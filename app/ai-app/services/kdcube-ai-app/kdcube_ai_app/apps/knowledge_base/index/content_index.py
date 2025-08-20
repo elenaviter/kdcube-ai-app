@@ -4,11 +4,11 @@ Provides content hash -> resource_id mapping with bloom filter optimization.
 """
 import json
 import time
-import hashlib
-from typing import Dict, Optional, Set, Tuple
-from pathlib import Path
+from abc import ABCMeta, abstractmethod
+from typing import Dict, Optional
 import logging
 
+from kdcube_ai_app.apps.knowledge_base.db.kb_db_connector import KnowledgeBaseConnector
 from kdcube_ai_app.storage.storage import IStorageBackend
 
 logger = logging.getLogger("KnowledgeBase.ContentIndex")
@@ -22,7 +22,148 @@ except ImportError:
     BloomFilter = None
 
 
-class ContentIndexManager:
+class IContentIndexManager(metaclass=ABCMeta):
+    @abstractmethod
+    def check_content_exists(self, content_hash: str) -> bool:
+        """
+        Check if content hash exists and return the resource_id if found.
+
+        Args:
+            content_hash: SHA-256 hash of content
+
+        Returns:
+            resource_id if content exists, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    def add_content_mapping(self, content_hash:str, resource_id:str) -> None:
+        """
+        Add a content hash -> resource_id mapping.
+
+        Args:
+            content_hash: SHA-256 hash of content
+            resource_id: Resource identifier
+        """
+        pass
+
+    @abstractmethod
+    def remove_content_mapping(self, content_hash:str) -> bool:
+        """
+        Remove a content hash mapping.
+
+        Args:
+            content_hash: SHA-256 hash to remove
+
+        Returns:
+            True if mapping was removed, False if not found
+        """
+        pass
+
+    @abstractmethod
+    def get_stats(self):
+        """Get index statistics."""
+        pass
+
+    def rebuild_index(self, content_mappings: Dict[str, str]) -> None:
+        """
+        Rebuild the entire index from scratch.
+
+        Args:
+            content_mappings: Dict of content_hash -> resource_id mappings
+        """
+        pass
+
+    @abstractmethod
+    def validate_index_consistency(self, resource_callback=None)-> Dict:
+        """
+        Validate index consistency by checking if all indexed resources still exist.
+
+        Args:
+            resource_callback: Function that takes resource_id and returns True if resource exists
+
+        Returns:
+            Dict with validation results
+        """
+        pass
+
+
+class DBContentIndexManager(IContentIndexManager):
+
+    def __init__(self, storage_backend: IStorageBackend, db_connector:KnowledgeBaseConnector):
+        super().__init__()
+        self.storage_backend = storage_backend
+        self.db_connector = db_connector
+        self.logger = logging.getLogger(__name__)
+
+    def check_content_exists(self, content_hash: str) -> bool:
+        self.logger.debug("Checking content hash %s", content_hash)
+        return self.db_connector.content_hash_exists(content_hash)
+
+    def add_content_mapping(self, content_hash: str, resource_id: str) -> None:
+        self.logger.debug("Adding content hash %s", content_hash)
+        self.db_connector.add_content_hash(resource_id, content_hash)
+
+    def remove_content_mapping(self, content_hash: str) -> bool:
+        self.logger.debug("Removing content hash %s", content_hash)
+        return self.db_connector.remove_content_hash(content_hash)
+
+    def get_stats(self):
+        self.logger.debug("Getting content statistics")
+        return {
+            "total_entries": self.db_connector.get_content_hash_count(),
+        }
+
+    def validate_index_consistency(self, resource_callback=None) -> Dict:
+        self.logger.debug("Validating index consistency")
+        if not resource_callback:
+            return {"status": "skipped", "reason": "no_callback_provided"}
+
+        orphaned_hashes = []
+        valid_entries = 0
+
+        total = 0
+        for content_hash, i, total in self.db_connector.list_content_hashes_generator():
+            if resource_callback(content_hash.value):
+                valid_entries += 1
+            else:
+                orphaned_hashes.append(content_hash)
+
+        return {
+            "status": "completed",
+            "total_entries": total,
+            "valid_entries": valid_entries,
+            "orphaned_entries": len(orphaned_hashes),
+            "orphaned_hashes": orphaned_hashes[:10]  # Limit for readability
+        }
+
+    def rebuild_index(self, content_mappings: Dict[str, str]):
+        """
+        Rebuild the entire index from scratch.
+
+        Args:
+            content_mappings: Dict of content_hash -> resource_id mappings
+        """
+        logger.info(f"Rebuilding content index with {len(content_mappings)} entries")
+
+        # Clear out hashes
+        self.db_connector.clear_all_content_hashes()
+
+        content_hashes = []
+        for content_hash, resource_id in content_mappings.items():
+            content_hashes.append(
+                {
+                    "name": resource_id,
+                    "value": content_hash,
+                }
+            )
+
+        self.db_connector.batch_add_content_hashes(content_hashes)
+
+        logger.info("Content index rebuild completed")
+
+
+class FSContentIndexManager(IContentIndexManager):
     """
     Manages content-based deduplication using hash indexes and bloom filters.
     Works with any IStorageBackend implementation.
@@ -36,6 +177,7 @@ class ContentIndexManager:
             backend: Storage backend to use for index persistence
             index_prefix: Directory prefix for index files
         """
+        super().__init__()
         self.backend = backend
         self.index_prefix = index_prefix
 

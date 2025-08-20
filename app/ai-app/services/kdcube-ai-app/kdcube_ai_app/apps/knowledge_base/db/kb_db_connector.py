@@ -7,8 +7,9 @@ Final KnowledgeBaseConnector implementation using the actual KnowledgeBaseDB and
 import os
 import logging
 import traceback
+from datetime import datetime
 
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Generator
 from dataclasses import dataclass
 
 from kdcube_ai_app.apps.chat.reg import EMBEDDERS
@@ -24,7 +25,7 @@ from kdcube_ai_app.infra.llm.llm_data_model import ModelRecord
 
 # Import data models
 from kdcube_ai_app.apps.knowledge_base.db.data_models import (
-    DataSource, EntityItem, SearchResult, HybridSearchParams
+    DataSource, EntityItem, SearchResult, HybridSearchParams, ContentHash
 )
 from kdcube_ai_app.infra.embedding.embedding import get_embedding
 
@@ -224,7 +225,8 @@ class KnowledgeBaseConnector:
         try:
             embedding_module = kb.get_embedding_module()
             if embedding_module:
-                all_embedding_records = embedding_module.get_resource_records(resource_id, version, SegmentType.RETRIEVAL)
+                all_embedding_records = embedding_module.get_resource_records(resource_id, version,
+                                                                              SegmentType.RETRIEVAL)
         except Exception as e:
             logger.warning(f"Could not load embedding records for {resource_id}: {e}")
 
@@ -236,7 +238,9 @@ class KnowledgeBaseConnector:
         extraction_module = kb.get_extraction_module()
         md_extraction_rn = None
         if extraction_module:
-            md_extraction_rn = next(iter([fi["rn"] for fi in (kb.storage.get_extraction_results(resource_id, version) or []) if fi["content_file"].endswith(".md")]), None)
+            md_extraction_rn = next(iter(
+                [fi["rn"] for fi in (kb.storage.get_extraction_results(resource_id, version) or []) if
+                 fi["content_file"].endswith(".md")]), None)
 
         enhanced_segments = []
 
@@ -421,7 +425,7 @@ class KnowledgeBaseConnector:
             List of NavigationSearchResult objects with proper backtrack navigation
         """
         logger.debug(f"Performing advanced search: query='{params.query}', "
-                    f"resources={params.resource_ids}, entities={len(params.entity_filters or [])}")
+                     f"resources={params.resource_ids}, entities={len(params.entity_filters or [])}")
 
         # Use the enhanced SQL-based search
         search_results = self.kb_search.search(params)
@@ -437,10 +441,10 @@ class KnowledgeBaseConnector:
         return self._format_search_results(query, search_results)
 
     def entity_search(self,
-                     entities: List[EntityItem],
-                     match_all: bool = False,
-                     resource_ids: Optional[List[str]] = None,
-                     top_k: int = 10) -> List[NavigationSearchResult]:
+                      entities: List[EntityItem],
+                      match_all: bool = False,
+                      resource_ids: Optional[List[str]] = None,
+                      top_k: int = 10) -> List[NavigationSearchResult]:
         """
         Pure entity-based search using SQL JSONB operators.
 
@@ -472,11 +476,11 @@ class KnowledgeBaseConnector:
         )
 
     def semantic_search(self,
-                       query: str,
-                       distance_type: str = "cosine",
-                       resource_ids: Optional[List[str]] = None,
-                       min_similarity: float = 0.0,
-                       top_k: int = 10) -> List[NavigationSearchResult]:
+                        query: str,
+                        distance_type: str = "cosine",
+                        resource_ids: Optional[List[str]] = None,
+                        min_similarity: float = 0.0,
+                        top_k: int = 10) -> List[NavigationSearchResult]:
         """
         Pure semantic search using vector similarity.
 
@@ -647,7 +651,8 @@ class KnowledgeBaseConnector:
                 "segments_result": segments_result
             }
 
-            logger.info(f"Successfully loaded complete resource {resource_id}: {segments_result.get('segments_upserted', 0)} segments")
+            logger.info(
+                f"Successfully loaded complete resource {resource_id}: {segments_result.get('segments_upserted', 0)} segments")
             return result
 
         except Exception as e:
@@ -672,6 +677,88 @@ class KnowledgeBaseConnector:
         """
         return self.kb_db.get_resources_with_indexed_segments()
 
+    def content_hash_exists(self, hash_value: str) -> bool:
+        return self.kb_db.content_hash_exists(hash_value)
+
+    def get_object_hash(self, object_name: str) -> List[ContentHash]:
+        return self.kb_db.get_object_hash(object_name)
+
+    def get_content_hash(self, object_name: str) -> Optional[ContentHash]:
+        return self.kb_db.get_content_hash(object_name)
+
+    def add_content_hash(self, object_name: str, hash_value: str,
+                         hash_type: str = "SHA-256", creation_time: Optional[datetime] = None):
+        return self.kb_db.add_content_hash(object_name, hash_value, hash_type, creation_time)
+
+    def remove_content_hash(self, hash_value: str) -> bool:
+        return self.kb_db.remove_content_hash(hash_value)
+
+    def remove_object_hash(self, object_name: str):
+        return self.kb_db.remove_object_hash(object_name)
+
+    def list_content_hashes(self, name_pattern: Optional[str] = None, hash_type: Optional[str] = None,
+                            provider: Optional[str] = None, created_after: Optional[datetime] = None,
+                            created_before: Optional[datetime] = None, limit: int = 100, offset: int = 0,
+                            order_by: str = "creation_time", order_desc: bool = True) -> Dict[str, Any]:
+        return self.kb_db.list_content_hashes(name_pattern=name_pattern, hash_type=hash_type, provider=provider,
+                                              created_after=created_after, created_before=created_before, limit=limit,
+                                              offset=offset, order_by=order_by, order_desc=order_desc)
+
+    def list_content_hashes_generator(self, name_pattern: Optional[str] = None, hash_type: Optional[str] = None,
+                                      provider: Optional[str] = None, created_after: Optional[datetime] = None,
+                                      created_before: Optional[datetime] = None, limit: int = 100, offset: int = 0,
+                                      order_by: str = "creation_time", order_desc: bool = True) -> Generator[tuple[ContentHash, int, int], None, None]:
+        while True:
+            result = self.kb_db.list_content_hashes(name_pattern=name_pattern, hash_type=hash_type, provider=provider,
+                                                    created_after=created_after, created_before=created_before,
+                                                    limit=limit, offset=offset, order_by=order_by,
+                                                    order_desc=order_desc)
+            items = result.get("items", [])
+            if len(items) == 0:
+                break
+            i = 0
+            for item in items:
+                yield item, i + offset, result.get("total_count")
+                i += 1
+            if not result.get("has_more", False):
+                break
+            offset += len(items)
+
+    def get_content_hash_count(self, name_pattern: Optional[str] = None, hash_type: Optional[str] = None,
+                               provider: Optional[str] = None, created_after: Optional[datetime] = None,
+                               created_before: Optional[datetime] = None) -> int:
+        return self.kb_db.get_content_hash_count(name_pattern=name_pattern, hash_type=hash_type, provider=provider,
+                                                 created_after=created_after, created_before=created_before)
+
+    def clear_all_content_hashes(self) -> int:
+        return self.kb_db.clear_all_content_hashes()
+
+    def batch_add_content_hashes(self,
+                                 content_hashes: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Batch insert multiple content hashes.
+
+        Args:
+            content_hashes: List of dictionaries with keys:
+                - name: str (required) - Object name
+                - value: str (required) - Hash value
+                - type: str (optional) - Hash type, defaults to 'SHA-256'
+                - provider: str (optional) - Provider identifier
+                - creation_time: datetime (optional) - Creation time, defaults to now()
+            conn: Database connection (handled by decorator)
+
+        Returns:
+            Dict with statistics about the batch operation:
+            {
+                "total_processed": int,
+                "newly_inserted": int,
+                "already_existed": int,
+                "inserted_hashes": List[ContentHash],
+                "duplicate_values": List[str]
+            }
+        """
+        return self.kb_db.batch_add_content_hashes(content_hashes)
+
 # Convenience functions for common operations
 def create_kb_connector(tenant: str,
                         schema_name: str,
@@ -691,8 +778,8 @@ def create_kb_connector(tenant: str,
     """
     return KnowledgeBaseConnector(tenant, schema_name, project_name, embedding_model, system_schema_name)
 
-def embedding_model() -> ModelRecord:
 
+def embedding_model() -> ModelRecord:
     from kdcube_ai_app.infra.llm.llm_data_model import AIProviderName, AIProvider
     from kdcube_ai_app.infra.llm.util import get_service_key_fn
 
@@ -712,7 +799,6 @@ def embedding_model() -> ModelRecord:
     )
 
 
-
 # Example usage
 if __name__ == "__main__":
     # Create connector
@@ -725,6 +811,7 @@ if __name__ == "__main__":
 
     resource_id = "file|LLM Hallucination Prevention Techniques.pdf"
     import os
+
     project = os.environ.get("DEFAULT_PROJECT_NAME", None)
     tenant = os.environ.get("DEFAULT_TENANT", None)
 
@@ -741,7 +828,9 @@ if __name__ == "__main__":
     def kb_workdir(tenant: str, project: str):
         return f"{STORAGE_PATH}/kb/tenants/{tenant}/projects/{project}/knowledge_base"
 
+
     from kdcube_ai_app.apps.knowledge_base.core import KnowledgeBase
+
     kb = KnowledgeBase(tenant, project, kb_workdir(tenant, project), embedding_model=embedding_model())
 
     # Example operations
@@ -776,11 +865,12 @@ if __name__ == "__main__":
     query = "uncertainty in LLM"
 
     from kdcube_ai_app.infra.accounting import with_accounting
+
     with with_accounting("kb.connector.debug",
                          metadata={
-                            "query": query,
-                            "phase": "test_query_embedding",
-                        }):
+                             "query": query,
+                             "phase": "test_query_embedding",
+                         }):
         query_embedding = connector.get_embedding(query)
 
     params = HybridSearchParams(
@@ -814,7 +904,7 @@ if __name__ == "__main__":
     start = time.perf_counter()
     entity_results = connector.entity_search(
         entities=[
-            EntityItem(key="topic", value="hallucinations"), # {"key": "topic", "value": "hallucinations"}
+            EntityItem(key="topic", value="hallucinations"),  # {"key": "topic", "value": "hallucinations"}
             EntityItem(key="domain", value="LLM")
         ],
         match_all=False,  # Any entity matches

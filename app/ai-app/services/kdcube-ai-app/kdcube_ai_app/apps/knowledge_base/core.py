@@ -27,8 +27,7 @@ from kdcube_ai_app.tools.content_type import (fetch_url_with_content_type,
                                               guess_mime_from_url, is_text_mime_type)
 from kdcube_ai_app.tools.parser import MarkdownParser
 from kdcube_ai_app.apps.knowledge_base.modules.base import ModuleFactory
-from kdcube_ai_app.apps.knowledge_base.index.content_index import ContentIndexManager
-
+from kdcube_ai_app.apps.knowledge_base.index.content_index import FSContentIndexManager, DBContentIndexManager
 
 logger = logging.getLogger("KnowledgeBase.Core")
 
@@ -115,13 +114,17 @@ class KnowledgeBase:
         else:
             self.backend = storage_backend
 
-        self.storage = KnowledgeBaseCollaborativeStorage(self.backend)
         self.db_connector = create_kb_connector(
             tenant=tenant,
             schema_name=project.replace("-", "_"),
             project_name=project,
             embedding_model=embedding_model
         )
+        # self.content_index = InMemoryContentIndexManager(self.backend)
+        self.content_index = DBContentIndexManager(self.backend, self.db_connector)
+        logger.info("Content deduplication index initialized")
+
+        self.storage = KnowledgeBaseCollaborativeStorage(self.backend, self.content_index)
         self.markdown_parser = MarkdownParser()
 
         logger.info("Knowledge Base initialized")
@@ -135,8 +138,7 @@ class KnowledgeBase:
         logger.info(f"Knowledge Base '{project}' initialized with modular architecture")
         self._search_component = None
 
-        self.content_index = ContentIndexManager(self.backend, index_prefix=".index")
-        logger.info("Content deduplication index initialized")
+
 
     @property
     def search_component(self) -> SimpleKnowledgeBaseSearch:

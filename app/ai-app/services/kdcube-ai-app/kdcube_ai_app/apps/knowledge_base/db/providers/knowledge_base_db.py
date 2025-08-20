@@ -1,6 +1,7 @@
 # providers/knowledge_base_enhanced.py
 
 from datetime import datetime
+import datetime as dt
 import json
 from typing import Optional, List, Dict, Any, Union, Tuple
 
@@ -13,7 +14,7 @@ from kdcube_ai_app.infra.embedding.embedding import convert_embedding_to_string,
 
 # Import the data models
 from kdcube_ai_app.apps.knowledge_base.db.data_models import (
-    DataSource, RetrievalSegment, EntityItem, BatchSegmentUpdate
+    DataSource, RetrievalSegment, EntityItem, BatchSegmentUpdate, ContentHash
 )
 
 
@@ -905,3 +906,387 @@ class KnowledgeBaseDB:
                 })
 
             return results
+
+    @transactional
+    def content_hash_exists(self, hash_value:str, conn=None) -> bool:
+        sql = f"""
+                SELECT EXISTS(
+                    SELECT 1 FROM {self.schema}.content_hash 
+                    WHERE value = %s
+                )
+            """
+        with conn.cursor() as cur:
+            cur.execute(sql, (hash_value,))
+            return cur.fetchone()[0]
+
+    def _row_to_content_hash(self, row_dict: Dict[str, Any]) -> ContentHash:
+        """Convert database row to ContentHash object."""
+        return ContentHash(
+            id=row_dict["id"],
+            name=row_dict["name"],
+            value=row_dict["value"],
+            type=row_dict["type"],
+            provider=row_dict.get("provider"),
+            creation_time=row_dict["creation_time"]
+        )
+
+    @transactional
+    def get_object_hash(self, object_name: str, conn=None) -> List[ContentHash]:
+        """Get all content hashes by object name."""
+        sql = f"""
+        SELECT * FROM {self.schema}.content_hash 
+        WHERE name = %s
+        ORDER BY creation_time DESC
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (object_name,))
+            rows = cur.fetchall()
+            if not rows:
+                return []
+            colnames = [desc[0] for desc in cur.description]
+            results = []
+            for row in rows:
+                row_dict = dict(zip(colnames, row))
+                results.append(self._row_to_content_hash(row_dict))
+            return results
+
+    @transactional
+    def get_content_hash(self, hash_value: str, conn=None) -> Optional[ContentHash]:
+        """Get content hash by hash value."""
+        sql = f"""
+        SELECT * FROM {self.schema}.content_hash 
+        WHERE value = %s
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (hash_value,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            colnames = [desc[0] for desc in cur.description]
+            row_dict = dict(zip(colnames, row))
+            return self._row_to_content_hash(row_dict)
+
+    @transactional
+    def add_content_hash(self, object_name: str, hash_value:str,
+                         hash_type:str = "SHA-256", creation_time:Optional[datetime]=None,
+                         conn=None):
+        sql = f"""
+            INSERT INTO {self.schema}.content_hash (
+                name, value, type, creation_time
+            )
+            VALUES (%s, %s, %s, COALESCE(%s, now()))
+            ON CONFLICT (value) DO NOTHING
+            RETURNING *, (xmax = 0) AS inserted
+        """
+
+        data = (
+            object_name,
+            hash_value,
+            hash_type,
+            creation_time
+        )
+
+        with conn.cursor() as cur:
+            cur.execute(sql, data)
+            row = cur.fetchone()
+            colnames = [desc[0] for desc in cur.description]
+            row_dict = dict(zip(colnames, row))
+
+            exists = True if row_dict.get("inserted") else False
+
+            return {
+                "exists": exists,
+            }
+
+    @transactional
+    def remove_content_hash(self, hash_value: str, conn=None) -> bool:
+        """Remove content hash by hash value."""
+        sql = f"""
+        DELETE FROM {self.schema}.content_hash 
+        WHERE value = %s
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (hash_value,))
+            return cur.rowcount > 0
+
+    @transactional
+    def remove_object_hash(self, object_name: str, conn=None) -> int:
+        """Remove content hash(es) by object name. Returns number of rows deleted."""
+        sql = f"""
+        DELETE FROM {self.schema}.content_hash 
+        WHERE name = %s
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, (object_name,))
+            return cur.rowcount
+
+    @transactional
+    def list_content_hashes(self, name_pattern: Optional[str] = None, hash_type: Optional[str] = None,
+                            provider: Optional[str] = None, created_after: Optional[datetime] = None,
+                            created_before: Optional[datetime] = None, limit: int = 100, offset: int = 0,
+                            order_by: str = "creation_time", order_desc: bool = True, conn=None) -> Dict[str, Any]:
+        """
+        List content hashes with optional filters and pagination.
+
+        Args:
+            provider: Filter by provider (optional)
+            hash_type: Filter by hash type (e.g., 'SHA-256', 'MD5') (optional)
+            name_pattern: Filter by name pattern using ILIKE (optional)
+            created_after: Filter by creation time >= this datetime (optional)
+            created_before: Filter by creation time <= this datetime (optional)
+            limit: Maximum number of results (default: 100)
+            offset: Number of results to skip for pagination (default: 0)
+            order_by: Column to order by ('creation_time', 'name', 'type') (default: 'creation_time')
+            order_desc: Whether to order descending (default: True)
+            conn: Database connection (handled by decorator)
+
+        Returns:
+            Dict containing 'items' (list of ContentHash), 'total_count', 'limit', 'offset'
+        """
+        where_clauses = []
+        params = []
+
+        if provider:
+            where_clauses.append("provider = %s")
+            params.append(provider)
+
+        if hash_type:
+            where_clauses.append("type = %s")
+            params.append(hash_type)
+
+        if name_pattern:
+            where_clauses.append("name ILIKE %s")
+            params.append(f"%{name_pattern}%")
+
+        if created_after:
+            where_clauses.append("creation_time >= %s")
+            params.append(created_after)
+
+        if created_before:
+            where_clauses.append("creation_time <= %s")
+            params.append(created_before)
+
+        where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Validate order_by column
+        valid_order_columns = ['creation_time', 'name', 'type', 'id', 'provider']
+        if order_by not in valid_order_columns:
+            order_by = 'creation_time'
+
+        order_direction = "DESC" if order_desc else "ASC"
+
+        # Get total count for pagination
+        count_sql = f"""
+        SELECT COUNT(*) FROM {self.schema}.content_hash 
+        {where_clause}
+        """
+
+        # Get paginated results
+        data_sql = f"""
+        SELECT * FROM {self.schema}.content_hash 
+        {where_clause}
+        ORDER BY {order_by} {order_direction}
+        LIMIT %s OFFSET %s
+        """
+
+        with conn.cursor() as cur:
+            # Get total count
+            cur.execute(count_sql, params)
+            total_count = cur.fetchone()[0]
+
+            # Get paginated data
+            data_params = params + [limit, offset]
+            cur.execute(data_sql, data_params)
+            rows = cur.fetchall()
+            colnames = [desc[0] for desc in cur.description]
+
+            results = []
+            for row in rows:
+                row_dict = dict(zip(colnames, row))
+                results.append(self._row_to_content_hash(row_dict))
+
+            return {
+                "items": results,
+                "total_count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + len(results) < total_count
+            }
+
+    @transactional
+    def batch_add_content_hashes(self,
+                                 content_hashes: List[Dict[str, Any]],
+                                 conn=None) -> Dict[str, Any]:
+        """
+        Batch insert multiple content hashes.
+
+        Args:
+            content_hashes: List of dictionaries with keys:
+                - name: str (required) - Object name
+                - value: str (required) - Hash value
+                - type: str (optional) - Hash type, defaults to 'SHA-256'
+                - provider: str (optional) - Provider identifier
+                - creation_time: datetime (optional) - Creation time, defaults to now()
+            conn: Database connection (handled by decorator)
+
+        Returns:
+            Dict with statistics about the batch operation:
+            {
+                "total_processed": int,
+                "newly_inserted": int,
+                "already_existed": int,
+                "inserted_hashes": List[ContentHash],
+                "duplicate_values": List[str]
+            }
+        """
+        if not content_hashes:
+            return {
+                "total_processed": 0,
+                "newly_inserted": 0,
+                "already_existed": 0,
+                "inserted_hashes": [],
+                "duplicate_values": []
+            }
+
+        now = datetime.now(dt.UTC)
+        rows_to_insert = []
+
+        # Prepare data for batch insert
+        for hash_data in content_hashes:
+            if not hash_data.get("name") or not hash_data.get("value"):
+                raise ValueError("Both 'name' and 'value' are required for each content hash")
+
+            row_data = (
+                hash_data["name"],
+                hash_data["value"],
+                hash_data.get("type", "SHA-256"),
+                hash_data.get("provider"),
+                hash_data.get("creation_time", now)
+            )
+            rows_to_insert.append(row_data)
+
+        with conn.cursor() as cur:
+            # First, check which hash values already exist
+            hash_values = [row[1] for row in rows_to_insert]  # Extract hash values
+            if hash_values:
+                placeholders = ','.join(['%s'] * len(hash_values))
+                existing_sql = f"""
+                SELECT value FROM {self.schema}.content_hash 
+                WHERE value IN ({placeholders})
+                """
+                cur.execute(existing_sql, hash_values)
+                existing_values = {row[0] for row in cur.fetchall()}
+            else:
+                existing_values = set()
+
+            # Filter out rows that would conflict (already exist)
+            new_rows = []
+            duplicate_values = []
+
+            for row in rows_to_insert:
+                hash_value = row[1]
+                if hash_value in existing_values:
+                    duplicate_values.append(hash_value)
+                else:
+                    new_rows.append(row)
+
+            # Batch insert only new rows
+            inserted_hashes = []
+            if new_rows:
+                sql = f"""
+                INSERT INTO {self.schema}.content_hash (
+                    name, value, type, provider, creation_time
+                )
+                VALUES %s
+                RETURNING *
+                """
+
+                execute_values(cur, sql, new_rows)
+                returned_rows = cur.fetchall()
+                colnames = [desc[0] for desc in cur.description]
+
+                for row in returned_rows:
+                    row_dict = dict(zip(colnames, row))
+                    inserted_hashes.append(self._row_to_content_hash(row_dict))
+
+            return {
+                "total_processed": len(content_hashes),
+                "newly_inserted": len(inserted_hashes),
+                "already_existed": len(duplicate_values),
+                "inserted_hashes": inserted_hashes,
+                "duplicate_values": duplicate_values
+            }
+
+    @transactional
+    def get_content_hash_count(self, name_pattern: Optional[str] = None, hash_type: Optional[str] = None,
+                               provider: Optional[str] = None, created_after: Optional[datetime] = None,
+                               created_before: Optional[datetime] = None, conn=None) -> int:
+        """
+        Count content hash records with optional filters.
+
+        Args:
+            provider: Filter by provider (optional)
+            hash_type: Filter by hash type (e.g., 'SHA-256', 'MD5') (optional)
+            name_pattern: Filter by name pattern using ILIKE (optional)
+            created_after: Filter by creation time >= this datetime (optional)
+            created_before: Filter by creation time <= this datetime (optional)
+            conn: Database connection (handled by decorator)
+
+        Returns:
+            Total count of matching content hash records
+        """
+        where_clauses = []
+        params = []
+
+        if provider:
+            where_clauses.append("provider = %s")
+            params.append(provider)
+
+        if hash_type:
+            where_clauses.append("type = %s")
+            params.append(hash_type)
+
+        if name_pattern:
+            where_clauses.append("name ILIKE %s")
+            params.append(f"%{name_pattern}%")
+
+        if created_after:
+            where_clauses.append("creation_time >= %s")
+            params.append(created_after)
+
+        if created_before:
+            where_clauses.append("creation_time <= %s")
+            params.append(created_before)
+
+        where_clause = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        sql = f"""
+        SELECT COUNT(*) FROM {self.schema}.content_hash 
+        {where_clause}
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            result = cur.fetchone()
+            return result[0] if result else 0
+
+    @transactional
+    def clear_all_content_hashes(self, conn=None) -> int:
+        """
+        Delete ALL content hash records from the table.
+
+        WARNING: This is a destructive operation that removes all content hash data.
+        Use with caution, especially in production environments.
+
+        Returns:
+            Number of records deleted
+        """
+        sql = f"DELETE FROM {self.schema}.content_hash"
+
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            return cur.rowcount

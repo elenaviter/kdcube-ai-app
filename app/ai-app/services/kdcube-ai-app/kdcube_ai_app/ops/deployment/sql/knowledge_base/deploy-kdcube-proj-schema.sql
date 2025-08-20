@@ -95,7 +95,30 @@ CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_ds_cache_lookup
     ON <SCHEMA>.datasource (provider, source_type, status, expiration);
 
 -------------------------------------------------------------------------------
--- 3) Versioned Data Source Retrieval Segment
+-- 3) Content Hash
+-------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS <SCHEMA>.content_hash (
+    id              BIGSERIAL PRIMARY KEY,
+    name            TEXT NOT NULL,
+    value           TEXT NOT NULL UNIQUE,
+    type            TEXT NOT NULL,
+    provider        TEXT,
+    creation_time   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Content hash indexes (schema-specific names)
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_ch_value
+    ON <SCHEMA>.content_hash (value);
+
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_ch_name
+    ON <SCHEMA>.content_hash (name);
+
+COMMENT ON COLUMN <SCHEMA>.content_hash.value IS 'Content hash value (e.g., SHA256, MD5, etc.)';
+COMMENT ON COLUMN <SCHEMA>.content_hash.type IS 'Type of hash algorithm used (e.g., SHA256, MD5, SHA1)';
+COMMENT ON COLUMN <SCHEMA>.content_hash.name IS 'Name or identifier of the object being hashed';
+
+-------------------------------------------------------------------------------
+-- 4) Versioned Data Source Retrieval Segment
 -------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS <SCHEMA>.retrieval_segment (
                                                           id                  TEXT NOT NULL,
@@ -143,7 +166,7 @@ COMMENT ON COLUMN <SCHEMA>.datasource.expiration IS 'Expiration timestamp for ca
 COMMENT ON COLUMN <SCHEMA>.retrieval_segment.provider IS 'Provider identifier inherited from datasource for faster filtering';
 
 -------------------------------------------------------------------------------
--- 4) Functions (CREATE OR REPLACE handles existence automatically)
+-- 5) Functions (CREATE OR REPLACE handles existence automatically)
 -------------------------------------------------------------------------------
 
 -- Enhanced search vector with metadata (schema-specific function name)
@@ -225,7 +248,7 @@ END;
 $$ LANGUAGE plpgsql;
 
 -------------------------------------------------------------------------------
--- 5) Trigger (with clean IF NOT EXISTS logic)
+-- 6) Trigger (with clean IF NOT EXISTS logic)
 -------------------------------------------------------------------------------
 
 -- Create trigger only if it doesn't exist
@@ -246,7 +269,7 @@ BEGIN
 END $$;
 
 -------------------------------------------------------------------------------
--- 6) Indexes (all support IF NOT EXISTS)
+-- 7) Indexes (all support IF NOT EXISTS)
 -------------------------------------------------------------------------------
 
 -- Primary search index (schema-specific name)
@@ -306,7 +329,7 @@ BEGIN
 END $$;
 
 -------------------------------------------------------------------------------
--- 7) Views for Common Queries - NEW
+-- 8) Views for Common Queries - NEW
 -------------------------------------------------------------------------------
 
 -- View for active (non-expired) data sources

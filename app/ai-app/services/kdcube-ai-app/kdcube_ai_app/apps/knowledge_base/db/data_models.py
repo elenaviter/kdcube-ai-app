@@ -198,3 +198,14 @@ class BatchSegmentUpdate(BaseModel):
     datasource_version: int  # Version of the datasource (same as segment versions)
     segments: List[SegmentProcessingData]
     cleanup_old_versions: bool = True
+
+class ContentHash(BaseModel):
+    """
+    Represents an object hash record
+    """
+    id: int
+    name: str
+    value: str
+    type: str
+    provider: Optional[str]
+    creation_time: datetime

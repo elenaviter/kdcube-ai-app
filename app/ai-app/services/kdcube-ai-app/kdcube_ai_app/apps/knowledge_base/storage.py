@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Literal, Union, Tuple
 
-from kdcube_ai_app.apps.knowledge_base.index.content_index import ContentIndexManager
+from kdcube_ai_app.apps.knowledge_base.index.content_index import IContentIndexManager
 from kdcube_ai_app.storage.distributed_locks import LockInfo
 from kdcube_ai_app.storage.storage import IStorageBackend, logger
 
@@ -27,9 +27,9 @@ VALID_STAGES = ["raw", "extraction", "segmentation", "metadata", "summarization"
 class KnowledgeBaseStorage:
     """High-level storage manager for Knowledge Base with multi-stage processing support."""
 
-    def __init__(self, backend: IStorageBackend):
+    def __init__(self, backend: IStorageBackend, content_index:IContentIndexManager):
         self.backend = backend
-        self.content_index = ContentIndexManager(self.backend, index_prefix=".index")
+        self.content_index = content_index
 
     def _validate_stage(self, stage: ProcessingStage) -> None:
         """Validate that the stage is supported."""
@@ -573,8 +573,8 @@ class KnowledgeBaseStorage:
 
 class KnowledgeBaseCollaborativeStorage(KnowledgeBaseStorage):
 
-    def __init__(self, backend: IStorageBackend):
-        super().__init__(backend)
+    def __init__(self, backend: IStorageBackend, content_index:IContentIndexManager):
+        super().__init__(backend, content_index)
 
         from kdcube_ai_app.storage.distributed_locks import DistributedResourceLocks
         self.locks = DistributedResourceLocks(backend)
