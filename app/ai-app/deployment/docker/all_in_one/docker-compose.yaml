@@ -1,0 +1,170 @@
+services:
+  postgres-db:
+    container_name: chat-postgres
+    image: pgvector/pgvector:pg16
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.postgres
+        required: false
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - chat-internal
+
+  postgres-setup:
+    image: chat-postgres-setup:latest
+    container_name: chat-postgres-setup
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_PostgresSetup
+    profiles:
+      - initial-setup
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.postgres.setup
+        required: false
+    environment:
+      - POSTGRES_HOST=postgres-db
+    depends_on:
+      - postgres-db
+    networks:
+      - chat-internal
+
+  redis:
+    container_name: chat-redis
+    image: redis:latest
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.redis
+        required: false
+    command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    networks:
+      - chat-internal
+    ports:
+      - "5445:6379"
+
+  dramatiq:
+    image: chat-dramatiq:latest
+    container_name: chat-dramatiq
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Dramatiq
+    profiles:
+      - backend
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.dramatiq
+        required: false
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres-db
+    volumes:
+      - ./kb-storage:/kb-storage
+    depends_on:
+      - postgres-db
+      - redis
+    networks:
+      - chat-internal
+
+  kb:
+    image: chat-kb:latest
+    container_name: chat-kb
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_KB
+    profiles:
+      - backend
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.kb
+        required: false
+    environment:
+      - REDIS_URL="redis://redis:6379/0"
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres-db
+    volumes:
+      - ./kb-storage:/kb-storage
+    depends_on:
+      - postgres-db
+      - redis
+    networks:
+      - chat-internal
+
+  chat:
+    image: chat-chat:latest
+    container_name: chat-chat
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
+    profiles:
+      - backend
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.kb
+        required: false
+    environment:
+      - REDIS_URL="redis://redis:6379/0"
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres-db
+    volumes:
+      - ./kb-storage:/kb-storage
+    depends_on:
+      - redis
+    networks:
+      - chat-internal
+
+  web-ui:
+    image: chat-web-ui:latest
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_UI
+    env_file:
+      - path: ./.env.ui
+        required: false
+    container_name: chat-web-ui
+    restart: unless-stopped
+    profiles:
+      - frontend
+    environment:
+      - NODE_ENV=production
+    networks:
+      - chat-internal
+
+  web-proxy:
+    image: chat-web-proxy:latest
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Proxy
+    env_file:
+      - path: ./.env.proxy
+        required: false
+    container_name: chat-web-proxy
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+    profiles:
+      - frontend
+    networks:
+      - chat-external
+      - chat-internal
+
+
+networks:
+  chat-external:
+    driver: bridge
+  chat-internal:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:

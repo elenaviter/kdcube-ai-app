@@ -1,0 +1,62 @@
+python-dotenv
+openai
+psycopg2-binary
+psycopg[binary]
+pytest
+coverage
+s3fs
+
+pathvalidate
+puremagic
+mammoth
+markdownify
+pdfminer>=20191125
+pdfminer.six>=20240706
+python_pptx
+pydub
+youtube_transcript_api
+SpeechRecognition
+boto3
+
+# requirements.txt
+pandas
+matplotlib
+numpy==2.1.0
+scipy
+seaborn
+scikit-learn
+# openai
+# s3fs
+umap-learn
+sentence-transformers
+sentencepiece
+torch==2.5.1
+Flask
+Flask-Cors
+# colbert-ai
+markdown-it-py
+anthropic
+
+fastapi
+uvicorn
+bcrypt
+
+# Agentic
+langchain
+langchain-community
+tiktoken
+
+
+# Demo app
+marker-pdf
+Flask[async]
+flask-socketio
+eventlet
+python-socketio
+python-multipart
+python-socketio[asyncio_server]
+redis
+aioredis
+python-magic
+celery
+celery[redis]

@@ -1,0 +1,1238 @@
+# chat/web_app.py - Updated with modular Socket.IO
+"""
+FastAPI chat application with modular Socket.IO integration and gateway protection
+"""
+import uuid
+import time
+import logging
+import os
+
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Dict, Any, Optional, List
+
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from dotenv import load_dotenv, find_dotenv
+load_dotenv(find_dotenv())
+
+from kdcube_ai_app.apps.chat.agentic_app import _mid
+from kdcube_ai_app.apps.middleware.logging.uvicorn import configure_logging
+from kdcube_ai_app.infra.accounting import with_accounting
+from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
+
+configure_logging()
+
+from kdcube_ai_app.apps.middleware.gateway import STATE_FLAG, STATE_SESSION, STATE_USER_TYPE
+from kdcube_ai_app.infra.gateway.backpressure import create_atomic_chat_queue_manager
+from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
+from kdcube_ai_app.infra.gateway.config import get_gateway_config
+
+# Import our simplified components
+from kdcube_ai_app.apps.chat.api.resolvers import (
+    get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency, require_auth,
+    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL
+)
+from kdcube_ai_app.auth.sessions import UserType, UserSession
+from kdcube_ai_app.auth.AuthManager import RequireUser, RequireRoles
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
+
+from kdcube_ai_app.apps.chat.inventory import ConfigRequest, ModelService, create_workflow_config
+from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
+
+# Import the modular Socket.IO handler
+from kdcube_ai_app.apps.chat.api.socketio.chat import create_socketio_chat_handler
+
+import kdcube_ai_app.apps.utils.logging_config as logging_config
+logging_config.configure_logging()
+logger = logging.getLogger(__name__)
+
+
+# ================================
+# APPLICATION SETUP
+# ================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Simplified lifespan management"""
+    # Startup
+    logger.info(f"Chat service starting on port {CHAT_APP_PORT}")
+
+    # Initialize gateway adapter and store in app state
+    app.state.gateway_adapter = get_fastapi_adapter()
+    gateway_config = get_gateway_config()
+    app.state.chat_queue_manager = create_atomic_chat_queue_manager(
+        gateway_config.redis_url,
+        gateway_config,
+        app.state.gateway_adapter.gateway.throttling_monitor  # Pass throttling monitor
+    )
+    app.state.acc_binder = get_fast_api_accounting_binder()
+
+    # --- Heartbeats / processor (uses local queue processor) ---
+
+    from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
+        service_health_checker
+
+    # Dummy chat handler for compatibility
+    async def dummy_chat_handler_1(message: str, session_id: str, config: Dict) -> Dict:
+        import asyncio
+        await asyncio.sleep(1)  # Simulate processing
+        return {
+            "final_answer": f"Processed: {message}",
+            "session_id": session_id
+        }
+
+    # Simple async "LLM" + Socket.IO emitter.
+    # IMPORTANT: We emit to ROOM == session_id so the connected socket gets the result.
+    async def dummy_chat_handler(message: str, session_id: str, config: Dict) -> Dict:
+        sio = getattr(app.state, "socketio_handler", None).sio if getattr(app.state, "socketio_handler", None) else None
+        start_ts = datetime.now().isoformat()
+
+        # Fire-and-forget safety if Socket.IO is missing
+        if sio:
+            await sio.emit("chat_start", {
+                "task_id": f"adhoc-{uuid.uuid4()}",
+                "message": message[:100] + "..." if len(message) > 100 else message,
+                "timestamp": start_ts,
+                "user_type": "unknown",
+                "queue_stats": {}
+            }, room=session_id)
+
+            # Simulate doing work + a step
+            await sio.emit("chat_step", {
+                "step": "answer_generator",
+                "status": "started",
+                "timestamp": datetime.now().isoformat(),
+                "data": {"model": config.get("selected_model", "gpt-4o")},
+                "elapsed_time": None,
+                "error": None
+            }, room=session_id)
+
+        # Simulated model output
+        await asyncio_sleep(0.25)
+        final_answer = f"(stub) You said: {message}"
+
+        if sio:
+            await sio.emit("chat_complete", {
+                "task_id": f"adhoc-{uuid.uuid4()}",
+                "final_answer": final_answer,
+                "is_our_domain": True,
+                "classification_reasoning": None,
+                "rag_queries": [],
+                "retrieved_docs": [],
+                "reranked_docs": [],
+                "error_message": None,
+                "selected_model": config.get("selected_model", "gpt-4o"),
+                "config_info": {
+                    "selected_model": config.get("selected_model", "gpt-4o"),
+                    "model_name": MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
+                        "model_name"],
+                    "provider": MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
+                        "provider"],
+                    "has_classifier":
+                        MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
+                            "has_classifier"],
+                    "description": MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
+                        "description"],
+                    "use_custom_endpoint": False,
+                    "custom_embedding_endpoint": None,
+                    "embedding_model": None
+                },
+                "timestamp": datetime.now().isoformat(),
+                "user_type": "unknown"
+            }, room=session_id)
+
+        return {"final_answer": final_answer, "session_id": session_id}
+
+    async def llm_passthrough_chat_handler(
+            message: str,
+            session_id: str,
+            config: Dict,
+            chat_history: Optional[List[Dict[str, str]]] = None,
+    ) -> Dict:
+        sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
+        task_id = f"adhoc-{uuid.uuid4()}"  # ← define ONCE and keep it
+        start_ts = datetime.now().isoformat()
+        streaming = (config or {}).get("stream", True)
+
+        if sio:
+            await sio.emit("chat_start", {
+                "task_id": task_id,
+                "message": message[:100] + "..." if len(message) > 100 else message,
+                "timestamp": start_ts,
+                "user_type": "unknown",
+                "queue_stats": {}
+            }, room=session_id)
+            await sio.emit("chat_step", {
+                "step": "answer_generator",
+                "status": "started",
+                "timestamp": datetime.now().isoformat(),
+                "data": {"model": (config or {}).get("selected_model", "gpt-4o")},
+                "elapsed_time": None,
+                "error": None
+            }, room=session_id)
+
+        # Build config + service
+        from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+        try:
+            cfg_req = ConfigRequest(**(config or {}))
+        except Exception:
+            cfg_req = ConfigRequest.model_validate(config or {})
+        wf_config = create_workflow_config(cfg_req)
+        service = ModelService(wf_config)
+        client = service.answer_generator_client
+        client_cfg = service.describe_client(client, role="answer_generator")
+
+        # Build LC messages with history
+        system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
+        lc_messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
+        for h in (chat_history or []):
+            role = (h.get("role") or "").lower()
+            content = h.get("content") or ""
+            if not content:
+                continue
+            lc_messages.append(AIMessage(content=content) if role == "assistant" else HumanMessage(content=content))
+        lc_messages.append(HumanMessage(content=message))
+
+        result_text = ""
+        usage_out: Dict[str, Any] = {}
+        step_status = "completed"
+        error_message = None
+
+        try:
+            with with_accounting(
+                    "chat.answer_generator",
+                    metadata={
+                        "selected_model": wf_config.selected_model,
+                        "provider": wf_config.provider,
+                        "history_len": len(chat_history or []),
+                        "message_chars": len(message or ""),
+                        "message": message,
+                    },
+            ):
+                if streaming:
+                    # emit deltas with the SAME task_id and the field name 'index'
+                    idx = -1
+
+                    async def on_delta(txt: str):
+                        nonlocal idx
+                        if sio and txt:
+                            idx += 1
+                            await sio.emit("chat_delta", {
+                                "task_id": task_id,  # ← SAME id
+                                "delta": txt,
+                                "index": idx,  # ← use 'index' (not 'idx')
+                                "timestamp": datetime.now().isoformat(),
+                            }, room=session_id)
+
+                    # CAPTURE the result so you can fill usage + final answer
+                    stream_res = await service.stream_model_text_tracked(
+                        client,
+                        lc_messages,
+                        on_delta=on_delta,
+                        temperature=(config or {}).get("temperature", 0.3),
+                        max_tokens=(config or {}).get("max_tokens", 800),
+                        client_cfg=client_cfg,
+                    )
+                    result_text = stream_res.get("text", "") or ""
+                    usage_out = stream_res.get("usage", {}) or {}
+
+                    # Optional: if OpenAI streaming didn’t report usage, approximate
+                    # if (usage_out.get("completion_tokens", 0) == 0) and result_text:
+                    #     approx = _approx_tokens_by_chars(result_text)  # import from your utils
+                    #     # merge keeping existing prompt tokens if present
+                    #     usage_out = {
+                    #         "prompt_tokens": usage_out.get("prompt_tokens", 0),
+                    #         "completion_tokens": approx.get("completion_tokens", approx.get("total_tokens", 0)),
+                    #         "total_tokens": usage_out.get("prompt_tokens", 0) + approx.get("total_tokens", 0),
+                    #     }
+
+                else:
+                    llm_res = await service.call_model_text(
+                        client,
+                        lc_messages,
+                        temperature=(config or {}).get("temperature", 0.3),
+                        max_tokens=(config or {}).get("max_tokens", 800),
+                        client_cfg=client_cfg,
+                    )
+                    result_text = llm_res["text"]
+                    usage_out = llm_res.get("usage", {})
+
+        except Exception as e:
+            error_message = str(e)
+            step_status = "error"
+            result_text = result_text or "I couldn't complete your request."
+
+        if sio:
+            await sio.emit("chat_step", {
+                "step": "answer_generator",
+                "status": step_status,
+                "timestamp": datetime.now().isoformat(),
+                "data": {
+                    "model": wf_config.model_config.get("model_name", wf_config.selected_model),
+                    "answer_length": len(result_text or ""),
+                    "usage": usage_out,
+                },
+                "elapsed_time": None,
+                "error": error_message
+            }, room=session_id)
+
+            await sio.emit("chat_complete", {
+                "task_id": task_id,  # ← SAME id
+                "final_answer": result_text,
+                "is_our_domain": None,
+                "classification_reasoning": None,
+                "rag_queries": [],
+                "retrieved_docs": [],
+                "reranked_docs": [],
+                "error_message": error_message,
+                "selected_model": wf_config.selected_model,
+                "config_info": {
+                    "selected_model": wf_config.selected_model,
+                    "model_name": wf_config.model_config.get("model_name", wf_config.selected_model),
+                    "provider": wf_config.provider,
+                    "has_classifier": wf_config.has_classifier,
+                    "description": wf_config.model_config.get("description"),
+                    "use_custom_endpoint": bool(wf_config.use_custom_endpoint),
+                    "custom_embedding_endpoint": wf_config.custom_embedding_endpoint,
+                    "embedding_model": wf_config.embedding_model
+                },
+                "timestamp": datetime.now().isoformat(),
+                "user_type": "unknown"
+            }, room=session_id)
+
+        return {"final_answer": result_text, "session_id": session_id}
+
+    async def agentic_chat_handler(
+            message: str,
+            session_id: str,
+            config: Dict,
+            chat_history: Optional[List[Dict[str, str]]] = None,
+            **kwargs
+    ) -> Dict:
+        sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
+        task_id = f"adhoc-{uuid.uuid4()}"
+        start_ts = datetime.now().isoformat()
+
+        # 1) announce start
+        if sio:
+            await sio.emit("chat_start", {
+                "task_id": task_id,
+                "message": message[:100] + "..." if len(message) > 100 else message,
+                "timestamp": start_ts,
+                "user_type": "unknown",
+                "queue_stats": {}
+            }, room=session_id)
+
+        # 2) build config + workflow with a step emitter
+        try:
+            cfg_req = ConfigRequest(**(config or {}))
+        except Exception:
+            cfg_req = ConfigRequest.model_validate(config or {})
+
+        wf_config = create_workflow_config(cfg_req)
+
+        async def _emit_step(step: str, status: str, data: Dict[str, Any]):
+            if not sio:
+                return
+            await sio.emit("chat_step", {
+                "step": step,
+                "status": status,
+                "timestamp": datetime.now().isoformat(),
+                "data": data,
+                "elapsed_time": None,
+                "error": data.get("error")
+            }, room=session_id)
+
+        async def _emit_delta(delta: str, index: int):
+            if not sio:
+                return
+            await sio.emit("chat_delta", {
+                "task_id": task_id,
+                "delta": delta,
+                "index": index,
+                "timestamp": datetime.now().isoformat(),
+            }, room=session_id)
+
+        from kdcube_ai_app.apps.chat.agentic_app import ChatWorkflow, create_initial_state
+        from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+
+        workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
+
+        # 3) seed optional history into initial state (so first run has context)
+        #    (We reuse your create_initial_state and pass it directly to graph)
+        state = create_initial_state(message)
+        # Include a lightweight system prompt if passed in config
+        system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
+        state["messages"] = [SystemMessage(content=system_prompt, id=_mid("sys"))]
+
+        for h in (chat_history or []):
+            role = (h.get("role") or "").lower()
+            content = h.get("content") or ""
+            if not content:
+                continue
+            state["messages"].append(
+                AIMessage(content=content) if role == "assistant" else HumanMessage(content=content))
+
+        # 4) run graph (the wrapped nodes will emit chat_step events)
+        error_message = None
+        try:
+            result = await workflow.graph.ainvoke(
+                state,
+                config={"configurable": {"thread_id": session_id}},
+            )
+        except Exception as e:
+            error_message = str(e)
+            # try to extract partial state if any
+            logger.exception(e)
+            result = {
+                "final_answer": "I couldn’t complete your request.",
+                "error_message": error_message,
+                "is_our_domain": None,
+                "classification_reasoning": None,
+                "rag_queries": [],
+                "retrieved_docs": [],
+                "reranked_docs": [],
+                "context": {},
+            }
+
+        # 5) finalize for UI
+        final_answer = result.get("final_answer") or ""
+        is_our_domain = result.get("is_our_domain")
+        classification_reasoning = result.get("classification_reasoning")
+        rag_queries = result.get("rag_queries") or []
+        retrieved_docs = result.get("retrieved_docs") or []
+        reranked_docs = result.get("reranked_docs") or []
+
+        # # 6) send complete
+        # if sio:
+        #     await sio.emit("chat_complete", {
+        #         "task_id": task_id,
+        #         "final_answer": final_answer,
+        #         "is_our_domain": is_our_domain,
+        #         "classification_reasoning": classification_reasoning,
+        #         "rag_queries": rag_queries,
+        #         "retrieved_docs": retrieved_docs,
+        #         "reranked_docs": reranked_docs,
+        #         "error_message": error_message,
+        #         "selected_model": wf_config.selected_model,
+        #         "config_info": {
+        #             "selected_model": wf_config.selected_model,
+        #             "model_name": wf_config.model_config.get("model_name", wf_config.selected_model),
+        #             "provider": wf_config.provider,
+        #             "has_classifier": wf_config.has_classifier,
+        #             "description": wf_config.model_config.get("description"),
+        #             "use_custom_endpoint": bool(wf_config.use_custom_endpoint),
+        #             "custom_embedding_endpoint": wf_config.custom_embedding_endpoint,
+        #             "embedding_model": wf_config.embedding_model,
+        #         },
+        #         "timestamp": datetime.now().isoformat(),
+        #         "user_type": "unknown"
+        #     }, room=session_id)
+
+        return {"final_answer": final_answer, "session_id": session_id}
+
+    # tiny awaitable sleep (no external deps)
+    import asyncio
+    async def asyncio_sleep(sec: float):
+        await asyncio.sleep(sec)
+
+    port = CHAT_APP_PORT
+    process_id = os.getpid()
+
+    handler = dummy_chat_handler
+    handler = llm_passthrough_chat_handler
+    handler = agentic_chat_handler
+    #     processor = get_external_request_processor(middleware, handler, app)
+    #     health_checker = service_health_checker(middleware)
+    #
+    #     # Store in app state for monitoring endpoints
+    #     app.state.middleware = middleware
+    #     app.state.heartbeat_manager = heartbeat_manager
+    #     app.state.processor = processor
+    #     app.state.health_checker = health_checker
+    #
+    #     # Start services
+    #     await middleware.init_redis()
+    #     await heartbeat_manager.start_heartbeat(interval=10)
+    #     await processor.start_processing()
+    #     await health_checker.start_monitoring()
+    #
+    #     logger.info(f"Chat process {process_id} started with enhanced gateway")
+    #
+    # except Exception as e:
+    #     logger.warning(f"Could not start legacy middleware: {e}")
+
+    # ================================
+    # SOCKET.IO SETUP
+    # ================================
+
+    # CORS setup for Socket.IO
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:4000",
+        "http://localhost:5173",
+        "http://localhost:8050",
+    ]
+
+    # Create modular Socket.IO chat handler
+    try:
+        socketio_handler = create_socketio_chat_handler(
+            app=app,
+            gateway_adapter=app.state.gateway_adapter,
+            chat_queue_manager=app.state.chat_queue_manager,
+            allowed_origins=allowed_origins,
+            instance_id=INSTANCE_ID,
+            redis_url=REDIS_URL
+        )
+
+        # Mount Socket.IO app if available
+        socket_asgi_app = socketio_handler.get_asgi_app()
+        if socket_asgi_app:
+            app.mount("/socket.io", socket_asgi_app)
+            app.state.socketio_handler = socketio_handler
+            logger.info("Socket.IO chat handler mounted successfully")
+        else:
+            logger.warning("Socket.IO not available - chat handler disabled")
+
+    except Exception as e:
+        logger.error(f"Failed to setup Socket.IO chat handler: {e}")
+        app.state.socketio_handler = None
+
+    try:
+        handler = agentic_chat_handler
+
+        middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(port=port)
+        processor = get_external_request_processor(middleware, handler, app)
+        health_checker = service_health_checker(middleware)
+
+        # Store in app state for monitoring endpoints
+        app.state.middleware = middleware
+        app.state.heartbeat_manager = heartbeat_manager
+        app.state.processor = processor
+        app.state.health_checker = health_checker
+
+        # Start services
+        await middleware.init_redis()
+        await heartbeat_manager.start_heartbeat(interval=10)
+        await processor.start_processing()
+        await health_checker.start_monitoring()
+
+        logger.info(f"Chat process {process_id} started with enhanced gateway")
+
+    except Exception as e:
+        logger.warning(f"Could not start legacy middleware: {e}")
+
+    yield
+
+    # Shutdown
+    if hasattr(app.state, 'heartbeat_manager'):
+        await app.state.heartbeat_manager.stop_heartbeat()
+    if hasattr(app.state, 'processor'):
+        await app.state.processor.stop_processing()
+    if hasattr(app.state, 'health_checker'):
+        await app.state.health_checker.stop_monitoring()
+
+    logger.info("Chat service stopped")
+
+
+# Create FastAPI app
+app = FastAPI(
+    title="Chat API with Modular Socket.IO",
+    description="Chat API with gateway integration and modular real-time Socket.IO streaming",
+    lifespan=lifespan
+)
+
+# CORS setup for FastAPI
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:4000",
+    "http://localhost:5173"
+]
+
+# CORS middleware for React frontend
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create orchestrator instance
+orchestrator: IOrchestrator = get_orchestrator()
+
+
+# ================================
+# MIDDLEWARE
+# ================================
+
+@app.middleware("http")
+async def gateway_middleware(request: Request, call_next):
+    if request.url.path.startswith(("/monitoring", "/admin", "/health", "/docs", "/openapi.json", "/favicon.ico")):
+        return await call_next(request)
+
+    # If already processed by a dependency earlier in the chain (rare but safe), skip
+    if getattr(request.state, STATE_FLAG, False):
+        return await call_next(request)
+
+    try:
+        session = await app.state.gateway_adapter.process_request(request, [])
+        setattr(request.state, STATE_SESSION, session)
+        setattr(request.state, STATE_USER_TYPE, session.user_type.value)
+        setattr(request.state, STATE_FLAG, True)
+
+        response = await call_next(request)
+
+        # Add headers once
+        response.headers["X-User-Type"] = session.user_type.value
+        response.headers["X-Session-ID"] = session.session_id
+        return response
+    except HTTPException as e:
+        headers = getattr(e, "headers", {})
+        return JSONResponse(status_code=e.status_code, content={"detail": e.detail}, headers=headers)
+
+
+# ================================
+# REQUEST/RESPONSE MODELS
+# ================================
+
+class ChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: Optional[str] = None
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+    config: Optional[ConfigRequest] = {}
+    chat_history: Optional[List[ChatMessage]] = []  # <— added
+
+
+class ChatResponse(BaseModel):
+    status: str
+    task_id: str
+    session_id: str
+    user_type: str
+    message: str
+
+
+# ================================
+# UTILITY FUNCTIONS
+# ================================
+
+def convert_chat_history(chat_history: List[ChatMessage]) -> List[Dict[str, str]]:
+    """Convert Pydantic chat history to dict format"""
+    return [
+        {
+            "role": msg["role"] if isinstance(msg, dict) else msg.role,
+            "content": msg["content"] if isinstance(msg, dict) else msg.content,
+            "timestamp": msg.get("timestamp") if isinstance(msg, dict) else (
+                        msg.timestamp or datetime.now().isoformat())
+        }
+        for msg in (chat_history or [])
+    ]
+
+
+# ================================
+# ENDPOINTS
+# ================================
+
+@app.get("/")
+async def root():
+    """Root endpoint with API information"""
+    socketio_enabled = hasattr(app.state, 'socketio_handler') and app.state.socketio_handler is not None
+
+    return {
+        "name": "LangGraph Chat API with Modular Socket.IO",
+        "version": "2.2.0",
+        "description": "Chat with real-time streaming via modular Socket.IO and legacy REST support",
+        "features": [
+            "Modular Socket.IO streaming chat",
+            "Legacy REST API support",
+            "Real-time step execution display",
+            "Custom embedding endpoint support",
+            "Multiple model providers (OpenAI, Anthropic, Custom)",
+            "Detailed execution logging",
+            "Format fixing and error recovery",
+            "Complete gateway protection on all endpoints"
+        ],
+        "available_models": list(MODEL_CONFIGS.keys()),
+        "socketio_enabled": socketio_enabled,
+        "endpoints": {
+            "/landing/health": "Health check",
+            "/landing/chat": "Legacy sync chat endpoint",
+            "/landing/models": "Get available models",
+            "/landing/test-embeddings": "Test custom embedding endpoint",
+            "/landing/workflow-info": "Get workflow information",
+            "/socket.io": "Socket.IO endpoint for real-time chat" if socketio_enabled else "Socket.IO disabled"
+        }
+    }
+
+
+@app.post("/landing/test-embeddings")
+async def check_embeddings_endpoint(request: ConfigRequest):
+    """Test embedding configuration"""
+    try:
+        from kdcube_ai_app.apps.chat.inventory import probe_embeddings
+        return probe_embeddings(request)
+    except Exception as e:
+        import traceback
+        logger.error(f"Error testing embeddings: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"Error testing embeddings: {str(e)}",
+                "embedder_id": request.selected_embedder
+            }
+        )
+
+
+@app.get("/public")
+async def public_endpoint():
+    """Public endpoint - no authentication required"""
+    return {"message": "This is a public endpoint", "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/profile")
+async def get_profile(session: UserSession = Depends(get_user_session_dependency())):
+    """Get user profile - works for both anonymous and registered users"""
+    if session.user_type in [UserType.REGISTERED, UserType.PRIVILEGED]:
+        return {
+            "user_type": "registered" if session.user_type == UserType.REGISTERED else "privileged",
+            "username": session.username,
+            "user_id": session.user_id,
+            "roles": session.roles,
+            "permissions": session.permissions,
+            "session_id": session.session_id,
+            "created_at": session.created_at
+        }
+    else:
+        return {
+            "user_type": "anonymous",
+            "fingerprint": session.fingerprint[:8] + "...",
+            "session_id": session.session_id,
+            "created_at": session.created_at
+        }
+
+
+@app.get("/protected")
+async def protected_endpoint(session: UserSession = Depends(require_auth(RequireUser()))):
+    """Protected endpoint - requires valid authentication"""
+    return {
+        "message": f"Hello {session.username}!",
+        "user_type": session.user_type.value,
+        "session_id": session.session_id
+    }
+
+
+@app.get("/admin-only")
+async def admin_only_endpoint(
+        session: UserSession = Depends(require_auth(
+            RequireUser(),
+            RequireRoles("kdcube:role:super-admin")
+        ))
+):
+    """Admin only endpoint"""
+    return {
+        "message": f"Welcome admin {session.username}!",
+        "roles": session.roles,
+        "user_type": session.user_type.value
+    }
+
+
+# --- background worker to do the work and emit over the room=session_id
+async def _process_rest_chat_and_emit(app: FastAPI,
+                                      session: UserSession,
+                                      payload: ChatRequest,
+                                      session_id: str,
+                                      acct_env_dict: Dict[str, Any]):
+    try:
+        if not hasattr(app.state,
+                       'socketio_handler') or not app.state.socketio_handler or not app.state.socketio_handler.sio:
+            logger.warning("Socket.IO not available; cannot emit results")
+            return
+
+        sio = app.state.socketio_handler.sio
+        task_id = str(uuid.uuid4())
+        cfg_dict = payload.config.model_dump() if payload.config else {}
+        history = convert_chat_history(payload.chat_history or [])
+
+        # Emit chat_start to the session room
+        await sio.emit('chat_start', {
+            'task_id': task_id,
+            'message': payload.message[:100] + "..." if len(payload.message) > 100 else payload.message,
+            'timestamp': datetime.now().isoformat(),
+            'user_type': session.user_type.value,
+        }, room=session_id)
+
+        import asyncio
+        async def _simple_llm_call(message: str, cfg: Dict, history: List[Dict[str, str]]) -> str:
+            # Replace this with your real call later. It’s async & side-effect free for wiring tests.
+            await asyncio.sleep(0.3)
+            preview = history[-1]['content'][:40] + '...' if history else ''
+            return f"[demo] Echo: {message}  (prev={preview})"
+
+        from kdcube_ai_app.storage.storage import create_storage_backend
+        from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope, bind_accounting
+        from kdcube_ai_app.infra.accounting import with_accounting
+
+        # Bind accounting for this async background continuation
+        storage_backend = create_storage_backend(os.environ.get("KDCUBE_STORAGE_PATH", "file://"))
+        # acct_env_dict comes from build_envelope_from_session(...).to_dict()
+        from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope
+        acct_env = AccountingEnvelope.from_dict(acct_env_dict)
+
+        async with bind_accounting(acct_env, storage_backend, enabled=True):
+            with with_accounting("chat.rest.generate", metadata={'selected_model': cfg_dict.get('selected_model')}):
+                final_answer = await _simple_llm_call(payload.message, cfg_dict, history)
+
+        model_config = MODEL_CONFIGS.get(cfg_dict.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])
+        config_info = {
+            "selected_model": cfg_dict.get("selected_model", "gpt-4o"),
+            "model_name": model_config["model_name"],
+            "provider": model_config["provider"],
+            "has_classifier": model_config["has_classifier"],
+            "description": model_config["description"],
+        }
+
+        # Emit completion to room=session_id
+        await sio.emit('chat_complete', {
+            'task_id': task_id,
+            'final_answer': final_answer,
+            'is_our_domain': None,
+            'classification_reasoning': None,
+            'rag_queries': None,
+            'retrieved_docs': None,
+            'reranked_docs': None,
+            'error_message': None,
+            'selected_model': config_info["selected_model"],
+            'config_info': config_info,
+            'timestamp': datetime.now().isoformat(),
+            'user_type': session.user_type.value,
+        }, room=session_id)
+
+    except Exception as e:
+        logger.error(f"REST->WS background processing failed: {e}")
+        try:
+            await app.state.socketio_handler.sio.emit('chat_error', {
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }, room=session_id)
+        except Exception:
+            pass
+
+
+@app.post("/landing/chat-real")
+async def chat_endpoint(
+        payload: ChatRequest,  # rename to avoid shadowing fastapi.Request
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """Main chat endpoint - supports both anonymous and registered users.
+       Only enqueues; worker binds accounting from attached envelope."""
+    try:
+        # IDs
+        task_id = str(uuid.uuid4())
+        request_id = str(uuid.uuid4())
+        session_id = payload.session_id or session.session_id
+
+        # Build an accounting snapshot (no storage I/O here)
+        # Try to infer tenant / project if you carry them in config; safe to leave None.
+        cfg_dict = payload.config.model_dump() if payload.config else {}
+        project_id = cfg_dict.get("project")
+        # If you have a central gateway config, you can fetch tenant like this:
+        try:
+            from kdcube_ai_app.infra.gateway.config import get_gateway_config
+            tenant_id = get_gateway_config().tenant_id
+        except Exception:
+            tenant_id = None
+
+        acct_env = build_envelope_from_session(
+            session=session,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            request_id=request_id,
+            component="chat.rest",
+            metadata={
+                "entrypoint": "/landing/chat",
+                "selected_model": cfg_dict.get("selected_model")
+            },
+        )
+
+        # Prepare task payload for the orchestrator/worker
+        task_data = {
+            "task_id": task_id,
+            "message": payload.message,
+            "session_id": session_id,
+            "config": cfg_dict,
+            "chat_history": convert_chat_history(payload.chat_history or []),
+            "user_type": session.user_type.value,
+            "user_info": {
+                "user_id": session.user_id,
+                "username": session.username,
+                "fingerprint": session.fingerprint,
+                "roles": session.roles,
+                "permissions": session.permissions,
+            },
+            "created_at": time.time(),
+            "instance_id": INSTANCE_ID,
+            "acct": acct_env.to_dict(),  # <— accounting envelope for downstream worker
+            "kdcube_path": os.environ.get("KDCUBE_STORAGE_PATH"),
+            "target_room": session_id  # <— explicit for clarity
+        }
+
+        # Use the gateway-provided context we stored in the session at auth time
+        context = session.request_context
+
+        # Atomic enqueue with backpressure protection
+        chat_queue_manager = app.state.chat_queue_manager
+        success, reason, stats = await chat_queue_manager.enqueue_chat_task_atomic(
+            session.user_type,
+            task_data,
+            session,
+            context,
+            "/landing/chat"
+        )
+
+        if not success:
+            retry_after = 30 if "anonymous" in reason else 45 if "registered" in reason else 60
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "System under pressure",
+                    "reason": reason,
+                    "retry_after": retry_after,
+                    "stats": stats
+                },
+                headers={"Retry-After": str(retry_after)}
+            )
+
+        # Keep the existing response shape for compatibility
+        return ChatResponse(
+            status="processing_started",
+            task_id=task_id,
+            session_id=session_id,
+            user_type=session.user_type.value,
+            message=f"Request queued for {session.user_type.value} user"
+        )
+
+    except CircuitBreakerError as e:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "Service temporarily unavailable",
+                "reason": f"Circuit breaker '{e.circuit_name}' is open",
+                "retry_after": e.retry_after,
+                "circuit_breaker": e.circuit_name
+            },
+            headers={"Retry-After": str(e.retry_after)}
+        )
+    except Exception as e:
+        logger.error(f"Chat endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/landing/chat")
+async def chat_endpoint(
+        payload: ChatRequest,
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """
+    REST receives a message; result is delivered over WebSocket to the SAME session_id room.
+    """
+    try:
+        # Use provided session_id if present (from /profile + client), else fall back to current REST session
+        session_id = payload.session_id or session.session_id
+
+        cfg_dict = payload.config.model_dump() if payload.config else {}
+        # Optional: project/tenant inference
+        project_id = cfg_dict.get("project")
+        try:
+            tenant_id = get_gateway_config().tenant_id
+        except Exception:
+            tenant_id = None
+
+        # Build an accounting snapshot (no I/O)
+        acct_env = build_envelope_from_session(
+            session=session,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            request_id=str(uuid.uuid4()),
+            component="chat.rest",
+            metadata={
+                "entrypoint": "/landing/chat",
+                "selected_model": cfg_dict.get("selected_model")
+            },
+        )
+
+        import asyncio
+        # Fire-and-forget the background job that emits to WS room = session_id
+        asyncio.create_task(_process_rest_chat_and_emit(
+            app, session, payload, session_id, acct_env.to_dict()
+        ))
+
+        # Immediate HTTP response
+        return ChatResponse(
+            status="processing_started",
+            task_id=str(uuid.uuid4()),
+            session_id=session_id,
+            user_type=session.user_type.value,
+            message=f"Processing will be sent over WS room={session_id}"
+        )
+
+    except Exception as e:
+        logger.error(f"Chat endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/landing/models")
+async def get_available_models(session: UserSession = Depends(get_user_session_dependency())):
+    """Get available model configurations"""
+    return {
+        "available_models": {
+            model_id: {
+                "id": model_id,
+                "name": config["model_name"],
+                "provider": config["provider"],
+                "has_classifier": config["has_classifier"],
+                "description": config["description"]
+            }
+            for model_id, config in MODEL_CONFIGS.items()
+        },
+        "default_model": "gpt-4o"
+    }
+
+
+@app.get("/landing/embedders")
+async def get_available_embedders(session: UserSession = Depends(get_user_session_dependency())):
+    """Get available embedding configurations"""
+    available_embedders = {
+        "available_embedders": {
+            embedder_id: {
+                "id": embedder_id,
+                "provider": config["provider"],
+                "model": config["model_name"],
+                "dimension": config["dim"],
+                "description": config["description"]
+            }
+            for embedder_id, config in EMBEDDERS.items()
+        },
+        "default_embedder": "openai-text-embedding-3-small",
+        "providers": {
+            "openai": {
+                "name": "OpenAI",
+                "description": "OpenAI's embedding models",
+                "requires_api_key": True,
+                "requires_endpoint": False
+            },
+            "custom": {
+                "name": "Custom/HuggingFace",
+                "description": "Custom embedding endpoints (HuggingFace, etc.)",
+                "requires_api_key": False,
+                "requires_endpoint": True
+            }
+        }
+    }
+    return available_embedders
+
+
+@app.get("/workflow-info")
+async def get_workflow_info():
+    """Get information about the workflow configuration"""
+    socketio_enabled = hasattr(app.state, 'socketio_handler') and app.state.socketio_handler is not None
+
+    return {
+        "pipeline_info": {
+            "description": "LangGraph workflow with modular Socket.IO streaming support",
+            "supports_streaming": True,
+            "supports_socketio": socketio_enabled,
+            "modular_architecture": True,
+            "steps": [
+                {
+                    "name": "Classifier",
+                    "description": "Domain classification",
+                    "input": "User message",
+                    "output": "is_our_domain, confidence, reasoning",
+                    "applies_to": [model_id for model_id, config in MODEL_CONFIGS.items() if config["has_classifier"]]
+                },
+                {
+                    "name": "Query Writer",
+                    "description": "Generate weighted RAG queries",
+                    "input": "User message",
+                    "output": "List of queries with weights and reasoning",
+                    "applies_to": list(MODEL_CONFIGS.keys())
+                },
+                {
+                    "name": "RAG Retrieval",
+                    "description": "Fetch relevant documents using embeddings",
+                    "input": "Generated queries",
+                    "output": "Retrieved documents with metadata",
+                    "applies_to": list(MODEL_CONFIGS.keys()),
+                    "supports_custom_embeddings": True
+                },
+                {
+                    "name": "Reranking",
+                    "description": "Rerank documents by relevance",
+                    "input": "Retrieved documents + user message",
+                    "output": "Reranked documents with relevance scores",
+                    "applies_to": list(MODEL_CONFIGS.keys())
+                },
+                {
+                    "name": "Answer Generator",
+                    "description": "Generate final response",
+                    "input": "User message + reranked documents",
+                    "output": "Final answer with sources",
+                    "applies_to": list(MODEL_CONFIGS.keys())
+                }
+            ]
+        },
+        "available_models": MODEL_CONFIGS,
+        "socket_events": {
+            "client_to_server": [
+                "chat_message",
+                "ping"
+            ],
+            "server_to_client": [
+                "chat_start",
+                "chat_step",
+                "chat_complete",
+                "chat_error",
+                "pong"
+            ]
+        } if socketio_enabled else {
+            "note": "Socket.IO events not available - modular handler disabled"
+        },
+        "architecture": {
+            "socket_handler_module": "kdcube_ai_app.apps.chat.socketio_chat",
+            "gateway_integration": "Full protection on all endpoints",
+            "modular_design": "Socket.IO logic separated for maintainability"
+        }
+    }
+
+
+# ================================
+# MONITORING ENDPOINTS
+# ================================
+
+@app.get("/health")
+async def health_check():
+    """Basic health check"""
+    socketio_status = "enabled" if hasattr(app.state, 'socketio_handler') and app.state.socketio_handler else "disabled"
+
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "instance_id": INSTANCE_ID,
+        "port": CHAT_APP_PORT,
+        "socketio_status": socketio_status,
+        "modular_architecture": True
+    }
+
+
+# ================================
+# DEBUG ENDPOINTS (for development)
+# ================================
+
+@app.get("/debug/users")
+async def debug_users():
+    """Debug endpoint to see test users (development only)"""
+    from kdcube_ai_app.apps.chat.api.resolvers import get_auth_manager
+    auth_manager = get_auth_manager()
+
+    if hasattr(auth_manager, 'get_all_users'):
+        return auth_manager.get_all_users()
+    else:
+        return {"message": "Auth manager does not support user listing"}
+
+
+@app.get("/debug/session")
+async def debug_session(session: UserSession = Depends(get_user_session_dependency())):
+    """Debug endpoint to see current session"""
+    return {
+        "session": session.__dict__,
+        "user_type": session.user_type.value
+    }
+
+
+@app.get("/debug/socketio")
+async def debug_socketio():
+    """Debug endpoint for Socket.IO status"""
+    if hasattr(app.state, 'socketio_handler') and app.state.socketio_handler:
+        return {
+            "status": "enabled",
+            "handler_type": type(app.state.socketio_handler).__name__,
+            "module": "kdcube_ai_app.apps.chat.socketio_chat",
+            "sio_available": app.state.socketio_handler.sio is not None
+        }
+    else:
+        return {
+            "status": "disabled",
+            "reason": "Socket.IO handler not initialized or failed to load"
+        }
+
+
+# ================================
+# ERROR HANDLERS
+# ================================
+
+@app.exception_handler(Exception)
+async def exception_handler(request: Request, exc: Exception):
+    """Enhanced exception handler that records circuit breaker failures"""
+    logger.exception(f"Unhandled exception in {request.url.path}: {exc}")
+
+    # Record failure in appropriate circuit breakers if it's a service error
+    if hasattr(app.state, 'gateway_adapter'):
+        try:
+            # You could record failures in relevant circuit breakers here
+            # based on the type of exception and endpoint
+            pass
+        except Exception as cb_error:
+            logger.error(f"Error recording circuit breaker failure: {cb_error}")
+
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+    )
+
+
+@app.exception_handler(CircuitBreakerError)
+async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreakerError):
+    """Handle circuit breaker errors gracefully"""
+    logger.warning(f"Circuit breaker '{exc.circuit_name}' blocked request to {request.url.path}")
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Service temporarily unavailable due to circuit breaker",
+            "circuit_breaker": exc.circuit_name,
+            "retry_after": exc.retry_after,
+            "message": "The service is experiencing issues and is temporarily unavailable. Please try again later."
+        },
+        headers={"Retry-After": str(exc.retry_after)}
+    )
+
+
+# Mount monitoring routers
+from kdcube_ai_app.apps.chat.api.monitoring import mount_monitoring_routers
+
+mount_monitoring_routers(app)
+
+# ================================
+# RUN APPLICATION
+# ================================
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=CHAT_APP_PORT,
+        log_level="info"
+    )

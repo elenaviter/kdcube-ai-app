@@ -1,0 +1,10 @@
+FROM nginx:alpine
+
+# Copy custom nginx configuration (optional)
+COPY deployment/docker/all_in_one/nginx_proxy.conf /etc/nginx/nginx.conf
+
+# Expose port 80
+EXPOSE 80
+
+# Start nginx
+CMD ["nginx", "-g", "daemon off;"]

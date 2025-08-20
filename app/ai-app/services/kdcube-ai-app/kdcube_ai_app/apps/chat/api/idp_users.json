@@ -1,0 +1,28 @@
+{
+  "test-admin-token-123": {
+    "sub": "admin-user-1",
+    "username": "admin",
+    "email": "admin@test.com",
+    "name": "Administrator",
+    "roles": [
+      "kdcube:role:super-admin"
+    ],
+    "permissions": [
+      "kdcube:*:knowledge_base:*;read;write;delete",
+      "kdcube:*:chat:*;read;write;delete",
+      "kdcube:*:monitoring:*;read"
+    ]
+  },
+  "test-chat-token-456": {
+    "sub": "chat-user-1",
+    "username": "chatuser",
+    "email": "chat@test.com",
+    "name": "Chat User",
+    "roles": [
+      "kdcube:role:chat-user"
+    ],
+    "permissions": [
+      "kdcube:*:chat:*;read"
+    ]
+  }
+}
