@@ -103,6 +103,7 @@ export interface EnhancedKBSearchRequest {
   top_k?: number;
   include_backtrack?: boolean;
   include_navigation?: boolean;
+  tenant?: string;
   project?: string;
 }
 

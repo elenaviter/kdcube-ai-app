@@ -93,7 +93,7 @@ export function getOAuthConfig() {
 
 export const getWorkingScope = () => {
     return {
-        project: import.meta.env.CHAT_WEB_APP_DEFAULT_PROJECT || 'default-project',
+        project: import.meta.env.CHAT_WEB_APP_PROJECT || import.meta.env.CHAT_WEB_APP_DEFAULT_PROJECT || 'default-project',
         tenant: import.meta.env.CHAT_WEB_APP_DEFAULT_TENANT || 'home',
     }
 }

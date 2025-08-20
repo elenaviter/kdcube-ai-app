@@ -236,7 +236,7 @@ class FileAccountingStorage(IAccountingStorage):
 
     async def store_event(self, event: AccountingEvent) -> bool:
         try:
-            rel_path = self.path_strategy(event) if self.path_strategy else self._default_path(event)
+            rel_path = f"{self.base_path}/{self.path_strategy(event)}" if self.path_strategy else self._default_path(event)
             content = json.dumps(event.to_dict(), indent=2)
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: self.storage_backend.write_text(rel_path, content))

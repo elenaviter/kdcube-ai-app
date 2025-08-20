@@ -7,6 +7,7 @@ from kdcube_ai_app.auth.sessions import UserSession, UserType, RequestContext
 from kdcube_ai_app.infra.accounting import AccountingSystem
 from kdcube_ai_app.apps.middleware.auth import FastAPIAuthAdapter
 from kdcube_ai_app.auth.AuthManager import RequirementBase, User, AuthenticationError, PRIVILEGED_ROLES
+from kdcube_ai_app.auth.AuthManager import User as AuthUser, AuthorizationError
 
 class MiddlewareAuthWithAccounting:
     def __init__(
@@ -91,10 +92,15 @@ class MiddlewareAuthWithAccounting:
         if not bearer_token:
             raise AuthenticationError("No bearer token provided for socket connect")
 
-        user = await self.base_auth.auth_manager.authenticate_and_authorize_with_both(
-            bearer_token, id_token, *requirements, require_all=require_all
-        )
+        # user = await self.base_auth.auth_manager.authenticate_and_authorize_with_both(
+        #     bearer_token, id_token, *requirements, require_all=require_all
+        # )
+        user = await self.base_auth.auth_manager.authenticate_with_both(bearer_token, id_token)
         roles = set(getattr(user, "roles", []) or [])
+        service_user = self.base_auth.service_role_name in roles
+        if not service_user and requirements:
+            self.base_auth.auth_manager.validate_requirements(user, *requirements, require_all=require_all)
+
         service_user = self.base_auth.service_role_name in roles
 
         session = None
@@ -174,3 +180,22 @@ class MiddlewareAuthWithAccounting:
 
     def process_orchestrator_task_execution(self):
         pass
+
+    def authorize_session_user(
+            self,
+            session: UserSession | None,
+            *requirements: RequirementBase,
+            require_all: bool = True,
+    ):
+        if session is None:
+            raise AuthorizationError("on_behalf_session_id or user session required.", 403)
+
+        eff_user = AuthUser(
+            username=session.username,
+            email=getattr(session, "email", None),
+            roles=getattr(session, "roles", []) or [],
+            permissions=getattr(session, "permissions", []) or [],
+        )
+        self.base_auth.auth_manager.validate_requirements(
+            eff_user, *requirements, require_all=require_all
+        )

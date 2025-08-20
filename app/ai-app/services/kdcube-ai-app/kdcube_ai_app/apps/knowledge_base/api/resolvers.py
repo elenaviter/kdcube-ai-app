@@ -4,6 +4,7 @@ from fastapi import Request, Depends
 import os
 import logging
 
+from kdcube_ai_app.apps.knowledge_base.core import KnowledgeBase
 from kdcube_ai_app.apps.middleware.accounting import MiddlewareAuthWithAccounting
 # Import new auth system
 from kdcube_ai_app.apps.middleware.simple_idp import SimpleIDP
@@ -32,7 +33,7 @@ def get_project(request: Request) -> str:
 
 # Environment configuration
 KDCUBE_STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH")
-KDCUBE_STORAGE_PATH
+
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
@@ -204,6 +205,21 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "kb",
     process_id = os.getpid()
     heartbeat_manager = ProcessHeartbeatManager(middleware, service_type, service_name, process_id, port=port)
     return middleware, heartbeat_manager
+
+kbs = {
+    DEFAULT_PROJECT: KnowledgeBase(get_tenant(),
+                                   DEFAULT_PROJECT,
+                                   kb_workdir(get_tenant(), DEFAULT_PROJECT),
+                                   embedding_model=embedding_model()),
+}
+
+
+def get_kb_for_project(project: str) -> 'KnowledgeBase':
+    kb = kbs.get(project)
+    if not kb:
+        kb = KnowledgeBase(get_tenant(), project, kb_workdir(get_tenant(), project), embedding_model=embedding_model())
+        # raise HTTPException(status_code=404, detail=f"Knowledge base for project '{project}' not found")
+    return kb
 
 # ================================
 # NEW AUTH SYSTEM SETUP

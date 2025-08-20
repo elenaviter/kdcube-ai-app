@@ -21,6 +21,7 @@ import {
 } from './SearchInterfaces';
 import {BinaryFilePreviewModal, RegularPreviewModal} from "../previews/BinaryAndRegularFilePreview";
 import {useAuthManagerContext} from "../auth/AuthManager.tsx";
+import {getWorkingScope} from "../../AppConfig.ts";
 
 // Enhanced Search Result Component
 const SearchResultCard: React.FC<{
@@ -373,11 +374,13 @@ const IntegratedEnhancedSearchPanel: React.FC = () => {
         setIsSearching(true);
         setHasSearched(true);
         const startTime = Date.now();
-
+        const workingScope = getWorkingScope()
         try {
             const response = await apiService.searchKBEnhanced({
                 query: searchQuery,
-                top_k: 10
+                top_k: 10,
+                project: workingScope.project,
+                tenant: workingScope.tenant,
             }, authContext);
 
             setSearchResults(response.results);

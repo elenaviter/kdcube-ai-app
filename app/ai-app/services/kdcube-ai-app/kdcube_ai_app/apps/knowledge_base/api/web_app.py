@@ -14,17 +14,19 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
-from kdcube_ai_app.auth.sessions import UserSession
-from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
-
-from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 from kdcube_ai_app.apps.knowledge_base.api.resolvers import (get_project, kb_workdir,
                                                              get_orchestrator, ORCHESTRATOR_TYPE,
                                                              ORCHESTRATOR_IDENTITY, embedding_model, get_tenant,
                                                              REDIS_URL, get_heartbeats_mgr_and_middleware, INSTANCE_ID,
                                                              KB_PORT, HEARTBEAT_INTERVAL, get_idp,
                                                              get_kb_write_with_acct_dep, KDCUBE_STORAGE_PATH,
-                                                             get_kb_auth_with_accounting, DEFAULT_PROJECT)
+                                                             get_kb_auth_with_accounting, DEFAULT_PROJECT, kbs,
+                                                             get_kb_for_project)
+from kdcube_ai_app.auth.sessions import UserSession
+from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
+
+from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
+
 from kdcube_ai_app.apps.knowledge_base.core import KnowledgeBase
 from kdcube_ai_app.apps.knowledge_base.api.socketio.kb import SocketIOKBHandler
 
@@ -112,22 +114,6 @@ app.add_middleware(
 # ================================================================================
 #                            KB INITIALIZATION
 # ================================================================================
-
-kbs = {
-    DEFAULT_PROJECT: KnowledgeBase(get_tenant(),
-                                   DEFAULT_PROJECT,
-                                   kb_workdir(get_tenant(), DEFAULT_PROJECT),
-                                   embedding_model=embedding_model()),
-}
-
-
-def get_kb_for_project(project: str) -> 'KnowledgeBase':
-    kb = kbs.get(project)
-    if not kb:
-        kb = KnowledgeBase(get_tenant(), project, kb_workdir(get_tenant(), project), embedding_model=embedding_model())
-        # raise HTTPException(status_code=404, detail=f"Knowledge base for project '{project}' not found")
-    return kb
-
 
 # ================================================================================
 #                      ORCHESTRATOR INITIALIZATION
