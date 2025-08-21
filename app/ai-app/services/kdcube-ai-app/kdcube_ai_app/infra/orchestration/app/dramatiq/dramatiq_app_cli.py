@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/orchestration/app/dramatiq/dramatiq_app_cli.py
 """
 Dramatiq + availability integration

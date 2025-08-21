@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # modules/summarization.py
 """
 Summarization module for generating summaries of segments and documents.

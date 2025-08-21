@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # auth/cognito_manager.py
 from typing import Any, Dict, Optional
 import os

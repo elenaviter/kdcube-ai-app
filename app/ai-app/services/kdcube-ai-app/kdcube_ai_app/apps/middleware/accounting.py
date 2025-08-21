@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import uuid
 from typing import Callable, Optional, Mapping
 from fastapi import Depends, Request

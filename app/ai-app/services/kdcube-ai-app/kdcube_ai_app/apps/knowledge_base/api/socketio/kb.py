@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # kdcube_ai_app/apps/knowledge_base/api/socketio/kb.py
 """
 Modular Socket.IO handler for KB progress events

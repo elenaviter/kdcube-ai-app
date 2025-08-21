@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # socketio/chat.py
 """
 Modular Socket.IO chat handler with gateway integration

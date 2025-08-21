@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # auth/service_auth/base.py
 from __future__ import annotations
 from dataclasses import dataclass

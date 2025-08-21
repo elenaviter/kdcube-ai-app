@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 Base classes and interfaces for knowledge base processing modules.
 """

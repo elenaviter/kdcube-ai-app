@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 core.py
 Enhanced Knowledge Base core functionality with search_and_navigate support.

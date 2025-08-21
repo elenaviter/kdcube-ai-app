@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # modules/extraction.py
 """
 Extraction module for processing raw documents into structured content and assets.

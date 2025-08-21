@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/gateway/config.py
 """
 Centralized Gateway Configuration

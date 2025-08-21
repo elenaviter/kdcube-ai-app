@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 from __future__ import annotations
 from typing import Optional, Dict, Any
 import base64, hashlib, hmac

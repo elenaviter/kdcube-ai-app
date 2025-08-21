@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 Simple search system that provides actual navigation data for frontend.
 Removes all unnecessary complexity and focuses on what's needed for backtracking.

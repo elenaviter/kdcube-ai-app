@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # budget_aware_load_tests.py
 """
 Advanced load testing with budget awareness and detailed capacity planning

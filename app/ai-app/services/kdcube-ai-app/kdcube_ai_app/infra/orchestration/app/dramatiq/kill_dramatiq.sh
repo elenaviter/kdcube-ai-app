@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # kill_dramatiq.sh
 # Kill IntelliJ-launched Dramatiq runs + all their children.
 

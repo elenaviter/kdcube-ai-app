@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Dict, Any

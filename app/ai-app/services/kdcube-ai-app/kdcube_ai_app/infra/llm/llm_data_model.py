@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/llm/llm_data_model.py
 
 from dataclasses import dataclass

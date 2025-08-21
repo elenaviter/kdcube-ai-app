@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/accounting/usage.py
 from dataclasses import dataclass
 from typing import Dict, Any, Optional

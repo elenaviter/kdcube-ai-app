@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 from typing import Any, Optional, Callable, Awaitable
 
 StepEmitter = Callable[[str, str, dict], Awaitable[None]]

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 Modular orchestrator api management system using FastAPI routers.
 File: api/orchestrator/__init__.py

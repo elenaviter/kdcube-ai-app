@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/accounting/__init__.py
 """
 Self-contained accounting system with async-safe context isolation using contextvars

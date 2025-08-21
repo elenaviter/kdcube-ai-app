@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # kb_data_models.py
 
 from typing import Optional, List, Dict, Any, Union

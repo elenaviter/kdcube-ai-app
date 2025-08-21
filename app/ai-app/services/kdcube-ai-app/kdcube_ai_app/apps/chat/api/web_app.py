@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # chat/web_app.py - Updated with modular Socket.IO
 """
 FastAPI chat application with modular Socket.IO integration and gateway protection

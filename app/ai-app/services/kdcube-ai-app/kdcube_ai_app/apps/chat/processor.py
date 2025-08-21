@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import asyncio
 import json
 from contextlib import asynccontextmanager

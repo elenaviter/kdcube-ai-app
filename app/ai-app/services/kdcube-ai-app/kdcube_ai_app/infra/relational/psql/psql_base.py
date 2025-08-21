@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import os
 import psycopg2
 from psycopg2.extras import execute_values

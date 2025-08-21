@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 Distributed Resource Locks - Pure S3/Filesystem based locking.
 No context managers, works across multiple servers and processes.

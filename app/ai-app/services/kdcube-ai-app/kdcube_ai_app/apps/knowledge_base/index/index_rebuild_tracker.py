@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 index_rebuild_tracker.py
 Persistent rebuild status tracker using storage backend.

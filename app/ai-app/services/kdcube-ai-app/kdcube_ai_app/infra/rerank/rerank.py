@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 from sentence_transformers import CrossEncoder
 
 # If you need consistent thresholds across queries, collect a small validation set of (query, segment, label)

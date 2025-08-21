@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import argparse
 import os, sys, re
 from dotenv import load_dotenv, find_dotenv

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 MODEL_CONFIGS = {
     "gpt-4.1-nano": {
         "model_name": "gpt-4.1-nano-2025-04-14",

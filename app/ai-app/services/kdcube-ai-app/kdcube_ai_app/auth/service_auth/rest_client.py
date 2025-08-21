@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # example_bootstrap.py
 import os
 from botocore.config import Config as BotoConfig

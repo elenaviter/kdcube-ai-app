@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # storage/storage.py
 """
 Knowledge Base storage backends for different storage systems.

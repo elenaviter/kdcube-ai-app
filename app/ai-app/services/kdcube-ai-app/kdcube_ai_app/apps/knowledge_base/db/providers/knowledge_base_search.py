@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # providers/knowledge_base_search.py
 
 from typing import Optional, List, Dict, Any

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # kdcube_ai_app/infra/orchestration/app/communicator.py
 import time
 import json

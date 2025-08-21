@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 Simple Knowledge Base Debug Script
 Minimal version for quick testing without LLM features

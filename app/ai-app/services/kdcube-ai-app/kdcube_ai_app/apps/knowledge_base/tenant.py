@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # knowledge_base/tenant.py
 """
 TenantProjects - Manages projects for a tenant using storage backend

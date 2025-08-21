@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import os, time, random
 from kdcube_ai_app.infra.llm.llm_data_model import AIProviderName, Message
 from typing import List, Dict, Optional, Any

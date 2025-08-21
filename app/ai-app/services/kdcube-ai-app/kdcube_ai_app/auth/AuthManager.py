@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # auth/AuthManager.py
 import logging
 from abc import abstractmethod, ABCMeta

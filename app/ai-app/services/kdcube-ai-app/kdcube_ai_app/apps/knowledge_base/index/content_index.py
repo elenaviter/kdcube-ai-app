@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 """
 Content-based deduplication index manager for Knowledge Base.
 Provides content hash -> resource_id mapping with bloom filter optimization.

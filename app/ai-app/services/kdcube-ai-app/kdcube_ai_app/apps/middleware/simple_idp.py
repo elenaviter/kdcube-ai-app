@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # apps/middleware/simple_idp.py
 """
 Framework-agnostic Simple IDP implementation

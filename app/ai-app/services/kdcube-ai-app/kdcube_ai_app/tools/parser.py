@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # tools/parser.py
 from abc import ABC, abstractmethod
 from bs4 import BeautifulSoup

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/accounting/envelope.py
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict, field

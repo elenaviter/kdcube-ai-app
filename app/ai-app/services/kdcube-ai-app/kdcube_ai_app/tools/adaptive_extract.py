@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # https://cookbook.openai.com/examples/parse_pdf_docs_for_rag
 # tools/adaptive_pdf_extraction.py
 

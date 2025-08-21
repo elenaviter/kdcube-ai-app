@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # load_tests.py
 """
 Comprehensive load testing suite for gateway system

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # infra/availability/health_and_heartbeat.py
 """
 Multiprocess-aware distributed system for distributed app with the single point of "map" (the chatbot and "prompt" api)

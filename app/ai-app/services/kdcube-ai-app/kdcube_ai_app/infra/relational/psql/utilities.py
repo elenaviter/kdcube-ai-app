@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import inspect
 from typing import List, Optional, Dict, Any, Union
 from functools import wraps

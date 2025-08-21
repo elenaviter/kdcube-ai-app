@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 from kdcube_ai_app.ops.deployment.sql.db_deployment import run as provision, SYSTEM_COMPONENT, SYSTEM_SCHEMA, PROJECT_COMPONENT
 
 

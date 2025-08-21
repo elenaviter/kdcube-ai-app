@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # service_auth/factory.py
 from typing import Dict, Any
 from kdcube_ai_app.auth.service_auth.base import IdpConfig, ServiceIdP

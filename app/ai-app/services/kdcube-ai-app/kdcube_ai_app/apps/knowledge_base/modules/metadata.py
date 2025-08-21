@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # knowledge_base/modules/metadata.py
 """
 Updated segment metadata processor using the new generalized usage tracking system.

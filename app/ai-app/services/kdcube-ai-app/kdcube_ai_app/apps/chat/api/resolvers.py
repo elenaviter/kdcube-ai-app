@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # chat/api/resolvers.py
 """
 Simplified resolvers module with clean separation of concerns

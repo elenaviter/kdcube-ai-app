@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 # knowledge_base/api/resolvers.py
 # Updated KB resolvers with new auth system
 from fastapi import Request, Depends

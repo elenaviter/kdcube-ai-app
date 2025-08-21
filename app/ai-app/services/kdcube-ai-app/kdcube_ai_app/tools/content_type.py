@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
 import requests, os, mimetypes
 from urllib.parse import urlparse
 from bs4 import BeautifulSoup
