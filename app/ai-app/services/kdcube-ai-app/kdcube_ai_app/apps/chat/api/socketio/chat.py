@@ -277,25 +277,25 @@ class SocketIOChatHandler:
                 return False
         logger.debug(f"WS origin accepted: {origin}")
 
-        # ---- 1) Internal service bypass (optional) ---------------------------------------------
-        try:
-            if auth and auth.get("token") == os.getenv("INTERNAL_SERVICE_TOKEN"):
-                logger.info(f"Internal service connected: sid={sid}")
-                await self.sio.save_session(sid, {
-                    "user_session": {"session_id": "service"},
-                    "authenticated": True,
-                    "service": True,
-                })
-                # No room join (no specific session)
-                await self.sio.emit("session_info", {
-                    "session_id": "service",
-                    "user_type": "privileged",
-                    "internal_service": True
-                }, to=sid)
-                return True
-        except Exception as e:
-            logger.error(f"Internal service token check failed for {sid}: {e}")
-            return False
+        # # ---- 1) Internal service bypass (optional) ---------------------------------------------
+        # try:
+        #     if auth and auth.get("token") == os.getenv("INTERNAL_SERVICE_TOKEN"):
+        #         logger.info(f"Internal service connected: sid={sid}")
+        #         await self.sio.save_session(sid, {
+        #             "user_session": {"session_id": "service"},
+        #             "authenticated": True,
+        #             "service": True,
+        #         })
+        #         # No room join (no specific session)
+        #         await self.sio.emit("session_info", {
+        #             "session_id": "service",
+        #             "user_type": "privileged",
+        #             "internal_service": True
+        #         }, to=sid)
+        #         return True
+        # except Exception as e:
+        #     logger.error(f"Internal service token check failed for {sid}: {e}")
+        #     return False
 
         # ---- 2) Require a REST-provisioned session id ------------------------------------------
         user_session_id = (auth or {}).get("user_session_id")
@@ -537,7 +537,6 @@ class SocketIOChatHandler:
 
             # 6) Parse config (only to capture fields; execution is offloaded)
             config_request = ConfigRequest(**config_data)
-            config = create_workflow_config(config_request)
 
             # Optional: infer project/tenant for accounting if you carry them in config
             project_id = getattr(config_request, "project", None) or data.get("project")

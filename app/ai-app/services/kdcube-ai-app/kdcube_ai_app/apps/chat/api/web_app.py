@@ -317,12 +317,12 @@ async def lifespan(app: FastAPI):
             **kwargs
     ) -> Dict:
         sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
-        task_id = f"adhoc-{uuid.uuid4()}"
         start_ts = datetime.now().isoformat()
-
+        task_id = kwargs.get("task_id")
         # 1) announce start
         if sio:
-            await sio.emit("chat_start", {
+            logger.info(f"agentic_chat_handler. session_id={session_id}, task_id={task_id}, message={message[:100]}...")
+            await sio.emit("chat_start_handler", {
                 "task_id": task_id,
                 "message": message[:100] + "..." if len(message) > 100 else message,
                 "timestamp": start_ts,
@@ -361,6 +361,9 @@ async def lifespan(app: FastAPI):
             }, room=session_id)
 
         from kdcube_ai_app.apps.chat.agentic_app import ChatWorkflow, create_initial_state
+
+        from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
+
         from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
 
         workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)

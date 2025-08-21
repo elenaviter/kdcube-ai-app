@@ -227,6 +227,7 @@ class EnhancedChatRequestProcessor:
                     async with self._lock_renewer(lock_key):
                         # Enforce timeout
                         result = await asyncio.wait_for(
+                            # self._invoke_handler(task_id, session_id, message, config, chat_history),
                             self._invoke_handler(task_id, session_id, message, config, chat_history),
                             timeout=self.task_timeout_sec,
                         )
