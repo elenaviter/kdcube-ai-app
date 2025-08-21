@@ -208,6 +208,9 @@ async def _demo():
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv())
 
+    project = os.environ.get("DEFAULT_PROJECT_NAME")
+    tenant = os.environ.get("TENANT_ID")
+
     # Build IdP config from env (Cognito example; swap if you add other providers)
     from botocore.config import Config as BotoConfig
     idp_cfg = IdpConfig(
@@ -223,45 +226,33 @@ async def _demo():
     )
 
     client = PersistentKBServiceSocketClient(
-        kb_socket_url=os.getenv("KB_SOCKET_URL", "http://localhost:8000/socket.io"),
+        kb_socket_url=os.getenv("KB_SOCKET_URL",
+                                "http://localhost:8000/socket.io"),
         idp_cfg=idp_cfg,
-        project=os.getenv("DEFAULT_PROJECT_NAME"),
-        tenant=os.getenv("TENANT_ID"),
+        project=project,
+        tenant=tenant,
     )
     await client.start()
 
     # 1) Direct user test: paste browser tokens if you want to test this path
-    USER_ACCESS_TOKEN = os.getenv("TEST_USER_ACCESS_TOKEN", "eyJraWQiOiI3eVdRQkZFVFo5VUlkNE5tZm5jVzJTUExcLzE5MHF3c0dcL3U5UzF1WmV1cTg9IiwiYWxnIjoiUlMyNTYifQ.eyJzdWIiOiI5MjQ1MzRiNC1kMGYxLTcwZTUtNDVkYy1mOTI1NTg0ZjNkNWMiLCJjb2duaXRvOmdyb3VwcyI6WyJrZGN1YmU6cm9sZTpzdXBlci1hZG1pbiJdLCJpc3MiOiJodHRwczpcL1wvY29nbml0by1pZHAuZXUtd2VzdC0xLmFtYXpvbmF3cy5jb21cL2V1LXdlc3QtMV9SVWx3WlNxNkgiLCJ2ZXJzaW9uIjoyLCJjbGllbnRfaWQiOiJtNTBpcGEyM3JsNjRzZGVoYTZicThxdTI0Iiwib3JpZ2luX2p0aSI6ImQwOTE1YWNlLTk0MzQtNDU2Yi1hZjIzLWIzNjQ2YjRjYzBlMiIsImV2ZW50X2lkIjoiNmUwMzU3MzYtZjkzNC00ZGMwLThlNTUtNTBiMzY0MmY2YjcwIiwidG9rZW5fdXNlIjoiYWNjZXNzIiwic2NvcGUiOiJwaG9uZSBvcGVuaWQgcHJvZmlsZSBlbWFpbCIsImF1dGhfdGltZSI6MTc1NTczMDI2MCwiZXhwIjoxNzU1NzMzODYwLCJpYXQiOjE3NTU3MzAyNjAsImp0aSI6IjZkNDAzNGFhLTMxNDctNDk0MS05ZWQ3LWQxNWQ1NGI0MGE3NSIsInVzZXJuYW1lIjoiZWxlbmEudiJ9.oTXQTimXtvTdvp37gYHCUVTeHAqoTQeWGecOSP1g6savBhMYi-_JoT_zQni5rI9hQHnVG1tomwzUUF0rnnHQTpuwLaLRnTJNBUArbeLE7ByJZL7of4nPJc4HB9A7QExbDaRcQfcwnkPdeLV5V9OnGLDodh-Yr6pNfe9prHTcxHs8rk3l2Nc5TTUr43BJGrzIbbN7MgbVMCsLLF0qk2XTT0RhYRIazO5Ysc-DuwdLZix1g0oFnX8dYLaouyGOBFpaXqFAN8ZVeIcVLbpHpC0vLXvKsPTgPtosexbWvch_1EqmXcXhiIU6MGUjoFjb8fCedZcZNtp9Zt59a5-PSnhIhQ")
-    USER_ID_TOKEN = os.getenv("TEST_USER_ID_TOKEN", "eyJraWQiOiJtYWJ0SHNFK0FDY1N1RDN3MzlCR21aSHc5dDA4M0UwdEwzd0pQYU9aRUtRPSIsImFsZyI6IlJTMjU2In0.eyJhdF9oYXNoIjoieWJrUDNrZ0gxMFpVcEZVRTN4Um83dyIsInN1YiI6IjkyNDUzNGI0LWQwZjEtNzBlNS00NWRjLWY5MjU1ODRmM2Q1YyIsImNvZ25pdG86Z3JvdXBzIjpbImtkY3ViZTpyb2xlOnN1cGVyLWFkbWluIl0sImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJpc3MiOiJodHRwczpcL1wvY29nbml0by1pZHAuZXUtd2VzdC0xLmFtYXpvbmF3cy5jb21cL2V1LXdlc3QtMV9SVWx3WlNxNkgiLCJjb2duaXRvOnVzZXJuYW1lIjoiZWxlbmEudiIsIm9yaWdpbl9qdGkiOiJkMDkxNWFjZS05NDM0LTQ1NmItYWYyMy1iMzY0NmI0Y2MwZTIiLCJhdWQiOiJtNTBpcGEyM3JsNjRzZGVoYTZicThxdTI0IiwiZXZlbnRfaWQiOiI2ZTAzNTczNi1mOTM0LTRkYzAtOGU1NS01MGIzNjQyZjZiNzAiLCJ0b2tlbl91c2UiOiJpZCIsImF1dGhfdGltZSI6MTc1NTczMDI2MCwiZXhwIjoxNzU1NzMzODYwLCJpYXQiOjE3NTU3MzAyNjAsImp0aSI6IjljMTg1ZmRiLWNmZmMtNDIyYi1iYWRlLTZlOGU4M2JmMmRmYiIsImVtYWlsIjoibGVuYUBuZXN0bG9naWMuY29tIn0.NdpPErbQpLeRdcKVFEG32ryJYdRmlzF7yhRVcmesGLQ8qnUZh_g0FqIW0Ky-lvy7aH8vDmFnq2rN2Hf-VTAUXxSrBuGtXWhM1v_Cb84qN71vFpB5pjFohjIivB6hOUWSSJ1ouylIf5NUJx6cfJQOSFADgwKogWt6IHpeEsorcuWDrKmVR90jEGus3SOvd69wAuRCbPj82e1ZfKp_4V6yG-Y_SIpERwEOKKz_k3_xAuLia9WmZmzbryfhYt4rLmqPToh81RWnPDwve9KxHTNHaadRMUBqSWwPNPqcT3p5XTBqrdgQhnWrdYAmVoLvjCFawcaTcSlx5tmOCtkCZ9Lwug")
+    USER_ACCESS_TOKEN = os.getenv("TEST_USER_ACCESS_TOKEN")
+    USER_ID_TOKEN = os.getenv("TEST_USER_ID_TOKEN")
 
     # 2) On-behalf test: pass a valid session id (from your chat gateway)
-    default_on_behalf_session_id = "1575eaf7-ca97-4f7e-a6e3-fca107400a90"
-    SESSION_ID = os.getenv("TEST_ON_BEHALF_SESSION_ID", default_on_behalf_session_id)
-
-    project = os.environ.get("DEFAULT_PROJECT_NAME")
-    tenant = os.environ.get("TENANT_ID")
+    SESSION_ID = "1575eaf7-ca97-4f7e-a6e3-fca107400a90"
 
     # Example: submit 2 searches on behalf of different users
-    on_behalf_1 = os.getenv("TEST_ON_BEHALF_SESSION_ID_1", default_on_behalf_session_id)
-    on_behalf_2 = os.getenv("TEST_ON_BEHALF_SESSION_ID_2")
+    on_behalf_1 = os.getenv("TEST_ON_BEHALF_SESSION_ID_1", SESSION_ID)
 
     if on_behalf_1:
         r1 = await client.submit_kb_search(
-            query="zero trust architecture controls",
+            query="usage of unauthorized ai app",
             on_behalf_session_id=on_behalf_1,
             top_k=5,
             timeout_sec=20,
         )
-        print("Result for user1:", r1)
+        print("Result for user:", r1)
 
-    # if on_behalf_2:
-    #     r2 = await client.submit_kb_search(
-    #         query="identity governance best practices",
-    #         on_behalf_session_id=on_behalf_2,
-    #         top_k=5,
-    #         timeout_sec=20,
-    #     )
-    #     print("Result for user2:", r2)
 
     # Keep running forever (daemon)
     while True:
