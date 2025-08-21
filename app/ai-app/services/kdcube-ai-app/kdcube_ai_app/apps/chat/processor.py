@@ -298,21 +298,13 @@ class EnhancedChatRequestProcessor:
 
         # Your handler already returns {"final_answer": ..., "session_id": ...} in your passthrough.
         # Normalize a bit, but don’t force a schema.
-        payload = {
-            "task_id": task_id,
-            "final_answer": result.get("final_answer"),
-            "is_our_domain": result.get("is_our_domain"),
-            "classification_reasoning": result.get("classification_reasoning"),
-            "rag_queries": result.get("rag_queries", []),
-            "retrieved_docs": result.get("retrieved_docs", []),
-            "reranked_docs": result.get("reranked_docs", []),
-            "error_message": result.get("error_message"),
-            "selected_model": (result.get("config_info") or {}).get("selected_model") or (result.get("selected_model")),
-            "config_info": result.get("config_info"),
-            "timestamp": _utc_now_iso(),
-            "user_type": result.get("user_type", "unknown"),
-        }
-        await self._emit("chat_complete", payload, room=session_id)
+        if not result:
+            result = {}
+        result["task_id"] = task_id
+        result["session_id"] = session_id
+        result["timestamp"] = _utc_now_iso()
+
+        await self._emit("chat_complete", result, room=session_id)
 
     async def _emit_error(self, task_id: str, session_id: str, error: str):
         logger.error(f"Task {task_id} failed for session {session_id}: {error}")

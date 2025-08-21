@@ -22,11 +22,11 @@ To initialize Postgres run this once
 
 ### Backend
 ```shell
-  docker compose --profile "backend" up -d --remove-orphans
+  docker compose --profile "backend" --env-file ./.env.backend up -d --remove-orphans
 ```
 With image rebuild
 ```shell
-  docker compose --profile "backend" up -d --remove-orphans --build
+  docker compose --profile "backend" --env-file ./.env.backend up -d --remove-orphans --build
 ```
 
 ### Frontend

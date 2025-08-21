@@ -22,9 +22,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
-from kdcube_ai_app.apps.chat.agentic_app import _mid
 from kdcube_ai_app.apps.middleware.logging.uvicorn import configure_logging
-from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
 
 configure_logging()
@@ -43,7 +41,7 @@ from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.auth.AuthManager import RequireUser, RequireRoles
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
-from kdcube_ai_app.apps.chat.inventory import ConfigRequest, ModelService, create_workflow_config
+from kdcube_ai_app.apps.chat.inventory import ConfigRequest, ModelServiceBase, create_workflow_config, _mid
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 # Import the modular Socket.IO handler
@@ -75,240 +73,10 @@ async def lifespan(app: FastAPI):
     app.state.acc_binder = get_fast_api_accounting_binder()
 
     # --- Heartbeats / processor (uses local queue processor) ---
-
     from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
         service_health_checker
 
-    # Dummy chat handler for compatibility
-    async def dummy_chat_handler_1(message: str, session_id: str, config: Dict) -> Dict:
-        import asyncio
-        await asyncio.sleep(1)  # Simulate processing
-        return {
-            "final_answer": f"Processed: {message}",
-            "session_id": session_id
-        }
-
-    # Simple async "LLM" + Socket.IO emitter.
-    # IMPORTANT: We emit to ROOM == session_id so the connected socket gets the result.
-    async def dummy_chat_handler(message: str, session_id: str, config: Dict) -> Dict:
-        sio = getattr(app.state, "socketio_handler", None).sio if getattr(app.state, "socketio_handler", None) else None
-        start_ts = datetime.now().isoformat()
-
-        # Fire-and-forget safety if Socket.IO is missing
-        if sio:
-            await sio.emit("chat_start", {
-                "task_id": f"adhoc-{uuid.uuid4()}",
-                "message": message[:100] + "..." if len(message) > 100 else message,
-                "timestamp": start_ts,
-                "user_type": "unknown",
-                "queue_stats": {}
-            }, room=session_id)
-
-            # Simulate doing work + a step
-            await sio.emit("chat_step", {
-                "step": "answer_generator",
-                "status": "started",
-                "timestamp": datetime.now().isoformat(),
-                "data": {"model": config.get("selected_model", "gpt-4o")},
-                "elapsed_time": None,
-                "error": None
-            }, room=session_id)
-
-        # Simulated model output
-        await asyncio_sleep(0.25)
-        final_answer = f"(stub) You said: {message}"
-
-        if sio:
-            await sio.emit("chat_complete", {
-                "task_id": f"adhoc-{uuid.uuid4()}",
-                "final_answer": final_answer,
-                "is_our_domain": True,
-                "classification_reasoning": None,
-                "rag_queries": [],
-                "retrieved_docs": [],
-                "reranked_docs": [],
-                "error_message": None,
-                "selected_model": config.get("selected_model", "gpt-4o"),
-                "config_info": {
-                    "selected_model": config.get("selected_model", "gpt-4o"),
-                    "model_name": MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
-                        "model_name"],
-                    "provider": MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
-                        "provider"],
-                    "has_classifier":
-                        MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
-                            "has_classifier"],
-                    "description": MODEL_CONFIGS.get(config.get("selected_model", "gpt-4o"), MODEL_CONFIGS["gpt-4o"])[
-                        "description"],
-                    "use_custom_endpoint": False,
-                    "custom_embedding_endpoint": None,
-                    "embedding_model": None
-                },
-                "timestamp": datetime.now().isoformat(),
-                "user_type": "unknown"
-            }, room=session_id)
-
-        return {"final_answer": final_answer, "session_id": session_id}
-
-    async def llm_passthrough_chat_handler(
-            message: str,
-            session_id: str,
-            config: Dict,
-            chat_history: Optional[List[Dict[str, str]]] = None,
-    ) -> Dict:
-        sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
-        task_id = f"adhoc-{uuid.uuid4()}"  # ← define ONCE and keep it
-        start_ts = datetime.now().isoformat()
-        streaming = (config or {}).get("stream", True)
-
-        if sio:
-            await sio.emit("chat_start", {
-                "task_id": task_id,
-                "message": message[:100] + "..." if len(message) > 100 else message,
-                "timestamp": start_ts,
-                "user_type": "unknown",
-                "queue_stats": {}
-            }, room=session_id)
-            await sio.emit("chat_step", {
-                "step": "answer_generator",
-                "status": "started",
-                "timestamp": datetime.now().isoformat(),
-                "data": {"model": (config or {}).get("selected_model", "gpt-4o")},
-                "elapsed_time": None,
-                "error": None
-            }, room=session_id)
-
-        # Build config + service
-        from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
-        try:
-            cfg_req = ConfigRequest(**(config or {}))
-        except Exception:
-            cfg_req = ConfigRequest.model_validate(config or {})
-        wf_config = create_workflow_config(cfg_req)
-        service = ModelService(wf_config)
-        client = service.answer_generator_client
-        client_cfg = service.describe_client(client, role="answer_generator")
-
-        # Build LC messages with history
-        system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
-        lc_messages: List[BaseMessage] = [SystemMessage(content=system_prompt)]
-        for h in (chat_history or []):
-            role = (h.get("role") or "").lower()
-            content = h.get("content") or ""
-            if not content:
-                continue
-            lc_messages.append(AIMessage(content=content) if role == "assistant" else HumanMessage(content=content))
-        lc_messages.append(HumanMessage(content=message))
-
-        result_text = ""
-        usage_out: Dict[str, Any] = {}
-        step_status = "completed"
-        error_message = None
-
-        try:
-            with with_accounting(
-                    "chat.answer_generator",
-                    metadata={
-                        "selected_model": wf_config.selected_model,
-                        "provider": wf_config.provider,
-                        "history_len": len(chat_history or []),
-                        "message_chars": len(message or ""),
-                        "message": message,
-                    },
-            ):
-                if streaming:
-                    # emit deltas with the SAME task_id and the field name 'index'
-                    idx = -1
-
-                    async def on_delta(txt: str):
-                        nonlocal idx
-                        if sio and txt:
-                            idx += 1
-                            await sio.emit("chat_delta", {
-                                "task_id": task_id,  # ← SAME id
-                                "delta": txt,
-                                "index": idx,  # ← use 'index' (not 'idx')
-                                "timestamp": datetime.now().isoformat(),
-                            }, room=session_id)
-
-                    # CAPTURE the result so you can fill usage + final answer
-                    stream_res = await service.stream_model_text_tracked(
-                        client,
-                        lc_messages,
-                        on_delta=on_delta,
-                        temperature=(config or {}).get("temperature", 0.3),
-                        max_tokens=(config or {}).get("max_tokens", 800),
-                        client_cfg=client_cfg,
-                    )
-                    result_text = stream_res.get("text", "") or ""
-                    usage_out = stream_res.get("usage", {}) or {}
-
-                    # Optional: if OpenAI streaming didn’t report usage, approximate
-                    # if (usage_out.get("completion_tokens", 0) == 0) and result_text:
-                    #     approx = _approx_tokens_by_chars(result_text)  # import from your utils
-                    #     # merge keeping existing prompt tokens if present
-                    #     usage_out = {
-                    #         "prompt_tokens": usage_out.get("prompt_tokens", 0),
-                    #         "completion_tokens": approx.get("completion_tokens", approx.get("total_tokens", 0)),
-                    #         "total_tokens": usage_out.get("prompt_tokens", 0) + approx.get("total_tokens", 0),
-                    #     }
-
-                else:
-                    llm_res = await service.call_model_text(
-                        client,
-                        lc_messages,
-                        temperature=(config or {}).get("temperature", 0.3),
-                        max_tokens=(config or {}).get("max_tokens", 800),
-                        client_cfg=client_cfg,
-                    )
-                    result_text = llm_res["text"]
-                    usage_out = llm_res.get("usage", {})
-
-        except Exception as e:
-            error_message = str(e)
-            step_status = "error"
-            result_text = result_text or "I couldn't complete your request."
-
-        if sio:
-            await sio.emit("chat_step", {
-                "step": "answer_generator",
-                "status": step_status,
-                "timestamp": datetime.now().isoformat(),
-                "data": {
-                    "model": wf_config.model_config.get("model_name", wf_config.selected_model),
-                    "answer_length": len(result_text or ""),
-                    "usage": usage_out,
-                },
-                "elapsed_time": None,
-                "error": error_message
-            }, room=session_id)
-
-            await sio.emit("chat_complete", {
-                "task_id": task_id,  # ← SAME id
-                "final_answer": result_text,
-                "is_our_domain": None,
-                "classification_reasoning": None,
-                "rag_queries": [],
-                "retrieved_docs": [],
-                "reranked_docs": [],
-                "error_message": error_message,
-                "selected_model": wf_config.selected_model,
-                "config_info": {
-                    "selected_model": wf_config.selected_model,
-                    "model_name": wf_config.model_config.get("model_name", wf_config.selected_model),
-                    "provider": wf_config.provider,
-                    "has_classifier": wf_config.has_classifier,
-                    "description": wf_config.model_config.get("description"),
-                    "use_custom_endpoint": bool(wf_config.use_custom_endpoint),
-                    "custom_embedding_endpoint": wf_config.custom_embedding_endpoint,
-                    "embedding_model": wf_config.embedding_model
-                },
-                "timestamp": datetime.now().isoformat(),
-                "user_type": "unknown"
-            }, room=session_id)
-
-        return {"final_answer": result_text, "session_id": session_id}
-
+    # TODO: handle chat history inside the Workflow.
     async def agentic_chat_handler(
             message: str,
             session_id: str,
@@ -360,17 +128,31 @@ async def lifespan(app: FastAPI):
                 "timestamp": datetime.now().isoformat(),
             }, room=session_id)
 
-        from kdcube_ai_app.apps.chat.agentic_app import ChatWorkflow, create_initial_state
-
         from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
+        bundle_path = (config or {}).get("agentic_bundle_path") or os.getenv("AGENTIC_BUNDLE_PATH")
+        bundle_module = (config or {}).get("agentic_bundle_module") or os.getenv("AGENTIC_BUNDLE_MODULE")
+        singleton = bool((config or {}).get("agentic_singleton", False) or os.getenv("AGENTIC_SINGLETON") in {"1","true","True"})
 
-        from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
-
-        workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+        if bundle_path:
+            logger.info(f"Loading agentic bundle from {bundle_path} with module {bundle_module}")
+            spec = AgenticBundleSpec(path=bundle_path, module=bundle_module, singleton=singleton)
+            workflow, create_initial_state_fn, _ = get_workflow_instance(
+                spec, wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta
+            )
+        else:
+            # fallback to your built-in
+            logger.info("Using built-in agentic workflow")
+            from kdcube_ai_app.apps.chat.default_app.agentic_app import (ChatWorkflow,
+                                                                         create_initial_state as
+                                                                         built_in_create_initial_state)
+            workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
+            create_initial_state_fn = built_in_create_initial_state
 
         # 3) seed optional history into initial state (so first run has context)
         #    (We reuse your create_initial_state and pass it directly to graph)
-        state = create_initial_state(message)
+        state = create_initial_state_fn(message)
+
         # Include a lightweight system prompt if passed in config
         system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
         state["messages"] = [SystemMessage(content=system_prompt, id=_mid("sys"))]
@@ -383,94 +165,25 @@ async def lifespan(app: FastAPI):
             state["messages"].append(
                 AIMessage(content=content) if role == "assistant" else HumanMessage(content=content))
 
-        # 4) run graph (the wrapped nodes will emit chat_step events)
-        error_message = None
+        # 4) run workflow
         try:
-            result = await workflow.graph.ainvoke(
-                state,
-                config={"configurable": {"thread_id": session_id}},
-            )
+            result = await workflow.run(session_id, state)
         except Exception as e:
             error_message = str(e)
             # try to extract partial state if any
             logger.exception(e)
             result = {
                 "final_answer": "I couldn’t complete your request.",
-                "error_message": error_message,
-                "is_our_domain": None,
-                "classification_reasoning": None,
-                "rag_queries": [],
-                "retrieved_docs": [],
-                "reranked_docs": [],
-                "context": {},
+                "error_message": error_message
             }
 
-        # 5) finalize for UI
-        final_answer = result.get("final_answer") or ""
-        is_our_domain = result.get("is_our_domain")
-        classification_reasoning = result.get("classification_reasoning")
-        rag_queries = result.get("rag_queries") or []
-        retrieved_docs = result.get("retrieved_docs") or []
-        reranked_docs = result.get("reranked_docs") or []
-
-        # # 6) send complete
+        # # 5) send complete
         # if sio:
-        #     await sio.emit("chat_complete", {
-        #         "task_id": task_id,
-        #         "final_answer": final_answer,
-        #         "is_our_domain": is_our_domain,
-        #         "classification_reasoning": classification_reasoning,
-        #         "rag_queries": rag_queries,
-        #         "retrieved_docs": retrieved_docs,
-        #         "reranked_docs": reranked_docs,
-        #         "error_message": error_message,
-        #         "selected_model": wf_config.selected_model,
-        #         "config_info": {
-        #             "selected_model": wf_config.selected_model,
-        #             "model_name": wf_config.model_config.get("model_name", wf_config.selected_model),
-        #             "provider": wf_config.provider,
-        #             "has_classifier": wf_config.has_classifier,
-        #             "description": wf_config.model_config.get("description"),
-        #             "use_custom_endpoint": bool(wf_config.use_custom_endpoint),
-        #             "custom_embedding_endpoint": wf_config.custom_embedding_endpoint,
-        #             "embedding_model": wf_config.embedding_model,
-        #         },
-        #         "timestamp": datetime.now().isoformat(),
-        #         "user_type": "unknown"
-        #     }, room=session_id)
-
-        return {"final_answer": final_answer, "session_id": session_id}
-
-    # tiny awaitable sleep (no external deps)
-    import asyncio
-    async def asyncio_sleep(sec: float):
-        await asyncio.sleep(sec)
+        #     await sio.emit("chat_complete", result, room=session_id)
+        return result
 
     port = CHAT_APP_PORT
     process_id = os.getpid()
-
-    handler = dummy_chat_handler
-    handler = llm_passthrough_chat_handler
-    handler = agentic_chat_handler
-    #     processor = get_external_request_processor(middleware, handler, app)
-    #     health_checker = service_health_checker(middleware)
-    #
-    #     # Store in app state for monitoring endpoints
-    #     app.state.middleware = middleware
-    #     app.state.heartbeat_manager = heartbeat_manager
-    #     app.state.processor = processor
-    #     app.state.health_checker = health_checker
-    #
-    #     # Start services
-    #     await middleware.init_redis()
-    #     await heartbeat_manager.start_heartbeat(interval=10)
-    #     await processor.start_processing()
-    #     await health_checker.start_monitoring()
-    #
-    #     logger.info(f"Chat process {process_id} started with enhanced gateway")
-    #
-    # except Exception as e:
-    #     logger.warning(f"Could not start legacy middleware: {e}")
 
     # ================================
     # SOCKET.IO SETUP

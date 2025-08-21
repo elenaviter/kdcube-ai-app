@@ -177,3 +177,5 @@ cython_debug/
 .idea/
 
 .vite/
+
+app/ai-app/deployment/docker/all_in_one/kb-storage

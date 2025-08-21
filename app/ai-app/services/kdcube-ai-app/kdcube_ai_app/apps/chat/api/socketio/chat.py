@@ -22,7 +22,6 @@ from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
 
 from kdcube_ai_app.apps.chat.inventory import create_workflow_config, ConfigRequest
-from kdcube_ai_app.apps.chat.agentic_app import ChatWorkflow, Config
 
 logger = logging.getLogger(__name__)
 
@@ -33,171 +32,6 @@ class StepUpdate(BaseModel):
     data: Optional[Dict[str, Any]] = None
     elapsed_time: Optional[str] = None
     error: Optional[str] = None
-
-class StreamingChatWorkflow(ChatWorkflow):
-    """Extended workflow that can stream step updates via Socket.IO"""
-
-    def __init__(self, config: Config, step_callback=None):
-        super().__init__(config)
-        self.step_callback = step_callback
-        self.current_step = ""
-
-    async def _emit_step_update(self, step: str, status: str, data: Dict[str, Any] = None, error: str = None):
-        """Emit step update via callback"""
-        if self.step_callback:
-            update = StepUpdate(
-                step=step,
-                status=status,
-                timestamp=datetime.now().isoformat(),
-                data=data or {},
-                elapsed_time=f"{time.time() - self.start_time:.2f}s" if hasattr(self, 'start_time') else None,
-                error=error
-            )
-            await self.step_callback(update)
-
-    async def process_message_with_streaming(self, user_message: str, chat_history: list) -> Dict[str, Any]:
-        """Process message with step-by-step streaming updates"""
-
-        self.start_time = time.time()
-
-        # Emit workflow start
-        await self._emit_step_update("workflow_start", "started", {
-            "message": user_message[:100] + "..." if len(user_message) > 100 else user_message,
-            "selected_model": self.config.selected_model,
-            "has_classifier": self.config.has_classifier,
-            "embedding_type": "custom" if self.config.custom_embedding_endpoint else "openai"
-        })
-
-        initial_state = {
-            "user_message": user_message,
-            "chat_history": chat_history,
-            "is_our_domain": None,
-            "classification_reasoning": None,
-            "rag_queries": None,
-            "retrieved_docs": None,
-            "reranked_docs": None,
-            "final_answer": None,
-            "error_message": None,
-            "format_fix_attempts": 0
-        }
-
-        try:
-            # Override node methods to emit step updates
-            original_classifier_node = getattr(self, '_classifier_node', None)
-            original_query_writer_node = getattr(self, '_query_writer_node', None)
-            original_rag_node = getattr(self, '_rag_node', None)
-            original_reranking_node = getattr(self, '_reranking_node', None)
-            original_answer_node = getattr(self, '_answer_node', None)
-
-            if self.config.has_classifier and original_classifier_node:
-                async def streaming_classifier_node(state_dict):
-                    await self._emit_step_update("classifier", "started", {
-                        "model": self.config.selected_model
-                    })
-                    try:
-                        result = original_classifier_node(state_dict)
-                        await self._emit_step_update("classifier", "completed", {
-                            "is_our_domain": result.get("is_our_domain"),
-                            "confidence": result.get("classification_confidence"),
-                            "reasoning": result.get("classification_reasoning", "")[:200] + "..." if len(result.get("classification_reasoning", "")) > 200 else result.get("classification_reasoning", "")
-                        })
-                        return result
-                    except Exception as e:
-                        await self._emit_step_update("classifier", "error", error=str(e))
-                        raise
-                self._classifier_node = streaming_classifier_node
-
-            if original_query_writer_node:
-                async def streaming_query_writer_node(state_dict):
-                    await self._emit_step_update("query_writer", "started", {
-                        "model": self.config.selected_model
-                    })
-                    try:
-                        result = original_query_writer_node(state_dict)
-                        await self._emit_step_update("query_writer", "completed", {
-                            "query_count": len(result.get("rag_queries", [])),
-                            "queries": [q.get("query", "")[:50] + "..." if len(q.get("query", "")) > 50 else q.get("query", "") for q in result.get("rag_queries", [])][:3]
-                        })
-                        return result
-                    except Exception as e:
-                        await self._emit_step_update("query_writer", "error", error=str(e))
-                        raise
-                self._query_writer_node = streaming_query_writer_node
-
-            if original_rag_node:
-                async def streaming_rag_node(state_dict):
-                    await self._emit_step_update("rag_retrieval", "started", {
-                        "embedding_type": "custom" if self.config.custom_embedding_endpoint else "openai"
-                    })
-                    try:
-                        result = original_rag_node(state_dict)
-                        await self._emit_step_update("rag_retrieval", "completed", {
-                            "retrieved_count": len(result.get("retrieved_docs", [])),
-                            "sources": list(set(doc.get("metadata", {}).get("source", "unknown") for doc in result.get("retrieved_docs", [])))[:5],
-                            "embedding_endpoint": self.config.custom_embedding_endpoint if self.config.custom_embedding_endpoint else "OpenAI"
-                        })
-                        return result
-                    except Exception as e:
-                        await self._emit_step_update("rag_retrieval", "error", error=str(e))
-                        raise
-                self._rag_node = streaming_rag_node
-
-            if original_reranking_node:
-                async def streaming_reranking_node(state_dict):
-                    await self._emit_step_update("reranking", "started", {
-                        "model": self.config.selected_model
-                    })
-                    try:
-                        result = original_reranking_node(state_dict)
-                        await self._emit_step_update("reranking", "completed", {
-                            "reranked_count": len(result.get("reranked_docs", [])),
-                            "avg_relevance": sum(doc.get("relevance_score", 0) for doc in result.get("reranked_docs", [])) / len(result.get("reranked_docs", [])) if result.get("reranked_docs") else 0
-                        })
-                        return result
-                    except Exception as e:
-                        await self._emit_step_update("reranking", "error", error=str(e))
-                        raise
-                self._reranking_node = streaming_reranking_node
-
-            if original_answer_node:
-                async def streaming_answer_node(state_dict):
-                    await self._emit_step_update("answer_generator", "started", {
-                        "model": self.config.selected_model
-                    })
-                    try:
-                        result = original_answer_node(state_dict)
-                        await self._emit_step_update("answer_generator", "completed", {
-                            "answer_length": len(result.get("final_answer", "")),
-                            "sources_used": len(result.get("reranked_docs", [])),
-                            "preview": result.get("final_answer", "")[:100] + "..." if len(result.get("final_answer", "")) > 100 else result.get("final_answer", "")
-                        })
-                        return result
-                    except Exception as e:
-                        await self._emit_step_update("answer_generator", "error", error=str(e))
-                        raise
-                self._answer_node = streaming_answer_node
-
-            # Execute the workflow
-            result = await self.graph.ainvoke(initial_state)
-
-            # Emit completion
-            await self._emit_step_update("workflow_complete", "completed", {
-                "total_time": f"{time.time() - self.start_time:.2f}s",
-                "final_answer_length": len(result.get("final_answer", "")),
-                "success": not bool(result.get("error_message")),
-                "selected_model": self.config.selected_model,
-                "embedding_type": "custom" if self.config.custom_embedding_endpoint else "openai"
-            })
-
-            return result
-
-        except Exception as e:
-            await self._emit_step_update("workflow_error", "error", error=str(e))
-            return {
-                **initial_state,
-                "error_message": str(e),
-                "final_answer": "I apologize, but I encountered an error processing your request."
-            }
 
 
 class SocketIOChatHandler:
@@ -276,26 +110,6 @@ class SocketIOChatHandler:
                 logger.warning(f"WS connect rejected for {sid}: origin '{origin}' not allowed")
                 return False
         logger.debug(f"WS origin accepted: {origin}")
-
-        # # ---- 1) Internal service bypass (optional) ---------------------------------------------
-        # try:
-        #     if auth and auth.get("token") == os.getenv("INTERNAL_SERVICE_TOKEN"):
-        #         logger.info(f"Internal service connected: sid={sid}")
-        #         await self.sio.save_session(sid, {
-        #             "user_session": {"session_id": "service"},
-        #             "authenticated": True,
-        #             "service": True,
-        #         })
-        #         # No room join (no specific session)
-        #         await self.sio.emit("session_info", {
-        #             "session_id": "service",
-        #             "user_type": "privileged",
-        #             "internal_service": True
-        #         }, to=sid)
-        #         return True
-        # except Exception as e:
-        #     logger.error(f"Internal service token check failed for {sid}: {e}")
-        #     return False
 
         # ---- 2) Require a REST-provisioned session id ------------------------------------------
         user_session_id = (auth or {}).get("user_session_id")

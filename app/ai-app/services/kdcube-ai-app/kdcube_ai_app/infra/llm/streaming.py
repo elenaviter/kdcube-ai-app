@@ -716,17 +716,10 @@ async def example_with_progress(model_record):
     print("\nAs dictionary:")
     print(json.dumps(result_dict, indent=2))
 
-
-if __name__ == "__main__":
-
+def test_platform_streaming():
     import os
     project = os.environ.get("DEFAULT_PROJECT_NAME", None)
     tenant = os.environ.get("DEFAULT_TENANT", None)
-
-    from dotenv import load_dotenv, find_dotenv
-    def load_env():
-        _ = load_dotenv(find_dotenv())
-    load_env()
 
     provider = AIProviderName.open_ai
     model_record_openai = ModelRecord(
@@ -772,3 +765,8 @@ if __name__ == "__main__":
         model_record = model_record_openai
         asyncio.run(example_with_progress(model_record=model_record))
         print()
+
+if __name__ == "__main__":
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv())
+    # test_platform_streaming()

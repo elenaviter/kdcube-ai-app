@@ -118,6 +118,9 @@ services:
       - POSTGRES_HOST=postgres-db
     volumes:
       - ./kb-storage:/kb-storage
+      - type: bind
+        source: ${SITE_AGENTIC_BUNDLE_PATH?}
+        target: ${AGENTIC_BUNDLE_PATH?}
     depends_on:
       - redis
     networks:

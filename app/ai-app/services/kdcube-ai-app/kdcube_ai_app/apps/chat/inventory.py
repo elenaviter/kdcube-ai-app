@@ -7,6 +7,7 @@ import json
 import os
 import logging
 from datetime import datetime
+from uuid import uuid4
 
 import aiohttp
 import requests
@@ -19,17 +20,24 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from pydantic import BaseModel
 
-from kdcube_ai_app.apps.chat.agentic_app_bckp import MODEL_CONFIGS, EMBEDDERS
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 from kdcube_ai_app.infra.accounting import track_llm
 from kdcube_ai_app.infra.accounting.usage import _structured_usage_extractor, \
     _norm_usage_dict, _approx_tokens_by_chars, ServiceUsage, ClientConfigHint
 
+def _mid(prefix: str = "m") -> str:
+    return f"{prefix}-{uuid4().hex}"
 
 class Config:
     """Configuration for the application"""
-    def __init__(self, selected_model: str = "gpt-4o"):
-        self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
-        self.claude_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    def __init__(self,
+                 selected_model: str = "gpt-4o",
+                 openai_api_key: Optional[str] = None,
+                 claude_api_key: Optional[str] = None,
+                 embedding_model: Optional[str] = None):
+
+        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
+        self.claude_api_key = claude_api_key or os.getenv("ANTHROPIC_API_KEY", "")
         self.selected_model = selected_model
         self.model_config = MODEL_CONFIGS.get(selected_model, MODEL_CONFIGS["gpt-4o"])
 
@@ -37,7 +45,8 @@ class Config:
         self.selected_embedder = "openai-text-embedding-3-small"  # Default
         self.embedder_config = EMBEDDERS.get(self.selected_embedder, EMBEDDERS["openai-text-embedding-3-small"])
 
-        self.embedding_model = "text-embedding-3-small"
+
+        self.embedding_model = embedding_model or "text-embedding-3-small"
         self.custom_embedding_endpoint = None
         self.custom_embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         self.custom_embedding_size = 384
@@ -257,12 +266,12 @@ def ms_freeform_meta_extractor(model_service, _client, messages, *a, **kw):
         "max_tokens": kw.get("max_tokens"),
     }
 
-class ModelService:
+class ModelServiceBase:
     """Handles interactions with different models"""
 
     def __init__(self, config: Config):
         self.config = config
-        self.logger = AgentLogger("ModelService", config.log_level)
+        self.logger = AgentLogger("ModelServiceBase", config.log_level)
 
         # Create clients based on provider
         if config.use_custom_endpoint:
@@ -311,7 +320,7 @@ class ModelService:
             "model_name": config.model_config["model_name"]
         })
 
-    # chat/inventory.py (inside ModelService)
+    # chat/inventory.py (inside ModelServiceBase)
     def describe_client(self, client, role: Optional[str] = None) -> ClientConfigHint:
         # Custom endpoint
         if isinstance(client, CustomModelClient):
@@ -682,7 +691,7 @@ class ModelService:
             combined_text = []
             usage = {}  # will be filled on the final chunk when include_usage=True
 
-            async for chunk in client.astream(messages):
+            async for chunk in client.astream(messages, stream_usage=True):
                 # 1) text deltas
                 if isinstance(chunk, AIMessageChunk):
                     piece = chunk.content or ""
@@ -719,6 +728,7 @@ class ModelService:
                 usage = _approx_tokens_by_chars(
                     "".join((getattr(m, "content", "") or "") for m in messages + [AIMessage(content="".join(combined_text))])
                 )
+            yield {"final": True, "usage": usage, "model_name": model_name}
             return
 
         # --- Custom endpoint streaming (via our client) ---
@@ -768,6 +778,7 @@ class ModelService:
                 max_tokens=max_tokens,
                 client_cfg=cfg,
         ):
+            print(ev.keys())
             if "delta" in ev:
                 delta = ev["delta"] or ""
                 if delta:
@@ -777,6 +788,8 @@ class ModelService:
             if ev.get("final"):
                 usage_out = ev.get("usage") or {}
                 break
+            if ev.get("usage"):
+                usage_out = ev.get("usage")
 
         return {
             "text": "".join(final_chunks),
@@ -1286,3 +1299,25 @@ def create_workflow_config(config_request: ConfigRequest) -> Config:
         config.set_kb_search_endpoint(config_request.kb_search_endpoint)
 
     return config
+
+if __name__ == "__main__":
+
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv())
+
+    async def streaming():
+
+        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+        model_name = "gpt-4o-mini"
+        client = ChatOpenAI(model=model_name, stream_usage=True)
+        msgs = [SystemMessage(content="You are concise."), HumanMessage(content="Say hi!")]
+
+        base_service = ModelServiceBase(Config(selected_model=model_name))
+        async for evt in base_service.stream_model_text(client, msgs):
+            print(evt)
+        print()
+
+    asyncio.run(streaming())
+
+
