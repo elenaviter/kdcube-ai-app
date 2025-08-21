@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import {useEffect, useState} from "react";
 import {useAuthManagerContext} from "../auth/AuthManager.tsx";
 

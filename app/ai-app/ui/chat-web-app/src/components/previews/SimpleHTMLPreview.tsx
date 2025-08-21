@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import React from "react";
 import { X, Download, ExternalLink, Globe } from "lucide-react";
 import FullScreenOverlay from "../FullScreenOverlay";

@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import {User, ChevronDown, UserCircle, LogOut} from "lucide-react";
 import {useState} from "react";
 import {useAuth} from "react-oidc-context";

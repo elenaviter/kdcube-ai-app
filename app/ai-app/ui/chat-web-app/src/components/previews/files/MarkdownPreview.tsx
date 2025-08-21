@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import {useState} from "react";
 import {Eye, Code, Copy} from "lucide-react";
 import ReactMarkdown from "react-markdown";

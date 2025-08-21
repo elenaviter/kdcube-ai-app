@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // Search utilities and highlighting functions
 
 import { BacktrackNavigation, EnhancedSearchResult } from './SearchInterfaces';

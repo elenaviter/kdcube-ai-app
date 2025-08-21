@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // components/auth/AuthManager.tsx
 import {createContext, ReactNode, useContext} from "react";
 import OAuthManager, {Callback, SignedOutPage, WithOAuthRequired} from "./OAuthManager.tsx";

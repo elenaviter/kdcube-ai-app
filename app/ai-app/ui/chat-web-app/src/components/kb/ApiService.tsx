@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // api/apiService.ts - Uses authContext.appendAuthHeader(headers) everywhere
 import { io, Socket } from "socket.io-client";
 import {

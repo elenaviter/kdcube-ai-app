@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // components/auth/useRefreshToken.ts
 import { useEffect, useRef } from "react";
 import { useAuth } from "react-oidc-context";

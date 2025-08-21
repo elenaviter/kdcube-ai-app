@@ -3,7 +3,7 @@
 ## First run
 To initialize Postgres run this once
 ```shell
-  docker compose run postgres-setup
+  docker compose build postgres-setup && docker compose run --rm postgres-setup
 ```
 
 

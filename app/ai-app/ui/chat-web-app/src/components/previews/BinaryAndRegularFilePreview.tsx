@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import {SearchPreviewContent} from "../search/SearchInterfaces";
 import React, {useState} from "react";
 import {AlertCircle, ArrowLeft, ArrowRight, Download, Eye, FileText, Highlighter, MapPin, X, File} from "lucide-react";

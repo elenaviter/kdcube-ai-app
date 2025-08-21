@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // components/auth/OAuthManager.tsx
 import {AuthProvider, useAuth} from "react-oidc-context";
 import {ReactNode, useEffect, useRef} from "react";

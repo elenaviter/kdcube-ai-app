@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
     X,

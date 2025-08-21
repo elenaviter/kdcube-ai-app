@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 export interface BacktrackNavigation {
     start_line: number;
     end_line: number;

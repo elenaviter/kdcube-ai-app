@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import './App.css'
 import {BrowserRouter as Router, Routes, Route} from "react-router-dom"
 import NotFoundPage from "./components/notfound/NotFoundPage.tsx";

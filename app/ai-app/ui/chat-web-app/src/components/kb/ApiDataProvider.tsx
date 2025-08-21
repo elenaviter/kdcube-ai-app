@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // ApiDataProvider.tsx
 import React, { createContext, useContext } from "react";
 import {

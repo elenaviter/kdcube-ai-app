@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import { User, Mail, LogOut } from "lucide-react";
 import {useAuth} from "react-oidc-context";
 
