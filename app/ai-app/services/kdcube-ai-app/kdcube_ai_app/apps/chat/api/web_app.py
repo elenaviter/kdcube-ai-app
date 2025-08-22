@@ -55,6 +55,17 @@ logger = logging.getLogger(__name__)
 # ================================
 # APPLICATION SETUP
 # ================================
+# CORS setup
+allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://localhost:4000",
+    "http://localhost:5173",
+    "http://localhost:8050",
+]
+app_domain = os.environ.get("APP_DOMAIN")
+if app_domain:
+    allowed_origins.append(f"https://{app_domain}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -189,19 +200,6 @@ async def lifespan(app: FastAPI):
     # SOCKET.IO SETUP
     # ================================
 
-    # CORS setup for Socket.IO
-    allowed_origins = [
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:4000",
-        "http://localhost:5173",
-        "http://localhost:8050",
-    ]
-    app_domain = os.environ.get("APP_DOMAIN")
-    if app_domain:
-        allowed_origins.append(f"http://{app_domain}")
-        allowed_origins.append(f"https://{app_domain}")
-
     # Create modular Socket.IO chat handler
     try:
         socketio_handler = create_socketio_chat_handler(
@@ -269,14 +267,6 @@ app = FastAPI(
     description="Chat API with gateway integration and modular real-time Socket.IO streaming",
     lifespan=lifespan
 )
-
-# CORS setup for FastAPI
-allowed_origins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
-    "http://localhost:4000",
-    "http://localhost:5173"
-]
 
 # CORS middleware for React frontend
 app.add_middleware(
