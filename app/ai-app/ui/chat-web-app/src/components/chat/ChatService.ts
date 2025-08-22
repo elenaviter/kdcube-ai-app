@@ -119,7 +119,7 @@ function getManager(baseUrl: string, path = '/socket.io', opts: Partial<Manager[
     if (!m) {
         m = new Manager(baseUrl, {
             path,
-            transports: ['websocket'], // no polling -> avoids “two lines” in WS tab
+            transports: ['websocket', 'polling'], // no polling -> avoids “two lines” in WS tab
             upgrade: false,            // no upgrade dance
             autoConnect: false,
             timeout: 10000,

@@ -294,7 +294,7 @@ class ApiService {
 
     this.kbSocket = io(getKBSocketAddress(), {
       path: getKBSocketSocketIOPath(),
-      transports: ["websocket"],
+      transports: ["websocket", "polling"],
       forceNew: false,
       timeout: 5000,
       // In browsers we can't set custom headers; put tokens in the auth payload
