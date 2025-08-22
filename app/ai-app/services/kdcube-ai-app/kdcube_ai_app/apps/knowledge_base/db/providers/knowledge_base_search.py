@@ -130,34 +130,26 @@ class KnowledgeBaseSearch:
                                params: HybridSearchParams,
                                conn=None) -> List[Dict[str, Any]]:
         """
-        Perform advanced hybrid search with full HybridSearchParams support,
-        allowing you to choose AND- or OR-semantics via params.match_all.
-        All filtering and scoring done in SQL for maximum performance.
+        Advanced hybrid search with correct boolean logic:
 
-        Args:
-            params: HybridSearchParams with all search parameters, including:
-                - query (str or None)
-                - embedding (list[float] or None)
-                - distance_type (str)
-                - resource_ids (list[str] or None)
-                - tags (list[str] or None)
-                - entity_filters (list[EntityItem] or None)
-                - top_n (int)
-                - min_similarity (float)
-                - text_weight (float)
-                - semantic_weight (float)
-                - match_all (bool): True = AND all filters, False = OR all filters
-            conn: optional psycopg2 connection (injected by @transactional)
+        - FACETS (always AND): providers, resource_ids, include_expired, entity_filters group
+          * The entity_filters group itself ANDs with other facets; inside the group you can
+            AND/OR individual entity items (controlled by entities_match_all or match_all).
+        - RECALL (combined by match_all): query + tags
+          * match_all=True  -> AND
+          * match_all=False -> OR
 
-        Returns:
-            List of dicts, each containing the segment fields plus:
-            text_score, semantic_score, relevance_score, has_embedding
+        Scoring:
+          text_score     = ts_rank_cd(search_vector, websearch_to_tsquery('english', %s), 33)
+          semantic_score = 1 - (embedding <=> %s)  (when embedding present)
+          relevance      = norm_tw * text_score + norm_sw * semantic_score
         """
-        # 1) Build the per‐row scoring fragments
+        import json
+
+        # ---------- 1) Per-row scoring fragments ----------
         if params.query:
-            # text_score_sql = "ts_rank(search_vector, plainto_tsquery('english', %s))"
-            # -- divide-by-length + coverage density
-            text_score_sql = "ts_rank_cd(search_vector, websearch_to_tsquery('english', %s), (1|32))"
+            # coverage-density rank (33 == 1|32) using websearch_to_tsquery
+            text_score_sql = "ts_rank_cd(search_vector, websearch_to_tsquery('english', %s), 33)"
         else:
             text_score_sql = "0.0"
 
@@ -170,7 +162,7 @@ class KnowledgeBaseSearch:
         else:
             semantic_score_sql = "0.0"
 
-        # 2) Normalize weights
+        # ---------- 2) Normalize weights ----------
         tw = params.text_weight or 0.0
         sw = params.semantic_weight or 0.0
         total = tw + sw
@@ -180,60 +172,80 @@ class KnowledgeBaseSearch:
         else:
             norm_tw = norm_sw = 0.5
 
-        # 3) Build filter clauses & params
-        where_clauses = []
-        where_params = []
+        # ---------- 3) Build FACETS (ALWAYS AND) ----------
+        facet_clauses: list[str] = []
+        facet_params: list[Any] = []
 
-        if params.query:
-            where_clauses.append("search_vector @@ plainto_tsquery('english', %s)")
-            where_params.append(params.query)
-
-        if params.embedding:
-            where_clauses.append("embedding IS NOT NULL")
-
+        # resource_ids facet
         if params.resource_ids:
             ph = ",".join(["%s"] * len(params.resource_ids))
-            where_clauses.append(f"resource_id IN ({ph})")
-            where_params.extend(params.resource_ids)
+            facet_clauses.append(f"resource_id IN ({ph})")
+            facet_params.extend(params.resource_ids)
 
-        # Provider filtering
-        if hasattr(params, 'providers') and params.providers:
-            ph = ",".join(["%s"] * len(params.providers))
-            where_clauses.append(f"provider IN ({ph})")
-            where_params.extend(params.providers)
-        elif hasattr(params, 'provider') and params.provider:
-            where_clauses.append("provider = %s")
-            where_params.append(params.provider)
+        # providers facet (supports multiple)
+        providers = getattr(params, "providers", None)
+        if providers:
+            ph = ",".join(["%s"] * len(providers))
+            facet_clauses.append(f"provider IN ({ph})")
+            facet_params.extend(providers)
 
-        # NEW: Expiration filtering
-        if not getattr(params, 'include_expired', False):
-            where_clauses.append(f"""
+        # include_expired facet (joins datasource)
+        if not getattr(params, "include_expired", True):
+            facet_clauses.append(f"""
                 EXISTS (
-                    SELECT 1 FROM {self.schema}.datasource ds 
-                    WHERE ds.id = resource_id AND ds.version = version
-                    AND (ds.expiration IS NULL OR ds.expiration > now())
+                    SELECT 1 FROM {self.schema}.datasource ds
+                    WHERE ds.id = resource_id
+                      AND ds.version = version
+                      AND (ds.expiration IS NULL OR ds.expiration > now())
                 )
             """)
 
+        # entity_filters facet group (internal AND/OR, group ANDed with other facets)
+        entity_filters = getattr(params, "entity_filters", None)
+        if entity_filters:
+            entities_match_all = getattr(params, "entities_match_all", params.match_all)
+            ent_parts = []
+            for ent in entity_filters:
+                ent_parts.append("entities @> %s")
+                facet_params.append(json.dumps([{"key": ent.key, "value": ent.value}]))
+            joiner = " AND " if entities_match_all else " OR "
+            facet_clauses.append("(" + joiner.join(ent_parts) + ")")
+
+        facet_sql = " AND ".join(facet_clauses) if facet_clauses else ""
+
+        # ---------- 4) Build RECALL (query + tags) by match_all ----------
+        recall_clauses: list[str] = []
+        recall_params: list[Any] = []
+
+        if params.query:
+            # match search_vector with the same websearch_to_tsquery used for ranking
+            recall_clauses.append("search_vector @@ websearch_to_tsquery('english', %s)")
+            recall_params.append(params.query)
+
         if params.tags:
-            where_clauses.append("tags && %s")
-            where_params.append(params.tags)
+            # match_all=True -> require all tags; else any overlap
+            if params.match_all:
+                recall_clauses.append("tags @> %s")
+            else:
+                recall_clauses.append("tags && %s")
+            recall_params.append(params.tags)
 
-        if params.entity_filters:
-            ent_conds = []
-            for ent in params.entity_filters:
-                ent_conds.append("entities @> %s")
-                where_params.append(json.dumps([{"key": ent.key, "value": ent.value}]))
-            where_clauses.append("(" + " OR ".join(ent_conds) + ")")
-
-        # 4) Combine filters with AND or OR
-        if where_clauses:
-            conj = " AND " if params.match_all else " OR "
-            where_clause = conj.join(where_clauses)
+        if recall_clauses:
+            recall_joiner = " AND " if params.match_all else " OR "
+            recall_sql = "(" + recall_joiner.join(recall_clauses) + ")"
         else:
-            where_clause = "TRUE"
+            recall_sql = ""
 
-        # 5) Full SQL: compute relevance_score inside the CTE so we can filter on it
+        # ---------- 5) Combine WHERE (FACETS AND (RECALL)) ----------
+        where_parts = []
+        if facet_sql:
+            where_parts.append(f"({facet_sql})")
+        if recall_sql:
+            where_parts.append(recall_sql)
+
+        where_clause = " AND ".join(where_parts) if where_parts else "TRUE"
+
+        # ---------- 6) Full SQL with CTE scoring ----------
         sql = f"""
         WITH scored_segments AS (
           SELECT
@@ -269,31 +281,40 @@ class KnowledgeBaseSearch:
         LIMIT %s
         """
 
-        # 6) Assemble final_params in exact placeholder order
-        final_params = []
+        # ---------- 7) Assemble parameters in exact placeholder order ----------
+        final_params: list[Any] = []
+
         # text_score alias
         if params.query:
-            final_params.append(params.query)
+            final_params.append(params.query)  # for text_score (websearch_to_tsquery)
+
         # semantic_score alias
         if params.embedding:
-            final_params.append(embedding_str)
+            final_params.append(embedding_str)  # for semantic_score
+
         # text_score inside relevance
         if params.query:
             final_params.append(params.query)
+
         # normalized text weight
         final_params.append(norm_tw)
+
         # semantic_score inside relevance
         if params.embedding:
             final_params.append(embedding_str)
+
         # normalized semantic weight
         final_params.append(norm_sw)
-        # WHERE‐clause params
-        final_params.extend(where_params)
+
+        # WHERE params: facets first, then recall (order matches where_clause construction)
+        final_params.extend(facet_params)
+        final_params.extend(recall_params)
+
         # threshold and limit
         final_params.append(params.min_similarity or 0.0)
         final_params.append(params.top_n)
 
-        # 7) Execute and post‐process
+        # ---------- 8) Execute and post-process ----------
         with conn.cursor() as cur:
             cur.execute(sql, final_params)
             cols = [desc[0] for desc in cur.description]
@@ -307,6 +328,7 @@ class KnowledgeBaseSearch:
                 results.append(rec)
 
         return results
+
 
     @transactional
     def entity_search(self,
