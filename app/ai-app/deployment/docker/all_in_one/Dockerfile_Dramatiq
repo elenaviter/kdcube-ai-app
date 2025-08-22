@@ -26,8 +26,9 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 #parse an example pdf to preload marker's data
-ADD "https://ontheline.trincoll.edu/images/bookdown/sample-local-pdf.pdf" /tmp/marker/sample/sample-local-pdf.pdf
-RUN /opt/venv/bin/marker_single --output_dir "/tmp/marker/output" /tmp/marker/sample/sample-local-pdf.pdf
+# ADD "https://ontheline.trincoll.edu/images/bookdown/sample-local-pdf.pdf" /tmp/marker/sample/sample-local-pdf.pdf
+# Temporary disabled
+# RUN /opt/venv/bin/marker_single --output_dir "/tmp/marker/output" /tmp/marker/sample/sample-local-pdf.pdf
 
 # Stage 2: Production stage
 FROM python:3.12-slim as production
@@ -53,10 +54,10 @@ RUN groupadd --gid 1000 appuser && \
 COPY --from=builder --chown=appuser:appuser /opt/venv /opt/venv
 
 # Make venv writable for marker
-RUN chown -R appuser:appuser /opt/venv
+# RUN chown -R appuser:appuser /opt/venv
 
-# Copy Marker cache
-COPY --from=builder --chown=appuser:appuser /root/.cache /home/appuser/.cache
+# Copy Marker cache. Temporary disabled
+# COPY --from=builder --chown=appuser:appuser /root/.cache /home/appuser/.cache
 
 # Set work directory
 WORKDIR /app
