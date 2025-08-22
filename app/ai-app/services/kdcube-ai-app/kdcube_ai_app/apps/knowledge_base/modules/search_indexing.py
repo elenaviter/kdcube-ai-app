@@ -24,6 +24,7 @@ class SearchIndexingModule(ProcessingModule):
     def __init__(self,
                  storage,
                  project: str,
+                 tenant: str,
                  pipeline,
                  db_connector: Optional[KnowledgeBaseConnector] = None,
                  **kwargs):
@@ -36,7 +37,7 @@ class SearchIndexingModule(ProcessingModule):
             pipeline: Processing pipeline instance
             db_connector: Optional pre-configured database connector
         """
-        super().__init__(storage, project, pipeline)
+        super().__init__(storage, project, tenant, pipeline)
         self.db_connector = db_connector
 
     @property
@@ -93,7 +94,7 @@ class SearchIndexingModule(ProcessingModule):
                 "datasource_result": load_result.get("datasource_result", {}),
                 "segments_result": load_result.get("segments_result", {}),
                 "indexing_timestamp": datetime.now().isoformat(),
-                "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
+                "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
             }
 
             # Save results for future reference
@@ -125,7 +126,7 @@ class SearchIndexingModule(ProcessingModule):
                 "search_indexing_completed": False,
                 "error": str(e),
                 "indexing_timestamp": datetime.now().isoformat(),
-                "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
+                "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
             }
 
             # Save error results

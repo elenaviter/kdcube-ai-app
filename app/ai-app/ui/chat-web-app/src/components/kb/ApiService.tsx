@@ -499,6 +499,7 @@ class ApiService {
 
   getKBResourceDownloadUrl(resourceId: string, version?: string): string {
     const params = new URLSearchParams();
+
     if (version) params.append("version", version);
     const qs = params.toString();
     return `${this.baseUrl}/api/kb/resource/${resourceId}/download${qs ? "?" + qs : ""}`;

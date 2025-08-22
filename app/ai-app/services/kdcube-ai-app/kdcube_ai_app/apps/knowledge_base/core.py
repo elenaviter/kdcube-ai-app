@@ -112,6 +112,7 @@ class KnowledgeBase:
             **storage_kwargs: Additional arguments passed to storage backend creation
         """
         self.project = project
+        self.tenant = tenant
         if isinstance(storage_backend, str):
             self.backend = create_storage_backend(storage_backend, **storage_kwargs)
         else:
@@ -135,6 +136,7 @@ class KnowledgeBase:
         # Initialize processing pipeline with all modules
         self.pipeline = ModuleFactory.create_default_pipeline(self.storage,
                                                               self.project,
+                                                              self.tenant,
                                                               processing_mode=processing_mode,
                                                               db_connector=self.db_connector)
 
@@ -147,7 +149,6 @@ class KnowledgeBase:
     def search_component(self) -> SimpleKnowledgeBaseSearch:
         """Get the multi-representation search component."""
         if self._search_component is None:
-            seg_module = self.get_segmentation_module()
             self._search_component = SimpleKnowledgeBaseSearch(
                 self
             )
@@ -291,7 +292,7 @@ class KnowledgeBase:
                 version=version,
                 content_hash=content_hash,
                 filename=filename,
-                rn=f"ef:{self.project}:knowledge_base:raw:{resource_id}:{version}",
+                rn=f"ef:{self.tenant}:{self.project}:knowledge_base:raw:{resource_id}:{version}",
                 ef_uri=self.storage.get_resource_full_path(resource_id=resource_id, version=version, filename=filename),
                 size_bytes=size_bytes,
             )
@@ -734,7 +735,6 @@ class KnowledgeBase:
         return self.search_component.search(
             query=query,
             resource_id=resource_id,
-            version=version,
             top_k=top_k
         )
 

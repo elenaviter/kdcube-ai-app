@@ -100,17 +100,19 @@ class HybridSearchParams(BaseModel):
     """
     Parameters for hybrid search combining text and semantic search.
     """
+
+    # Recall signals:
     # Text search
     query: Optional[str] = None
-
+    tags: Optional[List[str]] = None
     # Semantic search
     embedding: Optional[List[float]] = None
+
     distance_type: str = "cosine"  # 'cosine', 'l2', 'ip'
 
-    # Filters
+    # Filters (facets)
     resource_ids: Optional[List[str]] = None
     entity_filters: Optional[List[EntityItem]] = None
-    tags: Optional[List[str]] = None
 
     # Result controls
     top_n: int = 10
@@ -119,6 +121,8 @@ class HybridSearchParams(BaseModel):
     # Hybrid search weights (if both text and semantic)
     text_weight: float = 0.5
     semantic_weight: float = 0.5
+
+    # Controls recall signals attribution composition
     match_all: bool = False
 
     # Post-ANN cross-encoder options
@@ -126,6 +130,7 @@ class HybridSearchParams(BaseModel):
     rerank_threshold: Optional[float] = None  # drop any row with rerank_score < this
 
     providers: Optional[List[str]] = None  # Specific data providers to filter by
+
     include_expired: bool = True
 
 

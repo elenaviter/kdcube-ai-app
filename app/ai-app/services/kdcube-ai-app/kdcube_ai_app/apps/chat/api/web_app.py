@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# chat/web_app.py - Updated with modular Socket.IO
+# chat/web_app.py
 """
 FastAPI chat application with modular Socket.IO integration and gateway protection
 """
@@ -34,14 +34,13 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 
 # Import our simplified components
 from kdcube_ai_app.apps.chat.api.resolvers import (
-    get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency, require_auth,
+    get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
     get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
-from kdcube_ai_app.auth.AuthManager import RequireUser, RequireRoles
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
-from kdcube_ai_app.apps.chat.inventory import ConfigRequest, ModelServiceBase, create_workflow_config, _mid
+from kdcube_ai_app.apps.chat.inventory import ConfigRequest, create_workflow_config, _mid
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 # Import the modular Socket.IO handler
@@ -407,12 +406,6 @@ async def check_embeddings_endpoint(request: ConfigRequest):
         )
 
 
-@app.get("/public")
-async def public_endpoint():
-    """Public endpoint - no authentication required"""
-    return {"message": "This is a public endpoint", "timestamp": datetime.now().isoformat()}
-
-
 @app.get("/profile")
 async def get_profile(session: UserSession = Depends(get_user_session_dependency())):
     """Get user profile - works for both anonymous and registered users"""
@@ -433,31 +426,6 @@ async def get_profile(session: UserSession = Depends(get_user_session_dependency
             "session_id": session.session_id,
             "created_at": session.created_at
         }
-
-
-@app.get("/protected")
-async def protected_endpoint(session: UserSession = Depends(require_auth(RequireUser()))):
-    """Protected endpoint - requires valid authentication"""
-    return {
-        "message": f"Hello {session.username}!",
-        "user_type": session.user_type.value,
-        "session_id": session.session_id
-    }
-
-
-@app.get("/admin-only")
-async def admin_only_endpoint(
-        session: UserSession = Depends(require_auth(
-            RequireUser(),
-            RequireRoles("kdcube:role:super-admin")
-        ))
-):
-    """Admin only endpoint"""
-    return {
-        "message": f"Welcome admin {session.username}!",
-        "roles": session.roles,
-        "user_type": session.user_type.value
-    }
 
 
 # --- background worker to do the work and emit over the room=session_id
@@ -542,7 +510,7 @@ async def _process_rest_chat_and_emit(app: FastAPI,
             pass
 
 
-@app.post("/landing/chat-real")
+@app.post("/landing/chat")
 async def chat_endpoint(
         payload: ChatRequest,  # rename to avoid shadowing fastapi.Request
         session: UserSession = Depends(get_user_session_dependency())
@@ -650,60 +618,6 @@ async def chat_endpoint(
         logger.error(f"Chat endpoint error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/landing/chat")
-async def chat_endpoint(
-        payload: ChatRequest,
-        session: UserSession = Depends(get_user_session_dependency())
-):
-    """
-    REST receives a message; result is delivered over WebSocket to the SAME session_id room.
-    """
-    try:
-        # Use provided session_id if present (from /profile + client), else fall back to current REST session
-        session_id = payload.session_id or session.session_id
-
-        cfg_dict = payload.config.model_dump() if payload.config else {}
-        # Optional: project/tenant inference
-        project_id = cfg_dict.get("project")
-        try:
-            tenant_id = get_gateway_config().tenant_id
-        except Exception:
-            tenant_id = None
-
-        # Build an accounting snapshot (no I/O)
-        acct_env = build_envelope_from_session(
-            session=session,
-            tenant_id=tenant_id,
-            project_id=project_id,
-            request_id=str(uuid.uuid4()),
-            component="chat.rest",
-            metadata={
-                "entrypoint": "/landing/chat",
-                "selected_model": cfg_dict.get("selected_model")
-            },
-        )
-
-        import asyncio
-        # Fire-and-forget the background job that emits to WS room = session_id
-        asyncio.create_task(_process_rest_chat_and_emit(
-            app, session, payload, session_id, acct_env.to_dict()
-        ))
-
-        # Immediate HTTP response
-        return ChatResponse(
-            status="processing_started",
-            task_id=str(uuid.uuid4()),
-            session_id=session_id,
-            user_type=session.user_type.value,
-            message=f"Processing will be sent over WS room={session_id}"
-        )
-
-    except Exception as e:
-        logger.error(f"Chat endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.get("/landing/models")
 async def get_available_models(session: UserSession = Depends(get_user_session_dependency())):
     """Get available model configurations"""
@@ -759,7 +673,7 @@ async def get_available_embedders(session: UserSession = Depends(get_user_sessio
 async def get_workflow_info():
     """Get information about the workflow configuration"""
     socketio_enabled = hasattr(app.state, 'socketio_handler') and app.state.socketio_handler is not None
-
+    # TODO: retrieve from loaded app plugin. Add the parameter with plugin name
     return {
         "pipeline_info": {
             "description": "LangGraph workflow with modular Socket.IO streaming support",
@@ -820,11 +734,6 @@ async def get_workflow_info():
             ]
         } if socketio_enabled else {
             "note": "Socket.IO events not available - modular handler disabled"
-        },
-        "architecture": {
-            "socket_handler_module": "kdcube_ai_app.apps.chat.socketio_chat",
-            "gateway_integration": "Full protection on all endpoints",
-            "modular_design": "Socket.IO logic separated for maintainability"
         }
     }
 
@@ -847,23 +756,6 @@ async def health_check():
         "modular_architecture": True
     }
 
-
-# ================================
-# DEBUG ENDPOINTS (for development)
-# ================================
-
-@app.get("/debug/users")
-async def debug_users():
-    """Debug endpoint to see test users (development only)"""
-    from kdcube_ai_app.apps.chat.api.resolvers import get_auth_manager
-    auth_manager = get_auth_manager()
-
-    if hasattr(auth_manager, 'get_all_users'):
-        return auth_manager.get_all_users()
-    else:
-        return {"message": "Auth manager does not support user listing"}
-
-
 @app.get("/debug/session")
 async def debug_session(session: UserSession = Depends(get_user_session_dependency())):
     """Debug endpoint to see current session"""
@@ -871,24 +763,6 @@ async def debug_session(session: UserSession = Depends(get_user_session_dependen
         "session": session.__dict__,
         "user_type": session.user_type.value
     }
-
-
-@app.get("/debug/socketio")
-async def debug_socketio():
-    """Debug endpoint for Socket.IO status"""
-    if hasattr(app.state, 'socketio_handler') and app.state.socketio_handler:
-        return {
-            "status": "enabled",
-            "handler_type": type(app.state.socketio_handler).__name__,
-            "module": "kdcube_ai_app.apps.chat.socketio_chat",
-            "sio_available": app.state.socketio_handler.sio is not None
-        }
-    else:
-        return {
-            "status": "disabled",
-            "reason": "Socket.IO handler not initialized or failed to load"
-        }
-
 
 # ================================
 # ERROR HANDLERS

@@ -550,319 +550,177 @@ class KnowledgeBaseSearch:
         else:
             return self.advanced_hybrid_search(params)
 
-    def hybrid_pipeline_search_old(self, params: HybridSearchParams) -> List[Dict[str, Any]]:
+def hybrid_pipeline_search(self, params: HybridSearchParams) -> List[Dict[str, Any]]:
+    """
+    Two-stage retrieval with correct boolean logic:
+      - Facets (providers, resource_ids, include_expired, entity_filters group) always AND
+      - Recall signals (query + tags) combine via match_all (AND vs OR)
+      - ANN fallback is constrained by facets (not by recall)
+    Steps
+      1) BM25 high-recall filtering using prefix-aware tsquery
+      2) ANN k-NN fallback for recall
+      3) Semantic scoring on combined candidate IDs
+      4) Optional cross-encoder rerank for final ranking
+
+    This version uses prefix queries (to_tsquery with :*) to catch word variants like "mitigator".
+    """
+    import unicodedata, re, json
+
+    # -------- helpers --------
+    def normalize_query(q: str) -> str:
+        # decompose accents/diacritics, strip non-alphanumeric, lowercase
+        nfkd = unicodedata.normalize('NFKD', q or "")
+        cleaned = re.sub(r'[^0-9A-Za-z\s]', ' ', nfkd)
+        return cleaned.lower().strip()
+
+    def build_entity_group(entity_filters, use_and: bool, param_sink: list) -> str:
         """
-        Two-stage hybrid search that returns the same output format as advanced_hybrid_search:
-          segment_id, resource_id, version, content, title, lineage,
-          entities, extensions, tags, created_at,
-          text_score, semantic_score, relevance_score, has_embedding
-
-        Stages:
-          1) BM25 (full-text) → top bm25_k segment IDs
-          2) ANN + hybrid scoring → final top_n with full scores
+        Build an (entities @> %s [AND/OR ...]) group.
+        The group itself is a facet and will be ANDed with other facets.
         """
-        # 1) Build WHERE clauses & params for BM25 filtering
-        where_clauses: List[str] = []
-        where_params: List[Any]  = []
+        if not entity_filters:
+            return ""
+        parts = []
+        for ent in entity_filters:
+            parts.append("entities @> %s")
+            # [{"key":"...", "value":"..."}]
+            param_sink.append(json.dumps([{"key": ent.key, "value": ent.value}]))
+        joiner = " AND " if use_and else " OR "
+        return "(" + joiner.join(parts) + ")"
 
-        if params.query:
-            where_clauses.append("search_vector @@ plainto_tsquery('english', %s)")
-            where_params.append(params.query)
+    # -------- Stage 0: prepare query tokens --------
+    # Normalize and tokenize user query
+    raw_query = params.query or ""
+    q_norm = normalize_query(raw_query)
+    # Build prefix tsquery: use stems >3 chars with wildcard
+    terms = [t for t in q_norm.split() if len(t) > 3]
+    # Prefix tsquery to catch stems (leverages idx_<SCHEMA>_rs_search_vector)
+    prefix_tsquery = ' & '.join(f"{t}:*" for t in terms) if terms else ""
 
-        if params.resource_ids:
-            ph = ",".join(["%s"] * len(params.resource_ids))
-            where_clauses.append(f"resource_id IN ({ph})")
-            where_params.extend(params.resource_ids)
+    # -------- FACETS (ALWAYS AND) --------
+    facet_clauses, facet_params = [], []
 
-        # Provider filtering
-        if hasattr(params, 'providers') and params.providers:
-            ph = ",".join(["%s"] * len(params.providers))
-            where_clauses.append(f"provider IN ({ph})")
-            where_params.extend(params.providers)
-        elif hasattr(params, 'provider') and params.provider:
-            where_clauses.append("provider = %s")
-            where_params.append(params.provider)
+    # --------------------------
+    # Stage 1: BM25 filtering with prefix-aware to_tsquery
+    # --------------------------
+    # resource_ids facet (idx_<SCHEMA>_rs_resource / idx_<SCHEMA>_rs_provider_resource)
+    if params.resource_ids:
+        ph = ",".join(["%s"] * len(params.resource_ids))
+        facet_clauses.append(f"resource_id IN ({ph})")
+        facet_params.extend(params.resource_ids)
 
-        # Expiration filtering
-        if not getattr(params, 'include_expired', False):
-            where_clauses.append(f"""
-                EXISTS (
-                    SELECT 1 FROM {self.schema}.datasource ds 
-                    WHERE ds.id = resource_id AND ds.version = version
-                    AND (ds.expiration IS NULL OR ds.expiration > now())
-                )
-            """)
+    # providers facet (idx_<SCHEMA>_rs_provider / _provider_created)
+    if getattr(params, "providers", None):
+        ph = ",".join(["%s"] * len(params.providers))
+        facet_clauses.append(f"provider IN ({ph})")
+        facet_params.extend(params.providers)
 
-        if params.tags:
-            where_clauses.append("tags && %s")
-            where_params.append(params.tags)
-
-        if params.entity_filters:
-            ents = []
-            for ent in params.entity_filters:
-                ents.append("entities @> %s")
-                where_params.append(json.dumps([{"key": ent.key, "value": ent.value}]))
-            # combine multiple entity filters with OR
-            where_clauses.append("(" + " OR ".join(ents) + ")")
-
-        if where_clauses:
-            conj = " AND " if params.match_all else " OR "
-            where_clause = conj.join(where_clauses)
-        else:
-            where_clause = "TRUE"
-
-        # 2) BM25 pass: get top bm25_k segment IDs by full-text rank
-        #
-        bm25_k = getattr(params, "bm25_k", 100)
-        bm25_sql = f"""
-        SELECT
-          id AS segment_id
-        FROM {self.schema}.retrieval_segment
-        WHERE {where_clause}
-        ORDER BY
-          ts_rank_cd(
-            search_vector,
-            plainto_tsquery('english', %s),
-            32
-          ) DESC
-        LIMIT %s
-        """
-        # Append query for ranking and the limit
-        bm25_params = where_params.copy()
-        bm25_params.append(params.query or "")
-        bm25_params.append(bm25_k)
-
-        """
-        1.	Postgres inverted-index (BM25 & filters):
-        Keep search_vector, GIN/GiST indexes, any trigram indexes, plus whatever JSONB/tag indexes we need in Postgres.
-        2.	Faiss vector-index (ANN over embeddings):
-        We also need to export or read the raw embeddings from wherever we store them (for example, from column in 
-        Postgres), and feed them into Faiss—building an IVF/HNSW (or flat) index there.
-        """
-
-        bm25_rows = self.dbmgr.execute_sql(
-            bm25_sql,
-            data=tuple(bm25_params),
-            as_dict=True
-        )
-        bm25_ids = [r["segment_id"] for r in bm25_rows]
-        if not bm25_ids:
-            return []
-
-        # --- Prepare weights & embedding ---
-        tw, sw = params.text_weight or 0.0, params.semantic_weight or 0.0
-        total = tw + sw
-        norm_tw = tw/total if total>0 else 0.5
-        norm_sw = sw/total if total>0 else 0.5
-
-        if params.embedding is None:
-            return []
-        embedding_str = to_pgvector_str(params.embedding)
-
-        # 5) ANN + hybrid scoring pass: recompute text_score, semantic_score, relevance_score
-        # If need higher throughput or index  > 10 M docs, consider offloading ANN to a dedicated Faiss service (HNSW or IVF-Quantization)
-        """
-        4. What a Faiss-backed hybrid could add
-        If you do adopt Faiss, you can still implement your two‐stage logic:
-            1.	Phrase filter in Postgres → get candidate IDs
-            2.	Pull embeddings → feed into Faiss (HNSW or IVF-PQ) for much faster ANN on millions of docs
-            3.	Rescore → as you already do, with lexical+semantic hybrid, then cross‐encoder
-        
-        This lets you keep your weighting logic but gains Faiss’s speed and large‐scale memory efficiency.
-        """
-        ann_sql = f"""
-        WITH scored AS (
-          SELECT
-            id             AS segment_id,
-            resource_id,
-            version,
-            provider,
-            content,
-            title,
-            lineage,
-            entities,
-            extensions,
-            tags,
-            created_at,
-            ts_rank_cd(
-              search_vector,
-              websearch_to_tsquery('english', %s),
-              (1|32)
-            ) AS text_score,
-            (1.0 - (embedding <=> %s)) AS semantic_score,
-            (
-              ts_rank_cd(
-                search_vector,
-                websearch_to_tsquery('english', %s),
-                (1|32)
-              ) * %s
-              +
-              (1.0 - (embedding <=> %s)) * %s
-            ) AS relevance_score,
-            CASE WHEN embedding IS NOT NULL THEN 1.0 ELSE 0.0 END AS has_embedding
-          FROM {self.schema}.retrieval_segment
-          WHERE id = ANY(%s)
-        )
-        SELECT *
-        FROM scored
-        WHERE relevance_score >= %s
-        ORDER BY
-          relevance_score DESC,
-          has_embedding   DESC,
-          created_at      DESC
-        LIMIT %s
-        """
-        ann_params = (
-            # for text_score alias
-            params.query or "",
-            # for semantic_score alias
-            embedding_str,
-            # for text_score inside relevance
-            params.query or "",
-            # normalized text weight
-            norm_tw,
-            # for semantic_score inside relevance
-            embedding_str,
-            # normalized semantic weight
-            norm_sw,
-            # filter IDs array
-            bm25_ids,
-            # min_similarity threshold
-            params.min_similarity or 0.0,
-            # final limit
-            params.top_n
-        )
-
-        final_rows = self.dbmgr.execute_sql(
-            ann_sql,
-            data=ann_params,
-            as_dict=True
-        )
-        # Convert to floats
-        for r in final_rows:
-            for fld in ("text_score","semantic_score","relevance_score","has_embedding"):
-                r[fld] = float(r.get(fld) or 0.0)
-
-        if not final_rows:
-            return []
-        # --- Stage 3: Cross-encoder rerank ---
-        # Build (query, content) pairs
-        from kdcube_ai_app.infra.rerank.rerank import cross_encoder_rerank
-        final_rows = cross_encoder_rerank(params.query, final_rows, "content")
-        # Apply rerank_threshold if provided
-        if hasattr(params, 'rerank_threshold') and params.rerank_threshold is not None:
-            final_rows = [
-                r for r in final_rows
-                if r["rerank_score"] >= params.rerank_threshold
-            ]
-
-        # Apply rerank_top_k if provided (else leave at whatever survived)
-        if hasattr(params, 'rerank_top_k') and params.rerank_top_k is not None:
-            final_rows = final_rows[: params.rerank_top_k]
-
-        return final_rows
-
-    def hybrid_pipeline_search(self, params: HybridSearchParams) -> List[Dict[str, Any]]:
-        """
-        Two-stage retrieval:
-          1) BM25 high-recall filtering using prefix-aware tsquery
-          2) ANN k-NN fallback for recall
-          3) Semantic scoring on combined candidate IDs
-          4) Optional cross-encoder rerank for final ranking
-
-        This version uses prefix queries (to_tsquery with :*) to catch word variants like "mitigator".
-        """
-        import unicodedata, re, json
-
-        def normalize_query(q: str) -> str:
-            # decompose accents/diacritics, strip non-alphanumeric, lowercase
-            nfkd = unicodedata.normalize('NFKD', q)
-            cleaned = re.sub(r'[^0-9A-Za-z\s]', ' ', nfkd)
-            return cleaned.lower().strip()
-
-        # Normalize and tokenize user query
-        raw_query = params.query or ''
-        query = normalize_query(raw_query)
-        # Build prefix tsquery: use stems >3 chars with wildcard
-        terms = [t for t in query.split() if len(t) > 3]
-        prefix_tsquery = ' & '.join(f"{t}:*" for t in terms) if terms else query
-
-        # --------------------------
-        # Stage 1: BM25 filtering with prefix-aware to_tsquery
-        # --------------------------
-        where_clauses, where_params = [], []
-        if prefix_tsquery:
-            where_clauses.append("search_vector @@ to_tsquery('english', %s)")
-            where_params.append(prefix_tsquery)
-        if params.resource_ids:
-            ph = ",".join(["%s"] * len(params.resource_ids))
-            where_clauses.append(f"resource_id IN ({ph})")
-            where_params.extend(params.resource_ids)
-        if params.providers:
-            ph = ",".join(["%s"] * len(params.providers))
-            where_clauses.append(f"provider IN ({ph})")
-            where_params.extend(params.providers)
-        if not params.include_expired:
-            where_clauses.append(
-                f"EXISTS (SELECT 1 FROM {self.schema}.datasource ds "
-                "WHERE ds.id = resource_id AND ds.version = version "
-                "AND (ds.expiration IS NULL OR ds.expiration > now()))"
+    # include_expired facet via EXISTS on <SCHEMA>.datasource (idx_<SCHEMA>_ds_id_version, _ds_expiration)
+    if not getattr(params, "include_expired", True):
+        facet_clauses.append(f"""
+            EXISTS (
+                SELECT 1
+                FROM {self.schema}.datasource ds
+                WHERE ds.id = resource_id
+                  AND ds.version = version
+                  AND (ds.expiration IS NULL OR ds.expiration > now())
             )
-        if params.tags:
-            where_clauses.append("tags && %s")
-            where_params.append(params.tags)
-        if params.entity_filters:
-            ent_conds = []
-            for ent in params.entity_filters:
-                ent_conds.append("entities @> %s")
-                where_params.append(json.dumps([{"key": ent.key, "value": ent.value}]))
-            where_clauses.append("(" + " OR ".join(ent_conds) + ")")
+        """)
 
-        where_clause = " OR ".join(where_clauses) if where_clauses else "TRUE"
-        bm25_k = getattr(params, "bm25_k", 100)
-        bm25_sql = f"""
+    # entity_filters group (GIN on entities jsonb_ops); internal AND/OR, group ANDed with other facets
+    entities_match_all = getattr(params, "entities_match_all", params.match_all)
+    ent_group = build_entity_group(getattr(params, "entity_filters", None),
+                                   bool(entities_match_all), facet_params)
+    if ent_group:
+        facet_clauses.append(ent_group)
+
+    facet_sql = " AND ".join(facet_clauses) if facet_clauses else ""
+
+    # -------- RECALL (query + tags) by match_all --------
+    recall_clauses, recall_params = [], []
+
+    # query → search_vector @@ to_tsquery('english', ...)
+    if prefix_tsquery:
+        recall_clauses.append("search_vector @@ to_tsquery('english', %s)")
+        recall_params.append(prefix_tsquery)
+
+    # tags (GIN on text[]):
+    # match_all=True  -> tags @> ARRAY[...]
+    # match_all=False -> tags && ARRAY[...]
+    if getattr(params, "tags", None):
+        if params.match_all:
+            recall_clauses.append("tags @> %s")
+        else:
+            recall_clauses.append("tags && %s")
+        recall_params.append(params.tags)
+
+    if recall_clauses:
+        recall_joiner = " AND " if params.match_all else " OR "
+        recall_sql = "(" + recall_joiner.join(recall_clauses) + ")"
+    else:
+        recall_sql = ""
+
+    # -------- Stage 1: BM25 / prefix tsquery filter --------
+    where_parts = []
+    if facet_sql:
+        where_parts.append(f"({facet_sql})")
+    if recall_sql:
+        where_parts.append(recall_sql)
+
+    bm25_where = " AND ".join(where_parts) if where_parts else "TRUE"
+
+    # ORDER BY: use ts_rank_cd if we have a tsquery; else fallback to recency
+    if prefix_tsquery:
+        bm25_order = "ts_rank_cd(search_vector, to_tsquery('english', %s), 32) DESC"
+        order_params = [prefix_tsquery]
+    else:
+        bm25_order = "created_at DESC"
+        order_params = []
+
+    bm25_k = getattr(params, "bm25_k", 100)
+    bm25_sql = f"""
         SELECT id AS segment_id
         FROM {self.schema}.retrieval_segment
-        WHERE {where_clause}
-        ORDER BY ts_rank_cd(
-            search_vector,
-            to_tsquery('english', %s),
-            32
-        ) DESC
+        WHERE {bm25_where}
+        ORDER BY {bm25_order}
         LIMIT %s
-        """
-        bm25_params = where_params + [prefix_tsquery, bm25_k]
-        bm25_rows = self.dbmgr.execute_sql(
-            bm25_sql, data=tuple(bm25_params), as_dict=True
-        )
-        bm25_ids = [r['segment_id'] for r in bm25_rows]
+    """
+    bm25_params = tuple(facet_params + recall_params + order_params + [bm25_k])
+    bm25_rows = self.dbmgr.execute_sql(bm25_sql, data=bm25_params, as_dict=True)
+    bm25_ids = [r['segment_id'] for r in bm25_rows]
 
-        # --------------------------
-        # Stage 2: ANN k-NN fallback
-        # --------------------------
-        if params.embedding is None:
-            return []
-        embedding_str = to_pgvector_str(params.embedding)
-        fallback_k = getattr(params, 'fallback_k', params.top_n)
-        ann_sql = f"""
+    # -------- Stage 2: ANN fallback (constrained by FACETS) --------
+    if params.embedding is None:
+        return []
+
+    embedding_str = to_pgvector_str(params.embedding)
+    fallback_k = getattr(params, 'fallback_k', params.top_n)
+
+    ann_where_parts = ["embedding IS NOT NULL"]
+    ann_params = []
+
+    if facet_sql:
+        ann_where_parts.append(f"({facet_sql})")
+        ann_params.extend(facet_params)
+
+    ann_where = " AND ".join(ann_where_parts)
+    ann_sql = f"""
         SELECT id AS segment_id
         FROM {self.schema}.retrieval_segment
-        WHERE embedding IS NOT NULL
+        WHERE {ann_where}
         ORDER BY embedding <=> %s
         LIMIT %s
-        """
-        ann_rows = self.dbmgr.execute_sql(
-            ann_sql, data=(embedding_str, fallback_k), as_dict=True
-        )
-        ann_ids = [r['segment_id'] for r in ann_rows]
+    """
+    ann_params = tuple(ann_params + [embedding_str, fallback_k])
+    ann_rows = self.dbmgr.execute_sql(ann_sql, data=ann_params, as_dict=True)
+    ann_ids = [r['segment_id'] for r in ann_rows]
 
-        # --------------------------
-        # Stage 3: Semantic scoring on combined candidates
-        # --------------------------
-        candidate_ids = list(dict.fromkeys(bm25_ids + ann_ids))
-        if not candidate_ids:
-            return []
-        semantic_sql = f"""
+    # -------- Stage 3: semantic scoring on union of candidates --------
+    candidate_ids = list(dict.fromkeys(bm25_ids + ann_ids))
+    if not candidate_ids:
+        return []
+
+    semantic_sql = f"""
         SELECT
           id            AS segment_id,
           resource_id,
@@ -879,24 +737,26 @@ class KnowledgeBaseSearch:
           CASE WHEN embedding IS NOT NULL THEN 1.0 ELSE 0.0 END AS has_embedding
         FROM {self.schema}.retrieval_segment
         WHERE id = ANY(%s)
-        """
-        sem_rows = self.dbmgr.execute_sql(
-            semantic_sql,
-            data=(embedding_str, candidate_ids),
-            as_dict=True
-        )
-        thresh = params.min_similarity or 0.0
-        filtered = [r for r in sem_rows if float(r.get('semantic_score', 0.0)) >= thresh]
-        filtered.sort(key=lambda r: (r['semantic_score'], r['has_embedding'], r['created_at']), reverse=True)
-        top_sem = filtered[: params.top_n]
-        if not top_sem:
-            return []
+    """
+    sem_rows = self.dbmgr.execute_sql(
+        semantic_sql,
+        data=(embedding_str, candidate_ids),
+        as_dict=True
+    )
 
-        # --------------------------
-        # Stage 4: Optional cross-encoder rerank
-        # --------------------------
-        from kdcube_ai_app.infra.rerank.rerank import cross_encoder_rerank
-        reranked = cross_encoder_rerank(query or raw_query, top_sem, 'content')
-        if params.rerank_threshold is not None and len(reranked) > (params.rerank_top_k or params.top_n) * 2:
-            reranked = [r for r in reranked if r.get('rerank_score', 0.0) >= params.rerank_threshold]
-        return reranked[: (params.rerank_top_k or params.top_n)]
+    thresh = params.min_similarity or 0.0
+    filtered = [r for r in sem_rows if float(r.get('semantic_score', 0.0)) >= thresh]
+    filtered.sort(key=lambda r: (r['semantic_score'], r['has_embedding'], r['created_at']), reverse=True)
+    top_sem = filtered[: params.top_n]
+    if not top_sem:
+        return []
+
+    # -------- Stage 4: optional cross-encoder rerank --------
+    from kdcube_ai_app.infra.rerank.rerank import cross_encoder_rerank
+    reranked = cross_encoder_rerank(raw_query or q_norm, top_sem, 'content')
+
+    if params.rerank_threshold is not None and len(reranked) > (params.rerank_top_k or params.top_n) * 2:
+        reranked = [r for r in reranked if r.get("rerank_score", 0.0) >= params.rerank_threshold]
+
+    return reranked[: (params.rerank_top_k or params.top_n)]
+

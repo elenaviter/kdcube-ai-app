@@ -340,9 +340,10 @@ class SmartHierarchyReconstructor:
 class SimplifiedEnhancedParser(MarkdownParser):
     """Simplified parser since levels are now preserved in MarkdownParser."""
 
-    def __init__(self, project: str, min_tokens: int):
+    def __init__(self, project: str, tenant: str, min_tokens: int):
         super().__init__(min_tokens=min_tokens)
         self.project = project or ""
+        self.tenant = tenant
 
     def create_base_segments(self, md_content: str, data_source, resource_id: str, version: str) -> List['BaseSegment']:
         """Create base segments - now much simpler since levels are preserved."""
@@ -370,17 +371,17 @@ class SimplifiedEnhancedParser(MarkdownParser):
 
             # Create base segment
             guid = str(uuid.uuid4())
-            rn = f"ef:{self.project}:knowledge_base:segmentation:base:{resource_id}:{version}:segment:{guid}"
+            rn = f"ef:{self.tenant}:{self.project}:knowledge_base:segmentation:base:{resource_id}:{version}:segment:{guid}"
 
             extracted_data_rns = [
-                f"ef:{self.project}:knowledge_base:extraction:{resource_id}:{version}:extraction_0.md"
+                f"ef:{self.tenant}:{self.project}:knowledge_base:extraction:{resource_id}:{version}:extraction_0.md"
             ]
 
             # Look for referenced assets
             import re
             image_refs = re.findall(r'!\[.*?\]\((.*?)\)', text)
             for img_ref in image_refs:
-                img_rn = f"ef:{self.project}:knowledge_base:extraction:{resource_id}:{version}:{img_ref}"
+                img_rn = f"ef:{self.tenant}:{self.project}:knowledge_base:extraction:{resource_id}:{version}:{img_ref}"
                 extracted_data_rns.append(img_rn)
 
             base_segment = BaseSegment(
@@ -660,20 +661,22 @@ class SegmentationModule(ProcessingModule):
 
     def __init__(self,
                  storage: KnowledgeBaseStorage,
-                 project: str, pipeline,
+                 project: str,
+                 tenant: str,
+                 pipeline,
                  processing_mode: ProcessingMode = ProcessingMode.FULL_INDEXING,
                  continuous_min_tokens: int = 40,
                  retrieval_min_tokens: int = 500,
                  retrieval_max_tokens: int = 1000,
                  retrieval_overlap: int = 100):
-        super().__init__(storage, project, pipeline)
+        super().__init__(storage, project, tenant, pipeline)
         self.processing_mode = processing_mode
         self.continuous_min_tokens = continuous_min_tokens
         self.retrieval_min_tokens = retrieval_min_tokens
         self.retrieval_max_tokens = retrieval_max_tokens
         self.retrieval_overlap = retrieval_overlap
 
-        self.parser = SimplifiedEnhancedParser(min_tokens=0, project=project)
+        self.parser = SimplifiedEnhancedParser(min_tokens=0, project=project, tenant=tenant,)
 
     @property
     def stage_name(self) -> str:
@@ -763,7 +766,7 @@ class SegmentationModule(ProcessingModule):
             "base_segments_count": len(all_base_segments),
             "compound_segments": compound_results,
             "timestamp": datetime.now().isoformat(),
-            "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
+            "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
         }
 
         self.save_results(resource_id, version, results)
@@ -825,7 +828,7 @@ class SegmentationModule(ProcessingModule):
                 continue
 
             guid = str(uuid.uuid4())
-            rn = f"ef:{self.project}:knowledge_base:segmentation:{segment_type.value}:{resource_id}:{version}:segment:{guid}"
+            rn = f"ef:{self.tenant}:{self.project}:knowledge_base:segmentation:{segment_type.value}:{resource_id}:{version}:segment:{guid}"
 
             # Use real heading/subheading from first segment
             heading = group[0].heading

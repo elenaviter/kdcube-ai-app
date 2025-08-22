@@ -52,9 +52,11 @@ class SegmentMetadataProcessor:
     def __init__(self,
                  storage: KnowledgeBaseStorage,
                  project: str,
+                 tenant: str,
                  pipeline):
         self.storage = storage
         self.project = project
+        self.tenant = tenant
         self.pipeline = pipeline
         self.logger = logging.getLogger(self.__class__.__name__)
 
@@ -209,7 +211,7 @@ Valid output:
             "processed_at": datetime.now().isoformat(),
 
             # RN
-            "rn": f"ef:{self.project}:knowledge_base:metadata:{segment_type.value}:{resource_id}:{version}:segment:{segment.get('segment_id', position)}"
+            "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:metadata:{segment_type.value}:{resource_id}:{version}:segment:{segment.get('segment_id', position)}"
         }
 
     def _save_segment_metadata(self, metadata: Dict[str, Any], resource_id: str, version: str, segment_type: SegmentType):
@@ -639,6 +641,7 @@ class MetadataModule(ProcessingModule):
     def __init__(self,
                  storage: KnowledgeBaseStorage,
                  project: str,
+                 tenant: str,
                  pipeline,
                  processing_mode: ProcessingMode = ProcessingMode.FULL_INDEXING,
                  use_batch: bool = False,
@@ -653,14 +656,14 @@ class MetadataModule(ProcessingModule):
             batch_polling_interval: Polling interval for batch processing
             batch_timeout_seconds: Timeout for batch processing
         """
-        super().__init__(storage, project, pipeline)
+        super().__init__(storage, project, tenant, pipeline)
         self.processing_mode = processing_mode
         self.use_batch = use_batch
         self.batch_polling_interval = batch_polling_interval
         self.batch_timeout_seconds = batch_timeout_seconds
 
         # Create the processor instance
-        self.processor = SegmentMetadataProcessor(storage, project, pipeline)
+        self.processor = SegmentMetadataProcessor(storage, project, tenant, pipeline)
 
     @property
     def stage_name(self) -> str:
@@ -744,7 +747,7 @@ class MetadataModule(ProcessingModule):
             "processing_method": "batch" if use_batch else "stream",
             "generation_timestamp": datetime.now().isoformat(),
             "llm_model_used": model_record.systemName,
-            "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
+            "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
         }
 
         # Save overall results

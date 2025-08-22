@@ -52,15 +52,13 @@ class SummarizationModule(ProcessingModule):
             "document_summary": self._generate_document_summary(segments, metadata_results),
             "section_summaries": self._generate_section_summaries(segments),
             "segment_summaries": self._generate_segment_summaries(segments),
-            "key_points": self._extract_key_points(segments),
-            "abstract": self._generate_abstract(segments, metadata_results),
             "generation_timestamp": datetime.now().isoformat(),
             "summarization_metadata": {
                 "total_segments": len(segments),
                 "total_original_length": sum(len(s.get("text", "")) for s in segments),
                 "compression_ratio": 0.0  # Will be calculated after summarization
             },
-            "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
+            "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
         }
 
         # Calculate compression ratio
@@ -136,10 +134,9 @@ class SummarizationModule(ProcessingModule):
                 "heading": heading,
                 "segment_count": len(section_segments),
                 "summary": self._summarize_text(section_text, target_length=200),
-                "key_points": self._extract_section_key_points(section_segments),
                 "subsections": list(set(s.get("subheading", "") for s in section_segments if s.get("subheading"))),
                 "word_count": len(section_text.split()),
-                "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:section:{heading}"
+                "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:section:{heading}"
             }
 
             section_summaries.append(summary)
@@ -167,98 +164,12 @@ class SummarizationModule(ProcessingModule):
                 "original_length": len(text),
                 "summary_length": len(summary),
                 "compression_ratio": len(summary) / len(text) if text else 0,
-                "key_terms": self._extract_segment_key_terms(text),
-                "summary_type": self._classify_segment_type(segment),
-                "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:segment:{segment.get('segment_id')}"
+                "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:segment:{segment.get('segment_id')}"
             }
 
             segment_summaries.append(segment_summary)
 
         return segment_summaries
-
-    def _extract_key_points(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Extract key points from the entire document."""
-
-        key_points = []
-
-        for segment in segments:
-            text = segment.get("text", "")
-
-            # Look for list items
-            list_items = self._extract_list_items(text)
-            for item in list_items:
-                key_points.append({
-                    "point": item,
-                    "source_segment": segment.get("segment_id"),
-                    "source_heading": segment.get("heading", ""),
-                    "type": "list_item"
-                })
-
-            # Look for definitions
-            definitions = self._extract_definitions(text)
-            for definition in definitions:
-                key_points.append({
-                    "point": definition,
-                    "source_segment": segment.get("segment_id"),
-                    "source_heading": segment.get("heading", ""),
-                    "type": "definition"
-                })
-
-            # Look for key statements (sentences with importance indicators)
-            key_statements = self._extract_key_statements(text)
-            for statement in key_statements:
-                key_points.append({
-                    "point": statement,
-                    "source_segment": segment.get("segment_id"),
-                    "source_heading": segment.get("heading", ""),
-                    "type": "key_statement"
-                })
-
-        # Deduplicate and rank key points
-        key_points = self._deduplicate_key_points(key_points)
-        key_points = sorted(key_points, key=lambda x: self._score_key_point(x), reverse=True)
-
-        return key_points[:20]  # Return top 20 key points
-
-    def _generate_abstract(self, segments: List[Dict[str, Any]], metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate an academic-style abstract."""
-
-        # Extract purpose/objective (usually in introduction)
-        purpose = self._extract_purpose(segments)
-
-        # Extract methodology (if present)
-        methodology = self._extract_methodology(segments)
-
-        # Extract main findings/results
-        findings = self._extract_findings(segments)
-
-        # Extract conclusions
-        conclusions = self._extract_conclusions(segments)
-
-        # Combine into abstract
-        abstract_parts = []
-        if purpose:
-            abstract_parts.append(purpose)
-        if methodology:
-            abstract_parts.append(methodology)
-        if findings:
-            abstract_parts.append(findings)
-        if conclusions:
-            abstract_parts.append(conclusions)
-
-        abstract_text = " ".join(abstract_parts)
-
-        return {
-            "abstract": abstract_text,
-            "components": {
-                "purpose": purpose,
-                "methodology": methodology,
-                "findings": findings,
-                "conclusions": conclusions
-            },
-            "word_count": len(abstract_text.split()),
-            "structure_completeness": len([x for x in [purpose, methodology, findings, conclusions] if x]) / 4
-        }
 
     # Helper methods for text processing
 

@@ -13,7 +13,7 @@ import re
 # Add the KB import
 from kdcube_ai_app.apps.knowledge_base.api.resolvers import (get_project,
                                                              get_kb_write_with_acct_dep,
-                                                             get_kb_read_with_acct_dep)
+                                                             get_kb_read_with_acct_dep, get_tenant)
 from kdcube_ai_app.auth.sessions import UserSession
 from kdcube_ai_app.tools.content_type import get_mime_type_enhanced, is_text_mime_type
 from kdcube_ai_app.tools.datasource import URLDataElement, FileDataElement
@@ -103,6 +103,7 @@ async def upload_file_to_kb(
         session: UserSession = Depends(get_kb_write_with_acct_dep())
 ):
     """Upload a file and immediately add it to the knowledge base - requires KB write access."""
+    # TODO: should be tenant-aware
     kb = get_kb(project=project)
     try:
         # Validate file
@@ -162,6 +163,8 @@ async def preview_kb_resource(
         session=Depends(get_kb_read_with_acct_dep())):
     """Download/preview a KB resource - same pattern as your original file endpoint."""
     try:
+        tenant = get_tenant()
+        # TODO: Should be tenant-aware
         kb = get_kb(project=project)
 
         # Decode resource_id if it was URL encoded
@@ -246,18 +249,18 @@ async def get_content_by_rn(request: RNContentRequest,
                             session=Depends(get_kb_read_with_acct_dep())):
     """Get content by Resource Name (RN) - requires KB read access."""
     try:
-        kb = get_kb(project=project)
         rn = request.rn
 
         # Parse RN: ef:project:knowledge_base:stage:resource_id:version:...
         parts = rn.split(":")
-        if len(parts) < 6 or parts[0] != "ef" or parts[2] != "knowledge_base":
+        if len(parts) < 7 or parts[0] != "ef" or parts[3] != "knowledge_base":
             raise HTTPException(status_code=400, detail="Invalid RN format")
 
-        project_name = parts[1]
-        stage = parts[3]
-        resource_id = parts[4]
-        version = parts[5]
+        tenant_name = parts[1]
+        project_name = parts[2]
+        stage = parts[4]
+        resource_id = parts[5]
+        version = parts[6]
 
         # Determine content type from stage and request
         if request.content_type == "auto":
@@ -265,6 +268,8 @@ async def get_content_by_rn(request: RNContentRequest,
         else:
             content_type = request.content_type
 
+        # TODO: should be tenant-aware
+        kb = get_kb(project=project)
         # Get content based on stage
         if stage == "raw":
             # Get resource metadata first to check MIME type
@@ -281,8 +286,8 @@ async def get_content_by_rn(request: RNContentRequest,
                 metadata_dict = {
                     **resource_metadata.dict(),
                     "is_binary": True,
-                    "preview_url": f"/api/kb/resource/{resource_id}/preview?version={version}",
-                    "download_url": f"/api/kb/resource/{resource_id}/download?version={version}",
+                    "preview_url": f"/api/kb/resource/{tenant_name}/{project}/{resource_id}/preview?version={version}",
+                    "download_url": f"/api/kb/resource/{tenant_name}/{project}/{resource_id}/download?version={version}",
                     "message": f"Binary content ({mime_type}) - use preview_url or download_url to access"
                 }
 
@@ -299,7 +304,7 @@ async def get_content_by_rn(request: RNContentRequest,
 
         elif stage == "extraction":
             # Extract filename from RN if present
-            filename = parts[6] if len(parts) > 6 else None
+            filename = parts[7] if len(parts) > 7 else None
             extraction_module = kb.get_extraction_module()
 
             if filename:
@@ -333,7 +338,7 @@ async def get_content_by_rn(request: RNContentRequest,
 
         elif stage == "segmentation":
             # Handle segment-specific content
-            segment_type = parts[6] if len(parts) > 6 else "continuous"
+            segment_type = parts[7] if len(parts) > 7 else "continuous"
             segmentation_module = kb.get_segmentation_module()
 
             from kdcube_ai_app.apps.knowledge_base.modules.contracts.segmentation import SegmentType
@@ -369,6 +374,7 @@ async def list_kb_resources(project: str = Depends(get_project),
                             session=Depends(get_kb_read_with_acct_dep())):
     """List all resources in the knowledge base - requires KB read access."""
     try:
+        # TODO: should be tenant-aware
         kb = get_kb(project=project)
         resources = kb.list_resources()
 
@@ -400,9 +406,9 @@ async def list_kb_resources(project: str = Depends(get_project),
 
             # Add RNs for easy access
             resource_dict["rns"] = {
-                "raw": f"ef:{kb.project}:knowledge_base:raw:{resource.id}:{resource.version}",
-                "extraction": f"ef:{kb.project}:knowledge_base:extraction:{resource.id}:{resource.version}",
-                "segmentation": f"ef:{kb.project}:knowledge_base:segmentation:{resource.id}:{resource.version}"
+                "raw": f"ef:{kb.tenant}:{kb.project}:knowledge_base:raw:{resource.id}:{resource.version}",
+                "extraction": f"ef:{kb.tenant}:{kb.project}:knowledge_base:extraction:{resource.id}:{resource.version}",
+                "segmentation": f"ef:{kb.tenant}:{kb.project}:knowledge_base:segmentation:{resource.id}:{resource.version}"
             }
 
             resource_list.append(resource_dict)
@@ -429,6 +435,7 @@ async def get_kb_resource_content(
         session=Depends(get_kb_read_with_acct_dep())):
     """Get content for a KB resource - requires KB read access."""
     try:
+        # TODO: should be tenant-aware
         kb = get_kb(project=project)
         if not version:
             resource = kb.get_resource(resource_id)
@@ -496,6 +503,7 @@ async def delete_kb_resource(resource_id: str,
                              session=Depends(get_kb_read_with_acct_dep())):
     """Delete a KB resource - requires KB write access."""
     try:
+        # TODO: should be tenant-aware
         kb = get_kb(project=project)
         # Check if resource exists
         resource = kb.get_resource(resource_id)
@@ -522,6 +530,7 @@ async def add_url_to_kb(request: KBAddURLRequest,
                         project: str = Depends(get_project),
                         session=Depends(get_kb_read_with_acct_dep())):
     """Add a URL to the knowledge base - requires KB write access."""
+    # TODO: should be tenant-aware
     kb = get_kb(project=project)
     try:
         # Create URLDataElement with enhanced metadata
@@ -561,6 +570,7 @@ async def get_segment_content(request: SegmentContentRequest,
                               session=Depends(get_kb_read_with_acct_dep())):
     """Get specific segment content with context and highlighting - requires KB read access."""
     try:
+        # TODO: should be tenant-aware
         kb = get_kb(project=project)
 
         # Parse RN to get resource info

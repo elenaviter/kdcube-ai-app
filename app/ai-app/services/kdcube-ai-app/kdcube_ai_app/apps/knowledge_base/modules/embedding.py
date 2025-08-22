@@ -43,6 +43,7 @@ class AsyncSegmentEmbeddingProcessor:
     def __init__(self,
                  storage: KnowledgeBaseStorage,
                  project: str,
+                 tenant: str,
                  pipeline,
                  self_hosted_serving_endpoint: str = None,
                  max_concurrent_requests: int = 5,
@@ -50,6 +51,7 @@ class AsyncSegmentEmbeddingProcessor:
                  max_workers: int = None):
         self.storage = storage
         self.project = project
+        self.tenant = tenant
         self.pipeline = pipeline
         self.self_hosted_serving_endpoint = self_hosted_serving_endpoint
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -387,7 +389,7 @@ class AsyncSegmentEmbeddingProcessor:
             "error_message": embedding_result.error_message,
             "processed_at": datetime.now().isoformat(),
             "usage": embedding_result.usage.__dict__ if embedding_result.usage else None,
-            "rn": f"ef:{self.project}:knowledge_base:embedding:{segment_type.value}:{resource_id}:{version}:segment:{segment.get('segment_id', position)}"
+            "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:embedding:{segment_type.value}:{resource_id}:{version}:segment:{segment.get('segment_id', position)}"
         }
 
     def _save_segment_embedding(self, metadata: Dict[str, Any], resource_id: str, version: str,
@@ -452,6 +454,7 @@ class EmbeddingModule(ProcessingModule):
     def __init__(self,
                  storage: KnowledgeBaseStorage,
                  project: str,
+                 tenant: str,
                  pipeline,
                  processing_mode: ProcessingMode = ProcessingMode.FULL_INDEXING,
                  embedding_size: int = 1536,
@@ -467,14 +470,14 @@ class EmbeddingModule(ProcessingModule):
             batch_size: Number of segments to process in each batch
             max_workers: Maximum thread pool workers for CPU-intensive operations
         """
-        super().__init__(storage, project, pipeline)
+        super().__init__(storage, project, tenant, pipeline)
         self.processing_mode = processing_mode
         self.embedding_size = embedding_size
         self.self_hosted_serving_endpoint = self_hosted_serving_endpoint
 
         # Create the improved processor instance
         self.processor = AsyncSegmentEmbeddingProcessor(
-            storage, project, pipeline, self_hosted_serving_endpoint,
+            storage, project, tenant, pipeline, self_hosted_serving_endpoint,
             max_concurrent_requests, batch_size, max_workers
         )
 
@@ -543,7 +546,7 @@ class EmbeddingModule(ProcessingModule):
             "embedding_model_used": model_record.systemName,
             "embedding_provider": model_record.provider.provider.value,
             "processing_method": "parallel_batch",
-            "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
+            "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}"
         }
 
         self.save_results(resource_id, version, overall_results)

@@ -21,9 +21,11 @@ class ProcessingModule(ABC):
     def __init__(self,
                  storage: KnowledgeBaseStorage,
                  project: str,
+                 tenant: str,
                  pipeline: 'ProcessingPipeline'):
         self.storage = storage
         self.project = project
+        self.tenant = tenant
         self.logger = logging.getLogger(f"KnowledgeBase.{self.__class__.__name__}")
         self.pipeline = pipeline
 
@@ -201,6 +203,7 @@ class ModuleFactory:
     @staticmethod
     def create_default_pipeline(storage: KnowledgeBaseStorage,
                                 project: str,
+                                tenant: str,
                                 processing_mode: str = "full_indexing",
                                 db_connector: Optional[KnowledgeBaseConnector] = None) -> ProcessingPipeline:
 
@@ -240,13 +243,13 @@ class ModuleFactory:
         }
 
         # Register modules in processing order
-        pipeline.register_module(ExtractionModule(storage, project, pipeline), 0)
-        pipeline.register_module(SegmentationModule(storage, project, pipeline, **config.get("segmentation", {})), 1)
-        pipeline.register_module(MetadataModule(storage, project, pipeline, **config.get("metadata", {})), 2)
+        pipeline.register_module(ExtractionModule(storage, project, tenant, pipeline), 0)
+        pipeline.register_module(SegmentationModule(storage, project, tenant, pipeline, **config.get("segmentation", {})), 1)
+        pipeline.register_module(MetadataModule(storage, project, tenant, pipeline, **config.get("metadata", {})), 2)
 
-        # pipeline.register_module(SummarizationModule(storage, project, pipeline), 3)
-        pipeline.register_module(EmbeddingModule(storage, project, pipeline, **config.get("embedding", {})), 3)
-        pipeline.register_module(SearchIndexingModule(storage, project, pipeline, **config.get("search_indexing", {})), 4)
-        # pipeline.register_module(TfIdfModule(storage, project, pipeline), 5)
+        # pipeline.register_module(SummarizationModule(storage, project, tenant, pipeline), 3)
+        pipeline.register_module(EmbeddingModule(storage, project, tenant, pipeline, **config.get("embedding", {})), 3)
+        pipeline.register_module(SearchIndexingModule(storage, project, tenant, pipeline, **config.get("search_indexing", {})), 4)
+        # pipeline.register_module(TfIdfModule(storage, project, tenant, pipeline), 5)
 
         return pipeline

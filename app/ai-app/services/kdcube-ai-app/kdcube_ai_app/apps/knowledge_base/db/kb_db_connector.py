@@ -235,7 +235,7 @@ class KnowledgeBaseConnector:
 
         # Get resource metadata for RNs
         resource_metadata = kb.get_resource(resource_id)
-        raw_rn = resource_metadata.rn if resource_metadata else f"ef:{self.project_name}:knowledge_base:raw:{resource_id}:{version}"
+        raw_rn = resource_metadata.rn if resource_metadata else f"ef:{self.tenant}:{self.project_name}:knowledge_base:raw:{resource_id}:{version}"
 
         # Get extraction RNs
         extraction_module = kb.get_extraction_module()
@@ -304,13 +304,13 @@ class KnowledgeBaseConnector:
 
                 "embedding": {
                     "rn": embedding_record["rn"]
-                    # f"ef:{self.project_name}:knowledge_base:embedding:retrieval:{resource_id}:{version}:segment:{segment_id}"
+                    # f"ef:{self.tenant}:{self.project_name}:knowledge_base:embedding:retrieval:{resource_id}:{version}:segment:{segment_id}"
                 }
             }
             if metadata_record:
                 lineage["metadata"] = {
                     "rn": metadata_record.get("rn")
-                    # f"ef:{self.project_name}:knowledge_base:metadata:retrieval:{resource_id}:{version}:segment:{segment_id}"
+                    # f"ef:{self.tenant}:{self.project_name}:knowledge_base:metadata:retrieval:{resource_id}:{version}:segment:{segment_id}"
                 }
 
             # Get embedding

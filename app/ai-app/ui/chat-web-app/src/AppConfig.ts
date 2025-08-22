@@ -62,7 +62,7 @@ export const getCustomEmbedingEndpoint = (): string => {
 export function getOAuthConfig() {
     const authority = import.meta.env.CHAT_WEB_APP_OIDC_AUTHORITY!; // EITHER hosted UI domain OR issuer+poolId
     const clientId  = import.meta.env.CHAT_WEB_APP_OIDC_CLIENT_ID!;
-    const base      = getDefaultRoutePrefix(); // e.g. "/chatbot/chat"
+    const base      = getDefaultRoutePrefix(); // e.g. "/chatbot/domain-general"
     const origin    = window.location.origin;
 
     // These must exactly match what you configured in Cognito App Client (Callback URL(s) / Sign out URL(s))

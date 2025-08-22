@@ -29,10 +29,17 @@ from kdcube_ai_app.infra.llm.llm_data_model import AIProvider, ModelRecord, AIPr
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROJECT = os.environ.get("DEFAULT_PROJECT_NAME", None)
+DEFAULT_TENANT_ID = os.environ.get("DEFAULT_PROJECT_NAME", None)
+TENANT_ID = os.environ.get("TENANT_ID", DEFAULT_TENANT_ID)
 
 def get_project(request: Request) -> str:
     """Look for a `project` path-param; if absent, return your default_project."""
     return request.path_params.get("project", DEFAULT_PROJECT)
+
+def get_tenant_dep(request: Request) -> str:
+    """Look for a `project` path-param; if absent, return your default_project."""
+    return request.path_params.get("tenant", TENANT_ID)
+
 
 # Environment configuration
 KDCUBE_STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH")
@@ -116,7 +123,6 @@ def get_orchestrator() -> IOrchestrator:
     return orchestrator
 
 # System configuration
-TENANT_ID = os.environ.get("TENANT_ID", "home")
 ENABLE_DATABASE = os.environ.get("ENABLE_DATABASE", "true").lower() == "true"
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "home-instance-1")
 KB_PORT = int(os.environ.get("KB_PORT", 8000))

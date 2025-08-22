@@ -56,7 +56,7 @@ class ExtractionModule(ProcessingModule):
             result_dict = {
                 "index": i,
                 "content_file": content_filename,
-                "rn": f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}:{content_filename}",
+                "rn": f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{version}:{content_filename}",
                 "metadata": {
                     k: v for k, v in result.metadata.items()
                     if k != "assets"  # Don't include raw asset content in metadata
@@ -122,7 +122,7 @@ class ExtractionModule(ProcessingModule):
                         stored_asset_info["storage_path"] = self.storage.get_stage_file_path(
                             self.stage_name, resource_id, version, asset["storage_filename"]
                         )
-                        stored_asset_info["rn"] = f"ef:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{asset_type}:{version}:{asset['storage_filename']}"
+                        stored_asset_info["rn"] = f"ef:{self.tenant}:{self.project}:knowledge_base:{self.stage_name}:{resource_id}:{asset_type}:{version}:{asset['storage_filename']}"
 
                         stored_assets[asset_type].append(stored_asset_info)
 
