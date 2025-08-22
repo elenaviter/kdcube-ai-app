@@ -106,6 +106,11 @@ allowed_origins = [
     "http://localhost:8050",
 ]
 
+app_domain = os.environ.get("APP_DOMAIN")
+if app_domain:
+    allowed_origins.append(f"http://{app_domain}")
+    allowed_origins.append(f"https://{app_domain}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,

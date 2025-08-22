@@ -197,6 +197,10 @@ async def lifespan(app: FastAPI):
         "http://localhost:5173",
         "http://localhost:8050",
     ]
+    app_domain = os.environ.get("APP_DOMAIN")
+    if app_domain:
+        allowed_origins.append(f"http://{app_domain}")
+        allowed_origins.append(f"https://{app_domain}")
 
     # Create modular Socket.IO chat handler
     try:

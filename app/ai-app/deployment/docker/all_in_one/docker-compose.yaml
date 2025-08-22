@@ -154,7 +154,12 @@ services:
     container_name: chat-web-proxy
     ports:
       - "5173:80"
+      - "80:80"
+      - "443:443"
     restart: unless-stopped
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./nginx/webroot:/var/www/letsencrypt
     profiles:
       - frontend
     networks:
