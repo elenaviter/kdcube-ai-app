@@ -1,12 +1,14 @@
 Connect to PostgreSQL
 
+In the scripts below, replace `<POSTGRES_USER>` with your desired username and `<YOUR PASSWORD>` with a secure password of your choice.
+
 # PostgreSQL should have pgvector installed
 
 Images:
 `pgvector/pgvector:pg16`
 
 ```shell
-docker exec -it ef-postgres psql -U elenav -d postgres
+docker exec -it ef-postgres psql -U <POSTGRES_USER> -d postgres
 ```
 
 List the users and dbs
@@ -37,14 +39,14 @@ CREATE DATABASE kdcube;
 
 Create another user and grant privileges
 ```shell
-CREATE ROLE elenav WITH SUPERUSER LOGIN PASSWORD '<YOUR PASSWORD>';
-ALTER ROLE elenav WITH SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;
-GRANT ALL PRIVILEGES ON DATABASE kdcube TO elenav;
+CREATE ROLE <POSTGRES_USER> WITH SUPERUSER LOGIN PASSWORD '<YOUR PASSWORD>';
+ALTER ROLE <POSTGRES_USER> WITH SUPERUSER CREATEDB CREATEROLE REPLICATION BYPASSRLS;
+GRANT ALL PRIVILEGES ON DATABASE kdcube TO <POSTGRES_USER>;
 ```
 
 Relogin with new user
 ```shell
-docker exec -it ef-postgres psql -U elenav -d kdcube
+docker exec -it ef-postgres psql -U <POSTGRES_USER> -d kdcube
 ```
 
 Log and check the extensions

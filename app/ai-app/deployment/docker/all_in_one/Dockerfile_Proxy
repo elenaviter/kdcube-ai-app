@@ -1,7 +1,8 @@
 FROM nginx:alpine
 
+ARG NGINX_CONFIG_FILE_PATH="deployment/docker/all_in_one/nginx_proxy.conf"
 # Copy custom nginx configuration (optional)
-COPY deployment/docker/all_in_one/nginx_proxy.conf /etc/nginx/nginx.conf
+COPY $NGINX_CONFIG_FILE_PATH /etc/nginx/nginx.conf
 
 # Expose port 80
 EXPOSE 80

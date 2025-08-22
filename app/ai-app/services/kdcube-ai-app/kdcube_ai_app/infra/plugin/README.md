@@ -69,7 +69,7 @@ from kdcube_ai_app.infra.plugin.agentic_loader import (
 
 ```py
 @agentic_workflow(
-    name="chat-workflow",   # unique ID within your module
+    name="domain-general-chat-workflow",   # unique ID within your module
     version="1.0.0",
     priority=150,                # higher wins if multiple are present
     singleton=False              # preferred default (can be overridden via env)

@@ -1,24 +1,40 @@
 # All-In-One Setup
 
+## Services (what the Compose brings)
+
+* **postgres-db**: `pgvector/pgvector:pg16` (volume: `postgres-data`)
+* **postgres-setup**: applies KB schemas (depends on `postgres-db`)
+* **redis**: `redis:latest` (passworded; volume `redis-data`, port exposed `5445:6379`)
+* **dramatiq**: worker container (depends on Postgres + Redis, mounts `./kb-storage`)
+* **kb**: Knowledge Base API (depends on Postgres + Redis, mounts `./kb-storage`)
+* **chat**: Chat API (depends on Redis, mounts `./kb-storage` and **bind-mounts your agentic bundle**)
+
+    * **Important**: set both `SITE_AGENTIC_BUNDLE_PATH` (host path) and `AGENTIC_BUNDLE_PATH` (container path) in env; Compose bind-mounts the former into the latter.
+* **web-ui**: frontend
+* **web-proxy**: Nginx (exposes `80/443` and `5173`)
+
+### Notable environment options for Compose
+
+* `REDIS_URL="redis://redis:6379/0"` and `REDIS_HOST=redis` for in-house redis
+* `POSTGRES_HOST=postgres-db` for in-house Postgres
+* Optional `KDCUBE_STORAGE_PATH`—when using FS, point both KB and Chat to the same root; Compose mounts `./kb-storage:/kb-storage`.
+* For the proxy: mount `letsencrypt` and `nginx/webroot` if you terminate TLS.
+
+> See `deployment/docker/all_in_one` for Dockerfiles and sample `*.env.*` files [here](sample_env).
+Most of the env is documented in place.
+
 ## First run
-To initialize Postgres run this once
+Initialize Postgres (re-run if change the schemas)
 ```shell
   docker compose build postgres-setup && docker compose run --rm postgres-setup
 ```
 
-
-### Create local KB storage if does not exist (optional)
+### Create local KB persistent storage if does not exist (optional)
 ```shell
   mkdir "kb-storage" -p && chmod 777 "kb-storage"
 ```
 
-### Create new clean local KB storage (optional)
-```shell
-  rm -rf "kb-storage" && mkdir "kb-storage" -p && chmod 777 "kb-storage"
-```
-
 ## Run
-
 
 ### Backend
 ```shell

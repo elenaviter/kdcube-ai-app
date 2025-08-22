@@ -28,8 +28,9 @@ RUN rm -rf /usr/share/nginx/html/*
 # Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+ARG NGINX_CONFIG_FILE_PATH="deployment/docker/all_in_one/nginx_ui.conf"
 # Copy custom nginx configuration (optional)
-COPY deployment/docker/all_in_one/nginx_ui.conf /etc/nginx/nginx.conf
+COPY $NGINX_CONFIG_FILE_PATH /etc/nginx/nginx.conf
 
 # Expose port 80
 EXPOSE 80
