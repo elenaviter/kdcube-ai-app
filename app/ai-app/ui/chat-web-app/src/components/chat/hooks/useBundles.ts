@@ -4,7 +4,7 @@
  */
 
 import {useCallback, useEffect, useState} from 'react';
-import {BundleInfo} from '../types/types';
+import {BundleInfo} from '../types/chat';
 
 export interface UseBundlesResult {
     bundles: Record<string, BundleInfo>;

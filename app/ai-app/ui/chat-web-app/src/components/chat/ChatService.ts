@@ -167,6 +167,7 @@ export class SocketChatService {
     private isConnected = false;
     private eventHandlers: any = {};
     private currentSessionId?: string;
+    private currentUserRoles: string[] = [];
     // de-dupe concurrent connect calls
     private connectingPromise: Promise<Socket> | null = null;
 
@@ -237,22 +238,26 @@ export class SocketChatService {
         this.socket.on('pong', (d) => this.eventHandlers.onPong?.(d));
         this.socket.on('session_info', (info: any) => {
             if (info?.session_id) this.currentSessionId = info.session_id;
-            this.eventHandlers.onSessionInfo?.({ session_id: info?.session_id, user_type: info?.user_type });
+            if (Array.isArray(info?.roles)) this.currentUserRoles = info.roles; // ← ADDED
+            this.eventHandlers.onSessionInfo?.({
+                session_id: info?.session_id,
+                user_type: info?.user_type,
+                roles: Array.isArray(info?.roles) ? info.roles : undefined        // ← CHANGED
+            });
         });
     }
 
-    private async fetchProfile(authContext: AuthContextValue): Promise<{ session_id: string; user_type: string }> {
-        const headers: HeadersInit = [
-            ['Content-Type', 'application/json']
-        ];
-        // config
+    private async fetchProfile(authContext: AuthContextValue): Promise<{ session_id: string; user_type: string; roles: string[] }> {
+        const headers: HeadersInit = [['Content-Type', 'application/json']];
         authContext.appendAuthHeader(headers);
         const r = await fetch(`${getChatBaseAddress()}/profile`, { headers, credentials: 'include' as RequestCredentials });
         if (!r.ok) throw new Error(`Profile fetch failed (${r.status})`);
         const j = await r.json();
         if (!j.session_id) throw new Error('Profile missing session_id');
         this.currentSessionId = j.session_id;
-        return { session_id: j.session_id, user_type: j.user_type };
+        const roles = Array.isArray(j.roles) ? j.roles : [];
+        this.currentUserRoles = roles;                         // ← ADDED
+        return { session_id: j.session_id, user_type: j.user_type, roles };
     }
 
     public async connect(handlers: any = {}, authContext: AuthContextValue): Promise<Socket> {
@@ -333,6 +338,7 @@ export class SocketChatService {
     public get connected() { return this.isConnected && this.socket.connected; }
     public get socketId() { return this.socket.id; }
     public get sessionId(): string | undefined { return this.currentSessionId; }
+    public get userRoles(): string[] { return this.currentUserRoles; }
 }
 
 // Export singleton instance

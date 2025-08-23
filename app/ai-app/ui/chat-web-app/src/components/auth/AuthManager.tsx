@@ -10,7 +10,6 @@ import {AuthContextProps, useAuth} from "react-oidc-context";
 import {Route} from "react-router-dom";
 import {
     getDefaultRoutePrefix,
-    getCognitoHostedDomain,
     getExtraIdTokenHeaderName,
     getHardcodedAuthToken, getOAuthConfig
 } from "../../AppConfig.ts";
@@ -18,6 +17,11 @@ import {
 interface User {
     name?: string;
     email?: string;
+    roles?: string[];
+    permissions?: string[];
+    groups?: string[];
+    username?: string;
+    raw?: Record<string, any>;
 }
 
 export interface AuthContextValue {
@@ -27,7 +31,7 @@ export interface AuthContextValue {
     getRoutes: () => ReactNode | ReactNode[] | null
     getAuthType: () => AuthType
     appendAuthHeader: (headers: [string, string][] | Headers) => [string, string][] | Headers
-    logout: () => Promise<void> | void            // <— ADD
+    logout: () => Promise<void> | void
 }
 
 const defaultContextValue = {
@@ -113,7 +117,11 @@ const WithOAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
     return (
         <AuthContext
             value={{
-                getUserProfile: () => mapClaimsToUser(auth?.user?.profile),
+                getUserProfile: () => {
+                    const user = mapClaimsToUser(auth?.user?.profile);
+                    // console.log(user, auth?.user)
+                    return user;
+                },
                 getUserAuthToken: () => auth?.user?.access_token,
                 getUserIdToken: () => auth?.user?.id_token,
                 getRoutes: () => [
@@ -174,21 +182,29 @@ const listify = (v: unknown): string[] => {
     return [String(v)];
 };
 
+const listifyNonEmpty = (v: unknown): string[] | null => {
+    const arr = listify(v) ?? [];
+    // normalize + drop empties
+    const clean = Array.isArray(arr) ? arr.map(String).map(s => s.trim()).filter(Boolean) : [];
+    return clean.length ? clean : null; // null lets ?? skip empties
+};
+
+
 const mapClaimsToUser = (claims?: Record<string, any>) => {
     if (!claims) return undefined;
     const roles =
-        listify(claims.roles) ||
-        listify(claims["custom:roles"]) ||
-        listify(claims["cognito:groups"]) ||
-        listify(claims?.realm_access?.roles);
+        listifyNonEmpty(claims?.roles) ??
+        listifyNonEmpty(claims?.['custom:roles']) ??
+        listifyNonEmpty(claims?.['cognito:groups']) ??
+        listifyNonEmpty(claims?.realm_access?.roles) ??
+        [];
     const permissions =
         listify(claims.permissions) || listify(claims["custom:permissions"]);
     const groups = listify(claims["cognito:groups"]) || listify(claims.groups);
 
     const username =
         claims["cognito:username"] || claims.preferred_username || claims.username || claims.email;
-
-    return {
+    const user = {
         sub: claims.sub,
         username,
         name: claims.name || claims.given_name,
@@ -196,8 +212,10 @@ const mapClaimsToUser = (claims?: Record<string, any>) => {
         roles,
         permissions,
         groups,
-        raw: claims,
-    };
+        raw: claims
+    }
+    // console.log("USER", user);
+    return user;
 };
 
 export const useAuthManagerContext = () => {

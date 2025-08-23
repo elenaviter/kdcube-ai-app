@@ -473,7 +473,7 @@ const SingleChatApp: React.FC = () => {
     return (
         <div className="flex h-screen bg-gray-50">
             {/* Config Panel (widget) */}
-            {showConfig && (
+            {showConfig && !!authContext.getUserProfile()?.roles?.includes('kdcube:role:super-admin') && (
                 <ChatConfigPanel
                     visible={showConfig}
                     onClose={() => handleShowConfigChange(false)}
