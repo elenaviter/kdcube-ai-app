@@ -72,6 +72,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Chat service starting on port {CHAT_APP_PORT}")
 
+    from kdcube_ai_app.infra.plugin.bundle_registry import load_from_env
+    load_from_env()
+
     # Initialize gateway adapter and store in app state
     app.state.gateway_adapter = get_fastapi_adapter()
     gateway_config = get_gateway_config()
@@ -138,26 +141,29 @@ async def lifespan(app: FastAPI):
                 "timestamp": datetime.now().isoformat(),
             }, room=session_id)
 
-        from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
-        bundle_path = (config or {}).get("agentic_bundle_path") or os.getenv("AGENTIC_BUNDLE_PATH")
-        bundle_module = (config or {}).get("agentic_bundle_module") or os.getenv("AGENTIC_BUNDLE_MODULE")
-        singleton = bool((config or {}).get("agentic_singleton", False) or os.getenv("AGENTIC_SINGLETON") in {"1","true","True"})
-
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-        if bundle_path:
-            logger.info(f"Loading agentic bundle from {bundle_path} with module {bundle_module}")
-            spec = AgenticBundleSpec(path=bundle_path, module=bundle_module, singleton=singleton)
+        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+        bundle_id = (config or {}).get("agentic_bundle_id")
+        spec_resolved = resolve_bundle(bundle_id, override=None)
+        if not spec_resolved:
+            logger.info("Using built-in agentic workflow")
+            from kdcube_ai_app.apps.chat.default_app.agentic_app import (
+                ChatWorkflow, create_initial_state as built_in_create_initial_state
+            )
+            workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
+            create_initial_state_fn = built_in_create_initial_state
+        else:
+            from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
+            logger.info(f"Loading agentic bundle '{spec_resolved.id}' from {spec_resolved.path} module={spec_resolved.module}")
+            spec = AgenticBundleSpec(
+                path=spec_resolved.path,
+                module=spec_resolved.module,
+                singleton=bool(spec_resolved.singleton),
+            )
             workflow, create_initial_state_fn, _ = get_workflow_instance(
                 spec, wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta
             )
-        else:
-            # fallback to your built-in
-            logger.info("Using built-in agentic workflow")
-            from kdcube_ai_app.apps.chat.default_app.agentic_app import (ChatWorkflow,
-                                                                         create_initial_state as
-                                                                         built_in_create_initial_state)
-            workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
-            create_initial_state_fn = built_in_create_initial_state
+
+        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
         # 3) seed optional history into initial state (so first run has context)
         #    (We reuse your create_initial_state and pass it directly to graph)
@@ -807,8 +813,11 @@ async def circuit_breaker_exception_handler(request: Request, exc: CircuitBreake
 
 # Mount monitoring routers
 from kdcube_ai_app.apps.chat.api.monitoring import mount_monitoring_routers
-
 mount_monitoring_routers(app)
+
+# Mount integrations router
+from kdcube_ai_app.apps.chat.api.integrations import mount_integrations_routers
+mount_integrations_routers(app)
 
 # ================================
 # RUN APPLICATION

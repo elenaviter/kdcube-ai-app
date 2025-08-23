@@ -114,15 +114,18 @@ class ConfigRequest(BaseModel):
     custom_model_name: Optional[str] = None
     kb_search_endpoint: Optional[str] = None
 
-    # New declarative embedding fields
-    selected_embedder: str = "openai-text-embedding-3-small"  # Default
-    custom_embedding_endpoint: Optional[str] = None  # Required for custom embedders
+    # Embeddings
+    selected_embedder: str = "openai-text-embedding-3-small"
+    custom_embedding_endpoint: Optional[str] = None
 
-    # Legacy fields - keep for backward compatibility
+    # Legacy
     custom_embedding_model: Optional[str] = "sentence-transformers/all-MiniLM-L6-v2"
     custom_embedding_size: Optional[int] = 384
 
     selected_model: str = "gpt-4o"
+
+    # Bundle selection
+    agentic_bundle_id: Optional[str] = None
 
 class AgentLogger:
     """Enhanced logging for agents with structured output"""

@@ -18,7 +18,7 @@ from kdcube_ai_app.auth.AuthManager import RequireUser, RequireRoles
 from kdcube_ai_app.auth.sessions import UserSession
 from kdcube_ai_app.infra.availability.health_and_heartbeat import get_expected_services
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitState
-from kdcube_ai_app.infra.gateway.config import GatewayConfigurationManager, get_gateway_config
+from kdcube_ai_app.infra.gateway.config import GatewayConfigurationManager
 
 """
 Monitoring API
@@ -40,10 +40,7 @@ router = APIRouter()
 
 @router.get("/admin/circuit-breakers", response_model=CircuitBreakersResponse)
 async def get_circuit_breaker_status(
-        session: UserSession = Depends(require_auth(
-            RequireUser(),
-            RequireRoles("kdcube:role:super-admin")
-        ))
+        session: UserSession = Depends(auth_without_pressure())
 ):
     """Get circuit breaker status (admin only)"""
     try:
@@ -82,10 +79,7 @@ async def get_circuit_breaker_status(
 @router.post("/admin/circuit-breakers/{circuit_name}/reset")
 async def reset_circuit_breaker_endpoint(
         circuit_name: str,
-        session: UserSession = Depends(require_auth(
-            RequireUser(),
-            RequireRoles("kdcube:role:super-admin")
-        ))
+        session: UserSession = Depends(auth_without_pressure())
 ):
     """Reset a specific circuit breaker (admin only)"""
     try:
@@ -605,43 +599,10 @@ def _extract_detailed_config_for_frontend(capacity_transparency: Dict[str, Any],
         "computed_metrics": actual_runtime
     }
 
-# @router.get("/admin/gateway/capacity-metrics")
-# async def get_capacity_metrics(
-#         session: UserSession = Depends(require_auth(
-#             RequireUser(),
-#             RequireRoles("kdcube:role:super-admin")
-#         ))
-# ):
-#     """Get current capacity metrics (admin only)"""
-#     gateway_adapter = get_fastapi_adapter()
-#     config_manager = GatewayConfigurationManager(gateway_adapter)
-#
-#     metrics = await config_manager.get_current_metrics()
-#     current_config = get_gateway_config()
-#
-#     return {
-#         "current_metrics": metrics,
-#         "environment_settings": {
-#             "MAX_CONCURRENT_CHAT": os.getenv("MAX_CONCURRENT_CHAT", "5"),
-#             "CHAT_APP_PARALLELISM": os.getenv("CHAT_APP_PARALLELISM", "1"),
-#             "AVG_PROCESSING_TIME_SECONDS": os.getenv("AVG_PROCESSING_TIME_SECONDS", "25.0")
-#         },
-#         "effective_settings": {
-#             "concurrent_per_process": current_config.service_capacity.concurrent_requests_per_process,
-#             "processes_per_instance": current_config.service_capacity.processes_per_instance,
-#             "total_concurrent_per_instance": current_config.service_capacity.concurrent_requests_per_instance,
-#             "capacity_buffer_percent": current_config.backpressure.capacity_buffer * 100,
-#             "queue_depth_multiplier": current_config.backpressure.queue_depth_multiplier
-#         }
-#     }
-
 @router.post("/admin/gateway/validate-config")
 async def validate_config_changes(
         changes: Dict[str, Any],
-        session: UserSession = Depends(require_auth(
-            RequireUser(),
-            RequireRoles("kdcube:role:super-admin")
-        ))
+        session: UserSession = Depends(auth_without_pressure())
 ):
     """Validate proposed configuration changes (admin only)"""
     gateway_adapter = get_fastapi_adapter()
@@ -808,7 +769,7 @@ async def debug_capacity_calculation(
 
 # Also add environment variables debug
 @router.get("/debug/environment")
-async def debug_environment():
+async def debug_environment(session: UserSession = Depends(auth_without_pressure())):
     """Debug environment variables affecting capacity"""
     return {
         "MAX_CONCURRENT_CHAT": os.getenv("MAX_CONCURRENT_CHAT", "5"),

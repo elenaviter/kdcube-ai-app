@@ -103,7 +103,6 @@ export const appendAuthHeader = (
             headers.push([idHdr, idToken]);
         }
     }
-    console.log("Headers", headers);
     return headers;
 };
 
@@ -140,27 +139,6 @@ const WithOAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
                             logout_uri: logoutRedirect
                         }
                     })
-                    // try {
-                    //     const base = getDefaultRoutePrefix();
-                    //     const signedOutUrl = `${window.location.origin}${base}/chat`;
-                    //     const cfg = getOAuthConfig();
-                    //     const hosted = getCognitoHostedDomain();
-                    //     const clientId = (auth as any)?.settings?.client_id || (cfg as any).client_id || "";
-                    //
-                    //     try {
-                    //         await auth.removeUser();
-                    //     } catch {}
-                    //
-                    //     const logoutUrl = `${hosted.replace(/\/+$/, "")}/logout?client_id=${encodeURIComponent(
-                    //         clientId
-                    //     )}&logout_uri=${encodeURIComponent(signedOutUrl)}`;
-                    //
-                    //     window.location.assign(logoutUrl);
-                    // } catch (e) {
-                    //     console.error("signout failed", e);
-                    //     const base = getDefaultRoutePrefix();
-                    //     window.location.assign(`${window.location.origin}${base}/signedout`);
-                    // }
                 },
             }}
         >

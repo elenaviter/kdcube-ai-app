@@ -24,7 +24,7 @@ def mount_integrations_routers(app: FastAPI):
     # Mount content rebuild router
     integrations_router.state = app.state
     app.include_router(
-        monitoring_router,
+        integrations_router,
         prefix="",
         tags=["CB integrations"],
     )

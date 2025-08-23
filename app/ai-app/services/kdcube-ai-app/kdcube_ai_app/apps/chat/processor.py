@@ -13,6 +13,11 @@ from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter, NoopEmitter
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
 
+from kdcube_ai_app.infra.plugin.bundle_registry import set_registry, upsert_bundles, serialize_to_env, get_all, get_default_id
+from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
+
+import kdcube_ai_app.infra.namespaces as namespaces
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -55,6 +60,7 @@ class EnhancedChatRequestProcessor:
         )
 
         self._processor_task: Optional[asyncio.Task] = None
+        self._config_task: Optional[asyncio.Task] = None
         self._active_tasks: set[asyncio.Task] = set()
         self._current_load = 0
         self._stop_event = asyncio.Event()
@@ -68,6 +74,9 @@ class EnhancedChatRequestProcessor:
         if self._processor_task and not self._processor_task.done():
             return
         self._processor_task = asyncio.create_task(self._processing_loop(), name="chat-processing-loop")
+        # Start config broadcast listener
+        if not self._config_task:
+            self._config_task = asyncio.create_task(self._config_listener_loop(), name="config-bundles-listener")
 
     async def stop_processing(self):
         self._stop_event.set()
@@ -77,9 +86,13 @@ class EnhancedChatRequestProcessor:
                 await self._processor_task
             except asyncio.CancelledError:
                 pass
-
+        if self._config_task:
+            self._config_task.cancel()
+            try: await self._config_task
+            except asyncio.CancelledError: pass
         if self._active_tasks:
             await asyncio.gather(*list(self._active_tasks), return_exceptions=True)
+
 
     def get_current_load(self) -> int:
         return self._current_load
@@ -155,6 +168,56 @@ class EnhancedChatRequestProcessor:
             # Put back if someone else locked first
             await self.middleware.redis.lpush(queue_key, json.dumps(task_dict))
         return None
+
+    # ---------------- Config loop ----------------
+    async def _config_listener_loop(self):
+        """
+        Listen on Redis pub/sub (broadcast) for bundles updates and apply locally.
+        """
+        try:
+            pubsub = self.middleware.redis.pubsub()
+            await pubsub.subscribe(namespaces.CONFIG.CONFIG_CHANNEL)
+            logger.info(f"Subscribed to config channel: {namespaces.CONFIG.CONFIG_CHANNEL}")
+            async for message in pubsub.listen():
+                if message is None:
+                    continue
+                if message.get("type") != "message":
+                    continue
+                raw = message.get("data")
+                try:
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8")
+                    evt = json.loads(raw)
+                except Exception:
+                    logger.warning("Invalid config broadcast; ignoring")
+                    continue
+
+                if evt.get("type") != "bundles.update":
+                    continue
+
+                op = evt.get("op", "merge")
+                bundles = evt.get("bundles") or {}
+                default_id = evt.get("default_bundle_id")
+
+                # Apply to in-memory registry
+                if op == "replace":
+                    set_registry(bundles, default_id)
+                else:
+                    upsert_bundles(bundles, default_id)
+
+                # Mirror to env for consistency (best-effort)
+                serialize_to_env(get_all(), get_default_id())
+
+                # Clear loader caches so next request re-imports if needed
+                clear_agentic_caches()
+
+                logger.info(f"Applied bundles update (op={op}); now have {len(get_all())} bundles")
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Config listener error: {e}")
+            await asyncio.sleep(1.0)
 
     # ---------------- Per-task execution ----------------
 
