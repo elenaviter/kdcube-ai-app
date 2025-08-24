@@ -9,7 +9,7 @@
 * **kb**: Knowledge Base API (depends on Postgres + Redis, mounts `./kb-storage`)
 * **chat**: Chat API (depends on Redis, mounts `./kb-storage` and **bind-mounts your agentic bundle**)
 
-    * **Important**: set both `SITE_AGENTIC_BUNDLE_PATH` (host path) and `AGENTIC_BUNDLE_PATH` (container path) in env; Compose bind-mounts the former into the latter.
+    * **Important**: set both `SITE_AGENTIC_BUNDLES_ROOT` (host path - "artifactory folder" where you place the bundles) and `AGENTIC_BUNDLES_ROOT` (the folder to which we mount artifactory with bundles inside the container) in env; Compose bind-mounts the former into the latter.
 * **web-ui**: frontend
 * **web-proxy**: Nginx (exposes `80/443` and `5173`)
 

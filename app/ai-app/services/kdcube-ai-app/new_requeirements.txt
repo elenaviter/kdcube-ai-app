@@ -1,4 +1,0 @@
-sentence-transformers
-marker-pdf
-redis
-aioredis

@@ -12,7 +12,6 @@ import KnowledgeBasePage from "./components/kb/KnowledgeBasePage.tsx";
 import SystemMonitor from "./components/monitoring/monitoring.tsx";
 import AuthManager, {useAuthManagerContext, withAuthRequired} from "./components/auth/AuthManager.tsx";
 import {getAuthType, getDefaultRoutePrefix} from "./AppConfig.ts";
-import urlJoin from "url-join";
 
 const App: React.FC = () => {
 

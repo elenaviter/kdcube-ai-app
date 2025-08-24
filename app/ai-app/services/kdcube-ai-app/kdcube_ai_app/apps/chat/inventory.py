@@ -781,7 +781,6 @@ class ModelServiceBase:
                 max_tokens=max_tokens,
                 client_cfg=cfg,
         ):
-            print(ev.keys())
             if "delta" in ev:
                 delta = ev["delta"] or ""
                 if delta:
