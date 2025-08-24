@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# infra/relational/psql/psql_base.py
+
 import os
 import psycopg2
 from psycopg2.extras import execute_values

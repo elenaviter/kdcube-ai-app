@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# ops/deployment/sql/db_deployment.py
+
 import argparse
 import os, sys, re
-from dotenv import load_dotenv, find_dotenv
 
 # Add the directory to sys.path if it's not already there
 from kdcube_ai_app.infra.relational.psql.psql_base import PostgreSqlDbMgr

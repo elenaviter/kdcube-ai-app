@@ -50,30 +50,6 @@ services:
     ports:
       - "5445:6379"
 
-  dramatiq:
-    image: chat-dramatiq:latest
-    container_name: chat-dramatiq
-    build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Dramatiq
-    profiles:
-      - backend
-    env_file:
-      - path: ./.env.backend
-        required: false
-      - path: ./.env.dramatiq
-        required: false
-    environment:
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=postgres-db
-    volumes:
-      - ./kb-storage:/kb-storage
-    depends_on:
-      - postgres-db
-      - redis
-    networks:
-      - chat-internal
-
   kb:
     image: chat-kb:latest
     container_name: chat-kb
@@ -96,6 +72,31 @@ services:
     depends_on:
       - postgres-db
       - redis
+    networks:
+      - chat-internal
+
+  dramatiq:
+    image: chat-dramatiq:latest
+    container_name: chat-dramatiq
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Dramatiq
+    profiles:
+      - backend
+    env_file:
+      - path: ./.env.backend
+        required: false
+      - path: ./.env.dramatiq
+        required: false
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres-db
+    volumes:
+      - ./kb-storage:/kb-storage
+    depends_on:
+      - postgres-db
+      - redis
+      - kb
     networks:
       - chat-internal
 
@@ -131,6 +132,8 @@ services:
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one/Dockerfile_UI
+      args:
+        - NGINX_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
     env_file:
       - path: ./.env.ui
         required: false
@@ -138,6 +141,8 @@ services:
     restart: unless-stopped
     profiles:
       - frontend
+    depends_on:
+      - chat
     environment:
       - NODE_ENV=production
     networks:
@@ -148,6 +153,8 @@ services:
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one/Dockerfile_Proxy
+      args:
+        - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
     env_file:
       - path: ./.env.proxy
         required: false
@@ -165,7 +172,6 @@ services:
     networks:
       - chat-external
       - chat-internal
-
 
 networks:
   chat-external:

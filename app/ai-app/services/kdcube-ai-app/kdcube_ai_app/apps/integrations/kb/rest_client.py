@@ -101,13 +101,18 @@ class KBServiceClient:
             headers = build_auth_headers(self._tokens, id_header_name=id_header_name, on_behalf_session_id=on_behalf_session_id)
             return await self._post_json(url, payload, headers, timeout_sec)
 
-if __name__ == "__main__":
-
-    import asyncio
-
+def auth_with_idp():
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv())
 
+    async def auth():
+        idp = build_service_idp_from_env()
+        token_bundle = await asyncio.to_thread(idp.authenticate)
+        print(token_bundle)
+    asyncio.run(auth())
+
+
+def kb_search():
     project = os.environ.get("DEFAULT_PROJECT_NAME")
     tenant = os.environ.get("TENANT_ID")
 
@@ -128,6 +133,16 @@ if __name__ == "__main__":
         )
         print(result)
         idp.close()
-
     asyncio.run(run())
+
+if __name__ == "__main__":
+
+    import asyncio
+
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv())
+
+    auth_with_idp()
+
+
 
