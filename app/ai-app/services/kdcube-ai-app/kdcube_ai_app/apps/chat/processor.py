@@ -172,46 +172,125 @@ class EnhancedChatRequestProcessor:
     # ---------------- Config loop ----------------
     async def _config_listener_loop(self):
         """
-        Listen on Redis pub/sub (broadcast) for bundles updates and apply locally.
+        Listen on Redis pub/sub for bundles updates.
+
+        Protocol:
+        - Legacy COMMAND  (web posts): {"type":"bundles.update","op":"merge|replace","bundles":{...}, "default_bundle_id": "..."}
+          -> This process applies the command to the *persisted* registry (Redis),
+             saves it, broadcasts an AUTHORITATIVE SNAPSHOT, and updates in-memory.
+
+        - New SNAPSHOT (preferred): {"tenant":"...","project":"...","op":"...","ts":..., "registry":{...}, "actor":"..."}
+          -> This process treats it as source of truth and updates in-memory (and may
+             save to Redis for idempotence), but does NOT re-broadcast.
         """
+        import kdcube_ai_app.infra.namespaces as namespaces
+        from kdcube_ai_app.infra.plugin.bundle_registry import (
+            set_registry, serialize_to_env, get_all, get_default_id
+        )
+        from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
+        from kdcube_ai_app.infra.plugin.bundle_store import (
+            load_registry as store_load,
+            save_registry as store_save,
+            publish_update as store_publish,
+            apply_update,  # <-- new helper
+            BundlesRegistry
+        )
+
         try:
             pubsub = self.middleware.redis.pubsub()
-            await pubsub.subscribe(namespaces.CONFIG.CONFIG_CHANNEL)
-            logger.info(f"Subscribed to config channel: {namespaces.CONFIG.CONFIG_CHANNEL}")
+            await pubsub.subscribe(namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL)
+            logger.info(f"Subscribed to bundles channel: {namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL}")
+
             async for message in pubsub.listen():
-                if message is None:
+                if not message or message.get("type") != "message":
                     continue
-                if message.get("type") != "message":
-                    continue
+
                 raw = message.get("data")
                 try:
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8")
                     evt = json.loads(raw)
                 except Exception:
-                    logger.warning("Invalid config broadcast; ignoring")
+                    logger.warning("Invalid bundles broadcast; ignoring")
                     continue
 
-                if evt.get("type") != "bundles.update":
+                # --------------- SNAPSHOT path ----------------
+                if "registry" in evt:
+                    # Authoritative snapshot
+                    try:
+                        reg = BundlesRegistry(**(evt.get("registry") or {}))
+                    except Exception:
+                        logger.warning("Invalid registry payload; ignoring")
+                        continue
+
+                    # Update in-memory/env
+                    set_registry(
+                        {bid: be.model_dump() for bid, be in reg.bundles.items()},
+                        reg.default_bundle_id
+                    )
+                    serialize_to_env(get_all(), get_default_id())
+                    try:
+                        clear_agentic_caches()
+                    except Exception:
+                        pass
+
+                    # Optional: ensure persisted (idempotent; do NOT re-broadcast)
+                    try:
+                        await store_save(self.middleware.redis, reg)
+                    except Exception:
+                        logger.debug("Could not save snapshot to Redis; continuing")
+
+                    logger.info(f"Applied bundles SNAPSHOT; now have {len(get_all())} bundles")
                     continue
 
-                op = evt.get("op", "merge")
-                bundles = evt.get("bundles") or {}
-                default_id = evt.get("default_bundle_id")
+                # --------------- LEGACY COMMAND path ----------------
+                if evt.get("type") == "bundles.update":
+                    op = evt.get("op", "merge")
+                    bundles_patch = evt.get("bundles") or {}
+                    default_id = evt.get("default_bundle_id")
 
-                # Apply to in-memory registry
-                if op == "replace":
-                    set_registry(bundles, default_id)
-                else:
-                    upsert_bundles(bundles, default_id)
+                    # 1) Load current persisted registry (source of truth)
+                    try:
+                        current = await store_load(self.middleware.redis)
+                    except Exception as e:
+                        logger.error(f"Failed to load registry from Redis: {e}")
+                        current = BundlesRegistry()
 
-                # Mirror to env for consistency (best-effort)
-                serialize_to_env(get_all(), get_default_id())
+                    # 2) Apply command -> new registry
+                    try:
+                        reg = apply_update(current, op, bundles_patch, default_id)
+                    except Exception as e:
+                        logger.error(f"Ignoring invalid bundles.update: {e}")
+                        continue
 
-                # Clear loader caches so next request re-imports if needed
-                clear_agentic_caches()
+                    # 3) Persist and broadcast AUTHORITATIVE SNAPSHOT
+                    try:
+                        await store_save(self.middleware.redis, reg)
+                        await store_publish(
+                            self.middleware.redis,
+                            reg,
+                            op=op,
+                            actor=evt.get("updated_by") or None
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to persist/broadcast bundles: {e}")
 
-                logger.info(f"Applied bundles update (op={op}); now have {len(get_all())} bundles")
+                    # 4) Apply locally (in-memory + env) and clear caches
+                    set_registry(
+                        {bid: be.model_dump() for bid, be in reg.bundles.items()},
+                        reg.default_bundle_id
+                    )
+                    serialize_to_env(get_all(), get_default_id())
+                    try:
+                        clear_agentic_caches()
+                    except Exception:
+                        pass
+
+                    logger.info(f"Applied bundles COMMAND (op={op}); now have {len(get_all())} bundles")
+                    continue
+
+                # Unknown message shape
+                logger.debug("Ignoring unrelated pub/sub message on bundles channel")
 
         except asyncio.CancelledError:
             pass

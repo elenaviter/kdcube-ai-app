@@ -5,15 +5,17 @@
 
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
 import {
-    AlertCircle, BookOpen, Database, Download, Play, RotateCcw, Server, Settings, Upload, X, Plus,
-    Save, Trash2, Star, StarOff, ShieldAlert, Loader
+    AlertCircle, BookOpen, Database, Download, Play, RotateCcw, Upload, X, Loader
 } from 'lucide-react';
 import {useBundles} from '../hooks/useBundles';
 import {BundleInfo, EmbedderInfo, EmbeddingProvider, ModelInfo} from '../types/chat';
 import {getChatBaseAddress, getKBAPIBaseAddress} from '../../../AppConfig';
-import {BundlesGridAdmin, BundlesListAdmin} from "./BundlesGridAdmin.tsx";
+import { BundlesListAdmin } from "./BundlesListAdmin.tsx";
+import ReactMarkdown from "react-markdown";
+import className = ReactMarkdown.propTypes.className;
+import {cn} from "../../../utils/utils.ts";
 
-const server_url = `${getChatBaseAddress()}/landing`;
+const server_url = `${getChatBaseAddress()}`;
 const serving_server_url = 'http://localhost:5005/serving/v1';
 
 type Props = {
@@ -33,6 +35,7 @@ type Props = {
 
     // enable admin UI (you decide who is super-admin on the caller)
     canAdminBundles?: boolean;
+    className?: string;
 };
 
 function needsModule(path?: string) {
@@ -44,7 +47,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
                                                      visible, onClose, authContext,
                                                      config, setConfigValue, updateConfig,
                                                      validationErrors, onMetaChange,
-                                                     canAdminBundles = false
+                                                     canAdminBundles,
                                                  }) => {
     const [availableModels, setAvailableModels] = useState<Record<string, ModelInfo>>({});
     const [availableEmbedders, setAvailableEmbedders] = useState<Record<string, EmbedderInfo>>({});
@@ -80,10 +83,10 @@ export const ChatConfigPanel: React.FC<Props> = ({
             try {
                 const headers: HeadersInit = [['Content-Type', 'application/json']];
                 authContext.appendAuthHeader(headers);
-                const modelsRes = await fetch(`${server_url}/models`, {headers});
+                const modelsRes = await fetch(`${server_url}/landing/models`, {headers});
                 const modelsData = await modelsRes.json();
                 if (modelsRes.ok) setAvailableModels(modelsData.available_models || {});
-                const embRes = await fetch(`${server_url}/embedders`, {headers});
+                const embRes = await fetch(`${server_url}/landing/embedders`, {headers});
                 const embData = await embRes.json();
                 if (embRes.ok) {
                     setAvailableEmbedders(embData.available_embedders || {});
@@ -133,7 +136,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
         }
         try {
             const headers: HeadersInit = [['Content-Type', 'application/json']]; authContext.appendAuthHeader(headers);
-            const res = await fetch(`${server_url}/test-embeddings`, {method: 'POST', headers, body: JSON.stringify(config)});
+            const res = await fetch(`${server_url}/landing/test-embeddings`, {method: 'POST', headers, body: JSON.stringify(config)});
             const data = await res.json();
             if (res.ok) alert(`✅ Embeddings OK\nEmbedder: ${data.embedder_id}\nModel: ${data.model}\nDim: ${data.embedding_size}`);
             else alert(`❌ Failed:\n${data?.detail?.error || 'Unknown error'}`);
@@ -170,7 +173,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
     const postAdmin = useCallback(async (body: any) => {
         setAdminBusy(true); setAdminErr(null); setAdminMsg(null);
         try {
-            const res = await fetch(`${server_url}/admin/bundles`, {method: 'POST', headers: adminHeaders, body: JSON.stringify(body)});
+            const res = await fetch(`${server_url}/admin/integrations/bundles`, {method: 'POST', headers: adminHeaders, body: JSON.stringify(body)});
             const data = await res.json().catch(()=> ({}));
             if (!res.ok) {
                 if (res.status === 403) throw new Error('Forbidden: you need super-admin privileges to manage bundles.');
@@ -225,10 +228,31 @@ export const ChatConfigPanel: React.FC<Props> = ({
         setAdding(null);
     };
 
+    const resetFromEnv = useCallback(async () => {
+        if (!window.confirm('This will overwrite the current mapping from server .env. Continue?')) return;
+        setAdminBusy(true); setAdminErr(null); setAdminMsg(null);
+        try {
+            const headers: HeadersInit = [['Content-Type', 'application/json']]; authContext.appendAuthHeader(headers);
+            const res = await fetch(`${server_url}/admin/integrations/bundles/reset-from-env`, { method: 'POST', headers });
+            const data = await res.json().catch(()=> ({}));
+            if (!res.ok) throw new Error(data?.detail || 'Failed to reset from .env');
+            setAdminMsg('Mapping was reset from .env and broadcast.');
+            await reloadBundles();
+        } catch (e:any) {
+            setAdminErr(e.message || 'Failed to reset mapping');
+        } finally {
+            setAdminBusy(false);
+        }
+    }, [authContext, reloadBundles]);
+
+
     if (!visible) return null;
 
     return (
-        <div className="w-80 bg-white border-r border-gray-200 p-6 overflow-y-auto">
+        <div className={cn(
+            "bg-white border-r border-gray-200 p-6 overflow-y-auto w-[min(48vw,640px)] min-w-[360px]",
+            className
+        )}>
             <div className="flex items-center justify-between mb-6">
                 <h2 className="text-lg font-semibold text-gray-900">Configuration</h2>
                 <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg"><X size={16}/></button>
@@ -328,7 +352,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
                         const next = availableEmbedders[id] || ({} as EmbedderInfo);
                         updateConfig({
                             selected_embedder: id,
-                            custom_embedding_endpoint: next.provider === 'openai' ? '' : (config.custom_embedding_endpoint || `${serving_server_url}/embeddings`)
+                            custom_embedding_endpoint: next.provider === 'openai' ? '' : (config.custom_embedding_endpoint || `${serving_server_url}/landing/embeddings`)
                         });
                     }}
                     className="w-full p-2 border border-gray-300 rounded-lg"
@@ -397,7 +421,6 @@ export const ChatConfigPanel: React.FC<Props> = ({
             {/* ----------------------- */}
             {/* Admin: Manage Bundles   */}
             {/* ----------------------- */}
-            (
             <div className="border-t mt-5 pt-4">
                 <div className="flex items-center justify-between mb-2">
                     <h3 className="text-sm font-semibold text-gray-800">Admin: Manage Bundles</h3>
@@ -415,6 +438,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
                     defaultId={defaultId || undefined}
                     loading={bundlesLoading || adminBusy}
                     onReload={reloadBundles}
+                    onResetFromEnv={resetFromEnv}   // keep the toolbar button in the list
                     onSetDefault={(id) => setDefault(id)}
                     onDelete={async (id) => {
                         const next: Record<string, any> = {};
@@ -431,7 +455,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
                         });
                     }}
                     onSave={async (b) => {
-                        if (needsModule(b.path) && !b.module?.trim()) {
+                        if (/.whl$|.zip$/i.test(b.path) && !b.module?.trim()) {
                             setAdminErr('Module is required for .whl/.zip bundles');
                             return;
                         }
@@ -451,7 +475,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
                     }}
                 />
             </div>
-            )
+
         </div>
     );
 };

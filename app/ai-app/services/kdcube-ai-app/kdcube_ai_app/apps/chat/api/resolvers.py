@@ -363,10 +363,10 @@ def get_user_session_dependency():
     # return adapter.get_user_session_dependency()
     return adapter.http_dependency("chat-rest")
 
-def auth_without_pressure():
+def auth_without_pressure(requirements = None):
     """Get FastAPI dependency for auth without pressure (admin access)"""
     adapter = get_fastapi_adapter()
-    return adapter.auth_without_pressure()
+    return adapter.auth_without_pressure(requirements)
 
 def require_auth(*requirements):
     """Get FastAPI dependency with auth requirements"""

@@ -35,7 +35,7 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 # Import our simplified components
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
-    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL
+    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -71,9 +71,6 @@ async def lifespan(app: FastAPI):
     """Simplified lifespan management"""
     # Startup
     logger.info(f"Chat service starting on port {CHAT_APP_PORT}")
-
-    from kdcube_ai_app.infra.plugin.bundle_registry import load_from_env
-    load_from_env()
 
     # Initialize gateway adapter and store in app state
     app.state.gateway_adapter = get_fastapi_adapter()
@@ -245,6 +242,17 @@ async def lifespan(app: FastAPI):
         # Start services
         await middleware.init_redis()
         await heartbeat_manager.start_heartbeat(interval=10)
+
+        try:
+            from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
+            from kdcube_ai_app.infra.plugin.bundle_registry import set_registry as _set_mem_registry
+            reg = await _load_store_registry(middleware.redis)
+            bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
+            _set_mem_registry(bundles_dict, reg.default_bundle_id)
+            logger.info(f"Bundles registry loaded from Redis: {len(bundles_dict)} items (default={reg.default_bundle_id})")
+        except Exception as e:
+            logger.warning(f"Failed to load bundles registry from Redis; using env-only registry. {e}")
+
         await processor.start_processing()
         await health_checker.start_monitoring()
 
@@ -368,18 +376,10 @@ async def root():
     socketio_enabled = hasattr(app.state, 'socketio_handler') and app.state.socketio_handler is not None
 
     return {
-        "name": "LangGraph Chat API with Modular Socket.IO",
-        "version": "2.2.0",
-        "description": "Chat with real-time streaming via modular Socket.IO and legacy REST support",
+        "name": "KDCube AI App Platform",
+        "version": "3.0.0",
+        "description": "Multitenant hosting for your AI applications",
         "features": [
-            "Modular Socket.IO streaming chat",
-            "Legacy REST API support",
-            "Real-time step execution display",
-            "Custom embedding endpoint support",
-            "Multiple model providers (OpenAI, Anthropic, Custom)",
-            "Detailed execution logging",
-            "Format fixing and error recovery",
-            "Complete gateway protection on all endpoints"
         ],
         "available_models": list(MODEL_CONFIGS.keys()),
         "socketio_enabled": socketio_enabled,
@@ -395,7 +395,8 @@ async def root():
 
 
 @app.post("/landing/test-embeddings")
-async def check_embeddings_endpoint(request: ConfigRequest):
+async def check_embeddings_endpoint(request: ConfigRequest,
+                                    session: UserSession = Depends(auth_without_pressure())):
     """Test embedding configuration"""
     try:
         from kdcube_ai_app.apps.chat.inventory import probe_embeddings
@@ -413,6 +414,7 @@ async def check_embeddings_endpoint(request: ConfigRequest):
 
 
 @app.get("/profile")
+# think of replacing with auth_without_pressure
 async def get_profile(session: UserSession = Depends(get_user_session_dependency())):
     """Get user profile - works for both anonymous and registered users"""
     if session.user_type in [UserType.REGISTERED, UserType.PRIVILEGED]:
@@ -673,75 +675,6 @@ async def get_available_embedders(session: UserSession = Depends(get_user_sessio
         }
     }
     return available_embedders
-
-
-@app.get("/workflow-info")
-async def get_workflow_info():
-    """Get information about the workflow configuration"""
-    socketio_enabled = hasattr(app.state, 'socketio_handler') and app.state.socketio_handler is not None
-    # TODO: retrieve from loaded app plugin. Add the parameter with plugin name
-    return {
-        "pipeline_info": {
-            "description": "LangGraph workflow with modular Socket.IO streaming support",
-            "supports_streaming": True,
-            "supports_socketio": socketio_enabled,
-            "modular_architecture": True,
-            "steps": [
-                {
-                    "name": "Classifier",
-                    "description": "Domain classification",
-                    "input": "User message",
-                    "output": "is_our_domain, confidence, reasoning",
-                    "applies_to": [model_id for model_id, config in MODEL_CONFIGS.items() if config["has_classifier"]]
-                },
-                {
-                    "name": "Query Writer",
-                    "description": "Generate weighted RAG queries",
-                    "input": "User message",
-                    "output": "List of queries with weights and reasoning",
-                    "applies_to": list(MODEL_CONFIGS.keys())
-                },
-                {
-                    "name": "RAG Retrieval",
-                    "description": "Fetch relevant documents using embeddings",
-                    "input": "Generated queries",
-                    "output": "Retrieved documents with metadata",
-                    "applies_to": list(MODEL_CONFIGS.keys()),
-                    "supports_custom_embeddings": True
-                },
-                {
-                    "name": "Reranking",
-                    "description": "Rerank documents by relevance",
-                    "input": "Retrieved documents + user message",
-                    "output": "Reranked documents with relevance scores",
-                    "applies_to": list(MODEL_CONFIGS.keys())
-                },
-                {
-                    "name": "Answer Generator",
-                    "description": "Generate final response",
-                    "input": "User message + reranked documents",
-                    "output": "Final answer with sources",
-                    "applies_to": list(MODEL_CONFIGS.keys())
-                }
-            ]
-        },
-        "available_models": MODEL_CONFIGS,
-        "socket_events": {
-            "client_to_server": [
-                "chat_message",
-                "ping"
-            ],
-            "server_to_client": [
-                "chat_start",
-                "chat_step",
-                "chat_complete",
-                "chat_error",
-                "pong"
-            ]
-        } if socketio_enabled else {
-            "note": "Socket.IO events not available - modular handler disabled"
-        }
-    }
 
 
 # ================================

@@ -219,7 +219,7 @@ class ApiService {
 
   async postChatMessage(text: string, authContext: AuthContextValue): Promise<ChatMessage> {
     const headers = this.makeHeaders(authContext, { "Content-Type": "application/json" });
-    const res = await fetch(`${this.baseUrl}/api/chat/messages`, {
+    const res = await fetch(`${this.baseUrl}/api/{project}/chat/messages`, {
       method: "POST",
       headers,
       body: JSON.stringify({ text }),
@@ -360,11 +360,13 @@ class ApiService {
 
   // -------------------- KB FILE / URL --------------------
 
-  async uploadFileToKB(
-    file: File,
-    authContext: AuthContextValue,
-    onProgress?: (progress: number) => void
-  ): Promise<KBUploadResponse> {
+    async uploadFileToKB(
+        project: string,
+        tenant: string,
+        file: File,
+        authContext: AuthContextValue,
+        onProgress?: (progress: number) => void
+    ): Promise<KBUploadResponse> {
     const formData = new FormData();
     formData.append("file", file);
 
@@ -399,7 +401,7 @@ class ApiService {
 
       xhr.addEventListener("error", () => reject(new Error("Network error during upload")));
 
-      xhr.open("POST", `${this.baseUrl}/api/kb/upload`);
+      xhr.open("POST", `${this.baseUrl}/api/kb/${project}/upload`);
 
       // apply Authorization + X-ID-Token with the same helper
       const tmpPairs: [string, string][] = [];
@@ -410,9 +412,9 @@ class ApiService {
     });
   }
 
-  async addURLToKB(request: KBAddURLRequest, authContext: AuthContextValue): Promise<KBUploadResponse> {
+  async addURLToKB(project: string, tenant: string, request: KBAddURLRequest, authContext: AuthContextValue): Promise<KBUploadResponse> {
     const headers = this.makeHeaders(authContext, { "Content-Type": "application/json" });
-    const res = await fetch(`${this.baseUrl}/api/kb/add-url`, {
+    const res = await fetch(`${this.baseUrl}/api/kb/${project}/add-url`, {
       method: "POST",
       headers,
       body: JSON.stringify(request),
@@ -422,13 +424,15 @@ class ApiService {
   }
 
   async processKBURLWithSocket(
+      project: string,
+    tenant: string,
     authContext: AuthContextValue,
     resourceMetadata: any,
     socketId: string,
     processingMode?: string
   ): Promise<any> {
     const headers = this.makeHeaders(authContext, { "Content-Type": "application/json" });
-    const res = await fetch(`${this.baseUrl}/api/kb/add-url/process`, {
+    const res = await fetch(`${this.baseUrl}/api/kb/${project}/add-url/process`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -442,12 +446,14 @@ class ApiService {
   }
 
   async processKBFileWithSocket(
-    authContext: AuthContextValue,
+    project: string,
+    tenant: string,
+      authContext: AuthContextValue,
     resource_metadata: any,
     socketId: string
   ): Promise<any> {
     const headers = this.makeHeaders(authContext, { "Content-Type": "application/json" });
-    const res = await fetch(`${this.baseUrl}/api/kb/upload/process`, {
+    const res = await fetch(`${this.baseUrl}/api/kb/${project}/upload/process`, {
       method: "POST",
       headers,
       body: JSON.stringify({ resource_metadata, socket_id: socketId }),
@@ -457,11 +463,13 @@ class ApiService {
   }
 
   async listKBResources(
-    authContext: AuthContextValue,
+    project: string,
+      tenant: string,
+      authContext: AuthContextValue,
     resourceType?: string
   ): Promise<{ resources: KBResource[]; total_count: number; kb_stats: any }> {
     const headers = this.makeHeaders(authContext);
-    const res = await fetch(`${this.baseUrl}/api/kb/resources`, { headers });
+    const res = await fetch(`${this.baseUrl}/api/kb/${project}/resources`, { headers });
     if (!res.ok) throw new Error("Failed to list KB resources");
     const result = await res.json();
     const resources = result.resources.filter((r: KBResource) =>
@@ -471,7 +479,9 @@ class ApiService {
   }
 
   async getKBResourceContent(
-    authContext: AuthContextValue,
+    project: string,
+    tenant: string,
+      authContext: AuthContextValue,
     resourceId: string,
     version?: string,
     contentType: "raw" | "extraction" | "segments" = "raw"
@@ -480,16 +490,16 @@ class ApiService {
     const params = new URLSearchParams({ content_type: contentType });
     if (version) params.append("version", version);
 
-    const res = await fetch(`${this.baseUrl}/api/kb/resource/${resourceId}/content?${params}`, {
+    const res = await fetch(`${this.baseUrl}/api/kb/${project}/resource/${resourceId}/content?${params}`, {
       headers,
     });
     if (!res.ok) throw new Error("Failed to get KB resource content");
     return res.json();
   }
 
-  async deleteKBResource(authContext: AuthContextValue, resourceId: string): Promise<any> {
+  async deleteKBResource(project: string, tenant: string, authContext: AuthContextValue, resourceId: string): Promise<any> {
     const headers = this.makeHeaders(authContext);
-    const res = await fetch(`${this.baseUrl}/api/kb/resource/${resourceId}`, {
+    const res = await fetch(`${this.baseUrl}/api/kb/${project}/resource/${resourceId}`, {
       method: "DELETE",
       headers,
     });
@@ -497,28 +507,15 @@ class ApiService {
     return res.json();
   }
 
-  getKBResourceDownloadUrl(resourceId: string, version?: string): string {
+  // TODO: request by RN instead
+  getKBResourceDownloadUrl(project: string, tenant: string, resourceId: string, version?: string): string {
     const params = new URLSearchParams();
 
     if (version) params.append("version", version);
     const qs = params.toString();
-    return `${this.baseUrl}/api/kb/resource/${resourceId}/download${qs ? "?" + qs : ""}`;
+    return `${this.baseUrl}/api/kb/${project}/resource/${resourceId}/download${qs ? "?" + qs : ""}`;
     }
 
-  async getKBResourceContentForPreview(
-    authContext: AuthContextValue,
-    resourceId: string,
-    version?: string
-  ): Promise<{ content: any; mimeType: string; name: string }> {
-    const data = await this.getKBResourceContent(authContext, resourceId, version);
-    const { resources } = await this.listKBResources(authContext);
-    const resource = resources.find((r) => r.id === resourceId);
-    return {
-      content: data.content,
-      mimeType: resource?.mime || "application/octet-stream",
-      name: resource?.name || "Unknown",
-    };
-  }
 
   // -------------------- RN content helpers --------------------
 
@@ -731,7 +728,6 @@ export const {
   getKBResourceContent,
   deleteKBResource,
   getKBResourceDownloadUrl,
-  getKBResourceContentForPreview,
   extractResourceMetadata,
   getContentByRN,
   getKBHealth,

@@ -49,6 +49,9 @@ class REDIS:
 
 class CONFIG:
     ID_TOKEN_HEADER_NAME = os.getenv("ID_TOKEN_HEADER_NAME", "X-ID-Token")
-    CONFIG_CHANNEL = "kdcube:config:bundles"
+
+    class BUNDLES:
+        BUNDLE_MAPPING_KEY_FMT = "kdcube:config:bundles:mapping:{tenant}:{project}"
+        UPDATE_CHANNEL = "kdcube:config:bundles:update"
 
 

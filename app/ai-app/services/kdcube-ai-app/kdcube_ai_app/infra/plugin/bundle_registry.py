@@ -21,10 +21,6 @@ class BundleSpec:
     description: Optional[str] = None
 
 ENV_JSON = "AGENTIC_BUNDLES_JSON"
-ENV_DEFAULT_ID = "AGENTIC_DEFAULT_BUNDLE_ID"
-
-def _bool_env(v: Optional[str]) -> bool:
-    return v in {"1", "true", "True", "YES", "yes"}
 
 def _normalize(d: Dict[str, Any]) -> Dict[str, Any]:
     # Ensure required keys exist
@@ -34,36 +30,58 @@ def _normalize(d: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("BundleSpec missing 'id'")
     if not d.get("path"):
         raise ValueError(f"BundleSpec '{d['id']}' missing 'path'")
-    d.setdefault("singleton", bool(d.get("singleton", False)))
+    d["singleton"] = bool(d.get("singleton", False))
     return d
 
-
 def load_from_env() -> None:
+    """
+    Accept both shapes:
+      1) {"default_bundle_id": "...", "bundles": { "<id>": {...}, ... }}
+      2) legacy flat dict: { "<id>": {...}, ... }
+    """
     global _REGISTRY, _DEFAULT_ID
     with _REG_LOCK:
         raw = os.getenv(ENV_JSON)
+        if not raw:
+            _REGISTRY = {}
+            _DEFAULT_ID = None
+            return
+
         data = json.loads(raw)
+
+        if isinstance(data, dict) and "bundles" in data:
+            default_bundle_id = data.get("default_bundle_id")
+            raw_bundles = data.get("bundles") or {}
+        else:
+            # legacy: env was just a mapping
+            default_bundle_id = None
+            raw_bundles = data or {}
+
         reg: Dict[str, Dict[str, Any]] = {}
-        for k, v in (data or {}).items():
-            item = _normalize({"id": k, **(v or {})})
+        for k, v in (raw_bundles or {}).items():
+            # ensure id consistency for each entry
+            v = dict(v or {})
+            v.setdefault("id", k)
+            item = _normalize(v)
             reg[item["id"]] = item
+
         _REGISTRY = reg
 
-        default_env = os.getenv(ENV_DEFAULT_ID)
-        if default_env:
-            _DEFAULT_ID = default_env
-        elif _DEFAULT_ID not in (_REGISTRY.keys()):
-            # If default missing, pick first or None
+        # resolve default
+        if default_bundle_id and default_bundle_id in _REGISTRY:
+            _DEFAULT_ID = default_bundle_id
+        else:
             _DEFAULT_ID = next(iter(_REGISTRY.keys()), None)
 
 def serialize_to_env(registry: Dict[str, Dict[str, Any]], default_id: Optional[str]) -> None:
-    """Sets os.environ variables (does not persist to disk)."""
+    """Reflect current in-memory mapping back into env (best-effort)."""
     with _REG_LOCK:
-        os.environ[ENV_JSON] = json.dumps(registry, ensure_ascii=False)
-        if default_id:
-            os.environ[ENV_DEFAULT_ID] = default_id
-        else:
-            os.environ.pop(ENV_DEFAULT_ID, None)
+        payload = {
+            "default_bundle_id": default_id if default_id in registry else next(iter(registry), None),
+            "bundles": registry
+        }
+        os.environ[ENV_JSON] = json.dumps(payload, ensure_ascii=False)
+
 
 def get_all() -> Dict[str, Dict[str, Any]]:
     with _REG_LOCK:
@@ -113,3 +131,19 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
         if not bid or bid not in _REGISTRY:
             return None
         return BundleSpec(**_REGISTRY[bid])
+
+
+async def load_registry(redis, logger):
+    try:
+        from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store
+
+        persisted = await _load_store(redis)  # tenant/project inferred from env
+        set_registry(
+            {bid: be.model_dump() for bid, be in persisted.bundles.items()},
+            persisted.default_bundle_id
+        )
+        serialize_to_env(get_all(), get_default_id())
+        logger.info(f"Bundle mapping synced from Redis: {len(persisted.bundles)} bundles (default={persisted.default_bundle_id})")
+    except Exception as _e:
+        logger.warning(f"Could not sync bundles from Redis; using env-only: {_e}")
+

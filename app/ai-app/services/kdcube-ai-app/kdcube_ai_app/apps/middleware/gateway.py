@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Iterable
 from pydantic import BaseModel
 
 from kdcube_ai_app.infra.gateway.gateway import (
@@ -142,10 +142,15 @@ class FastAPIGatewayAdapter:
             return session
         return dependency
 
-    def auth_without_pressure(self):
+    def auth_without_pressure(self, requirements: Optional[Iterable] = None):
         """
         Authenticate + authorize for admin endpoints, bypass throttling for privileged users
         """
+        DEFAULT_ADMIN_REQUIREMENTS = [
+            RequireUser(),
+            RequireRoles("kdcube:role:super-admin"),
+        ]
+        reqs = requirements if requirements else DEFAULT_ADMIN_REQUIREMENTS
         async def dependency(request: Request) -> UserSession:
 
             existing: Optional[UserSession] = getattr(request.state, STATE_SESSION, None)
@@ -155,7 +160,7 @@ class FastAPIGatewayAdapter:
             # Use admin bypass for monitoring/admin endpoints
             session = await self.process_request(
                 request,
-                [RequireUser(), RequireRoles("kdcube:role:super-admin")],
+                reqs,
                 bypass_throttling=True
             )
             setattr(request.state, STATE_SESSION, session)

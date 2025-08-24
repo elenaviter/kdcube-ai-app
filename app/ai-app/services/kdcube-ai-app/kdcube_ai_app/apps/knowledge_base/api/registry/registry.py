@@ -95,7 +95,6 @@ class SegmentContentRequest(BaseModel):
 #                            KB ENDPOINTS
 # ================================================================================
 
-@router.post("/upload")
 @router.post("/{project}/upload")
 async def upload_file_to_kb(
         file: UploadFile = File(...),
@@ -153,7 +152,6 @@ async def upload_file_to_kb(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/resource/{resource_id}/preview")
 @router.get("/{project}/resource/{resource_id}/preview")
 async def preview_kb_resource(
         resource_id: str,
@@ -226,7 +224,6 @@ async def preview_kb_resource(
         logger.error(f"Error previewing KB resource: {e}; user: {session.username}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.options("/resource/{resource_id}/preview")
 @router.options("/{project}/resource/{resource_id}/preview")
 async def preview_kb_resource_options(resource_id: str,
                                       project: str = Depends(get_project),
@@ -243,9 +240,7 @@ async def preview_kb_resource_options(resource_id: str,
     )
 
 @router.post("/content/by-rn", response_model=RNContentResponse)
-@router.post("/{project}/content/by-rn", response_model=RNContentResponse)
 async def get_content_by_rn(request: RNContentRequest,
-                            project: str = Depends(get_project),
                             session=Depends(get_kb_read_with_acct_dep())):
     """Get content by Resource Name (RN) - requires KB read access."""
     try:
@@ -269,7 +264,7 @@ async def get_content_by_rn(request: RNContentRequest,
             content_type = request.content_type
 
         # TODO: should be tenant-aware
-        kb = get_kb(project=project)
+        kb = get_kb(project=project_name)
         # Get content based on stage
         if stage == "raw":
             # Get resource metadata first to check MIME type
@@ -286,8 +281,9 @@ async def get_content_by_rn(request: RNContentRequest,
                 metadata_dict = {
                     **resource_metadata.dict(),
                     "is_binary": True,
-                    "preview_url": f"/api/kb/resource/{tenant_name}/{project}/{resource_id}/preview?version={version}",
-                    "download_url": f"/api/kb/resource/{tenant_name}/{project}/{resource_id}/download?version={version}",
+                    # {project}/resource/{resource_id}/preview
+                    "preview_url": f"/api/kb/{project_name}/resource/{resource_id}/preview?version={version}",
+                    "X": f"/api/kb/{project_name}/resource/{resource_id}/download?version={version}",
                     "message": f"Binary content ({mime_type}) - use preview_url or download_url to access"
                 }
 
@@ -368,7 +364,6 @@ async def get_content_by_rn(request: RNContentRequest,
         logger.error(f"Error getting content by RN: {e}; user: {session.username}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/resources")
 @router.get("/{project}/resources")
 async def list_kb_resources(project: str = Depends(get_project),
                             session=Depends(get_kb_read_with_acct_dep())):
@@ -425,7 +420,6 @@ async def list_kb_resources(project: str = Depends(get_project),
         logger.error(f"Error listing KB resources: {e}; user: {session.username}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/resource/{resource_id}/content")
 @router.get("/{project}/resource/{resource_id}/content")
 async def get_kb_resource_content(
         resource_id: str,
@@ -487,7 +481,6 @@ async def get_kb_resource_content(
         logger.error(f"Error getting KB resource content: {e}; user: {session.username}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/resource/{resource_id}/download")
 @router.get("/{project}/resource/{resource_id}/download")
 async def download_kb_resource(resource_id: str,
                                version: Optional[str] = None,
@@ -496,7 +489,6 @@ async def download_kb_resource(resource_id: str,
     """Download a KB resource as attachment - requires KB read access."""
     return await preview_kb_resource(resource_id, version, attached="true", project=project, session=session)
 
-@router.delete("/resource/{resource_id}")
 @router.delete("/{project}/resource/{resource_id}")
 async def delete_kb_resource(resource_id: str,
                              project: str = Depends(get_project),
@@ -524,7 +516,6 @@ async def delete_kb_resource(resource_id: str,
         logger.error(f"Error deleting KB resource: {e}; user: {session.username}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/add-url")
 @router.post("/{project}/add-url")
 async def add_url_to_kb(request: KBAddURLRequest,
                         project: str = Depends(get_project),
@@ -563,7 +554,6 @@ async def add_url_to_kb(request: KBAddURLRequest,
         logger.error(f"Error adding URL to KB: {str(e)}; user: {session.username}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/content/segment")
 @router.post("/{project}/content/segment")
 async def get_segment_content(request: SegmentContentRequest,
                               project: str = Depends(get_project),

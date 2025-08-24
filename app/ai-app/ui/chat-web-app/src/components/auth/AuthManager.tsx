@@ -136,7 +136,7 @@ const WithOAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
                 // 2) Hit Hosted UI /logout to clear the Cognito cookie
                 // 3) Return to /signedout (user must click “Sign in” to start a new login)
                 logout: async () => {
-                    const base      = getDefaultRoutePrefix(); // e.g. "/chatbot/chat"
+                    const base      = getDefaultRoutePrefix(); // e.g. "/chatbot/domain-expert"
                     const origin    = window.location.origin;
                     const logoutRedirect = `${origin}${base}/chat`;
                     const cfg = getOAuthConfig();

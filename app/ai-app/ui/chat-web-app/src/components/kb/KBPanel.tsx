@@ -175,7 +175,7 @@ const FilesPanel = () => {
     const loadFileResources = async () => {
         try {
             // const filesResources = await apiService.listKBResources('file', auth.user?.access_token);
-            const filesResources = await apiService.listKBResources(authContext,'file');
+            const filesResources = await apiService.listKBResources(project, tenant, authContext,'file');
             const files = filesResources.resources;
             // Filter to only show file resources, not URL resources
             // const files = response.resources.filter(resource => resource.source_type === 'file');
@@ -252,6 +252,8 @@ const FilesPanel = () => {
                 try {
                     // 1) upload (0–20%)
                     const uploadResp = await apiService.uploadFileToKB(
+                        project,
+                        tenant,
                         file,
                         authContext,
                         pct => setUploadProgress(p => ({ ...p, [fileId]: Math.round(pct * 0.2) })),
@@ -339,7 +341,7 @@ const FilesPanel = () => {
                     // 4) start processing using the shared socket id
                     const sharedSocketId = (apiService as any)["kbSocket"]?.id;
                     setUploadStages(s => ({ ...s, [fileId]: "Starting processing…" }));
-                    await apiService.processKBFileWithSocket(authContext, meta, sharedSocketId);
+                    await apiService.processKBFileWithSocket(project, tenant, authContext, meta, sharedSocketId);
 
                 } catch (err: any) {
                     console.error("Upload/processing error:", err);
@@ -362,7 +364,7 @@ const FilesPanel = () => {
 
     const handleDeleteResource = async (resourceId: string) => {
         try {
-            await apiService.deleteKBResource(authContext, resourceId);
+            await apiService.deleteKBResource(project, tenant, authContext, resourceId);
             await loadFileResources();
         } catch (err) {
             console.error("Error deleting resource:", err);
@@ -371,7 +373,7 @@ const FilesPanel = () => {
 
     const handleDownloadResource = async (resourceId: string, filename: string) => {
         try {
-            const url = apiService.getKBResourceDownloadUrl(resourceId);
+            const url = apiService.getKBResourceDownloadUrl(project, tenant, resourceId);
             const link = document.createElement('a');
             link.href = url;
             link.download = filename;
@@ -390,7 +392,7 @@ const FilesPanel = () => {
                 name: resource.filename,
                 size: resource.size_bytes ? `${(resource.size_bytes / 1024 / 1024).toFixed(1)} MB` : 'Unknown size',
                 mimeType: resource.mime || 'application/octet-stream',
-                url: apiService.getKBResourceDownloadUrl(resource.id), // For download button
+                url: apiService.getKBResourceDownloadUrl(project, tenant, resource.id), // For download button
                 resourceId: resource.id, // For preview iframe - THIS IS THE KEY FIX
                 version: resource.version
             });
@@ -400,7 +402,7 @@ const FilesPanel = () => {
                 name: resource.filename,
                 size: resource.size_bytes ? `${(resource.size_bytes / 1024 / 1024).toFixed(1)} MB` : 'Unknown size',
                 mimeType: resource.mime || 'application/octet-stream',
-                url: apiService.getKBResourceDownloadUrl(resource.id),
+                url: apiService.getKBResourceDownloadUrl(project, tenant, resource.id),
                 resourceId: resource.id,
                 version: resource.version
             });
@@ -758,7 +760,7 @@ const LinksPanel = () => {
     const loadLinkResources = async () => {
         try {
             // const linksResources = await apiService.listKBResources('url', auth.user?.access_token);
-            const linksResources = await apiService.listKBResources(authContext, 'url');
+            const linksResources = await apiService.listKBResources(project, tenant, authContext, 'url');
             const links = linksResources.resources;
             setLinkResources(links);
         } catch (error) {
@@ -871,6 +873,8 @@ const LinksPanel = () => {
         try {
             // STEP 1: add URL (0–20%)
             const addResp = await apiService.addURLToKB(
+                project,
+                tenant,
                 { url, name: new URL(url).hostname },
                 authContext
             );
@@ -961,6 +965,8 @@ const LinksPanel = () => {
             // STEP 4: start processing (shared socket id is fine)
             const sharedSocketId = (apiService as any)["kbSocket"]?.id;
             await apiService.processKBURLWithSocket(
+                project,
+                tenant,
                 authContext,
                 resourceMeta,
                 sharedSocketId,
@@ -997,7 +1003,7 @@ const LinksPanel = () => {
 
     const handleDeleteResource = async (resourceId: string) => {
         try {
-            await apiService.deleteKBResource(authContext, resourceId);
+            await apiService.deleteKBResource(project, tenant, authContext, resourceId);
             await loadLinkResources();
         } catch (err) {
             console.error("Error deleting link:", err);
@@ -1006,7 +1012,7 @@ const LinksPanel = () => {
 
     const handleDownloadResource = async (resourceId: string, filename: string) => {
         try {
-            const url = apiService.getKBResourceDownloadUrl(resourceId);
+            const url = apiService.getKBResourceDownloadUrl(project, tenant, resourceId);
             const link = document.createElement('a');
             link.href = url;
             link.download = filename;
@@ -1024,7 +1030,7 @@ const LinksPanel = () => {
                 name: resource.name,
                 size: resource.size_bytes ? `${(resource.size_bytes / 1024 / 1024).toFixed(1)} MB` : 'Unknown size',
                 mimeType: resource.mime || 'text/html',
-                url: apiService.getKBResourceDownloadUrl(resource.id),
+                url: apiService.getKBResourceDownloadUrl(project, tenant, resource.id),
                 originalUrl: resource.uri,
                 resourceId: resource.id,
                 version: resource.version

@@ -25,7 +25,7 @@ export function useBundles(baseUrl: string, authContext: any): UseBundlesResult 
         try {
             const headers: HeadersInit = [['Content-Type','application/json']];
             authContext?.appendAuthHeader?.(headers);
-            const res = await fetch(`${baseUrl}/bundles`, {method: 'GET', headers});
+            const res = await fetch(`${baseUrl}/landing/bundles`, {method: 'GET', headers});
             const data = await res.json();
             if (!res.ok) throw new Error((data?.detail as string) || 'Failed to load bundles');
             setBundles(data.available_bundles || {});

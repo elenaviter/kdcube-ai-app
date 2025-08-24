@@ -130,7 +130,7 @@ class SegmentContentRequest(BaseModel):
 @router.post("/{project}/search", response_model=KBSearchResponse)
 async def search_kb(request: KBSearchRequest,
                     project: str = Depends(get_project),
-                    user=Depends(get_kb_read_dep())):
+                    session = Depends(get_kb_read_with_acct_dep())):
     """Enhanced search with navigation support and RN information - requires KB read access."""
     try:
         kb = get_kb(project=project)
@@ -164,7 +164,7 @@ async def search_kb(request: KBSearchRequest,
                     )
                     all_enhanced_results.extend(resource_results)
                 except Exception as e:
-                    logger.warning(f"Search failed for resource {resource.id}: {e}; user: {user.username}")
+                    logger.warning(f"Search failed for resource {resource.id}: {e}; user: {session.username}")
                     continue
 
             # Sort by relevance and limit results
@@ -179,12 +179,12 @@ async def search_kb(request: KBSearchRequest,
                 "searched_resources": 1 if request.resource_id else len(kb.list_resources()),
                 "total_resources": len(kb.list_resources()),
                 "enhanced_search": True,
-                "user": user.username
+                "user": session.username
             }
         )
 
     except Exception as e:
-        logger.error(f"Error searching KB: {e}; user: {user.username}")
+        logger.error(f"Error searching KB: {e}; user: {session.username}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -192,7 +192,7 @@ async def search_kb(request: KBSearchRequest,
 @router.post("/{project}/search/enhanced", response_model=EnhancedKBSearchResponse)
 async def search_kb_enhanced(request: EnhancedKBSearchRequest,
                              project: str = Depends(get_project),
-                             user = Depends(get_kb_read_with_acct_dep())):
+                             session = Depends(get_kb_read_with_acct_dep())):
     """Enhanced search with comprehensive backtrack information - requires KB read access."""
     try:
         kb = get_kb(project=project)
@@ -209,7 +209,7 @@ async def search_kb_enhanced(request: EnhancedKBSearchRequest,
             try:
                 formatted_results.append(result)
             except Exception as e:
-                logger.error(f"Error formatting result: {e}; user: {user.username}")
+                logger.error(f"Error formatting result: {e}; user: {session.username}")
                 continue
 
         return EnhancedKBSearchResponse(
@@ -221,12 +221,12 @@ async def search_kb_enhanced(request: EnhancedKBSearchRequest,
                 "backtrack_enabled": request.include_backtrack,
                 "navigation_enabled": request.include_navigation,
                 "searched_resources": 1 if request.resource_id else len(kb.list_resources()),
-                "user": user.username
+                "user": session.username
             }
         )
 
     except Exception as e:
-        logger.error(f"Enhanced search error: {e}; user: {user.username}")
+        logger.error(f"Enhanced search error: {e}; user: {session.username}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -234,7 +234,7 @@ async def search_kb_enhanced(request: EnhancedKBSearchRequest,
 @router.post("/{project}/content/highlighted")
 async def get_content_with_highlighting(request: HighlightRequest,
                                         project: str = Depends(get_project),
-                                        user=Depends(get_kb_read_dep())):
+                                        session = Depends(get_kb_read_with_acct_dep())):
     """Get content with highlighting applied based on citations and navigation - requires KB read access."""
     try:
         kb = get_kb(project=project)
@@ -289,13 +289,13 @@ async def get_content_with_highlighting(request: HighlightRequest,
             "navigation_applied": navigation_applied,
             "rn": request.rn,
             "citations_applied": len(request.citations),
-            "user": user.username
+            "user": session.username
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error applying highlighting: {e}; user: {user.username}")
+        logger.error(f"Error applying highlighting: {e}; user: {session.username}")
         raise HTTPException(status_code=500, detail=str(e))
 
 class FaissSearchRequest(BaseModel):

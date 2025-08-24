@@ -17,10 +17,11 @@ from kdcube_ai_app.apps.knowledge_base.api.resolvers import (
     get_project,
     get_tenant_projects,
     get_tenant_db,
-    ENABLE_DATABASE, get_system_health
+    ENABLE_DATABASE, get_system_health, get_kb_admin_with_acct_dep
 )
 from kdcube_ai_app.apps.knowledge_base.tenant import TenantProjects
 from kdcube_ai_app.apps.knowledge_base.db.providers.tenant_db import TenantDB
+from kdcube_ai_app.auth.sessions import UserSession
 
 logger = logging.getLogger("KBAdmin.project.API")
 
@@ -37,7 +38,8 @@ router.tenant_projects = None
 @router.post("/projects")
 async def create_project(
     request: Request,
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Create a new knowledge base project."""
     data = await request.json()
@@ -77,7 +79,8 @@ async def create_project(
 
 @router.get("/projects")
 async def list_projects(
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
+        tenant_projects: TenantProjects = Depends(get_tenant_projects)
 ):
     """List all knowledge base projects using TenantProjects singleton."""
     try:
@@ -116,7 +119,8 @@ async def list_projects(
 @router.get("/projects/{project}")
 async def get_project_info(
     project: str = Depends(get_project),
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Get detailed information about a specific project."""
     try:
@@ -169,7 +173,8 @@ async def get_project_info(
 async def update_project(
     request: Request,
     project: str = Depends(get_project),
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Update project metadata (description, etc.)."""
     try:
@@ -204,7 +209,8 @@ async def update_project(
 @router.delete("/projects/{project}")
 async def delete_project(
     project: str = Depends(get_project),
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Delete a project and all its data."""
     if not router.tenant_projects:
@@ -246,7 +252,8 @@ async def delete_project(
 
 @router.get("/admin/tenant/health")
 async def get_tenant_health(
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Get detailed tenant health including storage and database."""
     try:
@@ -257,7 +264,7 @@ async def get_tenant_health(
 
 
 @router.get("/admin/system/health")
-async def get_system_health_endpoint():
+async def get_system_health_endpoint(session: UserSession = Depends(get_kb_admin_with_acct_dep()),):
     """Get comprehensive system health."""
     try:
         return get_system_health()
@@ -268,7 +275,8 @@ async def get_system_health_endpoint():
 
 @router.post("/admin/tenant/cleanup")
 async def cleanup_orphaned_resources(
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Clean up orphaned database schemas and storage inconsistencies."""
     try:
@@ -281,7 +289,8 @@ async def cleanup_orphaned_resources(
 @router.get("/admin/projects/{project}/validate")
 async def validate_project_consistency(
     project: str = Depends(get_project),
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Validate consistency between storage and database for a project."""
     try:
@@ -293,7 +302,8 @@ async def validate_project_consistency(
 
 @router.post("/admin/tenant/provision-system")
 async def provision_system_components(
-    tenant_projects: TenantProjects = Depends(get_tenant_projects)
+    tenant_projects: TenantProjects = Depends(get_tenant_projects),
+        session: UserSession = Depends(get_kb_admin_with_acct_dep()),
 ):
     """Provision system-level database components."""
     try:
@@ -308,7 +318,7 @@ async def provision_system_components(
 # ================================================================================
 
 @router.get("/admin/database/health")
-async def get_database_health():
+async def get_database_health(session: UserSession = Depends(get_kb_admin_with_acct_dep()),):
     """Get database health (only available if database support is enabled)."""
     if not ENABLE_DATABASE:
         raise HTTPException(status_code=404, detail="Database support is disabled")
@@ -322,7 +332,7 @@ async def get_database_health():
 
 
 @router.post("/admin/database/provision-system")
-async def provision_database_system():
+async def provision_database_system(session: UserSession = Depends(get_kb_admin_with_acct_dep()),):
     """Provision system-level database components directly."""
     if not ENABLE_DATABASE:
         raise HTTPException(status_code=404, detail="Database support is disabled")

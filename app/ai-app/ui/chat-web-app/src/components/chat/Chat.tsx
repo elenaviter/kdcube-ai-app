@@ -480,6 +480,7 @@ const SingleChatApp: React.FC = () => {
                     authContext={authContext}
                     config={config}
                     setConfigValue={setConfigValue}
+                    className="w-[520px]"
                     updateConfig={updateConfig}
                     validationErrors={validationErrors}
                     onMetaChange={({model, embedder, bundle})=>{

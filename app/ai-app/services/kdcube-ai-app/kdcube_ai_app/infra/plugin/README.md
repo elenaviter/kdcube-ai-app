@@ -1,273 +1,454 @@
-# Agentic App Bundle — Integration Guide
+# Agentic App Bundles — Integration Guide (Multi-bundle runtime)
 
-This doc shows how to plug **your** agentic app (LangGraph/LangChain/etc.) into the host chat service by shipping a **bundle**. You’ll see:
+This guide shows how to plug **your** agentic app (LangGraph/LangChain/etc.) into the host chat service as a **bundle** — now with **multiple bundles** selectable at message time via **WebSocket + Queue** architecture.
 
+You'll learn:
 * The required **directory layout**
-* The **decorators** that mark your workflow for the loader
-* The **interface contract** your workflow should implement
-* The **env vars** you must set
-* How to **stream**, emit **step** updates, and **serialize** results
-* A minimal **Hello World** bundle you can copy
+* The **decorators** that mark your workflow
+* The **workflow interface** you should implement
+* How to **stream** tokens and emit **step** updates over WebSocket
+* The **multi-bundle registry** (env + admin API + Redis broadcast)
+* How clients **choose a bundle** per message over WebSocket
+* The **WebSocket → Queue → Processor → Chat Callback** flow
+* A copy-paste **Hello World** bundle
 
-> **Important:** The **decorator is the only way** to mark a workflow (class or factory). If nothing in your module is decorated, the loader won’t find you.
+> **Important:** A decorator is the **only way** to mark a workflow for discovery. If nothing is decorated, the loader won't find you.
 
 ---
 
-## 1) What’s a “bundle”?
+## Architecture Overview
 
-A bundle is a small Python package the host can import dynamically. It contains your workflow class (or factory), optional integrations (RAG, tools, etc.), and any local services you need.
+```mermaid
+sequenceDiagram
+    participant Client as WebSocket Client
+    participant WS as WebSocket Server
+    participant Queue as Message Queue
+    participant Processor as Queue Processor
+    participant Registry as Bundle Registry
+    participant Loader as Bundle Loader
+    participant Bundle as Workflow Bundle
+    
+    Note over Client,Bundle: Real WebSocket + Queue Architecture
+    
+    Client->>WS: Connect WebSocket
+    WS-->>Client: Connection established
+    
+    Client->>WS: Send message via WebSocket<br/>{message, config: {agentic_bundle_id}}
+    
+    WS->>Queue: Enqueue message<br/>with user context & config
+    WS-->>Client: Message queued (ack)
+    
+    Note over Queue,Processor: Async Processing
+    
+    Processor->>Queue: Dequeue next message
+    Queue-->>Processor: Message + config
+    
+    Processor->>Processor: Extract agentic_bundle_id<br/>from config
+    
+    Processor->>Registry: Get bundle config by ID
+    Registry-->>Processor: Bundle metadata<br/>(path, module, singleton)
+    
+    Processor->>Loader: Load workflow from bundle
+    
+    alt Singleton & Cached
+        Loader-->>Processor: Return cached instance
+    else Load New Instance
+        Loader->>Bundle: Import & instantiate workflow
+        Bundle-->>Loader: Workflow instance
+        opt Cache if singleton
+            Loader->>Loader: Cache instance
+        end
+        Loader-->>Processor: Workflow instance
+    end
+    
+    Note over Processor,Bundle: Chat Callback Execution
+    
+    Processor->>Bundle: Chat callback:<br/>run(session_id, state)
+    
+    loop Streaming Response
+        Bundle->>Processor: emit_delta(token, idx)
+        Processor->>WS: Stream token via WebSocket
+        WS-->>Client: Real-time token
+        
+        Bundle->>Processor: emit_step(step, status, payload)  
+        Processor->>WS: Stream step update via WebSocket
+        WS-->>Client: Real-time step update
+    end
+    
+    Bundle-->>Processor: Final result dict<br/>{final_answer, error_message, ...}
+    
+    Processor->>WS: Send final response via WebSocket
+    WS-->>Client: Complete response
+    
+    Processor->>Queue: Mark message as processed
+```
+
+> The **processor** is responsible for applying `bundles.update` broadcasts and, when a shared registry store is configured, persisting the resulting snapshot; the environment variable (`AGENTIC_BUNDLES_JSON`) remains a seed/reset source.
+> 
+---
+
+## 1) What's a "bundle"?
+
+A bundle is a small Python package (or single file, or wheel/zip) the host imports dynamically. It contains your workflow (class or factory), optional RAG/tools glue, etc.
 
 **Example layout:**
-
 ```
 my_cool_bundle/
 ├── __init__.py
-├── agentic_app.py        # ← your decorated workflow lives here
-├── inventory.py          # optional local service/model glue
+├── agentic_app.py        # ← your decorated workflow
+├── inventory.py          # optional: local service/model glue
 └── integrations/
     ├── __init__.py
-    └── rag.py            # optional RAG integration
+    └── rag.py            # some submodule
 ```
 
----
-
-## 2) How the loader finds you
-
-The host sets these **env vars**:
-
-* `AGENTIC_BUNDLE_PATH`
-  Absolute filesystem path to the **root folder** of your bundle (the dir containing `__init__.py`).
-
-* `AGENTIC_BUNDLE_MODULE`
-  The **import path inside that folder** that contains the decorated workflow/factory.
-
-    * If your workflow is in `agentic_app.py` at the top level, set: `AGENTIC_BUNDLE_MODULE=agentic_app`.
-    * If it’s in a subpackage, e.g. `app_backend/agent.py`, set: `AGENTIC_BUNDLE_MODULE=app_backend.agent`.
-
-* `AGENTIC_SINGLETON`
-  “true”/“false” (case-insensitive). Overrides bundle’s default and forces the loader to keep **one instance per process** (true) or **new per request** (false), when supported by your decorator options.
-
-> If the loader logs:
-> **“No decorated workflow found in module 'X'. Use @agentic\_workflow or @agentic\_workflow\_factory.”**
-> Check that `AGENTIC_BUNDLE_PATH` and `AGENTIC_BUNDLE_MODULE` point to the right place **and** your item is decorated.
+Supported forms:
+* **Package dir** with `__init__.py`
+* **Single file** `.py`
+* **Wheel/Zip** (`.whl` or `.zip`) — requires a **module name** inside the archive
 
 ---
 
-## 3) The decorators (required)
+## 2) Multi-bundle registry (env)
 
-Import the decorators from the host:
+The host keeps a **registry** of bundles.
+At startup the registry is built either from **environment** (`AGENTIC_BUNDLES_JSON`) 
+or from a configured **registry store** (e.g. Redis) — the code supports both. 
+At runtime the **processor** maintains an in-memory view and will persist updates back to the registry 
+store when one is configured.
+
+Define bundles in env as JSON (either shape works):
+
+```bash
+# flat (legacy) shape: id -> entry
+export AGENTIC_BUNDLES_JSON='{
+  "kdcube.demo.1": {
+    "id": "kdcube.demo.1",
+    "name": "KDCubeDemo.1",
+    "path": "/bundles/custom_apps",
+    "module": "default_app.agentic_app",
+    "singleton": false,
+    "description": "Agentic App: Default App"
+  },
+  "contextmgmt.experiment": { "...": "..." }
+}'
+```
+
+```bash
+# wrapped shape with default
+export AGENTIC_BUNDLES_JSON='{
+  "default_bundle_id": "kdcube.demo.1",
+  "bundles": {
+    "kdcube.demo.1": { "...": "..." },
+    "contextmgmt.experiment": { "...": "..." }
+  }
+}'
+```
+
+**Fields**
+
+* `id` — unique key
+* `path` — absolute path in the container (e.g. `/bundles/...`)
+* `module` — required for `.whl`/`.zip`, or when pointing to a parent dir
+* `singleton` — prefer one instance per process
+* `name`, `description` — for UI
+* `default_bundle_id` (optional if using wrapped shape). If omitted, the **first entry** is used as default.
+
+> If you’re running multi-process / multi-node, configure a shared registry store. The processor will sync to it on 
+> startup, apply updates received via broadcast, and persist the resulting snapshot.
+
+---
+
+## 3) Choosing a bundle per message (WebSocket)
+
+Clients choose a bundle via `agentic_bundle_id` inside the message **config** sent over WebSocket:
+
+```jsonc
+{
+  "message": "help me analyze this dataset",
+  "config": {
+    "selected_model": "gpt-4o",
+    "selected_embedder": "openai-text-embedding-3-small",
+    "kb_search_endpoint": "http://kb/api/kb",
+    "agentic_bundle_id": "data-analyzer"   // ← choose here
+  }
+}
+```
+
+If omitted, the host uses what's defined in bundles snapshot defined as `default_bundle_id`.
+
+**Message Flow:**
+1. Client sends message via **WebSocket** connection
+2. WebSocket server **enqueues** the message with config
+3. **Queue processor** dequeues and handles the message asynchronously
+4. Processor extracts `agentic_bundle_id` and loads the appropriate bundle
+5. **Chat callback** (`run` method) executes the workflow with streaming back over WebSocket
+
+---
+
+## 4) How the loader finds you (decorators)
+
+Import the decorators from the host loader:
 
 ```py
 from kdcube_ai_app.infra.plugin.agentic_loader import (
-    agentic_workflow,
-    agentic_workflow_factory,
-    agentic_initial_state,
+    agentic_workflow,          # decorate a CLASS
+    agentic_workflow_factory,  # decorate a FACTORY function
+    agentic_initial_state,     # optional: initial state builder
 )
 ```
 
-### 3.1 `@agentic_workflow` (decorate a **class**)
-
+### `@agentic_workflow` (class)
 ```py
 @agentic_workflow(
-    name="domain-general-chat-workflow",   # unique ID within your module
+    name="general-chat-workflow",
     version="1.0.0",
-    priority=150,                # higher wins if multiple are present
-    singleton=False              # preferred default (can be overridden via env)
+    priority=150,   # highest priority wins if multiple present
 )
 class MyWorkflow:
     ...
 ```
 
-### 3.2 `@agentic_workflow_factory` (decorate a **factory function**)
-
-Use this if you prefer to build/return an instance yourself.
-
+### `@agentic_workflow_factory` (function)
 ```py
 @agentic_workflow_factory(
     name="my-workflow-factory",
     version="1.0.0",
-    priority=200,
-    singleton=True
+    priority=200,   # beats lower-priority class if both exist
+    singleton=True  # preferred default (env can still force it)
 )
 def create_workflow(config, step_emitter=None, delta_emitter=None):
     return MyWorkflow(config, step_emitter, delta_emitter)
 ```
 
-> You can use **either** class **or** factory. The loader will pick the highest-priority decorated item it finds.
+> The loader picks the single **winner** with highest `priority` (tie → factory wins).
 
-### 3.3 `@agentic_initial_state` (optional)
-
-Provide a function the host can call to make your first state dict.
-
+### `@agentic_initial_state` (optional)
 ```py
 @agentic_initial_state(name="my-initial-state", priority=100)
 def create_initial_state(user_message: str) -> dict:
     return {
-        "context": {"bundle": "my_cool_bundle"},
         "user_message": user_message,
-        "is_our_domain": None,
-        "classification_reasoning": None,
-        "rag_queries": None,
-        "retrieved_docs": None,
-        "reranked_docs": None,
         "final_answer": None,
         "error_message": None,
-        "format_fix_attempts": 0,
-        "search_hits": None,
-        "execution_id": f"exec_{int(time.time()*1000)}",
-        "start_time": time.time(),
-        "step_logs": [],
-        "performance_metrics": {},
+        # ... add your own fields
     }
 ```
 
 ---
 
-## 4) Workflow interface contract
+## 5) Workflow interface contract
 
-Your decorated workflow **must** be constructible with:
+Your decorated workflow **must** be constructible as:
 
 ```py
-__init__(self,
-         config,                        # host Config object
-         step_emitter: Optional[StepEmitter] = None,
-         delta_emitter: Optional[DeltaEmitter] = None)
+def __init__(self, config: Config, step_emitter=None, delta_emitter=None): ...
 ```
 
-…and should provide at least **one** of these async entry points:
+**IMPORTANT:** Currently, only the `run` method is used as the entrypoint:
 
-* **Preferred:**
+```py
+async def run(self, session_id: str, state: dict) -> dict:
+    """
+    Main entrypoint called by the queue processor
+    
+    Args:
+        session_id: Unique session/thread identifier for conversation persistence
+        state: Initial state dict (from create_initial_state or previous state)
+    
+    Returns:
+        dict: Final state with at minimum 'final_answer' and 'error_message' fields
+    """
+```
 
-  ```py
-  async def process_message(
-      self,
-      user_message: str,
-      thread_id: str = "default",
-      seed_messages: Optional[List[Any]] = None
-  ) -> Dict[str, Any]
-  ```
+The **queue processor** will pass:
+* `delta_emitter(chunk: str, idx: int)` — token streaming back over WebSocket
+* `step_emitter(step: str, status: "started"|"completed"|"error", payload: dict)` — timeline updates over WebSocket
 
-  Return a **JSON-serializable dict** (see §6).
+### Config Object Structure
 
-* **Optional low-level:**
+Your workflow receives a `Config` object with these key properties:
 
-  ```py
-  async def run(self, session_id: str, state: dict) -> dict
-  ```
-
-  Useful if you expose your graph directly.
-
-> The host may inject:
->
-> * `delta_emitter(chunk: str, idx: int)` for **streaming tokens**
-> * `step_emitter(step_name: str, status: Literal["started","completed","error"], payload: dict)` for **step timeline**
+```py
+class Config:
+    selected_model: str              # e.g., "gpt-4o"
+    openai_api_key: str
+    claude_api_key: str
+    selected_embedder: str           # e.g., "openai-text-embedding-3-small"
+    embedding_model: str
+    custom_embedding_endpoint: str
+    kb_search_url: str
+    log_level: str
+    provider: str                    # "openai", "anthropic", etc.
+    has_classifier: bool
+    # ... and many more configuration options
+```
 
 ---
 
-## 5) Emitting streaming & steps (for the host UI)
+## 6) Streaming & step events
 
-### 5.1 Streaming tokens
-
-Call the `delta_emitter` whenever you get a chunk:
-
+**Token Streaming**
 ```py
 idx = -1
-async def on_token(txt: str):
-    nonlocal idx
-    if not txt: return
+for token in tokens:
     idx += 1
-    await delta_emitter(txt, idx)
+    await self.emit_delta(token, idx)
 ```
 
-### 5.2 Step events
-
-Wrap your nodes/operations and emit:
-
+**Step Updates**
 ```py
-await step_emitter("query_writer", "started", {"message": "Generating RAG queries..."})
-# ...do work...
-await step_emitter("query_writer", "completed", {"query_count": 5, "queries": ["..."]})
-# or, on error:
-await step_emitter("query_writer", "error", {"error": str(e)})
+await self.emit_step("query_writer", "started", {"message": "Generating queries"})
+# do work...
+await self.emit_step("query_writer", "completed", {"query_count": 5})
+# on error:
+await self.emit_step("query_writer", "error", {"error": str(e)})
 ```
 
-**Common step names** used by the UI (suggested):
+Suggested step names the UI understands:
 `workflow_start`, `classifier`, `query_writer`, `rag_retrieval`, `reranking`, `answer_generator`, `workflow_complete`
 
 ---
 
-## 6) What you should return (JSON-serializable)
+## 7) Return shape (JSON-serializable)
 
-Return a plain dict (no LangChain objects) containing at least:
+Return a plain dict (no LangChain objects) from your `run` method:
 
-* `final_answer: str` — what the UI shows
-* `error_message: Optional[str]` — if something failed
+Required:
+* `final_answer: str`
+* `error_message: Optional[str]`
 
-Recommended optional fields the UI knows how to use:
-
+Useful optional fields:
 * `is_our_domain: Optional[bool]`
 * `classification_reasoning: Optional[str]`
-* `retrieved_docs: Optional[List[Dict]]`
-* `reranked_docs: Optional[List[Dict]]`
-* `step_logs: List[Dict]` — your own per-step timeline
-* `performance_metrics: Dict[str, Any]`
+* `retrieved_docs: Optional[List[dict]]`
+* `reranked_docs: Optional[List[dict]]`
+* `step_logs: List[dict]`
+* `performance_metrics: dict`
 * `execution_id: str`, `start_time: float`
 
-> If you run a LangGraph and receive a `GraphState`/rich object back, **serialize** it by picking the above fields (and anything else your app cares about) and converting non-JSON types to primitives/strings.
-
 ---
 
-## 7) Configuration your bundle can rely on
+## 8) Admin & runtime control (multi-bundle)
 
-The host passes a `Config` object into your workflow constructor. Typical fields (check your host app):
+### 8.1 Read registry (chat users)
+```
+GET /landing/bundles
+```
+Returns the current registry snapshot for the running scope (optionally tenant/project aware).
 
-* `selected_model` (e.g., `"gpt-4o"`)
-* `openai_api_key`, `claude_api_key`, …
-* `embedding_model`, `custom_embedding_endpoint`
-* `kb_search_endpoint` (if you use RAG)
-* `log_level`, `provider`, etc.
-
-Your bundle can import types/utilities from the host, e.g.:
-
-```py
-from kdcube_ai_app.apps.chat.inventory import Config, AgentLogger, _mid
-from kdcube_ai_app.apps.chat.emitters import StepEmitter, DeltaEmitter
+**Response**
+```json
+{
+  "default_bundle_id": "smart-assistant",
+  "bundles": {
+    "smart-assistant": {
+      "id": "smart-assistant",
+      "name": "Smart Assistant",
+      "path": "/bundles/smart_assistant",
+      "module": "app_backend.agentic_app",
+      "singleton": true,
+      "description": "General-purpose AI assistant for Q&A and tasks"
+    },
+    "data-analyzer": { "...": "..." },
+    "demo-hello": { "...": "..." }
+  }
+}
 ```
 
----
-
-## 8) Debugging your bundle
-
-If the API exposes a debug endpoint (e.g. `GET /landing/debug/agentic`), it will show:
-
-* Which module was loaded
-* Which decorated workflow/factory was selected
-* Whether singleton mode is active
-* Any import or decoration errors
-
-**Typical pitfalls:**
-
-* Missing `__init__.py` (module not importable)
-* Wrong `AGENTIC_BUNDLE_MODULE` (points to a package, not the file containing the decorator)
-* Decorator not executed (guarded by `if __name__ == "__main__":` or code exceptions on import)
-* Returning non-serializable objects in your result
-
----
-
-## 9) Minimal bundle you can copy
-
-### `my_cool_bundle/__init__.py`
-
-```py
-# Keep it empty or put package version here
+### 8.2 Manage registry (super-admin)
+```
+POST /admin/integrations/bundles
+Content-Type: application/json
 ```
 
-### `my_cool_bundle/agentic_app.py`
+**Body**
 
+```jsonc
+{
+  "op": "merge",             // "merge" (upsert these ids) or "replace" (set exactly to these)
+  "bundles": {
+    "kdcube.demo.1": {
+      "id": "kdcube.demo.1",
+      "name": "Hello World Demo",
+      "path": "/opt/agentic-bundles/demo_hello-1.0.0.whl",
+      "module": "demo_hello.agentic_app",
+      "singleton": false,
+      "description": "Toy bundle for smoke tests"
+    }
+  },
+  "default_bundle_id": "kdcube.demo.1"  // optional: also set default
+}
+```
+
+**Behavior**
+
+* Web app applies the change to its **in-memory registry** and **broadcasts** a `bundles.update` message.
+* The **processor** listens for this broadcast, applies the change, mirrors to process env (best-effort), **persists** the full snapshot to the configured registry store (if any), and clears loader caches so new requests see the update.
+
+> **Delete**: send `op: "replace"` with only the **remaining** ids. The processor will persist that new snapshot.
+
+### 8.3 Reset registry from `.env` (super-admin)
+
+```
+POST /admin/integrations/bundles/reset-env
+```
+
+Forces a reset using `AGENTIC_BUNDLES_JSON` as the **source**. 
+The effect is broadcast; processors apply it and persist the snapshot to the registry store (if configured).
+
+---
+
+## 9) Hot-reload via config broadcast
+
+Updates propagate via a config broadcast that all processors subscribe to. Both payload shapes are accepted:
+
+* **Channel:** `kdcube:config:bundles:update`
+* **Message shape (JSON):**
+```json
+{
+  "tenant": "t1",
+  "project": "p1",
+  "op": "merge",
+  "ts": 1730000000,
+  "registry": {
+    "default_bundle_id": "kdcube.demo.1",
+    "bundles": { "...": "..." }
+  },
+  "actor": "admin@example.com"
+}
+```
+
+**Receiver behavior (each processor):**
+
+1. Update in-memory registry.
+2. Mirror to process env (best-effort).
+3. **Persist** the resulting snapshot to the registry store (if configured).
+4. Clear loader caches; **new** requests use the new mapping.
+
+---
+
+## 10) UI integration (WebSocket + Config widget)
+
+* The **Config** widget calls `GET /landing/bundles` to list bundles; users pick one per chat (stored as `agentic_bundle_id` in their local config).
+* If the user has **super-admin**, the widget shows **Manage Bundles** (add/edit/delete, set default) and calls `POST /admin/bundles`.
+* The **Chat** component sends the chosen `agentic_bundle_id` in the `config` field with each message over **WebSocket**; the queue processor resolves it to `{path, module, singleton}` and loads the workflow via the chat callback.
+
+---
+
+## 11) Minimal bundle you can copy
+
+`my_cool_bundle/__init__.py`
+```py
+# optional: version, exports
+BUNDLE_ID = "hello-world-bundle"
+```
+
+`my_cool_bundle/agentic_app.py`
 ```py
 import time
-from typing import Optional, List, Dict, Any
-
+import asyncio
+from typing import Optional, Dict, Any
 from kdcube_ai_app.infra.plugin.agentic_loader import (
     agentic_workflow,
     agentic_initial_state,
@@ -275,113 +456,199 @@ from kdcube_ai_app.infra.plugin.agentic_loader import (
 from kdcube_ai_app.apps.chat.emitters import StepEmitter, DeltaEmitter
 from kdcube_ai_app.apps.chat.inventory import Config
 
-BUNDLE_ID = "my_cool_bundle"
+# Import from your bundle's __init__.py
+try:
+    from . import BUNDLE_ID
+except ImportError:
+    BUNDLE_ID = "hello-world-bundle"
 
-@agentic_initial_state(name="my-initial-state", priority=100)
+@agentic_initial_state(name=f"{BUNDLE_ID}-initial-state", priority=100)
 def create_initial_state(user_message: str) -> dict:
     return {
-        "context": {"bundle": BUNDLE_ID},
         "user_message": user_message,
-        "is_our_domain": None,
-        "classification_reasoning": None,
-        "rag_queries": None,
-        "retrieved_docs": None,
-        "reranked_docs": None,
         "final_answer": None,
         "error_message": None,
-        "format_fix_attempts": 0,
-        "search_hits": None,
         "execution_id": f"exec_{int(time.time()*1000)}",
         "start_time": time.time(),
         "step_logs": [],
-        "performance_metrics": {},
     }
 
-@agentic_workflow(name="hello-workflow", version="1.0.0", priority=100, singleton=False)
+@agentic_workflow(name=f"{BUNDLE_ID}", version="1.0.0", priority=100)
 class HelloWorkflow:
     def __init__(self, config: Config,
                  step_emitter: Optional[StepEmitter] = None,
                  delta_emitter: Optional[DeltaEmitter] = None):
         self.config = config
-        self.emit_step = step_emitter or (lambda *_a, **_k: None)
-        self.emit_delta = delta_emitter or (lambda *_a, **_k: None)
+        self.emit_step = step_emitter or (lambda *a, **k: asyncio.sleep(0))
+        self.emit_delta = delta_emitter or (lambda *a, **k: asyncio.sleep(0))
 
-    async def process_message(self, user_message: str, thread_id: str = "default",
-                              seed_messages: Optional[List[Any]] = None) -> Dict[str, Any]:
+    async def run(self, session_id: str, state: dict) -> Dict[str, Any]:
+        """
+        Main entrypoint called by queue processor
+        """
         await self.emit_step("workflow_start", "started", {"message": "Starting..."})
-
+        
+        user_message = state.get("user_message", "")
+        answer = f"Hello! You said: '{user_message}'"
+        
         # Simulate streaming
-        answer = "Hello! You said: "
         idx = -1
-        for token in ["Hello", ", ", "world", "!"]:
+        for token in ["Hello", "! ", "You ", "said: ", f"'{user_message}'"]:
             idx += 1
             await self.emit_delta(token, idx)
-            answer += token
-
+            await asyncio.sleep(0.1)  # Simulate processing time
+        
         await self.emit_step("answer_generator", "completed", {"answer_length": len(answer)})
         await self.emit_step("workflow_complete", "completed", {"message": "Done"})
-
-        return {
+        
+        # Update state and return
+        state.update({
             "final_answer": answer,
-            "is_our_domain": True,
-            "retrieved_docs": [],
-            "reranked_docs": [],
-            "error_message": None,
-            "step_logs": [],
-            "execution_id": f"exec_{int(time.time()*1000)}",
-            "performance_metrics": {},
-        }
+            "error_message": None
+        })
+        
+        return state
 ```
 
-### `my_cool_bundle/inventory.py` (optional)
+You can find langgraph-based reference bundle(s) [here](../../apps/chat/default_app).
+---
 
-```py
-# Put your local model/service glue here (or leave empty if not needed)
-```
-
-### `my_cool_bundle/integrations/rag.py` (optional)
-
-```py
-class RAGService:
-    def __init__(self, config):
-        self.endpoint = getattr(config, "kb_search_endpoint", None)
-
-    async def retrieve_documents(self, queries):
-        # Replace with your real KB call
-        return []
-```
+## 12) Config your host (env)
+See [.env](../../../../../deployment/manual/sample_env/.env) for example.
 
 ---
 
-## 10) Configure the host
+## 13) Quick tests
 
-Set env vars so the host can import your bundle:
+Examples consider you use hardcoded auth where only an access token is needed.
 
+For oauth, use the ai app platform client [TBD documenting] which ensures the proper auth headers.
+**List bundles**
 ```bash
-export AGENTIC_BUNDLE_PATH=/absolute/path/to/my_cool_bundle
-export AGENTIC_BUNDLE_MODULE=agentic_app
-export AGENTIC_SINGLETON=false
-
-# plus any model keys your workflow needs:
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
+curl -H "Authorization: Bearer <token>" \
+  http://localhost:8000/landing/bundles
 ```
 
-Restart the host service and hit your chat endpoint. If the UI supports the debug route, check `/landing/debug/agentic`.
+**Set default + add/modify a bundle (super-admin)**
+```bash
+curl -X POST -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{
+    "op":"merge",
+    "bundles":{
+      "demo-hello":{
+        "id":"demo-hello",
+        "name":"Hello World Demo", 
+        "path":"/opt/agentic-bundles/demo_hello-1.0.0.whl",
+        "module":"demo_hello.agentic_app",
+        "singleton":false
+      }
+    },
+    "default_bundle_id":"smart-assistant"
+  }' \
+  http://localhost:8000/admin/integrations/bundles
+
+# delete via replace
+curl -X POST -H "Authorization: Bearer <admin-token>" -H "Content-Type: application/json" \
+  -d '{
+    "op":"replace",
+    "bundles": {
+      "kdcube.demo.1": {
+        "id":"kdcube.demo.1",
+        "name":"KDCubeDemo.1",
+        "path":"/bundles/custom_apps",
+        "module":"default_app.agentic_app",
+        "singleton":false
+      }
+    },
+    "default_bundle_id":"kdcube.demo.1"
+  }' \
+  http://localhost:8000/admin/integrations/bundles
+
+# reset from .env
+curl -X POST -H "Authorization: Bearer <admin-token>" \
+  http://localhost:8000/admin/integrations/bundles/reset-env
+```  
+
+**Send a chat message using a specific bundle**
+```javascript
+// WebSocket message format:
+{
+  "message": "say hi",
+  "config": {
+    "selected_model": "gpt-4o",
+    "selected_embedder": "openai-text-embedding-3-small", 
+    "agentic_bundle_id": "demo-hello"
+  }
+}
+// HTTP message format: TBD
+```
 
 ---
 
-## 11) FAQ
+## 14) End-to-End Flow Diagram
 
-**Q: Can I decorate my class instead of a factory?**
-A: Yes. Use `@agentic_workflow` on the class (see §3.1). That’s the simplest path.
+```mermaid
+flowchart TD
+    A[User Opens Chat] --> B[Establish WebSocket Connection]
+    B --> C[GET /landing/bundles]
+    C --> D[User Selects Bundle in UI]
+    D --> E[Store agentic_bundle_id in Config]
+    E --> F[User Types Message]
+    F --> G[Send Message via WebSocket]
+    G --> H[WebSocket Server Enqueues Message]
+    H --> I[Queue Processor Dequeues]
+    I --> J[Extract agentic_bundle_id]
+    J --> K[Resolve Bundle Path/Module]
+    K --> L{Singleton Cached?}
+    L -->|Yes| M[Use Cached Instance]
+    L -->|No| N[Load New Instance]
+    M --> O[Execute run method]
+    N --> P[Cache if Singleton]
+    P --> O
+    O --> Q[Start Streaming]
+    Q --> R[Stream Tokens via emit_delta]
+    Q --> S[Stream Steps via emit_step]
+    R --> T[Update Chat UI]
+    S --> U[Update Progress Timeline]
+    T --> V{Complete?}
+    U --> V
+    V -->|No| R
+    V -->|Yes| W[Send Final Response]
+    W --> X[Mark Message Processed]
+    X --> Y[Ready for Next Message]
+```
 
-**Q: What if I have multiple decorated items?**
-A: The loader picks the **highest priority**. Use `priority` to control the winner.
+---
 
-**Q: My state contains LangChain messages and crashes JSON serialization.**
-A: Don’t return raw graph state. Return a **clean dict** with primitives only (see §6). Keep your own `step_logs` and metrics if useful.
+## 15) FAQ & troubleshooting
 
-**Q: Do I need `__init__.py`?**
-A: Yes, your bundle root must be a Python package.
+**Loader says "No decorated workflow found …"**
+Ensure your `path` and `module` point to the **module that contains the decorator**, and that the decorator actually runs on import (no `if __name__ == "__main__"` guards, no import-time exceptions).
 
+**Wheel/zip doesn't load**
+Provide `module` (e.g., `my_pkg.agentic_app`). Wheels/zips can't be auto-discovered without it.
+
+**Multiple decorated items**
+The loader picks the one with highest `priority` (tie → factory wins).
+
+**Singleton vs non-singleton**
+* Decorator `singleton=True` marks preference.
+* Env can **force** via per-entry `singleton` in the registry.
+* The loader maintains an instance cache when singleton is active.
+
+**Hot-reload didn't apply**
+Check Redis pub/sub connectivity. Verify a message was published on `kdcube:config:bundles:update`. The server updates env, clears loader caches, and new requests should use the new registry.
+
+**Returning non-JSON types**
+Only return primitives, lists, and dicts. Convert pydantic/LangChain objects to dicts/strings.
+
+**WebSocket connection issues**
+Ensure your WebSocket connection is properly established before sending messages. The server will queue messages and process them asynchronously.
+
+**Streaming not working**
+Make sure you're calling `emit_delta` and `emit_step` with `await` in your workflow. These methods send real-time updates back over the WebSocket connection.
+
+---
+
+With this setup you can host **many agentic apps** side-by-side, allow users to **pick a bundle per chat message**, 
+and **admin** can add/replace/set default bundles across the fleet with Redis-based hot-reload — all over a scalable **WebSocket + Queue** architecture.

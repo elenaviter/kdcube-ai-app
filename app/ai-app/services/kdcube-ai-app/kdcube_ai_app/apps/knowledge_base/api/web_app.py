@@ -30,7 +30,6 @@ from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
 
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
-from kdcube_ai_app.apps.knowledge_base.core import KnowledgeBase
 from kdcube_ai_app.apps.knowledge_base.api.socketio.kb import SocketIOKBHandler
 
 KDCUBE_ORCHESTRATOR_QUEUES_PREFIX = "kdcube_orch_"
