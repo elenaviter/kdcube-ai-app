@@ -3,7 +3,7 @@
  * Copyright (c) 2025 Elena Viter
  */
 
-import { Manager, Socket } from 'socket.io-client';
+import {Manager, Socket} from 'socket.io-client';
 import {AppConfig} from './ChatConfigProvider';
 import {getChatBaseAddress} from "../../AppConfig.ts";
 import {AuthContextValue} from "../auth/AuthManager.tsx";
@@ -29,7 +29,7 @@ export interface ChatStepData {
 
 export interface ChatStartData {
     message: string;
-    timestamp: string;
+    timestamp: Date;
 }
 
 export interface ChatDeltaData {
@@ -70,7 +70,7 @@ export type UIMessage = {
     id: number;
     sender: 'user' | 'assistant';
     text: string;
-    timestamp: string;
+    timestamp: Date;
     isError?: boolean;
     metadata?: any;
 };
@@ -93,7 +93,7 @@ export interface ChatEventHandlers {
     onChatStep?: (data: ChatStepData) => void;
     onChatComplete?: (data: ChatCompleteData) => void;
     onChatError?: (data: ChatErrorData) => void;
-    onPong?: (data: { timestamp: string }) => void;
+    onPong?: (data: { timestamp: Date }) => void;
     onSessionInfo?: (info: { session_id: string; user_type: string }) => void;
 }
 
@@ -134,13 +134,6 @@ function getManager(baseUrl: string, path = '/socket.io', opts: Partial<Manager[
     return m;
 }
 
-
-// ---------- types ----------
-export interface ChatStepData { step: string; status: 'started'|'completed'|'error'; timestamp: string; data?: Record<string, any>; elapsed_time?: string; error?: string; }
-export interface ChatStartData { message: string; timestamp: string; }
-export interface ChatCompleteData { final_answer: string; is_our_domain?: boolean; classification_reasoning?: string; rag_queries?: any[]; retrieved_docs?: any[]; reranked_docs?: any[]; error_message?: string; selected_model: string; config_info: Record<string, any>; timestamp: string; }
-export interface ChatErrorData { error: string; timestamp: string; }
-
 export interface ChatRequest { message: string; chat_history: ChatMessage[]; config: AppConfig; project?: string; tenant?: string; }
 
 export interface ChatEventHandlers {
@@ -152,7 +145,7 @@ export interface ChatEventHandlers {
     onChatStep?: (data: ChatStepData) => void;
     onChatComplete?: (data: ChatCompleteData) => void;
     onChatError?: (data: ChatErrorData) => void;
-    onPong?: (data: { timestamp: string }) => void;
+    onPong?: (data: { timestamp: Date }) => void;
     onSessionInfo?: (info: { session_id: string; user_type: string }) => void;
 }
 
