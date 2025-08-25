@@ -8,7 +8,6 @@ Simplified resolvers module with clean separation of concerns
 import os
 import logging
 
-from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter
 # Import centralized configuration
 from kdcube_ai_app.infra.gateway.config import (
     GatewayConfigFactory,
@@ -20,7 +19,6 @@ from kdcube_ai_app.infra.gateway.config import (
 )
 from kdcube_ai_app.infra.gateway.gateway import create_gateway_from_config
 
-from kdcube_ai_app.apps.middleware.simple_idp import SimpleIDP
 from kdcube_ai_app.apps.middleware.gateway import FastAPIGatewayAdapter
 
 logger = logging.getLogger(__name__)
@@ -55,8 +53,7 @@ from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator, OrchestratorFactory
 from kdcube_ai_app.infra.llm.util import get_service_key_fn
 from kdcube_ai_app.infra.llm.llm_data_model import AIProvider, ModelRecord, AIProviderName
-from kdcube_ai_app.apps.knowledge_base.db.providers.tenant_db import TenantDB
-from kdcube_ai_app.apps.knowledge_base.tenant import TenantProjects
+
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
 # Storage setup (your existing logic)
@@ -112,16 +109,9 @@ def get_orchestrator() -> IOrchestrator:
 
 # Database setup (your existing logic)
 ENABLE_DATABASE = os.environ.get("ENABLE_DATABASE", "true").lower() == "true"
-_tenant_db = TenantDB(tenant_id=TENANT_ID) if ENABLE_DATABASE else None
 
 def get_tenant() -> str:
     return TENANT_ID
-
-def get_tenant_db() -> TenantDB:
-    """Singleton TenantDB instance."""
-    if not _tenant_db:
-        raise RuntimeError("TenantDB not available (database support disabled)")
-    return _tenant_db
 
 # Session analytics service
 _session_analytics_service = None
@@ -140,18 +130,6 @@ def get_session_analytics_service():
         except ImportError:
             logger.info("Session analytics models not available")
     return _session_analytics_service
-
-# Tenant projects setup (your existing logic)
-_tenant_projects = TenantProjects(
-    storage_backend=storage_backend,
-    tenant_db=_tenant_db,
-    tenant_id=TENANT_ID,
-    embedding_model_factory=embedding_model
-)
-
-def get_tenant_projects() -> TenantProjects:
-    """Singleton TenantProjects instance."""
-    return _tenant_projects
 
 # ================================
 # CENTRALIZED GATEWAY CONFIGURATION

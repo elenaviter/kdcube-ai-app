@@ -2,17 +2,14 @@
 # Copyright (c) 2025 Elena Viter
 
 import sys
-import shutil
+
 import s3fs
 import time, os, json
 import torch
 import numpy as np
-from flask import Flask, request, jsonify, Response
-from typing import List, Any
+from flask import Flask, request, jsonify
 
-from huggingface_hub import HfApi, HfFolder
-
-import requests, threading
+import threading
 from functools import wraps
 
 from flask_cors import CORS  # For CORS support
@@ -35,22 +32,6 @@ search_engine_cache_lock = threading.Lock()
 MAX_CACHE_SIZE = 2
 MAX_DS_CACHE_SIZE = 2
 MAX_SEARCH_ENGINE_CACHE_SIZE = 5
-
-import pandas as pd
-
-class NumpyEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, (np.integer, np.int64)):
-            return int(obj)
-        if isinstance(obj, (np.floating, np.float64)):
-            return float(obj)
-        if isinstance(obj, np.ndarray):
-            return obj.tolist()
-        if isinstance(obj, pd.Timestamp):
-            return obj.isoformat()
-        if isinstance(obj, pd.Series):
-            return obj.tolist()
-        return super().default(obj)
 
 from dotenv import load_dotenv, find_dotenv
 def load_env():
@@ -98,7 +79,6 @@ DEFAULT_SUMMARIZER_MODEL_2 = "google/pegasus-cnn_dailymail"
 summarizers = {}
 
 app = Flask(__name__)
-# app.json.encoder = NumpyEncoder
 
 CORS(app)
 

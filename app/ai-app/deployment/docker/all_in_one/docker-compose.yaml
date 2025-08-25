@@ -141,8 +141,6 @@ services:
     restart: unless-stopped
     profiles:
       - frontend
-    depends_on:
-      - chat
     environment:
       - NODE_ENV=production
     networks:

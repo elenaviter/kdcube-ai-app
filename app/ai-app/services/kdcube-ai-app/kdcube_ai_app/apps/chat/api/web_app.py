@@ -300,7 +300,7 @@ orchestrator: IOrchestrator = get_orchestrator()
 
 @app.middleware("http")
 async def gateway_middleware(request: Request, call_next):
-    if request.url.path.startswith(("/monitoring", "/admin", "/health", "/docs", "/openapi.json", "/favicon.ico")):
+    if request.url.path.startswith(("/profile", "/monitoring", "/admin", "/health", "/docs", "/openapi.json", "/favicon.ico")):
         return await call_next(request)
 
     # If already processed by a dependency earlier in the chain (rare but safe), skip

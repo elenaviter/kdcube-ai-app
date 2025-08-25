@@ -82,9 +82,9 @@ async def process_kb_resource(  kdcube_path: str,
         stages_config: Configuration for each stage
         ctx: execution ctx
     """
-    from kdcube_ai_app.apps.knowledge_base.processor import process_kb_resource
+    from kdcube_ai_app.apps.knowledge_base.processor import process_kb_resource as pkb
 
-    await process_kb_resource(kdcube_path, resource_id, version, target_sid, processing_mode, stages_config, ctx)
+    await pkb(kdcube_path, resource_id, version, target_sid, processing_mode, stages_config, ctx)
 
 # ==============================================================================
 #                              HEALTH CHECK ACTOR

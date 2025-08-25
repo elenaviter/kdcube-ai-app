@@ -173,7 +173,7 @@ class FastAPIGatewayAdapter:
     async def middleware(self, request: Request, call_next):
         """FastAPI middleware that adds session to request state"""
         # Skip processing for excluded paths
-        excluded_paths = ["/health", "/monitoring", "/docs", "/openapi.json", "/favicon.ico"]
+        excluded_paths = ["/profile", "/health", "/monitoring", "/docs", "/openapi.json", "/favicon.ico"]
 
         if any(request.url.path.startswith(path) for path in excluded_paths):
             return await call_next(request)

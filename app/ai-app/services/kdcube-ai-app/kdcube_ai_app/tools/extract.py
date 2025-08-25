@@ -13,15 +13,6 @@ from typing import Dict, Union, Any, List, Tuple
 
 from kdcube_ai_app.tools.processing import DataSourceExtractionResult
 
-try:
-    from marker.converters.pdf import PdfConverter
-    from marker.models import create_model_dict
-    from marker.output import text_from_rendered
-except ImportError:
-    PdfConverter = None
-    create_model_dict = None
-    text_from_rendered = None
-
 import logging
 logger = logging.getLogger("ExtractTool")
 
@@ -49,6 +40,14 @@ class PDFExtractor:
                 content: Union[str, bytes],
                 file_path: str) -> List[DataSourceExtractionResult]:
         """Extract content from PDF using marker library, including images and other assets."""
+        try:
+            from marker.converters.pdf import PdfConverter
+            from marker.models import create_model_dict
+            from marker.output import text_from_rendered
+        except ImportError:
+            PdfConverter = None
+            create_model_dict = None
+            text_from_rendered = None
 
         # Initialize marker converter
         marker_path = os.environ.get("MARKER_BINARY_PATH", None)

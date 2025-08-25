@@ -1,0 +1,4 @@
+boto3            # brings botocore, incl. botocore.config.Config
+PyJWT            # import jwt
+aiohttp          # async HTTP client
+python-dotenv    # load_dotenv, find_dotenv

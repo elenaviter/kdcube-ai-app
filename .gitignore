@@ -185,3 +185,5 @@ app/ai-app/deployment/scripts/
 app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/custom_apps/
 app/ai-app/ui/debug/
 app/ai-app/services/scripts/
+app/venvs
+app/ops

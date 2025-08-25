@@ -1,0 +1,6 @@
+python-socketio>=5.8 # provides socketio.AsyncClient
+websockets>=10       # required for AsyncClient with transports=["websocket"]
+aiohttp>=3.9         # enables polling fallback
+boto3                # you use botocore.Config via boto3
+PyJWT                # jwt
+python-dotenv        # load_dotenv/find_dotenv
