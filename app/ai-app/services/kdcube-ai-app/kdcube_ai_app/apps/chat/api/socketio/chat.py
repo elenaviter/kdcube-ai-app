@@ -364,7 +364,7 @@ class SocketIOChatHandler:
             if not config_request.openai_api_key:
                 config_request.openai_api_key = os.getenv("OPENAI_API_KEY")
             if not config_request.claude_api_key:
-                config_request.openai_api_key = os.getenv("ANTHROPIC_API_KEY")
+                config_request.claude_api_key = os.getenv("ANTHROPIC_API_KEY")
 
             # Optional: infer project/tenant for accounting if you carry them in config
             project_id = getattr(config_request, "project", None) or data.get("project")

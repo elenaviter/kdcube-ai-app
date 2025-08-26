@@ -191,7 +191,7 @@ async def get_bundle_suggestions(
     if not config_request.openai_api_key:
         config_request.openai_api_key = os.getenv("OPENAI_API_KEY")
     if not config_request.claude_api_key:
-        config_request.openai_api_key = os.getenv("ANTHROPIC_API_KEY")
+        config_request.claude_api_key = os.getenv("ANTHROPIC_API_KEY")
 
     spec_resolved = resolve_bundle(config_request.agentic_bundle_id, override=None)
     # 2) Build minimal workflow config (project-aware; defaults elsewhere)
