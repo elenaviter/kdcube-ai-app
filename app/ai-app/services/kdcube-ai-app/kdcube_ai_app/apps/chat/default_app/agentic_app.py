@@ -1178,6 +1178,14 @@ class ChatWorkflow:
             nodes.insert(2, "classifier")  # After summarize
         return nodes
 
+    def suggestions(self):
+        return [
+            "What light, watering, and soil do my common houseplants need?",
+            "Why are my leaves yellow/brown/curling, and how do I fix it?",
+            "How can I prevent and treat pests like spider mites and fungus gnats?",
+            "When should I repot, and what potting mix should I use?"
+        ]
+
 # ===========================================
 # Usage Example
 # ===========================================

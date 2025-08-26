@@ -14,3 +14,5 @@ python-socketio==5.13.0
 redis==6.2.0
 requests==2.32.4
 uvicorn==0.35.0
+networkx
+neo4j

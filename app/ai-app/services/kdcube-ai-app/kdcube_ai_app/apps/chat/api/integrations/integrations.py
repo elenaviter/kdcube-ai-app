@@ -4,12 +4,14 @@
 from typing import Optional, Dict, Any
 import logging
 import json
+import inspect
 
 from datetime import datetime
 from pydantic import BaseModel
 from fastapi import Depends, HTTPException, Request, APIRouter
 
 from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure
+from kdcube_ai_app.apps.chat.inventory import ConfigRequest
 from kdcube_ai_app.auth.sessions import UserSession
 
 import kdcube_ai_app.infra.namespaces as namespaces
@@ -36,6 +38,12 @@ class AdminBundlesUpdateRequest(BaseModel):
     op: str = "merge"  # "replace" | "merge"
     bundles: Dict[str, Dict[str, Any]]
     default_bundle_id: Optional[str] = None
+
+class BundleSuggestionsRequest(BaseModel):
+    user_id: str
+    bundle_id: str
+    conversation_id: Optional[str] = None
+    config_request: Optional[ConfigRequest] = None
 
 @router.get("/landing/bundles")
 async def get_available_bundles(
@@ -152,4 +160,90 @@ async def admin_reset_bundles_from_env(
         "count": len(reg.bundles)
     }
 
+@router.post("/integrations/bundles/{tenant}/{project}/operations/suggestions")
+async def get_bundle_suggestions(
+        tenant: str,
+        project: str,
+        payload: BundleSuggestionsRequest,
+        request: Request,
+        session: UserSession = Depends(get_user_session_dependency()),
+):
+    """
+    Load (or reuse singleton) bundle instance and, if defined, call its `suggestions(...)`.
+    Returns generic JSON from the bundle, or an empty suggestions list when not implemented.
+    """
+    from kdcube_ai_app.apps.chat.inventory import ConfigRequest, create_workflow_config
+    from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+    from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
 
+
+    # 1) Resolve bundle from the in-process registry (keeps processor-owned semantics)
+    spec_resolved = resolve_bundle(payload.bundle_id, override=None)
+    if not spec_resolved:
+        raise HTTPException(status_code=404, detail=f"Unknown bundle_id: {payload.bundle_id}")
+
+    # 2) Build minimal workflow config (project-aware; defaults elsewhere)
+    try:
+        wf_config = create_workflow_config(ConfigRequest())
+    except Exception:
+        # If ConfigRequest signature changes, be defensive
+        wf_config = create_workflow_config(ConfigRequest.model_validate({"project": project}))
+
+    # 3) Create or reuse the workflow instance (singleton honored by loader)
+    async def _noop(*_a, **_k):  # no-op emitters for this non-chat call
+        return None
+
+    spec = AgenticBundleSpec(
+        path=spec_resolved.path,
+        module=spec_resolved.module,
+        singleton=bool(spec_resolved.singleton),
+    )
+    try:
+        workflow, _init_state, _mod = get_workflow_instance(
+            spec, wf_config, step_emitter=_noop, delta_emitter=_noop
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load bundle: {e}")
+
+    # 4) Call suggestions() if available (support sync/async)
+    if not hasattr(workflow, "suggestions") or not callable(getattr(workflow, "suggestions")):
+        # Graceful, generic reply if not implemented
+        return {
+            "status": "ok",
+            "tenant": tenant,
+            "project": project,
+            "bundle_id": spec_resolved.id,
+            "conversation_id": payload.conversation_id,
+            "suggestions": [],
+            "note": "bundle does not implement suggestions()",
+        }
+
+    try:
+        fn = getattr(workflow, "suggestions")
+        if inspect.iscoroutinefunction(fn):
+            result = await fn(
+                user_id=payload.user_id,
+                conversation_id=payload.conversation_id,
+                tenant=tenant,
+                project=project,
+            )
+        else:
+            result = fn(
+                user_id=payload.user_id,
+                conversation_id=payload.conversation_id,
+                tenant=tenant,
+                project=project,
+            )
+    except Exception as e:
+        # Let bundles raise and still keep a predictable envelope here
+        raise HTTPException(status_code=500, detail=f"suggestions() failed: {e}")
+
+    # 5) Envelope the bundle’s generic JSON
+    return {
+        "status": "ok",
+        "tenant": tenant,
+        "project": project,
+        "bundle_id": spec_resolved.id,
+        "conversation_id": payload.conversation_id,
+        "suggestions": result,  # arbitrary JSON from bundle
+    }
