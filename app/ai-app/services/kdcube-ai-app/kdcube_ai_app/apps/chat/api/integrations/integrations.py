@@ -40,7 +40,6 @@ class AdminBundlesUpdateRequest(BaseModel):
     default_bundle_id: Optional[str] = None
 
 class BundleSuggestionsRequest(BaseModel):
-    user_id: str
     bundle_id: str
     conversation_id: Optional[str] = None
     config_request: Optional[ConfigRequest] = None
