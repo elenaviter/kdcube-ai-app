@@ -24,6 +24,11 @@ from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.plugin.agentic_loader import agentic_initial_state, agentic_workflow_factory, agentic_workflow
 from kdcube_ai_app.storage.storage import create_storage_backend
 
+import inspect
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
 try:
     from .inventory import ThematicBotModelService, BUNDLE_ID, project_app_state
     from .integrations.rag import RAGService
@@ -147,6 +152,8 @@ class ChatGraphState(TypedDict):
     start_time: float
     step_logs: List[Dict[str, Any]]
     performance_metrics: Dict[str, Any]
+
+    turn_id: str
 
 # ===========================================
 # Utility Functions for State Management
@@ -823,7 +830,7 @@ Be helpful, accurate, and cite specific information from the documents when rele
                         result_text += txt
                         idx += 1
                         # fire token to client
-                        await self.emit_delta(txt, idx)
+                        await self.emit_delta(txt, idx, {"turn_id": state.get("turn_id")})
 
                     stream_res = await self.model_service.stream_model_text_tracked(
                         self.model_service.answer_generator_client,
@@ -909,8 +916,28 @@ class ChatWorkflow:
                  delta_emitter: Optional[DeltaEmitter] = None):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.ChatWorkflow", config.log_level)
-        self.emit_step: StepEmitter = step_emitter or (lambda *_args, **_kw: asyncio.sleep(0))
-        self.emit_delta: DeltaEmitter = delta_emitter or (lambda *_: asyncio.sleep(0))
+
+        # Keep raw emitters
+        self._raw_step_emitter: StepEmitter = step_emitter or (lambda *_args, **_kw: asyncio.sleep(0))
+        self._raw_delta_emitter: DeltaEmitter = delta_emitter or (lambda *_args, **_kw: asyncio.sleep(0))
+
+        self._turn_id: Optional[str] = None  # NEW: set per turn
+
+        # Wrapped emitters that always include turn_id
+        async def _emit_step(step_name: str, status: str, payload: dict | None = None):
+            meta = dict(payload or {})
+            meta.setdefault("ts", _now_ms())
+            meta.setdefault("turn_id", self._turn_id)
+            await self._raw_step_emitter(step_name, status, meta)
+
+        async def _emit_delta(text: str, idx: int, meta: dict | None = None):
+            merged = {"turn_id": self._turn_id, "ts": _now_ms()}
+            if meta:
+                merged.update(meta)
+            await self._raw_delta_emitter(text, idx, merged)
+
+        self.emit_step = _emit_step              # use these everywhere internally
+        self.emit_delta = _emit_delta
 
         # Initialize services
         self.classifier = ClassifierAgent(config)
@@ -933,12 +960,30 @@ class ChatWorkflow:
         })
 
     async def run(self, session_id, conversation_id: str, state):
-        result = await self.graph.ainvoke(
-            state,
-            config={"configurable": {"thread_id": conversation_id}},
-        )
-        payload = project_app_state(result)
-        return payload
+
+        try:
+            # 1) ensure a fresh turn_id for this graph run
+            turn_id = state.get("turn_id") or _mid("turn")
+            state = dict(state)  # avoid mutating caller's dict
+            state["turn_id"] = turn_id
+            self._turn_id = turn_id
+
+            await self.emit_step("turn", "started", {
+                "session_id": session_id,
+                "conversation_id": conversation_id,
+            })
+            result = await self.graph.ainvoke(
+                state,
+                config={"configurable": {"thread_id": conversation_id}},
+            )
+            await self.emit_step("turn", "completed", {
+                "answer_length": len(result.get("final_answer") or ""),
+            })
+            payload = project_app_state(result)
+            return payload
+        finally:
+            # never leak the turn id to the next run
+            self._turn_id = None
 
 
 
@@ -1093,14 +1138,18 @@ class ChatWorkflow:
             thread_id=thread_id,
             selected_model=self.config.selected_model
         )
+        turn_id = _mid("turn")
+        self._turn_id = turn_id
 
         # Create initial state
         initial_state = create_initial_state(user_message)
+        initial_state["turn_id"] = turn_id
         if seed_messages:
             initial_state["messages"].extend(seed_messages)
 
         try:
             self.logger.log_step("invoking_workflow", {
+                "turn_id": turn_id,
                 "thread_id": thread_id,
                 "workflow_nodes": self._get_workflow_node_names(),
                 "embedding_type": "custom" if self.config.custom_embedding_endpoint else "openai"

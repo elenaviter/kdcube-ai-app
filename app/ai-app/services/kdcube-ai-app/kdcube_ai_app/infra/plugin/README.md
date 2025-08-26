@@ -248,7 +248,7 @@ def __init__(self, config: Config, step_emitter=None, delta_emitter=None): ...
 **IMPORTANT:** Currently, only the `run` method is used as the entrypoint:
 
 ```py
-async def run(self, session_id: str, state: dict) -> dict:
+async def run(self, session_id: str, conversation_id: str, state: dict) -> dict:
     """
     Main entrypoint called by the queue processor
     
@@ -482,7 +482,7 @@ class HelloWorkflow:
         self.emit_step = step_emitter or (lambda *a, **k: asyncio.sleep(0))
         self.emit_delta = delta_emitter or (lambda *a, **k: asyncio.sleep(0))
 
-    async def run(self, session_id: str, state: dict) -> Dict[str, Any]:
+    async def run(self, session_id: str, conversation_id: str, state: dict) -> Dict[str, Any]:
         """
         Main entrypoint called by queue processor
         """

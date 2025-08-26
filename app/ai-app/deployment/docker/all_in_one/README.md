@@ -34,6 +34,12 @@ Initialize Postgres (re-run if change the schemas)
   mkdir "kb-storage" -p && chmod 777 "kb-storage"
 ```
 
+### Create the data folders for the databases (if not done yet)
+```shell
+  mkdir -p ./data/{postgres,redis,neo4j/{data,logs,plugins,import}}
+  chmod -R 0777 data
+```
+
 ## Run
 
 ### Backend

@@ -4,7 +4,7 @@
 from typing import Any, Optional, Callable, Awaitable
 
 StepEmitter = Callable[[str, str, dict], Awaitable[None]]
-DeltaEmitter = Callable[[str, int], Awaitable[None]]
+DeltaEmitter = Callable[[str, int, dict], Awaitable[None]]
 
 class NoopEmitter:
     async def emit(self, event: str, data: dict, *, room: Optional[str] = None):

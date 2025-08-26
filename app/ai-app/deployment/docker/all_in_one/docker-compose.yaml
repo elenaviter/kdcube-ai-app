@@ -75,6 +75,38 @@ services:
     networks:
       - chat-internal
 
+  neo4j:
+    image: neo4j:5
+    container_name: chat-neo4j
+    profiles:
+      - backend
+    env_file:
+      - path: ./.env.backend
+        required: false
+    # Keep the plugin + procedure config here; credentials & memory come from .env.backend
+    environment:
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+      - neo4j-plugins:/plugins
+      - neo4j-import:/var/lib/neo4j/import
+    healthcheck:
+      # Uses container env (note the $$ for compose escaping)
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u $$N4J_USER -p $$N4J_PASSWORD 'RETURN 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    networks:
+      - chat-internal
+    # Expose if you want to use Neo4j Browser locally; otherwise you can omit ports
+    ports:
+      - "7474:7474"   # HTTP (Browser)
+      - "7687:7687"   # Bolt
+
+
   dramatiq:
     image: chat-dramatiq:latest
     container_name: chat-dramatiq
@@ -117,6 +149,7 @@ services:
       - REDIS_URL="redis://redis:6379/0"
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres-db
+      - APP_NEO4J_URI=bolt://neo4j:7687
     volumes:
       - ./kb-storage:/kb-storage
       - type: bind
@@ -124,6 +157,7 @@ services:
         target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
     depends_on:
       - redis
+      - neo4j
     networks:
       - chat-internal
 
@@ -180,3 +214,7 @@ networks:
 volumes:
   redis-data:
   postgres-data:
+  neo4j-data:
+  neo4j-logs:
+  neo4j-plugins:
+  neo4j-import:

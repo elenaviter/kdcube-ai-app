@@ -157,7 +157,10 @@ class AsyncSegmentEmbeddingProcessor:
                                   segment_type: SegmentType) -> EmbeddingResultWrapper:
         """Generate embedding for a single segment and record usage."""
         segment_id = segment.get("segment_id")
-        text = segment.get("text", "")
+
+        text = segment.get("summary", "")
+        if not text:
+            text = segment.get("text", "")
 
         if not text.strip():
             return EmbeddingResultWrapper.from_error(

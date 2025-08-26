@@ -441,7 +441,7 @@ class EnhancedChatRequestProcessor:
         logger.info(f"Task {task_id} completed for session {session_id}")
 
         # Close the synthetic workflow step
-        await self._emit_step("workflow_complete", "completed", session_id)
+        # await self._emit_step("workflow_complete", "completed", session_id)
 
         # Your handler already returns {"final_answer": ..., "session_id": ...} in your passthrough.
         # Normalize a bit, but don’t force a schema.

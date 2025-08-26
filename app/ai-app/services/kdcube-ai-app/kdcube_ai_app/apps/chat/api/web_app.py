@@ -122,16 +122,18 @@ async def lifespan(app: FastAPI):
             await sio.emit("chat_step", {
                 "step": step,
                 "status": status,
+                "turn_id": data["turn_id"],
                 "timestamp": datetime.now().isoformat(),
                 "data": data,
                 "elapsed_time": None,
                 "error": data.get("error")
             }, room=session_id)
 
-        async def _emit_delta(delta: str, index: int):
+        async def _emit_delta(delta: str, index: int, meta: dict):
             if not sio:
                 return
             await sio.emit("chat_delta", {
+                "turn_id": meta["turn_id"],
                 "task_id": task_id,
                 "delta": delta,
                 "index": index,

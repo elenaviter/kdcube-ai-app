@@ -2,6 +2,12 @@
 # Copyright (c) 2025 Elena Viter
 
 MODEL_CONFIGS = {
+    "o3-mini": {
+        "model_name": "o3-mini",
+        "provider": "openai",
+        "has_classifier": True,
+        "description": "GPT-o3 Mini"
+    },
     "gpt-4.1-nano": {
         "model_name": "gpt-4.1-nano-2025-04-14",
         "provider": "openai",
