@@ -60,6 +60,7 @@ import {
     StepUpdate
 } from './types/chat';
 import ChatInterface from "./ChatInterface.tsx";
+import {apiService} from "../kb/ApiService.tsx";
 
 // -----------------------------------------------------------------------------
 // Constants
@@ -319,13 +320,25 @@ const SingleChatApp: React.FC = () => {
         };
     }, []);
 
-    // Quick questions
-    const quickQuestions: string[] = [
-        "What light, watering, and soil do my common houseplants need?",
-        "Why are my leaves yellow/brown/curling, and how do I fix it?",
-        "How can I prevent and treat pests like spider mites and fungus gnats?",
-        "When should I repot, and what potting mix should I use?"
-    ];
+    // // Quick questions
+    // const quickQuestions: string[] = [
+    //     "What light, watering, and soil do my common houseplants need?",
+    //     "Why are my leaves yellow/brown/curling, and how do I fix it?",
+    //     "How can I prevent and treat pests like spider mites and fungus gnats?",
+    //     "When should I repot, and what potting mix should I use?"
+    // ];
+    const [updatingQustions, setUpdatingQustions] = useState<boolean>(false);
+    const [quickQuestions, setQuickQuestions] = useState([]);
+
+
+    useEffect(() => {
+        setUpdatingQustions(true);
+        apiService.getSuggestedQuestions(tenant, project, authContext).then((data) => {
+            setQuickQuestions(data);
+        }).catch((e) => {
+            console.error(e);
+        }).finally(() => setUpdatingQustions(false));
+    }, [project, tenant, config, authContext]);
 
     // Connection status
     const connectionStatus = useMemo(() => {
@@ -409,7 +422,12 @@ const SingleChatApp: React.FC = () => {
                     }
                     const id = Date.now();
                     streamingMsgIdRef.current = id;
-                    return [...prev, {id, sender: 'assistant', text: '', timestamp: new Date(Date.parse(data.timestamp))}];
+                    return [...prev, {
+                        id,
+                        sender: 'assistant',
+                        text: '',
+                        timestamp: new Date(Date.parse(data.timestamp))
+                    }];
                 });
             }
             if (!sawFirstDeltaRef.current) {
@@ -431,12 +449,11 @@ const SingleChatApp: React.FC = () => {
             }
             const stepUpdate: StepUpdate = {
                 step: data.step, status: data.status, timestamp: new Date(Date.parse(data.timestamp)),
-                elapsed_time: data.elapsed_time, error: data.error, data: data.data
+                elapsed_time: data.elapsed_time, error: data.error, data: data.data, title: data.title, turn_id: data.turn_id
             };
 
-
             setCurrentSteps(prev => {
-                const existing = prev.find(s => s.step === data.step);
+                const existing = prev.find(s => s.step === data.step && s.turn_id === data.turn_id);
                 return existing ? prev.map(s => (s.step === data.step ? stepUpdate : s)) : [...prev, stepUpdate];
             });
         },
@@ -473,7 +490,7 @@ const SingleChatApp: React.FC = () => {
                     }
                 }
                 return [...prev, {
-                    id: Date.now() + 1, sender: 'assistant', text: data.final_answer, timestamp: data.timestamp,
+                    id: Date.now() + 1, sender: 'assistant', text: data.final_answer, timestamp: new Date(Date.parse(data.timestamp)),
                     metadata: {
                         is_our_domain: (data as any).is_our_domain,
                         classification_reasoning: (data as any).classification_reasoning,
@@ -559,6 +576,133 @@ const SingleChatApp: React.FC = () => {
     chatLogItems.push(...currentSteps.map(createAssistantChatStep))
     chatLogItems.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
+    const renderFullHeader = () => {
+      return (
+          <div className="bg-white border-b border-gray-200 px-6 py-4">
+              <div className="flex items-center justify-between">
+                  <div className="flex items-center">
+                      <div
+                          className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg mr-3 flex items-center justify-center">
+                          {headerModel?.provider === 'anthropic' ? <Sparkles size={20} className="text-white"/> :
+                              <Bot size={20} className="text-white"/>}
+                      </div>
+                      <div>
+                          <h1 className="text-xl font-semibold text-gray-900">
+                              {headerModel?.description || 'AI Assistant'}
+                          </h1>
+                          <p className="text-sm text-gray-500 flex items-center">
+                              <Server size={14} className="mr-1"/>
+                              {headerModel?.provider || 'Unknown'} • {headerModel?.has_classifier ? ' Domain Classification' : ' Direct Processing'}
+                              <span className="flex items-center ml-1">
+                    <Database size={12} className="mr-1"/>
+                                  {headerEmbedder ? `${headerEmbedder.provider}${headerEmbedder.model ? ` (${headerEmbedder.model})` : ''}` : 'Embeddings'}
+                  </span>
+                              {headerBundle && (
+                                  <span className="flex items-center ml-1">
+                      • <Server size={12} className="mx-1"/> Bundle: {headerBundle.name || headerBundle.id}
+                    </span>
+                              )}
+                              {config.kb_search_endpoint && (
+                                  <span className="flex items-center ml-1"> • <BookOpen size={12}
+                                                                                        className="mr-1"/> KB Search</span>
+                              )}
+                              <span className="flex items-center ml-2"> • {connectionStatus.icon}<span
+                                  className="ml-1 text-xs">Streaming</span></span>
+                          </p>
+                      </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                      {/* Connection status pill */}
+                      <div className={`flex items-center px-3 py-1 rounded-lg text-sm ${connectionStatus.color}`}>
+                          {connectionStatus.icon}
+                          <span className="ml-2 font-medium">{connectionStatus.text}</span>
+                          {socketId &&
+                              <span className="ml-2 text-xs opacity-75">({socketId.slice(0, 8)}...)</span>}
+                      </div>
+
+                      <button
+                          onClick={() => setShowKB(!showKB)}
+                          className="relative flex items-center px-3 py-2 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200"
+                          title="View KB"
+                      >
+                          <Database size={16} className="mr-1"/><span className="text-sm">KB</span>
+                      </button>
+
+                      <button
+                          onClick={handleShowKbResults}
+                          className={`relative flex items-center px-3 py-2 rounded-lg transition-colors ${
+                              kbSearchHistory.length > 0 ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
+                          title="View KB Search Results"
+                      >
+                          <Search size={16} className="mr-1"/>
+                          <span className="text-sm">KB Search</span>
+                          {kbSearchHistory.length > 0 && (
+                              <span
+                                  className="ml-1 text-xs bg-blue-200 text-blue-800 px-1 rounded">{kbSearchHistory.length}</span>
+                          )}
+                          {newKbSearchCount > 0 && (
+                              <span
+                                  className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"/>
+                          )}
+                      </button>
+
+                      <button
+                          onClick={() => handleShowConfigChange(!showConfig)}
+                          className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
+                      >
+                          <Settings size={16} className="mr-1"/><span className="text-sm">Config</span>
+                      </button>
+
+                      <button
+                          onClick={toggleSystemMonitor}
+                          className={`relative flex items-center px-3 py-2 rounded-lg transition-colors ${
+                              showSystemMonitor ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
+                          title={showSystemMonitor ? "Hide Monitor" : "Show Monitor"}
+                      >
+                          <Server size={16} className="mr-1"/>
+                          <span className="text-sm">Monitor</span>
+                          <div className="ml-2 w-2 h-2 bg-green-400 rounded-full animate-pulse"/>
+                          {showSystemMonitor && <div className="ml-1 w-1 h-1 bg-green-600 rounded-full"/>}
+                      </button>
+
+                      <button
+                          onClick={handleLogout}
+                          className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
+                          title="Sign out"
+                      >
+                          <LogOut size={16} className="mr-1"/><span className="text-sm">Logout</span>
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )
+    }
+
+    const renderSimpleHeader = () => {
+        return (
+            <div className="bg-white border-b border-gray-200 px-6 py-4">
+                <div className="flex items-center justify-between">
+                    <div>
+                        AI Chat
+                    </div>
+                    <div className="flex-1"/>
+                    <div className="flex items-center gap-2">
+                        <button
+                            onClick={handleLogout}
+                            className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
+                            title="Sign out"
+                        >
+                            <LogOut size={16} className="mr-1"/><span className="text-sm">Logout</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )
+    }
+
     return (
         <div id={SingleChatApp.name} className="flex h-screen bg-gray-50">
             {/* Config Panel (widget) */}
@@ -583,106 +727,7 @@ const SingleChatApp: React.FC = () => {
             {/* Main Column */}
             <div className="flex-1 flex flex-col">
                 {/* Header */}
-                <div className="bg-white border-b border-gray-200 px-6 py-4">
-                    <div className="flex items-center justify-between">
-                        <div className="flex items-center">
-                            <div
-                                className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg mr-3 flex items-center justify-center">
-                                {headerModel?.provider === 'anthropic' ? <Sparkles size={20} className="text-white"/> :
-                                    <Bot size={20} className="text-white"/>}
-                            </div>
-                            <div>
-                                <h1 className="text-xl font-semibold text-gray-900">
-                                    {headerModel?.description || 'AI Assistant'}
-                                </h1>
-                                <p className="text-sm text-gray-500 flex items-center">
-                                    <Server size={14} className="mr-1"/>
-                                    {headerModel?.provider || 'Unknown'} • {headerModel?.has_classifier ? ' Domain Classification' : ' Direct Processing'}
-                                    <span className="flex items-center ml-1">
-                    <Database size={12} className="mr-1"/>
-                                        {headerEmbedder ? `${headerEmbedder.provider}${headerEmbedder.model ? ` (${headerEmbedder.model})` : ''}` : 'Embeddings'}
-                  </span>
-                                    {headerBundle && (
-                                        <span className="flex items-center ml-1">
-                      • <Server size={12} className="mx-1"/> Bundle: {headerBundle.name || headerBundle.id}
-                    </span>
-                                    )}
-                                    {config.kb_search_endpoint && (
-                                        <span className="flex items-center ml-1"> • <BookOpen size={12}
-                                                                                              className="mr-1"/> KB Search</span>
-                                    )}
-                                    <span className="flex items-center ml-2"> • {connectionStatus.icon}<span
-                                        className="ml-1 text-xs">Streaming</span></span>
-                                </p>
-                            </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                            {/* Connection status pill */}
-                            <div className={`flex items-center px-3 py-1 rounded-lg text-sm ${connectionStatus.color}`}>
-                                {connectionStatus.icon}
-                                <span className="ml-2 font-medium">{connectionStatus.text}</span>
-                                {socketId &&
-                                    <span className="ml-2 text-xs opacity-75">({socketId.slice(0, 8)}...)</span>}
-                            </div>
-
-                            <button
-                                onClick={() => setShowKB(!showKB)}
-                                className="relative flex items-center px-3 py-2 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200"
-                                title="View KB"
-                            >
-                                <Database size={16} className="mr-1"/><span className="text-sm">KB</span>
-                            </button>
-
-                            <button
-                                onClick={handleShowKbResults}
-                                className={`relative flex items-center px-3 py-2 rounded-lg transition-colors ${
-                                    kbSearchHistory.length > 0 ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                }`}
-                                title="View KB Search Results"
-                            >
-                                <Search size={16} className="mr-1"/>
-                                <span className="text-sm">KB Search</span>
-                                {kbSearchHistory.length > 0 && (
-                                    <span
-                                        className="ml-1 text-xs bg-blue-200 text-blue-800 px-1 rounded">{kbSearchHistory.length}</span>
-                                )}
-                                {newKbSearchCount > 0 && (
-                                    <span
-                                        className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"/>
-                                )}
-                            </button>
-
-                            <button
-                                onClick={() => handleShowConfigChange(!showConfig)}
-                                className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
-                            >
-                                <Settings size={16} className="mr-1"/><span className="text-sm">Config</span>
-                            </button>
-
-                            <button
-                                onClick={toggleSystemMonitor}
-                                className={`relative flex items-center px-3 py-2 rounded-lg transition-colors ${
-                                    showSystemMonitor ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                                }`}
-                                title={showSystemMonitor ? "Hide Monitor" : "Show Monitor"}
-                            >
-                                <Server size={16} className="mr-1"/>
-                                <span className="text-sm">Monitor</span>
-                                <div className="ml-2 w-2 h-2 bg-green-400 rounded-full animate-pulse"/>
-                                {showSystemMonitor && <div className="ml-1 w-1 h-1 bg-green-600 rounded-full"/>}
-                            </button>
-
-                            <button
-                                onClick={handleLogout}
-                                className="flex items-center px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg"
-                                title="Sign out"
-                            >
-                                <LogOut size={16} className="mr-1"/><span className="text-sm">Logout</span>
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                {renderSimpleHeader()}
 
                 {/* Body: Chat + optionally Steps / KB Results / System Monitor */}
                 <div className={`flex-1 flex overflow-hidden transition-all duration-300`}>
@@ -690,19 +735,27 @@ const SingleChatApp: React.FC = () => {
                     <div className={`flex-1 flex flex-col ${showSystemMonitor ? 'mr-4' : ''}`}>
                         {/* Quick Questions */}
                         <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
-                            <h4 className="text-sm font-medium text-gray-700 mb-2">Try these questions:</h4>
-                            <div className="flex flex-wrap gap-2">
-                                {quickQuestions.map((q, idx) => (
-                                    <button key={idx} onClick={() => sendMessage(q)}
-                                            disabled={isProcessing || !isSocketConnected}
-                                            className="px-3 py-1 text-xs bg-white text-gray-700 border border-gray-200 rounded-full hover:bg-gray-50 hover:border-gray-300 disabled:opacity-50">
-                                        {q}
-                                    </button>
-                                ))}
-                            </div>
+                            {updatingQustions ?
+                                (<div className="w-full flex">
+                                    <Loader size={28} className='animate-spin text-gray-300 mx-auto'/>
+                                </div>) :
+                                (<>
+                                    <h4 className="text-sm font-medium text-gray-700 mb-2">Try these questions:</h4>
+                                    <div className="flex flex-wrap gap-2">
+                                        {quickQuestions.map((q, idx) => (
+                                            <button key={idx} onClick={() => sendMessage(q)}
+                                                    disabled={isProcessing || !isSocketConnected}
+                                                    className="px-3 py-1 text-xs bg-white text-gray-700 border border-gray-200 rounded-full hover:bg-gray-50 hover:border-gray-300 disabled:opacity-50">
+                                                {q}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </>)
+                            }
                         </div>
 
-                        <ChatInterface chatLogItems={chatLogItems} onSendMessage={sendMessage} userInputEnabled={isSocketConnected && isConfigValid}
+                        <ChatInterface chatLogItems={chatLogItems} onSendMessage={sendMessage}
+                                       userInputEnabled={isSocketConnected && isConfigValid}
                                        isProcessing={isProcessing}/>
                     </div>
 

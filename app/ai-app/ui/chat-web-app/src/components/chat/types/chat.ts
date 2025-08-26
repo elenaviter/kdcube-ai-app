@@ -4,7 +4,7 @@
  */
 
 import React, {useEffect, useRef, useState} from "react";
-import {Bot} from "lucide-react";
+import {Bot, ChevronRight} from "lucide-react";
 
 export interface ModelInfo {
     id: string;
@@ -40,6 +40,8 @@ export interface BundleInfo {
 
 export interface StepUpdate {
     step: string;
+    title?: string;
+    turn_id?: string;
     status: 'started' | 'completed' | 'error';
     timestamp: Date;
     elapsed_time?: string;
@@ -109,8 +111,8 @@ export const createChatMessage =
 
 export const createAssistantChatStep =
     (input: StepUpdate): AssistantChatStep => {
-        const { step, status, timestamp, error, elapsed_time, data} = input;
-        return new AssistantChatStep(step, status, timestamp, elapsed_time, error, data)
+        const {step, status, timestamp, error, elapsed_time, data, title} = input;
+        return new AssistantChatStep(step, status, timestamp, elapsed_time, error, data, title);
     }
 
 
@@ -127,25 +129,55 @@ interface StepData {
     queries?: string[];
     sources?: string[];
     avg_relevance?: number;
+    markdown?: string;
 }
 
 type AssistantChatStepStatus = 'started' | 'completed' | 'error'
 
 export class AssistantChatStep {
     step: string;
+    title?: string;
     status: AssistantChatStepStatus;
     timestamp: Date;
     elapsed_time?: string;
     error?: string;
     data?: StepData;
 
-    constructor(step: string, status: AssistantChatStepStatus, timestamp: Date, elapsed_time?: string, error?: string, data?: StepData) {
+    constructor(step: string, status: AssistantChatStepStatus, timestamp: Date, elapsed_time?: string, error?: string, data?: StepData, title?: string) {
         this.step = step;
         this.timestamp = timestamp;
         this.elapsed_time = elapsed_time;
         this.status = status;
         this.error = error;
         this.data = data;
+        this.title = title;
+    }
+
+    getMarkdown() {
+        //return markdown if it is sent by server
+        if (this.data?.markdown)
+            return this.data.markdown;
+
+        const result = []
+        if (this.data?.message)
+            result.push(`**Message:** ${this.data.message}`)
+        if (this.data?.model)
+            result.push(`**Model:** ${this.data.model}`)
+        if (this.data?.embedding_type)
+            result.push(`**Embeddings:** ${this.data.embedding_type}`)
+        if (this.data?.query_count)
+            result.push(`**Queries:** ${this.data.query_count}`)
+        if (this.data?.retrieved_count)
+            result.push(`**Documents:** ${this.data.retrieved_count}`)
+        if (this.data?.answer_length)
+            result.push(`**Answer:** ${this.data.answer_length} chars`)
+        if (Array.isArray(this.data?.queries) && this.data?.queries.length > 0) {
+            result.push("**Queries:** ")
+            for (const q of this.data.queries) {
+                result.push(`* ${q}`)
+            }
+        }
+        return result.join("\n")
     }
 }
 

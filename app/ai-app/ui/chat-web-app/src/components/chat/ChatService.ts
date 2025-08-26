@@ -8,6 +8,8 @@ import {AppConfig} from './ChatConfigProvider';
 import {getChatBaseAddress} from "../../AppConfig.ts";
 import {AuthContextValue} from "../auth/AuthManager.tsx";
 
+import {v4 as uuidv4} from 'uuid';
+
 let __chatSingleton: SocketChatService | null = null;
 
 export function getChatServiceSingleton(opts: SocketChatOptions): SocketChatService {
@@ -20,6 +22,8 @@ export function getChatServiceSingleton(opts: SocketChatOptions): SocketChatServ
 // Type definitions for chat events
 export interface ChatStepData {
     step: string;
+    title?: string;
+    turn_id?: string;
     status: 'started' | 'completed' | 'error';
     timestamp: string;
     data?: Record<string, any>;
@@ -163,6 +167,7 @@ export class SocketChatService {
     private currentUserRoles: string[] = [];
     // de-dupe concurrent connect calls
     private connectingPromise: Promise<Socket> | null = null;
+    private conversationID:string = uuidv4();
 
     constructor(options: SocketChatOptions) {
         this.baseUrl = options.baseUrl;
@@ -180,6 +185,10 @@ export class SocketChatService {
             timeout: this.options.timeout,
         });
         this.socket = this.manager.socket(this.options.namespace, { auth: {} });
+    }
+
+    public newConversation() {
+        this.conversationID = uuidv4()
     }
 
     public updateOptions(next: SocketChatOptions) {
@@ -318,9 +327,9 @@ export class SocketChatService {
         this.connectingPromise = null;
     }
 
-    public sendChatMessage(req: { message: string; chat_history: any[]; config: AppConfig; project?: string; tenant?: string; }) {
+    public sendChatMessage(req: { message: string; chat_history: any[]; project?: string; tenant?: string; }) {
         if (!this.socket.connected) throw new Error('Socket not connected. Call connect() first.');
-        this.socket.emit('chat_message', req);
+        this.socket.emit('chat_message', {...req, "conversation_id": this.conversationID});
     }
 
     public ping() {
