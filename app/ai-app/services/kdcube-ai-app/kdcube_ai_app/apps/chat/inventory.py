@@ -1275,12 +1275,14 @@ def create_workflow_config(config_request: ConfigRequest) -> Config:
     """Create workflow configuration based on request"""
 
     config = Config(selected_model=config_request.selected_model)
+    provider = MODEL_CONFIGS[config_request.selected_model]["provider"]
 
-    if config_request.openai_api_key:
-        config.openai_api_key = config_request.openai_api_key
-    if config_request.claude_api_key:
-        config.claude_api_key = config_request.claude_api_key
-
+    if provider == "openai":
+        if config_request.openai_api_key:
+            config.openai_api_key = config_request.openai_api_key
+    elif provider == "anthropic":
+        if config_request.claude_api_key:
+            config.claude_api_key = config_request.claude_api_key
     # Handle declarative embedding configuration
     try:
         config.set_embedder(
