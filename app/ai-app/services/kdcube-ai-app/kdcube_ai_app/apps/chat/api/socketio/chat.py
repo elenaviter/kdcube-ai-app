@@ -351,6 +351,8 @@ class SocketIOChatHandler:
 
             # 6) Parse config (only to capture fields; execution is offloaded)
             config_request = ConfigRequest(**config_data)
+            if not config_request.selected_model:
+                config_request.selected_model = ""
 
             # Optional: infer project/tenant for accounting if you carry them in config
             project_id = getattr(config_request, "project", None) or data.get("project")

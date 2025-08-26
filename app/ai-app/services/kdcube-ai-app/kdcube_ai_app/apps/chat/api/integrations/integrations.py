@@ -219,17 +219,18 @@ async def get_bundle_suggestions(
         }
 
     try:
+        user_id = session.user_id or session.fingerprint
         fn = getattr(workflow, "suggestions")
         if inspect.iscoroutinefunction(fn):
             result = await fn(
-                user_id=payload.user_id,
+                user_id=user_id,
                 conversation_id=payload.conversation_id,
                 tenant=tenant,
                 project=project,
             )
         else:
             result = fn(
-                user_id=payload.user_id,
+                user_id=user_id,
                 conversation_id=payload.conversation_id,
                 tenant=tenant,
                 project=project,

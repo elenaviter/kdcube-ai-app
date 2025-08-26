@@ -86,12 +86,12 @@ async def lifespan(app: FastAPI):
     from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
         service_health_checker
 
-    # TODO: handle chat history inside the Workflow.
     async def agentic_chat_handler(
             message: str,
             session_id: str,
             config: Dict,
             chat_history: Optional[List[Dict[str, str]]] = None,
+            conversation_id: Optional[str] = None,
             **kwargs
     ) -> Dict:
         sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
@@ -180,7 +180,7 @@ async def lifespan(app: FastAPI):
 
         # 4) run workflow
         try:
-            result = await workflow.run(session_id, state)
+            result = await workflow.run(session_id, conversation_id, state)
         except Exception as e:
             error_message = str(e)
             # try to extract partial state if any
