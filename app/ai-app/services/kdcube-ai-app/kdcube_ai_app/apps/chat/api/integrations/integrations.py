@@ -221,19 +221,21 @@ async def get_bundle_suggestions(
         user_id = session.user_id or session.fingerprint
         fn = getattr(workflow, "suggestions")
         if inspect.iscoroutinefunction(fn):
-            result = await fn(
-                user_id=user_id,
-                conversation_id=payload.conversation_id,
-                tenant=tenant,
-                project=project,
-            )
+            # result = await fn(
+            #     user_id=user_id,
+            #     conversation_id=payload.conversation_id,
+            #     tenant=tenant,
+            #     project=project,
+            # )
+            result = await fn()
         else:
-            result = fn(
-                user_id=user_id,
-                conversation_id=payload.conversation_id,
-                tenant=tenant,
-                project=project,
-            )
+            result = fn()
+            # result = fn(
+            #     user_id=user_id,
+            #     conversation_id=payload.conversation_id,
+            #     tenant=tenant,
+            #     project=project,
+            # )
     except Exception as e:
         # Let bundles raise and still keep a predictable envelope here
         raise HTTPException(status_code=500, detail=f"suggestions() failed: {e}")
