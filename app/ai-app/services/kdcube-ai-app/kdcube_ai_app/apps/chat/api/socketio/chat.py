@@ -25,6 +25,8 @@ from kdcube_ai_app.apps.chat.inventory import create_workflow_config, ConfigRequ
 
 logger = logging.getLogger(__name__)
 
+import kdcube_ai_app.infra.namespaces as namespaces
+
 class StepUpdate(BaseModel):
     step: str
     status: str  # "started", "completed", "error"
@@ -284,7 +286,8 @@ class SocketIOChatHandler:
 
             message = data["message"]
             chat_history = data.get("chat_history", [])
-            config_data = data["config"]
+            config_data = data.get("config")
+            conversation_id = data.get("conversation_id")
 
             # 3) Rebuild our UserSession (lightweight)
             session = UserSession(
@@ -350,9 +353,18 @@ class SocketIOChatHandler:
                 return
 
             # 6) Parse config (only to capture fields; execution is offloaded)
+            if not config_data:
+                config_data = {}
+
             config_request = ConfigRequest(**config_data)
             if not config_request.selected_model:
-                config_request.selected_model = ""
+                config_request.selected_model = (namespaces.CONFIG.AGENTIC.DEFAULT_LLM_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
+            if not config_request.selected_model:
+                config_request.selected_embedder = (namespaces.CONFIG.AGENTIC.DEFAULT_EMBEDDING_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
+            if not config_request.openai_api_key:
+                config_request.openai_api_key = os.getenv("OPENAI_API_KEY")
+            if not config_request.claude_api_key:
+                config_request.openai_api_key = os.getenv("ANTHROPIC_API_KEY")
 
             # Optional: infer project/tenant for accounting if you carry them in config
             project_id = getattr(config_request, "project", None) or data.get("project")

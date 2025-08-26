@@ -25,8 +25,14 @@ from kdcube_ai_app.infra.accounting import track_llm
 from kdcube_ai_app.infra.accounting.usage import _structured_usage_extractor, \
     _norm_usage_dict, _approx_tokens_by_chars, ServiceUsage, ClientConfigHint
 
-def _mid(prefix: str = "m") -> str:
-    return f"{prefix}-{uuid4().hex}"
+# def _mid(prefix: str = "m") -> str:
+#     return f"{prefix}-{uuid4().hex}"
+
+def _mid(role, msg_ts = None) -> str:
+    if not msg_ts:
+        msg_ts = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
+    message_id = f"{role}-{msg_ts}-{uuid4().hex[:8]}"
+    return message_id
 
 class Config:
     """Configuration for the application"""

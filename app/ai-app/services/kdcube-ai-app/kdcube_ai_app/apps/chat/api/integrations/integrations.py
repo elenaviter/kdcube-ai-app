@@ -4,6 +4,7 @@
 from typing import Optional, Dict, Any
 import logging
 import json
+import os
 import inspect
 
 from datetime import datetime
@@ -40,7 +41,7 @@ class AdminBundlesUpdateRequest(BaseModel):
     default_bundle_id: Optional[str] = None
 
 class BundleSuggestionsRequest(BaseModel):
-    bundle_id: str
+    bundle_id: Optional[str] = None
     conversation_id: Optional[str] = None
     config_request: Optional[ConfigRequest] = None
 
@@ -177,9 +178,20 @@ async def get_bundle_suggestions(
 
 
     # 1) Resolve bundle from the in-process registry (keeps processor-owned semantics)
-    spec_resolved = resolve_bundle(payload.bundle_id, override=None)
-    if not spec_resolved:
-        raise HTTPException(status_code=404, detail=f"Unknown bundle_id: {payload.bundle_id}")
+    # spec_resolved = resolve_bundle(payload.bundle_id, override=None)
+    # if not spec_resolved:
+    #     raise HTTPException(status_code=404, detail=f"Unknown bundle_id: {payload.bundle_id}")
+
+    config_data = {}
+    config_request = ConfigRequest(**config_data)
+    if not config_request.selected_model:
+        config_request.selected_model = (namespaces.CONFIG.AGENTIC.DEFAULT_LLM_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
+    if not config_request.selected_model:
+        config_request.selected_embedder = (namespaces.CONFIG.AGENTIC.DEFAULT_EMBEDDING_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
+    if not config_request.openai_api_key:
+        config_request.openai_api_key = os.getenv("OPENAI_API_KEY")
+    if not config_request.claude_api_key:
+        config_request.openai_api_key = os.getenv("ANTHROPIC_API_KEY")
 
     # 2) Build minimal workflow config (project-aware; defaults elsewhere)
     try:

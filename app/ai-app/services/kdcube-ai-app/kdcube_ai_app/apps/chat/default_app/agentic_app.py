@@ -903,7 +903,8 @@ Be helpful, accurate, and cite specific information from the documents when rele
 class ChatWorkflow:
     """Main workflow orchestrator with proper state management"""
 
-    def __init__(self, config: Config,
+    def __init__(self,
+                 config: Config,
                  step_emitter: Optional[StepEmitter] = None,
                  delta_emitter: Optional[DeltaEmitter] = None):
         self.config = config
@@ -931,10 +932,10 @@ class ChatWorkflow:
             "kb_search_available": bool(config.kb_search_url)
         })
 
-    async def run(self, session_id, state):
+    async def run(self, session_id, conversation_id: str, state):
         result = await self.graph.ainvoke(
             state,
-            config={"configurable": {"thread_id": session_id}},
+            config={"configurable": {"thread_id": conversation_id}},
         )
         payload = project_app_state(result)
         return payload

@@ -2,6 +2,10 @@
 # Copyright (c) 2025 Elena Viter
 
 import os
+
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
+
+
 class REDIS:
     class CHAT:
         PROMPT_QUEUE_PREFIX = "kdcube:chat:prompt:queue"
@@ -53,5 +57,9 @@ class CONFIG:
     class BUNDLES:
         BUNDLE_MAPPING_KEY_FMT = "kdcube:config:bundles:mapping:{tenant}:{project}"
         UPDATE_CHANNEL = "kdcube:config:bundles:update"
+
+    class AGENTIC:
+        DEFAULT_LLM_MODEL_CONFIG = MODEL_CONFIGS.get(os.getenv("DEFAULT_LLM_MODEL_ID"), "gpt-4o-mini")
+        DEFAULT_EMBEDDING_MODEL_CONFIG = EMBEDDERS.get(os.getenv("DEFAULT_EMBEDDING_MODEL_ID"), "openai-text-embedding-3-small")
 
 

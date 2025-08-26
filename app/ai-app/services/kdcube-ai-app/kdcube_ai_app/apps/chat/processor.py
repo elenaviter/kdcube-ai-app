@@ -334,6 +334,7 @@ class EnhancedChatRequestProcessor:
     async def _process_task(self, task_data: Dict[str, Any]):
         task_id = task_data["task_id"]
         session_id = task_data.get("session_id")
+        conversation_id = task_data.get("conversation_id")
         config = task_data.get("config") or {}
         chat_history = task_data.get("chat_history") or []
         message = task_data.get("message") or ""
@@ -351,6 +352,8 @@ class EnhancedChatRequestProcessor:
         # Emit "chat_start" up-front (so UI shows a banner immediately)
         await self._emit("chat_start", {
             "task_id": task_id,
+            "conversation_id": conversation_id,
+            "user_id": envelope.user_id,
             "message": (message[:100] + "...") if len(message) > 100 else message,
             "timestamp": _utc_now_iso(),
             "user_type": task_data.get("user_type", "unknown"),
@@ -370,7 +373,7 @@ class EnhancedChatRequestProcessor:
                         # Enforce timeout
                         result = await asyncio.wait_for(
                             # self._invoke_handler(task_id, session_id, message, config, chat_history),
-                            self._invoke_handler(task_id, session_id, message, config, chat_history),
+                            self._invoke_handler(task_id, session_id, conversation_id, message, config, chat_history),
                             timeout=self.task_timeout_sec,
                         )
 
@@ -394,6 +397,7 @@ class EnhancedChatRequestProcessor:
             self,
             task_id: str,
             session_id: str,
+            conversation_id: str,
             message: str,
             config: Dict[str, Any],
             chat_history: list[Dict[str, Any]],
@@ -415,6 +419,7 @@ class EnhancedChatRequestProcessor:
             session_id,
             config,
             chat_history,
+            conversation_id,
             **kwargs,  # ignored by handlers that don't take them
         )
         return result or {}
