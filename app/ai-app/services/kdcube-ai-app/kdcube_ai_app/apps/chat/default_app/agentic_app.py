@@ -24,8 +24,6 @@ from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.plugin.agentic_loader import agentic_initial_state, agentic_workflow_factory, agentic_workflow
 from kdcube_ai_app.storage.storage import create_storage_backend
 
-import inspect
-
 def _now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -37,7 +35,7 @@ except ImportError:  # fallback when running as a script
     from integrations.rag import RAGService
 
 @agentic_initial_state(name=f"{BUNDLE_ID}-initial-state", priority=200)
-def create_initial_state(user_message: str):
+def create_initial_state(payload: Dict[str, Any]):
     """
     Start state for the LangGraph workflow. You can keep it identical to your current
     create_initial_state(...) or slightly extend it with bundle-specific context.
@@ -48,7 +46,7 @@ def create_initial_state(user_message: str):
         "messages": [],
         "summarized_messages": [],
         "context": {"bundle": BUNDLE_ID},
-        "user_message": user_message,
+        "user_message": payload.get("user_message"),
         "is_our_domain": None,
         "classification_reasoning": None,
         "rag_queries": None,
@@ -971,12 +969,14 @@ class ChatWorkflow:
             await self.emit_step("turn", "started", {
                 "session_id": session_id,
                 "conversation_id": conversation_id,
+                "turn_id": turn_id,
             })
             result = await self.graph.ainvoke(
                 state,
                 config={"configurable": {"thread_id": conversation_id}},
             )
             await self.emit_step("turn", "completed", {
+                "turn_id": turn_id,
                 "answer_length": len(result.get("final_answer") or ""),
             })
             payload = project_app_state(result)
@@ -987,29 +987,31 @@ class ChatWorkflow:
 
 
 
-    def _step_start_payload(self, state: ChatGraphState, step: str) -> dict:
+    def _step_start_payload(self, state: ChatGraphState, step: str, turn_id: str) -> dict:
         if step == "query_writer":
-            return {"message": "Generating RAG queries..."}
+            return {"message": "Generating RAG queries...", "turn_id": turn_id}
         if step == "rag_retrieval":
-            return {"message": "Retrieving documents..."}
+            return {"message": "Retrieving documents...", "turn_id": turn_id}
         if step == "reranking":
-            return {"message": "Reranking documents..."}
+            return {"message": "Reranking documents...", "turn_id": turn_id}
         if step == "answer_generator":
-            return {"message": "Generating final answer..."}
+            return {"message": "Generating final answer...", "turn_id": turn_id}
         if step == "classifier":
-            return {"message": "Classifying domain..."}
+            return {"message": "Classifying domain...", "turn_id": turn_id}
         return {}
 
-    def _step_end_payload(self, state: ChatGraphState, step: str) -> dict:
+    def _step_end_payload(self, state: ChatGraphState, step: str, turn_id: str) -> dict:
         if step == "classifier":
             return {
                 "is_our_domain": state.get("is_our_domain"),
                 "message": state.get("classification_reasoning"),
+                "turn_id": turn_id
             }
         if step == "query_writer":
             return {
                 "query_count": len(state.get("rag_queries") or []),
                 "queries": [q["query"] for q in (state.get("rag_queries") or [])][:6],
+                "turn_id": turn_id
             }
         if step == "rag_retrieval":
             return {
@@ -1019,6 +1021,7 @@ class ChatWorkflow:
                     "results": (state.get("retrieved_docs") or [])[:10],
                     "total_results": len(state.get("retrieved_docs") or []),
                     "query": state.get("user_message"),
+                    "turn_id": turn_id
                 }
             }
         if step == "reranking":
@@ -1033,16 +1036,16 @@ class ChatWorkflow:
     def _wrap_node(self, fn, step_name: str):
         async def _wrapped(state: ChatGraphState) -> ChatGraphState:
             # started
-            await self.emit_step(step_name, "started", self._step_start_payload(state, step_name))
+            await self.emit_step(step_name, "started", self._step_start_payload(state, step_name, self._turn_id))
             try:
                 out = fn(state)
                 if asyncio.iscoroutine(out):
                     out = await out
                 # completed
-                await self.emit_step(step_name, "completed", self._step_end_payload(out, step_name))
+                await self.emit_step(step_name, "completed", self._step_end_payload(out, step_name, self._turn_id))
                 return out
             except Exception as e:
-                await self.emit_step(step_name, "error", {"error": str(e)})
+                await self.emit_step(step_name, "error", {"error": str(e), "turn_id": self._turn_id})
                 raise
         return _wrapped
 
@@ -1114,7 +1117,7 @@ class ChatWorkflow:
         workflow.add_edge("rag_retrieval", "reranking")
         workflow.add_edge("reranking", "answer_generator")
         async def _emit_workflow_complete(state: ChatGraphState) -> ChatGraphState:
-            await self.emit_step("workflow_complete", "completed", {"message": "Workflow complete"})
+            await self.emit_step("workflow_complete", "completed", {"message": "Workflow complete", "turn_id": self._turn_id})
             return state
         workflow.add_node("workflow_complete", _emit_workflow_complete)
         workflow.add_edge("answer_generator", "workflow_complete")
@@ -1142,7 +1145,7 @@ class ChatWorkflow:
         self._turn_id = turn_id
 
         # Create initial state
-        initial_state = create_initial_state(user_message)
+        initial_state = create_initial_state({ "user_message": user_message })
         initial_state["turn_id"] = turn_id
         if seed_messages:
             initial_state["messages"].extend(seed_messages)

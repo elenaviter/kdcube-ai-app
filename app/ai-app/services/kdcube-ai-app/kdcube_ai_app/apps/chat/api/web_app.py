@@ -23,7 +23,7 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
 from kdcube_ai_app.apps.middleware.logging.uvicorn import configure_logging
-from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
+from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session, AccountingEnvelope
 
 configure_logging()
 
@@ -40,7 +40,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
-from kdcube_ai_app.apps.chat.inventory import ConfigRequest, create_workflow_config, _mid
+from kdcube_ai_app.apps.chat.inventory import ConfigRequest, create_workflow_config, _mid, BundleState
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 # Import the modular Socket.IO handler
@@ -92,6 +92,9 @@ async def lifespan(app: FastAPI):
             config: Dict,
             chat_history: Optional[List[Dict[str, str]]] = None,
             conversation_id: Optional[str] = None,
+            turn_id: Optional[str] = None,
+            envelope: AccountingEnvelope = None,
+            emit_data = None,
             **kwargs
     ) -> Dict:
         sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
@@ -115,6 +118,8 @@ async def lifespan(app: FastAPI):
             cfg_req = ConfigRequest.model_validate(config or {})
 
         wf_config = create_workflow_config(cfg_req)
+        if not emit_data:
+            emit_data = {}
 
         async def _emit_step(step: str, status: str, data: Dict[str, Any]):
             if not sio:
@@ -122,22 +127,21 @@ async def lifespan(app: FastAPI):
             await sio.emit("chat_step", {
                 "step": step,
                 "status": status,
-                "turn_id": data["turn_id"],
                 "timestamp": datetime.now().isoformat(),
                 "data": data,
                 "elapsed_time": None,
-                "error": data.get("error")
+                "error": data.get("error"),
+                **emit_data
             }, room=session_id)
 
         async def _emit_delta(delta: str, index: int, meta: dict):
             if not sio:
                 return
             await sio.emit("chat_delta", {
-                "turn_id": meta["turn_id"],
-                "task_id": task_id,
                 "delta": delta,
                 "index": index,
                 "timestamp": datetime.now().isoformat(),
+                **emit_data
             }, room=session_id)
 
         from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
@@ -166,7 +170,24 @@ async def lifespan(app: FastAPI):
 
         # 3) seed optional history into initial state (so first run has context)
         #    (We reuse your create_initial_state and pass it directly to graph)
-        state = create_initial_state_fn(message)
+        call_ctx = {
+            "user_message": message,
+            "workflow_config": wf_config,
+            "session_id": session_id,
+            "conversation_id": conversation_id,
+            "task_id": task_id,
+            "timestamp": start_ts,
+            "config": config,
+        }
+        state = create_initial_state_fn(call_ctx)
+
+        state["user"] = envelope.user_id
+        state["request_id"] = envelope.request_id
+        state["session_id"] = session_id
+        state["tenant"] = envelope.tenant_id
+        state["project"] = envelope.project_id
+        state["text"] = message
+        state["turn_id"] = turn_id
 
         # Include a lightweight system prompt if passed in config
         system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
@@ -180,6 +201,7 @@ async def lifespan(app: FastAPI):
             state["messages"].append(
                 AIMessage(content=content) if role == "assistant" else HumanMessage(content=content))
 
+        state = BundleState(**state)
         # 4) run workflow
         try:
             result = await workflow.run(session_id, conversation_id, state)

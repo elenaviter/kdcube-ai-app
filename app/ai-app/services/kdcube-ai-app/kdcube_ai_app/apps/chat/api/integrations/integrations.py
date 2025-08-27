@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-
+from dataclasses import asdict
 from typing import Optional, Dict, Any
 import logging
 import json
@@ -215,6 +215,7 @@ async def get_bundle_suggestions(
             spec, wf_config, step_emitter=_noop, delta_emitter=_noop
         )
     except Exception as e:
+        logger.exception(f"[get_bundle_suggestions.{tenant}.{project}] Failed to load bundle {asdict(spec)}")
         raise HTTPException(status_code=500, detail=f"Failed to load bundle: {e}")
 
     # 4) Call suggestions() if available (support sync/async)

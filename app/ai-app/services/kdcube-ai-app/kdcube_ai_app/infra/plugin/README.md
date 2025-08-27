@@ -226,9 +226,9 @@ def create_workflow(config, step_emitter=None, delta_emitter=None):
 ### `@agentic_initial_state` (optional)
 ```py
 @agentic_initial_state(name="my-initial-state", priority=100)
-def create_initial_state(user_message: str) -> dict:
+def create_initial_state(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "user_message": user_message,
+        "user_message": payload.get("user_message"),
         "final_answer": None,
         "error_message": None,
         # ... add your own fields
@@ -463,9 +463,9 @@ except ImportError:
     BUNDLE_ID = "hello-world-bundle"
 
 @agentic_initial_state(name=f"{BUNDLE_ID}-initial-state", priority=100)
-def create_initial_state(user_message: str) -> dict:
+def create_initial_state(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "user_message": user_message,
+        "user_message": payload.get("user_message"),
         "final_answer": None,
         "error_message": None,
         "execution_id": f"exec_{int(time.time()*1000)}",

@@ -10,13 +10,9 @@ import traceback
 from typing import Optional, Dict, Any, Iterable
 
 from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter, NoopEmitter
+from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
-
-from kdcube_ai_app.infra.plugin.bundle_registry import set_registry, upsert_bundles, serialize_to_env, get_all, get_default_id
-from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
-
-import kdcube_ai_app.infra.namespaces as namespaces
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -340,6 +336,7 @@ class EnhancedChatRequestProcessor:
         message = task_data.get("message") or ""
         acct_dict = task_data.get("acct") or {}
         lock_key = task_data.get("_lock_key")
+        turn_id = task_data["turn_id"]
 
         # accounting + storage
         from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope, bind_accounting
@@ -349,43 +346,52 @@ class EnhancedChatRequestProcessor:
         kdcube_path = task_data.get("kdcube_path") or os.environ.get("KDCUBE_STORAGE_PATH")
         storage_backend = create_storage_backend(kdcube_path, **{})
 
+        emit_data = {
+            "task_id": task_id,
+            "tenant_id": envelope.tenant_id,
+            "project_id": envelope.project_id,
+            "user_id": envelope.user_id,
+            "session_id": envelope.session_id,
+            "conversation_id": conversation_id,
+            "turn_id": turn_id,
+            "user_type": task_data.get("user_type", "unknown"),
+        }
         # Emit "chat_start" up-front (so UI shows a banner immediately)
         await self._emit("chat_start", {
-            "task_id": task_id,
-            "conversation_id": conversation_id,
-            "user_id": envelope.user_id,
             "message": (message[:100] + "...") if len(message) > 100 else message,
             "timestamp": _utc_now_iso(),
-            "user_type": task_data.get("user_type", "unknown"),
             "queue_stats": {},
+            **emit_data
         }, room=session_id)
 
         # Also emit a synthetic "workflow_start" step (optional but nice)
         await self._emit_step("workflow_start", "started", session_id, data={
             "model": (config or {}).get("selected_model"),
+            **emit_data
         })
 
         try:
             async with bind_accounting(envelope, storage_backend, enabled=True):
-                async with with_accounting("chat.orchestrator", metadata={"task_id": task_id}):
+                async with with_accounting("chat.orchestrator", metadata={**emit_data }):
                     # Renew the lock while running the job
                     async with self._lock_renewer(lock_key):
                         # Enforce timeout
                         result = await asyncio.wait_for(
                             # self._invoke_handler(task_id, session_id, message, config, chat_history),
-                            self._invoke_handler(task_id, session_id, conversation_id, message, config, chat_history),
+                            self._invoke_handler(task_id, session_id, conversation_id, turn_id, message, config, chat_history, envelope, emit_data),
                             timeout=self.task_timeout_sec,
                         )
 
             # Emit completion
-            await self._emit_result(task_id, session_id, result)
+            result = result or {}
+            await self._emit_result(session_id, {**result, **emit_data})
 
         except asyncio.TimeoutError:
             tb = "Task timed out"
-            await self._emit_error(task_id, session_id, tb)
+            await self._emit_error(task_id, session_id, emit_data, tb)
         except Exception:
             tb = traceback.format_exc()
-            await self._emit_error(task_id, session_id, tb)
+            await self._emit_error(task_id, session_id, emit_data, tb)
         finally:
             try:
                 if lock_key:
@@ -398,9 +404,12 @@ class EnhancedChatRequestProcessor:
             task_id: str,
             session_id: str,
             conversation_id: str,
+            turn_id: str,
             message: str,
             config: Dict[str, Any],
             chat_history: list[Dict[str, Any]],
+            envelope: AccountingEnvelope,
+            emit_data: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Calls the chat handler. If your handler supports callbacks or an emitter,
@@ -420,6 +429,9 @@ class EnhancedChatRequestProcessor:
             config,
             chat_history,
             conversation_id,
+            turn_id,
+            envelope,
+            emit_data,
             **kwargs,  # ignored by handlers that don't take them
         )
         return result or {}
@@ -437,8 +449,8 @@ class EnhancedChatRequestProcessor:
         }
         await self._emit("chat_step", payload, room=room)
 
-    async def _emit_result(self, task_id: str, session_id: str, result: Dict[str, Any]):
-        logger.info(f"Task {task_id} completed for session {session_id}")
+    async def _emit_result(self, session_id: str, result: Dict[str, Any]):
+        logger.info(f"Task {result['task_id']} completed for session {session_id}")
 
         # Close the synthetic workflow step
         # await self._emit_step("workflow_complete", "completed", session_id)
@@ -447,13 +459,10 @@ class EnhancedChatRequestProcessor:
         # Normalize a bit, but don’t force a schema.
         if not result:
             result = {}
-        result["task_id"] = task_id
-        result["session_id"] = session_id
-        result["timestamp"] = _utc_now_iso()
 
         await self._emit("chat_complete", result, room=session_id)
 
-    async def _emit_error(self, task_id: str, session_id: str, error: str):
+    async def _emit_error(self, task_id: str, session_id: str, emit_data, error: str):
         logger.error(f"Task {task_id} failed for session {session_id}: {error}")
         await self._emit_step("workflow_error", "error", session_id, error=error, data={"message": "Workflow aborted"})
 
@@ -461,6 +470,7 @@ class EnhancedChatRequestProcessor:
             "task_id": task_id,
             "error": error,
             "timestamp": _utc_now_iso(),
+            **emit_data
         }
         await self._emit("chat_error", payload, room=session_id)
 

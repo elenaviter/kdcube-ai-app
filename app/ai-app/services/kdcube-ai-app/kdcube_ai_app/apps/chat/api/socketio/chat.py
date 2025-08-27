@@ -21,7 +21,7 @@ from kdcube_ai_app.infra.gateway.rate_limiter import RateLimitError
 from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
 
-from kdcube_ai_app.apps.chat.inventory import create_workflow_config, ConfigRequest
+from kdcube_ai_app.apps.chat.inventory import create_workflow_config, ConfigRequest, _mid
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +276,7 @@ class SocketIOChatHandler:
             user_session_data = socket_session.get('user_session', {})
 
             # 2) Basic validation
-            if not data or "message" not in data or "config" not in data:
+            if not data or "message" not in data:
                 error_msg = 'Missing message or config in request'
                 logger.error(f"Chat validation error for {sid}: {error_msg}")
                 await self.sio.emit('chat_error', {
@@ -392,8 +392,10 @@ class SocketIOChatHandler:
             task_id = str(uuid.uuid4())
             task_data = {
                 "task_id": task_id,
+                "turn_id": _mid("turn"),
                 "message": message,
                 "session_id": session.session_id,
+                "conversation_id": conversation_id,
                 "config": config_request.model_dump(),
                 "chat_history": history_dict,
                 "user_type": session.user_type.value,

@@ -12,7 +12,7 @@ from uuid import uuid4
 import aiohttp
 import requests
 import time
-from typing import Optional, Any, Dict, List, AsyncIterator, Callable, Awaitable
+from typing import Optional, Any, Dict, List, AsyncIterator, Callable, Awaitable, TypedDict
 
 from langchain_core.embeddings import Embeddings
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage, AIMessage
@@ -1331,3 +1331,21 @@ if __name__ == "__main__":
     asyncio.run(streaming())
 
 
+class BundleState(TypedDict, total=False):
+    request_id: str
+    tenant: str
+    project: str
+    user: str
+    session_id: str
+    text: str
+    turn_id: str
+    final_answer: str
+    followups: list[str]
+    error_message: Optional[str]
+    step_logs: list[dict]
+    start_time: float
+
+APP_STATE_KEYS = [
+    "request_id", "tenant", "project", "user", "session_id",
+    "text", "final_answer", "followups", "error_message", "step_logs"
+]
