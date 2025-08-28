@@ -179,9 +179,11 @@ cython_debug/
 .vite/
 
 app/ai-app/deployment/docker/all_in_one/kb-storage/
+app/ai-app/deployment/docker/localstorage/data/
 app/ai-app/deployment/cicd/
 app/ai-app/deployment/artifactory/
 app/ai-app/deployment/scripts/
+
 app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/custom_apps/
 app/ai-app/ui/debug/
 app/ai-app/services/scripts/

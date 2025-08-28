@@ -21,7 +21,7 @@ from kdcube_ai_app.infra.gateway.rate_limiter import RateLimitError
 from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
 
-from kdcube_ai_app.apps.chat.inventory import create_workflow_config, ConfigRequest, _mid
+from kdcube_ai_app.apps.chat.sdk.inventory import create_workflow_config, ConfigRequest, _mid
 
 logger = logging.getLogger(__name__)
 

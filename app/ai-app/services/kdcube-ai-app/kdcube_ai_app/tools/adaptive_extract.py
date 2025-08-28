@@ -843,7 +843,7 @@ class BalancedPDFExtractor(PDFExtractorBase):
 class AnthropicPDFExtractor(PDFExtractorBase):
     """High-quality extraction using Anthropic Claude"""
 
-    def __init__(self, model: str = "claude-3-5-sonnet-20241022"):
+    def __init__(self, model: str = "claude-3-7-sonnet-latest"):
         super().__init__("anthropic_extractor")
         self.output_format = "markdown"
         self.model = model

@@ -7,7 +7,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 
-from kdcube_ai_app.apps.chat.inventory import AgentLogger, CustomEmbeddings, Config
+from kdcube_ai_app.apps.chat.sdk.inventory import AgentLogger, CustomEmbeddings, Config
 
 
 class RAGService:

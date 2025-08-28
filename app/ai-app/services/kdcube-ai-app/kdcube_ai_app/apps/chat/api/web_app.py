@@ -40,7 +40,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
-from kdcube_ai_app.apps.chat.inventory import ConfigRequest, create_workflow_config, _mid, BundleState
+from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config, _mid, BundleState
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 # Import the modular Socket.IO handler
@@ -141,6 +141,7 @@ async def lifespan(app: FastAPI):
                 "delta": delta,
                 "index": index,
                 "timestamp": datetime.now().isoformat(),
+                "meta": meta,
                 **emit_data
             }, room=session_id)
 
@@ -188,6 +189,7 @@ async def lifespan(app: FastAPI):
         state["project"] = envelope.project_id
         state["text"] = message
         state["turn_id"] = turn_id
+        state["conversation_id"] = conversation_id
 
         # Include a lightweight system prompt if passed in config
         system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
@@ -423,7 +425,7 @@ async def check_embeddings_endpoint(request: ConfigRequest,
                                     session: UserSession = Depends(auth_without_pressure())):
     """Test embedding configuration"""
     try:
-        from kdcube_ai_app.apps.chat.inventory import probe_embeddings
+        from kdcube_ai_app.apps.chat.sdk.inventory import probe_embeddings
         return probe_embeddings(request)
     except Exception as e:
         import traceback

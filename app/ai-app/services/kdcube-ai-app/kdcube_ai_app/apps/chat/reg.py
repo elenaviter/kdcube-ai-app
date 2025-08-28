@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# chat/reg.py
+
 MODEL_CONFIGS = {
     "o3-mini": {
         "model_name": "o3-mini",
@@ -26,14 +28,20 @@ MODEL_CONFIGS = {
         "has_classifier": True,
         "description": "GPT-4 Optimized Mini - High performance, cost-effective"
     },
-    "claude-3-5-sonnet": {
-        "model_name": "claude-3-5-sonnet-20241022",
+    "claude-3-7-sonnet-latest": {
+        "model_name": "claude-3-7-sonnet-20250219",
         "provider": "anthropic",
         "has_classifier": True,
-        "description": "Claude 3.5 Sonnet - Latest Anthropic model"
+        "description": "Claude Sonnet 3.7"
     },
-    "claude-3-haiku": {
-        "model_name": "claude-3-haiku-20240307",
+    "claude-sonnet-4-20250514": {
+        "model_name": "claude-sonnet-4-20250514",
+        "provider": "anthropic",
+        "has_classifier": True,
+        "description": "Claude Sonnet 4 Sonnet - Latest Anthropic Model"
+    },
+    "claude-3-5-haiku-latest": {
+        "model_name": "claude-3-5-haiku-20241022",
         "provider": "anthropic",
         "has_classifier": False,
         "description": "Claude 3 Haiku - Fast and efficient"

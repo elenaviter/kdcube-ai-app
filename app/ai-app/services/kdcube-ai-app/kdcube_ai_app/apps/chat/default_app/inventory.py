@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 
 from langchain_openai import ChatOpenAI
 
-from kdcube_ai_app.apps.chat.inventory import Config, ConfigRequest, CustomModelClient, ModelServiceBase, AgentLogger
+from kdcube_ai_app.apps.chat.sdk.inventory import Config, ConfigRequest, CustomModelClient, ModelServiceBase, AgentLogger
 from kdcube_ai_app.infra.accounting.usage import ClientConfigHint
 from kdcube_ai_app.tools.serialization import json_safe
 

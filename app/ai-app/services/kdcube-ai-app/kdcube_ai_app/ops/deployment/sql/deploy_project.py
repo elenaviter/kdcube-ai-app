@@ -4,12 +4,12 @@
 from kdcube_ai_app.ops.deployment.sql.db_deployment import run as provision, SYSTEM_COMPONENT, SYSTEM_SCHEMA, PROJECT_COMPONENT
 
 
-def step_provision(tenant, project):
+def step_provision(tenant, project, app: str = "knowledge_base"):
     # provision("deploy", SYSTEM_COMPONENT)
-    provision("deploy", PROJECT_COMPONENT, tenant, project.replace("-", "_"), "knowledge_base")
+    provision("deploy", PROJECT_COMPONENT, tenant, project.replace("-", "_"), app)
 
-def step_deprovision(tenant, project):
-    provision("delete", PROJECT_COMPONENT, tenant, project.replace("-", "_"), "knowledge_base")
+def step_deprovision(tenant, project, app: str = "knowledge_base"):
+    provision("delete", PROJECT_COMPONENT, tenant, project.replace("-", "_"), app)
 
 if __name__ == "__main__":
     # def load_env():
@@ -22,5 +22,6 @@ if __name__ == "__main__":
     import os
     project = os.environ.get("DEFAULT_PROJECT_NAME", None)
     tenant = os.environ.get("DEFAULT_TENANT", None)
-    step_provision(tenant, project)
+    step_provision(tenant, project, "knowledge_base")
+    step_provision(tenant, project, "chatbot")
     # step_deprovision(tenant, project)

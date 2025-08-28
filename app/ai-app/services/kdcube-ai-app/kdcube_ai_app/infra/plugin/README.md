@@ -454,7 +454,7 @@ from kdcube_ai_app.infra.plugin.agentic_loader import (
     agentic_initial_state,
 )
 from kdcube_ai_app.apps.chat.emitters import StepEmitter, DeltaEmitter
-from kdcube_ai_app.apps.chat.inventory import Config
+from kdcube_ai_app.apps.chat.sdk.inventory import Config
 
 # Import from your bundle's __init__.py
 try:

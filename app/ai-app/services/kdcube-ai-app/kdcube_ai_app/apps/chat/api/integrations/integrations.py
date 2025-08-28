@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from fastapi import Depends, HTTPException, Request, APIRouter
 
 from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure
-from kdcube_ai_app.apps.chat.inventory import ConfigRequest
+from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest
 from kdcube_ai_app.auth.sessions import UserSession
 
 import kdcube_ai_app.infra.namespaces as namespaces
@@ -172,7 +172,7 @@ async def get_bundle_suggestions(
     Load (or reuse singleton) bundle instance and, if defined, call its `suggestions(...)`.
     Returns generic JSON from the bundle, or an empty suggestions list when not implemented.
     """
-    from kdcube_ai_app.apps.chat.inventory import ConfigRequest, create_workflow_config
+    from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config
     from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
     from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
 

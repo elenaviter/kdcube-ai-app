@@ -17,7 +17,7 @@ from langchain.chat_models import init_chat_model
 from datetime import datetime
 
 from kdcube_ai_app.apps.chat.emitters import StepEmitter, DeltaEmitter
-from kdcube_ai_app.apps.chat.inventory import Config, AgentLogger, _mid
+from kdcube_ai_app.apps.chat.sdk.inventory import Config, AgentLogger, _mid
 from kdcube_ai_app.infra.accounting import with_accounting
 
 # Loader imports
