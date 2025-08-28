@@ -128,6 +128,7 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
             })
             return BundleSpec(**d)
         bid = bundle_id or _DEFAULT_ID
+        print(f"[resolve_bundle]. Default bundle id = {_DEFAULT_ID}\nRegistry={_REGISTRY}\nRequested id = {bundle_id}\nUsing id = {bid}")
         if not bid or bid not in _REGISTRY:
             return None
         return BundleSpec(**_REGISTRY[bid])
