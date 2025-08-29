@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# api/registry/registry.py
 import urllib
 from fastapi import Query, UploadFile, File, Response, Depends
 from fastapi.responses import StreamingResponse

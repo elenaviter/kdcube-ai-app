@@ -56,7 +56,7 @@ def run(op, component, tenant = None, project = None, app=None):
         print(error)
         raise Exception(error)
 
-    schema_name = safe_schema_name(project)
+    schema_name = safe_schema_name(project or "default-project")
     if tenant:
         substitutions = { "SCHEMA": f"kdcube_{tenant}_{schema_name}", "SYSTEM_SCHEMA": SYSTEM_SCHEMA }
     else:
@@ -89,7 +89,7 @@ def run(op, component, tenant = None, project = None, app=None):
     else:
         print("Please specify --deploy or --delete.")
 
-def main(args):
+def main(args, parser):
     """
     Main function to handle CLI arguments and execute scripts.
     """
@@ -99,25 +99,25 @@ def main(args):
         op = "delete"
     else:
         print("Please specify --deploy or --delete.")
-        parser.print_help()
+        parser and parser.print_help()
         return False
     component = args.component
 
     if not component:
         print("Please specify a component.")
-        parser.print_help()
+        parser and parser.print_help()
         sys.exit(1)
 
     project = args.project
     if not project and component != SYSTEM_COMPONENT:
         print("Please specify a project name.")
-        parser.print_help()
+        parser and parser.print_help()
         sys.exit(1)
 
     tenant = args.tenant
     if not tenant and component != SYSTEM_COMPONENT:
         print("Please specify a tenant name.")
-        parser.print_help()
+        parser and parser.print_help()
         sys.exit(1)
     app = args.app
 
@@ -130,6 +130,8 @@ if __name__ == "__main__":
 
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv())
+
+    parser = None
 
     # debug = os.environ["DEBUG"] == "true"
     debug = True
@@ -184,4 +186,4 @@ if __name__ == "__main__":
             "--app", help="Name of the app (namespace of the deployment scripts)"
         )
         args = parser.parse_args()
-    main(args)
+    main(args, parser)

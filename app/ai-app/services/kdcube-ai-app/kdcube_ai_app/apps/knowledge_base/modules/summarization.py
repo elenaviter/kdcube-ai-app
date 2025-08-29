@@ -20,7 +20,7 @@ class SummarizationModule(ProcessingModule):
     def stage_name(self) -> str:
         return "summarization"
 
-    def process(self, resource_id: str, version: str, force_reprocess: bool = False, **kwargs) -> Dict[str, Any]:
+    async def process(self, resource_id: str, version: str, force_reprocess: bool = False, **kwargs) -> Dict[str, Any]:
         """Generate summaries for segments and the overall document."""
 
         # Check if summarization already exists
@@ -81,8 +81,7 @@ class SummarizationModule(ProcessingModule):
         self.log_operation("summarization_complete", resource_id, {
             "version": version,
             "segment_count": len(segments),
-            "compression_ratio": summary_results["summarization_metadata"]["compression_ratio"],
-            "key_points_count": len(summary_results["key_points"])
+            "compression_ratio": summary_results["summarization_metadata"]["compression_ratio"]
         })
 
         self.logger.info(f"Generated summaries for {len(segments)} segments of {resource_id} v{version}")

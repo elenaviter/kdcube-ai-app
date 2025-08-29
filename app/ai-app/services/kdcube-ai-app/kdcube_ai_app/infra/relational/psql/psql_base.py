@@ -4,6 +4,7 @@
 # infra/relational/psql/psql_base.py
 
 import os
+import urllib
 import psycopg2
 from psycopg2.extras import execute_values
 
@@ -31,7 +32,14 @@ class PostgreSqlDbMgr:
             self.database_url += "?sslmode=require"
 
     def get_connection(self):
-        return psycopg2.connect(self.database_url)
+        return psycopg2.connect(
+            dbname=self.database,
+            user=self.username,
+            password=self.password,
+            host=self.host,
+            port=self.port,
+            sslmode="require" if self.ssl else "disable"
+        )
 
     def execute_sql_string(self, sql: str):
         with self.get_connection() as conn:
@@ -107,73 +115,6 @@ class PostgreSqlDbMgr:
                 # Otherwise (no data to return, e.g. normal INSERT/UPDATE/DELETE w/o returning)
                 conn.commit()
                 return None
-
-    def execute_sql_(
-            self,
-            sql: str,
-            data: Union[tuple, List[tuple]] = None,
-            as_dict: bool = True,
-            debug: bool = False,
-            bulk: bool = False,
-            conn=None
-    ):
-        """
-        Execute arbitrary SQL with optional data.
-
-        :param sql: The SQL query to execute.
-        :param data: Optional tuple or list-of-tuples of data to bind.
-        :param as_dict: Whether to return the results as a dictionary (list[dict])
-                        or as a dict with "columns" / "rows".
-        :param debug: If True, prints debug info.
-        :param bulk: Use execute_values for bulk insertion.
-        :param conn: Optional existing database connection to use instead of creating a new one.
-        :return: Query results if it's a SELECT or if there's a RETURNING clause,
-                 otherwise None.
-        """
-        if debug:
-            print(f"Executing SQL: {sql}")
-            print(f"With parameters: {data}")
-
-        # Determine if we should manage connection (create/close) or use the provided one
-        should_manage_connection = conn is None
-
-        try:
-            # Create connection only if one wasn't provided
-            if should_manage_connection:
-                conn = self.get_connection()
-
-            with conn.cursor() as cur:
-                # If we want to use execute_values for bulk insertion
-                if bulk and data:
-                    execute_values(cur, sql, data)
-                elif data:
-                    cur.execute(sql, data)
-                else:
-                    cur.execute(sql)
-
-                # 1) Check for "SELECT" or "RETURNING" in the query
-                #    If present, we fetch rows
-                lower_sql = sql.strip().lower()
-                is_select = lower_sql.startswith("select")
-                has_returning = "returning" in lower_sql
-
-                if is_select or has_returning:
-                    # 2) fetch rows
-                    rows = cur.fetchall()
-                    columns = [desc[0] for desc in cur.description]
-                    if as_dict:
-                        return [dict(zip(columns, row)) for row in rows]
-                    else:
-                        return {"columns": columns, "rows": rows}
-
-                # Otherwise (no data to return, e.g. normal INSERT/UPDATE/DELETE w/o returning)
-                if should_manage_connection:
-                    conn.commit()
-                return None
-        finally:
-            # Only close the connection if we created it
-            if should_manage_connection and conn is not None:
-                conn.close()
 
     def list_schemas(self) -> list:
         sql = "SELECT schema_name FROM information_schema.schemata;"

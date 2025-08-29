@@ -16,7 +16,6 @@ from typing import Dict, Any, List, Optional, Generator
 from dataclasses import dataclass
 
 from kdcube_ai_app.apps.chat.reg import EMBEDDERS
-# from kdcube_ai_app.apps.chat.agentic_app_bckp import EMBEDDERS
 
 from kdcube_ai_app.apps.knowledge_base.modules.contracts.segmentation import SegmentType
 

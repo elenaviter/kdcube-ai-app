@@ -46,7 +46,7 @@ ORCHESTRATOR_IDENTITY = os.environ.get("ORCHESTRATOR_IDENTITY", DEFAULT_ORCHESTR
 #     logger.error(f"Task {task_id} failed permanently: {exception_data}")
 
 # Global service communicator
-sc = ServiceCommunicator(orchestrator_identity=ORCHESTRATOR_IDENTITY)
+# sc = ServiceCommunicator(orchestrator_identity=ORCHESTRATOR_IDENTITY)
 
 # ==============================================================================
 #                          MAIN KB PROCESSING ACTOR

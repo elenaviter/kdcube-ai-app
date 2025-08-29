@@ -85,4 +85,5 @@ def _select_list(weight: str, table_alias: str = "KE", table="knowledge_elements
     """
     if weight.lower() != "light":
         return f"{table_alias}.*"
-    return ", ".join(f"{table_alias}.{c}" for c in _BASE_COLS.get(table))
+    cols = _BASE_COLS.get(table, ())
+    return ", ".join(f"{table_alias}.{c}" for c in cols)

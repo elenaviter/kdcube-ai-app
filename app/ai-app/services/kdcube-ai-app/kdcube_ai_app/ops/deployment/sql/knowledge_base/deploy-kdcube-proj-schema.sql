@@ -285,6 +285,10 @@ WITH (lists=100);
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_entities_gin
     ON <SCHEMA>.retrieval_segment USING GIN (entities jsonb_ops);
 
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_entity_values
+    ON <SCHEMA>.retrieval_segment
+    USING GIN (<SCHEMA>.extract_entity_values_<SCHEMA>(entities));
+
 -- Resource linkage index (critical for cleanup operations) (schema-specific name)
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_resource
     ON <SCHEMA>.retrieval_segment (resource_id, version);
