@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# socketio/chat.py
 """
-Modular Socket.IO chat handler with gateway integration
+Modular Socket.IO chat handler with gateway integration and Redis relay.
+Redis pub/sub listener relays chat events (chat.events) to clients
 """
+
 import os
 import uuid
 import time
@@ -26,6 +27,8 @@ from kdcube_ai_app.apps.chat.sdk.inventory import create_workflow_config, Config
 logger = logging.getLogger(__name__)
 
 import kdcube_ai_app.infra.namespaces as namespaces
+from kdcube_ai_app.infra.orchestration.app.communicator import ServiceCommunicator
+
 
 class StepUpdate(BaseModel):
     step: str
@@ -37,7 +40,7 @@ class StepUpdate(BaseModel):
 
 
 class SocketIOChatHandler:
-    """Socket.IO chat handler with gateway integration"""
+    """Socket.IO chat handler with gateway integration + Redis relay"""
 
     def __init__(self, app, gateway_adapter, chat_queue_manager, allowed_origins, instance_id, redis_url):
         self.app = app
@@ -51,6 +54,17 @@ class SocketIOChatHandler:
         # Create Socket.IO server
         self.sio = self._create_socketio_server()
         self._setup_event_handlers()
+
+        # --- pub/sub relay ---
+        self._relay_channel = "chat.events"
+        self._comm = ServiceCommunicator(
+            redis_url=self.redis_url,
+            orchestrator_identity=os.environ.get(
+                "ORCHESTRATOR_IDENTITY",
+                f"kdcube_orchestrator_{os.environ.get('ORCHESTRATOR_TYPE', 'dramatiq')}",
+            ),
+        )
+        self._listener_started = False
 
     def _create_socketio_server(self):
         """Create Socket.IO server with Redis manager"""
@@ -408,7 +422,7 @@ class SocketIOChatHandler:
                 },
                 "created_at": time.time(),
                 "instance_id": self.instance_id,
-                "socket_id": sid,                          # so the worker can emit back to this client
+                "socket_id": sid,                          # so the worker can address this client precisely
                 "acct": acct_envelope.to_dict(),           # <-- accounting snapshot for the worker
                 "kdcube_path": os.environ.get("KDCUBE_STORAGE_PATH"),  # worker uses this to init storage backend
             }
@@ -495,6 +509,49 @@ class SocketIOChatHandler:
         if self.sio:
             return socketio.ASGIApp(self.sio)
         return None
+
+    # -------------------------
+    # Redis relay start/stop
+    # -------------------------
+
+    async def _on_pubsub_message(self, message: dict):
+        """
+        Relay chat events published by workers/processors.
+        Payload schema:
+          { target_sid: str|None, session_id: str|None, event: str, data: dict }
+        """
+        try:
+            event = message.get("event")
+            data = message.get("data") or {}
+            target_sid = message.get("target_sid")
+            session_id = message.get("session_id")
+            if not event:
+                return
+
+            # Prefer target_sid to avoid duplicates; fall back to session_id room.
+            if target_sid:
+                await self.sio.emit(event, data, room=target_sid)
+            elif session_id:
+                await self.sio.emit(event, data, room=session_id)
+        except Exception as e:
+            logger.error(f"[chat relay] failed to emit: {e}")
+
+    async def start(self):
+        """Start listening for chat relay messages."""
+        if self._listener_started:
+            return
+        await self._comm.subscribe(self._relay_channel)
+        await self._comm.start_listener(self._on_pubsub_message)
+        self._listener_started = True
+        logger.info(f"Socket.IO chat handler subscribed to '{self._relay_channel}' relay channel.")
+
+    async def stop(self):
+        """Stop listening for chat relay messages."""
+        if not self._listener_started:
+            return
+        await self._comm.stop_listener()
+        self._listener_started = False
+        logger.info("Socket.IO chat handler relay listener stopped.")
 
 
 def create_socketio_chat_handler(app, gateway_adapter, chat_queue_manager, allowed_origins, instance_id, redis_url):

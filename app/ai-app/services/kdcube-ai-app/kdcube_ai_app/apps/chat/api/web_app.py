@@ -97,19 +97,37 @@ async def lifespan(app: FastAPI):
             emit_data = None,
             **kwargs
     ) -> Dict:
+        # prefer injected emitter (relay) if provided by processor
+        injected_emitter = kwargs.get("emitter")
         sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
+
         start_ts = datetime.now().isoformat()
         task_id = kwargs.get("task_id")
+
+        # early banner (best-effort)
         # 1) announce start
-        if sio:
-            logger.info(f"agentic_chat_handler. session_id={session_id}, task_id={task_id}, message={message[:100]}...")
-            await sio.emit("chat_start_handler", {
+        try:
+            start_payload = {
                 "task_id": task_id,
                 "message": message[:100] + "..." if len(message) > 100 else message,
                 "timestamp": start_ts,
                 "user_type": "unknown",
                 "queue_stats": {}
-            }, room=session_id)
+            }
+            handled = injected_emitter or sio
+            if injected_emitter:
+                await injected_emitter.emit(
+                    "chat_start_handler",
+                    start_payload,
+                    room=session_id,
+                    target_sid=(emit_data or {}).get("socket_id"),
+                )
+            elif sio:
+                await sio.emit("chat_start_handler", start_payload, room=session_id)
+            if handled:
+                logger.info(f"agentic_chat_handler. session_id={session_id}, task_id={task_id}, message={message[:100]}...")
+        except Exception:
+            pass
 
         # 2) build config + workflow with a step emitter
         try:
@@ -122,9 +140,7 @@ async def lifespan(app: FastAPI):
             emit_data = {}
 
         async def _emit_step(step: str, status: str, data: Dict[str, Any]):
-            if not sio:
-                return
-            await sio.emit("chat_step", {
+            payload = {
                 "step": step,
                 "status": status,
                 "timestamp": datetime.now().isoformat(),
@@ -132,18 +148,34 @@ async def lifespan(app: FastAPI):
                 "elapsed_time": None,
                 "error": data.get("error"),
                 **emit_data
-            }, room=session_id)
+            }
+            if injected_emitter:
+                await injected_emitter.emit(
+                    "chat_step",
+                    payload,
+                    room=session_id,
+                    target_sid=(emit_data or {}).get("socket_id"),
+                )
+            elif sio:
+                await sio.emit("chat_step", payload, room=session_id)
 
         async def _emit_delta(delta: str, index: int, meta: dict):
-            if not sio:
-                return
-            await sio.emit("chat_delta", {
+            payload = {
                 "delta": delta,
                 "index": index,
                 "timestamp": datetime.now().isoformat(),
                 "meta": meta,
                 **emit_data
-            }, room=session_id)
+            }
+            if injected_emitter:
+                await injected_emitter.emit(
+                    "chat_delta",
+                    payload,
+                    room=session_id,
+                    target_sid=(emit_data or {}).get("socket_id"),
+                )
+            elif sio:
+                await sio.emit("chat_delta", payload, room=session_id)
 
         from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
         bundle_id = (config or {}).get("agentic_bundle_id")
@@ -191,9 +223,7 @@ async def lifespan(app: FastAPI):
         state["turn_id"] = turn_id
         state["conversation_id"] = conversation_id
 
-        # Include a lightweight system prompt if passed in config
-        system_prompt = (config or {}).get("system_prompt") or "You are a helpful assistant."
-        state["messages"] = [SystemMessage(content=system_prompt, id=_mid("sys"))]
+        state["messages"] = []
 
         for h in (chat_history or []):
             role = (h.get("role") or "").lower()
@@ -216,10 +246,8 @@ async def lifespan(app: FastAPI):
                 "error_message": error_message
             }
 
-        # # 5) send complete
-        # if sio:
-        #     await sio.emit("chat_complete", result, room=session_id)
         return result
+
 
     port = CHAT_APP_PORT
     process_id = os.getpid()
@@ -270,6 +298,11 @@ async def lifespan(app: FastAPI):
         await heartbeat_manager.start_heartbeat(interval=10)
 
         try:
+            await socketio_handler.start()
+        except Exception as e:
+            logger.error(f"Failed to start chat relay listener: {e}")
+
+        try:
             from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
             from kdcube_ai_app.infra.plugin.bundle_registry import set_registry as _set_mem_registry
             reg = await _load_store_registry(middleware.redis)
@@ -290,6 +323,11 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if hasattr(app.state, "socketio_handler") and getattr(app.state.socketio_handler, "stop", None):
+        try:
+            await app.state.socketio_handler.stop()
+        except Exception:
+            pass
     if hasattr(app.state, 'heartbeat_manager'):
         await app.state.heartbeat_manager.stop_heartbeat()
     if hasattr(app.state, 'processor'):

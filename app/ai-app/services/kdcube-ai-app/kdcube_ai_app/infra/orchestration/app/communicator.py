@@ -80,19 +80,39 @@ class ServiceCommunicator:
 
     # ---------- publisher API (sync) ----------
 
-    def pub(self, event: str, target_sid: str, data: dict, channel: str = "kb.process_resource_out"):
+    def pub(
+            self,
+            event: str,
+            target_sid: str | None,
+            data: dict,
+            channel: str = "kb.process_resource_out",
+            session_id: str | None = None,
+    ):
         """
         Publish an event to the given channel (sync).
+
+        Args:
+            event: event name to relay (e.g., "chat_step", "chat_complete")
+            target_sid: specific Socket.IO SID to target (preferred for avoiding duplicates)
+            data: payload dict
+            channel: logical channel (auto-prefixed by orchestrator identity)
+            session_id: optional logical room (e.g., a user's session id). Use this
+                        ONLY when you don't know the exact target_sid.
         """
         message = {
             "target_sid": target_sid,
+            "session_id": session_id,
             "event": event,
             "data": data,
-            "timestamp": time.time()
+            "timestamp": time.time(),
         }
         full_channel = self._fmt_channel(channel)
-        logger.info(f"Publishing event '{event}' to '{full_channel}' for SID '{target_sid}': {data}")
+        logger.info(
+            f"Publishing event '{event}' to '{full_channel}' "
+            f"(sid={target_sid}, session={session_id}): {data}"
+        )
         self.redis.publish(full_channel, json.dumps(message))
+
 
     # ---------- subscriber API (async) ----------
 

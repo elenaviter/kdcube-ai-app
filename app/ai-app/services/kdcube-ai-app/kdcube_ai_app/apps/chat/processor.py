@@ -9,7 +9,7 @@ import os
 import traceback
 from typing import Optional, Dict, Any, Iterable
 
-from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter, NoopEmitter
+from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter, NoopEmitter, ChatRelayEmitter
 from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
@@ -22,7 +22,7 @@ class EnhancedChatRequestProcessor:
     Queue worker that:
       - Pops tasks fairly from multiple queues
       - Acquires + renews a per-task Redis lock
-      - Emits chat_* events via an injected emitter (Socket.IO or custom)
+      - Emits chat_* events via an injected emitter (Redis relay preferred)
       - Enforces per-task timeout
       - Handles graceful shutdown
     """
@@ -35,8 +35,8 @@ class EnhancedChatRequestProcessor:
             chat_handler,
             *,
             process_id: Optional[int] = None,
-            emitter: Optional[Any] = None,     # anything with `await emit(event, data, room=...)`
-            socketio=None,                     # convenience: if you pass sio, we wrap it
+            emitter: Optional[Any] = None,     # anything with `await emit(event, data, room=..., target_sid=...)`
+            socketio=None,                     # legacy: if you pass sio, we wrap it
             max_concurrent: Optional[int] = None,
             task_timeout_sec: Optional[int] = None,
             lock_ttl_sec: int = 300,
@@ -50,10 +50,15 @@ class EnhancedChatRequestProcessor:
         self.lock_ttl_sec = lock_ttl_sec
         self.lock_renew_sec = lock_renew_sec
 
-        self._emitter = (
-                emitter
-                or (SocketIOEmitter(socketio) if socketio is not None else NoopEmitter())
-        )
+        # Prefer explicitly supplied emitter; otherwise prefer Redis relay;
+        # fall back to direct Socket.IO (same-process) and finally Noop.
+        if emitter is not None:
+            self._emitter = emitter
+        else:
+            try:
+                self._emitter = ChatRelayEmitter(channel="chat.events")
+            except Exception:
+                self._emitter = SocketIOEmitter(socketio) if socketio is not None else NoopEmitter()
 
         self._processor_task: Optional[asyncio.Task] = None
         self._config_task: Optional[asyncio.Task] = None
@@ -89,7 +94,6 @@ class EnhancedChatRequestProcessor:
         if self._active_tasks:
             await asyncio.gather(*list(self._active_tasks), return_exceptions=True)
 
-
     def get_current_load(self) -> int:
         return self._current_load
 
@@ -109,7 +113,6 @@ class EnhancedChatRequestProcessor:
 
                 task = asyncio.create_task(self._process_task(task_data), name=f"chat-task:{task_data.get('task_id')}")
                 self._active_tasks.add(task)
-                # remove from set when done
                 task.add_done_callback(lambda t: self._active_tasks.discard(t))
 
             except asyncio.CancelledError:
@@ -188,7 +191,7 @@ class EnhancedChatRequestProcessor:
             load_registry as store_load,
             save_registry as store_save,
             publish_update as store_publish,
-            apply_update,  # <-- new helper
+            apply_update,
             BundlesRegistry
         )
 
@@ -337,6 +340,7 @@ class EnhancedChatRequestProcessor:
         acct_dict = task_data.get("acct") or {}
         lock_key = task_data.get("_lock_key")
         turn_id = task_data["turn_id"]
+        socket_id = task_data.get("socket_id")  # precise target when available
 
         # accounting + storage
         from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope, bind_accounting
@@ -355,20 +359,21 @@ class EnhancedChatRequestProcessor:
             "conversation_id": conversation_id,
             "turn_id": turn_id,
             "user_type": task_data.get("user_type", "unknown"),
+            "socket_id": socket_id,
         }
-        # Emit "chat_start" up-front (so UI shows a banner immediately)
+        # banner
         await self._emit("chat_start", {
             "message": (message[:100] + "...") if len(message) > 100 else message,
             "timestamp": _utc_now_iso(),
             "queue_stats": {},
             **emit_data
-        }, room=session_id)
+        }, room=session_id, target_sid=socket_id)
 
         # Also emit a synthetic "workflow_start" step (optional but nice)
         await self._emit_step("workflow_start", "started", session_id, data={
             "model": (config or {}).get("selected_model"),
             **emit_data
-        })
+        }, target_sid=socket_id)
 
         try:
             async with bind_accounting(envelope, storage_backend, enabled=True):
@@ -377,21 +382,23 @@ class EnhancedChatRequestProcessor:
                     async with self._lock_renewer(lock_key):
                         # Enforce timeout
                         result = await asyncio.wait_for(
-                            # self._invoke_handler(task_id, session_id, message, config, chat_history),
-                            self._invoke_handler(task_id, session_id, conversation_id, turn_id, message, config, chat_history, envelope, emit_data),
+                            self._invoke_handler(
+                                task_id, session_id, conversation_id, turn_id,
+                                message, config, chat_history, envelope, emit_data
+                            ),
                             timeout=self.task_timeout_sec,
                         )
 
             # Emit completion
             result = result or {}
-            await self._emit_result(session_id, {**result, **emit_data})
+            await self._emit_result(session_id, {**result, **emit_data}, target_sid=socket_id)
 
         except asyncio.TimeoutError:
             tb = "Task timed out"
-            await self._emit_error(task_id, session_id, emit_data, tb)
+            await self._emit_error(task_id, session_id, emit_data, tb, target_sid=socket_id)
         except Exception:
             tb = traceback.format_exc()
-            await self._emit_error(task_id, session_id, emit_data, tb)
+            await self._emit_error(task_id, session_id, emit_data, tb, target_sid=socket_id)
         finally:
             try:
                 if lock_key:
@@ -438,7 +445,7 @@ class EnhancedChatRequestProcessor:
 
     # ---------------- Emission helpers ----------------
 
-    async def _emit_step(self, step: str, status: str, room: Optional[str], *, data: Optional[dict] = None, error: Optional[str] = None):
+    async def _emit_step(self, step: str, status: str, room: Optional[str], *, data: Optional[dict] = None, error: Optional[str] = None, target_sid: Optional[str] = None):
         payload = {
             "step": step,
             "status": status,
@@ -447,9 +454,9 @@ class EnhancedChatRequestProcessor:
             "error": error,
             "data": data or {},
         }
-        await self._emit("chat_step", payload, room=room)
+        await self._emit("chat_step", payload, room=room, target_sid=target_sid)
 
-    async def _emit_result(self, session_id: str, result: Dict[str, Any]):
+    async def _emit_result(self, session_id: str, result: Dict[str, Any], *, target_sid: Optional[str] = None):
         logger.info(f"Task {result['task_id']} completed for session {session_id}")
 
         # Close the synthetic workflow step
@@ -459,23 +466,22 @@ class EnhancedChatRequestProcessor:
         # Normalize a bit, but don’t force a schema.
         if not result:
             result = {}
+        await self._emit("chat_complete", result, room=session_id, target_sid=target_sid)
 
-        await self._emit("chat_complete", result, room=session_id)
-
-    async def _emit_error(self, task_id: str, session_id: str, emit_data, error: str):
+    async def _emit_error(self, task_id: str, session_id: str, emit_data, error: str, *, target_sid: Optional[str] = None):
         logger.error(f"Task {task_id} failed for session {session_id}: {error}")
-        await self._emit_step("workflow_error", "error", session_id, error=error, data={"message": "Workflow aborted"})
-
+        await self._emit_step("workflow_error", "error", session_id, error=error, data={"message": "Workflow aborted"}, target_sid=target_sid)
         payload = {
             "task_id": task_id,
             "error": error,
             "timestamp": _utc_now_iso(),
             **emit_data
         }
-        await self._emit("chat_error", payload, room=session_id)
+        await self._emit("chat_error", payload, room=session_id, target_sid=target_sid)
 
-    async def _emit(self, event: str, data: dict, *, room: Optional[str] = None):
+    async def _emit(self, event: str, data: dict, *, room: Optional[str] = None, target_sid: Optional[str] = None):
         try:
-            await self._emitter.emit(event, data, room=room)
+            # Prefer precise SID when available; emitter decides how to route.
+            await self._emitter.emit(event, data, room=room, target_sid=target_sid)
         except Exception as e:
             logger.error(f"Emitter error for event '{event}': {e}")
