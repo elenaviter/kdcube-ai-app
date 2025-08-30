@@ -5,14 +5,15 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import time
 import os
 import traceback
 from typing import Optional, Dict, Any, Iterable
 
 from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter, NoopEmitter, ChatRelayEmitter
-from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
+from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -50,8 +51,7 @@ class EnhancedChatRequestProcessor:
         self.lock_ttl_sec = lock_ttl_sec
         self.lock_renew_sec = lock_renew_sec
 
-        # Prefer explicitly supplied emitter; otherwise prefer Redis relay;
-        # fall back to direct Socket.IO (same-process) and finally Noop.
+        # Prefer explicitly supplied emitter; otherwise Redis relay; fallback to direct Socket.IO, then Noop.
         if emitter is not None:
             self._emitter = emitter
         else:
@@ -111,7 +111,7 @@ class EnhancedChatRequestProcessor:
                     await asyncio.sleep(0.05)
                     continue
 
-                task = asyncio.create_task(self._process_task(task_data), name=f"chat-task:{task_data.get('task_id')}")
+                task = asyncio.create_task(self._process_task(task_data), name=f"chat-task:{task_data.get('task_id') or task_data.get('meta',{}).get('task_id')}")
                 self._active_tasks.add(task)
                 task.add_done_callback(lambda t: self._active_tasks.discard(t))
 
@@ -144,13 +144,14 @@ class EnhancedChatRequestProcessor:
                 logger.error("Invalid task payload (not JSON); dropping")
                 continue
 
-            task_id = task_dict.get("task_id")
-            if not task_id:
+            # lock by logical id if present, else fallback to legacy
+            logical_id = task_dict.get("meta", {}).get("task_id") or task_dict.get("task_id")
+            if not logical_id:
                 logger.error("Task missing task_id; dropping")
                 continue
 
             # Attempt lock
-            lock_key = f"{self.middleware.LOCK_PREFIX}:{task_id}"
+            lock_key = f"{self.middleware.LOCK_PREFIX}:{logical_id}"
             acquired = await self.middleware.redis.set(
                 lock_key,
                 f"{self.middleware.instance_id}:{self.process_id}",
@@ -159,7 +160,7 @@ class EnhancedChatRequestProcessor:
             )
             if acquired:
                 self._current_load += 1
-                logger.info(f"Process {self.process_id} acquired task {task_id} ({user_type})")
+                logger.info(f"Process {self.process_id} acquired task {logical_id} ({user_type})")
                 task_dict["_lock_key"] = lock_key
                 task_dict["_queue_key"] = queue_key
                 return task_dict
@@ -331,47 +332,89 @@ class EnhancedChatRequestProcessor:
                 pass
 
     async def _process_task(self, task_data: Dict[str, Any]):
-        task_id = task_data["task_id"]
-        session_id = task_data.get("session_id")
-        conversation_id = task_data.get("conversation_id")
-        config = task_data.get("config") or {}
-        chat_history = task_data.get("chat_history") or []
-        message = task_data.get("message") or ""
-        acct_dict = task_data.get("acct") or {}
         lock_key = task_data.get("_lock_key")
-        turn_id = task_data["turn_id"]
-        socket_id = task_data.get("socket_id")  # precise target when available
 
-        # accounting + storage
+        # 1) Parse standardized payload; fallback to legacy if needed
+        payload: Optional[ChatTaskPayload] = None
+        try:
+            payload = ChatTaskPayload.model_validate(task_data)
+        except Exception:
+            # Legacy compatibility path (min fields)
+            from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope
+            try:
+                # backfill minimal schema for old tasks
+                from kdcube_ai_app.apps.chat.sdk.protocol import build_chat_task_payload
+                payload = build_chat_task_payload(
+                    task_id=task_data.get("task_id"),
+                    created_at=task_data.get("created_at") or time.time(),
+                    instance_id=task_data.get("instance_id"),
+                    source="legacy",
+                    session_id=task_data.get("session_id"),
+                    conversation_id=task_data.get("conversation_id"),
+                    turn_id=task_data.get("turn_id"),
+                    socket_id=task_data.get("socket_id"),
+                    tenant_id=task_data.get("acct", {}).get("tenant_id"),
+                    project_id=task_data.get("acct", {}).get("project_id"),
+                    user_type=task_data.get("user_type"),
+                    user_id=task_data.get("user_info", {}).get("user_id"),
+                    username=task_data.get("user_info", {}).get("username"),
+                    fingerprint=task_data.get("user_info", {}).get("fingerprint"),
+                    roles=task_data.get("user_info", {}).get("roles"),
+                    permissions=task_data.get("user_info", {}).get("permissions"),
+                    message=task_data.get("message"),
+                    chat_history=task_data.get("chat_history"),
+                    config_values=task_data.get("config") or {},
+                    accounting_envelope=task_data.get("acct") or {},
+                    kdcube_path=task_data.get("kdcube_path"),
+                )
+            except Exception as e:
+                logger.error(f"Cannot normalize legacy task: {e}")
+                # give up on this task
+                try:
+                    if lock_key:
+                        await self.middleware.redis.delete(lock_key)
+                finally:
+                    return
+
+        assert payload is not None
+
+        # 2) Common context
+        session_id = payload.routing.session_id
+        socket_id = payload.routing.socket_id
+        task_id = payload.meta.task_id
+
+        # 3) Emission helpers
+        emit_data = {
+            "task_id": task_id,
+            "tenant_id": payload.actor.tenant_id,
+            "project_id": payload.actor.project_id,
+            "user_id": payload.user.user_id,
+            "session_id": session_id,
+            "conversation_id": payload.routing.conversation_id,
+            "turn_id": payload.routing.turn_id,
+            "user_type": payload.actor.user_type or "unknown",
+            "socket_id": socket_id,
+        }
+
+        # 4) accounting + storage
         from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope, bind_accounting
         from kdcube_ai_app.infra.accounting import with_accounting
 
-        envelope = AccountingEnvelope.from_dict(acct_dict)
-        kdcube_path = task_data.get("kdcube_path") or os.environ.get("KDCUBE_STORAGE_PATH")
+        envelope = AccountingEnvelope.from_dict(payload.accounting.envelope)
+        kdcube_path = payload.env.kdcube_path or os.environ.get("KDCUBE_STORAGE_PATH")
         storage_backend = create_storage_backend(kdcube_path, **{})
 
-        emit_data = {
-            "task_id": task_id,
-            "tenant_id": envelope.tenant_id,
-            "project_id": envelope.project_id,
-            "user_id": envelope.user_id,
-            "session_id": envelope.session_id,
-            "conversation_id": conversation_id,
-            "turn_id": turn_id,
-            "user_type": task_data.get("user_type", "unknown"),
-            "socket_id": socket_id,
-        }
         # banner
         await self._emit("chat_start", {
-            "message": (message[:100] + "...") if len(message) > 100 else message,
+            "message": (payload.request.message[:100] + "...") if payload.request.message and len(payload.request.message) > 100 else (payload.request.message or f"operation={payload.request.operation}"),
             "timestamp": _utc_now_iso(),
             "queue_stats": {},
             **emit_data
         }, room=session_id, target_sid=socket_id)
-
         # Also emit a synthetic "workflow_start" step (optional but nice)
+        # synthetic step
         await self._emit_step("workflow_start", "started", session_id, data={
-            "model": (config or {}).get("selected_model"),
+            "model": (payload.config.values or {}).get("selected_model"),
             **emit_data
         }, target_sid=socket_id)
 
@@ -382,14 +425,14 @@ class EnhancedChatRequestProcessor:
                     async with self._lock_renewer(lock_key):
                         # Enforce timeout
                         result = await asyncio.wait_for(
-                            self._invoke_handler(
-                                task_id, session_id, conversation_id, turn_id,
-                                message, config, chat_history, envelope, emit_data
+                            self.chat_handler(
+                                payload,
+                                emitter=self._emitter,
+                                task_id=task_id
                             ),
                             timeout=self.task_timeout_sec,
                         )
 
-            # Emit completion
             result = result or {}
             await self._emit_result(session_id, {**result, **emit_data}, target_sid=socket_id)
 
@@ -405,43 +448,6 @@ class EnhancedChatRequestProcessor:
                     await self.middleware.redis.delete(lock_key)
             finally:
                 self._current_load = max(0, self._current_load - 1)
-
-    async def _invoke_handler(
-            self,
-            task_id: str,
-            session_id: str,
-            conversation_id: str,
-            turn_id: str,
-            message: str,
-            config: Dict[str, Any],
-            chat_history: list[Dict[str, Any]],
-            envelope: AccountingEnvelope,
-            emit_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Calls the chat handler. If your handler supports callbacks or an emitter,
-        we pass our emitter so it can stream `chat_delta` etc. through this processor.
-        """
-        # Best-effort: some handlers accept **kwargs like emitter / task_id
-        kwargs = {}
-        try:
-            kwargs["emitter"] = self._emitter
-            kwargs["task_id"] = task_id
-        except Exception:
-            pass
-
-        result = await self.chat_handler(
-            message,
-            session_id,
-            config,
-            chat_history,
-            conversation_id,
-            turn_id,
-            envelope,
-            emit_data,
-            **kwargs,  # ignored by handlers that don't take them
-        )
-        return result or {}
 
     # ---------------- Emission helpers ----------------
 

@@ -3,7 +3,11 @@
 
 # chat/sdk/util.py
 import time, orjson, hashlib, re, json, unicodedata
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Union
+from datetime import datetime
+
+from kdcube_ai_app.apps.chat.sdk.protocol import ChatHistoryMessage
+
 
 # ---------- small general helpers ----------
 
@@ -217,3 +221,33 @@ def _to_json_safe(x):
     if isinstance(x, _dt.date):
         return x.isoformat()
     return x
+
+# -----------------------------
+# Utilities
+# -----------------------------
+
+def normalize_history(items: Optional[Union[List[Dict[str, Any]], List[ChatHistoryMessage]]]) -> List[ChatHistoryMessage]:
+    if not items:
+        return []
+    out: List[ChatHistoryMessage] = []
+    for it in items:
+        if isinstance(it, ChatHistoryMessage):
+            out.append(it)
+            continue
+        if isinstance(it, dict):
+            role = (it.get("role") or "user").lower()
+            content = it.get("content") or ""
+            ts = it.get("timestamp")
+            out.append(ChatHistoryMessage(role=role, content=content, timestamp=ts))
+    return out
+
+
+def history_as_dicts(items: List[ChatHistoryMessage]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for h in (items or []):
+        out.append({
+            "role": h.role,
+            "content": h.content,
+            "timestamp": h.timestamp or datetime.now().isoformat()
+        })
+    return out

@@ -4,6 +4,7 @@
 """
 Modular Socket.IO chat handler with gateway integration and Redis relay.
 Redis pub/sub listener relays chat events (chat.events) to clients
+uses a standardized ChatTaskPayload schema (chat/sdk/protocol.py).
 """
 
 import os
@@ -22,7 +23,10 @@ from kdcube_ai_app.infra.gateway.rate_limiter import RateLimitError
 from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
 
-from kdcube_ai_app.apps.chat.sdk.inventory import create_workflow_config, ConfigRequest, _mid
+from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest
+from kdcube_ai_app.apps.chat.sdk.protocol import (
+    build_chat_task_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -287,21 +291,23 @@ class SocketIOChatHandler:
         try:
             # 1) Pull the session we saved at connect time
             socket_session = await self.sio.get_session(sid)
-            user_session_data = socket_session.get('user_session', {})
+            user_session_data = (socket_session or {}).get('user_session', {})
 
             # 2) Basic validation
-            if not data or "message" not in data:
-                error_msg = 'Missing message or config in request'
+            if not data or ("message" not in data and "operation" not in data):
+                error_msg = 'Missing "message" or "operation" in request'
                 logger.error(f"Chat validation error for {sid}: {error_msg}")
-                await self.sio.emit('chat_error', {
-                    'error': error_msg
-                }, room=sid)
+                await self.sio.emit('chat_error', {'error': error_msg}, room=sid)
                 return
 
-            message = data["message"]
+            message = data.get("message")
             chat_history = data.get("chat_history", [])
-            config_data = data.get("config")
+            config_data = data.get("config") or {}
             conversation_id = data.get("conversation_id")
+
+            operation = data.get("operation")  # optional generic method
+            invocation = data.get("invocation")  # "sync" | "async" (advisory)
+            op_payload = data.get("payload")  # optional generic args
 
             # 3) Rebuild our UserSession (lightweight)
             session = UserSession(
@@ -367,8 +373,6 @@ class SocketIOChatHandler:
                 return
 
             # 6) Parse config (only to capture fields; execution is offloaded)
-            if not config_data:
-                config_data = {}
 
             config_request = ConfigRequest(**config_data)
             if not config_request.selected_model:
@@ -383,9 +387,6 @@ class SocketIOChatHandler:
             # Optional: infer project/tenant for accounting if you carry them in config
             project_id = getattr(config_request, "project", None) or data.get("project")
             tenant_id = getattr(self.gateway_adapter.gateway.gateway_config, "tenant_id", None)
-
-            # 7) Convert history to normalized list
-            history_dict = self._convert_chat_history(chat_history)
 
             # 8) Build the AccountingEnvelope snapshot (we attach this to the task)
             request_id = str(uuid.uuid4())
@@ -404,33 +405,38 @@ class SocketIOChatHandler:
 
             # 9) Prepare task payload for orchestrator
             task_id = str(uuid.uuid4())
-            task_data = {
-                "task_id": task_id,
-                "turn_id": _mid("turn"),
-                "message": message,
-                "session_id": session.session_id,
-                "conversation_id": conversation_id,
-                "config": config_request.model_dump(),
-                "chat_history": history_dict,
-                "user_type": session.user_type.value,
-                "user_info": {
-                    "user_id": session.user_id,
-                    "username": session.username,
-                    "fingerprint": session.fingerprint,
-                    "roles": session.roles,
-                    "permissions": session.permissions
-                },
-                "created_at": time.time(),
-                "instance_id": self.instance_id,
-                "socket_id": sid,                          # so the worker can address this client precisely
-                "acct": acct_envelope.to_dict(),           # <-- accounting snapshot for the worker
-                "kdcube_path": os.environ.get("KDCUBE_STORAGE_PATH"),  # worker uses this to init storage backend
-            }
+            turn_id = f"turn_{uuid.uuid4().hex[:8]}"
+            payload = build_chat_task_payload(
+                task_id=task_id,
+                created_at=time.time(),
+                instance_id=self.instance_id,
+                source="socket",
+                session_id=session.session_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                socket_id=sid,
+                tenant_id=tenant_id,
+                project_id=project_id,
+                user_type=session.user_type.value,
+                user_id=session.user_id,
+                username=session.username,
+                fingerprint=session.fingerprint,
+                roles=session.roles,
+                permissions=session.permissions,
+                message=message,
+                chat_history=chat_history,
+                config_values=config_request.model_dump(),
+                accounting_envelope=acct_envelope.to_dict(),
+                kdcube_path=os.environ.get("KDCUBE_STORAGE_PATH"),
+                operation=operation,
+                invocation=invocation,
+                payload=op_payload,
+            )
 
             # 10) Atomic enqueue with backpressure accounting
             success, reason, stats = await self.chat_queue_manager.enqueue_chat_task_atomic(
                 session.user_type,
-                task_data,
+                payload.model_dump(),
                 session,
                 context,
                 "/socket.io/chat"
@@ -492,17 +498,6 @@ class SocketIOChatHandler:
     async def _handle_ping(self, sid, data):
         """Handle ping for connection testing"""
         await self.sio.emit('pong', {'timestamp': datetime.now().isoformat()}, room=sid)
-
-    def _convert_chat_history(self, chat_history):
-        """Convert chat history to dict format"""
-        return [
-            {
-                "role": msg["role"] if isinstance(msg, dict) else msg.role,
-                "content": msg["content"] if isinstance(msg, dict) else msg.content,
-                "timestamp": msg.get("timestamp") if isinstance(msg, dict) else (msg.timestamp or datetime.now().isoformat())
-            }
-            for msg in chat_history
-        ]
 
     def get_asgi_app(self):
         """Get the Socket.IO ASGI app for mounting"""
