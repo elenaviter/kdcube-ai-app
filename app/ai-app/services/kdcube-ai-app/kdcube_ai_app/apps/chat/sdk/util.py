@@ -6,6 +6,8 @@ import time, orjson, hashlib, re, json, unicodedata
 from typing import Any, List, Dict, Optional, Union
 from datetime import datetime
 
+from pydantic import BaseModel
+
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatHistoryMessage
 
 
@@ -251,3 +253,11 @@ def history_as_dicts(items: List[ChatHistoryMessage]) -> List[Dict[str, str]]:
             "timestamp": h.timestamp or datetime.now().isoformat()
         })
     return out
+
+def _json_schema_of(model: type[BaseModel]) -> str:
+    """Pretty JSON Schema for a Pydantic model (v2 with v1 fallback)."""
+    try:
+        schema = model.model_json_schema()   # Pydantic v2
+    except Exception:
+        schema = model.schema()              # Pydantic v1 fallback
+    return json.dumps(schema, indent=2, ensure_ascii=False)

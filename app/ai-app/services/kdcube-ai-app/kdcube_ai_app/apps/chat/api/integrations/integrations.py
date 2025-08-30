@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
+
 from dataclasses import asdict
 from typing import Optional, Dict, Any
 import logging
@@ -8,11 +9,15 @@ import os
 import inspect
 
 from datetime import datetime
+from uuid import uuid4
+
 from pydantic import BaseModel
 from fastapi import Depends, HTTPException, Request, APIRouter
 
-from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure
+from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure, REDIS_URL
+from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
 from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest
+from kdcube_ai_app.apps.chat.sdk.protocol import ServiceCtx, ConversationCtx
 from kdcube_ai_app.auth.sessions import UserSession
 
 import kdcube_ai_app.infra.namespaces as namespaces
@@ -44,6 +49,39 @@ class BundleSuggestionsRequest(BaseModel):
     bundle_id: Optional[str] = None
     conversation_id: Optional[str] = None
     config_request: Optional[ConfigRequest] = None
+
+def _ensure_chat_communicator(app) -> ChatRelayCommunicator:
+    """
+    Return a process-wide ChatRelayCommunicator.
+    Reuse app.state.chat_comm if present, otherwise create one.
+    Prefer the Socket.IO handler's ServiceCommunicator to avoid extra Redis clients.
+    """
+    comm = getattr(app.state, "chat_comm", None)
+    if comm:
+        return comm
+
+    # Try reuse the Socket.IO chat handler's ServiceCommunicator (if available)
+    svc_comm = None
+    try:
+        sio_handler = getattr(app.state, "socketio_handler", None)
+        svc_comm = getattr(sio_handler, "_comm", None)  # ServiceCommunicator
+    except Exception:
+        svc_comm = None
+
+    if svc_comm:
+        comm = ChatRelayCommunicator(comm=svc_comm)
+    else:
+        # Fall back to a fresh one (same identity/env as processor/web)
+        comm = ChatRelayCommunicator(
+            redis_url=REDIS_URL,
+            orchestrator_identity=os.environ.get(
+                "ORCHESTRATOR_IDENTITY",
+                f"kdcube_orchestrator_{os.environ.get('ORCHESTRATOR_TYPE', 'dramatiq')}",
+            ),
+        )
+
+    app.state.chat_comm = comm
+    return comm
 
 @router.get("/landing/bundles")
 async def get_available_bundles(
@@ -201,18 +239,39 @@ async def get_bundle_suggestions(
         # If ConfigRequest signature changes, be defensive
         wf_config = create_workflow_config(ConfigRequest.model_validate({"project": project}))
 
-    # 3) Create or reuse the workflow instance (singleton honored by loader)
-    async def _noop(*_a, **_k):  # no-op emitters for this non-chat call
-        return None
+    chat_comm = _ensure_chat_communicator(request.app)
 
+    svc_ctx = ServiceCtx(
+        request_id=str(uuid4()),
+        tenant=tenant,
+        project=project,
+        user=session.user_id or session.fingerprint,
+    )
+    conv_ctx = ConversationCtx(
+        session_id=session.session_id,
+        conversation_id=payload.conversation_id or session.session_id,
+        turn_id=f"turn_{uuid4().hex[:8]}",
+    )
+
+    # Bind to this session/thread; no socket_id in REST call (target_sid=None)
+    bound_comm = chat_comm.bind(
+        service=svc_ctx.model_dump(),
+        conversation=conv_ctx.model_dump(),
+        session_id=session.session_id,
+        target_sid=None,
+    )
+
+    # --- Instantiate workflow with the bound communicator (new-style) ---
     spec = AgenticBundleSpec(
         path=spec_resolved.path,
         module=spec_resolved.module,
         singleton=bool(spec_resolved.singleton),
     )
     try:
+        # I need to create communicator here:
+        communicator = None #
         workflow, _init_state, _mod = get_workflow_instance(
-            spec, wf_config, step_emitter=_noop, delta_emitter=_noop
+            spec, wf_config, communicator=bound_comm,
         )
     except Exception as e:
         logger.exception(f"[get_bundle_suggestions.{tenant}.{project}] Failed to load bundle {asdict(spec)}")

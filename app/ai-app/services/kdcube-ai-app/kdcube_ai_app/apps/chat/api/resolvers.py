@@ -384,13 +384,14 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "chat",
     return middleware, heartbeat_manager
 
 def get_external_request_processor(middleware, chat_handler, app):
-    """Your existing request processor"""
     from kdcube_ai_app.apps.chat.processor import EnhancedChatRequestProcessor
-    return EnhancedChatRequestProcessor(middleware,
-                                        chat_handler, # agentic workflow entrypoint
-                                        socketio=app.state.socketio_handler.sio,
-                                        max_concurrent=5,
-                                        task_timeout_sec=900,)
+    return EnhancedChatRequestProcessor(
+        middleware,
+        chat_handler,                     # agentic workflow entrypoint
+        relay=app.state.chat_comm,      # use the Redis relay communicator
+        max_concurrent=5,
+        task_timeout_sec=900,
+    )
 
 def service_health_checker(middleware):
     """Your existing health checker"""

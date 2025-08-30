@@ -22,6 +22,9 @@ from pydantic import BaseModel
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
+from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator
+
+
 from kdcube_ai_app.apps.middleware.logging.uvicorn import configure_logging
 from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session, AccountingEnvelope
 
@@ -86,196 +89,82 @@ async def lifespan(app: FastAPI):
     from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
         service_health_checker
 
-    async def agentic_app_func(
-            task: "kdcube_ai_app.apps.chat.sdk.protocol.ChatTaskPayload",
-            *,
-            emitter=None,
-            task_id: Optional[str] = None,
-            **kwargs
-    ) -> Dict:
-        """
-        Generic agentic handler that accepts a standardized ChatTaskPayload.
-        - Builds workflow from task.config
-        - If task.request.operation is provided and the workflow has such method, calls it
-          with task.request.payload (sync/async).
-
-        Streams via provided emitter when available; otherwise falls back to Socket.IO in-process.
-        """
-        from typing import Dict, Any, Optional, List
-        from datetime import datetime
-        import inspect
-
-        from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config, _mid, BundleState
-        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
-        from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-
-        injected_emitter = emitter
-        sio = getattr(getattr(app.state, "socketio_handler", None), "sio", None)
-
-        session_id = task.routing.session_id
-        conversation_id = task.routing.conversation_id
-        turn_id = task.routing.turn_id
-        socket_id = task.routing.socket_id
-
-        start_ts = datetime.now().isoformat()
-
-        # early banner (best-effort)
-        try:
-            start_payload = {
-                "task_id": task_id or task.meta.task_id,
-                "message": (task.request.message[:100] + "...") if task.request.message and len(task.request.message) > 100 else (task.request.message or f"operation={task.request.operation}"),
-                "timestamp": start_ts,
-                "user_type": task.actor.user_type or "unknown",
-                "queue_stats": {}
-            }
-            if injected_emitter:
-                await injected_emitter.emit("chat_start_handler", start_payload, room=session_id, target_sid=socket_id)
-            elif sio:
-                await sio.emit("chat_start_handler", start_payload, room=session_id)
-        except Exception:
-            pass
-
-        # step/delta emitters
-        async def _emit_step(step: str, status: str, data: Dict[str, Any]):
-            payload = {
-                "step": step,
-                "status": status,
-                "timestamp": datetime.now().isoformat(),
-                "data": data,
-                "elapsed_time": None,
-                "error": data.get("error"),
-                "task_id": task.meta.task_id,
-                "tenant_id": task.actor.tenant_id,
-                "project_id": task.actor.project_id,
-                "user_id": task.user.user_id,
-                "session_id": session_id,
-                "conversation_id": conversation_id,
-                "turn_id": turn_id,
-                "user_type": task.actor.user_type,
-                "socket_id": socket_id,
-            }
-            if injected_emitter:
-                await injected_emitter.emit("chat_step", payload, room=session_id, target_sid=socket_id)
-            elif sio:
-                await sio.emit("chat_step", payload, room=session_id)
-
-        async def _emit_delta(delta: str, index: int, meta: dict):
-            payload = {
-                "delta": delta,
-                "index": index,
-                "timestamp": datetime.now().isoformat(),
-                "meta": meta,
-                "task_id": task.meta.task_id,
-                "tenant_id": task.actor.tenant_id,
-                "project_id": task.actor.project_id,
-                "user_id": task.user.user_id,
-                "session_id": session_id,
-                "conversation_id": conversation_id,
-                "turn_id": turn_id,
-                "user_type": task.actor.user_type,
-                "socket_id": socket_id,
-            }
-            if injected_emitter:
-                await injected_emitter.emit("chat_delta", payload, room=session_id, target_sid=socket_id)
-            elif sio:
-                await sio.emit("chat_delta", payload, room=session_id)
-
-        # build config
-        try:
-            cfg_req = ConfigRequest(**(task.config.values or {}))
-        except Exception:
-            cfg_req = ConfigRequest.model_validate(task.config.values or {})
-        wf_config = create_workflow_config(cfg_req)
-
-        # resolve bundle & get workflow
-        bundle_id = (task.config.values or {}).get("agentic_bundle_id")
-        spec_resolved = resolve_bundle(bundle_id, override=None)
-        if not spec_resolved:
-            from kdcube_ai_app.apps.chat.default_app.agentic_app import (ChatWorkflow, create_initial_state as built_in_create_initial_state)
-            workflow = ChatWorkflow(wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
-            create_initial_state_fn = built_in_create_initial_state
-        else:
-            from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
-            logger.info(f"Loading agentic bundle '{spec_resolved.id}' from {spec_resolved.path} module={spec_resolved.module}")
-            spec = AgenticBundleSpec(path=spec_resolved.path, module=spec_resolved.module, singleton=bool(spec_resolved.singleton))
-            workflow, create_initial_state_fn, _ = get_workflow_instance(spec, wf_config, step_emitter=_emit_step, delta_emitter=_emit_delta)
-
-        # if a generic operation was explicitly requested and exists on the workflow -> call it
-        if task.request.operation:
-            op_name = task.request.operation
-            fn = getattr(workflow, op_name, None)
-            if callable(fn):
-                try:
-                    if inspect.iscoroutinefunction(fn):
-                        result = await fn(**(task.request.payload or {}))
-                    else:
-                        result = fn(**(task.request.payload or {}))
-                    return {
-                        "operation": op_name,
-                        "result": result,
-                        "task_id": task.meta.task_id,
-                        "session_id": session_id,
-                        "conversation_id": conversation_id,
-                        "turn_id": turn_id,
-                    }
-                except Exception as e:
-                    logger.exception(e)
-                    return {
-                        "operation": op_name,
-                        "error_message": str(e),
-                        "task_id": task.meta.task_id,
-                    }
-            # fall through to chat-style run if method not found
-
-        # chat-style run (uses message/history -> LangChain messages)
-        system_prompt = (task.config.values or {}).get("system_prompt") or "You are a helpful assistant."
-
-        call_ctx = {
-            "user_message": task.request.message or "",
-            "workflow_config": wf_config,
-            "session_id": session_id,
-            "conversation_id": conversation_id,
-            "task_id": task.meta.task_id,
-            "timestamp": start_ts,
-            "config": task.config.values,
-        }
-        state = create_initial_state_fn(call_ctx)
-
-        # decorate state with accounting context
-        state["user"] = task.user.user_id
-        state["request_id"] = (task.accounting.envelope or {}).get("request_id")
-        state["session_id"] = session_id
-        state["tenant"] = task.actor.tenant_id
-        state["project"] = task.actor.project_id
-        state["text"] = task.request.message or ""
-        state["turn_id"] = turn_id
-        state["conversation_id"] = conversation_id
-
-        state["messages"] = [SystemMessage(content=system_prompt, id=_mid("sys"))]
-        for h in (task.request.chat_history or []):
-            if not h.content:
-                continue
-            state["messages"].append(AIMessage(content=h.content) if h.role == "assistant" else HumanMessage(content=h.content))
-
-        state = BundleState(**state)
-        try:
-            result = await workflow.run(session_id, conversation_id, state)
-        except Exception as e:
-            logger.exception(e)
-            result = {"final_answer": "I couldn’t complete your request.", "error_message": str(e)}
-
-        return result
-
-
+    app.state.chat_comm = ChatRelayCommunicator(redis_url=REDIS_URL, channel="chat.events")
 
     port = CHAT_APP_PORT
     process_id = os.getpid()
+
+    async def agentic_app_func(task: "ChatTaskPayload", *, comm: ChatCommunicator | None = None, **_):
+        """
+        Entry-point invoked by the processor. We do NOT bind a relay here.
+        We receive a ready-to-use ChatCommunicator and pass it into the workflow.
+        """
+        import inspect
+        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+        from kdcube_ai_app.infra.plugin.agentic_loader import get_workflow_instance
+        from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config
+
+        if comm is None:
+            raise RuntimeError("agentic_app_func: ChatCommunicator is required")
+
+        # config & bundle
+        cfg_req = ConfigRequest(**(task.config.values or {}))
+        wf_config = create_workflow_config(cfg_req)
+        bundle_id = (task.config.values or {}).get("agentic_bundle_id")
+        spec_resolved = resolve_bundle(bundle_id, override=None)
+
+        if not spec_resolved:
+            from kdcube_ai_app.apps.chat.default_app.agentic_app import ChatWorkflow as _Fallback
+            workflow = _Fallback(wf_config, communicator=comm)
+            create_initial_state_fn = lambda _ctx: {}
+        else:
+            spec = dict(path=spec_resolved.path, module=spec_resolved.module, singleton=bool(spec_resolved.singleton))
+            workflow, create_initial_state_fn, _ = get_workflow_instance(
+                type("Spec", (), spec),
+                wf_config,
+                communicator=comm,  # << pass through
+            )
+
+        # set workflow state (no emits here; processor already announced start)
+        state = {
+            "request_id": (task.accounting.envelope or {}).get("request_id", task.meta.task_id),
+            "tenant": task.actor.tenant_id,
+            "project": task.actor.project_id,
+            "user": task.user.user_id,
+            "session_id": task.routing.session_id,
+            "conversation_id": (task.routing.conversation_id or task.routing.session_id),
+            "text": task.request.message or (task.request.payload or {}).get("text") or "",
+            "turn_id": task.routing.turn_id,
+            "history": task.request.chat_history or [],
+            "final_answer": "",
+            "followups": [],
+            "step_logs": [],
+            "start_time": task.meta.created_at,
+        }
+        if hasattr(workflow, "set_state"):
+            maybe = workflow.set_state(state)
+            if inspect.isawaitable(maybe):
+                await maybe
+
+        params = dict(task.request.payload or {})
+        if "text" not in params and task.request.message:
+            params["text"] = task.request.message
+        command = task.request.operation or params.pop("command", None)
+
+        try:
+            result = await (getattr(workflow, command)(**params) if (command and hasattr(workflow, command))
+                            else workflow.run(**params))
+            return result or {}
+        except Exception as e:
+            # Let processor send the error envelope; we just surface the message up.
+            return {"error_message": str(e), "final_answer": "An error occurred."}
+
 
     # ================================
     # SOCKET.IO SETUP
     # ================================
 
-    # Create modular Socket.IO chat handler
+    # Create modular Socket.IO chat handler. Share communicator & queue manager.
     try:
         socketio_handler = create_socketio_chat_handler(
             app=app,
@@ -283,7 +172,8 @@ async def lifespan(app: FastAPI):
             chat_queue_manager=app.state.chat_queue_manager,
             allowed_origins=allowed_origins,
             instance_id=INSTANCE_ID,
-            redis_url=REDIS_URL
+            redis_url=REDIS_URL,
+            chat_comm=app.state.chat_comm,
         )
 
         # Mount Socket.IO app if available
@@ -317,7 +207,7 @@ async def lifespan(app: FastAPI):
         await heartbeat_manager.start_heartbeat(interval=10)
 
         try:
-            await socketio_handler.start()
+            await socketio_handler.start() # communicator subscribes internally
         except Exception as e:
             logger.error(f"Failed to start chat relay listener: {e}")
 
@@ -383,7 +273,7 @@ orchestrator: IOrchestrator = get_orchestrator()
 
 @app.middleware("http")
 async def gateway_middleware(request: Request, call_next):
-    if request.url.path.startswith(("/profile", "/monitoring", "/admin", "/health", "/docs", "/openapi.json", "/favicon.ico")):
+    if request.method == "OPTIONS" or request.url.path.startswith(("/profile", "/monitoring", "/admin", "/health", "/docs", "/openapi.json", "/favicon.ico")):
         return await call_next(request)
 
     # If already processed by a dependency earlier in the chain (rare but safe), skip

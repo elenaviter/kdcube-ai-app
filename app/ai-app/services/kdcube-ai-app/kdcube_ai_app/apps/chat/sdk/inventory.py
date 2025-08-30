@@ -576,10 +576,14 @@ class ModelServiceBase:
 
             else:
                 # OpenAI (LangChain) or Custom endpoint (returns AIMessage)
-                ai_msg = await client.ainvoke([
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_message),
-                ])
+                ai_msg = await client.ainvoke(
+                    [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=user_message),
+                    ],
+                    # nudge OpenAI to strict JSON
+                    response_format={"type": "json_object"},
+                )
                 response_content = ai_msg.content
                 usage = (
                         getattr(ai_msg, "usage_metadata", None)
@@ -1060,19 +1064,25 @@ class BundleState(TypedDict, total=False):
     user: str
     session_id: str
     conversation_id: str
-    text: str
+    text: Optional[str]
     turn_id: str
-    final_answer: str
-    followups: list[str]
+    final_answer: Optional[str]
+    followups: Optional[list[str]]
     error_message: Optional[str]
-    step_logs: list[dict]
-    start_time: float
+    step_logs: Optional[list[dict]]
+    start_time: Optional[float]
 
 APP_STATE_KEYS = [
     "request_id", "tenant", "project", "user", "session_id",
     "text", "final_answer", "followups", "error_message", "step_logs"
 ]
 
+class FollowupsOutput(BaseModel):
+    """Raw JSON payload emitted after <HERE GOES FOLLOWUP>."""
+    followups: List[str] = Field(
+        default_factory=list,
+        description="0–5 concise, user-imperative next steps (<=120 chars each)."
+    )
 
 if __name__ == "__main__":
 

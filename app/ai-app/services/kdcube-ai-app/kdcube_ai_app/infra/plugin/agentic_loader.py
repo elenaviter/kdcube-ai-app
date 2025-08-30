@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# kdcube_ai_app/infra/plugin/agentic_loader.py
+# infra/plugin/agentic_loader.py
 from __future__ import annotations
 
 import importlib
 import importlib.util
 import sys
+import inspect
 import types
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,9 @@ def agentic_workflow_factory(
 ):
     """
     Mark a function as the bundle's workflow FACTORY.
-    Signature: fn(config, step_emitter=None, delta_emitter=None) -> workflow_instance
+    Recommended signature (flexible):
+        fn(config, *, communicator=None, step_emitter=None, delta_emitter=None) -> workflow_instance
+    Only the kwargs present in the function signature will be passed.
     """
     def _wrap(fn):
         setattr(fn, AGENTIC_ROLE_ATTR, "workflow_factory")
@@ -47,7 +50,9 @@ def agentic_workflow(
 ):
     """
     Mark a CLASS as the bundle's workflow CLASS.
-    Signature: class(config, step_emitter=None, delta_emitter=None)
+    Recommended signature (flexible):
+        class(config, *, communicator=None, step_emitter=None, delta_emitter=None)
+    Only the kwargs present in the __init__ signature will be passed.
     """
     def _wrap(cls):
         setattr(cls, AGENTIC_ROLE_ATTR, "workflow_class")
@@ -200,6 +205,34 @@ def _discover_decorated(mod: types.ModuleType):
     init_fn = inits[0][2] if inits else None
     return chosen, init_fn
 
+def _select_supported_kwargs(symbol: Any, provided: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Return only those kwargs that the target symbol actually accepts.
+    Works for functions and classes (uses __init__ for classes).
+    """
+    try:
+        sig = inspect.signature(symbol if not isinstance(symbol, type) else symbol.__init__)
+    except Exception:
+        # if we can't introspect, be conservative
+        return {}
+    supported = {}
+    for name in provided.keys():
+        if name in sig.parameters:
+            supported[name] = provided[name]
+    return supported
+
+def _instantiate_symbol(kind: str, symbol: Any, config: Any, extra_kwargs: Dict[str, Any]):
+    """
+    Instantiate a factory/class while passing only supported kwargs.
+    """
+    call_kwargs = _select_supported_kwargs(symbol, extra_kwargs)
+    if kind == "factory":
+        # factories are callables returning an instance
+        return symbol(config, **call_kwargs)
+    else:
+        # classes to be constructed
+        return symbol(config, **call_kwargs)
+
 # --------------------------------------------------------------------------------------
 # Public API
 # --------------------------------------------------------------------------------------
@@ -208,8 +241,7 @@ def get_workflow_instance(
         spec: AgenticBundleSpec,
         config: Any,
         *,
-        step_emitter: Optional[Callable[..., Any]] = None,
-        delta_emitter: Optional[Callable[..., Any]] = None,
+        communicator: Optional[Any] = None,        # ← NEW optional unified communicator
 ) -> Tuple[Any, Optional[Callable[[str], Any]], types.ModuleType]:
     """
     Load the bundle at 'spec', discover decorated symbols, instantiate a workflow,
@@ -241,14 +273,18 @@ def get_workflow_instance(
     chosen_kind, meta, symbol = chosen
 
     # instantiate
+    extra_kwargs = {
+        "communicator": communicator,
+        "comm": communicator,   # many bundles prefer 'comm'
+    }
+
     if chosen_kind == "factory":
-        instance = symbol(config, step_emitter=step_emitter, delta_emitter=delta_emitter)  # type: ignore[misc]
-        # decorator-level singleton opt-in
+        instance = _instantiate_symbol("factory", symbol, config, extra_kwargs)
         dec_singleton = bool(meta.get("singleton"))
         final_singleton = bool(spec.singleton or dec_singleton)
     else:
-        instance = symbol(config, step_emitter=step_emitter, delta_emitter=delta_emitter)  # type: ignore[misc]
-        final_singleton = bool(spec.singleton)  # class decorator has no 'singleton' meta
+        instance = _instantiate_symbol("class", symbol, config, extra_kwargs)
+        final_singleton = bool(spec.singleton)
 
     if final_singleton:
         _singleton_cache[key] = (instance, init_fn, mod)

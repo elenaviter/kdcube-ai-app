@@ -3,8 +3,8 @@
 
 # chat/protocol.py
 from __future__ import annotations
-
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional, Literal, List
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 
@@ -35,111 +35,156 @@ class ClientRequest(BaseModel):
     chat_history: List[ChatHistoryMessage] = Field(default_factory=list)
 
 
-# -----------------------------
-# Identity / routing / context
-# -----------------------------
-
-class TaskMeta(BaseModel):
-    task_id: str
-    created_at: float
-    instance_id: Optional[str] = None
-    source: Optional[str] = None  # "socket" | "rest" | etc.
+def _iso_now() -> str:
+    return datetime.utcnow().isoformat() + "Z"
 
 
-class RoutingInfo(BaseModel):
+class _ProtoBase(BaseModel):
+    """Base that exposes `.dump_model()` as requested (alias of model_dump)."""
+    def dump_model(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+
+class ServiceCtx(_ProtoBase):
+    request_id: str
+    tenant: Optional[str] = None
+    project: Optional[str] = None
+    user: Optional[str] = None
+
+
+class ConversationCtx(_ProtoBase):
+    session_id: str
+    conversation_id: str
+    turn_id: str
+
+
+class EventCtx(_ProtoBase):
+    agent: Optional[str] = None
+    step: str
+    status: Literal["started", "running", "completed", "error", "skipped"]
+    title: Optional[str] = None
+
+
+class DeltaPart(_ProtoBase):
+    text: str
+    marker: Literal["thinking", "answer", "other"] = "answer"
+    index: int = 0
+
+
+class ChatEnvelope(_ProtoBase):
+    """
+    Unified protocol envelope used everywhere on the server and sent to the client as-is.
+    """
+    type: Literal["chat.start", "chat.step", "chat.delta", "chat.complete", "chat.error"]
+    timestamp: str = Field(default_factory=_iso_now)
+    service: ServiceCtx
+    conversation: ConversationCtx
+    event: EventCtx
+    data: Any | None = None          # generic payload from bundles/processors
+    delta: Optional[DeltaPart] = None
+
+    @staticmethod
+    def start(service: ServiceCtx, conv: ConversationCtx, *, message: str, queue_stats: Dict[str, Any] | None = None) -> "ChatEnvelope":
+        return ChatEnvelope(
+            type="chat.start",
+            service=service,
+            conversation=conv,
+            event=EventCtx(step="turn", status="started", title="Turn Started", agent="user"),
+            data={"message": message, "queue_stats": queue_stats or {}},
+        )
+
+    @staticmethod
+    def step(service: ServiceCtx, conv: ConversationCtx, *, step: str, status: EventCtx.model_fields["status"].annotation, title: str | None = None, data: Any = None, agent: str | None = None) -> "ChatEnvelope":
+        return ChatEnvelope(
+            type="chat.step",
+            service=service,
+            conversation=conv,
+            event=EventCtx(step=step, status=status, title=title, agent=agent),
+            data=data,
+        )
+
+    @staticmethod
+    def delta(service: ServiceCtx, conv: ConversationCtx, *, text: str, index: int, marker: DeltaPart.model_fields["marker"].annotation = "answer") -> "ChatEnvelope":
+        return ChatEnvelope(
+            type="chat.delta",
+            service=service,
+            conversation=conv,
+            event=EventCtx(step="stream", status="running", title="Assistant Delta", agent="assistant"),
+            delta=DeltaPart(text=text, index=int(index), marker=marker),
+        )
+
+    @staticmethod
+    def complete(service: ServiceCtx, conv: ConversationCtx, *, data: Any = None, agent: str | None = "answer_generator") -> "ChatEnvelope":
+        return ChatEnvelope(
+            type="chat.complete",
+            service=service,
+            conversation=conv,
+            event=EventCtx(step="stream", status="completed", title="Turn Completed", agent=agent),
+            data=data or {},
+        )
+
+    @staticmethod
+    def error(service: ServiceCtx, conv: ConversationCtx, *, error: str, title: str | None = "Workflow Error", step: str = "workflow") -> "ChatEnvelope":
+        return ChatEnvelope(
+            type="chat.error",
+            service=service,
+            conversation=conv,
+            event=EventCtx(step=step, status="error", title=title, agent=None),
+            data={"error": error},
+        )
+
+
+# ---- queue payload used between web and processor ----
+
+class ChatTaskRequest(_ProtoBase):
+    message: str
+    chat_history: List[Dict[str, Any]] = []
+    operation: Optional[str] = None
+    invocation: Optional[Literal["sync", "async"]] = None
+    payload: Any | None = None   # ← generic pass-through to bundle
+
+
+class ChatTaskRouting(_ProtoBase):
     session_id: str
     conversation_id: Optional[str] = None
-    turn_id: Optional[str] = None
-    socket_id: Optional[str] = None  # exact Socket.IO SID (preferred for relay)
+    turn_id: str
+    socket_id: Optional[str] = None
 
 
-class ActorInfo(BaseModel):
+class ChatTaskActor(_ProtoBase):
     tenant_id: Optional[str] = None
     project_id: Optional[str] = None
-    user_type: Optional[str] = None  # "anonymous" | "registered" | "privileged"
 
 
-class UserInfo(BaseModel):
+class ChatTaskUser(_ProtoBase):
+    user_type: str
     user_id: Optional[str] = None
     username: Optional[str] = None
     fingerprint: Optional[str] = None
-    roles: List[str] = Field(default_factory=list)
-    permissions: List[str] = Field(default_factory=list)
+    roles: List[str] = []
+    permissions: List[str] = []
 
 
-class ConfigBlock(BaseModel):
-    """Opaque config used to build the workflow (ConfigRequest model_dump goes here)."""
-    values: Dict[str, Any] = Field(default_factory=dict)
+class ChatTaskConfig(_ProtoBase):
+    values: Dict[str, Any] = {}
 
 
-class AccountingBlock(BaseModel):
-    """Accounting envelope (as dict)."""
-    envelope: Dict[str, Any] = Field(default_factory=dict)
+class ChatTaskMeta(_ProtoBase):
+    task_id: str
+    created_at: float
+    instance_id: Optional[str] = None
 
 
-class EnvBlock(BaseModel):
-    """Environment / infra hints."""
-    kdcube_path: Optional[str] = None
+class ChatTaskAccounting(_ProtoBase):
+    envelope: Dict[str, Any] = {}   # whatever your accounting layer produces
 
 
-# -----------------------------
-# Top-level standardized payload
-# -----------------------------
+class ChatTaskPayload(_ProtoBase):
+    meta: ChatTaskMeta
+    routing: ChatTaskRouting
+    actor: ChatTaskActor
+    user: ChatTaskUser
+    request: ChatTaskRequest
+    config: ChatTaskConfig
+    accounting: ChatTaskAccounting
 
-class ChatTaskPayload(BaseModel):
-    meta: TaskMeta
-    routing: RoutingInfo
-    actor: ActorInfo
-    user: UserInfo
-    request: ClientRequest
-    config: ConfigBlock
-    accounting: AccountingBlock
-    env: EnvBlock
-
-
-def build_chat_task_payload(
-        *,
-        task_id: str,
-        created_at: float,
-        instance_id: Optional[str],
-        source: str,
-        session_id: str,
-        conversation_id: Optional[str],
-        turn_id: Optional[str],
-        socket_id: Optional[str],
-        tenant_id: Optional[str],
-        project_id: Optional[str],
-        user_type: Optional[str],
-        user_id: Optional[str],
-        username: Optional[str],
-        fingerprint: Optional[str],
-        roles: Optional[List[str]],
-        permissions: Optional[List[str]],
-        message: Optional[str],
-        chat_history: Optional[Union[List[Dict[str, Any]], List[ChatHistoryMessage]]],
-        config_values: Dict[str, Any],
-        accounting_envelope: Dict[str, Any],
-        kdcube_path: Optional[str],
-        operation: Optional[str] = None,
-        invocation: Optional[str] = None,
-        payload: Optional[Dict[str, Any]] = None,
-) -> ChatTaskPayload:
-
-    from kdcube_ai_app.apps.chat.sdk.util import normalize_history
-    req = ClientRequest(
-        operation=operation,
-        invocation=invocation,
-        message=message,
-        payload=payload,
-        chat_history=normalize_history(chat_history),
-    )
-    return ChatTaskPayload(
-        meta=TaskMeta(task_id=task_id, created_at=created_at, instance_id=instance_id, source=source),
-        routing=RoutingInfo(session_id=session_id, conversation_id=conversation_id, turn_id=turn_id, socket_id=socket_id),
-        actor=ActorInfo(tenant_id=tenant_id, project_id=project_id, user_type=user_type),
-        user=UserInfo(user_id=user_id, username=username, fingerprint=fingerprint, roles=roles or [], permissions=permissions or []),
-        request=req,
-        config=ConfigBlock(values=config_values or {}),
-        accounting=AccountingBlock(envelope=accounting_envelope or {}),
-        env=EnvBlock(kdcube_path=kdcube_path),
-    )

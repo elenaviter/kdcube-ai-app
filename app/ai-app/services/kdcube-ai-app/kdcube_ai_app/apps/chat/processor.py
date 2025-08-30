@@ -1,6 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+
+# chat/processor.py
+from __future__ import annotations
+
 import asyncio
 import json
 from contextlib import asynccontextmanager
@@ -10,20 +14,42 @@ import os
 import traceback
 from typing import Optional, Dict, Any, Iterable
 
-from kdcube_ai_app.apps.chat.emitters import SocketIOEmitter, NoopEmitter, ChatRelayEmitter
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
-from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
+from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload, ServiceCtx, ConversationCtx
+from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+class _RelayEmitterAdapter:
+    """
+    Async adapter that lets ChatCommunicator 'await emitter.emit(...)' while
+    internally publishing via ChatRelayCommunicator's ServiceCommunicator.
+    """
+    def __init__(self, relay: ChatRelayCommunicator):
+        self._relay = relay
+
+    async def emit(self, event: str, data: dict, *, room: Optional[str] = None,
+                   target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        try:
+            # Route to the relay’s pub/sub channel. 'session_id' takes priority, else fall back to room.
+            self._relay._comm.pub(  # underlying transport publisher
+                event=event,
+                data=data,
+                target_sid=target_sid,
+                session_id=session_id or room,
+                channel=self._relay._channel,
+            )
+        except Exception as e:
+            logger.error(f"Relay emit failed for event '{event}': {e}")
 
 class EnhancedChatRequestProcessor:
     """
     Queue worker that:
       - Pops tasks fairly from multiple queues
       - Acquires + renews a per-task Redis lock
-      - Emits chat_* events via an injected emitter (Redis relay preferred)
+      - Emits chat_* events via ChatCommunicator (async)
       - Enforces per-task timeout
       - Handles graceful shutdown
     """
@@ -36,8 +62,7 @@ class EnhancedChatRequestProcessor:
             chat_handler,
             *,
             process_id: Optional[int] = None,
-            emitter: Optional[Any] = None,     # anything with `await emit(event, data, room=..., target_sid=...)`
-            socketio=None,                     # legacy: if you pass sio, we wrap it
+            relay: Optional[ChatRelayCommunicator] = None,   # unified relay (pub/sub)
             max_concurrent: Optional[int] = None,
             task_timeout_sec: Optional[int] = None,
             lock_ttl_sec: int = 300,
@@ -51,22 +76,12 @@ class EnhancedChatRequestProcessor:
         self.lock_ttl_sec = lock_ttl_sec
         self.lock_renew_sec = lock_renew_sec
 
-        # Prefer explicitly supplied emitter; otherwise Redis relay; fallback to direct Socket.IO, then Noop.
-        if emitter is not None:
-            self._emitter = emitter
-        else:
-            try:
-                self._emitter = ChatRelayEmitter(channel="chat.events")
-            except Exception:
-                self._emitter = SocketIOEmitter(socketio) if socketio is not None else NoopEmitter()
-
+        self._relay = relay or ChatRelayCommunicator()  # transport
         self._processor_task: Optional[asyncio.Task] = None
         self._config_task: Optional[asyncio.Task] = None
         self._active_tasks: set[asyncio.Task] = set()
         self._current_load = 0
         self._stop_event = asyncio.Event()
-
-        # round-robin index
         self._queue_idx = 0
 
     # ---------------- Public API ----------------
@@ -75,7 +90,6 @@ class EnhancedChatRequestProcessor:
         if self._processor_task and not self._processor_task.done():
             return
         self._processor_task = asyncio.create_task(self._processing_loop(), name="chat-processing-loop")
-        # Start config broadcast listener
         if not self._config_task:
             self._config_task = asyncio.create_task(self._config_listener_loop(), name="config-bundles-listener")
 
@@ -89,8 +103,10 @@ class EnhancedChatRequestProcessor:
                 pass
         if self._config_task:
             self._config_task.cancel()
-            try: await self._config_task
-            except asyncio.CancelledError: pass
+            try:
+                await self._config_task
+            except asyncio.CancelledError:
+                pass
         if self._active_tasks:
             await asyncio.gather(*list(self._active_tasks), return_exceptions=True)
 
@@ -111,7 +127,10 @@ class EnhancedChatRequestProcessor:
                     await asyncio.sleep(0.05)
                     continue
 
-                task = asyncio.create_task(self._process_task(task_data), name=f"chat-task:{task_data.get('task_id') or task_data.get('meta',{}).get('task_id')}")
+                task = asyncio.create_task(
+                    self._process_task(task_data),
+                    name=f"chat-task:{task_data.get('task_id') or task_data.get('meta',{}).get('task_id')}",
+                )
                 self._active_tasks.add(task)
                 task.add_done_callback(lambda t: self._active_tasks.discard(t))
 
@@ -122,9 +141,6 @@ class EnhancedChatRequestProcessor:
                 await asyncio.sleep(0.5)
 
     async def _pop_any_queue_fair(self) -> Optional[Dict[str, Any]]:
-        """
-        Round-robin across QUEUE_ORDER, try a non-blocking pop with very small timeout.
-        """
         for _ in range(len(self.QUEUE_ORDER)):
             user_type = self.QUEUE_ORDER[self._queue_idx]
             self._queue_idx = (self._queue_idx + 1) % len(self.QUEUE_ORDER)
@@ -133,7 +149,6 @@ class EnhancedChatRequestProcessor:
                 return None
 
             queue_key = f"{self.middleware.QUEUE_PREFIX}:{user_type}"
-            # tiny blocking timeframe to avoid busy-loop
             raw = await self.middleware.redis.brpop(queue_key, timeout=0.1)
             if not raw:
                 continue
@@ -144,13 +159,11 @@ class EnhancedChatRequestProcessor:
                 logger.error("Invalid task payload (not JSON); dropping")
                 continue
 
-            # lock by logical id if present, else fallback to legacy
             logical_id = task_dict.get("meta", {}).get("task_id") or task_dict.get("task_id")
             if not logical_id:
                 logger.error("Task missing task_id; dropping")
                 continue
 
-            # Attempt lock
             lock_key = f"{self.middleware.LOCK_PREFIX}:{logical_id}"
             acquired = await self.middleware.redis.set(
                 lock_key,
@@ -165,24 +178,11 @@ class EnhancedChatRequestProcessor:
                 task_dict["_queue_key"] = queue_key
                 return task_dict
 
-            # Put back if someone else locked first
             await self.middleware.redis.lpush(queue_key, json.dumps(task_dict))
         return None
 
     # ---------------- Config loop ----------------
     async def _config_listener_loop(self):
-        """
-        Listen on Redis pub/sub for bundles updates.
-
-        Protocol:
-        - Legacy COMMAND  (web posts): {"type":"bundles.update","op":"merge|replace","bundles":{...}, "default_bundle_id": "..."}
-          -> This process applies the command to the *persisted* registry (Redis),
-             saves it, broadcasts an AUTHORITATIVE SNAPSHOT, and updates in-memory.
-
-        - New SNAPSHOT (preferred): {"tenant":"...","project":"...","op":"...","ts":..., "registry":{...}, "actor":"..."}
-          -> This process treats it as source of truth and updates in-memory (and may
-             save to Redis for idempotence), but does NOT re-broadcast.
-        """
         import kdcube_ai_app.infra.namespaces as namespaces
         from kdcube_ai_app.infra.plugin.bundle_registry import (
             set_registry, serialize_to_env, get_all, get_default_id
@@ -214,16 +214,13 @@ class EnhancedChatRequestProcessor:
                     logger.warning("Invalid bundles broadcast; ignoring")
                     continue
 
-                # --------------- SNAPSHOT path ----------------
                 if "registry" in evt:
-                    # Authoritative snapshot
                     try:
                         reg = BundlesRegistry(**(evt.get("registry") or {}))
                     except Exception:
                         logger.warning("Invalid registry payload; ignoring")
                         continue
 
-                    # Update in-memory/env
                     set_registry(
                         {bid: be.model_dump() for bid, be in reg.bundles.items()},
                         reg.default_bundle_id
@@ -234,7 +231,6 @@ class EnhancedChatRequestProcessor:
                     except Exception:
                         pass
 
-                    # Optional: ensure persisted (idempotent; do NOT re-broadcast)
                     try:
                         await store_save(self.middleware.redis, reg)
                     except Exception:
@@ -243,39 +239,29 @@ class EnhancedChatRequestProcessor:
                     logger.info(f"Applied bundles SNAPSHOT; now have {len(get_all())} bundles")
                     continue
 
-                # --------------- LEGACY COMMAND path ----------------
                 if evt.get("type") == "bundles.update":
                     op = evt.get("op", "merge")
                     bundles_patch = evt.get("bundles") or {}
                     default_id = evt.get("default_bundle_id")
 
-                    # 1) Load current persisted registry (source of truth)
                     try:
                         current = await store_load(self.middleware.redis)
                     except Exception as e:
                         logger.error(f"Failed to load registry from Redis: {e}")
                         current = BundlesRegistry()
 
-                    # 2) Apply command -> new registry
                     try:
                         reg = apply_update(current, op, bundles_patch, default_id)
                     except Exception as e:
                         logger.error(f"Ignoring invalid bundles.update: {e}")
                         continue
 
-                    # 3) Persist and broadcast AUTHORITATIVE SNAPSHOT
                     try:
                         await store_save(self.middleware.redis, reg)
-                        await store_publish(
-                            self.middleware.redis,
-                            reg,
-                            op=op,
-                            actor=evt.get("updated_by") or None
-                        )
+                        await store_publish(self.middleware.redis, reg, op=op, actor=evt.get("updated_by") or None)
                     except Exception as e:
                         logger.error(f"Failed to persist/broadcast bundles: {e}")
 
-                    # 4) Apply locally (in-memory + env) and clear caches
                     set_registry(
                         {bid: be.model_dump() for bid, be in reg.bundles.items()},
                         reg.default_bundle_id
@@ -289,7 +275,6 @@ class EnhancedChatRequestProcessor:
                     logger.info(f"Applied bundles COMMAND (op={op}); now have {len(get_all())} bundles")
                     continue
 
-                # Unknown message shape
                 logger.debug("Ignoring unrelated pub/sub message on bundles channel")
 
         except asyncio.CancelledError:
@@ -302,24 +287,16 @@ class EnhancedChatRequestProcessor:
 
     @asynccontextmanager
     async def _lock_renewer(self, lock_key: str):
-        """
-        Background coroutine that keeps the Redis lock alive while a task runs.
-        """
-        cancelled = False
-
         async def renewer():
-            nonlocal cancelled
             try:
                 while not self._stop_event.is_set():
                     await asyncio.sleep(self.lock_renew_sec)
-                    # if lock was deleted, break
                     ttl = await self.middleware.redis.ttl(lock_key)
                     if ttl is None or ttl < 0:
-                        # key expired or no TTL -> stop renewing
                         break
                     await self.middleware.redis.expire(lock_key, self.lock_ttl_sec)
             except asyncio.CancelledError:
-                cancelled = True
+                pass
 
         task = asyncio.create_task(renewer(), name=f"lock-renewer:{lock_key}")
         try:
@@ -334,15 +311,12 @@ class EnhancedChatRequestProcessor:
     async def _process_task(self, task_data: Dict[str, Any]):
         lock_key = task_data.get("_lock_key")
 
-        # 1) Parse standardized payload; fallback to legacy if needed
+        # 1) Normalize payload
         payload: Optional[ChatTaskPayload] = None
         try:
             payload = ChatTaskPayload.model_validate(task_data)
         except Exception:
-            # Legacy compatibility path (min fields)
-            from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope
             try:
-                # backfill minimal schema for old tasks
                 from kdcube_ai_app.apps.chat.sdk.protocol import build_chat_task_payload
                 payload = build_chat_task_payload(
                     task_id=task_data.get("task_id"),
@@ -369,7 +343,6 @@ class EnhancedChatRequestProcessor:
                 )
             except Exception as e:
                 logger.error(f"Cannot normalize legacy task: {e}")
-                # give up on this task
                 try:
                     if lock_key:
                         await self.middleware.redis.delete(lock_key)
@@ -378,70 +351,84 @@ class EnhancedChatRequestProcessor:
 
         assert payload is not None
 
-        # 2) Common context
+        # 2) Build contexts
         session_id = payload.routing.session_id
         socket_id = payload.routing.socket_id
         task_id = payload.meta.task_id
 
-        # 3) Emission helpers
-        emit_data = {
-            "task_id": task_id,
-            "tenant_id": payload.actor.tenant_id,
-            "project_id": payload.actor.project_id,
-            "user_id": payload.user.user_id,
-            "session_id": session_id,
-            "conversation_id": payload.routing.conversation_id,
-            "turn_id": payload.routing.turn_id,
-            "user_type": payload.actor.user_type or "unknown",
-            "socket_id": socket_id,
-        }
+        svc = ServiceCtx(
+            request_id=(payload.accounting.envelope or {}).get("request_id", task_id),
+            tenant=payload.actor.tenant_id,
+            project=payload.actor.project_id,
+            user=payload.user.user_id,
+        )
+        conv = ConversationCtx(
+            session_id=session_id,
+            conversation_id=(payload.routing.conversation_id or session_id),
+            turn_id=payload.routing.turn_id,
+        )
+
+        # 3) ChatCommunicator (async) over the relay
+        emitter = _RelayEmitterAdapter(self._relay)
+        comm = ChatCommunicator(
+            emitter=emitter,
+            service=svc.model_dump(),
+            conversation=conv.model_dump(),
+            room=session_id,
+            target_sid=socket_id,
+        )
 
         # 4) accounting + storage
         from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope, bind_accounting
         from kdcube_ai_app.infra.accounting import with_accounting
 
         envelope = AccountingEnvelope.from_dict(payload.accounting.envelope)
-        kdcube_path = payload.env.kdcube_path or os.environ.get("KDCUBE_STORAGE_PATH")
-        storage_backend = create_storage_backend(kdcube_path, **{})
+        storage_backend = create_storage_backend(os.environ.get("KDCUBE_STORAGE_PATH"), **{})
 
-        # banner
-        await self._emit("chat_start", {
-            "message": (payload.request.message[:100] + "...") if payload.request.message and len(payload.request.message) > 100 else (payload.request.message or f"operation={payload.request.operation}"),
-            "timestamp": _utc_now_iso(),
-            "queue_stats": {},
-            **emit_data
-        }, room=session_id, target_sid=socket_id)
-        # Also emit a synthetic "workflow_start" step (optional but nice)
-        # synthetic step
-        await self._emit_step("workflow_start", "started", session_id, data={
-            "model": (payload.config.values or {}).get("selected_model"),
-            **emit_data
-        }, target_sid=socket_id)
+        # 5) Announce start (async)
+        msg = (
+            (payload.request.message[:100] + "...")
+            if payload.request.message and len(payload.request.message) > 100
+            else (payload.request.message or f"operation={payload.request.operation}")
+        )
+        await comm.start(message=msg, queue_stats={})
+        await comm.step(
+            step="workflow_start",
+            status="started",
+            title="Workflow Start",
+            data={"model": (payload.config.values or {}).get("selected_model"), "task_id": task_id},
+        )
 
+        # 6) Execute with lock renew + timeout
         try:
             async with bind_accounting(envelope, storage_backend, enabled=True):
-                async with with_accounting("chat.orchestrator", metadata={**emit_data }):
-                    # Renew the lock while running the job
+                async with with_accounting("chat.orchestrator", metadata={
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "conversation_id": payload.routing.conversation_id,
+                    "tenant_id": payload.actor.tenant_id,
+                    "project_id": payload.actor.project_id,
+                    "user_id": payload.user.user_id,
+                }):
                     async with self._lock_renewer(lock_key):
-                        # Enforce timeout
                         result = await asyncio.wait_for(
                             self.chat_handler(
                                 payload,
-                                emitter=self._emitter,
+                                comm=comm,     # << pass the async ChatCommunicator to handler
                                 task_id=task_id
                             ),
                             timeout=self.task_timeout_sec,
                         )
 
             result = result or {}
-            await self._emit_result(session_id, {**result, **emit_data}, target_sid=socket_id)
+            await comm.complete(data=result)
 
         except asyncio.TimeoutError:
             tb = "Task timed out"
-            await self._emit_error(task_id, session_id, emit_data, tb, target_sid=socket_id)
+            await comm.error(message=tb, data={"task_id": task_id})
         except Exception:
             tb = traceback.format_exc()
-            await self._emit_error(task_id, session_id, emit_data, tb, target_sid=socket_id)
+            await comm.error(message=tb, data={"task_id": task_id})
         finally:
             try:
                 if lock_key:
@@ -449,45 +436,3 @@ class EnhancedChatRequestProcessor:
             finally:
                 self._current_load = max(0, self._current_load - 1)
 
-    # ---------------- Emission helpers ----------------
-
-    async def _emit_step(self, step: str, status: str, room: Optional[str], *, data: Optional[dict] = None, error: Optional[str] = None, target_sid: Optional[str] = None):
-        payload = {
-            "step": step,
-            "status": status,
-            "timestamp": _utc_now_iso(),
-            "elapsed_time": None,
-            "error": error,
-            "data": data or {},
-        }
-        await self._emit("chat_step", payload, room=room, target_sid=target_sid)
-
-    async def _emit_result(self, session_id: str, result: Dict[str, Any], *, target_sid: Optional[str] = None):
-        logger.info(f"Task {result['task_id']} completed for session {session_id}")
-
-        # Close the synthetic workflow step
-        # await self._emit_step("workflow_complete", "completed", session_id)
-
-        # Your handler already returns {"final_answer": ..., "session_id": ...} in your passthrough.
-        # Normalize a bit, but don’t force a schema.
-        if not result:
-            result = {}
-        await self._emit("chat_complete", result, room=session_id, target_sid=target_sid)
-
-    async def _emit_error(self, task_id: str, session_id: str, emit_data, error: str, *, target_sid: Optional[str] = None):
-        logger.error(f"Task {task_id} failed for session {session_id}: {error}")
-        await self._emit_step("workflow_error", "error", session_id, error=error, data={"message": "Workflow aborted"}, target_sid=target_sid)
-        payload = {
-            "task_id": task_id,
-            "error": error,
-            "timestamp": _utc_now_iso(),
-            **emit_data
-        }
-        await self._emit("chat_error", payload, room=session_id, target_sid=target_sid)
-
-    async def _emit(self, event: str, data: dict, *, room: Optional[str] = None, target_sid: Optional[str] = None):
-        try:
-            # Prefer precise SID when available; emitter decides how to route.
-            await self._emitter.emit(event, data, room=room, target_sid=target_sid)
-        except Exception as e:
-            logger.error(f"Emitter error for event '{event}': {e}")
