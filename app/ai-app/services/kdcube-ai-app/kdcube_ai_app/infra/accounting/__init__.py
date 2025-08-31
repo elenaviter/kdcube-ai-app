@@ -20,49 +20,94 @@ from abc import ABC, abstractmethod
 from kdcube_ai_app.apps.chat.sdk.util import _deep_merge
 from kdcube_ai_app.infra.accounting.usage import ServiceUsage
 
+# ================================
+# REPORTING POLICY
+# ================================
+
+from typing import Set
+
+# keys we want at the event root (others can remain nested under "context" if you prefer)
+CONTEXT_EXPORT_KEYS: Set[str] = {
+    "user_id", "session_id", "project_id", "tenant_id",
+    "request_id", "component", "app_bundle_id"
+}
+
+def register_context_keys(*keys: str) -> None:
+    CONTEXT_EXPORT_KEYS.update(keys)
 
 # ================================
 # ASYNC-SAFE CONTEXT USING CONTEXTVARS
 # ================================
 
 class AccountingContext:
-    """Accounting context data"""
-
     def __init__(self):
-        self.user_id: Optional[str] = None
-        self.session_id: Optional[str] = None
-        self.project_id: Optional[str] = None
-        self.tenant_id: Optional[str] = None
-        self.request_id: Optional[str] = None
-        self.component: Optional[str] = None  # Current component context
-        self.app_bundle_id: Optional[str] = None  # Current app bundle ID
-        self.extra: Dict[str, Any] = {}
-        # Enrichment set by with_accounting(...):
-        #   - seed_system_resources: List[SystemResource]
-        #   - metadata: Dict[str, Any]
-        #   - any other keys you decide
-        self.event_enrichment: Dict[str, Any] = {}
+        # canonical storage for EVERYTHING
+        self._ctx: Dict[str, Any] = {}
+
+    # convenience properties for legacy/common keys (optional)
+    @property
+    def user_id(self) -> Optional[str]: return self._ctx.get("user_id")
+    @user_id.setter
+    def user_id(self, v): self._ctx["user_id"] = v
+
+    @property
+    def session_id(self) -> Optional[str]: return self._ctx.get("session_id")
+    @session_id.setter
+    def session_id(self, v): self._ctx["session_id"] = v
+
+    @property
+    def component(self) -> Optional[str]: return self._ctx.get("component")
+    @component.setter
+    def component(self, v): self._ctx["component"] = v
+
+    # enrichment is orthogonal; keep as-is if you like
+    event_enrichment: Dict[str, Any] = {}
 
     def update(self, **kwargs):
-        """Update context fields"""
-        for key, value in kwargs.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
-            else:
-                self.extra[key] = value
+        self._ctx.update(kwargs)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary"""
-        return {
-            "user_id": self.user_id,
-            "session_id": self.session_id,
-            "project_id": self.project_id,
-            "tenant_id": self.tenant_id,
-            "request_id": self.request_id,
-            "component": self.component,
-            "app_bundle_id": self.app_bundle_id,
-            **self.extra
-        }
+        # return a shallow copy
+        return dict(self._ctx)
+#
+# class AccountingContext:
+#     """Accounting context data"""
+#
+#     def __init__(self):
+#         self.user_id: Optional[str] = None
+#         self.session_id: Optional[str] = None
+#         self.project_id: Optional[str] = None
+#         self.tenant_id: Optional[str] = None
+#         self.request_id: Optional[str] = None
+#         self.component: Optional[str] = None  # Current component context
+#         self.app_bundle_id: Optional[str] = None  # Current app bundle ID
+#         self.extra: Dict[str, Any] = {}
+#         # Enrichment set by with_accounting(...):
+#         #   - seed_system_resources: List[SystemResource]
+#         #   - metadata: Dict[str, Any]
+#         #   - any other keys you decide
+#         self.event_enrichment: Dict[str, Any] = {}
+#
+#     def update(self, **kwargs):
+#         """Update context fields"""
+#         for key, value in kwargs.items():
+#             if hasattr(self, key):
+#                 setattr(self, key, value)
+#             else:
+#                 self.extra[key] = value
+#
+#     def to_dict(self) -> Dict[str, Any]:
+#         """Convert to dictionary"""
+#         return {
+#             "user_id": self.user_id,
+#             "session_id": self.session_id,
+#             "project_id": self.project_id,
+#             "tenant_id": self.tenant_id,
+#             "request_id": self.request_id,
+#             "component": self.component,
+#             "app_bundle_id": self.app_bundle_id,
+#             **self.extra
+#         }
 
 # Context variables for async-safe storage
 _context_var: contextvars.ContextVar[Optional[AccountingContext]] = contextvars.ContextVar(
@@ -145,65 +190,105 @@ class SystemResource:
 
 @dataclass
 class AccountingEvent:
-    """Accounting event record"""
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
-    # Context (from contextvars)
-    user_id: Optional[str] = None
-    session_id: Optional[str] = None
-    project_id: Optional[str] = None
-    tenant_id: Optional[str] = None
-    request_id: Optional[str] = None
-    app_bundle_id: Optional[str] = None
-    component: Optional[str] = None
+    # dynamic snapshot of context at event creation
+    context: Dict[str, Any] = field(default_factory=dict)
 
     # Service details
     service_type: ServiceType = ServiceType.OTHER
     provider: str = ""
     model_or_service: str = ""
 
-    # Caller-provided resources/metadata (from with_accounting)
+    # Caller-provided resources/metadata
     seed_system_resources: List[SystemResource] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     # Usage & status
     usage: ServiceUsage = field(default_factory=ServiceUsage)
-
-    # Status
     success: bool = True
     error_message: Optional[str] = None
     provider_request_id: Optional[str] = None
 
+    # ---- Backward-compatible properties (optional but helpful) ----
+    def _ctx_get(self, key: str): return self.context.get(key)
+    def _ctx_set(self, key: str, value: Any): self.context.__setitem__(key, value)
+
+    @property
+    def user_id(self): return self._ctx_get("user_id")
+    @user_id.setter
+    def user_id(self, v): self._ctx_set("user_id", v)
+
+    @property
+    def session_id(self): return self._ctx_get("session_id")
+    @session_id.setter
+    def session_id(self, v): self._ctx_set("session_id", v)
+
+    @property
+    def project_id(self): return self._ctx_get("project_id")
+    @project_id.setter
+    def project_id(self, v): self._ctx_set("project_id", v)
+
+    @property
+    def tenant_id(self): return self._ctx_get("tenant_id")
+    @tenant_id.setter
+    def tenant_id(self, v): self._ctx_set("tenant_id", v)
+
+    @property
+    def request_id(self): return self._ctx_get("request_id")
+    @request_id.setter
+    def request_id(self, v): self._ctx_set("request_id", v)
+
+    @property
+    def component(self): return self._ctx_get("component")
+    @component.setter
+    def component(self, v): self._ctx_set("component", v)
+
+    @property
+    def app_bundle_id(self): return self._ctx_get("app_bundle_id")
+    @app_bundle_id.setter
+    def app_bundle_id(self, v): self._ctx_set("app_bundle_id", v)
+
+    # ---- Serialization helpers ----
+    @staticmethod
+    def _compact(obj: Dict[str, Any]) -> Dict[str, Any]:
+        def keep(v):
+            return not (v is None or v == "" or v == [] or v == {} or v == 0)
+        return {k: v for k, v in obj.items() if keep(v)}
+
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for storage"""
+        # Flatten selected context keys to the root (only non-null)
+        flat_ctx = {k: v for k, v in self.context.items()
+                    if k in CONTEXT_EXPORT_KEYS and v is not None}
+
+        # Optionally filter metadata duplicates (don’t repeat root keys)
+        filtered_meta = {k: v for k, v in self.metadata.items()
+                         if k not in flat_ctx}  # drop duplicates
+
         return {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
-            "user_id": self.user_id,
-            "session_id": self.session_id,
-            "project_id": self.project_id,
-            "tenant_id": self.tenant_id,
-            "request_id": self.request_id,
-            "component": self.component,
-            "app_bundle_id": self.app_bundle_id,
+            **flat_ctx,  # user_id, session_id, tenant_id, app_bundle_id, etc.
             "service_type": self.service_type.value if hasattr(self.service_type, "value") else str(self.service_type),
             "provider": self.provider,
             "model_or_service": self.model_or_service,
             "seed_system_resources": [
                 {
-                    "resource_type": res.resource_type,
-                    "resource_id": res.resource_id,
-                    "rn": res.rn,
-                    "resource_version": res.resource_version,
-                    "metadata": res.metadata
-                } for res in self.seed_system_resources
+                    "resource_type": r.resource_type,
+                    "resource_id": r.resource_id,
+                    "rn": r.rn,
+                    "resource_version": r.resource_version,
+                    "metadata": r.metadata
+                } for r in self.seed_system_resources
             ],
             "usage": self.usage.to_compact_dict(),
             "success": self.success,
             "error_message": self.error_message,
             "provider_request_id": self.provider_request_id,
-            "metadata": self.metadata
+            "metadata": filtered_meta,
+            # Optional: keep the full context payload too (handy for forensics)
+            "context": {k: v for k, v in self.context.items() if k not in flat_ctx}
         }
 
 class IAccountingStorage(ABC):
@@ -337,7 +422,8 @@ class AccountingTracker:
 
         # merge in enrichment metadata (caller-provided data)
         extra_meta = dict(enrich.get("metadata") or {})
-        extra_meta["processing_time_ms"] = (datetime.now() - start_time).total_seconds() * 1000
+        elapsed_ms =  (datetime.now() - start_time).total_seconds() * 1000
+        extra_meta["processing_time_ms"] = round(elapsed_ms, 3)
         meta.update(extra_meta)
 
         # caller-provided resources (or none)
@@ -352,14 +438,9 @@ class AccountingTracker:
         if hasattr(result, 'provider_message_id'):
             provider_request_id = result.provider_message_id
 
+        context_snapshot = context.to_dict()
         return AccountingEvent(
-            user_id=context.user_id,
-            session_id=context.session_id,
-            project_id=context.project_id,
-            tenant_id=context.tenant_id,
-            request_id=context.request_id,
-            component=context.component,
-            app_bundle_id=context.app_bundle_id,
+            context=context_snapshot,
             service_type=self.service_type,
             provider=provider,
             model_or_service=model,
@@ -555,7 +636,10 @@ def grouped_by_component_and_seed() -> "callable":
         date_folder = f"{dt.year:04d}.{dt.month:02d}.{dt.day:02d}"
 
         # group folder
-        component = event.component or "unknown"
+        component = (event.component or event.context.get("component") or "unknown")
+        tenant   = (event.tenant_id or event.context.get("tenant_id") or "unknown")
+        project  = (event.project_id or event.context.get("project_id") or "unknown")
+
         service_type = event.service_type.value if hasattr(event.service_type, "value") else str(event.service_type)
         if event.seed_system_resources:
             r = event.seed_system_resources[0]  # pick the primary seed
@@ -570,9 +654,6 @@ def grouped_by_component_and_seed() -> "callable":
         # filename with ms; add short id suffix to avoid rare collisions
         ts = dt.strftime("%Y%m%d_%H%M%S_%f")[:-3]
         filename = f"usage_{ts}-{event.event_id[:8]}.json"
-
-        tenant = event.tenant_id or "unknown"
-        project = event.project_id or "unknown"
 
         # final path UNDER your base_path
         return f"{tenant}/{project}/{date_folder}/{service_type}/{group}/{filename}"
