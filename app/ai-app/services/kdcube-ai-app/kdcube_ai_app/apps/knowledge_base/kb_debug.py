@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 import logging
 
-from kdcube_ai_app.apps.chat.agentic_app_bckp import MODEL_CONFIGS, EMBEDDERS
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 from kdcube_ai_app.apps.knowledge_base.db.providers.tenant_db import TenantDB
 from kdcube_ai_app.apps.knowledge_base.tenant import TenantProjects
 from kdcube_ai_app.infra.llm.llm_data_model import AIProvider, ModelRecord, AIProviderName

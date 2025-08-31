@@ -20,7 +20,7 @@ from langchain_core.embeddings import Embeddings
 from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage, AIMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS, model_caps
 from kdcube_ai_app.infra.accounting import track_llm
 from kdcube_ai_app.infra.accounting.usage import (
     _structured_usage_extractor,
@@ -38,7 +38,26 @@ def _mid(role: str, msg_ts: str | None = None) -> str:
         msg_ts = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
     return f"{role}-{msg_ts}-{uuid4().hex[:8]}"
 
-BASE_ROLES = ("classifier", "query_writer", "reranker", "answer_generator", "format_fixer")
+
+from langchain_openai import ChatOpenAI
+def make_chat_openai(*, model: str, api_key: str,
+                     temperature: float | None = None,
+                     stream_usage: bool = True,
+                     **extra_kwargs) -> ChatOpenAI:
+    caps = model_caps(model)
+
+    params = {
+        "model": model,
+        "api_key": api_key,
+        "stream_usage": stream_usage,
+        **extra_kwargs,  # your other stable args
+    }
+
+    # Only include temperature if supported AND provided
+    if temperature is not None and caps.get("temperature", True):
+        params["temperature"] = float(temperature)
+
+    return ChatOpenAI(**params)
 
 # =========================
 # Logging
@@ -101,7 +120,7 @@ class ConfigRequest(BaseModel):
     claude_api_key: Optional[str] = None
 
     # Global defaults
-    selected_model: str = "gpt-4o"   # used for default role mapping if role_models not provided
+    selected_model: str = None   # used for default role mapping if role_models not provided
 
     # RAG embeddings
     selected_embedder: str = "openai-text-embedding-3-small"
@@ -134,18 +153,15 @@ class Config:
     Central config: keys, embedding, and ROLE → {provider, model} mapping.
     Back-compat: still exposes .provider and {classifier,query_writer,reranker,answer_generator}_model via properties.
     """
-    def __init__(self, selected_model: str = "gpt-4o",
+    def __init__(self,
                  openai_api_key: Optional[str] = None,
                  claude_api_key: Optional[str] = None,
-                 embedding_model: Optional[str] = None):
+                 embedding_model: Optional[str] = None,
+                 default_llm_model: Optional[str] = None,
+                 role_models: Optional[Dict[str, Dict[str, str]]] = None):
         # keys
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.claude_api_key = claude_api_key or os.getenv("ANTHROPIC_API_KEY", "")
-
-        # baseline model config (for defaults)
-        self.selected_model = selected_model
-        self.model_config = MODEL_CONFIGS.get(selected_model, MODEL_CONFIGS["gpt-4o"])
-        self._provider_default = self.model_config["provider"]
 
         # embeddings (declarative)
         self.selected_embedder = "openai-text-embedding-3-small"
@@ -162,14 +178,9 @@ class Config:
         self.format_fixer_model = "claude-3-haiku-20240307"
         self.format_fix_enabled = True
 
-        # feature flags
-        self.has_classifier = self.model_config.get("has_classifier", True)
-
-        # “legacy” single-provider defaults (for back-compat behavior)
-        self._single_provider = self._provider_default
-
+        self.default_llm_model = MODEL_CONFIGS.get(default_llm_model or "o3-mini")
         # role map (filled later; defaults below)
-        self.role_models: Dict[str, Dict[str, str]] = {}
+        self.role_models: Dict[str, Dict[str, str]] = role_models or self.default_role_map()
 
         # custom endpoint support (for CustomModelClient)
         self.custom_model_endpoint = os.getenv("CUSTOM_MODEL_ENDPOINT", "")
@@ -207,7 +218,8 @@ class Config:
     # ----- role map -----
     def default_role_map(self) -> Dict[str, Dict[str, str]]:
         """Defaults for our base roles; new roles will still get default provider/model lazily."""
-        base = {r: {"provider": self._provider_default, "model": self.model_config["model_name"]}
+        BASE_ROLES = ("classifier", "query_writer", "reranker", "answer_generator", "format_fixer")
+        base = {r: {"provider": self.default_llm_model["provider"], "model": self.default_llm_model["model_name"]}
                 for r in BASE_ROLES}
         # prefer Anthropic for format fixer
         base["format_fixer"] = {"provider": "anthropic", "model": self.format_fixer_model}
@@ -215,7 +227,7 @@ class Config:
 
     def get_default_role_spec(self) -> Dict[str, str]:
         """Default spec for any role not explicitly configured."""
-        return {"provider": self._provider_default, "model": self.model_config["model_name"]}
+        return {"provider": self.default_llm_model["provider"], "model": self.default_llm_model["model_name"]}
 
     def ensure_role(self, role: str) -> Dict[str, str]:
         """Make sure a role has a mapping; if missing, fill with defaults (special-case format_fixer)."""
@@ -241,8 +253,8 @@ class Config:
 
         # merge/insert provided roles (including brand-new ones)
         for r, spec in provided.items():
-            prov = spec.get("provider") or merged.get(r, {}).get("provider") or self._provider_default
-            model = spec.get("model")    or merged.get(r, {}).get("model")    or self.model_config["model_name"]
+            prov = spec.get("provider") or merged.get(r, {}).get("provider") or self.default_llm_model["provider"]
+            model = spec.get("model")    or merged.get(r, {}).get("model")    or self.default_llm_model["model_name"]
             merged[r] = {"provider": prov, "model": model}
 
         self.role_models = merged
@@ -251,30 +263,30 @@ class Config:
     @property
     def provider(self) -> str:
         # “global provider” (legacy): just return the classifier’s provider
-        return self.role_models.get("classifier", {}).get("provider", self._single_provider)
+        return self.role_models.get("classifier", {}).get("provider", self.default_llm_model["provider"])
 
     @property
     def classifier_model(self) -> str:
-        return self.role_models.get("classifier", {}).get("model", self.model_config["model_name"])
+        return self.role_models.get("classifier", {}).get("model", self.default_llm_model["model_name"])
 
     @property
     def query_writer_model(self) -> str:
-        return self.role_models.get("query_writer", {}).get("model", self.model_config["model_name"])
+        return self.role_models.get("query_writer", {}).get("model", self.default_llm_model["model_name"])
 
     @property
     def reranker_model(self) -> str:
-        return self.role_models.get("reranker", {}).get("model", self.model_config["model_name"])
+        return self.role_models.get("reranker", {}).get("model", self.default_llm_model["model_name"])
 
     @property
     def answer_generator_model(self) -> str:
-        return self.role_models.get("answer_generator", {}).get("model", self.model_config["model_name"])
+        return self.role_models.get("answer_generator", {}).get("model", self.default_llm_model["model_name"])
 
 
 # =========================
 # Config factory (accept bundle template or fill defaults)
 # =========================
 def create_workflow_config(config_request: ConfigRequest) -> Config:
-    cfg = Config(selected_model=config_request.selected_model)
+    cfg = Config(default_llm_model=config_request.selected_model)
 
     # keys
     if config_request.openai_api_key:
@@ -282,9 +294,6 @@ def create_workflow_config(config_request: ConfigRequest) -> Config:
     if config_request.claude_api_key:
         cfg.claude_api_key = config_request.claude_api_key
 
-    # feature toggles
-    if config_request.has_classifier is not None:
-        cfg.has_classifier = bool(config_request.has_classifier)
     cfg.format_fix_enabled = bool(config_request.format_fix_enabled)
 
     # embeddings
@@ -325,7 +334,12 @@ class ModelRouter:
         self._anthropic_client = None  # reuse a single client for all Anthropic roles
 
     def _mk_openai(self, model: str, temperature: float) -> ChatOpenAI:
-        return ChatOpenAI(model=model, api_key=self.config.openai_api_key, temperature=temperature, stream_usage=True)
+        return make_chat_openai(
+            model=model,                      # e.g., "o3-mini" or "gpt-4o"
+            api_key=self.config.openai_api_key,
+            temperature=temperature,          # user knob (may be ignored for reasoning models)
+            stream_usage=True
+        )
 
     def _mk_anthropic(self):
         if self._anthropic_client:
@@ -378,7 +392,7 @@ class ModelRouter:
                                 model_name=spec.get("model", "unknown"))
 
 # =========================
-# Usage metadata helpers (unchanged)
+# Usage metadata helpers
 # =========================
 def ms_provider_extractor(model_service, client, *args, **kw) -> str:
     cfg = kw.get("client_cfg") or model_service.describe_client(client)
@@ -391,7 +405,7 @@ def ms_model_extractor(model_service, client, *args, **kw) -> str:
 def ms_structured_meta_extractor(model_service, _client, system_prompt: str, user_message: str, response_format, **kw):
     client_cfg = kw.get("client_cfg")
     return {
-        "selected_model": (client_cfg.model_name if client_cfg else None),
+        "model": (client_cfg.model_name if client_cfg else None),
         "provider": (client_cfg.provider if client_cfg else None),
         "expected_format": getattr(response_format, "__name__", str(response_format)),
         "prompt_chars": len(system_prompt or "") + len(user_message or ""),
@@ -414,7 +428,7 @@ def ms_freeform_meta_extractor(model_service, _client, messages, *a, **kw):
     }
 
 # =========================
-# Format fixer (your class “as-is”)
+# Format fixer
 # =========================
 class FormatFixerService:
     """Fixes malformed JSON responses using Claude"""
@@ -1097,7 +1111,7 @@ if __name__ == "__main__":
         client = ChatOpenAI(model=model_name, stream_usage=True)
         msgs = [SystemMessage(content="You are concise."), HumanMessage(content="Say hi!")]
 
-        base_service = ModelServiceBase(Config(selected_model=model_name))
+        base_service = ModelServiceBase(Config(default_llm_model=model_name))
         async for evt in base_service.stream_model_text(client, msgs):
             print(evt)
         print()

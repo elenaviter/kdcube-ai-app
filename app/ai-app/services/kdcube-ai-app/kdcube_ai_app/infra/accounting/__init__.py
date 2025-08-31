@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
 
+from kdcube_ai_app.apps.chat.sdk.util import _deep_merge
 from kdcube_ai_app.infra.accounting.usage import ServiceUsage
 
 
@@ -34,6 +35,7 @@ class AccountingContext:
         self.tenant_id: Optional[str] = None
         self.request_id: Optional[str] = None
         self.component: Optional[str] = None  # Current component context
+        self.app_bundle_id: Optional[str] = None  # Current app bundle ID
         self.extra: Dict[str, Any] = {}
         # Enrichment set by with_accounting(...):
         #   - seed_system_resources: List[SystemResource]
@@ -58,6 +60,7 @@ class AccountingContext:
             "tenant_id": self.tenant_id,
             "request_id": self.request_id,
             "component": self.component,
+            "app_bundle_id": self.app_bundle_id,
             **self.extra
         }
 
@@ -152,6 +155,7 @@ class AccountingEvent:
     project_id: Optional[str] = None
     tenant_id: Optional[str] = None
     request_id: Optional[str] = None
+    app_bundle_id: Optional[str] = None
     component: Optional[str] = None
 
     # Service details
@@ -182,6 +186,7 @@ class AccountingEvent:
             "tenant_id": self.tenant_id,
             "request_id": self.request_id,
             "component": self.component,
+            "app_bundle_id": self.app_bundle_id,
             "service_type": self.service_type.value if hasattr(self.service_type, "value") else str(self.service_type),
             "provider": self.provider,
             "model_or_service": self.model_or_service,
@@ -194,22 +199,7 @@ class AccountingEvent:
                     "metadata": res.metadata
                 } for res in self.seed_system_resources
             ],
-            "usage": {
-                "input_tokens": self.usage.input_tokens,
-                "output_tokens": self.usage.output_tokens,
-                "cache_creation_tokens": self.usage.cache_creation_tokens,
-                "cache_read_tokens": self.usage.cache_read_tokens,
-                "total_tokens": self.usage.total_tokens,
-                "embedding_tokens": self.usage.embedding_tokens,
-                "embedding_dimensions": self.usage.embedding_dimensions,
-                "search_queries": self.usage.search_queries,
-                "search_results": self.usage.search_results,
-                "image_count": self.usage.image_count,
-                "image_pixels": self.usage.image_pixels,
-                "audio_seconds": self.usage.audio_seconds,
-                "requests": self.usage.requests,
-                "cost_usd": self.usage.cost_usd
-            },
+            "usage": self.usage.to_compact_dict(),
             "success": self.success,
             "error_message": self.error_message,
             "provider_request_id": self.provider_request_id,
@@ -369,6 +359,7 @@ class AccountingTracker:
             tenant_id=context.tenant_id,
             request_id=context.request_id,
             component=context.component,
+            app_bundle_id=context.app_bundle_id,
             service_type=self.service_type,
             provider=provider,
             model_or_service=model,
@@ -539,8 +530,7 @@ class with_accounting:
         self._prev_enrichment = dict(ctx.event_enrichment or {})
         ctx.component = self.component
         # shallow-merge: inner scope can override keys
-        merged = dict(self._prev_enrichment)
-        merged.update(self._new_enrichment)
+        merged = _deep_merge(self._prev_enrichment, self._new_enrichment)
         ctx.event_enrichment = merged
         return self
 

@@ -107,7 +107,7 @@ class ServiceCommunicator:
             "timestamp": time.time(),
         }
         full_channel = self._fmt_channel(channel)
-        logger.info(
+        logger.debug(
             f"Publishing event '{event}' to '{full_channel}' "
             f"(sid={target_sid}, session={session_id}): {data}"
         )

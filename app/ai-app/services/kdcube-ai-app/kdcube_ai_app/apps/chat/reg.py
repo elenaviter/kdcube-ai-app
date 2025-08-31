@@ -3,6 +3,9 @@
 
 # chat/reg.py
 
+import re
+from collections import defaultdict
+
 MODEL_CONFIGS = {
     "o3-mini": {
         "model_name": "o3-mini",
@@ -88,3 +91,34 @@ EMBEDDERS = {
         "description": "All MPNet Base v2 - High quality general purpose"
     }
 }
+
+
+_SEEDED_FALSE = [
+    (re.compile(r"^o3", re.I), {"temperature": False, "top_p": False}),  # o3, o3-mini, etc.
+    (re.compile(r"^o4", re.I), {"temperature": False, "top_p": False}),  # o4-* reasoning models
+]
+
+# Sparse learned overrides: only set keys we actually learned.
+_dynamic_caps: dict[str, dict[str, bool]] = {}
+
+def model_caps(model: str) -> dict:
+    caps = {"temperature": True, "top_p": True}
+
+    # apply seeded knowledge
+    for rx, preset in _SEEDED_FALSE:
+        if rx.match(model):
+            caps.update(preset)
+            break
+
+    # apply learned overrides only if present
+    learned = _dynamic_caps.get(model)
+    if learned:
+        caps.update(learned)
+
+    return caps
+
+def learn_unsupported(model: str, param: str):
+    _dynamic_caps.setdefault(model, {})[param] = False
+
+def learn_supported(model: str, param: str):
+    _dynamic_caps.setdefault(model, {})[param] = True

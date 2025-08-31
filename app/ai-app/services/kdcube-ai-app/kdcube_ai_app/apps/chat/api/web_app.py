@@ -26,7 +26,7 @@ from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunic
 
 
 from kdcube_ai_app.apps.middleware.logging.uvicorn import configure_logging
-from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session, AccountingEnvelope
+from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
 
 configure_logging()
 
@@ -38,7 +38,7 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 # Import our simplified components
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
-    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure
+    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -308,10 +308,11 @@ class ChatMessage(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    bundle_id: Optional[str] = None
     message: str
     session_id: Optional[str] = None
     config: Optional[ConfigRequest] = {}
-    chat_history: Optional[List[ChatMessage]] = []  # <— added
+    chat_history: Optional[List[ChatMessage]] = []
 
 
 class ChatResponse(BaseModel):
@@ -421,17 +422,13 @@ async def chat_endpoint(
         task_id = str(uuid.uuid4())
         request_id = str(uuid.uuid4())
         session_id = payload.session_id or session.session_id
+        bundle_id = payload.bundle_id
 
         # Build an accounting snapshot (no storage I/O here)
         # Try to infer tenant / project if you carry them in config; safe to leave None.
         cfg_dict = payload.config.model_dump() if payload.config else {}
         project_id = cfg_dict.get("project")
-        # If you have a central gateway config, you can fetch tenant like this:
-        try:
-            from kdcube_ai_app.infra.gateway.config import get_gateway_config
-            tenant_id = get_gateway_config().tenant_id
-        except Exception:
-            tenant_id = None
+        tenant_id = cfg_dict.get("tenant_id") or get_tenant()
 
         acct_env = build_envelope_from_session(
             session=session,
@@ -439,9 +436,9 @@ async def chat_endpoint(
             project_id=project_id,
             request_id=request_id,
             component="chat.rest",
+            app_bundle_id=bundle_id,
             metadata={
-                "entrypoint": "/landing/chat",
-                "selected_model": cfg_dict.get("selected_model")
+                "entrypoint": "/landing/chat"
             },
         )
 

@@ -18,6 +18,7 @@ class AccountingEnvelope:
     project_id: Optional[str]
     request_id: Optional[str]
     component: Optional[str]
+    app_bundle_id: Optional[str]
 
     # optional enrichment you might want to carry
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -58,9 +59,12 @@ class AccountingEnvelope:
             component=d.get("component"),
             metadata=d.get("metadata") or {},
             seed_system_resources=seeds,
+            app_bundle_id=d.get("app_bundle_id"),
         )
 
-def build_envelope_from_session(session, *, tenant_id, project_id, request_id, component, metadata=None, seeds=None) -> AccountingEnvelope:
+def build_envelope_from_session(session, *, tenant_id,
+                                project_id, request_id, component,
+                                app_bundle_id=None, metadata=None, seeds=None) -> AccountingEnvelope:
     return AccountingEnvelope(
         user_id=getattr(session, "user_id", None),
         session_id=getattr(session, "session_id", None),
@@ -70,6 +74,7 @@ def build_envelope_from_session(session, *, tenant_id, project_id, request_id, c
         component=component,
         metadata=metadata or {},
         seed_system_resources=seeds or [],
+        app_bundle_id=app_bundle_id
     )
 
 @asynccontextmanager
@@ -86,9 +91,10 @@ async def bind_accounting(envelope: AccountingEnvelope, storage_backend, *, enab
         project_id=envelope.project_id,
         request_id=envelope.request_id,
         component=envelope.component,
+        app_bundle_id=envelope.app_bundle_id,
     )
     # push caller-provided enrichment for inner with_accounting scopes to inherit/merge
-    from kdcube_ai_app.infra.accounting import _get_context  # same module; you already have this
+    from kdcube_ai_app.infra.accounting import _get_context  # same module;
     _get_context().event_enrichment = {
         "metadata": dict(envelope.metadata or {}),
         "seed_system_resources": envelope.seed_system_resources or [],
@@ -111,6 +117,7 @@ def bind_accounting_sync(envelope: AccountingEnvelope, storage_backend, *, enabl
         project_id=envelope.project_id,
         request_id=envelope.request_id,
         component=envelope.component,
+        app_bundle_id=envelope.app_bundle_id,
     )
     from kdcube_ai_app.infra.accounting import _get_context
     _get_context().event_enrichment = {

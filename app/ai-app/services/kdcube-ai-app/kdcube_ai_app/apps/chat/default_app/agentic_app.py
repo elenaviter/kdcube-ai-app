@@ -254,24 +254,16 @@ class KBSearchAgent:
 
 
 class ClassifierAgent:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, model_service: ThematicBotModelService):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.ClassifierAgent", config.log_level)
-        self.model_service = ThematicBotModelService(config)
+        self.model_service = model_service
         self.format_fixer = FormatFixerService(config)
 
     async def classify(self, state: ChatGraphState) -> ChatGraphState:
         self.logger.start_operation("classify_query",
                                     user_message=state["user_message"][:100] + "..." if len(state["user_message"]) > 100 else state["user_message"],
                                     execution_id=state["execution_id"])
-        if not self.config.has_classifier:
-            state["is_our_domain"] = True
-            state["classification_reasoning"] = f"Model {self.config.selected_model} processes all queries without classification"
-            add_step_log(state, "classification", {"success": True, "skipped": True})
-            self.logger.finish_operation(True, "Classification skipped")
-            return state
-
-        summary_context = ""
         if state["context"].get("running_summary"):
             summary_context = f"Conversation summary: {state['context']['running_summary']}\n\n"
 
@@ -290,7 +282,7 @@ RULES:
 - "confidence" must be in [0.0, 1.0].
 - "reasoning" should be brief and concrete.
 """
-        with with_accounting("chat.agentic.classifier", metadata={"message": state["user_message"]}):
+        with with_accounting("chat.agentic.classifier", metadata={ "message": state["user_message"] }):
             result = await self.model_service.call_model_with_structure(
                 self.model_service.classifier_client,
                 system_prompt,
@@ -338,11 +330,11 @@ RULES:
 
 
 class QueryWriterAgent:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, model_service: ThematicBotModelService):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.QueryWriterAgent", config.log_level)
-        self.model_service = ThematicBotModelService(config)
         self.format_fixer = FormatFixerService(config)
+        self.model_service = model_service
 
     async def write_queries(self, state: ChatGraphState) -> ChatGraphState:
         self.logger.start_operation("write_queries",
@@ -435,10 +427,10 @@ class RAGAgent:
 
 
 class RerankingAgent:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, model_service: ThematicBotModelService):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.RerankingAgent", config.log_level)
-        self.model_service = ThematicBotModelService(config)
+        self.model_service = model_service
         self.format_fixer = FormatFixerService(config)
 
     async def rerank(self, state: ChatGraphState) -> ChatGraphState:
@@ -501,10 +493,10 @@ INSTRUCTIONS:
 
 
 class AnswerGeneratorAgent:
-    def __init__(self, config: Config, delta_emitter, step_emitter, streaming: bool = True):
+    def __init__(self, config: Config, model_service: ThematicBotModelService, delta_emitter, step_emitter, streaming: bool = True):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.AnswerGeneratorAgent", config.log_level)
-        self.model_service = ThematicBotModelService(config)
+        self.model_service = model_service
         self.emit_delta = delta_emitter or (lambda *_: asyncio.sleep(0))
         self.emit_step = step_emitter or (lambda *_: asyncio.sleep(0))
         self.streaming = streaming
@@ -753,7 +745,11 @@ class ChatWorkflow:
     """Main workflow orchestrator using ChatCommunicator for emissions"""
 
     def __init__(self, config: Config, communicator: ChatCommunicator, streaming: bool = True):
+
         self.config = config
+        config.role_models = self.configuration["role_models"]
+        self.model_service = ThematicBotModelService(config)
+
         self.logger = AgentLogger(f"{BUNDLE_ID}.ChatWorkflow", config.log_level)
 
         # unified communicator (async)
@@ -774,13 +770,14 @@ class ChatWorkflow:
         self.emit_delta = _emit_delta
 
         # agents
-        self.classifier = ClassifierAgent(config)
-        self.query_writer = QueryWriterAgent(config)
+        self.classifier = ClassifierAgent(config, self.model_service)
+        self.query_writer = QueryWriterAgent(config, self.model_service)
         self.rag_agent = RAGAgent(config)
-        self.reranking_agent = RerankingAgent(config)
+        self.reranking_agent = RerankingAgent(config, self.model_service)
         self.answer_generator = AnswerGeneratorAgent(config,
                                                      delta_emitter=self.emit_delta,
                                                      step_emitter=self.emit_step,
+                                                     model_service=self.model_service,
                                                      streaming=streaming)
         self.kb_search_agent = KBSearchAgent(config)
 
@@ -789,12 +786,22 @@ class ChatWorkflow:
         self.graph = self._build_graph()
 
         self.logger.log_step("workflow_initialized", {
-            "selected_model": config.selected_model,
-            "has_classifier": config.has_classifier,
-            "provider": config.provider,
+            "role_mapping": config.role_models,
             "embedding_type": "custom" if config.custom_embedding_endpoint else "openai",
             "kb_search_available": bool(config.kb_search_url)
         })
+
+    @property
+    def configuration(self):
+        return {
+            "role_models": {
+                "classifier":       {"provider": "openai",    "model": "gpt-4o-mini"},
+                "answer_generator": {"provider": "openai", "model": "o3-mini"},
+                "query_writer":     {"provider": "openai",    "model": "gpt-4o-mini"},
+                "reranker":         {"provider": "openai",    "model": "gpt-4o-mini"},
+                "format_fixer":     {"provider": "anthropic",    "model": "claude-3-haiku-20240307"},
+            }
+        }
 
     def set_state(self, state: Dict[str, Any]):
         self._app_state = dict(state or {})
@@ -901,8 +908,7 @@ class ChatWorkflow:
                 return state
             workflow.add_node("summarize", simple_summarize)
 
-        if self.config.has_classifier:
-            workflow.add_node("classifier", self._wrap_node(self.classifier.classify, "classifier"))
+        workflow.add_node("classifier", self._wrap_node(self.classifier.classify, "classifier"))
 
         workflow.add_node("query_writer", self._wrap_node(self.query_writer.write_queries, "query_writer"))
         workflow.add_node("rag_retrieval", self._wrap_node(self.rag_agent.retrieve, "rag_retrieval"))
@@ -913,11 +919,8 @@ class ChatWorkflow:
         workflow.add_edge(START, "workflow_start")
         workflow.add_edge("workflow_start", "summarize")
 
-        if self.config.has_classifier:
-            workflow.add_edge("summarize", "classifier")
-            workflow.add_edge("classifier", "query_writer")
-        else:
-            workflow.add_edge("summarize", "query_writer")
+        workflow.add_edge("summarize", "classifier")
+        workflow.add_edge("classifier", "query_writer")
 
         workflow.add_edge("query_writer", "rag_retrieval")
         workflow.add_edge("rag_retrieval", "reranking")
@@ -973,8 +976,7 @@ class ChatWorkflow:
 
     def _get_workflow_node_names(self) -> List[str]:
         nodes = ["workflow_start", "summarize", "query_writer", "rag_retrieval", "reranking", "answer_generator"]
-        if self.config.has_classifier:
-            nodes.insert(2, "classifier")
+        nodes.insert(2, "classifier")
         return nodes
 
     def suggestions(self):
@@ -1017,6 +1019,7 @@ async def example_usage():
         "tenant_id": tenant_id,
         "project_id": project_id,
         "component": COMPONENT,
+        "app_bundle_id": BUNDLE_ID,
         "metadata": {"description": "Chat App Workflow Example", "tags": ["demo", "chat", "workflow"]}
     }
 
@@ -1028,7 +1031,7 @@ async def example_usage():
     claude_api_key = os.environ.get("ANTHROPIC_API_KEY")
     embedding_model = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
 
-    config = Config(selected_model="gpt-4o",
+    config = Config(default_llm_model="gpt-4o",
                     openai_api_key=openai_api_key,
                     claude_api_key=claude_api_key,
                     embedding_model=embedding_model)
@@ -1071,6 +1074,7 @@ async def example_conversation():
         "tenant_id": tenant_id,
         "project_id": project_id,
         "component": COMPONENT,
+        "app_bundle_id": BUNDLE_ID,
         "metadata": {"description": "Chat App Workflow Example", "tags": ["demo", "chat", "workflow"]}
     }
 
@@ -1082,8 +1086,7 @@ async def example_conversation():
     claude_api_key = os.environ.get("ANTHROPIC_API_KEY")
     embedding_model = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small")
 
-    config = Config(selected_model="gpt-4o",
-                    openai_api_key=openai_api_key,
+    config = Config(openai_api_key=openai_api_key,
                     claude_api_key=claude_api_key,
                     embedding_model=embedding_model)
 

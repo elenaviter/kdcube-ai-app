@@ -66,32 +66,6 @@ def workdir(tenant: str, project: str):
     logger.info(f"Project workdir: {w}")
     return w
 
-def main_model() -> ModelRecord:
-    provider = AIProviderName.open_ai
-    provider = AIProvider(provider=provider, apiToken=get_service_key_fn(provider))
-    model_config = MODEL_CONFIGS.get("gpt-4o", {})
-    model_name = model_config.get("model_name")
-
-    return ModelRecord(
-        modelType="base",
-        status="active",
-        provider=provider,
-        systemName=model_name
-    )
-
-def embedding_model() -> ModelRecord:
-    provider = AIProviderName.open_ai
-    provider = AIProvider(provider=provider, apiToken=get_service_key_fn(provider))
-    model_config = EMBEDDERS.get("openai-text-embedding-3-small")
-    model_name = model_config.get("model_name")
-
-    return ModelRecord(
-        modelType="base",
-        status="active",
-        provider=provider,
-        systemName=model_name,
-    )
-
 # Orchestrator setup (your existing logic)
 ORCHESTRATOR_TYPE = os.environ.get("ORCHESTRATOR_TYPE", "dramatiq")
 DEFAULT_ORCHESTRATOR_IDENTITY = f"kdcube_orchestrator_{ORCHESTRATOR_TYPE}"

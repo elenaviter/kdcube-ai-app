@@ -396,19 +396,18 @@ class EnhancedChatRequestProcessor:
             step="workflow_start",
             status="started",
             title="Workflow Start",
-            data={"model": (payload.config.values or {}).get("selected_model"), "task_id": task_id},
+            data={ "default_model": (payload.config.values or {}).get("selected_model"), "task_id": task_id},
         )
 
         # 6) Execute with lock renew + timeout
         try:
             async with bind_accounting(envelope, storage_backend, enabled=True):
-                async with with_accounting("chat.orchestrator", metadata={
+                async with with_accounting("chat.orchestrator",
+                                           bundle_id=payload.routing.bundle_id,
+                                           metadata={
                     "task_id": task_id,
-                    "session_id": session_id,
                     "conversation_id": payload.routing.conversation_id,
-                    "tenant_id": payload.actor.tenant_id,
-                    "project_id": payload.actor.project_id,
-                    "user_id": payload.user.user_id,
+                    "turn_id": payload.routing.turn_id,
                 }):
                     async with self._lock_renewer(lock_key):
                         result = await asyncio.wait_for(

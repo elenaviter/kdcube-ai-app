@@ -334,15 +334,22 @@ class SocketIOChatHandler:
                 self._comm.emit_error(svc, conv, error="System check failed", target_sid=sid, session_id=session.session_id)
                 logger.error("gateway check failed: %s", e)
                 return
-
+            tenant_id = data.get("tenant_id") or get_tenant()
             # accounting envelope
             request_id = str(uuid.uuid4())
+
+            agentic_bundle_id = data.get("bundle_id")
+            from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+            spec_resolved = resolve_bundle(agentic_bundle_id, override=None)
+            agentic_bundle_id = spec_resolved.id if spec_resolved else None
+
             acct_env = build_envelope_from_session(
                 session=session,
-                tenant_id=None,
+                tenant_id=tenant_id,
                 project_id=data.get("project"),
                 request_id=request_id,
                 component="chat.socket",
+                app_bundle_id=agentic_bundle_id,
                 metadata={"socket_id": sid, "entrypoint": "/socket.io/chat"},
             ).to_dict()
 
@@ -351,6 +358,13 @@ class SocketIOChatHandler:
             turn_id = data.get("turn_id") or f"turn_{uuid.uuid4().hex[:8]}"
             conversation_id = data.get("conversation_id") or session.session_id
 
+
+            if not spec_resolved:
+                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=data.get("project"))
+                conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
+                self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
+                return
+
             payload = ChatTaskPayload(
                 meta=ChatTaskMeta(task_id=task_id, created_at=time.time(), instance_id=self.instance_id),
                 routing=ChatTaskRouting(
@@ -358,6 +372,7 @@ class SocketIOChatHandler:
                     conversation_id=conversation_id,
                     turn_id=turn_id,
                     socket_id=sid,
+                    bundle_id=spec_resolved.id,
                 ),
                 actor=ChatTaskActor(
                     tenant_id=data.get("tenant_id") or get_tenant(),

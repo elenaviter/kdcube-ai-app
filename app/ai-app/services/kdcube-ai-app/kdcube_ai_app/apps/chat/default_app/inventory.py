@@ -31,9 +31,6 @@ class ThematicBotModelService(ModelServiceBase):
         self.logger.log_step(
             "model_service_initialized",
             {
-                "selected_model": config.selected_model,
-                "provider": config.provider,
-                "has_classifier": config.has_classifier,
                 "role_models": dict(config.role_models or {}),
             },
         )

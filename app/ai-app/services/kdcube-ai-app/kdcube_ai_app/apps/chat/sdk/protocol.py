@@ -145,6 +145,7 @@ class ChatTaskRequest(_ProtoBase):
 
 
 class ChatTaskRouting(_ProtoBase):
+    bundle_id: str
     session_id: str
     conversation_id: Optional[str] = None
     turn_id: str
