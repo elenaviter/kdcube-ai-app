@@ -266,13 +266,13 @@ class EnhancedChatRequestProcessor:
                         {bid: be.model_dump() for bid, be in reg.bundles.items()},
                         reg.default_bundle_id
                     )
-                    serialize_to_env(get_all(), get_default_id())
+                    new_env = serialize_to_env(get_all(), get_default_id())
                     try:
                         clear_agentic_caches()
                     except Exception:
                         pass
 
-                    logger.info(f"Applied bundles COMMAND (op={op}); now have {len(get_all())} bundles")
+                    logger.info(f"Applied bundles COMMAND (op={op}); now have {len(get_all())} bundles. New env = {new_env}")
                     continue
 
                 logger.debug("Ignoring unrelated pub/sub message on bundles channel")

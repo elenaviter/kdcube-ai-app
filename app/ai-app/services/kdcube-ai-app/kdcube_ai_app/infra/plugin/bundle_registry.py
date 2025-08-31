@@ -73,7 +73,7 @@ def load_from_env() -> None:
         else:
             _DEFAULT_ID = next(iter(_REGISTRY.keys()), None)
 
-def serialize_to_env(registry: Dict[str, Dict[str, Any]], default_id: Optional[str]) -> None:
+def serialize_to_env(registry: Dict[str, Dict[str, Any]], default_id: Optional[str]) -> str:
     """Reflect current in-memory mapping back into env (best-effort)."""
     with _REG_LOCK:
         payload = {
@@ -81,6 +81,7 @@ def serialize_to_env(registry: Dict[str, Dict[str, Any]], default_id: Optional[s
             "bundles": registry
         }
         os.environ[ENV_JSON] = json.dumps(payload, ensure_ascii=False)
+        return os.environ[ENV_JSON]
 
 
 def get_all() -> Dict[str, Dict[str, Any]]:

@@ -4,7 +4,7 @@
 # chat/sdk/util.py
 import time, orjson, hashlib, re, json, unicodedata
 from typing import Any, List, Dict, Optional, Union
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel
 
@@ -299,3 +299,7 @@ def _deep_merge(a, b):
 
     # fallback: overwrite
     return b
+
+def _today_str() -> str:
+    # UTC; if you have user’s tz, inject it in prompts separately
+    return datetime.now(timezone.utc).date().isoformat()
