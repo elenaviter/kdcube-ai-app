@@ -1,4 +1,5 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+import json
 
 from kdcube_ai_app.apps.chat.sdk.context.policy.policy import PreferenceExtractionOut
 from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase

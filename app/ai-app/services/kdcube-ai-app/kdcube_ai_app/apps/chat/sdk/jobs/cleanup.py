@@ -13,8 +13,7 @@ from kdcube_ai_app.apps.chat.sdk.util import _make_project_schema
 
 load_dotenv(find_dotenv())
 
-async def run_cleanup():
-
+async def run_cleanup(purge_anonymous_all: bool = False):
     g = GraphCtx()
     v = ConvIndex()
     await v.init()
@@ -28,6 +27,9 @@ async def run_cleanup():
         async with v._pool.acquire() as con:
             d = await con.execute(f"DELETE FROM {schema}.conv_messages WHERE ts + (ttl_days || ' days')::interval < now()")
             print("[vector] cleanup:", d)
+        if purge_anonymous_all:
+            n = await v.purge_user_type(user_type="anonymous", older_than_days=None)
+            print("[vector] purge anonymous (all):", n)
     finally:
         await v.close()
         await g.close()

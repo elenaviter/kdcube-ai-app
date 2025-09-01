@@ -1,11 +1,33 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# chat/sdk/context/policy/policy.py
+from __future__ import annotations
 from typing import Dict, Any, List, Tuple, TypedDict, Optional
-from dataclasses import dataclass
 import time
 import json
 from pydantic import BaseModel, Field
+
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+@dataclass
+class KeyPolicy:
+    # promotion thresholds
+    min_support: int = 2              # distinct conversations needed
+    avg_decayed: float = 0.7          # average decayed confidence threshold
+    distinct_days: int = 2            # minimum unique days among supports
+    conflict_horizon_days: int = 45   # recent opposing evidence blocks promotion
+    ttl_days_user: int = 365          # TTL when promoted to user scope
+    half_life_days: float = 45.0      # decay half-life for evidence
+
+    # data semantics
+    numeric_tolerance: float = 0.05   # 5% relative tolerance for equivalence
+    canonicalizer: Optional[Callable[[Any], Any]] = None  # optional value normalizer
+
+    # privacy/visibility (controls what goes into LLM prompts)
+    send_to_llm: bool = True
+
 
 class PrefAssertion(BaseModel):
     key: str
@@ -171,3 +193,6 @@ def evaluate_policy(raw: Dict[str, Any], *, half_life_days: float = 30.0) -> Pol
         dropped=dropped,
         reasons=reasons,
     )
+
+def _filter_llm_prefs(d: dict, policy_for_key) -> dict:
+    return {k:v for k,v in (d or {}).items() if policy_for_key(k).send_to_llm}

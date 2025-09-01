@@ -25,9 +25,6 @@ def json_dumps(data: Any) -> str:
 def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
-# def slug(s: str) -> str:
-#     return re.sub(r"[^a-z0-9\-]+", "-", s.lower()).strip("-")
-
 def slug(s: str) -> str:
     # fold accents → ascii, then normalize
     s = unicodedata.normalize("NFKD", s)
@@ -128,6 +125,18 @@ def _truncate(s: str, n: int = 500) -> str:
         return ""
     return s if len(s) <= n else s[:n] + "…"
 
+def _ms_to_iso(ms: Optional[int]) -> Optional[str]:
+    if not ms and ms != 0:
+        return None
+    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).isoformat()
+
+def _format_elapsed(ms: Optional[int]) -> Optional[str]:
+    if ms is None:
+        return None
+    if ms < 1000:
+        return f"{ms} ms"
+    return f"{ms/1000.0:.2f} s"
+
 def ensure_event_markdown(evt: Dict[str, Any]) -> Dict[str, Any]:
     """
     Ensure evt['markdown'] exists based purely on fields present in the event.
@@ -140,6 +149,7 @@ def ensure_event_markdown(evt: Dict[str, Any]) -> Dict[str, Any]:
       - status: str
       - message: str
       - data: dict | list | str | number
+      - timing: dict with {started_ms, ended_ms, elapsed_ms}  <-- NEW (optional)
     """
     if evt.get("markdown"):
         return evt
@@ -151,15 +161,45 @@ def ensure_event_markdown(evt: Dict[str, Any]) -> Dict[str, Any]:
     note   = evt.get("message")
     data   = evt.get("data")
 
+    # timing can live either at evt['timing'] or as scalars inside data
+    timing = evt.get("timing") or {}
+    if not timing and isinstance(data, dict):
+        # tolerate either *_ms or *_at fields
+        if any(k in data for k in ("elapsed_ms", "started_ms", "ended_ms")):
+            timing = {
+                "started_ms": data.get("started_ms"),
+                "ended_ms":   data.get("ended_ms"),
+                "elapsed_ms": data.get("elapsed_ms"),
+            }
+
     lines: List[str] = [f"**Message:** {title}"]
     if agent:  lines.append(f"**Agent:** `{agent}`")
     if step:   lines.append(f"**Step:** `{step}`")
     if status: lines.append(f"**Status:** `{status}`")
-    if note:   lines.append(f"**Note:** {_truncate(str(note), 1200)}")
+
+    # Render timing if any
+    if isinstance(timing, dict) and any(timing.get(k) is not None for k in ("elapsed_ms", "started_ms", "ended_ms")):
+        smsi = _ms_to_iso(timing.get("started_ms"))
+        emsi = _ms_to_iso(timing.get("ended_ms"))
+        elap = _format_elapsed(timing.get("elapsed_ms"))
+        tparts = []
+        if elap: tparts.append(f"Elapsed: **{elap}**")
+        if smsi: tparts.append(f"Started: {smsi}")
+        if emsi: tparts.append(f"Ended: {emsi}")
+        if tparts:
+            lines.append("**Timing:** " + " • ".join(tparts))
+
+    if note:
+        lines.append(f"**Note:** {_truncate(str(note), 1200)}")
 
     # Render data in a helpful, generic way
     if isinstance(data, dict):
         # show frequently useful fields if present
+
+        # topics
+        if isinstance(data.get("topics"), list) and data["topics"]:
+            lines.append("**Topics:** " + ", ".join(map(str, data["topics"][:6])) + ("" if len(data["topics"]) <= 6 else " …"))
+
         # queries
         if isinstance(data.get("queries"), list):
             qs = data["queries"]
@@ -169,6 +209,7 @@ def ensure_event_markdown(evt: Dict[str, Any]) -> Dict[str, Any]:
                 lines.append(f"* {_truncate(str(item), 200)}")
             if len(qs) > 8:
                 lines.append(f"* … +{len(qs) - 8} more")
+
         # items/sources
         if isinstance(data.get("items"), list):
             items = data["items"]
@@ -181,7 +222,8 @@ def ensure_event_markdown(evt: Dict[str, Any]) -> Dict[str, Any]:
                 lines.append(f"* {_truncate(label, 160)}")
             if len(items) > 5:
                 lines.append(f"* … +{len(items) - 5} more")
-        # scalars overview
+
+        # compact scalars (non-nested)
         scalars = {k: v for k, v in data.items() if not isinstance(v, (dict, list))}
         if scalars:
             lines.append("**Details:**")
@@ -228,6 +270,9 @@ def _to_json_safe(x):
 # Utilities
 # -----------------------------
 
+from kdcube_ai_app.apps.chat.sdk.protocol import ChatHistoryMessage
+from collections.abc import Mapping, MutableSequence, Set as _Set
+
 def normalize_history(items: Optional[Union[List[Dict[str, Any]], List[ChatHistoryMessage]]]) -> List[ChatHistoryMessage]:
     if not items:
         return []
@@ -261,8 +306,6 @@ def _json_schema_of(model: type[BaseModel]) -> str:
     except Exception:
         schema = model.schema()              # Pydantic v1 fallback
     return json.dumps(schema, indent=2, ensure_ascii=False)
-
-from collections.abc import Mapping, MutableSequence, Set as _Set
 
 def _deep_merge(a, b):
     """

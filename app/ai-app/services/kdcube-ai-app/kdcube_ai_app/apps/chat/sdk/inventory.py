@@ -111,6 +111,9 @@ class AgentLogger:
         self.execution_logs = []
         return summary
 
+    def log(self, message: str, level: str = "INFO"):
+        getattr(self.logger, level.lower())(message)
+
 # =========================
 # Config (+ role mapping)
 # =========================
@@ -1076,6 +1079,7 @@ class BundleState(TypedDict, total=False):
     tenant: str
     project: str
     user: str
+    user_type: Optional[str]
     session_id: str
     conversation_id: str
     text: Optional[str]

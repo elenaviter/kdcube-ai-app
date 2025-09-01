@@ -131,6 +131,7 @@ async def lifespan(app: FastAPI):
             "tenant": task.actor.tenant_id,
             "project": task.actor.project_id,
             "user": task.user.user_id,
+            "user_type": task.user.user_type,
             "session_id": task.routing.session_id,
             "conversation_id": (task.routing.conversation_id or task.routing.session_id),
             "text": task.request.message or (task.request.payload or {}).get("text") or "",
@@ -157,7 +158,7 @@ async def lifespan(app: FastAPI):
             return result or {}
         except Exception as e:
             # Let processor send the error envelope; we just surface the message up.
-            return {"error_message": str(e), "final_answer": "An error occurred."}
+            return { "error_message": str(e), "final_answer": "An error occurred." }
 
 
     # ================================
