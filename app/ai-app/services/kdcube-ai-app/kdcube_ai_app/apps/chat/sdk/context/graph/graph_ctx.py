@@ -147,17 +147,13 @@ class GraphCtx:
         return {k: node[k] for k in node.keys()}
 
     # ---------- assertions & exceptions ----------
-
     async def add_assertion(
-        self, *,
-        tenant: str, project: str, user: str, conversation: str,
-        key: str, value: Any, desired: bool, scope: Scope,
-        confidence: float = 0.9, ttl_days: int = 365, reason: str = "agent",
-        turn_id: Optional[str] = None, user_type: str = "anonymous"
+            self, *,
+            tenant: str, project: str, user: str, conversation: str,
+            key: str, value: Any, desired: bool, scope: Scope,
+            confidence: float = 0.9, ttl_days: int = 365, reason: str = "agent",
+            turn_id: Optional[str] = None, user_type: str = "anonymous"
     ) -> str:
-        """
-        Create a *new* assertion for this turn and link it to both User and Conversation.
-        """
         uk = f"{tenant}:{project}:{user}"
         ck = f"{tenant}:{project}:{conversation}"
         now = _now_sec()
@@ -165,35 +161,63 @@ class GraphCtx:
         v_prim, v_json, v_type, v_hash = _pack_for_neo4j_value(value)
 
         async with self._driver.session() as s:
-            await s.run(
+            rec = await (await s.run(
                 """
                 MERGE (u:User {key:$uk})
                   ON CREATE SET u.created_at=$now, u.user_type=$user_type
                   ON MATCH  SET u.user_type = coalesce(u.user_type, $user_type)
                 MERGE (c:Conversation {key:$ck})
-                CREATE (a:Assertion {
-                  id:$aid, tenant:$tenant, project:$project, user:$user, conversation:$conversation,
-                  key:$key, value:$value_primitive, value_json:$value_json, value_type:$value_type, value_hash:$value_hash,
-                  desired:$desired, scope:$scope,
-                  confidence:$confidence, created_at:$now, ttl_days:$ttl_days, reason:$reason, turn_id:$turn_id
+    
+                // Canonical assertion per semantic identity
+                MERGE (a:Assertion {
+                  tenant:$tenant, project:$project, user:$user,
+                  key:$key, scope:$scope, desired:$desired, value_hash:$value_hash
                 })
+                ON CREATE SET
+                  a.id=$aid,
+                  a.value=$value_primitive, a.value_json=$value_json, a.value_type=$value_type,
+                  a.confidence=$confidence, a.created_at=$now, a.last_seen_at=$now,
+                  a.ttl_days=$ttl_days, a.reason=$reason, a.turn_id=$turn_id,
+                  a.conversation=$conversation,
+                  a.hits = 1
+                ON MATCH SET
+                  a.value        = $value_primitive,
+                  a.value_json   = $value_json,
+                  a.value_type   = $value_type,
+                  a.confidence   = 0.6 * coalesce(a.confidence, 0.6) + 0.4 * $confidence,
+                  a.ttl_days     = CASE
+                                     WHEN a.ttl_days IS NULL OR a.ttl_days < toInteger($ttl_days)
+                                       THEN toInteger($ttl_days)
+                                     ELSE a.ttl_days
+                                   END,
+                  a.reason       = $reason,
+                  a.turn_id      = coalesce($turn_id, a.turn_id),
+                  a.last_seen_at = $now,
+                  a.hits         = coalesce(a.hits, 0) + 1,
+                  a.conversation = coalesce(a.conversation, $conversation)
+    
                 MERGE (u)-[:HAS_ASSERTION]->(a)
-                MERGE (c)-[:INCLUDES]->(a)
+    
+                // One edge per conversation with counters
+                MERGE (c)-[r:INCLUDES]->(a)
+                ON CREATE SET r.hits = 1, r.first_seen = $now, r.last_seen = $now
+                ON MATCH  SET r.hits = coalesce(r.hits,0) + 1, r.last_seen = $now
+    
+                RETURN a.id AS id
                 """,
                 uk=uk, ck=ck, aid=aid, tenant=tenant, project=project, user=user, conversation=conversation,
-                key=key,
-                value_primitive=v_prim, value_json=v_json, value_type=v_type, value_hash=v_hash,
-                desired=bool(desired), scope=scope,
-                confidence=float(confidence), now=now, ttl_days=int(ttl_days), reason=reason,
-                turn_id=turn_id, user_type=user_type
-            )
-        return aid
+                key=key, value_primitive=v_prim, value_json=v_json, value_type=v_type, value_hash=v_hash,
+                desired=bool(desired), scope=scope, user_type=user_type,
+                confidence=float(confidence), now=now, ttl_days=int(ttl_days), reason=reason, turn_id=turn_id
+            )).single()
+        return rec["id"] or aid
+
 
     async def add_exception(
-        self, *,
-        tenant: str, project: str, user: str, conversation: str,
-        rule_key: str, scope: Scope, value: Any, reason: str = "agent",
-        turn_id: Optional[str] = None, user_type: str = "anonymous"
+            self, *,
+            tenant: str, project: str, user: str, conversation: str,
+            rule_key: str, scope: Scope, value: Any, reason: str = "agent",
+            turn_id: Optional[str] = None, user_type: str = "anonymous"
     ) -> str:
         uk = f"{tenant}:{project}:{user}"
         ck = f"{tenant}:{project}:{conversation}"
@@ -202,36 +226,47 @@ class GraphCtx:
         v_prim, v_json, v_type, v_hash = _pack_for_neo4j_value(value)
 
         async with self._driver.session() as s:
-            await s.run(
+            rec = await (await s.run(
                 """
                 MERGE (u:User {key:$uk})
                   ON CREATE SET u.created_at=$now, u.user_type=$user_type
                   ON MATCH  SET u.user_type = coalesce(u.user_type, $user_type)
                 MERGE (c:Conversation {key:$ck})
-                CREATE (e:Exception {
-                  id:$eid, tenant:$tenant, project:$project, user:$user, conversation:$conversation,
-                  rule_key:$rule_key, value:$value_primitive, value_json:$value_json, value_type:$value_type, value_hash:$value_hash,
-                  scope:$scope, created_at:$now, reason:$reason, turn_id:$turn_id
+    
+                MERGE (e:Exception {
+                  tenant:$tenant, project:$project, user:$user,
+                  rule_key:$rule_key, scope:$scope, value_hash:$value_hash
                 })
+                ON CREATE SET
+                  e.id=$eid,
+                  e.value=$value_primitive, e.value_json=$value_json, e.value_type=$value_type,
+                  e.created_at=$now, e.last_seen_at=$now, e.reason=$reason, e.turn_id=$turn_id,
+                  e.ttl_days=365, e.hits=1
+                ON MATCH SET
+                  e.value=$value_primitive, e.value_json=$value_json, e.value_type=$value_type,
+                  e.last_seen_at=$now, e.reason=$reason, e.turn_id=coalesce($turn_id, e.turn_id),
+                  e.hits=coalesce(e.hits,0)+1
+    
                 MERGE (u)-[:HAS_EXCEPTION]->(e)
-                MERGE (c)-[:INCLUDES]->(e)
+                MERGE (c)-[r:INCLUDES]->(e)
+                ON CREATE SET r.hits = 1, r.first_seen = $now, r.last_seen = $now
+                ON MATCH  SET r.hits = coalesce(r.hits,0) + 1, r.last_seen = $now
+    
+                RETURN e.id AS id
                 """,
-                uk=uk, ck=ck, eid=eid, tenant=tenant, project=project, user=user, conversation=conversation,
-                rule_key=rule_key,
+                uk=uk, ck=ck, eid=eid, tenant=tenant, project=project, user=user,
+                rule_key=rule_key, scope=scope,
                 value_primitive=v_prim, value_json=v_json, value_type=v_type, value_hash=v_hash,
-                scope=scope, now=now, reason=reason, turn_id=turn_id, user_type=user_type
-            )
-        return eid
+                now=now, reason=reason, turn_id=turn_id, user_type=user_type
+            )).single()
+        return rec["id"] or eid
 
     async def upsert_assertion(
-        self, *,
-        tenant: str, project: str, user: str, conversation: str | None,
-        key: str, value: Any, desired: bool, scope: Scope,
-        confidence: float, ttl_days: int, reason: str, turn_id: str | None = None, bump_time: bool = True
+            self, *,
+            tenant: str, project: str, user: str, conversation: str | None,
+            key: str, value: Any, desired: bool, scope: Scope,
+            confidence: float, ttl_days: int, reason: str, turn_id: str | None = None, bump_time: bool = True
     ) -> str:
-        """
-        Idempotent promotion/update (usually scope='user'). Keeps a single record per semantic identity.
-        """
         uk = f"{tenant}:{project}:{user}"
         ck = f"{tenant}:{project}:{conversation}" if conversation else None
         now = _now_sec()
@@ -250,19 +285,30 @@ class GraphCtx:
                 })
                 ON CREATE SET
                   a.id=$aid, a.value=$value_primitive, a.value_json=$value_json, a.value_type=$value_type,
-                  a.confidence=$confidence, a.created_at=$now, a.ttl_days=$ttl_days, a.reason=$reason,
-                  a.turn_id=$turn_id, a.conversation=coalesce($ck,'(promoted)')
+                  a.confidence=$confidence, a.created_at=$now, a.last_seen_at=$now,
+                  a.ttl_days=$ttl_days, a.reason=$reason, a.turn_id=$turn_id,
+                  a.conversation=coalesce($ck,'(promoted)'), a.hits=1
                 ON MATCH SET
-                  a.value=$value_primitive, a.value_json=$value_json, a.value_type=$value_type,
-                  a.confidence = 0.6*a.confidence + 0.4*$confidence,
-                  a.ttl_days = GREATEST(a.ttl_days, $ttl_days),
-                  a.reason = $reason,
-                  a.turn_id = coalesce($turn_id, a.turn_id),
+                  a.value        = $value_primitive,
+                  a.value_json   = $value_json,
+                  a.value_type   = $value_type,
+                  a.confidence   = 0.6 * coalesce(a.confidence, 0.6) + 0.4 * $confidence,
+                  a.ttl_days     = CASE
+                                     WHEN a.ttl_days IS NULL OR a.ttl_days < toInteger($ttl_days)
+                                       THEN toInteger($ttl_days)
+                                     ELSE a.ttl_days
+                                   END,
+                  a.reason       = $reason,
+                  a.turn_id      = coalesce($turn_id, a.turn_id),
                   a.conversation = coalesce(a.conversation, coalesce($ck,'(promoted)')),
-                  a.created_at = CASE WHEN $bump_time THEN $now ELSE a.created_at END
+                  a.last_seen_at = CASE WHEN $bump_time THEN $now ELSE coalesce(a.last_seen_at, a.created_at) END,
+                  a.hits         = coalesce(a.hits, 0) + 1
+    
                 MERGE (u)-[:HAS_ASSERTION]->(a)
                 FOREACH(_ IN CASE WHEN $ck IS NULL THEN [] ELSE [1] END |
-                    MERGE (conv)-[:INCLUDES]->(a)
+                    MERGE (conv)-[r:INCLUDES]->(a)
+                    ON CREATE SET r.hits=1, r.first_seen=$now, r.last_seen=$now
+                    ON MATCH  SET r.hits=coalesce(r.hits,0)+1, r.last_seen=$now
                 )
                 RETURN a.id AS id
                 """,
@@ -273,28 +319,25 @@ class GraphCtx:
             )).single()
             return rec["id"] or aid
 
+
     # ---------- reads & hygiene ----------
 
     async def snapshot(self, *, tenant: str, project: str, user: str, conversation: str) -> Dict[str, Any]:
-        """
-        Returns {assertions, exceptions} = (user/global, TTL-valid) ∪ (this conversation, TTL-valid)
-        """
         uk = f"{tenant}:{project}:{user}"
         ck = f"{tenant}:{project}:{conversation}"
         now = _now_sec()
 
         async with self._driver.session() as s:
-            # user/global
             rec = await (await s.run(
                 """
                 MATCH (u:User {key:$uk})-[:HAS_ASSERTION]->(a:Assertion)
                 WHERE a.tenant=$tenant AND a.project=$project
                   AND a.scope IN ['user','global']
-                  AND (a.created_at + (a.ttl_days * 86400)) >= $now
+                  AND (coalesce(a.last_seen_at,a.created_at) + (a.ttl_days * 86400)) >= $now
                 OPTIONAL MATCH (u)-[:HAS_EXCEPTION]->(e:Exception)
                 WHERE e.tenant=$tenant AND e.project=$project
                   AND e.scope IN ['user','global']
-                  AND (e.created_at + (coalesce(e.ttl_days,365) * 86400)) >= $now
+                  AND (coalesce(e.last_seen_at,e.created_at) + (coalesce(e.ttl_days,365) * 86400)) >= $now
                 RETURN collect(a) AS asrts, collect(e) AS excs
                 """,
                 uk=uk, tenant=tenant, project=project, now=now
@@ -302,13 +345,12 @@ class GraphCtx:
             u_assertions = [dict(x) for x in (rec["asrts"] or [])]
             u_exceptions = [dict(x) for x in (rec["excs"] or [])]
 
-            # conversation
             rec2 = await (await s.run(
                 """
                 MATCH (c:Conversation {key:$ck})-[:INCLUDES]->(a:Assertion)
-                WHERE (a.created_at + (a.ttl_days * 86400)) >= $now
+                WHERE (coalesce(a.last_seen_at,a.created_at) + (a.ttl_days * 86400)) >= $now
                 OPTIONAL MATCH (c)-[:INCLUDES]->(e:Exception)
-                WHERE (e.created_at + (coalesce(e.ttl_days,365) * 86400)) >= $now
+                WHERE (coalesce(e.last_seen_at,e.created_at) + (coalesce(e.ttl_days,365) * 86400)) >= $now
                 RETURN collect(a) AS casrts, collect(e) AS cexcs
                 """,
                 ck=ck, now=now
@@ -320,16 +362,35 @@ class GraphCtx:
             seen, out = set(), []
             for n in items:
                 nid = n.get("id")
-                if nid in seen:
-                    continue
-                seen.add(nid)
-                out.append(n)
+                if nid in seen: continue
+                seen.add(nid); out.append(n)
             return out
 
         return {
             "assertions": _dedup(u_assertions + c_assertions),
             "exceptions": _dedup(u_exceptions + c_exceptions),
         }
+
+    async def load_user_assertions_with_support(self, *, tenant: str, project: str, user: str) -> List[dict]:
+        uk = f"{tenant}:{project}:{user}"
+        async with self._driver.session() as s:
+            rows = await (await s.run(
+                """
+                MATCH (u:User {key:$uk})-[:HAS_ASSERTION]->(a:Assertion)
+                WHERE a.tenant=$tenant AND a.project=$project
+                OPTIONAL MATCH (c:Conversation)-[r:INCLUDES]->(a)
+                WITH a, collect({conv: c.key, hits: r.hits, first_seen: r.first_seen, last_seen: r.last_seen}) AS convs
+                RETURN a, convs
+                ORDER BY a.created_at DESC
+                """,
+                uk=uk, tenant=tenant, project=project
+            )).values()
+        out = []
+        for a_node, convs in rows or []:
+            a = dict(a_node)
+            a["_conversations"] = [d for d in (convs or []) if d.get("conv")]
+            out.append(a)
+        return out
 
     async def load_user_assertions(self, *, tenant: str, project: str, user: str) -> List[dict]:
         uk = f"{tenant}:{project}:{user}"

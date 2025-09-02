@@ -37,41 +37,6 @@ def _unpack_value(a: Dict[str, Any]) -> Any:
             v = a["value_json"]
     return v
 
-async def upsert_user_assertion(
-    graph: GraphCtx, *, tenant: str, project: str, user: str,
-    key: str, value: Any, desired: bool, confidence: float,
-    ttl_days: int, reason: str
-):
-    v = value
-    v_prim = v if isinstance(v, (str, int, float, bool, list)) else None
-    v_json = None if v_prim is not None else json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    import hashlib
-    async with graph._driver.session() as s:
-        await s.run(
-            """MATCH (u:User {key:$uk})-[:HAS_ASSERTION]->(old:Assertion)
-               WHERE old.tenant=$tenant AND old.project=$project AND old.scope='user' AND old.key=$key
-               DETACH DELETE old""",
-            uk=f"{tenant}:{project}:{user}", tenant=tenant, project=project, key=key
-        )
-        await s.run(
-            """MERGE (u:User {key:$uk})
-               CREATE (a:Assertion {
-                 id: randomUUID(), tenant:$tenant, project:$project, user:$user, conversation:$conv,
-                 key:$key, value:$value_primitive, value_json:$value_json, value_type:$value_type,
-                 value_hash:$value_hash, desired:$desired, scope:'user', confidence:$confidence,
-                 created_at:$now, ttl_days:$ttl_days, reason:$reason
-               })
-               MERGE (u)-[:HAS_ASSERTION]->(a)""",
-            uk=f"{tenant}:{project}:{user}", tenant=tenant, project=project, user=user,
-            conv=f"{tenant}:{project}:<user>", key=key,
-            value_primitive=v_prim,
-            value_json=v_json,
-            value_type=("primitive" if v_prim is not None else "object"),
-            value_hash=hashlib.sha1((v_json if v_prim is None else json.dumps(v_prim, ensure_ascii=False, sort_keys=True, separators=(",", ":"))).encode("utf-8")).hexdigest(),
-            desired=bool(desired), confidence=float(confidence),
-            now=int(time.time()), ttl_days=int(ttl_days), reason=reason
-        )
-
 async def promote_user_preferences(
         graph: GraphCtx,
         *,
@@ -81,7 +46,9 @@ async def promote_user_preferences(
         policy_for_key: Callable[[str], KeyPolicy],
         reason_weights: Dict[str, float] | None = None
 ) -> Dict[str, Any]:
-    items = await graph.load_user_assertions(tenant=tenant, project=project, user=user)
+    items = await graph.load_user_assertions_with_support(
+        tenant=tenant, project=project, user=user
+    )
     if not items:
         return {"promoted": [], "skipped": [], "blocked": []}
 
@@ -102,10 +69,15 @@ async def promote_user_preferences(
                 challenged_at_by_key[key] = max(challenged_at_by_key.get(key, 0), challenged_at)
 
     for key, arr in seen_by_key.items():
-        arr_sorted = sorted(arr, key=lambda r: int(r.get("created_at") or 0), reverse=True)
-        pos_ts = next((int(r.get("created_at") or 0) for r in arr_sorted if r.get("desired") is True), 0)
-        neg_ts = next((int(r.get("created_at") or 0) for r in arr_sorted if r.get("desired") is False), 0)
-        # if most recent item is opposite of candidate, we block within horizon
+        arr_sorted = sorted(
+            arr,
+            key=lambda r: int(r.get("last_seen_at") or r.get("created_at") or 0),
+            reverse=True
+        )
+        pos_ts = next((int(r.get("last_seen_at") or r.get("created_at") or 0)
+                       for r in arr_sorted if r.get("desired") is True), 0)
+        neg_ts = next((int(r.get("last_seen_at") or r.get("created_at") or 0)
+                       for r in arr_sorted if r.get("desired") is False), 0)
         latest_opposing[key] = max(pos_ts, neg_ts)
 
     # buckets per (key, desired, semantic value)
@@ -116,7 +88,8 @@ async def promote_user_preferences(
     for a in items:
         key = a.get("key")
         desired = bool(a.get("desired"))
-        created_at = int(a.get("created_at") or 0)
+        # use freshness
+        seen_ts = int(a.get("last_seen_at") or a.get("created_at") or 0)
         conf = float(a.get("confidence") or 0.6)
         reason = (a.get("reason") or "").lower()
         if not key:
@@ -138,21 +111,37 @@ async def promote_user_preferences(
             index.setdefault(key, []).append((bid, val))
             buckets[(key, desired, bid)] = {
                 "key": key, "desired": desired, "value": val,
-                "support": 0, "conv_ids": set(), "days": set(),
-                "score_sum": 0.0, "last_seen": 0, "reasons": set()
+                "support": 0,
+                "conv_ids": set(),     # filled from edges
+                "days": set(),         # distinct active days from edges
+                "score_sum": 0.0,
+                "last_seen": 0,
+                "reasons": set(),
+                "edge_hits": 0,
             }
 
         pol = policy_for_key(key)
-        decay = _decay_score(conf, created_at, pol.half_life_days)
-        w = REASON_W.get(reason, 0.75)
+        decay = _decay_score(conf, seen_ts, pol.half_life_days)
+        w = (reason_weights or REASON_WEIGHTS).get(reason, 0.75)
+
+        # per-conversation edges from GraphCtx loader
+        conv_edges = a.get("_conversations") or []
+        # distinct conversations & days that actually touched this assertion
+        conv_ids = {e.get("conv") for e in conv_edges if e.get("conv")}
+        day_bins = {
+            int((e.get("last_seen") or e.get("first_seen") or seen_ts) // 86400)
+            for e in conv_edges
+        }
+        total_edge_hits = sum(int(e.get("hits") or 0) for e in conv_edges)
 
         rec = buckets[(key, desired, bid)]
         rec["support"] += 1
-        rec["conv_ids"].add(a.get("conversation"))
-        rec["days"].add(int(created_at // 86400))
+        rec["conv_ids"].update(conv_ids)
+        rec["days"].update(day_bins)
         rec["score_sum"] += w * decay
-        rec["last_seen"] = max(rec["last_seen"], created_at)
+        rec["last_seen"] = max(rec["last_seen"], seen_ts)
         rec["reasons"].add(reason or "unknown")
+        rec["edge_hits"] += total_edge_hits
 
     promoted, skipped, blocked = [], [], []
 
@@ -166,24 +155,23 @@ async def promote_user_preferences(
         challenged_recent = challenged_at_by_key.get(key, 0) >= (now - pol.conflict_horizon_days * 86400)
 
         if recent_conflict or challenged_recent:
-            blocked.append({
-                "key": key,
-                "desired": desired,
-                "reason": ("recent_conflict" if recent_conflict else "challenged_recent")
-            })
+            blocked.append({"key": key, "desired": desired,
+                            "reason": ("recent_conflict" if recent_conflict else "challenged_recent")})
             continue
 
         if distinct_convs >= pol.min_support and distinct_days >= pol.distinct_days and avg_decayed >= pol.avg_decayed:
-            await upsert_user_assertion(
-                graph,
+            await graph.upsert_assertion(
                 tenant=tenant, project=project, user=user,
-                key=key, value=rec["value"], desired=desired,
+                conversation=None,                  # user-level
+                key=key, value=rec["value"], desired=desired, scope="user",
                 confidence=min(0.99, max(0.6, avg_decayed)),
-                ttl_days=pol.ttl_days_user, reason="promoted"
+                ttl_days=pol.ttl_days_user, reason="promoted",
+                bump_time=True
             )
             promoted.append({
                 "key": key, "desired": desired, "value": rec["value"],
-                "support": rec["support"], "avg_decayed": round(avg_decayed, 3)
+                "support": rec["support"], "distinct_convs": distinct_convs,
+                "distinct_days": distinct_days, "avg_decayed": round(avg_decayed, 3)
             })
         else:
             skipped.append({
@@ -191,6 +179,7 @@ async def promote_user_preferences(
                 "support": rec["support"], "distinct_convs": distinct_convs,
                 "distinct_days": distinct_days, "avg_decayed": round(avg_decayed, 3)
             })
+
     return {"promoted": promoted, "skipped": skipped, "blocked": blocked}
 
 """

@@ -412,7 +412,7 @@ class ServiceHealthChecker:
             status = await self.middleware.get_instance_service_status(service_type, service_name)
 
             if not status:
-                logger.warning(f"No status found for {service_type}:{service_name}")
+                logger.debug(f"No status found for {service_type}:{service_name}")
                 continue
 
             if status.overall_health == ServiceHealth.UNHEALTHY:

@@ -68,9 +68,43 @@ RETURN [x IN collect(e) | {rule_key:x.rule_key, value:x.value, scope:x.scope, cr
 
 ### (D) Wipe DB
 ```cypher
+// 1) delete all nodes/relationships
 MATCH (n) DETACH DELETE n;
-DROP CONSTRAINT user_id IF EXISTS;
+
+// 2) drop your constraints (exact names from your file)
+DROP CONSTRAINT user_key IF EXISTS;
 DROP CONSTRAINT conversation_key IF EXISTS;
 DROP CONSTRAINT assertion_id IF EXISTS;
 DROP CONSTRAINT exception_id IF EXISTS;
+DROP CONSTRAINT assertion_identity IF EXISTS;
+DROP CONSTRAINT exception_identity IF EXISTS;
+
+// 3) drop your indexes (tables + rel-prop indexes)
+DROP INDEX user_user_type IF EXISTS;
+DROP INDEX user_created_at IF EXISTS;
+
+DROP INDEX conversation_user_id IF EXISTS;
+DROP INDEX conversation_last_seen IF EXISTS;
+DROP INDEX conversation_topic_latest IF EXISTS;
+DROP INDEX conversation_meta_updated IF EXISTS;
+
+DROP INDEX assertion_lookup IF EXISTS;
+DROP INDEX assertion_created_at IF EXISTS;
+DROP INDEX assertion_last_seen IF EXISTS;
+DROP INDEX assertion_hits IF EXISTS;
+
+DROP INDEX exception_lookup IF EXISTS;
+DROP INDEX exception_created_at IF EXISTS;
+
+DROP INDEX includes_last_seen IF EXISTS;
+DROP INDEX includes_hits IF EXISTS;
+
+// 4) verify clean
+SHOW CONSTRAINTS;
+SHOW INDEXES;
+```
+
+### cypher-shell Inside the docker
+```shell
+cypher-shell -a bolt://neo4j:7687 -u neo4j -p '<pass>'
 ```

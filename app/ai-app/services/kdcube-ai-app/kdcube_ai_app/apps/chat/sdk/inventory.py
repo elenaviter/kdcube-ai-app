@@ -67,9 +67,10 @@ class AgentLogger:
         self.logger = logging.getLogger(f"agent.{name}")
         self.logger.setLevel(getattr(logging, log_level.upper()))
         if not self.logger.handlers:
-            h = logging.StreamHandler()
-            h.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-            self.logger.addHandler(h)
+            self.logger.addHandler(logging.NullHandler())
+            # h = logging.StreamHandler()
+            # h.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+            # self.logger.addHandler(h)
         self.start_time = None
         self.execution_logs = []
 
@@ -100,12 +101,16 @@ class AgentLogger:
             data["elapsed_time"] = f"{time.time() - self.start_time:.2f}s"
         self.logger.error(f"💥 Error - {json.dumps(data, indent=2)}")
 
-    def finish_operation(self, success: bool = True, result_summary: str | None = None):
+    def finish_operation(self,
+                         success: bool = True,
+                         result_summary: str | None = None,
+                         **kwargs):
         if not self.start_time:
             return
         total = time.time() - self.start_time
         summary = {"success": success, "total_time": f"{total:.2f}s", "result_summary": result_summary,
-                   "total_steps": len(self.execution_logs), "timestamp": datetime.now().isoformat()}
+                   "total_steps": len(self.execution_logs), "timestamp": datetime.now().isoformat(),
+                   **kwargs}
         self.logger.info(f"{'🎉' if success else '💥'} Operation Complete - {json.dumps(summary, indent=2)}")
         self.start_time = None
         self.execution_logs = []
@@ -334,7 +339,8 @@ class ModelRouter:
         self.config = config
         self.logger = AgentLogger("ModelRouter", config.log_level)
         self._cache: Dict[tuple, Any] = {}
-        self._anthropic_client = None  # reuse a single client for all Anthropic roles
+        self._anthropic_client = None
+        self._anthropic_async = None
 
     def _mk_openai(self, model: str, temperature: float) -> ChatOpenAI:
         return make_chat_openai(
@@ -344,6 +350,13 @@ class ModelRouter:
             stream_usage=True
         )
 
+    def _mk_custom(self, model: str, temperature: float):
+        return CustomModelClient(
+            endpoint=self.config.custom_model_endpoint,
+            api_key=self.config.custom_model_api_key,
+            model_name=model,
+            temperature=temperature,
+        )
     def _mk_anthropic(self):
         if self._anthropic_client:
             return self._anthropic_client
@@ -354,13 +367,12 @@ class ModelRouter:
         except ImportError:
             raise RuntimeError("anthropic package not available")
 
-    def _mk_custom(self, model: str, temperature: float):
-        return CustomModelClient(
-            endpoint=self.config.custom_model_endpoint,
-            api_key=self.config.custom_model_api_key,
-            model_name=model,
-            temperature=temperature,
-        )
+    def _mk_anthropic_async(self):
+        if self._anthropic_async:
+            return self._anthropic_async
+        import anthropic
+        self._anthropic_async = anthropic.AsyncAnthropic(api_key=self.config.claude_api_key)
+        return self._anthropic_async
 
     def get_client(self, role: str, temperature: float) -> Optional[Any]:
         # ensure mapping exists even for new roles
@@ -448,7 +460,11 @@ class FormatFixerService:
 
     async def fix_format(self, raw_output: str, expected_format: str, input_data: str, system_prompt: str) -> Dict[str, Any]:
         self.logger.start_operation("format_fixing",
-                                    raw_output_length=len(raw_output), expected_format=expected_format, input_data_length=len(input_data)
+                                    raw_output_length=len(raw_output),
+                                    expected_format=expected_format,
+                                    input_data_length=len(input_data),
+                                    model=self.config.format_fixer_model,
+                                    provider="anthropic"
                                     )
         if not self.claude_client:
             msg = "Claude client not available"
@@ -504,6 +520,7 @@ class ModelServiceBase:
         self.logger = AgentLogger("ModelServiceBase", config.log_level)
         self.router = ModelRouter(config)
         self.format_fixer = FormatFixerService(config)
+        self._anthropic_async = None
 
     # ---------- back-compat clients (lazily resolved) ----------
     @property
@@ -628,7 +645,10 @@ class ModelServiceBase:
                 if not _ok(parsed):
                     raise ValueError("Pydantic validation failed")
                 validated = response_format.model_validate(parsed)
-                self.logger.finish_operation(True, f"Parsed {response_format.__name__}")
+                self.logger.finish_operation(True,
+                                             f"Parsed {response_format.__name__}",
+                                             model=model_name,
+                                             provider=provider_name,)
                 return {
                     "success": True,
                     "data": validated.model_dump(),
@@ -649,7 +669,10 @@ class ModelServiceBase:
                     if fix.get("success"):
                         try:
                             validated = response_format.model_validate(fix["data"])
-                            self.logger.finish_operation(True, "Parsed after FormatFixer")
+                            self.logger.finish_operation(True,
+                                                         "Parsed after FormatFixer",
+                                                         model=self.format_fixer.config.format_fixer_model,
+                                                         provider="anthropic",)
                             return {
                                 "success": True,
                                 "data": validated.model_dump(),
@@ -787,8 +810,9 @@ class ModelServiceBase:
         provider_name, model_name = cfg.provider, cfg.model_name
 
         # Anthropic streaming
-        if provider_name == "anthropic" and hasattr(client, "messages"):
+        if provider_name == "anthropic":
             import anthropic
+            async_client = getattr(self.router, "_mk_anthropic_async")()
             sys_prompt = None
             convo = []
             for m in messages:
@@ -801,19 +825,35 @@ class ModelServiceBase:
                 else:
                     convo.append({"role": "user", "content": str(getattr(m, "content", ""))})
 
-            with client.messages.stream(
-                    model=model_name, system=sys_prompt, messages=convo, max_tokens=max_tokens, temperature=temperature
+            async with async_client.messages.stream(
+                    model=model_name,
+                    system=sys_prompt,
+                    messages=convo,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
             ) as stream:
-                for text in stream.text_stream:
+                async for text in stream.text_stream:
                     if text:
                         yield {"delta": text}
-                resp = stream.get_final_response()
+
                 usage = {}
-                u = getattr(resp, "usage", None)
-                if u:
-                    usage = {"input_tokens": getattr(u, "input_tokens", 0) or 0,
-                             "output_tokens": getattr(u, "output_tokens", 0) or 0}
-                    usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+                final_obj = None
+                if hasattr(stream, "get_final_message"):
+                    final_obj = await stream.get_final_message()
+                elif hasattr(stream, "get_final_response"):
+                    # older SDKs returned a sync method; guard it
+                    maybe = stream.get_final_response()
+                    final_obj = await maybe if asyncio.iscoroutine(maybe) else maybe
+
+                if final_obj is not None:
+                    u = getattr(final_obj, "usage", None)
+                    if u:
+                        usage = {
+                            "input_tokens":  getattr(u, "input_tokens", 0) or 0,
+                            "output_tokens": getattr(u, "output_tokens", 0) or 0,
+                        }
+                        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+
                 yield {"final": True, "usage": _norm_usage_dict(usage), "model_name": model_name}
             return
 
@@ -865,22 +905,123 @@ class ModelServiceBase:
             max_tokens: int = 1200,
             client_cfg: ClientConfigHint | None = None,
             role: Optional[str] = None,
+            on_complete: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
+        # dedicated streaming logger (new instance as requested)
+        slog = AgentLogger("StreamTracker", self.config.log_level)
+        cfg = client_cfg or (self.router.describe(role) if role else self.describe_client(client))
+
+        # helpful context + previews
+        def _msg_preview(ms: List[BaseMessage]) -> dict:
+            try:
+                sys = next((m.content for m in ms if isinstance(m, SystemMessage)), "")[:200]
+                usr = next((m.content for m in ms if isinstance(m, HumanMessage)), "")[:200]
+            except Exception:
+                sys, usr = "", ""
+            return {"system_preview": sys, "user_preview": usr}
+
+        slog.start_operation(
+            "stream_model_text_tracked",
+            provider=cfg.provider,
+            model=cfg.model_name,
+            role=role,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            msg_count=len(messages),
+            **_msg_preview(messages),
+        )
+
         final_chunks: list[str] = []
         usage_out: Dict[str, Any] = {}
-        cfg = client_cfg or (self.router.describe(role) if role else self.describe_client(client))
-        async for ev in self.stream_model_text(client, messages, temperature=temperature, max_tokens=max_tokens, client_cfg=cfg, role=role):
-            if "delta" in ev:
-                if ev["delta"]:
+        chunk_count = 0
+
+        try:
+            async for ev in self.stream_model_text(
+                    client,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    client_cfg=cfg,
+                    role=role
+            ):
+                if "delta" in ev and ev["delta"]:
+                    # >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+                    # CRITICAL: forward the delta to the caller (3-section parser)
+                    try:
+                        await on_delta(ev["delta"])
+                    except Exception as cb_err:
+                        slog.log_error(cb_err, "on_delta_callback_failed")
+                    # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
                     final_chunks.append(ev["delta"])
-                    await on_delta(ev["delta"])
-            if ev.get("final"):
-                usage_out = ev.get("usage") or {}
-                break
-            if ev.get("usage"):
-                usage_out = ev.get("usage")
-        return {"text": "".join(final_chunks), "usage": _norm_usage_dict(usage_out),
-                "provider_message_id": None, "model_name": cfg.model_name}
+                    chunk_count += 1
+                    # if chunk_count <= 5:
+                    #     slog.log_step(
+                    #         "delta_chunk",
+                    #         {
+                    #             "index": chunk_count,
+                    #             "len": len(ev["delta"]),
+                    #             "preview": ev["delta"][:160],
+                    #             "provider": cfg.provider,
+                    #             "model": cfg.model_name,
+                    #             "role": role,
+                    #         },
+                    #     )
+                if ev.get("usage"):
+                    usage_out = ev["usage"]
+                if ev.get("final"):
+                    usage_out = ev.get("usage") or usage_out or {}
+                    break
+
+            full_text = "".join(final_chunks)
+            slog.log_step(
+                "stream_finished",
+                {
+                    "chunks": chunk_count,
+                    "final_text_len": len(full_text),
+                    "final_text_preview": full_text[:600],
+                    "usage": usage_out,
+                    "provider": cfg.provider,
+                    "model": cfg.model_name,
+                    "role": role,
+                },
+            )
+
+            ret = {
+                "text": full_text,
+                "usage": _norm_usage_dict(usage_out),
+                "provider_message_id": None,
+                "model_name": cfg.model_name,
+            }
+
+            if on_complete:
+                try:
+                    await on_complete(ret)
+                    slog.log_step(
+                        "on_complete_called",
+                        {
+                            "status": "ok",
+                            "final_text_len": len(full_text),
+                            "provider": cfg.provider,
+                            "model": cfg.model_name,
+                            "role": role,
+                        },
+                    )
+                except Exception as e:
+                    slog.log_error(e, "on_complete_failed")
+
+            slog.finish_operation(True, "stream_model_text_tracked_complete", provider=cfg.provider, model=cfg.model_name, role=role)
+            return ret
+
+        except Exception as e:
+            slog.log_error(e, "stream_loop_failed")
+            slog.finish_operation(False, "stream_model_text_tracked_failed", provider=cfg.provider, model=cfg.model_name, role=role)
+            return {
+                "text": f"Model call failed: {e}",
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "provider_message_id": None,
+                "model_name": cfg.model_name,
+            }
 
 # =========================
 # Custom endpoint client (unchanged API)

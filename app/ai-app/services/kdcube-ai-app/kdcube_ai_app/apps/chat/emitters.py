@@ -210,13 +210,15 @@ class ChatCommunicator:
             env["event"]["markdown"] = markdown
         await self.emit("chat_step", env)
 
-    async def delta(self, *, text: str, index: int, marker: str = "answer", agent: str = "assistant"):
+    async def delta(self, *, text: str, index: int, marker: str = "answer", agent: str = "assistant", completed: bool = False, **kwargs):
         env = self._base_env("chat.delta")
         env["event"].update({"agent": agent, "step": "stream", "status": "running", "title": "Assistant Delta"})
-        env["delta"] = {"text": text, "marker": marker, "index": int(index)}
+        env["delta"] = {"text": text, "marker": marker, "index": int(index), "completed": completed }
         # back-compat mirrors
         env["text"] = text
         env["idx"] = int(index)
+        if kwargs:
+            env["extra"] = kwargs
         await self.emit("chat_delta", env)
 
     async def complete(self, *, data: dict):

@@ -22,34 +22,16 @@ CREATE CONSTRAINT exception_identity IF NOT EXISTS
 FOR (e:Exception)
 REQUIRE (e.tenant, e.project, e.user, e.rule_key, e.scope, e.value_hash) IS UNIQUE;
 
-// ============ Helpful Indexes ============
+// ===== Helpful indexes (new/extra) =====
+CREATE INDEX assertion_last_seen IF NOT EXISTS
+FOR (a:Assertion) ON (a.last_seen_at);
 
-CREATE INDEX user_user_type IF NOT EXISTS
-FOR (u:User) ON (u.user_type);
+CREATE INDEX assertion_hits IF NOT EXISTS
+FOR (a:Assertion) ON (a.hits);
 
-CREATE INDEX user_created_at IF NOT EXISTS
-FOR (u:User) ON (u.created_at);
+// Relationship property indexes (Neo4j 5+)
+CREATE INDEX includes_last_seen IF NOT EXISTS
+FOR ()-[r:INCLUDES]-() ON (r.last_seen);
 
-CREATE INDEX conversation_user_id IF NOT EXISTS
-FOR (c:Conversation) ON (c.user_id);
-
-CREATE INDEX conversation_last_seen IF NOT EXISTS
-FOR (c:Conversation) ON (c.last_seen_at);
-
-CREATE INDEX conversation_topic_latest IF NOT EXISTS
-FOR (c:Conversation) ON (c.topic_latest);
-
-CREATE INDEX conversation_meta_updated IF NOT EXISTS
-FOR (c:Conversation) ON (c.meta_updated_at);
-
-CREATE INDEX assertion_lookup IF NOT EXISTS
-FOR (a:Assertion) ON (a.user, a.key, a.scope);
-
-CREATE INDEX assertion_created_at IF NOT EXISTS
-FOR (a:Assertion) ON (a.created_at);
-
-CREATE INDEX exception_lookup IF NOT EXISTS
-FOR (e:Exception) ON (e.user, e.rule_key, e.scope);
-
-CREATE INDEX exception_created_at IF NOT EXISTS
-FOR (e:Exception) ON (e.created_at);
+CREATE INDEX includes_hits IF NOT EXISTS
+FOR ()-[r:INCLUDES]-() ON (r.hits);

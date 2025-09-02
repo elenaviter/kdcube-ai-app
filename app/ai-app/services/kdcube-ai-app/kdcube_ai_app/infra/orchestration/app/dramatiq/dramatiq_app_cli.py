@@ -25,7 +25,7 @@ load_dotenv(find_dotenv())
 # Logging setup
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
-logger = logging.getLogger("DramatiqFixed")
+logger = logging.getLogger("Orch.Dramatiq")
 
 
 class HeartbeatMiddleware(Middleware):
