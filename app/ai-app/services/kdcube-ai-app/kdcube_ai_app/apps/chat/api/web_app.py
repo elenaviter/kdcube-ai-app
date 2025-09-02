@@ -12,7 +12,7 @@ import os
 
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Optional, List
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,13 +22,11 @@ from pydantic import BaseModel
 from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
+import kdcube_ai_app.apps.utils.logging_config as logging_config
+logging_config.configure_logging()
+
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator
-
-
-from kdcube_ai_app.apps.middleware.logging.uvicorn import configure_logging
 from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
-
-configure_logging()
 
 from kdcube_ai_app.apps.middleware.gateway import STATE_FLAG, STATE_SESSION, STATE_USER_TYPE
 from kdcube_ai_app.infra.gateway.backpressure import create_atomic_chat_queue_manager
@@ -43,14 +41,11 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
-from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config, _mid, BundleState
+from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
-# Import the modular Socket.IO handler
 from kdcube_ai_app.apps.chat.api.socketio.chat import create_socketio_chat_handler
 
-import kdcube_ai_app.apps.utils.logging_config as logging_config
-logging_config.configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -652,5 +647,6 @@ if __name__ == "__main__":
         app,
         host="0.0.0.0",
         port=CHAT_APP_PORT,
-        log_level="info"
+        log_config=None,   # ← don't let Uvicorn install its own handlers
+        log_level=None,
     )
