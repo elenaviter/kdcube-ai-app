@@ -7,15 +7,19 @@ Knowledge Base storage backends for different storage systems.
 """
 import asyncio
 import logging
+import mimetypes
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime, UTC
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger("KnowledgeBase.Storage")
 
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("application/wasm", ".wasm")
 
 class IStorageBackend(ABC):
     """Interface for storage backends."""
@@ -31,7 +35,7 @@ class IStorageBackend(ABC):
         pass
 
     @abstractmethod
-    def write_bytes(self, path: str, data: bytes) -> None:
+    def write_bytes(self, path: str, data: bytes,  meta: Optional[dict] = None) -> None:
         """Write raw bytes to storage."""
         pass
 
@@ -88,7 +92,7 @@ class LocalFileSystemBackend(IStorageBackend):
     def read_bytes(self, path: str) -> bytes:
         return self._resolve_path(path).read_bytes()
 
-    def write_bytes(self, path: str, data: bytes) -> None:
+    def write_bytes(self, path: str, data: bytes,  meta: Optional[dict] = None) -> None:
         resolved = self._resolve_path(path)
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_bytes(data)
@@ -195,13 +199,68 @@ class S3StorageBackend(IStorageBackend):
         except Exception as e:
             raise FileNotFoundError(f"Cannot read {path} from S3: {e}")
 
-    def write_bytes(self, path: str, data: bytes) -> None:
+    def write_bytes(self, path: str, data: bytes, meta: Optional[dict] = None) -> None:
+
         try:
-            self.s3_client.put_object(
-                Bucket=self.bucket_name,
-                Key=self._get_s3_key(path),
-                Body=data
+            key = self._get_s3_key(path)
+            put_kwargs: Dict[str, Any] = {
+                "Bucket": self.bucket_name,
+                "Key": key,
+                "Body": data,
+            }
+            content_type = None
+            if meta:
+                content_type = (
+                        meta.get("ContentType")
+                        or meta.get("content_type")
+                        or meta.get("mime")
+                        or meta.get("mime_type")
+                )
+            if not content_type:
+                guessed_type, guessed_encoding = mimetypes.guess_type(path)
+                if guessed_type:
+                    content_type = guessed_type
+                if guessed_encoding:
+                    put_kwargs["ContentEncoding"] = guessed_encoding  # e.g., "gzip"
+
+            if content_type:
+                put_kwargs["ContentType"] = content_type
+
+            header_names = [
+                "ContentEncoding",
+                "CacheControl",
+                "ContentDisposition",
+                "ContentLanguage",
+                "Expires",  # can be datetime or RFC 1123 string
+                "ACL",          # optional if you want to allow this
+                "StorageClass", # e.g., "STANDARD_IA"
+            ]
+            if meta:
+                for name in header_names:
+                    if name in meta:
+                        put_kwargs[name] = meta[name]
+                    elif name.lower() in meta:
+                        put_kwargs[name] = meta[name.lower()]
+
+            # Merge/derive custom metadata
+            metadata: Dict[str, str] = {}
+            if isinstance(meta.get("Metadata"), dict):
+                metadata.update({str(k): str(v) for k, v in meta["Metadata"].items()})
+
+            reserved = set(
+                ["ContentType", "content_type", "mime", "mime_type"]
+                + header_names
+                + ["Metadata"]
             )
+            leftovers = {k: v for k, v in meta.items() if k not in reserved}
+            if leftovers:
+                # S3 requires str values for Metadata
+                metadata.update({str(k): str(v) for k, v in leftovers.items()})
+
+            if metadata:
+                put_kwargs["Metadata"] = metadata
+
+            self.s3_client.put_object(**put_kwargs)
         except Exception as e:
             raise IOError(f"Cannot write {path} to S3: {e}")
 
@@ -401,7 +460,7 @@ class InMemoryStorageBackend(IStorageBackend):
                 return self.__fs_objects[path].data
         raise FileNotFoundError(f"{path} not found in storage")
 
-    def write_bytes(self, path: str, data: bytes) -> None:
+    def write_bytes(self, path: str, data: bytes,  meta: Optional[dict] = None) -> None:
         if path.endswith('/'):
             raise ValueError(f"{path} is a directory")
         if self.max_file_size and len(data) > self.max_file_size:

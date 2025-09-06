@@ -8,6 +8,8 @@ Simplified resolvers module with clean separation of concerns
 import os
 import logging
 
+from starlette.requests import Request
+
 # Import centralized configuration
 from kdcube_ai_app.infra.gateway.config import (
     GatewayConfigFactory,
@@ -42,11 +44,18 @@ STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH")
 
 DEFAULT_PROJECT = os.environ.get("DEFAULT_PROJECT_NAME", None)
 
-def get_project(request) -> str:
+def get_project(request: Request) -> str:
     """Look for a `project` path-param; if absent, return default_project."""
     if hasattr(request, 'path_params'):
         return request.path_params.get("project", DEFAULT_PROJECT)
     return DEFAULT_PROJECT
+
+def get_tenant_dep(request: Request) -> str:
+    """Look for a `tenant` path-param; if absent, return TENANT_ID."""
+    if hasattr(request, 'path_params'):
+        return request.path_params.get("tenant", TENANT_ID)
+    return TENANT_ID
+
 
 # Your existing storage, orchestrator, and model configurations
 from kdcube_ai_app.storage.storage import create_storage_backend

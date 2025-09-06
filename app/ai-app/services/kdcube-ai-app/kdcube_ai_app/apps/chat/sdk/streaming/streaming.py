@@ -284,11 +284,9 @@ async def _stream_agent_sections_to_json(
         await parser.feed(piece)
 
     async def on_complete(ret):
-        if not ret:
-            ret = {}
         await parser.finalize()
         # send the "completed" signal to the UI
-        await _emit_user("", completed=True, **ret)
+        await _emit_user("", completed=True)
         run_logger.log_step("stream_complete", {"deltas": deltas})
 
     # ---- stream with model ----

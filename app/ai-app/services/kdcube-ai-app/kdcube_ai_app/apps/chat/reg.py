@@ -48,6 +48,12 @@ MODEL_CONFIGS = {
         "provider": "anthropic",
         "has_classifier": False,
         "description": "Claude 3 Haiku - Fast and efficient"
+    },
+    "claude-3-7-sonnet-20250219": {
+        "model_name": "claude-3-7-sonnet-20250219",
+        "provider": "anthropic",
+        "has_classifier": False,
+        "description": "Claude 3.7 Sonnett"
     }
 }
 EMBEDDERS = {
@@ -96,6 +102,7 @@ EMBEDDERS = {
 _SEEDED_FALSE = [
     (re.compile(r"^o3", re.I), {"temperature": False, "top_p": False}),  # o3, o3-mini, etc.
     (re.compile(r"^o4", re.I), {"temperature": False, "top_p": False}),  # o4-* reasoning models
+    (re.compile(r"^gpt-5", re.I), {"temperature": False, "top_p": False}),  # o4-* reasoning models
 ]
 
 # Sparse learned overrides: only set keys we actually learned.

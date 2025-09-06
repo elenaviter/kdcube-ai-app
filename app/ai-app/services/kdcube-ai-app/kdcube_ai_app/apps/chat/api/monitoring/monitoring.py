@@ -29,7 +29,7 @@ from fastapi import APIRouter, HTTPException
 from typing import Optional, Callable, List, Dict, Any, Union
 import logging
 
-logger = logging.getLogger("KBMonitoring.API")
+logger = logging.getLogger("Monitoring.API")
 
 # Create router
 router = APIRouter()

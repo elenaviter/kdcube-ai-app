@@ -906,6 +906,7 @@ class ModelServiceBase:
             client_cfg: ClientConfigHint | None = None,
             role: Optional[str] = None,
             on_complete: Optional[Callable[[dict], Awaitable[None]]] = None,
+            debug: bool = True
     ) -> Dict[str, Any]:
         # dedicated streaming logger (new instance as requested)
         slog = AgentLogger("StreamTracker", self.config.log_level)
@@ -955,18 +956,6 @@ class ModelServiceBase:
 
                     final_chunks.append(ev["delta"])
                     chunk_count += 1
-                    # if chunk_count <= 5:
-                    #     slog.log_step(
-                    #         "delta_chunk",
-                    #         {
-                    #             "index": chunk_count,
-                    #             "len": len(ev["delta"]),
-                    #             "preview": ev["delta"][:160],
-                    #             "provider": cfg.provider,
-                    #             "model": cfg.model_name,
-                    #             "role": role,
-                    #         },
-                    #     )
                 if ev.get("usage"):
                     usage_out = ev["usage"]
                 if ev.get("final"):
@@ -979,7 +968,7 @@ class ModelServiceBase:
                 {
                     "chunks": chunk_count,
                     "final_text_len": len(full_text),
-                    "final_text_preview": full_text[:600],
+                    **({"final_text": full_text} if debug else {"final_text_preview": full_text[:600]}),
                     "usage": usage_out,
                     "provider": cfg.provider,
                     "model": cfg.model_name,

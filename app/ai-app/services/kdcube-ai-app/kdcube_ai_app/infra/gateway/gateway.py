@@ -113,7 +113,8 @@ class RequestGateway:
                               context: RequestContext,
                               requirements: List[RequirementBase] = None,
                               endpoint: str = "/api/chat",
-                              bypass_throttling: bool = False) -> UserSession:
+                              bypass_throttling: bool = False,
+                              bypass_gate: bool = False) -> UserSession:
         """Process request through all gateway layers with optional bypass"""
 
         # Check if this is a privileged admin/monitoring endpoint
@@ -150,6 +151,9 @@ class RequestGateway:
                     if validation_error:
                         from kdcube_ai_app.auth.AuthManager import AuthorizationError
                         raise AuthorizationError(validation_error.message, validation_error.code)
+
+            if bypass_gate:
+                return session
 
             # Step 3: Check if privileged user on admin endpoint (bypass throttling)
             if (is_admin_endpoint and

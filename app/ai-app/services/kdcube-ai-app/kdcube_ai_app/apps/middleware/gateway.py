@@ -69,7 +69,8 @@ class FastAPIGatewayAdapter:
     async def process_request(self,
                               request: Request,
                               requirements: List[RequirementBase] = None,
-                              bypass_throttling: bool = False) -> UserSession:
+                              bypass_throttling: bool = False,
+                              bypass_gate: bool = False) -> UserSession:
         """Process request and return session"""
         context = self._extract_context(request)
         endpoint = request.url.path
@@ -79,7 +80,8 @@ class FastAPIGatewayAdapter:
                 context,
                 requirements,
                 endpoint,
-                bypass_throttling
+                bypass_throttling,
+                bypass_gate=bypass_gate
             )
             return session
 
@@ -119,10 +121,10 @@ class FastAPIGatewayAdapter:
             return await self.process_request(request, list(requirements))
         return dependency
 
-    def get_session(self):
+    def get_session(self, bypass_gate: bool = False):
         """Create FastAPI dependency that just gets the session (no requirements)"""
         async def dependency(request: Request) -> UserSession:
-            return await self.process_request(request, [])
+            return await self.process_request(request, [], bypass_gate=bypass_gate)
         return dependency
 
 
@@ -270,7 +272,7 @@ class AccountingContextBinder:
         Use in FastAPI endpoints:
             session: UserSession = Depends(binder.http_dependency("chat-rest"))
         """
-        base_dep = self.gateway_adapter.get_session()
+        base_dep = self.gateway_adapter.get_session(bypass_gate=True)
         comp = component or self.default_component
 
         async def dep(request: Request, session: UserSession = Depends(base_dep)) -> UserSession:
