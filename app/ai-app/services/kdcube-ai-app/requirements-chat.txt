@@ -35,4 +35,4 @@ lxml
 pandas
 matplotlib
 
- python-magic
+python-magic
