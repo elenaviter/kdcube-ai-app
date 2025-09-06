@@ -17,3 +17,22 @@ uvicorn==0.35.0
 networkx
 neo4j
 asyncpg
+ddgs
+semantic-kernel
+reportlab
+
+bs4
+mdit-py-plugins
+playwright
+markdown-it-py
+pygments
+jinja2
+
+python-pptx
+Pillow
+lxml
+
+pandas
+matplotlib
+
+ python-magic
