@@ -4,8 +4,8 @@
 # chatbot/storage/storage.py
 
 import json, time, os, mimetypes, pathlib
-from urllib.parse import urlparse
 from typing import Optional, Tuple, List, Dict, Any
+from urllib.parse import urlparse, unquote
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.inventory import _mid
@@ -84,7 +84,8 @@ class ConversationStore:
         meta: Dict | None = None,
         embedding: List[float] | None = None,
         user_type: str = "anonymous",
-        ttl_days: int = 365
+        ttl_days: int = 365,
+        track_id: Optional[str] = None
     ) -> Tuple[str, str, str]:
         """
         Persist a message JSON. Returns (uri, message_id, rn).
@@ -96,7 +97,7 @@ class ConversationStore:
 
         rel = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "conversation", who, user_or_fp, conversation_id, turn_id,
+            "conversation", user_type, user_or_fp, conversation_id, turn_id,
             f"{message_id}.json"
         )
 
@@ -121,7 +122,8 @@ class ConversationStore:
                 "ttl_days": int(ttl_days),
                 "rn": rn,
                 **(meta or {})
-            }
+            },
+            "track_id": track_id
         }
         self.backend.write_bytes(rel, json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"), meta=_JSON_META)
         return self._uri_for_path(rel), message_id, rn
@@ -202,6 +204,7 @@ class ConversationStore:
         fingerprint: Optional[str],
         conversation_id: str,
         turn_id: str,
+        track_id: str,
         role: str = "artifact",
         filename: str,
         data: bytes,
@@ -221,7 +224,7 @@ class ConversationStore:
         who, user_or_fp = self._who_and_id(user, fingerprint)
         base = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "attachments", who, user_or_fp, conversation_id, turn_id
+            "attachments", user_type, user_or_fp, conversation_id, turn_id
         )
         safe_name = os.path.basename(filename) or "file.bin"
         rel_name = f"{ts}-{safe_name}"
@@ -243,9 +246,12 @@ class ConversationStore:
         tenant: str,
         project: str,
         user: Optional[str],
+        user_type: str,
         fingerprint: Optional[str],
         conversation_id: str,
         turn_id: str,
+        track_id: str,
+        codegen_run_id: str,
         role: str = "artifact",
         out_dir: Optional[str] = None,
         pkg_dir: Optional[str] = None,
@@ -257,7 +263,7 @@ class ConversationStore:
         who, user_or_fp = self._who_and_id(user, fingerprint)
         base = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "executions", who, user_or_fp, conversation_id, turn_id
+            "executions", user_type, user_or_fp, conversation_id, turn_id, codegen_run_id
         )
 
         def _copy_tree(src: Optional[str], kind: str) -> Tuple[Optional[str], List[dict]]:
@@ -295,3 +301,90 @@ class ConversationStore:
 
     async def close(self):
         return None
+
+    def _rel_from_uri_or_path(self, uri_or_path: str) -> str:
+        """
+        Convert a full URI or filesystem path into the backend-relative key used by storage.
+        Accepts:
+          - file://... absolute URIs
+          - s3://bucket/prefix/... URIs
+          - absolute filesystem paths (when using file backend)
+          - backend-relative keys starting with 'cb/...'
+        Returns a normalized relative key like:
+          'cb/tenants/{tenant}/projects/{project}/conversation/.../{message_id}.json'
+        """
+        if not uri_or_path:
+            raise ValueError("uri_or_path is required")
+
+        text = uri_or_path.strip()
+        parsed = urlparse(text)
+
+        # --- URI forms ---
+        if parsed.scheme in ("file", "s3"):
+            if parsed.scheme == "file":
+                abs_path = os.path.normpath(unquote(parsed.path))
+                base = os.path.normpath(self._file_base or "/")
+                # primary: strip configured base
+                base_with_sep = base.rstrip(os.sep) + os.sep
+                if abs_path.startswith(base_with_sep):
+                    rel = abs_path[len(base_with_sep):].replace("\\", "/")
+                    return rel.lstrip("/")
+                # fallback: try to cut from '/cb/...'
+                as_posix = abs_path.replace("\\", "/")
+                idx = as_posix.find("/" + self.root_prefix + "/")
+                if idx >= 0:
+                    return as_posix[idx + 1 :].lstrip("/")
+                raise ValueError(f"Path {abs_path} is not under storage base {base}")
+
+            if parsed.scheme == "s3":
+                bucket = parsed.netloc
+                key = unquote(parsed.path.lstrip("/"))
+                prefix = self._s3_prefix.rstrip("/")
+                # prefer configured prefix removal
+                if prefix and key.startswith(prefix + "/"):
+                    return key[len(prefix) + 1 :].lstrip("/")
+                if not prefix:
+                    return key.lstrip("/")
+                # fallback: detect 'cb/...'
+                cb_idx = key.find(self.root_prefix + "/")
+                if cb_idx >= 0:
+                    return key[cb_idx:].lstrip("/")
+                raise ValueError(f"S3 key {key} does not start with expected prefix '{prefix}/'")
+
+        # --- Non-URI forms ---
+        # Absolute filesystem path (file backend only)
+        if text.startswith("/"):
+            if self.scheme != "file":
+                raise ValueError("Absolute paths are only supported for file:// storage")
+            abs_path = os.path.normpath(unquote(text))
+            base = os.path.normpath(self._file_base or "/")
+            base_with_sep = base.rstrip(os.sep) + os.sep
+            if abs_path.startswith(base_with_sep):
+                rel = abs_path[len(base_with_sep):].replace("\\", "/")
+                return rel.lstrip("/")
+            as_posix = abs_path.replace("\\", "/")
+            idx = as_posix.find("/" + self.root_prefix + "/")
+            if idx >= 0:
+                return as_posix[idx + 1 :].lstrip("/")
+            raise ValueError(f"Absolute path {text} is not under storage base {base}")
+
+        # Already looks like a backend-relative key (e.g., 'cb/tenants/...')
+        return text.lstrip("/")
+
+    def get_message(self, uri_or_path: str) -> dict:
+        """
+        Load a single message JSON by its URI or path and return the record (dict).
+        - Supports 'file://', 's3://', absolute file paths, or backend-relative keys.
+        - Ensures meta.s3_uri is set to a dereferenceable URI for this storage,
+          and fills in 'turn_id' if missing by parsing the path.
+        """
+        rel = self._rel_from_uri_or_path(uri_or_path)
+        if not rel.endswith(".json"):
+            raise ValueError(f"Message path must point to a .json file: got '{rel}'")
+
+        try:
+            raw = self.backend.read_text(rel)
+        except Exception as e:
+            raise FileNotFoundError(f"Cannot read message at {uri_or_path}: {e}")
+
+        return json.loads(raw)

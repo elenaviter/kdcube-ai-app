@@ -29,6 +29,13 @@ class SolverCodegenOut(BaseModel):
     files: conlist(CodeFile, min_length=1)
     outputs: conlist(OutputSpec, min_length=1)
     notes: str = ""
+    # short guidance for the final answer generator about how to read artifacts from this run
+    result_interpretation_instruction: str = Field(
+        default="",
+        description="≤120 words. Explain how to interpret the deliverables of the code you generate (the solution) produced this run (by slot/type), "
+                    "that they are system-provided context (not user-authored), how to cite new sources, "
+                    "and how to refer to artifacts prduced by code, for example, any files (PDF, PPTX, CSV, etc.), in the final answer presented to a user."
+    )
 
 def _adapters_public_view(adapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -84,62 +91,96 @@ async def solver_codegen_stream(
     # ---------- System prompt (authoritative; no ambiguity) ----------
 
     sys = (
-        "You generate ONE Python 3.11 program that uses ONLY the documented adapters provided below.\n"
-        "\nLANGUAGE & SYNTAX (HARD RULES):\n"
-        "• This is Python, not JSON. Use Python literals: True/False/None (never 'true/false/null').\n"
-        "• Build JSON strings with json.dumps(...), never by embedding JSON text in Python code.\n"
-        "\nIMPORTS (HARD RULES):\n"
-        "• Paste the adapter import **exactly as provided** in the adapters list; do not alter module path or alias.\n"
-        "• Call functions exactly as in the provided call_template.\n"
-        "\nRUNTIME CONTRACT:\n"
-        "• CRITICAL: A global variable OUTPUT_DIR (contains string path) is defined for you at runtime. Do not redefine it!\n"
-        "• Use it to read context and task: read OUTPUT_DIR/context.json and OUTPUT_DIR/task.json.\n"
-        "• Write ALL outputs only into OUTPUT_DIR, exactly as declared in `outputs`.\n"
-        "\nPERSISTENCE (IO ADAPTER — REQUIRED):\n"
-        "• After every adapter call, use agent_io_tools.save_tool_output(\n"
-        "  tool_id='<adapter id>', data=<raw_return>, params=json.dumps(<your args>), index=<0-based>) and collect returned filenames under result.raw_files[adapter_id].\n"
-        "• At the end, write the final JSON via agent_io_tools.save_ret(data=json.dumps(result), filename='result.json').\n"
-        "\nRESULT FILE (FIRST outputs[] ITEM) — REQUIRED KEYS:\n"
-        "• On success include at least: ok=true, objective, contract (echoed slot→description), out_dyn (filled per contract).\n"
-        "• Optional when applicable: queries_used, raw_files.\n"
-        "• NEVER write result['out'] directly; save_ret will derive it from out_dyn. Any manual 'out' you add will be ignored.\n"
-        "\nCONTRACT→out_dyn MAPPING (STRICT):\n"
-        "• You receive a dynamic contract (slot_name→description). You MUST fill out_dyn with EXACTLY those slot names.\n"
-        "• For FILE slots (e.g., pdf_file, slides_pptx, image_png, csv_file, zip_bundle):\n"
-        "    out_dyn[slot] = {{\"file\": \"<relative path under OUTPUT_DIR>\", \"mime\": \"<mime>\", \"description\"?: \"...\", \"tool_id\"?: \"...\", \"tool_input\"?: {{...}} }}\n"
-        "• For TEXT slots (e.g., summary_md, outline_md, caption_md, data_json, table_md, plan_md):\n"
-        "    out_dyn[slot] = one of:\n"
-        "      {{\"markdown\": \"...\"}} | {{\"text\": \"...\"}} | {{\"json\": <object or string>}}\n"
-        "• resource_id for each derived artifact will be the slot name. Do NOT invent extra slots and do NOT omit required slots.\n"
-        "• Paths must be RELATIVE to OUTPUT_DIR; if a tool requires an absolute path, construct it with OUTPUT_DIR but store the relative path in out_dyn.\n"
-        "\nCITATIONS & SOURCES (NO FABRICATION):\n"
-        "• Any external URLs/names/facts/dates you present must come from adapter returns that you saved via save_tool_output.\n"
-        "• If you include a “sources” section or enable citations in a summarizer, build them ONLY from the actual search results fetched in THIS run.\n"
-        "• Infra will auto-promote citable URLs from saved tool outputs; you must NOT put those URLs into out_dyn unless the contract explicitly requires a text sources slot.\n"
-        "FILE PATHS & OUT ITEMS (CRITICAL):\n"
-        "• All files MUST physically live inside OUTPUT_DIR.\n"
-        "• If adapter returns a path, treat it as relative to OUTPUT_DIR.\n"
-        "• If you pass the path to provider, it must be relative to OUTPUT_DIR path.\n"
-        "• Do not resolve it to absoulte id store this file in result.out/out_dyn.\n"
-        "• For file contract slots, set out_dyn[slot] = {\"file\": \"<OUTPUT_DIR-relative filename>\", \mime\"...\", \"description\": \"...\"}.\n"
-        "\nSUMMARY MODES (llm_tools.summarize_llm):\n"
-        "• Summarize free text → input_mode='text', text='<content>'.\n"
-        "• Summarize search results with citations → build an array of sources like\n"
-        "  [{{\"sid\": i, \"title\": r.title, \"url\": (r.url or r.href), \"text\": (r.body or r.snippet)}}] and call with\n"
-        "  input_mode='sources', cite_sources=true, sources_json=json.dumps(sources).\n"
-        "• Only set cite_sources=true when sources_json is actually provided.\n"
-        "\nQUERY HYGIENE (web_search-like adapters):\n"
-        "• Disambiguate terms (e.g., 'python programming language'), add sensible recency (e.g., 'past 7 days'), prefer domain qualifiers.\n"
-        "• Record exact query strings used in result.queries_used.\n"
-        "\nERROR HANDLING:\n"
-        "• On any failure, write a JSON object to the FIRST output with ok=false, and keys: error, where, details..\n"
-        "\nADAPTER USAGE (CRITICAL):\n"
-        "• Import ONLY the provided adapter imports; stdlib allowed. Call adapters exactly per their docs. If a required arg is missing and not recoverable from context/task, fail gracefully.\n"
-        "\nASYNC ADAPTERS:\n"
-        "• If any adapter is async, implement 'async def main()' and run with 'asyncio.run(main())'.\n"
-        "\nSTYLE & BEHAVIOR:\n"
-        f"• Keep main.py ≤ {line_budget} lines; linear and concise. {'Be extra concise. ' if concise else ''}No prints.\n"
-        "USER-FACING STATUS: two short lines (objective; plan). Do NOT name tools/providers/models.\n"
+        "# Codegen — single Python program\n"
+        "\n"
+        "## Authoritative inputs for **this** run\n"
+        "- The **dynamic output contract** `output_contract_dyn` is provided **in THIS prompt**. Treat it as the single source of truth.\n"
+        "- **Embed** the contract verbatim inside `main.py` (e.g., `CONTRACT = {...}` as a Python dict literal).\n"
+        "- Do **not** read the contract from `task.json` or `context.json`.\n"
+        "- You may read `OUTPUT_DIR/context.json` for prior history/sources and `OUTPUT_DIR/task.json` for objective/constraints (optional),\n"
+        "  but **never** for the contract.\n"
+        "\n"
+        "## Language & syntax\n"
+        "- Python 3.11. Use `True/False/None`. Build JSON with `json.dumps(...)`.\n"
+        "\n"
+        "## Imports & calls (hard rules)\n"
+        "- Paste adapter imports **exactly** as provided; do not alter module paths or aliases.\n"
+        "- Call functions exactly per the provided `call_template`.\n"
+        "\n"
+        "## Runtime contract\n"
+        "- A global `OUTPUT_DIR` is injected at runtime. Do **not** redefine it.\n"
+        "- Write **all** files into `OUTPUT_DIR`, exactly as declared in `outputs[]`.\n"
+        "\n"
+        "## Persistence (required)\n"
+        "- After every adapter call, invoke:\n"
+        "  `agent_io_tools.save_tool_output(tool_id=\"<adapter id>\", data=<raw_return>, params=json.dumps(<your args>), index=<0-based>)`.\n"
+        "- Collect returned filenames under `result.raw_files[adapter_id]`.\n"
+        "- Finish with `agent_io_tools.save_ret(data=json.dumps(result), filename=\"result.json\")`.\n"
+        "\n"
+        "## result.json (first outputs[] item)\n"
+        "- On success include: `ok=true`, `objective`, `contract=CONTRACT` (echoed), and `out_dyn` (filled **exactly** per CONTRACT).\n"
+        "- Optional: `queries_used`, `raw_files`.\n"
+        "- Do **not** manually write `result['out']`; infra derives it from `out_dyn`.\n"
+        "\n"
+        "## Contract → out_dyn (strict)\n"
+        "- Use `CONTRACT` keys as the **only** keys of `out_dyn`.\n"
+        "- **FILE** slots (e.g., `pdf_file`): `{\"file\":\"<OUTPUT_DIR-relative>\", \"mime\":\"<mime>\", \"description\":\"...\"}`.\n"
+        "- **TEXT/STRUCT** slots (e.g., `project_canvas`, `summary_md`, `data_json`):\n"
+        "  `{\"description\":\"...\", \"value\":\"<stringified>\", \"format\":\"markdown|plain_text|json|yaml|object\"}`.\n"
+        "- The `resource_id` for each artifact is the slot name (infra will prefix with `slot:` automatically).\n"
+        "- Paths stored in `out_dyn` **must** be `OUTPUT_DIR`-relative (never absolute).\n"
+        "\n"
+        "## Project canvas (critical)\n"
+        "- The editable slot is **`project_canvas`**. Populate it with the final user-facing **Markdown** content only.\n"
+        "- Do **not** include solver reasoning, change logs, or TODOs in the canvas.\n"
+        "- Preserve existing `[[S:n]]` tokens; add new tokens **only** where NEW/CHANGED factual claims are made.\n"
+        "\n"
+        "## History reuse (if applicable)\n"
+        "- Read `OUTPUT_DIR/context.json → program_history` (list of `{ <exec_id>: {...} }`).\n"
+        "- Use the provided `decision.history_select` and `decision.instructions_for_codegen` from **this prompt** to pick **exactly one** prior version:\n"
+        "  editable text at `selected.project_canvas.text`; prior sources at `selected.web_links_citations.items`.\n"
+        "- If none fits, start a fresh canvas.\n"
+        "\n"
+        "## Citations (stable IDs)\n"
+        "- Working sources = `prior_sources ∪ new_search_results`; **dedupe by URL** (case-insensitive).\n"
+        "- Keep existing SIDs for existing URLs. New URLs keep **adapter-provided** SIDs (runtime seeds after the last used).\n"
+        "- Never compress/backfill SIDs; gaps are OK.\n"
+        "- Pass the full `sources_json` to the editor and to PDF/PPTX renderers when resolving `[[S:n]]`.\n"
+        "\n"
+        "## Editor guidance (optional)\n"
+        "- You may append a temporary block to the editor input:\n"
+        "  `<!--GUIDANCE_START-->\\n<short actionable plan>\\n<!--GUIDANCE_END-->`.\n"
+        "- Your edit instruction MUST require applying the guidance and **removing** the entire GUIDANCE block from the output.\n"
+        "\n"
+        "## Reference editor pipe\n"
+        "1) `editable = selected.project_canvas.text` (or \"\").\n"
+        "2) `guidance_md = decision.instructions_for_codegen` (optional) and append a temporary GUIDANCE block.\n"
+        "3) `sources = merge_and_dedupe(prior.items, new_results)`  # keep old sids; new sids from adapter.\n"
+        "4) `edited = agent_llm_tools.edit_text_llm(text=editable_with_guidance, instruction=\"Apply guidance; keep structure; no invented facts; add [[S:n]] only on NEW/CHANGED claims; REMOVE GUIDANCE block.\", keep_formatting=True, sources_json=json.dumps(sources), cite_sources=True, forbid_new_facts_without_sources=True)`.\n"
+        "5) `out_dyn[\"project_canvas\"] = {\"description\":\"Updated project canvas (Markdown)\", \"value\": edited, \"format\":\"markdown\"}`.\n"
+        "6) If rendering PDF/PPTX, pass the SAME `sources` to `write_pdf`/`write_pptx` with `resolve_citations=True`.\n"
+        "\n"
+        "## llm_tools.summarize_llm quick rules\n"
+        "- `input_mode='text'` for free text; `input_mode='sources'` + `cite_sources=true` for search results.\n"
+        "- Source rows: `{sid:int, title:str, url:str, text:str}`. Record exact queries in `result.queries_used`.\n"
+        "\n"
+        "## File/path rules\n"
+        "- All files must physically live in `OUTPUT_DIR`.\n"
+        "- Store `OUTPUT_DIR`-relative paths in `out_dyn` (e.g., `\"rust_advances.pdf\"`).\n"
+        "\n"
+        "## Error handling\n"
+        "- On any failure: write `ok=false` with keys: `error`, `where`, `details` to the FIRST output file.\n"
+        "\n"
+        "## Async\n"
+        "- If any adapter is async, implement `async def main()` and run with `asyncio.run(main())`.\n"
+        "\n"
+        "## Style & behavior\n"
+        "- Linear and concise. No prints.\n"
+        "- USER-FACING STATUS: two short lines (objective; plan). Do **not** name tools/providers/models.\n"
+        "\n"
+    )
+    sys += (
+        f"• Keep main.py ≤ {line_budget} lines.\n"
         f"Assume today={today} (UTC).\n"
     )
 
@@ -150,7 +191,8 @@ async def solver_codegen_stream(
         "  \"entrypoint\": \"python main.py\","
         "  \"files\": [ {\"path\": \"main.py\", \"content\": \"...\"} ],"
         "  \"outputs\": [ {\"filename\": \"result.json\", \"kind\": \"json\", \"key\": \"worker_output\"} ],"
-        "  \"notes\": \"<=40 words\""
+        "  \"notes\": \"<=40 words\","
+        "  \"result_interpretation_instruction\": \"<=120 words, tool-agnostic, concise\""
         "}"
     )
 
@@ -164,7 +206,7 @@ async def solver_codegen_stream(
         f"{json.dumps(task or {}, ensure_ascii=False, indent=2)}\n\n"
         "SOLVABILITY / DECISION (read-only hints):\n"
         f"{json.dumps(decision or {}, ensure_ascii=False, indent=2)}\n\n"
-        "DYNAMIC OUTPUT CONTRACT YOU MUST FULFILL (slot → description):\n"
+        "DYNAMIC OUTPUT CONTRACT YOU MUST FULFILL - output_contract_dyn (slot → description):\n"
         f"{json.dumps(contract_dyn, ensure_ascii=False, indent=2)}\n\n"
         "ADAPTERS — imports, call templates, is_async:\n"
         f"{json.dumps([{k: v for k,v in a.items() if k in ('id','import','call_template','is_async')} for a in adapters_for_llm], ensure_ascii=False, indent=2)}\n\n"
@@ -217,7 +259,7 @@ async def tool_router_stream(
         "\nHARD RULES:\n"
         "• Do NOT solve the task. Do NOT run tools. Do NOT invent facts, URLs, dates, or long free text.\n"
         "• Only select tools present in the catalog. For each selection, 'name' MUST equal the catalog 'id'.\n"
-        "\nPARAMETER FILL POLICY (SCaffolding only):\n"
+        "\nPARAMETER FILL POLICY (Scaffolding only):\n"
         "• Provide MINIMAL, PLAUSIBLE scaffolding for parameters (booleans, enums, small numerics, simple flags).\n"
         "• For any contentful parameter (e.g., text, content_md/markdown, sources_json, url lists, file bodies):\n"
         "    - Do NOT invent content. Use a short placeholder like \"<TBD at runtime>\" or omit the param.\n"
@@ -236,6 +278,12 @@ async def tool_router_stream(
         "USER-FACING (STATUS): 2 short lines (focus; minimal plan). No tool/provider/model names.\n"
     )
     ToolRouterOut.model_json_schema()
+    sys += (
+        "\nREUSE CONTEXT:\n"
+        "• Downstream code will read prior runs from OUTPUT_DIR/context.json → program_history[]. "
+        "Prefer selecting tools that can EDIT or UPDATE existing deliverables when appropriate (e.g., LLM editor, file writer), "
+        "instead of rebuilding everything from scratch. Only applicable if the new request applies to a past program in the context.\n"
+    )
     sys = _add_3section_protocol(
         sys,
         "{ \"candidates\": ["
@@ -293,11 +341,6 @@ class ContractItem(BaseModel):
     min_count: int = 1
     max_count: Optional[int] = 1
 
-class OutputContract(BaseModel):
-    must_produce: conlist(ContractItem, min_length=1) = Field(default_factory=list)
-    nice_to_have: List[ContractItem] = Field(default_factory=list)
-
-
 class SolvabilityOut(BaseModel):
     solvable: bool
     confidence: float = Field(0.5, ge=0.0, le=1.0)
@@ -313,6 +356,13 @@ class SolvabilityOut(BaseModel):
     # map: slot name -> human description of what should be produced
     output_contract_dyn: Optional[Dict[str, str]] = Field(default_factory=dict)
 
+    context_use: bool = True
+    editable_slot: str = "editable_md"                  # the slot codegen MUST populate for text representation
+    history_select: str = "latest"                      # 'latest' | 'by_mention' | 'by_similarity'
+    history_select_hint: str = ""                       # short instruction when not 'latest'
+    citations_source_path: str = "program_history[].<exec>.web_links_citations.items"
+    instructions_for_codegen: str = ""                  # ≤80 words, concrete steps to read context and pick version
+
 
 async def assess_solvability_stream(
         svc: ModelServiceBase,
@@ -325,39 +375,60 @@ async def assess_solvability_stream(
         on_thinking_delta=None,
         max_tokens=None,
 ) -> Dict[str, Any]:
+
     today = _today_str()
     sys = (
-    "You are the 'Solvability Checker'.\n"
-    "Decide if the request is answerable NOW using ONLY the provided candidates. Choose the mode.\n"
-    "\nDYNAMIC OUTPUT CONTRACT — PURPOSE:\n"
-    "• Provide output_contract_dyn: dict slot_name → short description (≤18 words).\n"
-    "• This is the minimal checklist of deliverables the downstream program MUST emit; the answer generator will ingest only these.\n"
-    "\nHARD RULES:\n"
-    "• Do NOT solve the task. Consider only the provided candidates; do NOT invent tools.\n"
-    "• Feasibility gate: every contract slot must be producible with the selected tools; otherwise adjust tools or set solvable=false.\n"
-    "• Non-invention: never invent page counts, sections, URLs, dates, or substantive content.\n"
-    "• Contract minimality: include ONLY what the objective requires.\n"
-    "\nCLOSED-PLAN / COMPOSABILITY (CRITICAL):\n"
-    "• Build a closed plan: any input needed by a selected tool must come from user/context OR from another selected tool.\n"
-    "• If a renderer requires content (e.g., content_md/text/sources_json), you MUST also select a text/content producer.\n"    
-    "\nLLM-READABLE MIRROR RULE (CRITICAL):\n"
-    "• For every FILE deliverable, ALSO add one textual slot that captures its essential content for LLM consumption.\n"
-    "  Examples (generic guidance, not a mandate):\n"
-    "    pdf_file → summary_md; slides_pptx → outline_md; image_png → caption_md; csv_file → data_json or table_md.\n"
-    "• If the objective already demands text (e.g., a summary), reuse that as the mirror slot.\n"
-    "\nSLOT NAMING:\n"
-    "• snake_case; file slots like: pdf_file, slides_pptx, image_png, csv_file, zip_bundle.\n"
-    "• text slots like: summary_md, outline_md, caption_md, table_md, data_json, plan_md.\n"
-    "• Include 'sources_md' ONLY if the user explicitly asked for sources/citations.\n"
-    "\nMODE SELECTION (STRICT):\n"
-    "• llm_only — no tools needed.\n"
-    "• direct_tools_exec — allowed ONLY when exactly ONE tool is selected. (Multiple tools imply orchestration.)\n"
-    "• codegen — choose whenever outputs of one tool feed another, or when multiple tools are selected for the plan.\n"
-    "\nCLARIFYING QUESTIONS: add ≤2 only if ambiguity blocks progress.\n"
-    f"Assume today={today} (UTC).\n"
-    "INTERNAL THINKING: very concise. USER-FACING: two concise lines (assessment; action). No tool/provider names.\n"
-)
-
+        "# Solvability Checker\n"
+        "\n"
+        "## Goal\n"
+        "- Decide if the request is answerable **now** using ONLY the provided tool candidates.\n"
+        "- If solvable, emit a minimal **DYNAMIC OUTPUT CONTRACT** the downstream program MUST produce.\n"
+        "\n"
+        "## Hard rules\n"
+        "- Do **not** solve the task. Do **not** invent tools or content, dates, URLs, or section lists.\n"
+        "- **Feasibility gate:** every contract slot must be producible with the selected tools; otherwise change tools or set `solvable=false`.\n"
+        "- **Contract minimality:** include **only** what the user objective requires.\n"
+        "\n"
+        "## Modes\n"
+        "- `llm_only` — no tools needed.\n"
+        "- `direct_tools_exec` — allowed **only** when exactly one tool is selected.\n"
+        "- `codegen` — choose when multiple tools are needed or when outputs must flow between tools.\n"
+        "\n"
+        "## Closed-plan requirement\n"
+        "- Any input needed by a selected tool must come from user/context **or** be produced by another selected tool.\n"
+        "\n"
+        "## Project canvas (critical)\n"
+        "- ALWAYS include a slot named **`project_canvas`** in `output_contract_dyn`. This is the single editable, textual mirror of the project.\n"
+        "- The canvas must contain the actual user-facing Markdown content, including any `[[S:n]]` tokens.\n"
+        "- Do **not** put solver notes, change logs, or internal reasoning into the canvas.\n"
+        "- If the request modifies a prior project, prefer **edit/update** over full regeneration.\n"
+        "\n"
+        "## History reuse (if applicable)\n"
+        "- The downstream program can read `OUTPUT_DIR/context.json → program_history[]`.\n"
+        "- Set `history_select`: `latest` | `by_mention` | `by_similarity`. If not `latest`, add a short `history_select_hint`.\n"
+        "- Provide concise `instructions_for_codegen`: how to pick **one** prior version at\n"
+        "  `program_history[i][<exec_id>].project_canvas.text` and where to read prior citations at\n"
+        "  `program_history[i][<exec_id>].web_links_citations.items`.\n"
+        "\n"
+        "## Citations\n"
+        "- The editor inserts `[[S:n]]` for **new/changed** claims. Never ask to renumber existing tokens.\n"
+        "\n"
+        "## Slot naming\n"
+        "- snake_case.\n"
+        "- Files: `pdf_file`, `slides_pptx`, `image_png`, `csv_file`, `zip_bundle`.\n"
+        "- Text/struct: `project_canvas`, `summary_md`, `outline_md`, `table_md`, `data_json`, `plan_md`.\n"
+        "- Only add a separate `sources_md` slot if the user explicitly asks for sources outside the file render.\n"
+        "\n"
+        "## Clarifying questions\n"
+        "- Ask ≤2 only if ambiguity **blocks** progress.\n"
+        "\n"
+    )
+    sys += (
+        f"Assume today={today} (UTC).\n"
+        "\n"
+        "INTERNAL THINKING: very concise.\n"
+        "USER-FACING STATUS: two short lines (assessment; next action). No tool/provider names.\n"
+    )
     sys = _add_3section_protocol(
         sys,
         "{"

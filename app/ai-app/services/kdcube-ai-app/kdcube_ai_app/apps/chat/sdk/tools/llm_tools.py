@@ -21,7 +21,7 @@ def bind_service(svc):  # ToolManager will call this
     _SERVICE = svc
 
 
-class SummarizerTools:
+class LLMTools:
     """
     LLM-backed summarizer with TWO explicit modes:
 
@@ -155,9 +155,106 @@ class SummarizerTools:
         )
         return "".join(buf).strip()
 
+    @kernel_function(
+        name="edit_text_llm",
+        description=(
+                "Edit or transform text per an instruction while preserving facts/structure. "
+                "Optionally ground new/changed claims in provided sources and insert inline citation tokens [[S:<sid>]]."
+        )
+    )
+    async def edit_text_llm(
+            self,
+            text: Annotated[str, "Original content to edit (≤15k chars)."],
+            instruction: Annotated[str, "Editing goal, e.g., 'add security section and shorten intro'"],
+            tone: Annotated[str, "Optional tone/style, e.g., 'professional'"] = "",
+            keep_formatting: Annotated[bool, "Keep Markdown structure (headings, lists, code blocks)."] = True,
+            sources_json: Annotated[str, "JSON array of sources: {sid:int, title:str, url:str, text:str}"] = "[]",
+            cite_sources: Annotated[bool, "If true, add tokens [[S:<sid>]] after NEW/CHANGED claims only."] = True,
+            forbid_new_facts_without_sources: Annotated[bool, "If true, any NEW claim MUST be grounded in provided sources."] = True,
+            max_tokens: Annotated[int, "LLM output cap.", {"min": 64, "max": 1600}] = 900,
+    ) -> Annotated[str, "Edited Markdown; may include [[S:<sid>]] tokens if cite_sources=true"]:
+        if _SERVICE is None:
+            return "ERROR: editor not bound to service."
+
+        from langchain_core.messages import SystemMessage, HumanMessage
+        import json as _json
+
+        # ---- Parse/normalize sources (bounded) ----
+        try:
+            raw = _json.loads(sources_json) if sources_json else []
+        except Exception:
+            raw = []
+        rows = []
+        total_budget = 10000
+        per = max(600, total_budget // max(1, len(raw))) if raw else 0
+        for s in (raw or []):
+            if not isinstance(s, dict) or "sid" not in s:
+                continue
+            rows.append({
+                "sid": int(s["sid"]),
+                "title": str(s.get("title",""))[:160],
+                "url": str(s.get("url",""))[:800],
+                "text": str(s.get("text") or s.get("body") or "")[:per]
+            })
+        sid_map = "\n".join([f"- {r['sid']}: {r['title']}" for r in rows]) if rows else ""
+
+        # ---- System rules ----
+        rules = [
+            "Edit deterministically. Preserve meaning unless the instruction requires changes.",
+            "Do NOT invent facts, numbers, or events.",
+            "If tone is specified, apply consistently.",
+            "If keep_formatting=true: preserve Markdown structure and section order; you may rewrite sentences inside blocks.",
+            "Return ONLY the edited text (Markdown). No commentary.",
+        ]
+        rules += [
+            "Do not alter or renumber existing [[S:n]] tokens. Remove a token only if you delete the entire supported claim/sentence."
+        ]
+        rules += [
+            "If the input contains <!--GUIDANCE_START--> ... <!--GUIDANCE_END-->, treat it as internal instructions: apply them, then REMOVE the entire block from the output."
+        ]
+        if forbid_new_facts_without_sources:
+            rules.append("Any NEW or materially CHANGED factual claim must be grounded in provided sources.")
+        if cite_sources and rows:
+            rules += [
+                "CITATIONS:",
+                "- Insert [[S:<sid>]] after sentences/bullets that contain NEW or materially CHANGED factual claims,",
+                "- Use provided sid values only; never invent sids.",
+                "- If a sentence is rearranged but unchanged factually, do not cite it.",
+            ]
+
+        sys_prompt = "\n".join(rules)
+
+        # ---- User payload ----
+        header = f"INSTRUCTION: {instruction}\nTONE: {tone or 'as-is'}\nkeep_formatting={bool(keep_formatting)}; cite_sources={bool(cite_sources)}; forbid_new_facts_without_sources={bool(forbid_new_facts_without_sources)}"
+        if rows:
+            header += f"\nSOURCE IDS:\n{sid_map}\n"
+
+        body = (text or "")[:15000]
+        if rows:
+            digest = "\n\n---\n\n".join([f"[sid:{r['sid']}] {r['title']}\n{r['text']}" for r in rows])[:total_budget]
+            ask = f"{header}\n---\nTEXT (original):\n{body}\n\n---\nSOURCES DIGEST:\n{digest}"
+        else:
+            ask = f"{header}\n---\nTEXT (original):\n{body}"
+
+        buf = []
+        async def on_delta(d):
+            if d: buf.append(d)
+        async def on_complete(_):
+            pass
+
+        await _SERVICE.stream_model_text_tracked(
+            _SERVICE.get_client("tool.editor"),
+            [SystemMessage(content=sys_prompt), HumanMessage(content=ask)],
+            on_delta=on_delta, on_complete=on_complete,
+            temperature=0.15, max_tokens=max_tokens,
+            client_cfg=_SERVICE.describe_client(_SERVICE.answer_generator_client, role="answer_generator"),
+            role="answer_generator",
+        )
+        return "".join(buf).strip()
+
 
 kernel = sk.Kernel()
-tools = SummarizerTools()
+tools = LLMTools()
 kernel.add_plugin(tools, "agent_llm_tools")
 
 print()

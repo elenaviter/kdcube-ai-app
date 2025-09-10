@@ -29,6 +29,9 @@ from kdcube_ai_app.infra.accounting.usage import (
     ServiceUsage,
     ClientConfigHint,
 )
+from kdcube_ai_app.infra.llm.llm_data_model import ModelRecord, AIProvider, AIProviderName
+from kdcube_ai_app.infra.llm.util import get_service_key_fn
+from kdcube_ai_app.infra.embedding.embedding import get_embedding
 
 # =========================
 # ids/util
@@ -505,6 +508,19 @@ Please fix the JSON to match the expected format. Return only the fixed JSON, no
             self.logger.finish_operation(False, f"Format fixing failed: {str(e)}")
             return {"success": False, "error": str(e), "raw": raw_output}
 
+from kdcube_ai_app.apps.chat.reg import EMBEDDERS
+def embedding_model() -> ModelRecord:
+    provider_name = AIProviderName.open_ai
+    provider = AIProvider(provider=provider_name, apiToken=get_service_key_fn(provider_name))
+    model_config = EMBEDDERS.get("openai-text-embedding-3-small")
+    model_name = model_config.get("model_name")
+    return ModelRecord(
+        modelType="base",
+        status="active",
+        provider=provider,
+        systemName=model_name,
+    )
+
 # =========================
 # Model service — thin, tidy, role-first
 # =========================
@@ -522,6 +538,8 @@ class ModelServiceBase:
         self.format_fixer = FormatFixerService(config)
         self._anthropic_async = None
 
+        self._emb_model = embedding_model()
+
     # ---------- back-compat clients (lazily resolved) ----------
     @property
     def classifier_client(self):       return self.router.get_client("classifier", 0.1)
@@ -534,6 +552,16 @@ class ModelServiceBase:
 
     def get_client(self, role, temperature: float = 0.7 ):
         return self.router.get_client(role, temperature)
+
+    async def embed_texts(self, texts: List[str]) -> List[List[float]]:
+        """
+        Uses your accounting-aware embedding path via get_embedding().
+        Kept simple; if you want to offload to thread pool, you can wrap get_embedding in run_in_executor.
+        """
+        out: List[List[float]] = []
+        for t in texts:
+            out.append(get_embedding(model=self._emb_model, text=t))
+        return out
 
     # ---------- helper ----------
     def describe_client(self, client, role: Optional[str] = None) -> ClientConfigHint:

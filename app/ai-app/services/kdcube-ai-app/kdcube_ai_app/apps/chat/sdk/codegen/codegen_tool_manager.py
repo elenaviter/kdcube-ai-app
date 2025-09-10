@@ -2,8 +2,9 @@
 # Copyright (c) 2025 Elena Viter
 
 # chat/sdk/codegen/codegen_tool_manager.py
-import datetime
-import os, sys
+
+import os
+import sys
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, Any, Awaitable, Optional, List, Tuple
@@ -16,16 +17,22 @@ import json
 import asyncio
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
+from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
+import kdcube_ai_app.apps.chat.sdk.codegen.project_retrieval as project_retrieval
 from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase, AgentLogger
 from kdcube_ai_app.apps.chat.sdk.runtime.simple_runtime import _InProcessRuntime
-from kdcube_ai_app.apps.chat.sdk.storage.turn_storage import _LocalTurnStore
-from kdcube_ai_app.apps.chat.sdk.codegen.team import tool_router_stream, _today_str, assess_solvability_stream
+from kdcube_ai_app.apps.chat.sdk.codegen.team import (
+    tool_router_stream,
+    assess_solvability_stream,
+    solver_codegen_stream,
+    _today_str,
+)
+from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
 from kdcube_ai_app.apps.chat.sdk.viz import logging_helpers
 
 def _rid(prefix: str = "r") -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
-import importlib.util
 
 def _here(*parts: str) -> pathlib.Path:
     """Path relative to this file (workflow.py)."""
@@ -94,17 +101,16 @@ class CodegenToolManager:
         *,
         service: ModelServiceBase,
         comm: ChatCommunicator,
-        logger: AgentLogger,
-        emit: Callable[[Dict[str, Any], str], Awaitable[None]],
-        registry: Optional[Dict[str, Dict[str, Any]]] = None,
+        logger: Optional[AgentLogger] = None,
+        emit: Callable[[Dict[str, Any]], Awaitable[None]],
+        registry: Optional[Dict[str, Any]] = None,
+        context_rag_client: Optional[ContextRAGClient] = None,
         tools_specs: Optional[List[Dict[str, Any]]] = None, # list of {ref, use_sk, alias}
-        storage: Optional[object] = None
     ):
-        tools_modules = _resolve_tools(tools_specs)
-
-        self.store = storage or _LocalTurnStore()
+        tools_modules = _resolve_tools(tools_specs or [])
         self.svc = service
         self.comm = comm
+        self.context_rag_client = context_rag_client
         self.log = logger or AgentLogger("tool_manager")
         self.emit = emit
         self.registry = registry or {}
@@ -147,6 +153,11 @@ class CodegenToolManager:
             try:
                 if hasattr(mod, "bind_registry"):
                     mod.bind_registry(self.registry)
+            except Exception:
+                pass
+            try:
+                if hasattr(mod, "bind_integrations"):
+                    mod.bind_integrations({ "ctx_client": self.context_rag_client })
             except Exception:
                 pass
 
@@ -375,16 +386,13 @@ class CodegenToolManager:
             if p.get("default") not in (None, inspect._empty):
                 type_hint += f" (default={p['default']})"
             args_doc[p["name"]] = type_hint
-        returns_doc = (return_annotation or "").strip()
-        if not returns_doc:
-            # fallback default if nothing detected
-            returns_doc = "str or JSON (tool-specific)"
+        returns_doc = (return_annotation or "").strip() or "str or JSON (tool-specific)"
         entry = {
             "id": f"{alias}.{fn_name}",     # QUALIFIED id
             "desc": desc.strip(),
             "params": params,
             "import": import_stmt,
-            "call_template": call_template,
+            "call_template": call_template.replace("${","{").replace("}$","}"),
             "is_async": bool(is_async),
             "doc": {
                 "purpose": desc.strip(),
@@ -399,8 +407,8 @@ class CodegenToolManager:
         if "plugin_alias" not in entry: entry["plugin_alias"] = alias
         return entry
 
-    # -------- prompt catalogs / adapters --------
-    # ---- scoped catalogs/adapters ----
+    # -------- catalogs / adapters --------
+
     def _filter_entries(self, allowed_plugins: Optional[List[str]] = None, allowed_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         ents = list(self.tools_info)
         system_tool = lambda e: (e.get("plugin_alias") or "") in ["io_tools"]
@@ -432,7 +440,8 @@ class CodegenToolManager:
             "doc": e["doc"],
         } for e in self._filter_entries(allowed_plugins, allowed_ids)]
 
-    # -------- selection flow --------
+    # -------- router / solvability --------
+
     async def decide(self, *, ctx: Dict[str, Any], allowed_plugins: Optional[List[str]] = None, allowed_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         rid = ctx.get("request_id") or "req-unknown"
 
@@ -458,14 +467,13 @@ class CodegenToolManager:
         }
 
     async def _run_tool_router(self, ctx: Dict[str, Any], *, allowed_plugins: Optional[List[str]] = None, allowed_ids: Optional[List[str]] = None) -> Dict[str, Any]:
-        topics = ctx.get("topics") or []
         out = await tool_router_stream(
             self.svc,
             ctx["text"],
             policy_summary=(ctx.get("policy_summary") or ""),
             context_hint=(ctx.get("context_hint") or ""),
             topic_hint=(ctx.get("topic_hint") or ""),
-            topics=topics,
+            topics=ctx.get("topics") or [],
             tool_catalog=self.tool_catalog_for_prompt(allowed_plugins=allowed_plugins, allowed_ids=allowed_ids),  # <-- scoped
             on_thinking_delta=self._mk_thinking_streamer("tool router"),
             max_tokens=1500
@@ -537,25 +545,52 @@ class CodegenToolManager:
             reasoning=sv.get("reasoning", "")
         )
 
+    # -------- solution entry point --------
+
     async def solve(
             self,
             *,
             request_id: str,
             user_text: str,
             policy_summary: str = "",
+            topic_hint: Optional[str] = None,
             topics: Optional[List[str]] = None,
             allowed_plugins: Optional[List[str]] = None,
             section_name: Optional[str] = None,
-            extra_task_hint: Optional[Dict[str, Any]] = None
+            extra_task_hint: Optional[Dict[str, Any]] = None,
+            context_hint: str = "",
     ) -> Dict[str, Any]:
         """
-        One-call orchestrator:
-          - routes + solvability
-          - if solver_mode=='direct_tools_exec' => execute directly
-          - if solver_mode=='codegen'     => generate program, run, collect outputs
-        Returns a structured dict with 'mode', 'decision', 'exec'/'codegen', and 'artifacts' for scratchpad.
+        Orchestrate routing/solvability and, when in 'codegen' mode, return a clean normalized envelope:
+          {
+            mode: "codegen" | "direct_tools_exec" | "llm_only",
+            decision: {...},
+            contract_dyn: {...},              # dynamic contract (if any)
+            out: [result.json 'out' items],   # raw out items (not rehosted)
+            deliverables: {slot: {description, value:[...] } },
+            citations: [...],
+            calls: [...],                     # grouped out-items by (tool_id, input)
+            codegen: {...},                   # full codegen envelope (rounds etc.)
+            execution_id: "<from result.json or run_id>"
+          }
         """
         topics = topics or []
+
+        try:
+            program_history = \
+                await project_retrieval._build_program_history(self,
+                                                               user_text=user_text,
+                                                               scope="track", days=365, top_k=6)
+        except Exception:
+            program_history = []
+
+        history_hint = project_retrieval._history_digest(program_history, limit=3)
+        context_hint = (context_hint or "")
+        context_hint = (
+            f"{context_hint}\n"
+            f"Prior programs (for reuse): {history_hint}. "
+            f"The downstream program can read them under OUTPUT_DIR/context.json → program_history[]."
+        ).strip()
 
         # 1) Router + Solvability (scoped)
         tm_out = await self.decide(
@@ -565,8 +600,8 @@ class CodegenToolManager:
                 "topics": topics,
                 "is_spec_domain": ("domain_tools" in (allowed_plugins or [])),  # caller can scope via allowed_plugins already
                 "policy_summary": policy_summary,
-                "context_hint": "",
-                "topic_hint": ", ".join((topics or [])[:3]),
+                "context_hint": context_hint,
+                "topic_hint": topic_hint or ", ".join((topics or [])[:3]),
             },
             allowed_plugins=allowed_plugins
         )
@@ -577,11 +612,6 @@ class CodegenToolManager:
         chosen = [t.id for t in (decision.tools or [])]
         sv_mode = (tm_out.get("sv") or {}).get("solver_mode")
         mode = sv_mode or ("direct_tools_exec" if chosen else "llm_only")
-
-        # choose mode
-        # mode = "llm_only"
-        # if chosen:
-        #     mode = "direct_tools_exec" if len(chosen) == 1 else "codegen"
 
         result: Dict[str, Any] = {
             "mode": mode,
@@ -595,44 +625,36 @@ class CodegenToolManager:
             "artifacts": [],
             "deliverables": {},            # <— by slot name
             "citations": [],
+            "out": [],
+            "calls": [],
         }
 
+        # ---- direct execution (simple, one tool typical) ----
         if mode == "direct_tools_exec":
-            steps = [{"tool": chosen[0], "args": (decision.tools[0].params or {}), "save_as": chosen[0]}]
+            steps = [{
+                "tool": chosen[0],
+                "args": (decision.tools[0].params or {}),
+                "save_as": chosen[0]
+            }]
             exec_res = await self.execute_plan(steps, allowed_plugins=allowed_plugins)
-            # Expose standard artifacts to the caller
             result["exec"] = exec_res
-            # Best-effort publish: if any step produced a file-like artifact under out[], copy it.
-            try:
-                out_items = result.get("exec", {}).get("out") or []
-                # Build a faux solver_json with only 'out'
-                faux = {"ok": True, "objective": user_text, "out": out_items, "raw_files": {}}
-                # Reuse a small temp dir as "outdir" base for relative paths (no-ops if paths are absolute)
-                import tempfile
-                tmp_outdir = pathlib.Path(tempfile.mkdtemp(prefix="direct_exec_out_"))
-                pub = await self._publish_codegen_outputs(
-                    request_id=request_id, outdir=tmp_outdir, solver_json=faux, contract_dyn=contract_dyn
-                )
-                result["storage"] = {
-                    "manifest_url": pub["manifest_url"],
-                    "manifest_key": pub["manifest_key"],
-                    "files": pub["files"],
-                    "raw_files": pub["raw_files"],
-                }
-            except Exception as _e:
-                # non-fatal; just skip publishing
-                pass
-
             result["out"] = exec_res.get("out") or []
+            result["calls"] = exec_res.get("calls") or []
+            result["result_interpretation_instruction"] = (
+                f"Artifacts shown under the 'Context — not authored by the user' block were produced automatically "
+                f"by executing {chosen[0]}. Treat them as system-provided context for this turn; cite any URLs within."
+            )
+            result["execution_id"] = None
             return result
 
+        # ---- codegen flow ----
         if mode == "codegen":
-
-            # Always include IO utils with chosen adapters so codegen can persist artifacts cleanly
-            chosen_set = set(chosen)
+            # always include IO utils so codegen can persist files/JSON
             support_ids = [e["id"] for e in self.tools_info if (e.get("plugin_alias") or "") == "io_tools"]
-            scoped_ids = list(chosen_set | set(support_ids))
-            adapters = self.adapters_for_codegen(allowed_plugins=allowed_plugins, allowed_ids=scoped_ids)
+            adapters = self.adapters_for_codegen(
+                allowed_plugins=allowed_plugins,
+                allowed_ids=list(set(chosen) | set(support_ids)),
+            )
 
             cg_res = await self.run_code_gen(
                 request_id=request_id,
@@ -643,110 +665,70 @@ class CodegenToolManager:
                 topics=topics,
                 extra_task_hint=extra_task_hint,
                 constraints={"prefer_direct_tools_exec": True, "minimize_logic": True, "concise": True, "line_budget": 80},
-                max_rounds=1,  # bump to 2–3 if you want chained codegen
+                max_rounds=1,
+                program_history=program_history,
             )
 
-            # Artifacts summary
+            # Extract solver JSON and derived blocks
             rounds = cg_res.get("rounds") or []
-            if rounds:
-                r0 = rounds[0]
+            solver_json = self._extract_solver_json_from_round(rounds[0]) if rounds else {}
+            out_items: List[Dict[str, Any]] = (solver_json or {}).get("out") or []
 
-                main_src = r0.get("main_preview")
-                if main_src:
-                    result["artifacts"].append(self._artifact("solver-code", f"[{section_name or 'solver'}] main.py",
-                                                              (main_src if len(main_src) <= 8000 else (main_src[:8000] + "\n...[truncated]"))))
-                result["artifacts"].append(self._artifact("solver-outputs", f"[{section_name or 'solver'}] outputs",
-                                                          json.dumps(r0.get("outputs"), ensure_ascii=False, indent=2)))
-                result["artifacts"].append(self._artifact("tool-decision", f"[{section_name or 'solver'}] decision",
-                                                          json.dumps(result["decision"], ensure_ascii=False, indent=2)))
-
-                out_items: List[Dict[str, Any]] = []
-                items = r0.get("outputs", {}).get("items", [])
-                for it in items:
-                    data = it.get("data")
-                    if isinstance(data, dict):
-                        out_items = data.get("out") or []
-                        # try to read original out_dyn for slot mapping
-                        out_dyn = data.get("_out_dyn_raw") or data.get("out_dyn") or {}
-                        break
-
-                # Map deliverables back to slots:
-                # We used slot names as resource_id base in save_ret; for files/urls we kept resource_id=slot
-                by_slot: Dict[str, List[Dict[str, Any]]] = {}
-                for art in out_items:
-                    rid = str(art.get("resource_id") or "")
-                    slot = rid.split("#", 1)[0] if "#" in rid else rid
-                    if not slot: continue
+            # Deliverables strictly from contract slots
+            contract_keys = set(contract_dyn.keys()) if isinstance(contract_dyn, dict) else set()
+            # group deliverables strictly by contract keys; others are citations
+            by_slot: Dict[str, List[Dict[str, Any]]] = {}
+            for art in out_items:
+                rid = str(art.get("resource_id") or "")
+                slot = rid.split("#", 1)[0] if "#" in rid else rid
+                if slot:
                     by_slot.setdefault(slot, []).append(art)
 
-                # Build deliverables dict strictly for contract keys; others treated as citations
-                deliverables = {k: by_slot.get(k, []) for k in (contract_dyn.keys() if isinstance(contract_dyn, dict) else [])}
-                # Citations: any citable item whose slot is not a contract key
-                contract_keys = set(contract_dyn.keys()) if isinstance(contract_dyn, dict) else set()
-                citations = [a for a in out_items if bool(a.get("citable")) and (a.get("resource_id","").split("#",1)[0] not in contract_keys)]
+            deliverables = {k: {"description": contract_dyn[k], "value": by_slot.get(f"slot:{k}", [])}
+                            for k in contract_keys}
 
-                solver_json = self._extract_solver_json_from_round(r0) or {}
-                pub = await self._publish_codegen_outputs(
-                    request_id=request_id,
-                    outdir=pathlib.Path(r0["outdir"]),
-                    solver_json=solver_json,
-                    contract_dyn=contract_dyn,
-                )
-                # Inject URLs back into result:
-                # - artifacts already set above (dev-facing)
-                # - deliverables: enrich file artifacts with url/store_key when available
-                enriched_deliverables: Dict[str, List[Dict[str, Any]]] = {}
-                url_by_resource = {(a.get("resource_id"), a.get("path")): a.get("url")
-                                   for a in (pub.get("out_with_urls") or [])
-                                   if a.get("type") == "file" and a.get("url")}
-                for slot, items in (deliverables or {}).items():
-                    new_items = []
-                    for a in (items or []):
-                        if a.get("type") == "file":
-                            key = (a.get("resource_id"), a.get("path"))
-                            url = url_by_resource.get(key)
-                            if url:
-                                b = dict(a); b["url"] = url
-                                new_items.append(b)
-                            else:
-                                new_items.append(a)
-                        else:
-                            new_items.append(a)
-                    enriched_deliverables[slot] = new_items
+            # Citations: any citable inline out item (regardless of slot)
+            citations = []
+            for a in out_items:
+                if a.get("type") == "inline" and bool(a.get("citable")):
+                    citations.append(a)
 
-                result["deliverables"] = enriched_deliverables
-                result["storage"] = {
-                    "manifest_url": pub["manifest_url"],
-                    "manifest_key": pub["manifest_key"],
-                    "files": pub["files"],
-                    "raw_files": pub["raw_files"],
-                }
-                result["citations"] = citations
-                result["artifacts"] = out_items
             result["codegen"] = cg_res
+            result["out"] = out_items
+            result["deliverables"] = deliverables
+            result["citations"] = citations
+            result["calls"] = self._group_calls_sequential(out_items)
+
+            # Attach execution id if solver exposed it (fallback to run_id)
+            exec_id = None
+            try:
+                exec_id = (solver_json or {}).get("execution_id") or cg_res.get("run_id")
+            except Exception:
+                exec_id = cg_res.get("run_id")
+            result["execution_id"] = exec_id
+
             return result
 
-        # llm_only fallthrough
+        # ---- llm only (no tools) ----
+        result["execution_id"] = None
         return result
 
-    def _artifact(self, kind: str, title: str, content: str) -> Dict[str, Any]:
-        return {"kind": kind, "title": title, "content": content}
 
-    # ---- direct execution of a simple step list ----
-    def _resolve_callable(self, qualified_id: str):
-        # qualified id: "<alias>.<fn>"
-        try:
-            alias, fn = qualified_id.split(".", 1)
-            modrec = self._mods_by_alias[alias]
-            owner = getattr(modrec["mod"], "tools", modrec["mod"])
-            return getattr(owner, fn)
-        except Exception:
-            return None
+    # -------- execution & artifact promotion --------
 
-    def _mk_artifact(self, *, resource_id: str, type_: str, tool_id: str,
-                     path: Optional[str]=None, value: Optional[str]=None,
-                     mime: Optional[str]=None, citable: bool=False,
-                     description: Optional[str]=None, tool_input: Optional[Dict[str,Any]]=None) -> Dict[str, Any]:
+    def _mk_artifact(
+        self,
+        *,
+        resource_id: str,
+        type_: str,
+        tool_id: str,
+        path: Optional[str] = None,
+        value: Optional[str] = None,
+        mime: Optional[str] = None,
+        citable: bool = False,
+        description: Optional[str] = None,
+        tool_input: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         a = {
             "resource_id": resource_id,
             "type": type_,
@@ -754,22 +736,18 @@ class CodegenToolManager:
             "mime": mime,
             "citable": bool(citable),
             "description": description or "",
-            "tool_input": tool_input or {},
+            "input": tool_input or {},
         }
         if type_ == "file": a["path"] = path or ""
         else: a["value"] = value or ""
         return a
 
     def _promote_tool_return(self, tool_id: str, args: Dict[str, Any], ret: Any) -> List[Dict[str, Any]]:
-        """
-        Convert a single tool's return value into zero or more standardized artifacts.
-        Heuristics are deterministic and documented.
-        """
+        """Normalize one tool's return value into standard artifacts usable by the Orchestrator."""
         arts: List[Dict[str, Any]] = []
         base_args = dict(args or {})
-
-        # Normalize
         data = ret
+
         if tool_id.endswith(".kb_search"):
             items = data if isinstance(data, list) else []
             for it in items:
@@ -801,11 +779,10 @@ class CodegenToolManager:
         # web_search → list of sources
         if tool_id.endswith(".web_search"):
             items = data if isinstance(data, list) else []
-            for i, it in enumerate(items):
-                if not isinstance(it, dict):  # best-effort
-                    rid = _rid("S")
+            for it in items:
+                if not isinstance(it, dict):
                     arts.append(self._mk_artifact(
-                        resource_id=rid, type_="inline", tool_id=tool_id,
+                        resource_id=_rid("S"), type_="inline", tool_id=tool_id,
                         value=json.dumps(it, ensure_ascii=False),
                         mime="application/json", citable=True,
                         description="web source", tool_input=base_args
@@ -831,9 +808,8 @@ class CodegenToolManager:
         # write_pdf / write_file → file path string
         if tool_id.endswith(".write_pdf"):
             if isinstance(data, str):
-                rid = _rid("F")
                 arts.append(self._mk_artifact(
-                    resource_id=rid, type_="file", tool_id=tool_id,
+                    resource_id=_rid("F"), type_="file", tool_id=tool_id,
                     path=data, mime="application/pdf", citable=True,
                     description="PDF document", tool_input=base_args
                 ))
@@ -841,19 +817,16 @@ class CodegenToolManager:
 
         if tool_id.endswith(".write_file"):
             if isinstance(data, str):
-                rid = _rid("F")
                 arts.append(self._mk_artifact(
-                    resource_id=rid, type_="file", tool_id=tool_id,
+                    resource_id=_rid("F"), type_="file", tool_id=tool_id,
                     path=data, mime="text/plain", citable=True,
                     description="Text file", tool_input=base_args
                 ))
             return arts
 
-        # calc → inline number/string (non-citable)
         if tool_id.endswith(".calc"):
-            rid = _rid("V")
             arts.append(self._mk_artifact(
-                resource_id=rid, type_="inline", tool_id=tool_id,
+                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
                 value=str(data), mime="text/plain", citable=False,
                 description="calculation result", tool_input=base_args
             ))
@@ -861,93 +834,117 @@ class CodegenToolManager:
 
         # summarizer → inline markdown (non-citable)
         if tool_id.endswith(".summarize_llm"):
-            rid = _rid("V")
             val = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
             arts.append(self._mk_artifact(
-                resource_id=rid, type_="inline", tool_id=tool_id,
+                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
                 value=val, mime="text/markdown", citable=False,
                 description="summary", tool_input=base_args
             ))
             return arts
 
-        # default: if scalar string → inline, else JSON inline
-        rid = _rid("V")
+        # default normalization
         if isinstance(data, str):
             arts.append(self._mk_artifact(
-                resource_id=rid, type_="inline", tool_id=tool_id,
+                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
                 value=data, mime="text/plain", citable=False,
                 description="result", tool_input=base_args
             ))
         else:
             arts.append(self._mk_artifact(
-                resource_id=rid, type_="inline", tool_id=tool_id,
+                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
                 value=json.dumps(data, ensure_ascii=False),
                 mime="application/json", citable=False,
                 description="result", tool_input=base_args
             ))
         return arts
+
     async def execute_plan(self, steps: List[Dict[str, Any]], *, allowed_plugins: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Execute [{tool:'alias.fn', args:{...}, save_as:'name'}].
-        Return {steps:[...], out:[artifacts...] } where out[] matches the standard artifact schema.
+        Returns:
+          {
+            steps:[{ok, tool, args, return, elapsed_ms, call_id, save_as?}, ...],
+            out:[artifacts...],                  # flattened normalized artifacts (with tool_input)
+            calls:[{call_id, tool_id, args, artifacts:[...]}]  # one entry per invocation
+          }
         """
-        out = {"steps": [], "out": []}
+        out = {"steps": [], "out": [], "calls": []}
+
+        from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import SOURCE_ID_CV
+        token_sid = SOURCE_ID_CV.set({"next": 1})
         allowed = set(allowed_plugins or [])
-        for i, s in enumerate(steps or []):
-            tool_id = s.get("tool")
-            entry = self._by_id.get(tool_id)
-            if not entry:
-                out["steps"].append({"ok": False, "tool": tool_id, "error": "tool_not_found"}); continue
+        call_seq = 0
 
-            plugin_name  = (entry.get("plugin") or "")
-            plugin_alias = (entry.get("plugin_alias") or "")
+        try:
+            for s in steps or []:
+                tool_id = s.get("tool")
+                entry = self._by_id.get(tool_id)
+                if not entry:
+                    out["steps"].append({"ok": False, "tool": tool_id, "args": s.get("args") or {}, "error": "tool_not_found"})
+                    continue
 
-            if allowed and not ({plugin_name, plugin_alias, tool_id} & allowed):
-                out["steps"].append({
-                    "ok": False,
-                    "tool": tool_id,
-                    "error": "plugin_not_allowed",
-                    "plugin": plugin_name,
-                    "alias": plugin_alias
-                })
-                continue
+                plugin_name  = (entry.get("plugin") or "")
+                plugin_alias = (entry.get("plugin_alias") or "")
 
-            fn = self._resolve_callable(tool_id)
-            if fn is None:
-                out["steps"].append({"ok": False, "tool": tool_id, "error": "callable_not_found"}); continue
+                if allowed and not ({plugin_name, plugin_alias, tool_id} & allowed):
+                    out["steps"].append({
+                        "ok": False,
+                        "tool": tool_id,
+                        "args": s.get("args") or {},
+                        "error": "plugin_not_allowed",
+                        "plugin": plugin_name,
+                        "alias": plugin_alias
+                    })
+                    continue
 
-            want = {p["name"] for p in (entry.get("params") or [])}
-            args = {k: v for (k, v) in (s.get("args") or {}).items() if k in want}
+                fn = self._resolve_callable(tool_id)
+                if fn is None:
+                    out["steps"].append({"ok": False, "tool": tool_id, "args": s.get("args") or {}, "error": "callable_not_found"})
+                    continue
 
-            t0 = time.perf_counter()
-            try:
-                ret = fn(**args) if args else fn()
-                if inspect.isawaitable(ret): ret = await ret
-                elapsed = int((time.perf_counter() - t0) * 1000)
+                want = {p["name"] for p in (entry.get("params") or [])}
+                args = {k: v for (k, v) in (s.get("args") or {}).items() if k in want}
 
-                parsed = None
-                if isinstance(ret, str):
-                    sv = ret.strip()
-                    if (sv.startswith("{") and sv.endswith("}")) or (sv.startswith("[") and sv.endswith("]")):
-                        try: parsed = json.loads(sv)
-                        except Exception: parsed = sv
+                t0 = time.perf_counter()
+                try:
+                    ret = fn(**args) if args else fn()
+                    if inspect.isawaitable(ret): ret = await ret
+                    elapsed = int((time.perf_counter() - t0) * 1000)
+
+                    parsed = None
+                    if isinstance(ret, str):
+                        sv = ret.strip()
+                        if (sv.startswith("{") and sv.endswith("}")) or (sv.startswith("[") and sv.endswith("]")):
+                            try: parsed = json.loads(sv)
+                            except Exception: parsed = sv
+                        else:
+                            parsed = sv
                     else:
-                        parsed = sv
-                else:
-                    parsed = ret
+                        parsed = ret
 
-                # Promote artifacts per your contract
-                artifacts = self._promote_tool_return(tool_id, args, parsed)
-                out["out"].extend(artifacts)
+                    # Promote artifacts per your contract
+                    artifacts = self._promote_tool_return(tool_id, args, parsed)
+                    out["out"].extend(artifacts)
 
-                out["steps"].append({
-                    "ok": True, "tool": tool_id, "save_as": s.get("save_as"),
-                    "return": parsed, "elapsed_ms": elapsed
-                })
-            except Exception as e:
-                elapsed = int((time.perf_counter() - t0) * 1000)
-                out["steps"].append({"ok": False, "tool": tool_id, "error": f"{type(e).__name__}: {e}", "elapsed_ms": elapsed})
-        return out
+                    call_seq += 1
+                    out["calls"].append({
+                        "call_id": call_seq,
+                        "tool_id": tool_id,
+                        "args": args,
+                        "artifacts": artifacts,
+                    })
+                    out["steps"].append({
+                        "ok": True, "tool": tool_id, "args": args, "save_as": s.get("save_as"),
+                        "return": parsed, "elapsed_ms": elapsed, "call_id": call_seq
+                    })
+                    return out
+                except Exception as e:
+                    elapsed = int((time.perf_counter() - t0) * 1000)
+                    out["steps"].append({"ok": False, "tool": tool_id, "args": args, "error": f"{type(e).__name__}: {e}", "elapsed_ms": elapsed})
+        finally:
+            SOURCE_ID_CV.reset(token_sid)
+
+    # -------- codegen runtime --------
 
     async def run_code_gen(
             self,
@@ -963,13 +960,19 @@ class CodegenToolManager:
             reuse_outdir: bool = False,
             outdir: Optional[pathlib.Path] = None,
             max_rounds: int = 1,
-            timeout_s=120
+            timeout_s=120,
+            program_history: Optional[List[dict]] = None,
     ) -> Dict[str, Any]:
         """Materialize + run codegen once (or a few times with chaining) and collect outputs."""
-        from kdcube_ai_app.apps.chat.sdk.codegen.team import solver_codegen_stream, _today_str
+        from kdcube_ai_app.apps.chat.sdk.codegen.team import _today_str
+
 
         topics = topics or []
         constraints = constraints or {"prefer_direct_tools_exec": True, "minimize_logic": True, "concise": True, "line_budget": 80}
+
+        # attach a stable run-id to this codegen session
+        import uuid as _uuid
+        run_id = f"cg-{_uuid.uuid4().hex[:8]}"
 
         # Working dirs
         if not reuse_outdir or outdir is None:
@@ -988,9 +991,10 @@ class CodegenToolManager:
             "objective": user_text,
             "constraints": constraints,
             "tools_selected": [a["id"] for a in adapters],
-            "notes": (extra_task_hint or {}),
+            "notes": [extra_task_hint or {}],
         }
 
+        remaining = max(1, int(max_rounds))
         while remaining > 0:
             # stream codegen
             cg_stream = await solver_codegen_stream(
@@ -1002,9 +1006,13 @@ class CodegenToolManager:
                 ctx="solver_codegen"
             )
             cg = (cg_stream or {}).get("agent_response") or {}
+            internal_thinking = (cg_stream or {}).get("internal_thinking") or ""
             files = cg.get("files") or []
             entrypoint = cg.get("entrypoint") or "python main.py"
+            result_interpretation_instruction = cg.get("result_interpretation_instruction") or ""
             outputs = cg.get("outputs") or [{"filename": "result.json", "kind": "json", "key": "solver_output"}]
+            notes = cg.get("notes") or ""
+            current_task_spec["notes"].append(notes)
 
             # materialize files
             files_map = {f["path"]: f["content"] for f in files if f.get("path") and f.get("content") is not None}
@@ -1013,10 +1021,19 @@ class CodegenToolManager:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
 
+            context = {"request_id": request_id,
+                       "program_history": program_history or [],
+                       "topics": topics,
+                       "policy_summary": policy_summary,
+                       "today": _today_str(),
+                       "notes": notes,
+                       "run_id": run_id,
+                       "result_interpretation_instruction": result_interpretation_instruction,
+                       "internal_thinking": internal_thinking,}
             # write runtime inputs
             self.write_runtime_inputs(
                 output_dir=outdir,
-                context={"request_id": request_id, "topics": topics, "policy_summary": policy_summary, "today": _today_str()},
+                context=context,
                 task={**current_task_spec, "adapters_spec": adapters}
             )
 
@@ -1029,10 +1046,20 @@ class CodegenToolManager:
                 "entrypoint": entrypoint,
                 "files": [{"path": p, "size": len(c or "")} for p, c in files_map.items()],
                 "run": run_res,
+                "notes": current_task_spec["notes"],
                 "outputs": collected,
-                "notes": cg.get("notes", ""),
+                "internal_thinking": internal_thinking,
+                "result_interpretation_instruction": result_interpretation_instruction,
+                "inputs": {
+                    "constraints": constraints,
+                    "objective": user_text,
+                    "topics": topics,
+                    "tools_selected": current_task_spec["tools_selected"],
+                    "policy_summary": policy_summary,
+                },
                 "workdir": str(workdir),
                 "outdir": str(outdir),
+                "run_id": run_id,
             }
             # inline preview of main.py when short
             main_src = files_map.get("main.py")
@@ -1041,7 +1068,7 @@ class CodegenToolManager:
 
             rounds.append(round_rec)
 
-            # Optional chaining: if program asks for another codegen round, detect a spec file
+            # Optional chaining: detect another round
             next_spec_path = outdir / "next_codegen.json"
             remaining -= 1
             if remaining <= 0 or not next_spec_path.exists():
@@ -1058,7 +1085,6 @@ class CodegenToolManager:
                 "tools_selected": next_spec.get("tools_selected") or current_task_spec.get("tools_selected"),
                 "notes": next_spec.get("notes") or {},
             }
-            # narrow adapters to requested tools + always-available IO utils
             requested = set(current_task_spec["tools_selected"] or [])
             support_ids = [e["id"] for e in self.tools_info if (e.get("plugin") or "") == "agent_io_tools"]
             adapters = self.adapters_for_codegen(allowed_ids=list(requested | set(support_ids)))
@@ -1067,89 +1093,10 @@ class CodegenToolManager:
             "rounds": rounds,
             "outdir": str(outdir),
             "workdir": str(workdir),
+            "run_id": run_id,
         }
 
     # -------- runtime IO & exec --------
-
-    # -------- storage publishing --------
-    async def _publish_codegen_outputs(
-            self,
-            *,
-            request_id: str,
-            outdir: pathlib.Path,
-            solver_json: Dict[str, Any],
-            contract_dyn: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        """
-        Publishes:
-          - every file artifact in solver_json['out']  → {request_id}/files/...
-          - every raw tool payload listed in solver_json['raw_files'] → {request_id}/raw/<tool>/...
-          - a storage manifest                        → {request_id}/manifest.json
-        Returns a dict { manifest_url, manifest_key, files: [...], raw_files: [...], out_with_urls: [...] }
-        """
-        ts = datetime.datetime.utcnow().isoformat() + "Z"
-
-        out_items = solver_json.get("out") or []
-        raw_files = solver_json.get("raw_files") or {}
-
-        stored_files: List[Dict[str, Any]] = []
-        out_with_urls: List[Dict[str, Any]] = []
-
-        # 3.1 push file artifacts
-        for art in out_items:
-            art2 = dict(art)
-            if art.get("type") == "file" and art.get("path"):
-                p = pathlib.Path(art["path"])
-                if not p.is_absolute():
-                    p = (outdir / art["path"]).resolve()
-                if p.exists():
-                    # stable storage relative name
-                    rel_name = f"files/{art.get('resource_id','res')}_{p.name}"
-                    meta = await self.store.save_file(request_id=request_id, src_path=p, dest_rel=rel_name)
-                    art2["store_key"] = meta["key"]
-                    art2["url"] = meta["url"]
-                    art2["mime"] = meta.get("mime") or art2.get("mime")
-                    stored_files.append({
-                        "slot": art.get("resource_id",""),
-                        "tool_id": art.get("tool_id",""),
-                        "description": art.get("description",""),
-                        **meta,
-                    })
-            out_with_urls.append(art2)
-
-        # 3.2 push raw tool payloads (JSONs written via save_tool_output)
-        stored_raws: List[Dict[str, Any]] = []
-        for tool_id, rel_list in (raw_files or {}).items():
-            for rel in rel_list or []:
-                src = (outdir / rel).resolve()
-                if not src.exists():
-                    continue
-                rel_name = f"raw/{tool_id.replace('.','_')}/{pathlib.Path(rel).name}"
-                meta = await self.store.save_file(request_id=request_id, src_path=src, dest_rel=rel_name)
-                stored_raws.append({"tool_id": tool_id, "source": rel, **meta})
-
-        # 3.3 write manifest
-        manifest = {
-            "version": 1,
-            "request_id": request_id,
-            "created_utc": ts,
-            "contract": contract_dyn or {},
-            "out": out_with_urls,
-            "files": stored_files,
-            "raw_files": stored_raws,
-            "objective": solver_json.get("objective"),
-            "doc": solver_json.get("doc"),
-            "queries_used": solver_json.get("queries_used", []),
-        }
-        man = await self.store.save_json(request_id=request_id, obj=manifest, dest_rel="manifest.json")
-
-        return {
-            "manifest_url": man["url"],
-            "manifest_key": man["key"],
-            "files": stored_files,
-            "raw_files": stored_raws,
-            "out_with_urls": out_with_urls,
-        }
 
     def _extract_solver_json_from_round(self, r0: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Fetch the primary JSON payload (first output item with kind=json)."""
@@ -1212,7 +1159,40 @@ class CodegenToolManager:
             out["items"].append(item)
         return out
 
+    # -------- call grouping (ordered) --------
+
+    def _group_calls_sequential(self, out_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Group normalized out[] into *ordered* calls by sequence:
+        consecutive items with identical (tool_id, tool_input) belong to the same call.
+        This preserves call order and avoids merging separate identical calls.
+        Returns:
+          [{"order": i, "tool_id": "...", "input": {...}, "outputs":[out-item,...]}]
+        """
+        calls: List[Dict[str, Any]] = []
+        cur: Optional[Dict[str, Any]] = None
+
+        def _same(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+            return (a.get("tool_id") or "") == (b.get("tool_id") or "") and (a.get("input") or {}) == (b.get("input") or {})
+
+        for it in (out_items or []):
+            if not isinstance(it, dict):
+                continue
+            base = {"tool_id": it.get("tool_id") or "", "input": it.get("input") or {}}
+            if cur and _same(cur, base):
+                cur["outputs"].append(it)
+            else:
+                if cur:
+                    calls.append(cur)
+                cur = {"tool_id": base["tool_id"], "input": base["input"], "outputs": [it]}
+        if cur:
+            calls.append(cur)
+        for i, c in enumerate(calls, 1):
+            c["order"] = i
+        return calls
+
     # -------- comm helpers --------
+
     def _mk_thinking_streamer(self, phase: str) -> Callable[[str], Awaitable[None]]:
         counter = {"n": 0}
         async def emit_thinking_delta(text: str, completed: bool = False):
@@ -1234,4 +1214,15 @@ class CodegenToolManager:
             "data": data,
             "timing": timing or {},
         }
-        await self.emit(evt, rid)
+        await self.emit(evt)
+
+    # -------- internals --------
+
+    def _resolve_callable(self, qualified_id: str):
+        try:
+            alias, fn = qualified_id.split(".", 1)
+            modrec = self._mods_by_alias[alias]
+            owner = getattr(modrec["mod"], "tools", modrec["mod"])
+            return getattr(owner, fn)
+        except Exception:
+            return None

@@ -23,15 +23,48 @@ def _inject_header_after_future(src: str, header: str) -> str:
     return "".join(lines[:i] + [header] + lines[i:])
 
 def _fix_json_bools(src: str) -> str:
-    """Replace NAME tokens true/false/null with True/False/None (not inside strings)."""
-    out = []
-    tokens = tokenize.generate_tokens(io.StringIO(src).readline)
+    """
+    Replace NAME tokens 'true'/'false'/'null' with Python's True/False/None,
+    preserving all original spacing and positions, and skipping strings/comments.
+    Includes a fast path that returns src unchanged if none of the literals occur.
+    """
+    # Fast path: avoid tokenization if none of the JSON literals appear
+    if ("true" not in src) and ("false" not in src) and ("null" not in src):
+        return src
+
     mapping = {"true": "True", "false": "False", "null": "None"}
-    for toknum, tokval, start, end, line in tokens:
-        if toknum == tokenize.NAME and tokval in mapping:
-            tokval = mapping[tokval]
-        out.append((toknum, tokval))
+    out = []
+
+    # Use TokenInfo objects to preserve exact spacing via start/end positions
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.NAME and tok.string in mapping:
+            tok = tok._replace(string=mapping[tok.string])
+        out.append(tok)
+
     return tokenize.untokenize(out)
+
+def _max_sid_from_context(outdir: pathlib.Path) -> int:
+    try:
+        p = outdir / "context.json"
+        if not p.exists():
+            return 0
+        import json as _json
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        ph = data.get("program_history") or []
+        mx = 0
+        for entry in ph:
+            if not isinstance(entry, dict):
+                continue
+            rec = next(iter(entry.values()), {})  # {"<exec_id>": {...}}
+            items = (((rec or {}).get("web_links_citations") or {}).get("items") or [])
+            for it in items:
+                try:
+                    mx = max(mx, int(it.get("sid") or 0))
+                except Exception:
+                    pass
+        return mx
+    except Exception:
+        return 0
 
 class _InProcessRuntime:
     def __init__(self, logger: AgentLogger):
@@ -81,12 +114,17 @@ class _InProcessRuntime:
     ) -> Dict[str, Any]:
         workdir.mkdir(parents=True, exist_ok=True)
 
-        from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, WORKDIR_CV
+        from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, WORKDIR_CV, SOURCE_ID_CV
         def _runner():
             old_env = dict(os.environ)
             old_path = list(sys.path)
+
             t_out = OUTDIR_CV.set(str(output_dir))
             t_wrk = WORKDIR_CV.set(str(workdir))
+
+            last_sid = _max_sid_from_context(output_dir)
+            t_sid = SOURCE_ID_CV.set({"next": int(last_sid) + 1})
+
             try:
                 sys.path.insert(0, str(workdir))
                 self._ensure_modules_on_sys_modules(tool_modules)
@@ -114,6 +152,7 @@ OUTPUT = Path(OUTPUT_DIR)
                 runpy.run_path(str(workdir / "main.py"), run_name="__main__")
             finally:
                 OUTDIR_CV.reset(t_out); WORKDIR_CV.reset(t_wrk)
+                SOURCE_ID_CV.reset(t_sid)
                 sys.path[:] = old_path
                 os.environ.clear(); os.environ.update(old_env)
 

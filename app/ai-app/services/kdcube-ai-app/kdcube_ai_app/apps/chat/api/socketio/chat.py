@@ -15,6 +15,9 @@ import time
 import logging
 from datetime import datetime
 from typing import Any, Optional, Dict
+import hashlib
+from pathlib import Path
+import re
 
 import socketio
 
@@ -31,6 +34,7 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
     ServiceCtx, ConversationCtx,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
+from kdcube_ai_app.tools.file_text_extractor import DocumentTextExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +65,12 @@ class SocketIOChatHandler:
         self._comm = chat_comm
         self._listener_started = False
 
+        from pathlib import Path
+
+        self.upload_dir = Path(os.environ.get("CHAT_UPLOAD_DIR", "./var/chat_uploads"))
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        self.max_upload_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
+
         self.sio = self._create_socketio_server()
         self._setup_event_handlers()
 
@@ -69,12 +79,16 @@ class SocketIOChatHandler:
     def _create_socketio_server(self):
         try:
             mgr = socketio.AsyncRedisManager(self.redis_url)
+            max_mb = getattr(self, "max_upload_mb", 20)
+            max_bytes = int(max_mb) * 1024 * 1024
+
             sio = socketio.AsyncServer(
                 cors_allowed_origins=self.allowed_origins,
                 async_mode="asgi",
                 client_manager=mgr,
                 logger=True,
                 engineio_logger=True,
+                max_http_buffer_size=max_bytes
             )
             return sio
         except Exception as e:
@@ -94,8 +108,8 @@ class SocketIOChatHandler:
             return await self._handle_disconnect(sid)
 
         @self.sio.on("chat_message")
-        async def _on_chat_message(sid, data):
-            return await self._handle_chat_message(sid, data)
+        async def _on_chat_message(sid, *args):
+            return await self._handle_chat_message(sid,  *args)
 
         @self.sio.on("ping")
         async def _on_ping(sid, data):
@@ -271,19 +285,82 @@ class SocketIOChatHandler:
 
     # ---------- CHAT MESSAGE with GATING (restored) ----------
 
-    async def _handle_chat_message(self, sid, data: Dict[str, Any]):
-        logger.info("chat_message sid=%s '%s'...", sid, (data or {}).get("message", "")[:100])
+    async def _save_attachment(self, raw: bytes, orig_name: str, mime: str) -> Dict[str, Any]:
+        # sanitise name
+        name = (orig_name or "file.pdf").strip()
+        name = re.sub(r"[^A-Za-z0-9._ -]+", "", name) or "file.pdf"
+
+        data = bytes(raw)  # handle memoryview/bytearray
+        sha = hashlib.sha256(data).hexdigest()
+        fname = f"{uuid.uuid4().hex}_{name}"
+        fpath = self.upload_dir / fname
+
+        # lazy import to avoid hard dep if not used
+        aiofiles = __import__("aiofiles")
+        async with await aiofiles.open(fpath, "wb") as f:
+            await f.write(data)
+
+        # If you serve static files elsewhere, make this a real URL
+        return {
+            "id": fname,
+            "name": name,
+            "mime": mime or "application/pdf",
+            "size": len(data),
+            "sha256": sha,
+            "storage": "local",
+            "path": str(fpath),     # workers on same host can read this
+            "url": None,            # optionally set e.g. "/uploads/{fname}"
+        }
+
+    async def _handle_chat_message(self, sid, *args):
+        if not args:
+            logger.info("chat_message with no args")
+            return {"ok": False, "error": "No data provided"}
+
+        data = args[0]
+
+        attachments_meta = data.get("attachment_meta", [])
+        attachments = []
+        for idx, f in enumerate(attachments_meta):
+            mime = f.get("mime", "application/pdf")
+            name = f.get("filename")
+            raw = args[1 + idx] if len(args) > 1 + idx else None
+            if raw and isinstance(raw, (bytes, bytearray, memoryview)):
+                raw_bytes = bytes(raw)
+                attachments.append({"raw": raw_bytes, "name": name, "mime": mime})
+
+        extractor = DocumentTextExtractor()
+        attachments_text = []
+        for a in attachments:
+            text, info = extractor.extract(a["raw"], a.get("name") or "file", a.get("mime"))
+            attachments_text.append({
+                "name": a.get("name"),
+                "mime": info.mime,
+                "ext": info.ext,
+                "size": len(a["raw"]),
+                "meta": info.meta,
+                "warnings": info.warnings,
+                "text": text,  # plain text of the document
+            })
+
+        # If you want to pass it to your workers:
+        message_data = data.get("message", {})
+        logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
         try:
             socket_session = await self.sio.get_session(sid)
             user_session_data = (socket_session or {}).get("user_session", {})
 
             # basic validation
-            message = (data or {}).get("text") or (data or {}).get("message")
+            message = (message_data or {}).get("text") or (message_data or {}).get("message") or ""
+
+            message += "\nAttachments:\n"
+            for a in attachments_text:
+                message += f"{a['name']}\n{a['text']}\n...\n"
             if not message:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()))
                 conv = ConversationCtx(
                     session_id=user_session_data.get("session_id", "unknown"),
-                    conversation_id=data.get("conversation_id") or user_session_data.get("session_id", "unknown"),
+                    conversation_id=message_data.get("conversation_id") or user_session_data.get("session_id", "unknown"),
                     turn_id=f"turn_{uuid.uuid4().hex[:8]}",
                 )
                 self._comm.emit_error(svc, conv, error='Missing "message"', target_sid=sid, session_id=conv.session_id)
@@ -330,15 +407,15 @@ class SocketIOChatHandler:
 
             except Exception as e:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
-                conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
+                conv = ConversationCtx(session_id=session.session_id, conversation_id=message_data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
                 self._comm.emit_error(svc, conv, error="System check failed", target_sid=sid, session_id=session.session_id)
                 logger.error("gateway check failed: %s", e)
                 return
-            tenant_id = data.get("tenant_id") or get_tenant()
+            tenant_id = message_data.get("tenant_id") or get_tenant()
             # accounting envelope
             request_id = str(uuid.uuid4())
 
-            agentic_bundle_id = data.get("bundle_id")
+            agentic_bundle_id = message_data.get("bundle_id")
             from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
             spec_resolved = resolve_bundle(agentic_bundle_id, override=None)
             agentic_bundle_id = spec_resolved.id if spec_resolved else None
@@ -346,7 +423,7 @@ class SocketIOChatHandler:
             acct_env = build_envelope_from_session(
                 session=session,
                 tenant_id=tenant_id,
-                project_id=data.get("project"),
+                project_id=message_data.get("project"),
                 request_id=request_id,
                 component="chat.socket",
                 app_bundle_id=agentic_bundle_id,
@@ -355,12 +432,12 @@ class SocketIOChatHandler:
 
             # assemble task payload (protocol model)
             task_id = str(uuid.uuid4())
-            turn_id = data.get("turn_id") or f"turn_{uuid.uuid4().hex[:8]}"
-            conversation_id = data.get("conversation_id") or session.session_id
+            turn_id = message_data.get("turn_id") or f"turn_{uuid.uuid4().hex[:8]}"
+            conversation_id = message_data.get("conversation_id") or session.session_id
 
 
             if not spec_resolved:
-                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=data.get("project"))
+                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=message_data.get("project"))
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
                 self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
                 return
@@ -375,8 +452,8 @@ class SocketIOChatHandler:
                     bundle_id=spec_resolved.id,
                 ),
                 actor=ChatTaskActor(
-                    tenant_id=data.get("tenant_id") or get_tenant(),
-                    project_id=data.get("project"),
+                    tenant_id=message_data.get("tenant_id") or get_tenant(),
+                    project_id=message_data.get("project"),
                 ),
                 user=ChatTaskUser(
                     user_type=session.user_type.value,
@@ -388,12 +465,12 @@ class SocketIOChatHandler:
                 ),
                 request=ChatTaskRequest(
                     message=message,
-                    chat_history=data.get("chat_history") or [],
-                    operation=data.get("operation") or data.get("command"),
-                    invocation=data.get("invocation"),
-                    payload=data.get("payload") or {},       # ← generic Any pass-through
+                    chat_history=message_data.get("chat_history") or [],
+                    operation=message_data.get("operation") or message_data.get("command"),
+                    invocation=message_data.get("invocation"),
+                    payload=message_data.get("payload") or {},       # ← generic Any pass-through
                 ),
-                config=ChatTaskConfig(values=data.get("config") or {}),
+                config=ChatTaskConfig(values=message_data.get("config") or {}),
                 accounting=ChatTaskAccounting(envelope=acct_env),
             )
 
@@ -406,13 +483,13 @@ class SocketIOChatHandler:
                 "/socket.io/chat",
             )
             if not success:
-                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=data.get("project"))
+                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=message_data.get("project"))
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
                 self._comm.emit_error(svc, conv, error=f"System under pressure - request rejected ({reason})", target_sid=sid, session_id=session.session_id)
                 return
 
             # ack to client via communicator (same envelope as processor emits)
-            svc = ServiceCtx(request_id=request_id, user=session.user_id, project=data.get("project"))
+            svc = ServiceCtx(request_id=request_id, user=session.user_id, project=message_data.get("project"))
             conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
             self._comm.emit_start(svc, conv, message=(message[:100] + "..." if len(message) > 100 else message), queue_stats=stats, target_sid=sid, session_id=session.session_id)
 

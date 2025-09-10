@@ -6,3 +6,6 @@ from contextvars import ContextVar
 
 OUTDIR_CV = ContextVar("OUTDIR_CV", default="")
 WORKDIR_CV = ContextVar("WORKDIR_CV", default="")
+
+# holds {'next': int}
+SOURCE_ID_CV = ContextVar("SOURCE_ID_CV", default=None)
