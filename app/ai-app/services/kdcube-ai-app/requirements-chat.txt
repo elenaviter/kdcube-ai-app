@@ -36,3 +36,11 @@ pandas
 matplotlib
 
 python-magic
+
+pymupdf
+pdfminer.six
+pypdf
+python-docx
+python-pptx
+chardet
+orjson
