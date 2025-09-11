@@ -246,7 +246,7 @@ class AgentIO:
         self,
         tool_id: Annotated[str, "Qualified id, e.g. 'generic_tools.web_search'."],
         description: Annotated[Optional[str], "Short description of why this call needed and what it produces."],
-        data: Annotated[str, "Raw return; Pass as is"],
+        data: Annotated[Any, "Raw return; Pass as is, no stringification."],
         params: Annotated[str, "JSON-encoded dict of parameters used for the call."] = "{}",
         index: Annotated[int, "Monotonic index per tool, starting at 0."] = 0,
         filename: Annotated[Optional[str], "Override filename (relative in OUTPUT_DIR)."] = None,
