@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from abc import ABC, abstractmethod
 
-from kdcube_ai_app.apps.chat.sdk.util import _deep_merge
+from kdcube_ai_app.apps.utils.util import _deep_merge
 from kdcube_ai_app.infra.accounting.usage import ServiceUsage
 
 # ================================
