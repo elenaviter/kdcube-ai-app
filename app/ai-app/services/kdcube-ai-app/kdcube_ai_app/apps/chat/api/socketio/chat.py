@@ -67,8 +67,8 @@ class SocketIOChatHandler:
 
         from pathlib import Path
 
-        self.upload_dir = Path(os.environ.get("CHAT_UPLOAD_DIR", "./var/chat_uploads"))
-        self.upload_dir.mkdir(parents=True, exist_ok=True)
+        # self.upload_dir = Path(os.environ.get("CHAT_UPLOAD_DIR", "./var/chat_uploads"))
+        # self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.max_upload_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
 
         self.sio = self._create_socketio_server()
