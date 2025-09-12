@@ -12,6 +12,8 @@ services:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - chat-internal
+    ports:
+      - "127.0.0.1:5432:5444"
 
   postgres-setup:
     image: chat-postgres-setup:latest
@@ -110,8 +112,8 @@ services:
       - chat-internal
     # Expose if you want to use Neo4j Browser locally; otherwise you can omit ports
     ports:
-      - "7474:7474"   # HTTP (Browser)
-      - "7687:7687"   # Bolt
+      - "127.0.0.1:7474:7474"   # HTTP (Neo4j Browser)
+      - "127.0.0.1:7687:7687"   # Bolt
 
   dramatiq:
     image: chat-dramatiq:latest
