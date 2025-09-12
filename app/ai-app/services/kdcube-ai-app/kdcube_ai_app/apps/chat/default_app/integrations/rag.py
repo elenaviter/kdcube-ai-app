@@ -9,7 +9,6 @@ from langchain_openai import OpenAIEmbeddings
 
 from kdcube_ai_app.apps.chat.sdk.inventory import AgentLogger, CustomEmbeddings, Config
 
-
 class RAGService:
     """RAG service for document retrieval with custom embeddings support"""
 

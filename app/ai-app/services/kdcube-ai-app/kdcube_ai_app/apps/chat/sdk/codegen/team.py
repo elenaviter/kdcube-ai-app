@@ -3,6 +3,10 @@
 
 # chat/sdk/codegen/team.py
 
+"""
+Once logs are JSON, your _history_digest (and any “previous programs” retrieval) can pick the best prior execution by action and targets, not brittle headings. E.g., “find the latest run with action in {"edit","create"} and sections_added contains 'Security'”.
+"""
+
 from typing import Dict, Any, List, Optional, Literal
 from pydantic import BaseModel, Field, conlist
 from datetime import datetime, timezone
@@ -106,29 +110,25 @@ async def solver_codegen_stream(
         "## Imports & calls (hard rules)\n"
         "- Paste adapter imports **exactly** as provided; do not alter module paths or aliases.\n"
         "- Call functions exactly per the provided `call_template`.\n"
+        "- Import the infra wrapper: `from io_tools import tools as agent_io_tools`.\n"
+        "- **Wrap every adapter call** using the wrapper (logging + indexing):\n"
+        "  `res = await agent_io_tools.tool_call(\\n"
+        "       fn=<alias>.<fn>,\\n"
+        "       params_json=json.dumps({<kwargs>}),\\n"
+        "       call_reason=\"<5–12 words why this call is needed>\",\\n"
+        "       tool_id=\"<qualified id exactly as in ADAPTERS list>\"\\n"
+        "  )`\n"
+        "- Do **not** call `save_tool_call` directly.\n"
         "\n"
         "## Runtime contract\n"
         "- A global `OUTPUT_DIR` is injected at runtime. Do **not** redefine it.\n"
         "- Write **all** files into `OUTPUT_DIR`, exactly as declared in `outputs[]`.\n"
         "\n"
         "## Persistence (required)\n"
-        "- After every adapter call, **persist the call and capture the returned filename**:\n"
-        "  `rel = await agent_io_tools.save_tool_call(\\n"
-        "      tool_id=\\\"<adapter id>\\\",\\n"
-        "      description=\\\"<why this call is needed>\\\",\\n"
-        "      data=json.dumps(<raw_return>),\\n"
-        "      params=json.dumps(<your args dict>),\\n"
-        "      index=<0-based>\\n"
-        "  )`\n"
-        "- Then **append exactly that returned `rel`** to `result.raw_files[\"<adapter id>\"]`:\n"
-        "  `result.setdefault(\\\"raw_files\\\", {}).setdefault(\\\"<adapter id>\\\", []).append(rel)`\n"
-        "- Do **not** guess or construct filenames yourself. If you pass a custom `filename=...`, still append the **returned** value.\n"
-        "- Finish by writing the final result: `await agent_io_tools.save_ret(data=json.dumps(result), filename=\\\"result.json\\\")`.\n"
+        "- Finish by writing the final result: `await agent_io_tools.save_ret(data=json.dumps(result), filename=\"result.json\")`.\n"
         "\n"
         "## result.json (first outputs[] item)\n"
         "- On success include: `ok=true`, `objective`, `contract=CONTRACT` (echoed), and `out_dyn` (filled **exactly** per CONTRACT).\n"
-        "- Optional: `queries_used`, `raw_files`.\n"
-        "- Do **not** manually write `result['out']`; infra derives it from `out_dyn`.\n"
         "\n"
         "## Contract → out_dyn (strict)\n"
         "- Use `CONTRACT` keys as the **only** keys of `out_dyn`.\n"
@@ -143,17 +143,23 @@ async def solver_codegen_stream(
         "- Do **not** include solver reasoning, change logs, or TODOs in the canvas.\n"
         "- Preserve existing `[[S:n]]` tokens; add new tokens **only** where NEW/CHANGED factual claims are made.\n"
         "\n"
+        "## Project log (critical)\n"
+        "- Second editable slot is **`project_log`**. Populate it with the concise list of changes taken on your turn.\n"
+        "\n"
         "## History reuse (if applicable)\n"
-        "- Read `OUTPUT_DIR/context.json → program_history` (list of `{ <exec_id>: {...} }`).\n"
-        "- Use the provided `decision.history_select` and `decision.instructions_for_codegen` from **this prompt** to pick **exactly one** prior version:\n"
-        "  editable text at `selected.project_canvas.text`; prior sources at `selected.web_links_citations.items`.\n"
-        "- If none fits, start a fresh canvas.\n"
+        "- Read `OUTPUT_DIR/context.json → program_history` `H = program_history` (list of `{ <exec_id>: {...} }`).\n"
+        "- Iterate newest→oldest: for each `E in H`, do `exec_id, inner = next(iter(E.items()))`.\n"
+        "- Pick the first with a **non-empty** `inner[\"project_canvas\"][\"text\"]`.\n"
+        "- `editable = inner[\"project_canvas\"][\"text\"]` (or empty string if none exists).\n"
+        "- `prior_sources = inner.get(\"web_links_citations\",{}).get(\"items\",[])`.\n"
+        "- If none has non-empty canvas, start a fresh one.\n"
         "\n"
         "## Citations (stable IDs)\n"
         "- Working sources = `prior_sources ∪ new_search_results`; **dedupe by URL** (case-insensitive).\n"
         "- Keep existing SIDs for existing URLs. New URLs keep **adapter-provided** SIDs (runtime seeds after the last used).\n"
         "- Never compress/backfill SIDs; gaps are OK.\n"
-        "- Pass the full `sources_json` to the editor and to PDF/PPTX renderers when resolving `[[S:n]]`.\n"
+        "- Pass the full `sources_json` to the editor LLM and to PDF/PPTX renderers when resolving `[[S:n]]`.\n"
+        "- If no new sources were needed, still pass `prior_sources` so existing `[[S:n]]` resolve.\n"
         "\n"
         "## Editor guidance (optional)\n"
         "- You may append a temporary block to the editor input:\n"
@@ -162,15 +168,17 @@ async def solver_codegen_stream(
         "\n"
         "## Reference editor pipe\n"
         "1) `editable = selected.project_canvas.text` (or \"\").\n"
-        "2) `guidance_md = decision.instructions_for_codegen` (optional) and append a temporary GUIDANCE block.\n"
-        "3) `sources = merge_and_dedupe(prior.items, new_results)`  # keep old sids; new sids from adapter.\n"
-        "4) `edited = agent_llm_tools.edit_text_llm(text=editable_with_guidance, instruction=\"Apply guidance; keep structure; no invented facts; add [[S:n]] only on NEW/CHANGED claims; REMOVE GUIDANCE block.\", keep_formatting=True, sources_json=json.dumps(sources), cite_sources=True, forbid_new_facts_without_sources=True)`.\n"
-        "5) `out_dyn[\"project_canvas\"] = {\"description\":\"Updated project canvas (Markdown)\", \"value\": edited, \"format\":\"markdown\"}`.\n"
-        "6) If rendering PDF/PPTX, pass the SAME `sources` to `write_pdf`/`write_pptx` with `resolve_citations=True`.\n"
+        "2) prev_project_log = selected.project_log.text (or "").\n"
+        "3) guidance_md ... If prev_project_log exists, include only its last ~800 chars (or a one-paragraph summary) in a GUIDANCE block to avoid prompt bloat.\n"
+        "4) `sources = merge_and_dedupe(prior.items, new_results)`  # keep old sids; new sids from adapter.\n"
+        "5) `edited = agent_llm_tools.edit_text_llm(text=editable_with_guidance, instruction=\"Apply guidance; keep structure; no invented facts; add [[S:n]] only on NEW/CHANGED claims; REMOVE GUIDANCE block.\", keep_formatting=True, sources_json=json.dumps(sources), cite_sources=True, forbid_new_facts_without_sources=True)`.\n"
+        "6) `out_dyn[\"project_canvas\"] = {\"description\":\"Updated project canvas (Markdown)\", \"value\": edited, \"format\":\"markdown\"}`.\n"
+        "7) `out_dyn[\"project_log\"] = {\"description\":\"Added .. to project log\", \"value\": <your log>, \"format\":\"markdown\"}`.\n"
+        "8) If rendering PDF/PPTX, pass the SAME `sources` to `write_pdf`/`write_pptx` with `resolve_citations=True`.\n"
         "\n"
         "## llm_tools.summarize_llm quick rules\n"
         "- `input_mode='text'` for free text; `input_mode='sources'` + `cite_sources=true` for search results.\n"
-        "- Source rows: `{sid:int, title:str, url:str, text:str}`. Record exact queries in `result.queries_used`.\n"
+        "- Source rows: `{sid:int, title:str, url:str, text:str}`.\n"
         "\n"
         "## File/path rules\n"
         "- All files must physically live in `OUTPUT_DIR`.\n"
@@ -253,6 +261,7 @@ async def tool_router_stream(
         policy_summary: str = "",
         context_hint: str = "",
         topic_hint: str = "",
+        prefs_hint: Dict[str, Any] | None = None,
         *,
         topics: Optional[List[str]] = None,
         tool_catalog: Optional[List[Dict[str, Any]]] = None,
@@ -280,6 +289,8 @@ async def tool_router_stream(
         "• Minimize redundancy: avoid overlapping tools when one suffices; prefer the smallest closed set that keeps the plan feasible.\n"
         "\nSEQUENCING ASSUMPTION:\n"
         "• It is acceptable if outputs must flow between selected tools; the downstream solver will orchestrate (likely via codegen). Your job is to pick a feasible set.\n"
+        "CONTEXT-AWARE SEARCH RULE:\n"
+        "• If the user intent is to *add / expand / modify / improve*, and there's no strict anti-recommendation for adding a web/search tool, include such tools if relevant.\n"
         "\nOUTPUT FORMAT:\n"
         "• Return up to 5 candidates with reasons and minimal parameters.\n"
         "\nINTERNAL THINKING (STATUS): tiny.\n"
@@ -314,6 +325,7 @@ async def tool_router_stream(
             f"User question:\n{user_text}\n\n"
             f"{'Topics: ' + ', '.join(topics[:6]) if topics else f'Topics (hint): {topic_hint}'}\n"
             f"Policy/context hints:\n{policy_summary[:800]}\n\n"
+            f"Preferences hint (assertions/exceptions; treat as constraints when selecting tools):\n{json.dumps((prefs_hint or {}), ensure_ascii=False)[:1200]}\n\n"
             f"Conversation cue:\n{context_hint[:400]}\n\n"
             "Produce the three sections as instructed."
     )
@@ -365,7 +377,8 @@ class SolvabilityOut(BaseModel):
     output_contract_dyn: Optional[Dict[str, str]] = Field(default_factory=dict)
 
     context_use: bool = True
-    editable_slot: str = "editable_md"                  # the slot codegen MUST populate for text representation
+    project_canvas_slot: str = "project_canvas"                  # the slot codegen MUST populate for text representation of solution
+    project_log_slot: str = "project_log"
     history_select: str = "latest"                      # 'latest' | 'by_mention' | 'by_similarity'
     history_select_hint: str = ""                       # short instruction when not 'latest'
     citations_source_path: str = "program_history[].<exec>.web_links_citations.items"
@@ -377,6 +390,7 @@ async def assess_solvability_stream(
         user_text: str,
         candidates: List[Dict[str, Any]],
         policy_summary: str = "",
+        prefs_hint: Dict[str, Any] | None = None,
         *,
         is_spec_domain: Optional[bool] = None,
         topics: Optional[List[str]] = None,
@@ -411,12 +425,17 @@ async def assess_solvability_stream(
         "- Do **not** put solver notes, change logs, or internal reasoning into the canvas.\n"
         "- If the request modifies a prior project, prefer **edit/update** over full regeneration.\n"
         "\n"
+        "## Project log (critical)\n"
+        "- ALWAYS include a slot named **`project_log`** in `output_contract_dyn`. This is the continuous slot which is filled during project by its internal editors.\n"
+        "- The project log must contain the description of objective, actual edits to take and the user current intent or preferences on this turn\n"
+        "\n"        
         "## History reuse (if applicable)\n"
         "- The downstream program can read `OUTPUT_DIR/context.json → program_history[]`.\n"
         "- Set `history_select`: `latest` | `by_mention` | `by_similarity`. If not `latest`, add a short `history_select_hint`.\n"
-        "- Provide concise `instructions_for_codegen`: how to pick **one** prior version at\n"
-        "  `program_history[i][<exec_id>].project_canvas.text` and where to read prior citations at\n"
-        "  `program_history[i][<exec_id>].web_links_citations.items`.\n"
+        "- Provide concise `instructions_for_codegen`: how to pick **one** prior version - at \n"
+        "  `program_history[i][<exec_id>].project_canvas.text`, prior project log at "
+        "  `program_history[i][<exec_id>].project_log.text`and \n"
+        "  `prior citations at program_history[i][<exec_id>].web_links_citations.items`.\n"
         "\n"
         "## Citations\n"
         "- The editor inserts `[[S:n]]` for **new/changed** claims. Never ask to renumber existing tokens.\n"
@@ -424,8 +443,8 @@ async def assess_solvability_stream(
         "## Slot naming\n"
         "- snake_case.\n"
         "- Files: `pdf_file`, `slides_pptx`, `image_png`, `csv_file`, `zip_bundle`.\n"
-        "- Text/struct: `project_canvas`, `summary_md`, `outline_md`, `table_md`, `data_json`, `plan_md`.\n"
-        "- Only add a separate `sources_md` slot if the user explicitly asks for sources outside the file render.\n"
+        "- Text/struct: `project_canvas`, `project_log`, `summary_md`, `outline_md`, `table_md`, `data_json`, `plan_md`.\n"
+        "- Only add a separate `sources_md` slot if the user explicitly asks for sources outside the file render so they are needed separately of internal project canvas.\n"
         "\n"
         "## Clarifying questions\n"
         "- Ask ≤2 only if ambiguity **blocks** progress.\n"
@@ -456,6 +475,7 @@ async def assess_solvability_stream(
         f"{domain_line}\n{topic_line}\n"
         f"User question:\n{user_text}\n"
         f"Policy/context summary:\n{policy_summary[:800]}\n"
+        f"Preferences hint (use to constrain what to produce/avoid):\n{json.dumps((prefs_hint or {}), ensure_ascii=False)[:1200]}\n"
         f"Candidates:\n{json.dumps(candidates, ensure_ascii=False)}\n"
         "Produce the three sections as instructed."
     )

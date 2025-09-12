@@ -5,6 +5,7 @@
 
 import os
 import sys
+import traceback
 import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, Any, Awaitable, Optional, List, Tuple
@@ -466,13 +467,18 @@ class CodegenToolManager:
             "sv": sv,
         }
 
-    async def _run_tool_router(self, ctx: Dict[str, Any], *, allowed_plugins: Optional[List[str]] = None, allowed_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def _run_tool_router(self,
+                               ctx: Dict[str, Any],
+                               *,
+                               allowed_plugins: Optional[List[str]] = None,
+                               allowed_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         out = await tool_router_stream(
             self.svc,
             ctx["text"],
             policy_summary=(ctx.get("policy_summary") or ""),
             context_hint=(ctx.get("context_hint") or ""),
             topic_hint=(ctx.get("topic_hint") or ""),
+            prefs_hint=(ctx.get("prefs_hint") or {}),
             topics=ctx.get("topics") or [],
             tool_catalog=self.tool_catalog_for_prompt(allowed_plugins=allowed_plugins, allowed_ids=allowed_ids),  # <-- scoped
             on_thinking_delta=self._mk_thinking_streamer("tool router"),
@@ -508,6 +514,7 @@ class CodegenToolManager:
                 "parameters": c.get("suggested_params", {}),
             } for c in candidates],
             policy_summary=(ctx.get("policy_summary") or ""),
+            prefs_hint=(ctx.get("prefs_hint") or {}),
             is_spec_domain=ctx.get("is_spec_domain"),
             topics=ctx.get("topics") or [],
             on_thinking_delta=self._mk_thinking_streamer("solvability"),
@@ -556,7 +563,7 @@ class CodegenToolManager:
             topic_hint: Optional[str] = None,
             topics: Optional[List[str]] = None,
             allowed_plugins: Optional[List[str]] = None,
-            section_name: Optional[str] = None,
+            prefs_hint: Optional[dict] = None,
             extra_task_hint: Optional[Dict[str, Any]] = None,
             context_hint: str = "",
     ) -> Dict[str, Any]:
@@ -581,7 +588,8 @@ class CodegenToolManager:
                 await project_retrieval._build_program_history(self,
                                                                user_text=user_text,
                                                                scope="track", days=365, top_k=6)
-        except Exception:
+        except Exception as ex:
+            self.log.log(f"Error building program history: {traceback.format_exc()}", "ERROR")
             program_history = []
 
         history_hint = project_retrieval._history_digest(program_history, limit=3)
@@ -602,6 +610,7 @@ class CodegenToolManager:
                 "policy_summary": policy_summary,
                 "context_hint": context_hint,
                 "topic_hint": topic_hint or ", ".join((topics or [])[:3]),
+                "prefs_hint": prefs_hint or {},
             },
             allowed_plugins=allowed_plugins
         )
@@ -663,6 +672,7 @@ class CodegenToolManager:
                 solvability=tm_out.get("sv"),
                 policy_summary=policy_summary,
                 topics=topics,
+                prefs_hint=prefs_hint or {},
                 extra_task_hint=extra_task_hint,
                 constraints={"prefer_direct_tools_exec": True, "minimize_logic": True, "concise": True, "line_budget": 80},
                 max_rounds=1,
@@ -674,20 +684,24 @@ class CodegenToolManager:
             solver_json = self._extract_solver_json_from_round(rounds[0]) if rounds else {}
             out_items: List[Dict[str, Any]] = (solver_json or {}).get("out") or []
 
-            # Deliverables strictly from contract slots
+            # Deliverables: STRICTLY ONE artifact per contract slot
             contract_keys = set(contract_dyn.keys()) if isinstance(contract_dyn, dict) else set()
-            # group deliverables strictly by contract keys; others are citations
-            by_slot: Dict[str, List[Dict[str, Any]]] = {}
+
+            by_slot_single: Dict[str, Dict[str, Any]] = {}
             for art in out_items:
                 rid = str(art.get("resource_id") or "")
-                slot = rid.split("#", 1)[0] if "#" in rid else rid
-                if slot:
-                    by_slot.setdefault(slot, []).append(art)
+                if not rid.startswith("slot:"):
+                    continue
+                slot_name = rid.split(":", 1)[1]  # after 'slot:' prefix
+                # last write wins if duplicates (shouldn't happen)
+                by_slot_single[slot_name] = art
 
-            deliverables = {k: {"description": contract_dyn[k], "value": by_slot.get(f"slot:{k}", [])}
-                            for k in contract_keys}
+            deliverables = {
+                k: {"description": contract_dyn[k], "value": by_slot_single.get(k)}
+                for k in contract_keys
+            }
 
-            # Citations: any citable inline out item (regardless of slot)
+            # Citations: any citable inline out item
             citations = []
             for a in out_items:
                 if a.get("type") == "inline" and bool(a.get("citable")):
@@ -741,122 +755,6 @@ class CodegenToolManager:
         if type_ == "file": a["path"] = path or ""
         else: a["value"] = value or ""
         return a
-
-    def _promote_tool_return(self, tool_id: str, args: Dict[str, Any], ret: Any) -> List[Dict[str, Any]]:
-        """Normalize one tool's return value into standard artifacts usable by the Orchestrator."""
-        arts: List[Dict[str, Any]] = []
-        base_args = dict(args or {})
-        data = ret
-
-        if tool_id.endswith(".kb_search"):
-            items = data if isinstance(data, list) else []
-            for it in items:
-                if not isinstance(it, dict):
-                    rid = _rid("K")
-                    arts.append(self._mk_artifact(
-                        resource_id=rid, type_="inline", tool_id=tool_id,
-                        value=json.dumps(it, ensure_ascii=False),
-                        mime="application/json", citable=True,
-                        description="kb source", tool_input=base_args
-                    ))
-                    continue
-                rid = str(it.get("sid") or it.get("id") or _rid("K"))
-                url = it.get("url")
-                title = it.get("title") or "kb source"
-                if url:
-                    arts.append(self._mk_artifact(
-                        resource_id=rid, type_="inline", tool_id=tool_id,
-                        value=url, mime="text/x-url", citable=True,
-                        description=title, tool_input=base_args
-                    ))
-                else:
-                    arts.append(self._mk_artifact(
-                        resource_id=rid, type_="inline", tool_id=tool_id,
-                        value=json.dumps(it, ensure_ascii=False), mime="application/json",
-                        citable=True, description=title, tool_input=base_args
-                    ))
-            return arts
-        # web_search → list of sources
-        if tool_id.endswith(".web_search"):
-            items = data if isinstance(data, list) else []
-            for it in items:
-                if not isinstance(it, dict):
-                    arts.append(self._mk_artifact(
-                        resource_id=_rid("S"), type_="inline", tool_id=tool_id,
-                        value=json.dumps(it, ensure_ascii=False),
-                        mime="application/json", citable=True,
-                        description="web source", tool_input=base_args
-                    ))
-                    continue
-                rid = str(it.get("sid") or it.get("id") or _rid("S"))
-                url = it.get("url") or it.get("href")
-                title = it.get("title") or ""
-                if url:
-                    arts.append(self._mk_artifact(
-                        resource_id=rid, type_="inline", tool_id=tool_id,
-                        value=url, mime="text/x-url", citable=True,
-                        description=title or "web source", tool_input=base_args
-                    ))
-                else:
-                    arts.append(self._mk_artifact(
-                        resource_id=rid, type_="inline", tool_id=tool_id,
-                        value=json.dumps(it, ensure_ascii=False), mime="application/json",
-                        citable=True, description=title or "web source", tool_input=base_args
-                    ))
-            return arts
-
-        # write_pdf / write_file → file path string
-        if tool_id.endswith(".write_pdf"):
-            if isinstance(data, str):
-                arts.append(self._mk_artifact(
-                    resource_id=_rid("F"), type_="file", tool_id=tool_id,
-                    path=data, mime="application/pdf", citable=True,
-                    description="PDF document", tool_input=base_args
-                ))
-            return arts
-
-        if tool_id.endswith(".write_file"):
-            if isinstance(data, str):
-                arts.append(self._mk_artifact(
-                    resource_id=_rid("F"), type_="file", tool_id=tool_id,
-                    path=data, mime="text/plain", citable=True,
-                    description="Text file", tool_input=base_args
-                ))
-            return arts
-
-        if tool_id.endswith(".calc"):
-            arts.append(self._mk_artifact(
-                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
-                value=str(data), mime="text/plain", citable=False,
-                description="calculation result", tool_input=base_args
-            ))
-            return arts
-
-        # summarizer → inline markdown (non-citable)
-        if tool_id.endswith(".summarize_llm"):
-            val = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
-            arts.append(self._mk_artifact(
-                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
-                value=val, mime="text/markdown", citable=False,
-                description="summary", tool_input=base_args
-            ))
-            return arts
-
-        # default normalization
-        if isinstance(data, str):
-            arts.append(self._mk_artifact(
-                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
-                value=data, mime="text/plain", citable=False,
-                description="result", tool_input=base_args
-            ))
-        else:
-            arts.append(self._mk_artifact(
-                resource_id=_rid("V"), type_="inline", tool_id=tool_id,
-                value=json.dumps(data, ensure_ascii=False),
-                mime="application/json", citable=False,
-                description="result", tool_input=base_args
-            ))
-        return arts
 
     async def execute_plan(self, steps: List[Dict[str, Any]], *, allowed_plugins: Optional[List[str]] = None) -> Dict[str, Any]:
         """
@@ -923,15 +821,12 @@ class CodegenToolManager:
                         parsed = ret
 
                     # Promote artifacts per your contract
-                    artifacts = self._promote_tool_return(tool_id, args, parsed)
-                    out["out"].extend(artifacts)
 
                     call_seq += 1
                     out["calls"].append({
                         "call_id": call_seq,
                         "tool_id": tool_id,
                         "args": args,
-                        "artifacts": artifacts,
                     })
                     out["steps"].append({
                         "ok": True, "tool": tool_id, "args": args, "save_as": s.get("save_as"),
@@ -955,6 +850,7 @@ class CodegenToolManager:
             solvability: Optional[Dict[str, Any]] = None,
             policy_summary: str = "",
             topics: Optional[List[str]] = None,
+            prefs_hint: Optional[Dict[str, Any]] = None,
             extra_task_hint: Optional[Dict[str, Any]] = None,
             constraints: Optional[Dict[str, Any]] = None,
             reuse_outdir: bool = False,
@@ -992,6 +888,7 @@ class CodegenToolManager:
             "constraints": constraints,
             "tools_selected": [a["id"] for a in adapters],
             "notes": [extra_task_hint or {}],
+            "prefs_hint": prefs_hint or {},
         }
 
         remaining = max(1, int(max_rounds))
@@ -1024,6 +921,7 @@ class CodegenToolManager:
             context = {"request_id": request_id,
                        "program_history": program_history or [],
                        "topics": topics,
+                       "prefs_hint": prefs_hint or {},
                        "policy_summary": policy_summary,
                        "today": _today_str(),
                        "notes": notes,

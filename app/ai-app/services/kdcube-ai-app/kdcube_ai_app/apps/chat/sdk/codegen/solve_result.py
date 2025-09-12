@@ -50,7 +50,8 @@ class SolveResult:
     def deliverables_map(self) -> Dict[str, Any]:
         """
         Standardized structure returned by CodegenToolManager.solve():
-          {slot_name: {"description": str, "value": [artifact dicts...]}, ...}
+          { slot_name: { "description": str, "value": <artifact dict or None> }, ... }
+        NOTE: 'value' is a SINGLE artifact dict for the slot (not a list).
         """
         return (self.raw or {}).get("deliverables") or {}
 
@@ -59,13 +60,12 @@ class SolveResult:
         return set(self.deliverables_map().keys())
 
     def deliverables_out(self) -> List[Dict[str, Any]]:
-        """Flattened artifacts that belong to contract slots, in result form (file/inline)."""
+        """Flattened SINGLE artifact per slot (if present)."""
         out: List[Dict[str, Any]] = []
         for _, spec in (self.deliverables_map() or {}).items():
-            vals = (spec or {}).get("value") or []
-            for v in vals:
-                if isinstance(v, dict):
-                    out.append(v)
+            val = (spec or {}).get("value")
+            if isinstance(val, dict):
+                out.append(val)
         return out
 
     # ----- reasoning & hints from the first codegen round -----
@@ -102,37 +102,39 @@ class SolveResult:
         r = self._first_round()
         return (r.get("outdir"), r.get("workdir"))
 
-    # ----- citations from result.json['out'] -----
+    # ----- citations: url+title(+text) only -----
     def citations(self) -> List[Dict[str, Any]]:
         """
-        All citable items in result.json['out'].
-        A citable item is an inline row with 'citable': true (e.g., a URL).
+        Extract citable items from result.json['out'] and normalize:
+          [{url, title, text?}, ...]
         """
-        cites = []
+        cites: List[Dict[str, Any]] = []
         for row in self.out_items():
             if not isinstance(row, dict):
                 continue
-            if row.get("type") == "inline" and bool(row.get("citable")):
-                data = row.get("output") or row.get("value")
-                # normalize to dict {url,title,...} if already in 'output' list
-                if isinstance(data, list):
-                    for c in data:
-                        if isinstance(c, dict):
-                            cites.append({
-                                **c,
-                                "tool_id": row.get("tool_id") or "",
-                                "description": row.get("description") or "",
-                                "resource_id": row.get("resource_id") or row.get("slot") or ""
-                            })
-                else:
-                    # single URL/plain value style
-                    cites.append({
-                        "url": str(data or ""),
-                        "title": row.get("description") or "",
-                        "tool_id": row.get("tool_id") or "",
-                        "resource_id": row.get("resource_id") or row.get("slot") or ""
-                    })
-        # de-dup by URL
+            if row.get("type") != "inline" or not bool(row.get("citable")):
+                continue
+
+            data = row.get("output") or row.get("value")
+            # Unified downstream expects url+title
+            def _push(d: Dict[str, Any]):
+                d = d or {}
+                url = str(d.get("url") or "").strip()
+                if not url:
+                    return
+                d["url"] = url
+                cites.append({**d,
+                              "tool_id": row.get("tool_id") or "",
+                              "resource_id": row.get("resource_id") or ""})
+
+            if isinstance(data, list):
+                for c in data:
+                    if isinstance(c, dict):
+                        _push(c)
+            elif isinstance(data, dict):
+                _push(data)
+
+        # dedupe by URL
         seen, uniq = set(), []
         for c in cites:
             u = c.get("url")

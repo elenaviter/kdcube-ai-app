@@ -353,9 +353,9 @@ class SocketIOChatHandler:
             # basic validation
             message = (message_data or {}).get("text") or (message_data or {}).get("message") or ""
 
-            message += "\nAttachments:\n"
-            for a in attachments_text:
-                message += f"{a['name']}\n{a['text']}\n...\n"
+            message += "\nAATTACHMENTS:\n"
+            for idx, a in enumerate(attachments_text):
+                message += f"{idx + 1}. Name: {a['name']}; Mime: {a['mime']}\n{a['text']}\n...\n"
             if not message:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()))
                 conv = ConversationCtx(

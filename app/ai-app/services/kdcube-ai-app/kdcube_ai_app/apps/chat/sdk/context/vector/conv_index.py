@@ -543,3 +543,76 @@ class ConvIndex:
             roles=("artifact",), any_tags=list(prefer_kinds), include_deps=True, sort="hybrid"
         )
         return sem[0] if sem else (recent[0] if recent else None)
+
+
+    async def fetch_latest_summary(self, *, user_id: str, conversation_id: str, kind: str = "conversation.summary") -> Optional[Dict[str, Any]]:
+        q = f"""
+          SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
+          FROM {self.schema}.conv_messages
+          WHERE user_id=$1 AND conversation_id=$2
+            AND role='artifact' AND tags @> ARRAY[$3]::text[]
+          ORDER BY ts DESC
+          LIMIT 1
+        """
+        async with self._pool.acquire() as con:
+            row = await con.fetchrow(q, user_id, conversation_id, f"kind:{kind}")
+        return dict(row) if row else None
+
+    async def fetch_last_turn_logs(self, *, user_id: str, conversation_id: str, max_turns: int = 3) -> list[dict]:
+        """
+        Returns newest-first up to one log per turn (tagged 'kind:turn.log').
+        """
+        q = f"""
+        WITH cand AS (
+          SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
+          FROM {self.schema}.conv_messages
+          WHERE user_id=$1 AND conversation_id=$2
+            AND role='artifact' AND tags @> ARRAY['kind:turn.log']::text[]
+          ORDER BY ts DESC
+        )
+        SELECT DISTINCT ON ( (SELECT t FROM regexp_matches(unnest(tags)::text, '^turn:(.+)$') AS r(t) LIMIT 1) )
+               id, message_id, role, text, s3_uri, ts, tags, track_id
+        FROM cand
+        ORDER BY (SELECT t FROM regexp_matches(unnest(tags)::text, '^turn:(.+)$') AS r(t) LIMIT 1), ts DESC
+        LIMIT {int(max_turns)}
+        """
+        async with self._pool.acquire() as con:
+            rows = await con.fetch(q, user_id, conversation_id)
+        # newest-first
+        return [dict(r) for r in sorted(rows, key=lambda r: r["ts"], reverse=True)]
+
+    async def load_turn_prefs(self, *, user_id: str, conversation_id: str, turn_id: str) -> dict:
+        q1 = f"""SELECT key, value_json, desired, confidence FROM {self.schema}.conv_prefs
+                 WHERE user_id=$1 AND conversation_id=$2 AND turn_id=$3 ORDER BY ts ASC"""
+        q2 = f"""SELECT rule_key, value_json, confidence FROM {self.schema}.conv_pref_exceptions
+                 WHERE user_id=$1 AND conversation_id=$2 AND turn_id=$3 ORDER BY ts ASC"""
+        async with self._pool.acquire() as con:
+            prefs = await con.fetch(q1, user_id, conversation_id, turn_id)
+            excs  = await con.fetch(q2, user_id, conversation_id, turn_id)
+        return {
+            "assertions": [dict(p) for p in prefs],
+            "exceptions": [dict(e) for e in excs]
+        }
+
+    async def fetch_latest_summary_text(self, *, user_id: str, conversation_id: str) -> str:
+        q = f"""
+        SELECT text FROM {self.schema}.conv_messages
+        WHERE user_id=$1 AND conversation_id=$2
+          AND role='artifact' AND tags @> ARRAY['kind:conversation.summary']::text[]
+        ORDER BY ts DESC LIMIT 1
+        """
+        async with self._pool.acquire() as con:
+            row = await con.fetchrow(q, user_id, conversation_id)
+        return (row["text"] if row else "") or ""
+
+    async def fetch_last_turn_summaries(self, *, user_id: str, conversation_id: str, limit: int = 3) -> list[str]:
+        q = f"""
+        SELECT text FROM {self.schema}.conv_messages
+        WHERE user_id=$1 AND conversation_id=$2
+          AND role='artifact' AND tags @> ARRAY['kind:turn.summary']::text[]
+        ORDER BY ts DESC LIMIT {int(limit)}
+        """
+        async with self._pool.acquire() as con:
+            rows = await con.fetch(q, user_id, conversation_id)
+        return [r["text"] for r in rows]
+
