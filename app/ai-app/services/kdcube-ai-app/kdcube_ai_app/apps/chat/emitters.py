@@ -232,3 +232,46 @@ class ChatCommunicator:
         env["event"].update({"step": "workflow", "status": "error", "title": "Workflow Error"})
         env["data"] = {"error": message, **(data or {})}
         await self.emit("chat_error", env)
+
+    async def event(
+            self,
+            *,
+            type: str,                         # e.g. "chat.followups"
+            title: str | None = None,
+            step: str = "event",
+            status: str = "update",
+            agent: str | None = None,
+            data: dict | None = None,
+            markdown: str | None = None,
+            compose: bool = False,             # put markdown into data.compose blocks if True
+            route: str | None = None,          # override socket route; default = "chat_step"
+    ):
+        """
+        Generic typed chat event with full wrapping (service/conversation).
+        Use for cards like followups, clarifications, files, citations, etc.
+
+        Example:
+          await comm.event(
+              type="chat.followups",
+              title="Follow-ups: User Shortcuts",
+              step="followups",
+              status="completed",
+              agent="answer_generator",
+              data={"items": ["Do X.", "Open Y."]},
+          )
+        """
+        env = self._base_env(type)
+        env["event"].update({"agent": agent, "step": step, "status": status, "title": title})
+
+        payload = dict(data or {})
+        if markdown:
+            if compose:
+                payload.setdefault("markdown", markdown)
+                payload.setdefault("compose", {"blocks": [{"type": "md", "text": markdown}]})
+            else:
+                env["event"]["markdown"] = markdown
+
+        env["data"] = payload
+
+        # for typed cards we route via the same channel as steps
+        await self.emit(route or "chat_step", env)
