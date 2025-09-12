@@ -28,7 +28,7 @@ export interface AuthContextValue {
     getUserProfile: () => User | undefined
     getUserAuthToken: () => string | undefined
     getUserIdToken: () => string | undefined
-    getRoutes: () => ReactNode | ReactNode[] | null
+    getRoutes: (rootPrefix?: string) => ReactNode | ReactNode[] | null
     getAuthType: () => AuthType
     appendAuthHeader: (headers: [string, string][] | Headers) => [string, string][] | Headers
     logout: () => Promise<void> | void
@@ -124,10 +124,14 @@ const WithOAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
                 },
                 getUserAuthToken: () => auth?.user?.access_token,
                 getUserIdToken: () => auth?.user?.id_token,
-                getRoutes: () => [
-                    <Route key="cb" path="callback" element={<Callback/>}/>,
-                    <Route key="so" path="signedout" element={<SignedOutPage/>}/>,
-                ],
+                getRoutes: (rootPrefix?: string) => {
+                    rootPrefix = rootPrefix ? `${rootPrefix}/` : ""
+                    return [
+                        <Route key="cb" path={`${rootPrefix}callback`} element={<Callback/>}/>,
+                        <Route key="so" path={`${rootPrefix}signedout`}
+                               element={<SignedOutPage/>}/>,
+                    ]
+                },
                 getAuthType: () => "oauth" as AuthType,
                 appendAuthHeader: (h) => appendAuthHeader(h, auth),
 
@@ -136,8 +140,8 @@ const WithOAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
                 // 2) Hit Hosted UI /logout to clear the Cognito cookie
                 // 3) Return to /signedout (user must click “Sign in” to start a new login)
                 logout: async () => {
-                    const base      = getDefaultRoutePrefix(); // e.g. "/chatbot/domain-expert"
-                    const origin    = window.location.origin;
+                    const base = getDefaultRoutePrefix(); // e.g. "/chatbot/domain-expert"
+                    const origin = window.location.origin;
                     const logoutRedirect = `${origin}${base}/chat`;
                     const cfg = getOAuthConfig();
                     const clientId = (auth as any)?.settings?.client_id || (cfg as any).client_id || "";

@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, List
 from kdcube_ai_app.auth.sessions import UserSession
-from kdcube_ai_app.infra.accounting import AccountingSystem, with_accounting, SystemResource
+from kdcube_ai_app.infra.accounting import AccountingSystem, _new_context_with, _context_var, _storage_var, SystemResource
 from contextlib import contextmanager
 
 @dataclass
@@ -84,7 +84,10 @@ async def bind_accounting(envelope: AccountingEnvelope, storage_backend, *, enab
     Clears context on exit.
     """
     AccountingSystem.init_storage(storage_backend, enabled)
-    AccountingSystem.set_context(
+    # When we spawn a task with asyncio.create_task(...), the current ContextVars are copied.
+    # That copy still references the same AccountingContext object so we set a new one.
+    # Create a brand-new AccountingContext for this bind scope
+    ctx = _new_context_with(
         user_id=envelope.user_id,
         session_id=envelope.session_id,
         tenant_id=envelope.tenant_id,
@@ -93,16 +96,21 @@ async def bind_accounting(envelope: AccountingEnvelope, storage_backend, *, enab
         component=envelope.component,
         app_bundle_id=envelope.app_bundle_id,
     )
-    # push caller-provided enrichment for inner with_accounting scopes to inherit/merge
-    from kdcube_ai_app.infra.accounting import _get_context  # same module;
-    _get_context().event_enrichment = {
+    # Push it with a ContextVar token so we can restore precisely
+    ctx_token = _context_var.set(ctx)
+    # Optionally also isolate storage if you use different backends per task
+    store_token = _storage_var.set(_storage_var.get())  # no-op isolation, or set a specific one
+    # seed enrichment
+    ctx.event_enrichment = {
         "metadata": dict(envelope.metadata or {}),
         "seed_system_resources": envelope.seed_system_resources or [],
     }
     try:
         yield
     finally:
-        AccountingSystem.clear_context()
+        # restore previous values atomically
+        _context_var.reset(ctx_token)
+        _storage_var.reset(store_token)
 
 @contextmanager
 def bind_accounting_sync(envelope: AccountingEnvelope, storage_backend, *, enabled: bool = True):

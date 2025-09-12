@@ -345,6 +345,7 @@ class SocketIOChatHandler:
 
         # If you want to pass it to your workers:
         message_data = data.get("message", {})
+        # message_data["conversation_id"] = "ba34fca7-a97e-4d96-9768-5c739c187714"
         logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
         try:
             socket_session = await self.sio.get_session(sid)
@@ -353,9 +354,10 @@ class SocketIOChatHandler:
             # basic validation
             message = (message_data or {}).get("text") or (message_data or {}).get("message") or ""
 
-            message += "\nAATTACHMENTS:\n"
-            for idx, a in enumerate(attachments_text):
-                message += f"{idx + 1}. Name: {a['name']}; Mime: {a['mime']}\n{a['text']}\n...\n"
+            if attachments_text:
+                message += "\nATTACHMENTS:\n"
+                for idx, a in enumerate(attachments_text):
+                    message += f"{idx + 1}. Name: {a['name']}; Mime: {a['mime']}\n{a['text']}\n...\n"
             if not message:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()))
                 conv = ConversationCtx(
@@ -412,6 +414,8 @@ class SocketIOChatHandler:
                 logger.error("gateway check failed: %s", e)
                 return
             tenant_id = message_data.get("tenant_id") or get_tenant()
+            project_id = message_data.get("project")
+
             # accounting envelope
             request_id = str(uuid.uuid4())
 
@@ -423,7 +427,7 @@ class SocketIOChatHandler:
             acct_env = build_envelope_from_session(
                 session=session,
                 tenant_id=tenant_id,
-                project_id=message_data.get("project"),
+                project_id=project_id,
                 request_id=request_id,
                 component="chat.socket",
                 app_bundle_id=agentic_bundle_id,
@@ -435,9 +439,16 @@ class SocketIOChatHandler:
             turn_id = message_data.get("turn_id") or f"turn_{uuid.uuid4().hex[:8]}"
             conversation_id = message_data.get("conversation_id") or session.session_id
 
+            ext_config = message_data.get("config")
+            if not ext_config:
+                ext_config = {}
+            if not "tenant" in ext_config:
+                ext_config["tenant"] = tenant_id
+            if not "project" in ext_config and project_id:
+                ext_config["project"] = project_id
 
             if not spec_resolved:
-                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=message_data.get("project"))
+                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=project_id)
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
                 self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
                 return
@@ -452,8 +463,8 @@ class SocketIOChatHandler:
                     bundle_id=spec_resolved.id,
                 ),
                 actor=ChatTaskActor(
-                    tenant_id=message_data.get("tenant_id") or get_tenant(),
-                    project_id=message_data.get("project"),
+                    tenant_id=tenant_id,
+                    project_id=project_id,
                 ),
                 user=ChatTaskUser(
                     user_type=session.user_type.value,
@@ -470,7 +481,7 @@ class SocketIOChatHandler:
                     invocation=message_data.get("invocation"),
                     payload=message_data.get("payload") or {},       # ← generic Any pass-through
                 ),
-                config=ChatTaskConfig(values=message_data.get("config") or {}),
+                config=ChatTaskConfig(values=ext_config),
                 accounting=ChatTaskAccounting(envelope=acct_env),
             )
 
@@ -483,13 +494,13 @@ class SocketIOChatHandler:
                 "/socket.io/chat",
             )
             if not success:
-                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=message_data.get("project"))
+                svc = ServiceCtx(request_id=request_id, user=session.user_id, project=project_id, tenant=tenant_id)
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
                 self._comm.emit_error(svc, conv, error=f"System under pressure - request rejected ({reason})", target_sid=sid, session_id=session.session_id)
                 return
 
             # ack to client via communicator (same envelope as processor emits)
-            svc = ServiceCtx(request_id=request_id, user=session.user_id, project=message_data.get("project"))
+            svc = ServiceCtx(request_id=request_id, user=session.user_id, project=project_id, tenant=tenant_id)
             conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
             self._comm.emit_start(svc, conv, message=(message[:100] + "..." if len(message) > 100 else message), queue_stats=stats, target_sid=sid, session_id=session.session_id)
 

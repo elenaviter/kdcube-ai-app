@@ -82,7 +82,7 @@ export function BundlesListAdmin({
             </div>
 
             {/* Table: ID only + compact Default + Actions */}
-            <div className="border border-gray-200 rounded-md overflow-hidden">
+            <div className="border border-gray-400 rounded-md overflow-hidden">
                 <table className="w-full table-fixed text-sm">
                     <colgroup>
                         <col />                              {/* ID (flex) */}
@@ -98,7 +98,7 @@ export function BundlesListAdmin({
                     </thead>
                     <tbody>
                     {rows.map((b) => (
-                        <tr key={b.id} className="border-t border-gray-200">
+                        <tr key={b.id} className="border-t border-gray-400">
                             <td className="px-2 py-1.5">
                                 <button
                                     className="max-w-full truncate text-blue-600 hover:underline underline-offset-2"
@@ -202,7 +202,7 @@ function EditorCard({
     useEffect(() => setDraft(initial), [initial]);
 
     return (
-        <div className="border border-gray-200 rounded-lg p-3 bg-white">
+        <div className="border border-gray-400 rounded-lg p-3 bg-white">
             <h4 className="text-sm font-semibold mb-2">
                 {mode === "create" ? "New bundle" : "Edit bundle"}
             </h4>

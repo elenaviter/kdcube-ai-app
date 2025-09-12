@@ -312,42 +312,16 @@ class EnhancedChatRequestProcessor:
         lock_key = task_data.get("_lock_key")
 
         # 1) Normalize payload
-        payload: Optional[ChatTaskPayload] = None
         try:
             payload = ChatTaskPayload.model_validate(task_data)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Cannot normalize legacy task: {e}")
+            logger.error(traceback.format_exc())
             try:
-                from kdcube_ai_app.apps.chat.sdk.protocol import build_chat_task_payload
-                payload = build_chat_task_payload(
-                    task_id=task_data.get("task_id"),
-                    created_at=task_data.get("created_at") or time.time(),
-                    instance_id=task_data.get("instance_id"),
-                    source="legacy",
-                    session_id=task_data.get("session_id"),
-                    conversation_id=task_data.get("conversation_id"),
-                    turn_id=task_data.get("turn_id"),
-                    socket_id=task_data.get("socket_id"),
-                    tenant_id=task_data.get("acct", {}).get("tenant_id"),
-                    project_id=task_data.get("acct", {}).get("project_id"),
-                    user_type=task_data.get("user_type"),
-                    user_id=task_data.get("user_info", {}).get("user_id"),
-                    username=task_data.get("user_info", {}).get("username"),
-                    fingerprint=task_data.get("user_info", {}).get("fingerprint"),
-                    roles=task_data.get("user_info", {}).get("roles"),
-                    permissions=task_data.get("user_info", {}).get("permissions"),
-                    message=task_data.get("message"),
-                    chat_history=task_data.get("chat_history"),
-                    config_values=task_data.get("config") or {},
-                    accounting_envelope=task_data.get("acct") or {},
-                    kdcube_path=task_data.get("kdcube_path"),
-                )
-            except Exception as e:
-                logger.error(f"Cannot normalize legacy task: {e}")
-                try:
-                    if lock_key:
-                        await self.middleware.redis.delete(lock_key)
-                finally:
-                    return
+                if lock_key:
+                    await self.middleware.redis.delete(lock_key)
+            finally:
+                return
 
         assert payload is not None
 
@@ -403,7 +377,9 @@ class EnhancedChatRequestProcessor:
         try:
             async with bind_accounting(envelope, storage_backend, enabled=True):
                 async with with_accounting("chat.orchestrator",
-                                           bundle_id=payload.routing.bundle_id,
+                                           app_bundle_id=payload.routing.bundle_id,
+                                           conversation_id=payload.routing.conversation_id,
+                                           turn_id=payload.routing.turn_id,
                                            metadata={
                     "task_id": task_id,
                     "conversation_id": payload.routing.conversation_id,

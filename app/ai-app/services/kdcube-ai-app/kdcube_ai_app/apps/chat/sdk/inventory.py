@@ -158,6 +158,11 @@ class ConfigRequest(BaseModel):
     # Bundle selection
     agentic_bundle_id: Optional[str] = None
 
+    # slow storage for bundle needs
+    bundle_storage_url: Optional[str] = None
+
+    tenant: Optional[str] = None
+    project: Optional[str] = None
 
 class Config:
     """
@@ -201,6 +206,12 @@ class Config:
 
         # KB
         self.kb_search_url = os.getenv("KB_SEARCH_URL", None)
+
+        # CB, bundles
+        self.bundle_storage_url = os.getenv("CB_BUNDLE_STORAGE_URL", None)
+
+        self.tenant = os.getenv("TENANT_ID", None)
+        self.project = os.getenv("DEFAULT_PROJECT_NAME", None)
 
     # ----- embedding config -----
     def set_embedder(self, embedder_id: str, custom_endpoint: str | None = None):
@@ -330,6 +341,11 @@ def create_workflow_config(config_request: ConfigRequest) -> Config:
 
     if config_request.kb_search_endpoint:
         cfg.set_kb_search_endpoint(config_request.kb_search_endpoint)
+
+    if config_request.tenant:
+        cfg.tenant = config_request.tenant
+    if config_request.project:
+        cfg.project = config_request.project
 
     return cfg
 
@@ -486,7 +502,8 @@ Please fix the JSON to match the expected format. Return only the fixed JSON, no
             self.logger.log_step("sending_fix_request", {
                 "model": self.config.format_fixer_model,
                 "fix_prompt_length": len(fix_prompt),
-                "raw_output_preview": raw_output[:200] + "..." if len(raw_output) > 200 else raw_output
+                # "raw_output_preview": raw_output[:200] + "..." if len(raw_output) > 200 else raw_output
+                "raw_output": raw_output
             })
             response = self.claude_client.messages.create(
                 model=self.config.format_fixer_model,

@@ -15,6 +15,11 @@ try:
 except Exception:
     from semantic_kernel.utils.function_decorator import kernel_function
 
+_CITABLE_TOOL_IDS = {
+    "generic_tools.web_search",
+    "generic_tools.browsing",
+    "ctx_tools.merge_sources",   # <-- add this
+}
 
 # ---------- basics ----------
 
@@ -177,6 +182,11 @@ def _infer_format_for_tool_output(tool_id: str, out: Any) -> Optional[str]:
         return "markdown"
     return _detect_format_from_value(out, fallback=None)
 
+def _is_citable_tool(tool_id: str) -> bool:
+    tid = (tool_id or "").lower()
+    # allow kb_search variants too
+    return tid in _CITABLE_TOOL_IDS or tid.endswith(".kb_search")
+
 def _promote_tool_calls(raw_files: Dict[str, List[str]], outdir: pathlib.Path) -> List[Dict[str, Any]]:
     """
     Promote each saved tool-call JSON as ONE artifact:
@@ -205,7 +215,7 @@ def _promote_tool_calls(raw_files: Dict[str, List[str]], outdir: pathlib.Path) -
             except Exception:
                 tool_output = None
 
-            citable = tool_id in {"generic_tools.web_search", "generic_tools.browsing"}
+            citable = _is_citable_tool(tool_id)
             fmt = _infer_format_for_tool_output(tool_id, tool_output)
 
             base = {
@@ -352,8 +362,9 @@ class AgentIO:
                 "RESULT SHAPE (authoritative):\n"
                 "  - ok: bool (required)\n"
                 "  - objective: str (recommended)\n"
-                "  - contract: dict(slot->description)  # echo of the dynamic contract you received\n"
-                "  - out_dyn:  dict(slot->VALUE)        # YOU fill this per slot (value+format for inline, file+mime for files, description)"
+                "  - contract: dict(slot->description)\n"
+                "  - out_dyn:  dict(slot->VALUE)\n"
+                "  - error: dict with keys error, where, details, managed: optional keys for failures\n"
         )
     )
     async def save_ret(

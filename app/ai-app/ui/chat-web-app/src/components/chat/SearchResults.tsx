@@ -91,7 +91,7 @@ const FilePreview = ({ isOpen, onClose, file }) => {
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
             <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl h-5/6 overflow-hidden m-4">
-                <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                <div className="flex items-center justify-between p-4 border-b border-gray-400">
                     <div className="flex items-center space-x-3">
                         {getFileIcon(file.mimeType)}
                         <div>
@@ -231,7 +231,7 @@ const SearchResultItem = ({ result, index, onPreview, onPreviewFile, isExpanded,
     const truncatedPreview = previewText.length > 150 ? previewText.slice(0, 150) + '...' : previewText;
 
     return (
-        <div className="mb-3 border border-gray-200 rounded-lg bg-white overflow-hidden">
+        <div className="mb-3 border border-gray-400 rounded-lg bg-white overflow-hidden">
             <div className="p-4">
                 {/* Header */}
                 <div className="flex items-start justify-between mb-3">
@@ -489,7 +489,7 @@ const PreviewModal = ({ isOpen, onClose, previewContent, apiService }) => {
             <div className="bg-white rounded-lg max-w-5xl max-h-[85vh] overflow-hidden m-4 w-full">
                 <div className="flex flex-col h-full max-h-[85vh]">
                     {/* Header */}
-                    <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+                    <div className="flex items-center justify-between p-4 border-b border-gray-400 bg-gray-50 flex-shrink-0">
                         <div className="flex-1">
                             <h3 className="text-lg font-semibold">{previewContent.result.heading}</h3>
                             <p className="text-sm text-gray-600">{previewContent.result.subheading}</p>
@@ -670,7 +670,7 @@ export const EnhancedKBSearchResults = ({ searchResults, onClose, kbEndpoint, ap
     if (!searchResults || searchResults.length === 0) {
         return (
             <div className="h-full flex flex-col">
-                <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+                <div className="px-4 py-3 border-b border-gray-400 bg-gray-50 flex items-center justify-between">
                     <h3 className="font-semibold text-gray-900 text-sm">KB Search Results</h3>
                     <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded text-gray-500 hover:text-gray-700">
                         <X size={14} />
@@ -707,7 +707,7 @@ export const EnhancedKBSearchResults = ({ searchResults, onClose, kbEndpoint, ap
             />
 
             {/* Header */}
-            <div className="px-4 py-3 border-b border-gray-200 bg-gray-50">
+            <div className="px-4 py-3 border-b border-gray-400 bg-gray-50">
                 <div className="flex items-center justify-between mb-2">
                     <h3 className="font-semibold text-gray-900 text-sm">KB Search Results</h3>
                     <button onClick={onClose} className="p-1 hover:bg-gray-200 rounded text-gray-500 hover:text-gray-700">
@@ -739,7 +739,7 @@ export const EnhancedKBSearchResults = ({ searchResults, onClose, kbEndpoint, ap
 
             {/* Search History Tabs */}
             {searchResults.length > 1 && (
-                <div className="border-b border-gray-200 bg-gray-50 p-2">
+                <div className="border-b border-gray-400 bg-gray-50 p-2">
                     <div className="text-xs text-gray-600 mb-2">Recent Searches:</div>
                     <div className="flex gap-1 overflow-x-auto">
                         {searchResults.slice(0, 5).map((result, index) => (

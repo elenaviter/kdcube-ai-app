@@ -158,8 +158,7 @@ class LLMTools:
     @kernel_function(
         name="edit_text_llm",
         description=(
-                "Edit or transform text per an instruction while preserving facts/structure. "
-                "Optionally ground new/changed claims in provided sources and insert inline citation tokens [[S:<sid>]]."
+                "Edit or transform text per an instruction while preserving facts/structure. If sources are provided, any NEW or CHANGED facts must be grounded and cited with [[S:n]]."
         )
     )
     async def edit_text_llm(

@@ -104,7 +104,7 @@ const JSONPreview = ({content, loading, error}: FilesPreviewProps) => {
     return (
         <div className="flex-1 min-h-1 flex flex-col">
             {/* JSON Toolbar */}
-            <div className="flex items-center justify-between p-3 bg-gray-100 border-b border-gray-200">
+            <div className="flex items-center justify-between p-3 bg-gray-100 border-b border-gray-400">
                 <div className="flex items-center space-x-2">
                     <button
                         onClick={() => setCollapsed({})}

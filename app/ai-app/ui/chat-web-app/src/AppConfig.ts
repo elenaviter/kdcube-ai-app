@@ -111,3 +111,15 @@ export function getCognitoHostedDomain(): string {
     // e.g. https://<your-domain>.auth.<region>.amazoncognito.com
     return "https://eu-west-1rulwzsq6h.auth.eu-west-1.amazoncognito.com";
 }
+
+export function showExampleAssistantMessage(): boolean {
+    return !!import.meta.env.CHAT_WEB_APP_SHOW_EXAMPLE_ASSISTANT_MESSAGE || false;
+}
+
+export function showExampleAssistantFileSteps(): boolean {
+    return !!import.meta.env.CHAT_WEB_APP_SHOW_EXAMPLE_ASSISTANT_FILE_STEPS || false;
+}
+
+export function showExampleAssistantSourceSteps(): boolean {
+    return !!import.meta.env.CHAT_WEB_APP_SHOW_EXAMPLE_ASSISTANT_SOURCE_STEPS || false;
+}

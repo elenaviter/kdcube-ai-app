@@ -459,7 +459,7 @@ const FilesPanel = () => {
 
             {/* Filter Panel */}
             {isFilterOpen && (
-                <div className="mb-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                <div className="mb-4 p-3 bg-gray-50 border border-gray-400 rounded-lg">
                     <div className="flex flex-col space-y-3">
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -572,7 +572,7 @@ const FilesPanel = () => {
             {/* File Resources List */}
             <div className="space-y-2">
                 {filteredFileResources.length === 0 && fileResources.length === 0 ? (
-                    <div className="p-6 text-center bg-gray-50 border border-gray-200 rounded-lg">
+                    <div className="p-6 text-center bg-gray-50 border border-gray-400 rounded-lg">
                         <FileIcon size={24} className="mx-auto text-gray-400 mb-2"/>
                         <p className="text-gray-600">No files uploaded yet</p>
                         <button
@@ -583,7 +583,7 @@ const FilesPanel = () => {
                         </button>
                     </div>
                 ) : filteredFileResources.length === 0 ? (
-                    <div className="p-6 text-center bg-gray-50 border border-gray-200 rounded-lg">
+                    <div className="p-6 text-center bg-gray-50 border border-gray-400 rounded-lg">
                         <Search size={24} className="mx-auto text-gray-400 mb-2"/>
                         <p className="text-gray-600">No files match your filters</p>
                         <button
@@ -595,7 +595,7 @@ const FilesPanel = () => {
                     </div>
                 ) : (
                     filteredFileResources.map((resource) => (
-                        <div key={resource.id} className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                        <div key={resource.id} className="bg-white border border-gray-400 rounded-lg overflow-hidden">
                             <div
                                 className="p-3 cursor-pointer hover:shadow-sm"
                                 onClick={() => handleResourceClick(resource.id)}
@@ -1156,7 +1156,7 @@ const LinksPanel = () => {
 
                         return (
                             <div key={resource.id}
-                                 className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                                 className="bg-white border border-gray-400 rounded-lg overflow-hidden">
                                 <div
                                     className="p-3 cursor-pointer hover:shadow-sm"
                                     onClick={() => handleResourceClick(resource.id)}
@@ -1385,7 +1385,7 @@ const KBPanel = ({onClose}: { onClose?: () => void }) => {
 
     return (
         <div className="relative h-full w-full bg-gray-100 flex flex-col transition-transform">
-            <div className="flex items-center justify-between p-4 bg-white border-b border-gray-200">
+            <div className="flex items-center justify-between p-4 bg-white border-b border-gray-400">
                 <h3 className="text-lg font-semibold">Knowledge Base</h3>
                 {!!onClose &&
                     (<button onClick={onClose} className="p-1 hover:bg-gray-200 rounded">
@@ -1394,7 +1394,7 @@ const KBPanel = ({onClose}: { onClose?: () => void }) => {
                 }
             </div>
 
-            <div className="flex border-b border-gray-200 bg-white overflow-x-auto">
+            <div className="flex border-b border-gray-400 bg-white overflow-x-auto">
                 {tabs.map((tab, i) => (
                     <Fragment key={i}>
                         <button

@@ -3,6 +3,8 @@
 
 # chat/sdk/context/vector/conv_index.py
 
+from __future__ import annotations
+import json
 import asyncpg
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Sequence, Union, Callable, Iterable
@@ -21,10 +23,20 @@ def _coerce_ts(ts: Union[str, datetime]) -> datetime:
         return datetime.fromisoformat(s)  # raises if invalid; that’s good
     raise TypeError("ts must be a datetime or ISO8601 string")
 
+def _safe_json_loads(value: Any) -> Any:
+    """Safely deserialize JSON value, returning original if not JSON string."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+    return value
 
 class ConvIndex:
     def __init__(self):
-        self._pool: asyncpg.Pool | None = None
+        self._pool: Optional[asyncpg.Pool] = None
         self._settings = get_settings()
 
         tenant = self._settings.TENANT.replace("-", "_").replace(" ", "_")
@@ -38,9 +50,12 @@ class ConvIndex:
 
     async def init(self):
         self._pool = await asyncpg.create_pool(
-            host=self._settings.PGHOST, port=self._settings.PGPORT,
-            user=self._settings.PGUSER, password=self._settings.PGPASSWORD, database=self._settings.PGDATABASE,
-            ssl=self._settings.PGSSL
+            host=self._settings.PGHOST,
+            port=self._settings.PGPORT,
+            user=self._settings.PGUSER,
+            password=self._settings.PGPASSWORD,
+            database=self._settings.PGDATABASE,
+            ssl=self._settings.PGSSL,
         )
 
     async def close(self):
@@ -50,13 +65,14 @@ class ConvIndex:
     async def ensure_schema(self):
         sql_raw = (await self._read_sql()).decode()
         sql = sql_raw.replace("<SCHEMA>", self.schema)
-        # execute statements defensively
+        # Execute statements defensively (simple splitter; keep statements single-purpose)
         async with self._pool.acquire() as con:
             for stmt in [s.strip() for s in sql.split(";") if s.strip()]:
                 await con.execute(stmt)
 
     async def _read_sql(self) -> bytes:
         import pkgutil
+
         # Try both names so packaging can pick either
         data = pkgutil.get_data(__package__, "conversation_history.sql")
         if data:
@@ -67,48 +83,56 @@ class ConvIndex:
         raise FileNotFoundError("conversation_history.sql / deploy-conversation-history.sql not found in package")
 
     async def add_message(
-        self,
-        *,
-        user_id: str,
-        conversation_id: str,
-        role: str,
-        text: str,
-        s3_uri: str,
-        ts: Union[str, datetime],
-        tags: Optional[List[str]] = None,
-        ttl_days: int = 365,
-        user_type: str = "anonymous",
-        embedding: Optional[List[float]] = None,
-        message_id: Optional[str] = None,
-        track_id: Optional[str] = None                       # NEW
+            self,
+            *,
+            user_id: str,
+            conversation_id: str,
+            role: str,
+            text: str,
+            s3_uri: str,
+            ts: Union[str, datetime],
+            tags: Optional[List[str]] = None,
+            ttl_days: int = 365,
+            user_type: str = "anonymous",
+            embedding: Optional[List[float]] = None,
+            message_id: Optional[str] = None,
+            track_id: Optional[str] = None,  # NEW
     ) -> int:
         ts_dt = _coerce_ts(ts)
         async with self._pool.acquire() as con:
             q = f"""
                 INSERT INTO {self.schema}.conv_messages
                     (user_id, conversation_id, message_id, role, text, s3_uri, ts, ttl_days, user_type, tags, embedding, track_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::vector,$12)
                 RETURNING id
             """
             rec = await con.fetchrow(
                 q,
-                user_id, conversation_id, message_id, role, text, s3_uri, ts_dt,
-                int(ttl_days), user_type, (tags or []),
+                user_id,
+                conversation_id,
+                message_id,
+                role,
+                text,
+                s3_uri,
+                ts_dt,
+                int(ttl_days),
+                user_type,
+                (tags or []),
                 convert_embedding_to_string(embedding) if embedding else None,
-                track_id
+                track_id,
             )
             return int(rec["id"])
 
     async def search_recent(
-        self,
-        *,
-        user_id: str,
-        conversation_id: str,
-        query_embedding: List[float],
-        top_k: int = 8,
-        days: int = 90,
-        roles: tuple[str, ...] = ("user", "assistant", "artifact"),
-        track_id: Optional[str] = None                         # NEW
+            self,
+            *,
+            user_id: str,
+            conversation_id: str,
+            query_embedding: List[float],
+            top_k: int = 8,
+            days: int = 90,
+            roles: tuple[str, ...] = ("user", "assistant", "artifact"),
+            track_id: Optional[str] = None,  # NEW
     ) -> List[Dict[str, Any]]:
         args = [user_id, conversation_id, list(roles), str(days), convert_embedding_to_string(query_embedding)]
         where = [
@@ -117,7 +141,7 @@ class ConvIndex:
             "role = ANY($3)",
             "ts >= now() - ($4::text || ' days')::interval",
             "ts + (ttl_days || ' days')::interval >= now()",
-            "embedding IS NOT NULL"
+            "embedding IS NOT NULL",
         ]
         if track_id:
             args.append(track_id)
@@ -125,10 +149,10 @@ class ConvIndex:
 
         q = f"""
             SELECT id, message_id, role, text, s3_uri, ts, tags, track_id,
-                   1 - (embedding <=> $5) AS score
+                   1 - (embedding <=> $5::vector) AS score
             FROM {self.schema}.conv_messages
             WHERE {' AND '.join(where)}
-            ORDER BY embedding <=> $5
+            ORDER BY embedding <=> $5::vector
             LIMIT {int(top_k)}
         """
         async with self._pool.acquire() as con:
@@ -136,50 +160,53 @@ class ConvIndex:
         return [dict(r) for r in rows]
 
     async def search_recent_with_tags(
-        self, *,
-        user_id: str,
-        conversation_id: str,
-        query_embedding: List[float],
-        top_k: int = 8,
-        days: int = 90,
-        roles: tuple[str, ...] = ("user", "assistant", "artifact"),
-        any_tags: Optional[List[str]] = None,
-        all_tags: Optional[List[str]] = None,
-        track_id: Optional[str] = None                         # NEW
+            self,
+            *,
+            user_id: str,
+            conversation_id: str,
+            query_embedding: List[float],
+            top_k: int = 8,
+            days: int = 90,
+            roles: tuple[str, ...] = ("user", "assistant", "artifact"),
+            any_tags: Optional[List[str]] = None,
+            all_tags: Optional[List[str]] = None,
+            track_id: Optional[str] = None,  # NEW
     ) -> List[Dict[str, Any]]:
         """
         Optional server-side tag filtering flavor. Most callers should prefer search_recent
         + Python-side filtering to avoid extra scans.
         """
         args: List[Any] = [
-            user_id,                                          # $1
-            conversation_id,                                  # $2
-            list(roles),                                      # $3
-            str(days),                                        # $4
-            convert_embedding_to_string(query_embedding)      # $5
+            user_id,  # $1
+            conversation_id,  # $2
+            list(roles),  # $3
+            str(days),  # $4
+            convert_embedding_to_string(query_embedding),  # $5
         ]
         clauses = [
             "user_id = $1",
             "conversation_id = $2",
             "role = ANY($3)",
             "ts >= now() - ($4::text || ' days')::interval",
-            "ts + (ttl_days || ' days')::interval >= now()",   # TTL guard
-            "embedding IS NOT NULL"
+            "ts + (ttl_days || ' days')::interval >= now()",  # TTL guard
+            "embedding IS NOT NULL",
         ]
         if any_tags:
-            args.append(any_tags); clauses.append(f"tags && ${len(args)}")
+            args.append(any_tags)
+            clauses.append(f"tags && ${len(args)}")
         if all_tags:
-            args.append(all_tags); idx = len(args)
-            clauses.append(f"(SELECT COUNT(*) FROM unnest(${idx}) t WHERE t = ANY(tags)) = array_length(${idx},1)")
+            args.append(all_tags)
+            clauses.append(f"tags @> ${len(args)}::text[]")
         if track_id:
-            args.append(track_id); clauses.append(f"track_id = ${len(args)}")
+            args.append(track_id)
+            clauses.append(f"track_id = ${len(args)}")
 
         q = f"""
             SELECT id, message_id, role, text, s3_uri, ts, tags, track_id,
-                   1 - (embedding <=> $5) AS score
+                   1 - (embedding <=> $5::vector) AS score
             FROM {self.schema}.conv_messages
             WHERE {' AND '.join(clauses)}
-            ORDER BY embedding <=> $5
+            ORDER BY embedding <=> $5::vector
             LIMIT {int(top_k)}
         """
         async with self._pool.acquire() as con:
@@ -194,7 +221,7 @@ class ConvIndex:
             query_embedding: List[float],
             top_k: int = 8,
             days: int = 90,
-            track_id: Optional[str] = None
+            track_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Returns nearest neighbors, each augmented with the *closest prior user*
@@ -202,15 +229,17 @@ class ConvIndex:
         Pairing is done on the DB side via LATERAL joins.
         """
         args = [
-            user_id, conversation_id, str(days),
-            convert_embedding_to_string(query_embedding)
+            user_id,
+            conversation_id,
+            str(days),
+            convert_embedding_to_string(query_embedding),
         ]
         where = [
             "m.user_id = $1",
             "m.conversation_id = $2",
             "m.ts >= now() - ($3::text || ' days')::interval",
             "m.ts + (m.ttl_days || ' days')::interval >= now()",
-            "m.embedding IS NOT NULL"
+            "m.embedding IS NOT NULL",
         ]
         if track_id:
             args.append(track_id)
@@ -220,10 +249,10 @@ class ConvIndex:
         WITH hits AS (
           SELECT
             m.*,
-            1 - (m.embedding <=> $4) AS score
+            1 - (m.embedding <=> $4::vector) AS score
           FROM {self.schema}.conv_messages m
           WHERE {' AND '.join(where)}
-          ORDER BY m.embedding <=> $4
+          ORDER BY m.embedding <=> $4::vector
           LIMIT {int(top_k)}
         )
         SELECT
@@ -286,12 +315,12 @@ class ConvIndex:
             return int(res.split()[-1])
 
     async def backfill_from_store(
-        self,
-        *,
-        records: List[Dict[str, Any]],
-        default_ttl_days: int = 365,
-        default_user_type: str = "anonymous",
-        embedder: Optional[Callable[[str], List[float]]] = None
+            self,
+            *,
+            records: List[Dict[str, Any]],
+            default_ttl_days: int = 365,
+            default_user_type: str = "anonymous",
+            embedder: Optional[Callable[[str], List[float]]] = None,
     ) -> int:
         """
         Re-index previously persisted messages. Each record is a JSON dict as written by ConversationStore.
@@ -320,7 +349,7 @@ class ConvIndex:
                     ttl_days=ttl_days,
                     user_type=user_type,
                     tags=meta.get("tags") or [],
-                    embedding=emb
+                    embedding=emb,
                 )
                 n += 1
             except Exception:
@@ -329,7 +358,8 @@ class ConvIndex:
 
     async def add_edges_by_id(self, *, from_id: int, to_ids: Iterable[int], policy: str = "none") -> int:
         rows = [(int(from_id), int(t), policy) for t in to_ids if t and int(t) != int(from_id)]
-        if not rows: return 0
+        if not rows:
+            return 0
         q = f"INSERT INTO {self.schema}.conv_artifact_edges (from_id, to_id, policy) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING"
         async with self._pool.acquire() as con:
             await con.executemany(q, rows)
@@ -341,56 +371,63 @@ class ConvIndex:
             user_id: str,
             conversation_id: Optional[str],
             track_id: Optional[str],
-            query_embedding: list[float],
+            query_embedding: List[float],
             top_k: int = 12,
             days: int = 90,
-            scope: str = "track",                     # 'track' | 'conversation' | 'user'
+            scope: str = "track",  # 'track' | 'conversation' | 'user'
             roles: tuple[str, ...] = ("user", "assistant", "artifact"),
-            any_tags: Optional[Sequence[str]] = None, # OR
-            all_tags: Optional[Sequence[str]] = None, # AND (tags @> array)
-            not_tags: Optional[Sequence[str]] = None, # NOT (tags && array)
-            text_query: Optional[str] = None,         # ILIKE '%q%' (trgm indexed)
-            kinds: Optional[Sequence[str]] = None,    # sugar: expands to any_tags += kinds
+            any_tags: Optional[Sequence[str]] = None,  # OR
+            all_tags: Optional[Sequence[str]] = None,  # AND (tags @> array)
+            not_tags: Optional[Sequence[str]] = None,  # NOT (tags && array)
+            text_query: Optional[str] = None,  # ILIKE '%q%' (trgm indexed)
+            kinds: Optional[Sequence[str]] = None,  # sugar: expands to any_tags += kinds
             half_life_days: float = 7.0,
             include_deps: bool = True,
-            sort: str = "hybrid"                      # 'hybrid' | 'semantic' | 'recency'
-    ) -> list[dict]:
+            sort: str = "hybrid",  # 'hybrid' | 'semantic' | 'recency'
+    ) -> List[Dict[str, Any]]:
         if kinds:
             any_tags = (list(any_tags or []) + list(kinds))
-        args = [user_id, list(roles), str(days), convert_embedding_to_string(query_embedding)]
+        args: List[Any] = [user_id, list(roles), str(days), convert_embedding_to_string(query_embedding)]
         where = [
             "m.user_id = $1",
             "m.role = ANY($2)",
             "m.ts >= now() - ($3::text || ' days')::interval",
             "m.ts + (m.ttl_days || ' days')::interval >= now()",
-            "m.embedding IS NOT NULL"
+            "m.embedding IS NOT NULL",
         ]
         # scope
         if scope == "track" and track_id:
-            args.append(track_id); where.append(f"m.track_id = ${len(args)}")
+            args.append(track_id)
+            where.append(f"m.track_id = ${len(args)}")
             if conversation_id:
-                args.append(conversation_id); where.append(f"m.conversation_id = ${len(args)}")
+                args.append(conversation_id)
+                where.append(f"m.conversation_id = ${len(args)}")
         elif scope == "conversation" and conversation_id:
-            args.append(conversation_id); where.append(f"m.conversation_id = ${len(args)}")
+            args.append(conversation_id)
+            where.append(f"m.conversation_id = ${len(args)}")
         # tags
         if any_tags:
-            args.append(list(any_tags)); where.append(f"m.tags && ${len(args)}")
+            args.append(list(any_tags))
+            where.append(f"m.tags && ${len(args)}")
         if all_tags:
-            args.append(list(all_tags)); where.append(f"m.tags @> ${len(args)}::text[]")
+            args.append(list(all_tags))
+            where.append(f"m.tags @> ${len(args)}::text[]")
         if not_tags:
-            args.append(list(not_tags)); where.append(f"NOT (m.tags && ${len(args)})")
+            args.append(list(not_tags))
+            where.append(f"NOT (m.tags && ${len(args)})")
         # text match (optional)
         if text_query:
-            args.append(f"%{text_query}%"); where.append(f"m.text ILIKE ${len(args)}")
+            args.append(f"%{text_query}%")
+            where.append(f"m.text ILIKE ${len(args)}")
 
         # scoring + optional deps
-        args.append(str(max(0.1, float(half_life_days))))
-        half_life_days_s = f"(${len(args)}::text)::float"
+        args.append(max(0.1, float(half_life_days)))
+        half_life_days_s = f"${len(args)}::float"
 
         order_by = {
             "semantic": "sim DESC, m.ts DESC",
-            "recency":  "m.ts DESC",
-            "hybrid":   f"(0.70*sim + 0.25*exp(-ln(2) * age_sec / ({half_life_days_s}*24*3600.0)) + 0.05*rboost) DESC, m.ts DESC"
+            "recency": "m.ts DESC",
+            "hybrid": f"(0.70*sim + 0.25*exp(-ln(2) * age_sec / ({half_life_days_s}*24*3600.0)) + 0.05*rboost) DESC, m.ts DESC",
         }.get(sort, "m.ts DESC")
 
         deps_select, deps_join = "", ""
@@ -416,7 +453,7 @@ class ConvIndex:
         q = f"""
           WITH base AS (
             SELECT m.*,
-                   1 - (m.embedding <=> $4) AS sim,
+                   1 - (m.embedding <=> $4::vector) AS sim,
                    EXTRACT(EPOCH FROM (now() - m.ts)) AS age_sec,
                    CASE m.role WHEN 'artifact' THEN 1.10 WHEN 'assistant' THEN 1.00 ELSE 0.98 END AS rboost
             FROM {self.schema}.conv_messages m
@@ -446,27 +483,33 @@ class ConvIndex:
             all_tags: Optional[Sequence[str]] = None,
             not_tags: Optional[Sequence[str]] = None,
             limit: int = 30,
-            days: int = 30
-    ) -> list[dict]:
-        args = [user_id, list(roles), str(days)]
+            days: int = 30,
+    ) -> List[Dict[str, Any]]:
+        args: List[Any] = [user_id, list(roles), str(days)]
         where = [
             "user_id = $1",
             "role = ANY($2)",
             "ts >= now() - ($3::text || ' days')::interval",
-            "ts + (ttl_days || ' days')::interval >= now()"
+            "ts + (ttl_days || ' days')::interval >= now()",
         ]
         if track_id:
-            args.append(track_id); where.append(f"track_id = ${len(args)}")
+            args.append(track_id)
+            where.append(f"track_id = ${len(args)}")
             if conversation_id:
-                args.append(conversation_id); where.append(f"conversation_id = ${len(args)}")
+                args.append(conversation_id)
+                where.append(f"conversation_id = ${len(args)}")
         elif conversation_id:
-            args.append(conversation_id); where.append(f"conversation_id = ${len(args)}")
+            args.append(conversation_id)
+            where.append(f"conversation_id = ${len(args)}")
         if any_tags:
-            args.append(list(any_tags)); where.append(f"tags && ${len(args)}")
+            args.append(list(any_tags))
+            where.append(f"tags && ${len(args)}::text[]")
         if all_tags:
-            args.append(list(all_tags)); where.append(f"tags @> ${len(args)}::text[]")
+            args.append(list(all_tags))
+            where.append(f"tags @> ${len(args)}::text[]")
         if not_tags:
-            args.append(list(not_tags)); where.append(f"NOT (tags && ${len(args)})")
+            args.append(list(not_tags))
+            where.append(f"NOT (tags && ${len(args)}::text[])")
 
         q = f"""
           SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
@@ -484,28 +527,40 @@ class ConvIndex:
             *,
             user_id: str,
             conversation_id: str,
-            query_embedding: list[float],
+            query_embedding: List[float],
             track_id: Optional[str],
-            recent_limit: int = 30,     # deterministic
+            recent_limit: int = 30,  # deterministic
             recent_days: int = 30,
-            semantic_top_k: int = 12,   # add older-but-relevant
+            semantic_top_k: int = 12,  # add older-but-relevant
             semantic_days: int = 365,
-            roles: tuple[str, ...] = ("user","assistant","artifact"),
-            topic_tags: Optional[Sequence[str]] = None
-    ) -> list[dict]:
+            roles: tuple[str, ...] = ("user", "assistant", "artifact"),
+            topic_tags: Optional[Sequence[str]] = None,
+    ) -> List[Dict[str, Any]]:
         # A) recent window (recency only)
         recent = await self.fetch_recent(
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=roles, any_tags=topic_tags, limit=recent_limit, days=recent_days
+            user_id=user_id,
+            conversation_id=conversation_id,
+            track_id=track_id,
+            roles=roles,
+            any_tags=topic_tags,
+            limit=recent_limit,
+            days=recent_days,
         )
         seen_ids = {r["id"] for r in recent}
 
         # B) semantic extras (exclude those already present)
         sem = await self.search_context(
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            query_embedding=query_embedding, top_k=semantic_top_k, days=semantic_days,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            track_id=track_id,
+            query_embedding=query_embedding,
+            top_k=semantic_top_k,
+            days=semantic_days,
             scope=("track" if track_id else "conversation"),
-            roles=roles, any_tags=topic_tags, include_deps=True, sort="hybrid"
+            roles=roles,
+            any_tags=topic_tags,
+            include_deps=True,
+            sort="hybrid",
         )
         sem = [r for r in sem if r["id"] not in seen_ids]
 
@@ -519,14 +574,19 @@ class ConvIndex:
             conversation_id: str,
             track_id: Optional[str],
             mention: str,
-            mention_emb: Optional[list[float]],
-            prefer_kinds: Sequence[str] = ("codegen.out.inline","codegen.program.presentation","codegen.out.file"),
-            window_limit: int = 40
-    ) -> Optional[dict]:
+            mention_emb: Optional[List[float]],
+            prefer_kinds: Sequence[str] = ("codegen.out.inline", "codegen.program.presentation", "codegen.out.file"),
+            window_limit: int = 40,
+    ) -> Optional[Dict[str, Any]]:
         # 1) Look in recent window for deliverables
         recent = await self.fetch_recent(
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), any_tags=list(prefer_kinds), limit=window_limit, days=90
+            user_id=user_id,
+            conversation_id=conversation_id,
+            track_id=track_id,
+            roles=("artifact",),
+            any_tags=list(prefer_kinds),
+            limit=window_limit,
+            days=90,
         )
         # 2) If mention text looks exact-ish, try ILIKE in-window first
         if mention and len(mention) >= 3:
@@ -535,15 +595,24 @@ class ConvIndex:
                 if txt.lower() in (r.get("text") or "").lower():
                     return r
 
-        # 3) Otherwise do semantic over deliverable kinds
-        qvec = mention_emb
-        sem = await self.search_context(
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            query_embedding=qvec, top_k=8, days=365, scope=("track" if track_id else "conversation"),
-            roles=("artifact",), any_tags=list(prefer_kinds), include_deps=True, sort="hybrid"
-        )
-        return sem[0] if sem else (recent[0] if recent else None)
-
+        # 3) Otherwise do semantic over deliverable kinds (guard if no embedding)
+        if mention_emb:
+            sem = await self.search_context(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                track_id=track_id,
+                query_embedding=mention_emb,
+                top_k=8,
+                days=365,
+                scope=("track" if track_id else "conversation"),
+                roles=("artifact",),
+                any_tags=list(prefer_kinds),
+                include_deps=True,
+                sort="hybrid",
+            )
+            return sem[0] if sem else (recent[0] if recent else None)
+        else:
+            return recent[0] if recent else None
 
     async def fetch_latest_summary(self, *, user_id: str, conversation_id: str, kind: str = "conversation.summary") -> Optional[Dict[str, Any]]:
         q = f"""
@@ -558,9 +627,10 @@ class ConvIndex:
             row = await con.fetchrow(q, user_id, conversation_id, f"kind:{kind}")
         return dict(row) if row else None
 
-    async def fetch_last_turn_logs(self, *, user_id: str, conversation_id: str, max_turns: int = 3) -> list[dict]:
+    async def fetch_last_turn_logs(self, *, user_id: str, conversation_id: str, max_turns: int = 3) -> List[Dict[str, Any]]:
         """
         Returns newest-first up to one log per turn (tagged 'kind:turn.log').
+        Avoids SRFs in non-top-level contexts (PG14+).
         """
         q = f"""
         WITH cand AS (
@@ -568,51 +638,232 @@ class ConvIndex:
           FROM {self.schema}.conv_messages
           WHERE user_id=$1 AND conversation_id=$2
             AND role='artifact' AND tags @> ARRAY['kind:turn.log']::text[]
-          ORDER BY ts DESC
+        ),
+        tagged AS (
+          SELECT
+            c.*,
+            (
+              SELECT substring(tag FROM '^turn:(.+)$')
+              FROM unnest(c.tags) AS tag
+              WHERE tag LIKE 'turn:%'
+              LIMIT 1
+            ) AS turn_key
+          FROM cand c
+        ),
+        ranked AS (
+          SELECT *,
+                 row_number() OVER (PARTITION BY turn_key ORDER BY ts DESC) AS rn
+          FROM tagged
+          WHERE turn_key IS NOT NULL
         )
-        SELECT DISTINCT ON ( (SELECT t FROM regexp_matches(unnest(tags)::text, '^turn:(.+)$') AS r(t) LIMIT 1) )
-               id, message_id, role, text, s3_uri, ts, tags, track_id
-        FROM cand
-        ORDER BY (SELECT t FROM regexp_matches(unnest(tags)::text, '^turn:(.+)$') AS r(t) LIMIT 1), ts DESC
+        SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
+        FROM ranked
+        WHERE rn = 1
+        ORDER BY ts DESC
         LIMIT {int(max_turns)}
         """
         async with self._pool.acquire() as con:
             rows = await con.fetch(q, user_id, conversation_id)
-        # newest-first
-        return [dict(r) for r in sorted(rows, key=lambda r: r["ts"], reverse=True)]
+        # newest-first already enforced in SQL
+        return [dict(r) for r in rows]
 
-    async def load_turn_prefs(self, *, user_id: str, conversation_id: str, turn_id: str) -> dict:
+    async def insert_turn_prefs(
+            self, *, user_id: str, conversation_id: str, turn_id: str,
+            assertions: List[Dict[str, Any]], exceptions: List[Dict[str, Any]]
+    ) -> None:
+        """
+        Insert turn preferences with proper JSON serialization for value fields.
+        """
+        async with self._pool.acquire() as con:
+            async with con.transaction():
+                if assertions:
+                    # Prepare assertion data with proper JSON serialization
+                    assertion_data = []
+                    for a in assertions:
+                        if not a.get("key"):
+                            continue
+
+                        # Serialize the value to JSON string
+                        value_json = json.dumps(a.get("value")) if a.get("value") is not None else None
+
+                        assertion_data.append((
+                            user_id,
+                            conversation_id,
+                            turn_id,
+                            a.get("key"),
+                            value_json,  # Now properly JSON-serialized
+                            bool(a.get("desired", True)),
+                            a.get("scope") or "conversation",
+                            float(a.get("confidence", 0.6)),
+                            a.get("reason") or "nl-extracted",
+                            a.get("tags") or []
+                        ))
+
+                    if assertion_data:
+                        await con.executemany(
+                            f"""
+                            INSERT INTO {self.schema}.conv_prefs
+                              (user_id, conversation_id, turn_id, key, value_json, desired, scope, confidence, reason, tags)
+                            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                            """,
+                            assertion_data
+                        )
+
+                if exceptions:
+                    # Prepare exception data with proper JSON serialization
+                    exception_data = []
+                    for e in exceptions:
+                        if not e.get("rule_key"):
+                            continue
+
+                        # Serialize the value to JSON string
+                        value_json = json.dumps(e.get("value")) if e.get("value") is not None else None
+
+                        exception_data.append((
+                            user_id,
+                            conversation_id,
+                            turn_id,
+                            e.get("rule_key"),
+                            value_json,  # Now properly JSON-serialized
+                            e.get("scope") or "conversation",
+                            float(e.get("confidence", 0.6)),
+                            e.get("reason") or "nl-extracted",
+                        ))
+
+                    if exception_data:
+                        await con.executemany(
+                            f"""
+                            INSERT INTO {self.schema}.conv_pref_exceptions
+                              (user_id, conversation_id, turn_id, rule_key, value_json, scope, confidence, reason)
+                            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                            """,
+                            exception_data
+                        )
+
+    async def fetch_conversation_prefs(
+            self, *, user_id: str, conversation_id: str, days: int = 90, min_conf: float = 0.55
+    ) -> Dict[str, Any]:
+        """
+        Aggregate, newest-first per key, last-write-wins; filter by confidence.
+        """
+        q1 = f"""
+          SELECT key, value_json, desired, confidence, ts
+          FROM {self.schema}.conv_prefs
+          WHERE user_id=$1 AND conversation_id=$2
+            AND ts >= now() - ($3::text || ' days')::interval
+            AND confidence >= $4
+          ORDER BY ts DESC
+        """
+        q2 = f"""
+          SELECT rule_key, value_json, confidence, ts
+          FROM {self.schema}.conv_pref_exceptions
+          WHERE user_id=$1 AND conversation_id=$2
+            AND ts >= now() - ($3::text || ' days')::interval
+            AND confidence >= $4
+          ORDER BY ts DESC
+        """
+        async with self._pool.acquire() as con:
+            rows_a = await con.fetch(q1, user_id, conversation_id, str(days), float(min_conf))
+            rows_e = await con.fetch(q2, user_id, conversation_id, str(days), float(min_conf))
+
+        seen = set()
+        assertions: List[Dict[str, Any]] = []
+        for r in rows_a:
+            k = r["key"]
+            if k in seen:
+                continue
+            seen.add(k)
+            # Deserialize JSON value back to Python object
+            row_dict = dict(r)
+            row_dict["value"] = _safe_json_loads(row_dict["value_json"])
+            assertions.append(row_dict)
+
+        # exceptions: keep newest per rule_key
+        seen_e = set()
+        exceptions: List[Dict[str, Any]] = []
+        for r in rows_e:
+            k = r["rule_key"]
+            if k in seen_e:
+                continue
+            seen_e.add(k)
+            # Deserialize JSON value back to Python object
+            row_dict = dict(r)
+            row_dict["value"] = _safe_json_loads(row_dict["value_json"])
+            exceptions.append(row_dict)
+
+        return {"assertions": assertions, "exceptions": exceptions}
+
+    async def load_turn_prefs(self, *, user_id: str, conversation_id: str, turn_id: str) -> Dict[str, Any]:
         q1 = f"""SELECT key, value_json, desired, confidence FROM {self.schema}.conv_prefs
                  WHERE user_id=$1 AND conversation_id=$2 AND turn_id=$3 ORDER BY ts ASC"""
         q2 = f"""SELECT rule_key, value_json, confidence FROM {self.schema}.conv_pref_exceptions
                  WHERE user_id=$1 AND conversation_id=$2 AND turn_id=$3 ORDER BY ts ASC"""
         async with self._pool.acquire() as con:
             prefs = await con.fetch(q1, user_id, conversation_id, turn_id)
-            excs  = await con.fetch(q2, user_id, conversation_id, turn_id)
+            excs = await con.fetch(q2, user_id, conversation_id, turn_id)
+
+        # Deserialize JSON values back to Python objects
+        assertions = []
+        for p in prefs:
+            row_dict = dict(p)
+            row_dict["value"] = _safe_json_loads(row_dict["value_json"])
+            assertions.append(row_dict)
+
+        exceptions = []
+        for e in excs:
+            row_dict = dict(e)
+            row_dict["value"] = _safe_json_loads(row_dict["value_json"])
+            exceptions.append(row_dict)
+
         return {
-            "assertions": [dict(p) for p in prefs],
-            "exceptions": [dict(e) for e in excs]
+            "assertions": assertions,
+            "exceptions": exceptions,
         }
+
+    async def fetch_recent_topics(
+            self, *, user_id: str, conversation_id: str, max_turns: int = 5
+    ) -> List[str]:
+        rows = await self.fetch_last_turn_logs(
+            user_id=user_id, conversation_id=conversation_id, max_turns=max_turns
+        )
+        seen = set()
+        out: List[str] = []
+        for r in rows:
+            for tag in (r.get("tags") or []):
+                if isinstance(tag, str) and tag.startswith("topic:"):
+                    t = tag.split(":", 1)[1].strip()
+                    if t and t not in seen:
+                        seen.add(t)
+                        out.append(t)
+        return out
 
     async def fetch_latest_summary_text(self, *, user_id: str, conversation_id: str) -> str:
         q = f"""
         SELECT text FROM {self.schema}.conv_messages
         WHERE user_id=$1 AND conversation_id=$2
-          AND role='artifact' AND tags @> ARRAY['kind:conversation.summary']::text[]
+          AND role='artifact' AND tags @> ARRAY['artifact:conversation.summary']::text[]
         ORDER BY ts DESC LIMIT 1
         """
         async with self._pool.acquire() as con:
             row = await con.fetchrow(q, user_id, conversation_id)
         return (row["text"] if row else "") or ""
 
-    async def fetch_last_turn_summaries(self, *, user_id: str, conversation_id: str, limit: int = 3) -> list[str]:
+    async def fetch_last_turn_summaries(self, *, user_id: str, conversation_id: str, limit: int = 3) -> List[str]:
         q = f"""
         SELECT text FROM {self.schema}.conv_messages
         WHERE user_id=$1 AND conversation_id=$2
-          AND role='artifact' AND tags @> ARRAY['kind:turn.summary']::text[]
+          AND role='artifact' AND tags @> ARRAY['artifact:turn.summary']::text[]
         ORDER BY ts DESC LIMIT {int(limit)}
         """
         async with self._pool.acquire() as con:
             rows = await con.fetch(q, user_id, conversation_id)
         return [r["text"] for r in rows]
 
+"""
+        if tags_mode == "all":
+            where.append(f"tags @> ${len(args)}::text[]")
+        elif tags_mode == "exact":
+            where.append(f"(tags @> ${len(args)}::text[] AND tags <@ ${len(args)}::text[])")
+        else:  # "any"
+            where.append(f"tags && ${len(args)}::text[]")
+"""

@@ -232,3 +232,36 @@ class ChatCommunicator:
         env["event"].update({"step": "workflow", "status": "error", "title": "Workflow Error"})
         env["data"] = {"error": message, **(data or {})}
         await self.emit("chat_error", env)
+
+    async def event(
+            self,
+            *,
+            agent: str | None,
+            type: str,                   # e.g. "chat.followups"
+            title: str | None = None,
+            step: str = "event",
+            data: dict | None = None,
+            markdown: str | None = None,
+            route: str | None = None,    # optional override for socket event name
+            status: str = "update",      # e.g. "started" | "completed" | "update"
+    ):
+        """
+        Generic typed chat event with full wrapping (service/conversation).
+
+        - everything payload-like goes into env["data"].
+        - if `route` not given, emit on type-derived socket event: type.replace(".", "_").
+        - no 'compose' handling, no 'chat_step' routing here.
+        """
+        env = self._base_env(type)
+        env["event"].update({
+            "agent": agent,
+            "title": title,
+            "status": status,
+            "step": step,
+        })
+        if markdown:
+            env["event"]["markdown"] = markdown
+        env["data"] = data or {}
+
+        socket_event = route or "chat_step"
+        await self.emit(socket_event, env)

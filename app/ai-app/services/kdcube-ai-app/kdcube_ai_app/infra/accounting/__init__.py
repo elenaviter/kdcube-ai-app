@@ -43,6 +43,7 @@ class AccountingContext:
     def __init__(self):
         # canonical storage for EVERYTHING
         self._ctx: Dict[str, Any] = {}
+        self.event_enrichment: Dict[str, Any] = {}
 
     # convenience properties for legacy/common keys (optional)
     @property
@@ -60,8 +61,8 @@ class AccountingContext:
     @component.setter
     def component(self, v): self._ctx["component"] = v
 
-    # enrichment is orthogonal; keep as-is if you like
-    event_enrichment: Dict[str, Any] = {}
+    # enrichment is orthogonal;
+    # event_enrichment: Dict[str, Any] = {}
 
     def update(self, **kwargs):
         self._ctx.update(kwargs)
@@ -69,45 +70,6 @@ class AccountingContext:
     def to_dict(self) -> Dict[str, Any]:
         # return a shallow copy
         return dict(self._ctx)
-#
-# class AccountingContext:
-#     """Accounting context data"""
-#
-#     def __init__(self):
-#         self.user_id: Optional[str] = None
-#         self.session_id: Optional[str] = None
-#         self.project_id: Optional[str] = None
-#         self.tenant_id: Optional[str] = None
-#         self.request_id: Optional[str] = None
-#         self.component: Optional[str] = None  # Current component context
-#         self.app_bundle_id: Optional[str] = None  # Current app bundle ID
-#         self.extra: Dict[str, Any] = {}
-#         # Enrichment set by with_accounting(...):
-#         #   - seed_system_resources: List[SystemResource]
-#         #   - metadata: Dict[str, Any]
-#         #   - any other keys you decide
-#         self.event_enrichment: Dict[str, Any] = {}
-#
-#     def update(self, **kwargs):
-#         """Update context fields"""
-#         for key, value in kwargs.items():
-#             if hasattr(self, key):
-#                 setattr(self, key, value)
-#             else:
-#                 self.extra[key] = value
-#
-#     def to_dict(self) -> Dict[str, Any]:
-#         """Convert to dictionary"""
-#         return {
-#             "user_id": self.user_id,
-#             "session_id": self.session_id,
-#             "project_id": self.project_id,
-#             "tenant_id": self.tenant_id,
-#             "request_id": self.request_id,
-#             "component": self.component,
-#             "app_bundle_id": self.app_bundle_id,
-#             **self.extra
-#         }
 
 # Context variables for async-safe storage
 _context_var: contextvars.ContextVar[Optional[AccountingContext]] = contextvars.ContextVar(
@@ -596,29 +558,66 @@ class AccountingSystem:
 # USAGE HELPERS
 # ================================
 
+# Sentinel used to mark "key was absent" in context overlays
+_MISSING = object()
+
 class with_accounting:
-    """Context manager for setting component - async safe"""
+    """Context manager for setting component and overlaying context keys (async safe)."""
 
     def __init__(self, component: str, **kwargs):
         self.component = component
+        self._new_enrichment = kwargs or {}
         self.previous_component = None
         self._prev_enrichment = None
-        self._new_enrichment = kwargs or {}
+
+        # track context overlays so we can restore on exit
+        self._overlaid_prev = {}  # key -> previous value or _MISSING
 
     def __enter__(self):
         ctx = _get_context()
+
+        # remember current state
         self.previous_component = ctx.component
         self._prev_enrichment = dict(ctx.event_enrichment or {})
+
+        # set/override component in the canonical context
         ctx.component = self.component
-        # shallow-merge: inner scope can override keys
-        merged = _deep_merge(self._prev_enrichment, self._new_enrichment)
+
+        # split kwargs: pull out enrichment keys using a sentinel so static analysis
+        new = dict(self._new_enrichment)
+
+        enrich_patch = {}
+        for key in ("metadata", "seed_system_resources"):
+            val = new.pop(key, _MISSING)
+            if val is not _MISSING:
+                enrich_patch[key] = val
+
+        # overlay all remaining keys into canonical context (stack semantics)
+        # NOTE: we touch ctx._ctx here because we need to restore precisely.
+        for k, v in new.items():
+            self._overlaid_prev[k] = ctx._ctx.get(k, _MISSING)
+            ctx._ctx[k] = v
+
+        # also keep everything in enrichment (deep-merge)
+        # also include the non-meta overlays in enrichment so it's visible there too
+        enrich_patch.update(new)
+        merged = _deep_merge(self._prev_enrichment, enrich_patch)
         ctx.event_enrichment = merged
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         ctx = _get_context()
+
+        # restore component and enrichment
         ctx.component = self.previous_component
         ctx.event_enrichment = self._prev_enrichment or {}
+
+        # restore overlaid context keys
+        for k, prev in self._overlaid_prev.items():
+            if prev is _MISSING:
+                ctx._ctx.pop(k, None)
+            else:
+                ctx._ctx[k] = prev
 
     async def __aenter__(self): return self.__enter__()
     async def __aexit__(self, *a): return self.__exit__(*a)
@@ -658,6 +657,12 @@ def grouped_by_component_and_seed() -> "callable":
         # final path UNDER your base_path
         return f"{tenant}/{project}/{date_folder}/{service_type}/{group}/{filename}"
     return _strategy
+
+def _new_context_with(**fields) -> AccountingContext:
+    ctx = AccountingContext()
+    ctx.update(**fields)
+    return ctx
+
 # ================================
 # EXPORT API
 # ================================

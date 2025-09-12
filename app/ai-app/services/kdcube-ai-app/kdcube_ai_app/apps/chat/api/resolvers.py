@@ -469,3 +469,19 @@ def _find_config_differences(config1: dict, config2: dict, path: str = "") -> di
             }
 
     return differences
+
+def _announce_startup():
+    """Print a bold, clickable 'Application is running' line to stdout."""
+    url = os.environ.get("CHAT_PUBLIC_URL")
+    if not url:
+        # fallback: infer from port if no env provided
+        port = os.environ.get("CHAT_APP_PORT") or str(CHAT_APP_PORT)
+        url = f"http://localhost:{port}/health"
+    try:
+        # Bold line
+        print(f"\n\033[1mApplication is running:\033[0m {url}\n", flush=True)
+        # Terminal hyperlink (OSC 8) — most modern terminals make this clickable
+        print(f'\x1b]8;;{url}\x1b\\Open in browser\x1b]8;;\x1b\\\n', flush=True)
+    except Exception:
+        # be resilient; never crash on printing
+        pass

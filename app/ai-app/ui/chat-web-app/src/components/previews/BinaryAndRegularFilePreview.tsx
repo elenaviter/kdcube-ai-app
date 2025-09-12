@@ -32,7 +32,7 @@ export const RegularPreviewModal: React.FC<{
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
             <div className="bg-white rounded-lg max-w-6xl max-h-[90vh] overflow-hidden m-4 w-full flex flex-col">
-                <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50">
+                <div className="flex items-center justify-between p-4 border-b border-gray-400 bg-gray-50">
                     <div className="flex items-center space-x-4">
                         <div>
                             <h3 className="text-lg font-semibold flex items-center">
@@ -112,7 +112,7 @@ export const RegularPreviewModal: React.FC<{
                     )}
                 </div>
 
-                <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 text-sm text-gray-500">
+                <div className="border-t border-gray-400 px-6 py-3 bg-gray-50 text-sm text-gray-500">
                     <div className="flex items-center justify-between">
                         <span>RN: {content.rn}</span>
                         <span>Resource: {content.resource_id} (v{content.version})</span>
@@ -145,7 +145,7 @@ export const BinaryFilePreviewModal: React.FC<{
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
             <div className="bg-white rounded-lg max-w-md overflow-hidden m-4 w-full">
-                <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50">
+                <div className="flex items-center justify-between p-4 border-b border-gray-400 bg-gray-50">
                     <div>
                         <h3 className="text-lg font-semibold flex items-center">
                             <File size={20} className="mr-2 text-orange-600" />
@@ -188,7 +188,7 @@ export const BinaryFilePreviewModal: React.FC<{
                     </div>
                 </div>
 
-                <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 text-sm text-gray-500">
+                <div className="border-t border-gray-400 px-6 py-3 bg-gray-50 text-sm text-gray-500">
                     <div className="text-center">
                         <span>MIME Type: {content.mimeType}</span>
                     </div>

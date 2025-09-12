@@ -1,0 +1,6 @@
+streamlit>=1.45,<2
+pandas>=2.0
+websocket-client>=1.8
+python-dotenv>=1.0
+fastapi
+uvicorn[standard]>=0.30

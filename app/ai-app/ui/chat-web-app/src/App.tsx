@@ -29,7 +29,7 @@ const AppRouterRoutes = () => {
     return (
         <Routes>
             {/*get additional routes (if any) for current auth type*/}
-            {authContext.getRoutes()}
+            {authContext.getRoutes(prefix)}
 
             <Route path={`${prefix}/chat`} element={withAuthRequired(<ChatPage/>)}/>
             <Route path={`${prefix}/kb`}  element={withAuthRequired(<KnowledgeBasePage/>)}/>

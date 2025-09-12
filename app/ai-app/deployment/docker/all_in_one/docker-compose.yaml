@@ -12,6 +12,8 @@ services:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - chat-internal
+    ports:
+      - "127.0.0.1:5432:5444"
 
   postgres-setup:
     image: chat-postgres-setup:latest
@@ -80,6 +82,7 @@ services:
     container_name: chat-neo4j
     profiles:
       - backend
+      - chatbot
     env_file:
       - path: ./.env.backend
         required: false
@@ -110,8 +113,8 @@ services:
       - chat-internal
     # Expose if you want to use Neo4j Browser locally; otherwise you can omit ports
     ports:
-      - "7474:7474"   # HTTP (Browser)
-      - "7687:7687"   # Bolt
+      - "127.0.0.1:7476:7474"   # HTTP (Neo4j Browser)
+      - "127.0.0.1:7688:7687"   # Bolt
 
   dramatiq:
     image: chat-dramatiq:latest
@@ -138,13 +141,14 @@ services:
     networks:
       - chat-internal
 
-  chat:
+  chat-back:
     image: chat-chat:latest
     container_name: chat-chat
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
     profiles:
+      - chatbot
       - backend
     env_file:
       - path: ./.env.backend
@@ -156,18 +160,22 @@ services:
       - REDIS_HOST=redis
       - POSTGRES_HOST=postgres-db
       - APP_NEO4J_URI=bolt://neo4j:7687
+      - CHAT_PUBLIC_URL=http://localhost:5173/chatbot/api/chat
+      - PYTHONUNBUFFERED=1
+    tty: true
     volumes:
       - ./kb-storage:/kb-storage
       - type: bind
         source: ${SITE_AGENTIC_BUNDLES_ROOT?}  # host root with all bundles
         target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
     depends_on:
+      - postgres-db
       - redis
       - neo4j
     networks:
       - chat-internal
 
-  web-ui:
+  chat:
     image: chat-web-ui:latest
     build:
       context: ../../..
@@ -179,12 +187,17 @@ services:
         required: false
     container_name: chat-web-ui
     restart: unless-stopped
+    depends_on:
+      - chat-back
     profiles:
       - frontend
+      - chatbot
     environment:
       - NODE_ENV=production
     networks:
       - chat-internal
+    ports:
+      - "127.0.0.1:5173:80"
 
   web-proxy:
     image: chat-web-proxy:latest

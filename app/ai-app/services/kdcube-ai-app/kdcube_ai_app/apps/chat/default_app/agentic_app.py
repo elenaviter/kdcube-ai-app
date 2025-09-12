@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
+# chatbot/default_app/agentic_app.py
 # Simple bundle workflow with complex-bundle style streaming & step emissions (markdown composed)
 
 from __future__ import annotations
-
 import json
 import asyncio
-import logging
+import pathlib
+
 import time
+
 from typing import List, Dict, Any, Optional, TypedDict, Annotated
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END, START
@@ -14,19 +18,20 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AnyMessage
 from langgraph.graph.message import add_messages
 from datetime import datetime
-import math
 import textwrap
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
 from kdcube_ai_app.apps.chat.sdk.inventory import Config, AgentLogger, _mid
 from kdcube_ai_app.apps.chat.sdk.util import _json_schema_of
 from kdcube_ai_app.infra.accounting import with_accounting
+from kdcube_ai_app.apps.chat.sdk.storage.ai_bundle_storage import AIBundleStorage
 
 # Loader decorators
 from kdcube_ai_app.infra.plugin.agentic_loader import (
     agentic_initial_state,
     agentic_workflow,
 )
+from kdcube_ai_app.apps.chat.sdk.comm.emitters import AIBEmitters, DeltaPayload, StepPayload
 
 # Local bundle imports
 try:
@@ -386,10 +391,10 @@ REQUIREMENTS:
 
 
 class RAGAgent:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, storage: AIBundleStorage):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.RAGAgent", config.log_level)
-        self.rag_service = RAGService(config)
+        self.rag_service = RAGService(config, storage)
 
     async def retrieve(self, state: ChatGraphState) -> ChatGraphState:
         self.logger.start_operation(
@@ -485,30 +490,71 @@ INSTRUCTIONS:
 
 
 class AnswerGeneratorAgent:
-    def __init__(self, config: Config, model_service: ThematicBotModelService, delta_emitter, step_emitter, streaming: bool = True):
+    def __init__(self, config: Config, model_service: ThematicBotModelService,
+                 emit: AIBEmitters, streaming: bool = True):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.AnswerGeneratorAgent", config.log_level)
         self.model_service = model_service
-        self.emit_delta = delta_emitter or (lambda *_: asyncio.sleep(0))
-        self.emit_step = step_emitter or (lambda *_: asyncio.sleep(0))
+        self.emit = emit
         self.streaming = streaming
+
+    async def emit_file(self):
+        """
+        Emits chat events for batch files + citations + per-file.
+        """
+            # if files:
+                # await self._emit({
+                #     "type": "chat.files",
+                #     "agent": "tooling",
+                #     "step": "files",
+                #     "status": "completed",
+                #     "title": f"Files Ready ({len(files)})",
+                #     "data": {"count": len(files), "items": files}
+                # })
+        f = {
+            "slot": "pdf_file",
+             "title": "Sample PDF",
+            "filename": "sample.pdf",
+            "key": "sample.pdf",
+            "description": "A sample PDF file for testing.",
+            "rn": "file_12345",
+            "mime": "application/pdf",
+            "tool_id": "static_resource",
+        }
+        await self._emit({
+            "type": "artifact.saved",
+            "agent": "tooling",
+            "step": "file",
+            "artifact_type": "file",
+            "status": "completed",
+            "title": f"File Ready — {pathlib.Path((f.get('key') or '')).name or '(file)'}",
+            "data": f
+        })
+                #
+                # if citations:
+                #     await self._emit({
+                #         "type": "chat.citable",
+                #         "agent": "tooling",
+                #         "step": "citations",
+                #         "status": "completed",
+                #         "title": f"Citations ({len(citations)})",
+                #         "data": {"count": len(citations), "items": citations}
+                #     })
+
 
     async def generate_answer(self, state: ChatGraphState) -> ChatGraphState:
         self.logger.start_operation(
             "generate_answer",
             execution_id=state["execution_id"],
             is_our_domain=state["is_our_domain"],
-            document_count=len(state["reranked_docs"]) if state["reranked_docs"] else 0
+            document_count=len(state["reranked_docs"]) if state["reranked_docs"] else 0,
         )
 
-        # --- Build context snippet block (unchanged) ---
+        # Build context snippets for prompt
         context_docs = ""
-        doc_sources = []
         if state["reranked_docs"]:
             for i, doc in enumerate(state["reranked_docs"][:5]):
                 context_docs += f"Document {i+1}:\n{doc.get('content','')}\n\n"
-                src = (doc.get("metadata") or {}).get("source")
-                if src: doc_sources.append(src)
 
         summary_context = ""
         if state["context"].get("running_summary"):
@@ -516,33 +562,58 @@ class AnswerGeneratorAgent:
 
         SUGGESTION_RULES = """
 FOLLOW-UP SUGGESTIONS (strict):
-- Phrased as first-person, user-side imperatives: executable as-is (e.g., "Learn more about plating begonia in winter").
-- Start with a strong verb; no "you", no questions, no "please".
-- No generic meta-asks such as: "Specify your needs", "Provide more details", "What else can I help with".
-- ≤ 120 characters each, end with a period.
+- First-person, user-side imperatives (executable as-is).
+- Start with a strong verb; no questions; no "please".
+- No meta-asks like "Provide more details".
+- ≤ 120 chars each, end with a period.
 - Mirror the user’s language and context.
-- 0–3 items. If the turn is only greetings/capabilities → return [].
+- 0–3 items. If greeting/capabilities → [].
 """
-        # --- Output protocol & guardrails ---
+        # PRIVATE internal prelude guidance (not streamed)
+        INTERNAL_GUIDE = (
+            "\n\nINTERNAL PRELUDE (private; must appear BEFORE '<HERE GOES THINKING PART>'):\n"
+            "Write a compact turn log as JSON, then continue with the usual three sections.\n"
+            "Format:\n"
+            "<<< BEGIN TURN LOG >>>\n"
+            "```json\n"
+            "{\n"
+            '  "objective": "short goal",\n'
+            '  "done": [],\n'
+            '  "not_done": [],\n'
+            '  "assumptions": [],\n'
+            '  "risks": [],\n'
+            '  "notes": "",\n'
+            '  "prefs": {\n'
+            '    "assertions": [],\n'
+            '    "exceptions": []\n'
+            '  }\n'
+            "}\n"
+            "```\n"
+            "After that, emit strictly in order:\n"
+            "  <HERE GOES THINKING PART>\n"
+            "  <HERE GOES ANSWER FOR USER>\n"
+            "  <HERE GOES FOLLOWUP>\n"
+        )
+
         system_prompt = (
-            f"{summary_context}You are a helpful assistant. Use the provided context snippets if relevant; otherwise answer from general knowledge.\n\n"
-            "STYLE:\n"
-            "- Be direct, structured, and actionable. Use short sections or lists.\n"
-            "- Only cite the provided snippets if you actually used them.\n"
-            "- The THINKING section must be high-level (key considerations), not step-by-step chain-of-thought.\n\n"
-            "OUTPUT PROTOCOL (strict):\n"
-            "1) Write exactly this marker on its own line:\n"
-            "<HERE GOES THINKING PART>\n"
-            "Then a brief high-level plan/rationale in Markdown (bullets/short lines; no numbered reasoning steps).\n"
-            "2) Then this marker on its own line:\n"
-            "<HERE GOES ANSWER FOR USER>\n"
-            "Then the final user-facing answer in Markdown.\n"
-            "3) Then this marker on its own line:\n"
-            "<HERE GOES FOLLOWUP>\n"
-            "{ \"followups\": [ /* 0–3 concise, user-imperative actions; or [] */ ] }\n"
-            "Rules for followups: start with a verb; no questions; <=120 chars; no emojis.\n"
-            "Return ONLY these three sections in this exact order.\n"
-            f"{SUGGESTION_RULES}"
+                f"{summary_context}You are a helpful assistant. Use the provided context snippets if relevant; otherwise answer from general knowledge.\n\n"
+                "STYLE:\n"
+                "- Be direct, structured, and actionable. Use short sections or lists.\n"
+                "- Only cite provided snippets if you actually used them.\n"
+                "- The THINKING section must be high-level (key considerations), not step-by-step chain-of-thought.\n\n"
+                "OUTPUT PROTOCOL (strict):\n"
+                "1) Write exactly this marker on its own line:\n"
+                "<HERE GOES THINKING PART>\n"
+                "Then a brief high-level plan in Markdown (bullets/short lines).\n"
+                "2) Then this marker on its own line:\n"
+                "<HERE GOES ANSWER FOR USER>\n"
+                "Then the final user-facing answer in Markdown.\n"
+                "3) Then this marker on its own line:\n"
+                "<HERE GOES FOLLOWUP>\n"
+                '{ "followups": [ /* 0–3 concise, user-imperative actions; or [] */ ] }\n'
+                "Return ONLY these three sections in this exact order.\n"
+                f"{SUGGESTION_RULES}"
+                + INTERNAL_GUIDE
         )
 
         user_content = (
@@ -550,42 +621,62 @@ FOLLOW-UP SUGGESTIONS (strict):
             f"User question:\n{state.get('user_message','')}"
         )
 
-        # --- Streaming parser: THINKING -> ANSWER -> FOLLOWUP(JSON) ---
+        # Streaming parser
         import re, json as _json
 
         THINK_RE = re.compile(r"<\s*here\s+goes\s+thinking\s+part\s*>", re.I)
         ANS_RE   = re.compile(r"<\s*here\s+goes\s+answer\s+for\s+user\s*>", re.I)
         FUP_RE   = re.compile(r"<\s*here\s+goes\s+followup\s*>", re.I)
+        LOG_RE   = re.compile(r"<<<?\s*begin\s+turn\s+log\s*>>>?", re.I)
 
         MAX_BASE = max(len("here goes thinking part"),
                        len("here goes answer for user"),
-                       len("here goes followup"))
-        HOLDBACK = MAX_BASE + 8  # tolerate split markers
+                       len("here goes followup"),
+                       len("<<< BEGIN TURN LOG >>>"))
+        HOLDBACK = MAX_BASE + 8
 
         buf = ""
         tail = ""
-        mode = "pre"     # pre -> thinking -> answer -> followup
+        mode = "pre"     # pre (private) -> thinking -> answer -> followup
+
+        delta_idx = 0
+        thinking_chunks: list[str] = []
+        answer_chunks: list[str] = []
+
         emit_from = 0
         deltas = 0
         thinking_text = ""
         answer_text = ""
+        internal_buf: list[str] = []
 
         def _skip_ws(i: int) -> int:
             while i < len(buf) and buf[i] in (" ", "\t", "\r", "\n"):
                 i += 1
             return i
 
-        async def _emit(kind: str, text: str):
-            nonlocal deltas, thinking_text, answer_text
-            if not text:
+        async def _emit(kind: str, text: str, completed: bool = False):
+            nonlocal delta_idx
+            if not text and not completed:
                 return
-            idx = deltas
-            await self.emit_delta(text, idx, {"marker": ("thinking" if kind == "thinking" else "answer")})
-            deltas += 1
             if kind == "thinking":
-                thinking_text += text
+                if text:
+                    thinking_chunks.append(text)
+                await self.emit.delta(DeltaPayload(
+                    text=text or "",
+                    index=delta_idx,
+                    marker="thinking",
+                    completed=completed
+                ))
             else:
-                answer_text += text
+                if text:
+                    answer_chunks.append(text)
+                await self.emit.delta(DeltaPayload(
+                    text=text or "",
+                    index=delta_idx,
+                    marker="answer",
+                    completed=completed
+                ))
+            delta_idx += 1
 
         def _find(pat: re.Pattern, start_hint: int):
             start = max(0, start_hint - HOLDBACK)
@@ -596,14 +687,26 @@ FOLLOW-UP SUGGESTIONS (strict):
             if not piece:
                 return
             prev_len = len(buf)
-            buf += piece
+            if mode != "followup":
+                buf += piece
 
             while True:
+
                 if mode == "pre":
+                    # capture PRIVATE internal prelude until THINKING marker
                     m = _find(THINK_RE, prev_len)
-                    if not m: break
-                    emit_from = _skip_ws(m.end())
-                    mode = "thinking"
+                    if m:
+                        if m.start() > emit_from:
+                            internal_buf.append(buf[emit_from:m.start()])
+                        emit_from = _skip_ws(m.end())
+                        mode = "thinking"
+                        continue
+                    # accumulate safe internal slice; do NOT stream
+                    safe_end = max(emit_from, len(buf) - HOLDBACK)
+                    if safe_end > emit_from:
+                        internal_buf.append(buf[emit_from:safe_end])
+                        emit_from = safe_end
+                    break
 
                 if mode == "thinking":
                     m = _find(ANS_RE, prev_len)
@@ -658,7 +761,6 @@ FOLLOW-UP SUGGESTIONS (strict):
                         ),
                     )
                 else:
-                    # Non-streaming fallback: just call and then parse once
                     res = await self.model_service.call_model_text(
                         self.model_service.answer_generator_client,
                         [
@@ -673,16 +775,30 @@ FOLLOW-UP SUGGESTIONS (strict):
                     )
                     await on_delta(res["text"])
 
-            # Final flush (if stream ended mid-section)
-            if mode == "thinking" and emit_from < len(buf):
+            # Final flush
+            if mode == "pre" and emit_from < len(buf):
+                internal_buf.append(buf[emit_from:])
+            elif mode == "thinking" and emit_from < len(buf):
                 await _emit("thinking", buf[emit_from:].rstrip())
             elif mode == "answer" and emit_from < len(buf):
                 await _emit("answer", buf[emit_from:].rstrip())
 
-            # Parse followups JSON (tolerant)
+            # signal completion of THINKING stream (complex-bundle parity)
+            try:
+                # after final flush of thinking:
+                # await self.emit.delta(DeltaPayload(text="", index=deltas, marker="thinking", completed=True))
+                await self.emit.delta(DeltaPayload(text="", index=delta_idx, marker="thinking", completed=True))
+                delta_idx += 1
+                await self.emit.delta(DeltaPayload(text="", index=delta_idx, marker="answer", completed=True))
+                delta_idx += 1
+            except Exception:
+                pass
+
+            # Parse FOLLOWUPS JSON
             followups: List[str] = []
             if tail:
                 raw = tail.strip().strip("`").lstrip(">")
+                import re, json as _json
                 m = re.search(r"\{.*\}\s*$", raw, re.S)
                 if m:
                     try:
@@ -693,32 +809,75 @@ FOLLOW-UP SUGGESTIONS (strict):
                     except Exception:
                         pass
 
+            # Parse TURN LOG JSON from the PRIVATE internal prelude
+            internal_text = "".join(internal_buf).strip()
+
+            def _extract_turn_log_json(text: str) -> Optional[dict]:
+                if not text:
+                    return None
+                import re, json as _json
+                LOG_RE   = re.compile(r"<<<?\s*begin\s+turn\s+log\s*>>>?", re.I)
+                mm = LOG_RE.search(text)
+                if not mm:
+                    return None
+                tail_ = text[mm.end():]
+                fence = re.search(r"```json\s*(.*?)```", tail_, re.S | re.I)
+                if not fence:
+                    return None
+                try:
+                    return _json.loads(fence.group(1).strip())
+                except Exception:
+                    try:
+                        payload = fence.group(1).strip()
+                        payload = re.sub(r",\s*}", "}", payload)
+                        payload = re.sub(r",\s*]", "]", payload)
+                        return _json.loads(payload)
+                    except Exception:
+                        return None
+
+            turn_log = _extract_turn_log_json(internal_text) or {}
+
             # Persist to state
-            state["final_answer"] = answer_text or (buf.strip() if buf else "")
-            state["thinking"] = (thinking_text or "").strip() or None
+            thinking_text = "".join(thinking_chunks).strip()
+            answer_text   = "".join(answer_chunks).strip()
+
+            state["thinking"] = thinking_text or None
+            state["final_answer"] = answer_text or "..."
+
             state["followups"] = followups
+            state["internal_prelude"] = internal_text or None
+            state["turn_log"] = turn_log or None
 
+            # Emit followups step with composed markdown
             if followups:
-                await self.emit_step(
-                    "followups",
-                    "completed",
-                    {"items": followups, "turn_id": state.get("turn_id")},
-                    title="Follow-ups"
-                )
-            else:
-                await self.emit_step(
-                    "followups",
-                    "skipped",
-                    {"reason": "none", "turn_id": state.get("turn_id")},
-                    title="Follow-ups"
-                )
+                await self.emit.step(StepPayload(
+                    step="followups",
+                    status="completed",
+                    title="🧠 Follow-ups",
+                    markdown="### Suggested next actions\n\n" + "\n".join(f"- {s}" for s in followups),
+                    agent="answer_generator",
+                    data={"items": followups}
+                ))
 
-            # Record usage marker (optional)
             add_step_log(state, "answer_generation_usage", {"usage": usage_out, "followups": followups})
+            add_step_log(state, "followups_parsed", {"count": len(followups), "tail_len": len(tail)})
 
-            # Keep the assistant message as the visible ANSWER (not the thinking)
+            # Keep the final assistant message (the ANSWER, not the thinking)
             ai_msg = AIMessage(content=state["final_answer"], id=_mid("ai"))
             state["messages"].append(ai_msg)
+
+            # Stream completion event
+            try:
+                await self.emit.step(StepPayload(
+                    step="assistant_stream",
+                    status="completed",
+                    title="📡 Stream",
+                    markdown="Streaming complete.",
+                    data={"meta": {"deltas": delta_idx, "turn_id": state.get("turn_id")}},
+                    agent="answer_generator",
+                ))
+            except Exception:
+                pass
 
             self.logger.finish_operation(True, f"Generated answer, {len(state['final_answer'])} chars; followups={len(followups)}")
         except Exception as e:
@@ -727,8 +886,6 @@ FOLLOW-UP SUGGESTIONS (strict):
             add_step_log(state, "answer_generation_failed", {"success": False, "error": state["error_message"]})
             self.logger.finish_operation(False, state["error_message"])
         return state
-
-
 
 # =========================
 # Initial state + Workflow
@@ -766,7 +923,18 @@ def create_initial_state(payload: Dict[str, Any]):
 class ChatWorkflow:
     """Main workflow orchestrator using ChatCommunicator for emissions."""
 
-    def __init__(self, config: Config, communicator: ChatCommunicator, streaming: bool = True):
+    def __init__(self,
+                 config: Config,
+                 communicator: ChatCommunicator,
+                 streaming: bool = True):
+
+        self.storage = AIBundleStorage(
+            tenant=config.tenant,
+            project=config.project,
+            ai_bundle_id=BUNDLE_ID,
+            storage_uri=config.bundle_storage_url,
+        )
+
         self.config = config
         # role mapping for this bundle
         config.role_models = self.configuration["role_models"]
@@ -776,6 +944,7 @@ class ChatWorkflow:
 
         # unified communicator
         self.comm = communicator
+        self.emit = AIBEmitters(self.comm)
 
         # current turn id
         self._turn_id: Optional[str] = None
@@ -794,13 +963,12 @@ class ChatWorkflow:
         # agents
         self.classifier = ClassifierAgent(config, self.model_service)
         self.query_writer = QueryWriterAgent(config, self.model_service)
-        self.rag_agent = RAGAgent(config)
+        self.rag_agent = RAGAgent(config, self.storage)
         self.reranking_agent = RerankingAgent(config, self.model_service)
         self.answer_generator = AnswerGeneratorAgent(
             config,
             model_service=self.model_service,
-            delta_emitter=self.emit_delta,
-            step_emitter=self.emit_step,
+            emit=self.emit,
             streaming=streaming,
         )
 
@@ -1012,6 +1180,7 @@ class ChatWorkflow:
         workflow.add_node("workflow_complete", _emit_workflow_complete)
         workflow.add_edge("answer_generator", "workflow_complete")
         workflow.add_edge("workflow_complete", END)
+
 
         return workflow.compile(checkpointer=self.memory)
 
