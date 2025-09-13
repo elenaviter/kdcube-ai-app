@@ -171,11 +171,11 @@ class TurnLog(BaseModel):
 
     @property
     def user_entry(self):
-        return next((d for d in self.entries if d.area == "user"), None)
+        return next((d.model_dump() for d in self.entries if d.area == "user"), None)
 
     @property
     def objective_entry(self):
-        return next((d for d in self.entries if d.area == "objective"), None)
+        return next((d.model_dump() for d in self.entries if d.area == "objective"), None)
 
     def to_markdown(self, header: str="[turn_log]") -> str:
         lines = [header]
