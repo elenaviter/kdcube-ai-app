@@ -36,7 +36,7 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 # Import our simplified components
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
-    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant
+    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant, _announce_startup
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
         # config & bundle
         cfg_req = ConfigRequest(**(task.config.values or {}))
         wf_config = create_workflow_config(cfg_req)
-        bundle_id = (task.config.values or {}).get("agentic_bundle_id")
+        bundle_id = (task.routing.bundle_id)
         spec_resolved = resolve_bundle(bundle_id, override=None)
 
         if not spec_resolved:
@@ -221,6 +221,7 @@ async def lifespan(app: FastAPI):
         await health_checker.start_monitoring()
 
         logger.info(f"Chat process {process_id} started with enhanced gateway")
+        _announce_startup()
 
     except Exception as e:
         logger.warning(f"Could not start legacy middleware: {e}")

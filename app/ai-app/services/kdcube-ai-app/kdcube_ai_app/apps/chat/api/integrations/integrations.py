@@ -221,6 +221,7 @@ async def get_bundle_suggestions(
     #     raise HTTPException(status_code=404, detail=f"Unknown bundle_id: {payload.bundle_id}")
 
     config_data = {}
+
     config_request = ConfigRequest(**config_data)
     if not config_request.selected_model:
         config_request.selected_model = (namespaces.CONFIG.AGENTIC.DEFAULT_LLM_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
@@ -230,6 +231,8 @@ async def get_bundle_suggestions(
         config_request.openai_api_key = os.getenv("OPENAI_API_KEY")
     if not config_request.claude_api_key:
         config_request.claude_api_key = os.getenv("ANTHROPIC_API_KEY")
+    if payload and payload.bundle_id:
+        config_request.agentic_bundle_id = payload.bundle_id
 
     spec_resolved = resolve_bundle(config_request.agentic_bundle_id, override=None)
     # 2) Build minimal workflow config (project-aware; defaults elsewhere)
