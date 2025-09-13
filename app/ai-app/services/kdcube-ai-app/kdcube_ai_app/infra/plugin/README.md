@@ -313,70 +313,6 @@ awesome—here are two drop-in Mermaid diagrams for the README.
 ### 1) Architecture (WS-only async flow)
 
 ```mermaid
-graph TB
-  %% Layout hints
-  classDef box fill:#f8f9fb,stroke:#c9d2e1,color:#111,rounded:6px;
-  classDef infra fill:#fff7e6,stroke:#d7c9a1,color:#111,rounded:6px;
-  classDef svc fill:#eef7ff,stroke:#b9d5f3,color:#111,rounded:6px;
-  classDef mod fill:#f3e8ff,stroke:#cdb7f6,color:#111,rounded:6px;
-
-  subgraph CLIENT["Client Layer"]
-    UI[Web UI / Socket.IO client\n(session_id = room)]:::box
-  end
-
-  subgraph GATEWAY["Gateway & Entry"]
-    WS[Socket.IO Handler\n/landing via WS]:::svc
-    AUTH[Auth]:::svc
-    RATE[Rate Limit]:::svc
-    BACK[Backpressure (pre-check + atomic enqueue)]:::svc
-    CB[Circuit Breakers]:::svc
-  end
-
-  subgraph RUNTIME["Chat Service Runtime"]
-    QUEUE[Message Queue]:::svc
-    PROC[Queue Processor]:::svc
-    REG[Bundle Registry Snapshot]:::svc
-    LOAD[Bundle Loader]:::svc
-    WF[Your Bundle Workflow]:::box
-  end
-
-  subgraph INTEGRATIONS["Integrations"]
-    KB[(Knowledge Base API)]:::mod
-    ACC[(Accounting Writer)]:::mod
-  end
-
-  subgraph INFRA["Infrastructure"]
-    REDIS[(Redis Pub/Sub Relay)]:::infra
-    STORE[(Storage: FS/S3)]:::infra
-  end
-
-  %% client -> gateway
-  UI -- Socket.IO message\n{message, config, agentic_bundle_id} --> WS
-  WS --> AUTH --> RATE --> BACK --> CB
-  CB -->|accepted| QUEUE
-  CB -.->|rejected| UI
-
-  %% queue -> runtime
-  PROC --> REG --> LOAD --> WF
-  QUEUE --> PROC
-
-  %% streaming/events path
-  WF -- chat.delta / chat.step / chat.complete --> PROC --> REDIS --> UI
-
-  %% optional tools + accounting
-  WF -. optional .-> KB
-  WF -. with_accounting(...) .-> ACC
-  ACC -. writes .-> STORE
-
-  %% styling
-  class UI,WF,KB,ACC,STORE,REDIS box;
-```
-
----
-
-### 2) End-to-end sequence (streaming + steps + follow-ups)
-
-```mermaid
 sequenceDiagram
     autonumber
     participant UI as Client
@@ -424,6 +360,8 @@ sequenceDiagram
     Note over UI: UI renders streams and steps
 ```
 
+---
+
 **Event types your bundle produces (and default UI consumes):**
 
 * `chat.start` (platform)
@@ -432,7 +370,6 @@ sequenceDiagram
 * `chat.followups` (optional custom; many UIs just read `step: "followups"`)
 * `chat.complete` (platform)
 * `chat.error` (platform)
-  
 ```mermaid
 sequenceDiagram
     autonumber
