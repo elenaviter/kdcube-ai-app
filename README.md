@@ -162,9 +162,9 @@ docker compose up -d --build web-ui
 
 ---
 
-## Developing bundles (agents)
+## Developing bundles (chatbots / agentic apps)
 
-Bring **any Python agent** (folder, single `.py`, or wheel/zip). Decorate one workflow class so the loader can find it. Stream via the communicator.
+Bring your agentic app (**any Python**) (folder, single `.py`, or wheel/zip). Decorate one workflow class so the loader can find it. Stream via the communicator.
 
 **Hello-bundle sketch**
 
