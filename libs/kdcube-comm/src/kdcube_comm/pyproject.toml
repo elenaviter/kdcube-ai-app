@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kdcube-comm"
+version = "0.1.0"
+description = "Comm utilities"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Elena Viter"}]
+requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://example.com/kdcube-comm"
+
+[project.optional-dependencies]
+streamlit = [
+    "streamlit>=1.30",
+    "websocket-client>=1.8",
+]
+socketio = [
+    "python-socketio>=5.11",
+    "aiohttp>=3.9"
+]
+examples = [
+    "python-dotenv>=1.0",
+    "pandas>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
