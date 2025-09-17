@@ -332,6 +332,8 @@ async def _stream_agent_sections_to_json(
             return None
 
     data = _try_parse_json(json_tail)
+    raw_data = json_tail
+    error = None
 
     if data is None and json_tail.strip():
         # try format fixer once
@@ -344,81 +346,83 @@ async def _stream_agent_sections_to_json(
         if fix.get("success"):
             try:
                 data = schema_model.model_validate(fix["data"]).model_dump()
-            except Exception:
+            except Exception as ex:
+                error = f"JSON parse after format fix failed: {ex}"
                 data = None
 
+
     # Retry streaming once if JSON missing entirely (model stopped early)
-    if data is None and not json_tail.strip():
-        produced = []
-        if internal_thinking or parser.mode in ("user", "json"):
-            produced.append("<<< BEGIN INTERNAL THINKING >>>\n" + internal_thinking)
-        if user_thinking or parser.mode == "json":
-            produced.append("<<< BEGIN USER-FACING THINKING >>>\n" + user_thinking)
-        seed_assistant = "\n".join(produced).strip()
-
-        continue_note = (
-            "You already produced the earlier sections shown above. "
-            "Continue by producing ONLY the remaining sections in the exact order, starting with "
-            "<<< BEGIN STRUCTURED JSON >>>. "
-            "Return the remaining sections exactly once."
-        )
-        sys_prompt_retry = sys_prompt + "\n\n[CONTINUE]\n" + continue_note
-
-        buf2 = ""
-        mode2 = "pre"
-        emit_from2 = 0
-        json_tail2 = ""
-
-        def _safe_window_end2(current_len: int) -> int:
-            return max(emit_from2, current_len - HOLDBACK)
-
-        async def on_delta_retry(piece: str):
-            nonlocal buf2, mode2, emit_from2, json_tail2
-            if not piece:
-                return
-            prev_len2 = len(buf2)
-            buf2 += piece
-
-            if mode2 == "pre":
-                m = JSON_RE.search(buf2, max(0, prev_len2 - HOLDBACK))
-                if m:
-                    emit_from2 = _skip_ws(buf2, m.end())
-                    json_tail2 = buf2[emit_from2:]
-                    mode2 = "json"
-                return
-
-            if mode2 == "json":
-                json_tail2 += piece
-                return
-
-        retry_msgs = [SystemMessage(content=sys_prompt_retry), HumanMessage(content=user_msg)]
-        if seed_assistant:
-            retry_msgs.append(AIMessage(content=seed_assistant))
-
-        await svc.stream_model_text_tracked(
-            client,
-            retry_msgs,
-            on_delta=on_delta_retry,
-            on_complete=None,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            client_cfg=cfg,
-            role=client_role,
-        )
-
-        data = _try_parse_json(json_tail2)
-        if data is None and json_tail2.strip():
-            fix2 = await svc.format_fixer.fix_format(
-                raw_output=json_tail2,
-                expected_format=getattr(schema_model, "__name__", str(schema_model)),
-                input_data=user_msg,
-                system_prompt=sys_prompt_retry,
-            )
-            if fix2.get("success"):
-                try:
-                    data = schema_model.model_validate(fix2["data"]).model_dump()
-                except Exception:
-                    data = None
+    # if data is None and not json_tail.strip():
+    #     produced = []
+    #     if internal_thinking or parser.mode in ("user", "json"):
+    #         produced.append("<<< BEGIN INTERNAL THINKING >>>\n" + internal_thinking)
+    #     if user_thinking or parser.mode == "json":
+    #         produced.append("<<< BEGIN USER-FACING THINKING >>>\n" + user_thinking)
+    #     seed_assistant = "\n".join(produced).strip()
+    #
+    #     continue_note = (
+    #         "You already produced the earlier sections shown above. "
+    #         "Continue by producing ONLY the remaining sections in the exact order, starting with "
+    #         "<<< BEGIN STRUCTURED JSON >>>. "
+    #         "Return the remaining sections exactly once."
+    #     )
+    #     sys_prompt_retry = sys_prompt + "\n\n[CONTINUE]\n" + continue_note
+    #
+    #     buf2 = ""
+    #     mode2 = "pre"
+    #     emit_from2 = 0
+    #     json_tail2 = ""
+    #
+    #     def _safe_window_end2(current_len: int) -> int:
+    #         return max(emit_from2, current_len - HOLDBACK)
+    #
+    #     async def on_delta_retry(piece: str):
+    #         nonlocal buf2, mode2, emit_from2, json_tail2
+    #         if not piece:
+    #             return
+    #         prev_len2 = len(buf2)
+    #         buf2 += piece
+    #
+    #         if mode2 == "pre":
+    #             m = JSON_RE.search(buf2, max(0, prev_len2 - HOLDBACK))
+    #             if m:
+    #                 emit_from2 = _skip_ws(buf2, m.end())
+    #                 json_tail2 = buf2[emit_from2:]
+    #                 mode2 = "json"
+    #             return
+    #
+    #         if mode2 == "json":
+    #             json_tail2 += piece
+    #             return
+    #
+    #     retry_msgs = [SystemMessage(content=sys_prompt_retry), HumanMessage(content=user_msg)]
+    #     if seed_assistant:
+    #         retry_msgs.append(AIMessage(content=seed_assistant))
+    #
+    #     await svc.stream_model_text_tracked(
+    #         client,
+    #         retry_msgs,
+    #         on_delta=on_delta_retry,
+    #         on_complete=None,
+    #         temperature=temperature,
+    #         max_tokens=max_tokens,
+    #         client_cfg=cfg,
+    #         role=client_role,
+    #     )
+    #
+    #     data = _try_parse_json(json_tail2)
+    #     if data is None and json_tail2.strip():
+    #         fix2 = await svc.format_fixer.fix_format(
+    #             raw_output=json_tail2,
+    #             expected_format=getattr(schema_model, "__name__", str(schema_model)),
+    #             input_data=user_msg,
+    #             system_prompt=sys_prompt_retry,
+    #         )
+    #         if fix2.get("success"):
+    #             try:
+    #                 data = schema_model.model_validate(fix2["data"]).model_dump()
+    #             except Exception:
+    #                 data = None
 
     if data is None:
         try:
@@ -428,8 +432,9 @@ async def _stream_agent_sections_to_json(
 
     try:
         run_logger.log_step(
-            "section_capture_summary",
+            "streaming_with_structured_output",
             {
+                "error": error,
                 "internal_chars": len(internal_thinking),
                 "user_chars": len(user_thinking),
                 "json_tail_chars": len(parser.json),
@@ -445,6 +450,7 @@ async def _stream_agent_sections_to_json(
         True,
         "three_section_stream_complete",
         result_preview={
+            "error": error,
             "internal_len": len(internal_thinking),
             "user_len": len(user_thinking),
             "has_agent_response": bool(data),
@@ -455,6 +461,10 @@ async def _stream_agent_sections_to_json(
 
     return {
         "agent_response": data,
+        "log": {
+            "error": error,
+            "raw_data": raw_data
+        },
         "internal_thinking": internal_thinking,
         "user_thinking": user_thinking,
     }

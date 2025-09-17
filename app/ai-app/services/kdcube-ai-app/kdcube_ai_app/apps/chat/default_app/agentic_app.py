@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
+# chatbot/default_app/agentic_app.py
 # Simple bundle workflow with complex-bundle style streaming & step emissions (markdown composed)
 
 from __future__ import annotations
-
 import json
 import asyncio
-import logging
+import pathlib
+
 import time
-import traceback
+
 from typing import List, Dict, Any, Optional, TypedDict, Annotated
 from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END, START
@@ -15,20 +18,20 @@ from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AnyMessage
 from langgraph.graph.message import add_messages
 from datetime import datetime
-import math
 import textwrap
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
 from kdcube_ai_app.apps.chat.sdk.inventory import Config, AgentLogger, _mid
 from kdcube_ai_app.apps.chat.sdk.util import _json_schema_of
 from kdcube_ai_app.infra.accounting import with_accounting
+from kdcube_ai_app.apps.chat.sdk.storage.ai_bundle_storage import AIBundleStorage
 
 # Loader decorators
 from kdcube_ai_app.infra.plugin.agentic_loader import (
     agentic_initial_state,
     agentic_workflow,
 )
-from .emitters import SimpleEmitters, DeltaPayload, StepPayload
+from kdcube_ai_app.apps.chat.sdk.comm.emitters import AIBEmitters, DeltaPayload, StepPayload
 
 # Local bundle imports
 try:
@@ -388,10 +391,10 @@ REQUIREMENTS:
 
 
 class RAGAgent:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, storage: AIBundleStorage):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.RAGAgent", config.log_level)
-        self.rag_service = RAGService(config)
+        self.rag_service = RAGService(config, storage)
 
     async def retrieve(self, state: ChatGraphState) -> ChatGraphState:
         self.logger.start_operation(
@@ -488,12 +491,56 @@ INSTRUCTIONS:
 
 class AnswerGeneratorAgent:
     def __init__(self, config: Config, model_service: ThematicBotModelService,
-                 emit: SimpleEmitters, streaming: bool = True):
+                 emit: AIBEmitters, streaming: bool = True):
         self.config = config
         self.logger = AgentLogger(f"{BUNDLE_ID}.AnswerGeneratorAgent", config.log_level)
         self.model_service = model_service
         self.emit = emit
         self.streaming = streaming
+
+    async def emit_file(self):
+        """
+        Emits chat events for batch files + citations + per-file.
+        """
+            # if files:
+                # await self._emit({
+                #     "type": "chat.files",
+                #     "agent": "tooling",
+                #     "step": "files",
+                #     "status": "completed",
+                #     "title": f"Files Ready ({len(files)})",
+                #     "data": {"count": len(files), "items": files}
+                # })
+        f = {
+            "slot": "pdf_file",
+             "title": "Sample PDF",
+            "filename": "sample.pdf",
+            "key": "sample.pdf",
+            "description": "A sample PDF file for testing.",
+            "rn": "file_12345",
+            "mime": "application/pdf",
+            "tool_id": "static_resource",
+        }
+        await self._emit({
+            "type": "artifact.saved",
+            "agent": "tooling",
+            "step": "file",
+            "artifact_type": "file",
+            "status": "completed",
+            "title": f"File Ready — {pathlib.Path((f.get('key') or '')).name or '(file)'}",
+            "data": f
+        })
+                #
+                # if citations:
+                #     await self._emit({
+                #         "type": "chat.citable",
+                #         "agent": "tooling",
+                #         "step": "citations",
+                #         "status": "completed",
+                #         "title": f"Citations ({len(citations)})",
+                #         "data": {"count": len(citations), "items": citations}
+                #     })
+
 
     async def generate_answer(self, state: ChatGraphState) -> ChatGraphState:
         self.logger.start_operation(
@@ -591,6 +638,11 @@ FOLLOW-UP SUGGESTIONS (strict):
         buf = ""
         tail = ""
         mode = "pre"     # pre (private) -> thinking -> answer -> followup
+
+        delta_idx = 0
+        thinking_chunks: list[str] = []
+        answer_chunks: list[str] = []
+
         emit_from = 0
         deltas = 0
         thinking_text = ""
@@ -603,11 +655,28 @@ FOLLOW-UP SUGGESTIONS (strict):
             return i
 
         async def _emit(kind: str, text: str, completed: bool = False):
+            nonlocal delta_idx
             if not text and not completed:
                 return
-            marker = "thinking" if kind == "thinking" else "answer"
-            # use a simple counter you already keep (deltas)
-            await self.emit.delta(DeltaPayload(text=text or "", index=deltas, marker=marker, completed=completed))
+            if kind == "thinking":
+                if text:
+                    thinking_chunks.append(text)
+                await self.emit.delta(DeltaPayload(
+                    text=text or "",
+                    index=delta_idx,
+                    marker="thinking",
+                    completed=completed
+                ))
+            else:
+                if text:
+                    answer_chunks.append(text)
+                await self.emit.delta(DeltaPayload(
+                    text=text or "",
+                    index=delta_idx,
+                    marker="answer",
+                    completed=completed
+                ))
+            delta_idx += 1
 
         def _find(pat: re.Pattern, start_hint: int):
             start = max(0, start_hint - HOLDBACK)
@@ -618,9 +687,11 @@ FOLLOW-UP SUGGESTIONS (strict):
             if not piece:
                 return
             prev_len = len(buf)
-            buf += piece
+            if mode != "followup":
+                buf += piece
 
             while True:
+
                 if mode == "pre":
                     # capture PRIVATE internal prelude until THINKING marker
                     m = _find(THINK_RE, prev_len)
@@ -715,7 +786,11 @@ FOLLOW-UP SUGGESTIONS (strict):
             # signal completion of THINKING stream (complex-bundle parity)
             try:
                 # after final flush of thinking:
-                await self.emit.delta(DeltaPayload(text="", index=deltas, marker="thinking", completed=True))
+                # await self.emit.delta(DeltaPayload(text="", index=deltas, marker="thinking", completed=True))
+                await self.emit.delta(DeltaPayload(text="", index=delta_idx, marker="thinking", completed=True))
+                delta_idx += 1
+                await self.emit.delta(DeltaPayload(text="", index=delta_idx, marker="answer", completed=True))
+                delta_idx += 1
             except Exception:
                 pass
 
@@ -763,24 +838,29 @@ FOLLOW-UP SUGGESTIONS (strict):
             turn_log = _extract_turn_log_json(internal_text) or {}
 
             # Persist to state
-            state["final_answer"] = answer_text or (buf.strip() if buf else "")
-            state["thinking"] = (thinking_text or "").strip() or None
+            thinking_text = "".join(thinking_chunks).strip()
+            answer_text   = "".join(answer_chunks).strip()
+
+            state["thinking"] = thinking_text or None
+            state["final_answer"] = answer_text or "..."
+
             state["followups"] = followups
             state["internal_prelude"] = internal_text or None
             state["turn_log"] = turn_log or None
 
             # Emit followups step with composed markdown
-            if followups is not None:
-                await self.emit.event(
-                    type="chat.followups",
-                    title="Follow-ups: User Shortcuts",
+            if followups:
+                await self.emit.step(StepPayload(
                     step="followups",
                     status="completed",
+                    title="🧠 Follow-ups",
+                    markdown="### Suggested next actions\n\n" + "\n".join(f"- {s}" for s in followups),
                     agent="answer_generator",
-                    data={"items": ["Review recommended care for each plant type.", "Ask for specifics if needed for a particular plant."]},
-                )
+                    data={"items": followups}
+                ))
 
             add_step_log(state, "answer_generation_usage", {"usage": usage_out, "followups": followups})
+            add_step_log(state, "followups_parsed", {"count": len(followups), "tail_len": len(tail)})
 
             # Keep the final assistant message (the ANSWER, not the thinking)
             ai_msg = AIMessage(content=state["final_answer"], id=_mid("ai"))
@@ -793,7 +873,7 @@ FOLLOW-UP SUGGESTIONS (strict):
                     status="completed",
                     title="📡 Stream",
                     markdown="Streaming complete.",
-                    data={"meta": {"deltas": deltas, "turn_id": state.get("turn_id")}},
+                    data={"meta": {"deltas": delta_idx, "turn_id": state.get("turn_id")}},
                     agent="answer_generator",
                 ))
             except Exception:
@@ -843,7 +923,18 @@ def create_initial_state(payload: Dict[str, Any]):
 class ChatWorkflow:
     """Main workflow orchestrator using ChatCommunicator for emissions."""
 
-    def __init__(self, config: Config, communicator: ChatCommunicator, streaming: bool = True):
+    def __init__(self,
+                 config: Config,
+                 communicator: ChatCommunicator,
+                 streaming: bool = True):
+
+        self.storage = AIBundleStorage(
+            tenant=config.tenant,
+            project=config.project,
+            ai_bundle_id=BUNDLE_ID,
+            storage_uri=config.bundle_storage_url,
+        )
+
         self.config = config
         # role mapping for this bundle
         config.role_models = self.configuration["role_models"]
@@ -853,7 +944,7 @@ class ChatWorkflow:
 
         # unified communicator
         self.comm = communicator
-        self.emit = SimpleEmitters(self.comm)
+        self.emit = AIBEmitters(self.comm)
 
         # current turn id
         self._turn_id: Optional[str] = None
@@ -872,7 +963,7 @@ class ChatWorkflow:
         # agents
         self.classifier = ClassifierAgent(config, self.model_service)
         self.query_writer = QueryWriterAgent(config, self.model_service)
-        self.rag_agent = RAGAgent(config)
+        self.rag_agent = RAGAgent(config, self.storage)
         self.reranking_agent = RerankingAgent(config, self.model_service)
         self.answer_generator = AnswerGeneratorAgent(
             config,
