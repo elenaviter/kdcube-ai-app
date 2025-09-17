@@ -236,42 +236,32 @@ class ChatCommunicator:
     async def event(
             self,
             *,
-            type: str,                         # e.g. "chat.followups"
+            agent: str | None,
+            type: str,                   # e.g. "chat.followups"
             title: str | None = None,
             step: str = "event",
-            status: str = "update",
-            agent: str | None = None,
             data: dict | None = None,
             markdown: str | None = None,
-            compose: bool = False,             # put markdown into data.compose blocks if True
-            route: str | None = None,          # override socket route; default = "chat_step"
+            route: str | None = None,    # optional override for socket event name
+            status: str = "update",      # e.g. "started" | "completed" | "update"
     ):
         """
         Generic typed chat event with full wrapping (service/conversation).
-        Use for cards like followups, clarifications, files, citations, etc.
 
-        Example:
-          await comm.event(
-              type="chat.followups",
-              title="Follow-ups: User Shortcuts",
-              step="followups",
-              status="completed",
-              agent="answer_generator",
-              data={"items": ["Do X.", "Open Y."]},
-          )
+        - everything payload-like goes into env["data"].
+        - if `route` not given, emit on type-derived socket event: type.replace(".", "_").
+        - no 'compose' handling, no 'chat_step' routing here.
         """
         env = self._base_env(type)
-        env["event"].update({"agent": agent, "step": step, "status": status, "title": title})
-
-        payload = dict(data or {})
+        env["event"].update({
+            "agent": agent,
+            "title": title,
+            "status": status,
+            "step": step,
+        })
         if markdown:
-            if compose:
-                payload.setdefault("markdown", markdown)
-                payload.setdefault("compose", {"blocks": [{"type": "md", "text": markdown}]})
-            else:
-                env["event"]["markdown"] = markdown
+            env["event"]["markdown"] = markdown
+        env["data"] = data or {}
 
-        env["data"] = payload
-
-        # for typed cards we route via the same channel as steps
-        await self.emit(route or "chat_step", env)
+        socket_event = route or "chat_step"
+        await self.emit(socket_event, env)

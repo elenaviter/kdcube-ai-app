@@ -1,65 +1,38 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
+import json
+import re, hashlib
 
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
+from langchain_core.embeddings import Embeddings
 
 from kdcube_ai_app.apps.chat.sdk.inventory import AgentLogger, CustomEmbeddings, Config
+from kdcube_ai_app.apps.chat.sdk.storage.ai_bundle_storage import AIBundleStorage
 
-class RAGService:
-    """RAG service for document retrieval with custom embeddings support"""
+class _PrecomputedThenRealEmbeddings(Embeddings):
+    """
+    Embeddings adapter:
+      - For building the index with FAISS.from_texts: return precomputed vectors for the given texts.
+      - For querying: delegate to the real embedding model.
+    """
+    def __init__(self, pre_map: Dict[str, List[float]], real: Embeddings):
+        self._map = pre_map
+        self._real = real
 
-    def __init__(self, config: Config):
-        self.config = config
-        self.logger = AgentLogger("RAGService", config.log_level)
-        self.vector_store = None
-        self._setup_embeddings_and_data()
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return [self._map[t] for t in texts]
 
-    def _setup_embeddings_and_data(self):
-        """Setup embeddings service and sample data"""
-        operation_start = self.logger.start_operation("setup_embeddings_and_data")
+    def embed_query(self, text: str) -> List[float]:
+        return self._real.embed_query(text)
 
-        embedder_config = self.config.embedder_config
-        if embedder_config["provider"] == "openai":
-            # Initialize OpenAI embeddings
-            self.embeddings = OpenAIEmbeddings(
-                model=embedder_config["model_name"],
-                openai_api_key=self.config.openai_api_key
-            )
-            self.logger.log_step("openai_embeddings_initialized", {
-                "embedder_id": self.config.selected_embedder,
-                "model": embedder_config["model_name"],
-                "provider": "openai",
-                "dimension": embedder_config["dim"]
-            })
-
-        elif embedder_config["provider"] == "custom":
-            # Initialize custom embeddings
-            if not self.config.custom_embedding_endpoint:
-                raise ValueError(f"Custom embedder {self.config.selected_embedder} requires an endpoint")
-
-            self.embeddings = CustomEmbeddings(
-                endpoint=self.config.custom_embedding_endpoint,
-                model=embedder_config["model_name"],
-                size=embedder_config["dim"]
-            )
-            self.logger.log_step("custom_embeddings_initialized", {
-                "embedder_id": self.config.selected_embedder,
-                "endpoint": self.config.custom_embedding_endpoint,
-                "model": embedder_config["model_name"],
-                "provider": "custom",
-                "dimension": embedder_config["dim"]
-            })
-        else:
-            raise ValueError(f"Unknown embedding provider: {embedder_config['provider']}")
-
-        # Create sample documents
-        sample_docs = [
-            Document(
-                page_content="""
+def _builtin_docs():
+    sample_docs = [
+        Document(
+            page_content="""
 Light, Watering, and Soil Basics for Houseplants
 
 Getting the basics right prevents 80% of problems.
@@ -86,10 +59,10 @@ Getting the basics right prevents 80% of problems.
 - **Environment**:
   - Most houseplants like 18–27°C and moderate humidity. Avoid cold drafts and hot radiators.
 """,
-                metadata={"source": "basics_light_watering_soil.md", "type": "documentation"}
-            ),
-            Document(
-                page_content="""
+            metadata={"source": "basics_light_watering_soil.md", "type": "documentation"}
+        ),
+        Document(
+            page_content="""
 Common Pests & Simple Integrated Pest Management (IPM)
 
 - **Identify & Isolate**: Move the plant away from others. Confirm the pest before treating.
@@ -110,10 +83,10 @@ Common Pests & Simple Integrated Pest Management (IPM)
   - Avoid overwatering; increase airflow; keep leaves dust-free.
   - Inspect undersides of leaves during routine watering.
 """,
-                metadata={"source": "pests_ipm.md", "type": "documentation"}
-            ),
-            Document(
-                page_content="""
+            metadata={"source": "pests_ipm.md", "type": "documentation"}
+        ),
+        Document(
+            page_content="""
 Propagation 101: Cuttings, Division, and More
 
 - **Stem cuttings (vining aroids: pothos/philodendron/monstera)**:
@@ -137,10 +110,10 @@ Propagation 101: Cuttings, Division, and More
   - Bright-indirect light, consistent light moisture (not soggy), and high humidity speed rooting.
   - Avoid strong fertilizer until robust new growth appears.
 """,
-                metadata={"source": "propagation_101.md", "type": "documentation"}
-            ),
-            Document(
-                page_content="""
+            metadata={"source": "propagation_101.md", "type": "documentation"}
+        ),
+        Document(
+            page_content="""
 Repotting & Fertilizing Guide
 
 - **When to repot**:
@@ -164,10 +137,10 @@ Repotting & Fertilizing Guide
 - **Salts & Leaf Tips**:
   - Brown, crispy tips can indicate salt buildup or underwatering—flush soil and adjust watering.
 """,
-                metadata={"source": "repotting_fertilizing.md", "type": "documentation"}
-            ),
-            Document(
-                page_content="""
+            metadata={"source": "repotting_fertilizing.md", "type": "documentation"}
+        ),
+        Document(
+            page_content="""
 Troubleshooting Leaf Symptoms
 
 - **Yellow lower leaves**: Often overwatering or insufficient light.
@@ -190,33 +163,139 @@ Troubleshooting Leaf Symptoms
 
 General rule: change **one variable at a time**, observe 1–2 weeks, and keep a simple care log.
 """,
-                metadata={"source": "troubleshooting_symptoms.md", "type": "documentation"}
+            metadata={"source": "troubleshooting_symptoms.md", "type": "documentation"}
+        )
+    ]
+    return sample_docs
+
+class RAGService:
+    """RAG service for document retrieval with custom embeddings support"""
+
+    def __init__(self, config: Config, storage: AIBundleStorage):
+        self.config = config
+        self.logger = AgentLogger("RAGService", config.log_level)
+        self.vector_store = None
+        self.storage = storage
+        self._setup_embeddings_and_data()
+
+    # ---------- setup ----------
+
+    def _setup_embeddings_and_data(self):
+        op = self.logger.start_operation("setup_embeddings_and_data")
+
+        embedder_config = self.config.embedder_config
+        provider = embedder_config["provider"]
+        model_name = embedder_config["model_name"]
+        dim = int(embedder_config["dim"])
+
+        if provider == "openai":
+            self.embeddings = OpenAIEmbeddings(
+                model=model_name,
+                openai_api_key=self.config.openai_api_key
             )
-        ]
+            self.logger.log_step("openai_embeddings_initialized", {
+                "embedder_id": self.config.selected_embedder,
+                "model": model_name,
+                "provider": "openai",
+                "dimension": dim
+            })
+        elif provider == "custom":
+            if not self.config.custom_embedding_endpoint:
+                raise ValueError(f"Custom embedder {self.config.selected_embedder} requires an endpoint")
+            self.embeddings = CustomEmbeddings(
+                endpoint=self.config.custom_embedding_endpoint,
+                model=model_name,
+                size=dim
+            )
+            self.logger.log_step("custom_embeddings_initialized", {
+                "embedder_id": self.config.selected_embedder,
+                "endpoint": self.config.custom_embedding_endpoint,
+                "model": model_name,
+                "provider": "custom",
+                "dimension": dim
+            })
+        else:
+            raise ValueError(f"Unknown embedding provider: {provider}")
 
-
+        # --- Built-in small KB (same content as before) ---
+        sample_docs = _builtin_docs()
         self.logger.log_step("sample_docs_created", {
             "total_documents": len(sample_docs),
             "doc_previews": [doc.page_content[:100] + "..." for doc in sample_docs]
         })
 
-        # Create FAISS vector store
+        # --- Load or build cached embeddings for each doc ---
+        kb_items: List[Tuple[Document, List[float]]] = []
+        to_embed: List[Tuple[str, Document]] = []
+        pre_map: Dict[str, List[float]] = {}
+
+        for doc in sample_docs:
+            doc_id = self._doc_id_for(doc)
+            key = self._kb_key(doc_id)
+            cached = self._try_load_cached_doc(key)
+
+            if cached and self._is_embedding_compatible(cached, provider, model_name, dim):
+                vec = cached["embedding"]
+                kb_items.append((doc, vec))
+                pre_map[doc.page_content] = vec
+                self.logger.log_step("kb_cache_hit", {"doc_id": doc_id, "key": key})
+            else:
+                to_embed.append((doc_id, doc))
+                self.logger.log_step("kb_cache_miss", {"doc_id": doc_id, "key": key})
+
+        # Embed only the missing ones
+        if to_embed:
+            texts = [d.page_content for _, d in to_embed]
+            vecs = self.embeddings.embed_documents(texts)  # batch
+            for (doc_id, doc), vec in zip(to_embed, vecs):
+                kb_items.append((doc, vec))
+                pre_map[doc.page_content] = vec
+                self._save_doc_json(
+                    self._kb_key(doc_id),
+                    {
+                        "id": doc_id,
+                        "content": doc.page_content,
+                        "metadata": doc.metadata,
+                        "embedding": vec,
+                        "embedder": {
+                            "provider": provider,
+                            "model": model_name,
+                            "dimension": dim,
+                            "selected_embedder": self.config.selected_embedder,
+                        },
+                        "sha256": self._sha256(doc.page_content),
+                    },
+                )
+                self.logger.log_step("kb_cache_write", {"doc_id": doc_id, "dimension": len(vec)})
+
+        # --- Build FAISS without re-embedding: try from_embeddings, else adapter ---
         try:
-            self.vector_store = FAISS.from_documents(sample_docs, self.embeddings)
+            # Newer langchain supports FAISS.from_embeddings([(vec, doc), ...], embedding=<Embeddings>)
+            pairs = [ (vec, doc) for (doc, vec) in kb_items ]
+            if hasattr(FAISS, "from_embeddings"):
+                self.vector_store = FAISS.from_embeddings(pairs, self.embeddings)
+            else:
+                # Fallback: build via from_texts with an adapter that supplies precomputed vectors for build
+                adapter = _PrecomputedThenRealEmbeddings(pre_map, self.embeddings)
+                texts = [doc.page_content for (doc, _) in kb_items]
+                metas = [doc.metadata for (doc, _) in kb_items]
+                self.vector_store = FAISS.from_texts(texts, adapter, metadatas=metas)
             self.logger.log_step("vector_store_created", {
                 "store_type": "FAISS",
-                "embedding_type": "custom" if self.config.custom_embedding_endpoint else "openai",
-                "document_count": len(sample_docs)
+                "embedding_provider": provider,
+                "document_count": len(kb_items)
             })
         except Exception as e:
-            self.logger.log_error(e, "Vector store creation failed")
+            self.logger.log_error(e, "vector_store_creation_failed")
             self.vector_store = None
 
-        self.logger.finish_operation(True, f"Setup complete with {len(sample_docs)} documents")
+        self.logger.finish_operation(True, f"Setup complete with {len(kb_items)} cached docs")
+
+    # ---------- public ----------
 
     async def retrieve_documents(self, queries: List[Dict[str, Any]], k: int = 3) -> List[Dict[str, Any]]:
-        """Retrieve documents based on weighted queries"""
-        operation_start = self.logger.start_operation("retrieve_documents",
+        op = self.logger.start_operation(
+            "retrieve_documents",
             query_count=len(queries),
             k=k,
             queries=[q.get("query", "")[:50] + "..." for q in queries]
@@ -231,21 +310,15 @@ General rule: change **one variable at a time**, observe 1–2 weeks, and keep a
         for i, query_data in enumerate(queries):
             query_text = query_data.get("query", "")
             weight = query_data.get("weight", 1.0)
-
             self.logger.log_step(f"processing_query_{i}", {
-                "query": query_text,
-                "weight": weight,
-                "query_length": len(query_text)
+                "query": query_text, "weight": weight, "query_length": len(query_text)
             })
-
             try:
                 docs = self.vector_store.similarity_search(query_text, k=k)
-
                 self.logger.log_step(f"query_{i}_results", {
                     "retrieved_count": len(docs),
                     "doc_previews": [doc.page_content[:100] + "..." for doc in docs]
                 })
-
                 for doc in docs:
                     all_docs.append({
                         "content": doc.page_content,
@@ -256,13 +329,13 @@ General rule: change **one variable at a time**, observe 1–2 weeks, and keep a
             except Exception as e:
                 self.logger.log_error(e, f"Query {i} retrieval failed")
 
-        # Remove duplicates
+        # Deduplicate by content head
         seen = set()
         unique_docs = []
         for doc in all_docs:
-            doc_key = doc["content"][:100]  # Use first 100 chars as key
-            if doc_key not in seen:
-                seen.add(doc_key)
+            key = doc["content"][:100]
+            if key not in seen:
+                seen.add(key)
                 unique_docs.append(doc)
 
         self.logger.log_step("deduplication_complete", {
@@ -270,6 +343,48 @@ General rule: change **one variable at a time**, observe 1–2 weeks, and keep a
             "unique_count": len(unique_docs),
             "duplicates_removed": len(all_docs) - len(unique_docs)
         })
-
         self.logger.finish_operation(True, f"Retrieved {len(unique_docs)} unique documents")
         return unique_docs
+
+    # ---------- helpers ----------
+
+    def _kb_key(self, doc_id: str) -> str:
+        return f"rag/kb/{doc_id}/doc.json"  # bundle root is implicit in AIBundleStorage
+
+    def _sha256(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def _slugify(self, s: str) -> str:
+        s = (s or "").strip().lower()
+        s = re.sub(r"[^\w\-\.]+", "-", s)        # keep word chars, dash, dot, underscore
+        s = re.sub(r"-{2,}", "-", s).strip("-")
+        return s or "doc"
+
+    def _doc_id_for(self, doc: Document) -> str:
+        src = (doc.metadata or {}).get("source")
+        if src:
+            return self._slugify(str(src).rsplit("/", 1)[-1].rsplit(".", 1)[0])
+        return self._sha256(doc.page_content)[:16]
+
+    def _try_load_cached_doc(self, key: str) -> Optional[Dict[str, Any]]:
+        try:
+            raw = self.storage.read(key, as_text=True)
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    def _is_embedding_compatible(self, cached: Dict[str, Any], provider: str, model: str, dim: int) -> bool:
+        try:
+            emb = cached.get("embedding")
+            meta = (cached.get("embedder") or {})
+            return (
+                    isinstance(emb, list) and len(emb) == dim and
+                    meta.get("provider") == provider and
+                    meta.get("model") == model
+            )
+        except Exception:
+            return False
+
+    def _save_doc_json(self, key: str, obj: Dict[str, Any]) -> None:
+        data = json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=False)
+        self.storage.write(key, data, mime="application/json")
