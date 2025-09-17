@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import datetime
 import pathlib, json
 from typing import Optional, Sequence, List, Dict, Any
 
@@ -42,9 +43,9 @@ class ContextRAGClient:
         return context_snapshot
 
     def _scope_from_ctx(self, ctx: dict, *, user_id=None, conversation_id=None, track_id=None) -> tuple[str,str,str]:
-        user = user_id or ctx.get("user_id") or ctx.get("user") or ""
-        conv = conversation_id or ctx.get("conversation_id") or ctx.get("session_id") or ""
-        track = track_id or ctx.get("track_id") or ""
+        user = user_id or ctx.get("user_id")
+        conv = conversation_id or ctx.get("conversation_id")
+        track = track_id or ctx.get("track_id")
         return user, conv, track
 
     # ---------- public API ----------
@@ -147,6 +148,7 @@ class ContextRAGClient:
         any_tags = list(any_tags or [])
         if kinds:
             any_tags += list(kinds)
+            all_tags += list(kinds)
         rows = await self.idx.fetch_recent(
             user_id=user,
             conversation_id=(conv or None),
@@ -178,46 +180,6 @@ class ContextRAGClient:
                     pass
             items.append(item)
         return {"items": items}
-
-    async def get_run_artifacts(
-            self,
-            *,
-            codegen_run_id: str,
-            scope: str = "track",
-            days: int = 365,
-            ctx: Optional[dict] = None,
-            user_id: Optional[str] = None,
-            conversation_id: Optional[str] = None,
-            track_id: Optional[str] = None,
-            with_payload: bool = True,
-            limit: int = 30
-    ) -> dict:
-        """
-        Single-call pull for all artifacts of a given codegen run:
-          - deliverables: kind 'codegen.program.out.deliverables'
-          - citations:    kind 'codegen.program.citables'
-        Returns: { deliverables: {...?}, citables: [...?] } (payloads as stored)
-        """
-        kinds = ("codegen.program.out.deliverables", "codegen.program.citables")
-        tag = f"codegen_run:{codegen_run_id}"
-        res = await self.recent(
-            kinds=kinds,
-            scope=scope, days=days, limit=limit,
-            ctx=ctx, user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",),
-            any_tags=[tag],
-            with_payload=with_payload
-        )
-        out: Dict[str, Any] = {"deliverables": None, "citables": None}
-        for it in (res.get("items") or []):
-            paydoc = (it.get("payload") or {})
-            payload = (paydoc.get("payload") or {})
-            kind = (paydoc.get("meta") or {}).get("kind") or ""
-            if kind == "codegen.program.out.deliverables" and out["deliverables"] is None:
-                out["deliverables"] = payload
-            elif kind == "codegen.program.citables" and out["citables"] is None:
-                out["citables"] = payload
-        return out
 
     async def pull_text_artifact(self, *, artifact_uri: str) -> dict:
         doc = self.store.get_message(artifact_uri)
@@ -263,12 +225,18 @@ class ContextRAGClient:
             self,
             *,
             tenant: str, project: str, user: str,
-            conversation_id: str, user_type: str, turn_id: str, track_id: Optional[str],
-            log: TurnLog
+            conversation_id: str, user_type: str,
+            turn_id: str, track_id: Optional[str],
+            log: TurnLog,
+            extra_tags: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """Writes markdown to store (assistant artifact) + indexes it."""
         md = log.to_markdown()
         payload = {"turn_log": log.to_payload()}
+
+        tags = TURN_LOG_TAGS_BASE + [f"turn:{turn_id}"] + ([f"track:{track_id}"] if track_id else [])
+        if extra_tags:
+            tags.extend([t for t in extra_tags if isinstance(t, str) and t.strip()])
         s3_uri, message_id, rn = self.store.put_message(
             tenant=tenant, project=project, user=user, fingerprint=None,
             conversation_id=conversation_id, role="artifact", text=md,
@@ -279,7 +247,7 @@ class ContextRAGClient:
         await self.idx.add_message(
             user_id=user, conversation_id=conversation_id, role="artifact",
             text=md, s3_uri=s3_uri, ts=log.started_at_iso,
-            tags=TURN_LOG_TAGS_BASE + [f"turn:{turn_id}"] + ([f"track:{track_id}"] if track_id else []),
+            tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id, track_id=track_id
         )
         return {"s3_uri": s3_uri, "message_id": message_id, "rn": rn}
@@ -306,36 +274,77 @@ class ContextRAGClient:
         u = await self.recent(
             scope=scope, days=days, limit=1, ctx=ctx,
             user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("user",), any_tags=[f"turn:{turn_id}"], with_payload=with_payload
+            roles=("user",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
         )
         # 2) assistant
         a = await self.recent(
             scope=scope, days=days, limit=1, ctx=ctx,
             user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("assistant",), any_tags=[f"turn:{turn_id}"], with_payload=with_payload
+            roles=("assistant",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
         )
         # 3) presentation (draft the user saw)
-        # prez = await self.recent(
-        #     kinds=("codegen.program.presentation",),  # meta.kind
-        #     scope=scope, days=days, limit=1, ctx=ctx,
-        #     user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-        #     roles=("artifact",), any_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        # )
-        # 4) deliverables (file list user could download)
-        dels = await self.recent(
-            kinds=("codegen.program.out.deliverables",),
+        prez = await self.recent(
+            kinds=("artifact:codegen.program.presentation",),  # meta.kind
             scope=scope, days=days, limit=1, ctx=ctx,
             user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), any_tags=[f"turn:{turn_id}"], with_payload=with_payload
+            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
         )
-
-        def first(items: dict) -> Optional[dict]:
-            arr = items.get("items") or []
-            return arr[0] if arr else None
+        # 4) deliverables (file list user could download)
+        dels = await self.recent(
+            kinds=("artifact:codegen.program.out.deliverables",),
+            scope=scope, days=days, limit=1, ctx=ctx,
+            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
+            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
+        )
+        # 5) errors
+        solver_failure = await self.recent(
+            kinds=("artifact:solver:failure",),
+            scope=scope, days=days, limit=1, ctx=ctx,
+            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
+            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
+        )
+        # 6) citables
+        citables = await self.recent(
+            kinds=("artifact:codegen.program.citables",),
+            scope=scope, days=days, limit=3, ctx=ctx,
+            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
+            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
+        )
+        def first(results: dict) -> Optional[dict]:
+            arr = next(iter(results.get("items") or []), None)
+            return arr
+            # return arr.get("payload") if arr else None
 
         return {
             "user": first(u),
             "assistant": first(a),
-            # "presentation": first(prez),
-            "deliverables": first(dels)
+            "presentation": first(prez),
+            "deliverables": first(dels),
+            "citables": first(citables),
+            "solver_failure": first(solver_failure)
         }
+
+    async def append_reaction_to_turn_log(self, *,
+                                          turn_id: str, reaction: str,
+                                          tenant: str, project: str, user: str,
+                                          fingerprint: Optional[str],
+                                          user_type: str, conversation_id: str, track_id: str):
+
+        payload = {"reaction": {"text": reaction, "ts": datetime.datetime.utcnow().isoformat()+"Z"}}
+        # persist as a small artifact tied to the same turn (don’t overwrite)
+        s3_uri, message_id, rn = self.store.put_message(
+            tenant=tenant, project=project, user=user,
+            conversation_id=conversation_id, role="artifact",
+            text=f"[turn.log.reaction]\n{reaction}",
+            payload=payload,
+            meta={"kind": "turn.log.reaction", "turn_id": turn_id, "track_id": track_id},
+            embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
+            fingerprint=fingerprint
+        )
+        await self.idx.add_message(
+            user_id=user, conversation_id=conversation_id, role="artifact",
+            text=f"[turn.log.reaction] {reaction}", s3_uri=s3_uri, ts=payload["reaction"]["ts"],
+            tags=["kind:turn.log.reaction", f"turn:{turn_id}", f"track:{track_id}"],
+            ttl_days=365, user_type=user_type, embedding=None, message_id=message_id, track_id=track_id
+        )
+

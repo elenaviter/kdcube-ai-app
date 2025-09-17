@@ -93,17 +93,16 @@ async def solver_codegen_stream(
     concise = bool(constraints.get("concise", True))
 
     # ---------- System prompt (authoritative; no ambiguity) ----------
-
     sys = (
         "# Codegen — single Python program\n"
         "\n"
         "## Authoritative inputs for **this** run\n"
         "- The **dynamic output contract** `output_contract_dyn` is provided **in THIS prompt**. Treat it as the single source of truth.\n"
         "- **Embed** the contract verbatim inside `main.py` (e.g., `CONTRACT = {...}` as a Python dict literal).\n"
-        "- Do **not** read the contract from `task.json` or `context.json`.\n"
-        "- You may read `OUTPUT_DIR/context.json` for prior history/sources and `OUTPUT_DIR/task.json` for objective/constraints (optional),\n"
-        "  but **never** for the contract.\n"
-        "\n"
+        "- If the downstream instruction says 'use history / edit existing', call `context_tools.fetch_working_set(select='latest')` to retrieve the materials to start with.\n"
+        "- Use `ws.canvas_md` as the editable base and `ws.sources` as `prior_sources`.\n"                                                                                                                          
+        "- You may read `OUTPUT_DIR/task.json` for objective/constraints.\n"
+        "- Never read the contract from files; the contract is provided in this prompt.\n"
         "## Language & syntax\n"
         "- Python 3.11. Use `True/False/None`. Build JSON with `json.dumps(...)`.\n"
         "\n"
@@ -147,34 +146,27 @@ async def solver_codegen_stream(
         "- Second editable slot is **`project_log`**. Populate it with the concise list of changes taken on your turn.\n"
         "\n"
         "## History reuse (if applicable)\n"
-        "- Read `OUTPUT_DIR/context.json → program_history` `H = program_history` (list of `{ <exec_id>: {...} }`).\n"
-        "- Iterate newest→oldest: for each `E in H`, do `exec_id, inner = next(iter(E.items()))`.\n"
-        "- Pick the first with a **non-empty** `inner[\"project_canvas\"][\"text\"]`.\n"
-        "- `editable = inner[\"project_canvas\"][\"text\"]` (or empty string if none exists).\n"
-        "- `prior_sources = inner.get(\"web_links_citations\",{}).get(\"items\",[])`.\n"
-        "- If none has non-empty canvas, start a fresh one.\n"
+        '- Call `ws = context_tools.fetch_working_set(select="latest")` when editing is requested.\n'
+        '- `editable = ws["canvas_md"] or ""`.\n'
+        '- `prior_sources = ws["sources"] or []`.\n'
+        '- If no prior canvas, start fresh.\n'
         "\n"
+        "## Reference editor pipe:\n"                                                                                                                                                                             
+        "1) `ws = context_tools.fetch_working_set(select='latest')` (only if editing is requested).\n"
+        "2) `editable = ws.canvas_md or ""`.\n"
+        "3) Include a compact GUIDANCE block summarizing only the last ~800 chars of previous project log if available.\n"
+        "4) `sources = context_tools.merge_sources(prior_json=json.dumps(ws.sources), new_json=json.dumps(new_results))`.\n"
+        "5) `edited = agent_llm_tools.edit_text_llm(text=editable_with_guidance, instruction='Apply guidance; keep structure; no invented facts; add [[S:n]] only on NEW/CHANGED claims; REMOVE GUIDANCE block.', keep_formatting=True, sources_json=json.dumps(sources), cite_sources=True, forbid_new_facts_without_sources=True)`.\n"
+        "6) `out_dyn[\"project_canvas\"] = {\"description\":\"Updated project canvas (Markdown)\", \"value\": edited, \"format\":\"markdown\"}`.\n"
+        "7) `out_dyn[\"project_log\"] = {\"description\":\"Added .. to project log\", \"value\": <your log>, \"format\":\"markdown\"}`.\n"
+        "8) If rendering PDF/PPTX etc., pass the SAME `sources` to `write_pdf`/`write_pptx / etc.` with `resolve_citations=True`.\n"
+        
         "## Citations (stable IDs)\n"
         "- Working sources = `prior_sources ∪ new_search_results`; **dedupe by URL** (case-insensitive).\n"
         "- Keep existing SIDs for existing URLs. New URLs keep **adapter-provided** SIDs (runtime seeds after the last used).\n"
         "- Never compress/backfill SIDs; gaps are OK.\n"
         "- Pass the full `sources_json` to the editor LLM and to PDF/PPTX renderers when resolving `[[S:n]]`.\n"
         "- If no new sources were needed, still pass `prior_sources` so existing `[[S:n]]` resolve.\n"
-        "\n"
-        "## Editor guidance (optional)\n"
-        "- You may append a temporary block to the editor input:\n"
-        "  `<!--GUIDANCE_START-->\\n<short actionable plan>\\n<!--GUIDANCE_END-->`.\n"
-        "- Your edit instruction MUST require applying the guidance and **removing** the entire GUIDANCE block from the output.\n"
-        "\n"
-        "## Reference editor pipe\n"
-        "1) `editable = selected.project_canvas.text` (or \"\").\n"
-        "2) prev_project_log = selected.project_log.text (or "").\n"
-        "3) guidance_md ... If prev_project_log exists, include only its last ~800 chars (or a one-paragraph summary) in a GUIDANCE block to avoid prompt bloat.\n"
-        "4) `sources = merge_and_dedupe(prior.items, new_results)`  # keep old sids; new sids from adapter.\n"
-        "5) `edited = agent_llm_tools.edit_text_llm(text=editable_with_guidance, instruction=\"Apply guidance; keep structure; no invented facts; add [[S:n]] only on NEW/CHANGED claims; REMOVE GUIDANCE block.\", keep_formatting=True, sources_json=json.dumps(sources), cite_sources=True, forbid_new_facts_without_sources=True)`.\n"
-        "6) `out_dyn[\"project_canvas\"] = {\"description\":\"Updated project canvas (Markdown)\", \"value\": edited, \"format\":\"markdown\"}`.\n"
-        "7) `out_dyn[\"project_log\"] = {\"description\":\"Added .. to project log\", \"value\": <your log>, \"format\":\"markdown\"}`.\n"
-        "8) If rendering PDF/PPTX, pass the SAME `sources` to `write_pdf`/`write_pptx` with `resolve_citations=True`.\n"
         "\n"
         "## llm_tools.summarize_llm quick rules\n"
         "- `input_mode='text'` for free text; `input_mode='sources'` + `cite_sources=true` for search results.\n"
@@ -185,7 +177,11 @@ async def solver_codegen_stream(
         "- Store `OUTPUT_DIR`-relative paths in `out_dyn` (e.g., `\"rust_advances.pdf\"`).\n"
         "\n"
         "## Error handling\n"
-        "- On any failure: write `ok=false` with keys: `error`, `where`, `details` to the FIRST output file.\n"
+        "- A runtime helper `fail(...)` is injected into your program and available globally.\n"
+        "- Managed errors: call `await fail(\"<short description>\", where=\"<stage>\", details=\"<why>\")` and return immediately.\n"
+        "- Unhandled exceptions: wrap `main()` in try/except; in except, call `await fail(\"Unhandled exception\", where=\"main\", error=str(e), details=type(e).__name__, managed=False)`.\n"
+        "- The helper writes a normalized failure envelope to `result.json` (including `contract`, `objective`, and optional `out_dyn`).\n"
+
         "\n"
         "## Async\n"
         "- If any adapter is async, implement `async def main()` and run with `asyncio.run(main())`.\n"
@@ -326,7 +322,7 @@ async def tool_router_stream(
             f"{'Topics: ' + ', '.join(topics[:6]) if topics else f'Topics (hint): {topic_hint}'}\n"
             f"Policy/context hints:\n{policy_summary[:800]}\n\n"
             f"Preferences hint (assertions/exceptions; treat as constraints when selecting tools):\n{json.dumps((prefs_hint or {}), ensure_ascii=False)[:1200]}\n\n"
-            f"Conversation cue:\n{context_hint[:400]}\n\n"
+            f"Conversation cue:\n{context_hint}\n\n"
             "Produce the three sections as instructed."
     )
 
@@ -370,7 +366,7 @@ class SolvabilityOut(BaseModel):
 
     # NOTE: unified names — no 'single_call' anymore
     solver_mode: Literal["direct_tools_exec","codegen","llm_only"] = "llm_only"
-    solver_reason: str = ""  # short justification
+    solver_instruction: str = ""  # short justification
 
     # Dynamic contract the program must fulfill iff solver_mode='codegen'
     # map: slot name -> human description of what should be produced
@@ -382,7 +378,7 @@ class SolvabilityOut(BaseModel):
     history_select: str = "latest"                      # 'latest' | 'by_mention' | 'by_similarity'
     history_select_hint: str = ""                       # short instruction when not 'latest'
     citations_source_path: str = "program_history[].<exec>.web_links_citations.items"
-    instructions_for_codegen: str = ""                  # ≤80 words, concrete steps to read context and pick version
+    instructions_for_downstream: str = ""               # ≤80 words, concrete steps to read context and pick version, or other special instructions
 
 
 async def assess_solvability_stream(
@@ -404,7 +400,9 @@ async def assess_solvability_stream(
         "\n"
         "## Goal\n"
         "- Decide if the request is answerable **now** using ONLY the provided tool candidates.\n"
-        "- If solvable, emit a minimal **DYNAMIC OUTPUT CONTRACT** the downstream program MUST produce.\n"
+        "- If solvable, emit a minimal **DYNAMIC OUTPUT CONTRACT** (output_contract_dyn) the downstream program MUST produce.\n"
+        "- output_contract_dyn format is the str -> str: key-value mapping of the slot name to the detailed text description of what this slot represents.\n"
+        "- output_contract_dyn must include slots for all user-facing products that will be created to satisfy user request, such as files.\n"
         "\n"
         "## Hard rules\n"
         "- Do **not** solve the task. Do **not** invent tools or content, dates, URLs, or section lists.\n"
@@ -412,34 +410,33 @@ async def assess_solvability_stream(
         "- **Contract minimality:** include **only** what the user objective requires.\n"
         "\n"
         "## Modes\n"
-        "- `llm_only` — no tools needed.\n"
+        "- `llm_only` — no tools needed or the task cannot be solved by codegen / tools.\n"
         "- `direct_tools_exec` — allowed **only** when exactly one tool is selected.\n"
         "- `codegen` — choose when multiple tools are needed or when outputs must flow between tools.\n"
         "\n"
         "## Closed-plan requirement\n"
         "- Any input needed by a selected tool must come from user/context **or** be produced by another selected tool.\n"
         "\n"
+        "## Editing detection & context use\n"
+        "- If the user request implies EDIT/UPDATE/EXTEND/APPEND/REVISE/IMPROVE/CONTINUE, set:\n"
+        "solver_mode='codegen'\n"
+        "context_use=true\n"
+        "instructions_for_downstream: 'This is an editing turn. Use context_tools.fetch_working_set(select=\"latest\") to get the prior canvas and citations, then edit in place using the editor; merge prior + new sources and render deliverables.\n"
         "## Project canvas (critical)\n"
         "- ALWAYS include a slot named **`project_canvas`** in `output_contract_dyn`. This is the single editable, textual mirror of the project.\n"
         "- The canvas must contain the actual user-facing Markdown content, including any `[[S:n]]` tokens.\n"
-        "- Do **not** put solver notes, change logs, or internal reasoning into the canvas.\n"
+        # "- Do **not** put solver notes, change logs, or internal reasoning into the canvas.\n"
         "- If the request modifies a prior project, prefer **edit/update** over full regeneration.\n"
         "\n"
         "## Project log (critical)\n"
         "- ALWAYS include a slot named **`project_log`** in `output_contract_dyn`. This is the continuous slot which is filled during project by its internal editors.\n"
         "- The project log must contain the description of objective, actual edits to take and the user current intent or preferences on this turn\n"
-        "\n"        
-        "## History reuse (if applicable)\n"
-        "- The downstream program can read `OUTPUT_DIR/context.json → program_history[]`.\n"
-        "- Set `history_select`: `latest` | `by_mention` | `by_similarity`. If not `latest`, add a short `history_select_hint`.\n"
-        "- Provide concise `instructions_for_codegen`: how to pick **one** prior version - at \n"
-        "  `program_history[i][<exec_id>].project_canvas.text`, prior project log at "
-        "  `program_history[i][<exec_id>].project_log.text`and \n"
-        "  `prior citations at program_history[i][<exec_id>].web_links_citations.items`.\n"
         "\n"
-        "## Citations\n"
-        "- The editor inserts `[[S:n]]` for **new/changed** claims. Never ask to renumber existing tokens.\n"
-        "\n"
+        "## Instruction for downstream agent\n"
+        "`instructions_for_downstream` must include the instruction for downstream agent.\n"
+        " If mode == 'llm_only', describe why the solution cannot be solved by solver (no such tools or not enough data, or the solution cannot be solved completely) so the llm decide how to answer to a user w/o solver, including the confessing the uncertainty\n"
+        " If the mode == 'direct_tools_exec', this message also will be shown to the final answer generator so that it will know how to interpret the solver results (produced by selected tool).\n"
+        " If the mode == 'codegen', this instruction will be shared to codegen LLM so that it produces the code which solves the task.\n"
         "## Slot naming\n"
         "- snake_case.\n"
         "- Files: `pdf_file`, `slides_pptx`, `image_png`, `csv_file`, `zip_bundle`.\n"
@@ -463,16 +460,18 @@ async def assess_solvability_stream(
         "  \"confidence\": 0..1,"
         "  \"reasoning\": \"(<=25 words)\","
         "  \"tools_to_use\": [\"<tool_id>\"],"
+        "  \"context_use\": bool,"
         "  \"clarifying_questions\": [\"...\",\"...\"],"
         "  \"solver_mode\": \"direct_tools_exec\"|\"codegen\"|\"llm_only\","
-        "  \"solver_reason\": \"(<=25 words)\","
+        "  \"instructions_for_downstream\": \"(<=45 words)\","
         "  \"output_contract_dyn\": {\"<slot>\": \"<description>\"}"
         "}"
     )
     topic_line = f"Topics: {', '.join(topics[:6])}" if topics else ""
-    domain_line = f"is_spec_domain={is_spec_domain!s}"
+    # domain_line = f"is_spec_domain={is_spec_domain!s}"
     msg = (
-        f"{domain_line}\n{topic_line}\n"
+        # f"{domain_line}\n{topic_line}\n"
+        f"{topic_line}\n"
         f"User question:\n{user_text}\n"
         f"Policy/context summary:\n{policy_summary[:800]}\n"
         f"Preferences hint (use to constrain what to produce/avoid):\n{json.dumps((prefs_hint or {}), ensure_ascii=False)[:1200]}\n"
@@ -493,16 +492,28 @@ async def assess_solvability_stream(
     )
     out = out or {}
     agent_response = out.setdefault("agent_response", {})
+    elog = out.setdefault("log", {})
+    internal_thinking = out.get("internal_thinking")
+    error = elog.get("error")
+
+    agent_response_tools_to_use = agent_response.get("tools_to_use") or []
+    __service = {
+        "internal_thinking": internal_thinking,
+        "raw_data": elog.get("raw_data")
+    }
+    out["__service"] = __service
+    if error:
+        agent_response["solver_mode"] = "llm_only"
+        __service["error"] = error
 
     # constrain to provided candidates
     cand_names = {c.get("name") for c in (candidates or []) if c.get("name")}
-    tools = [t for t in (agent_response.get("tools_to_use") or []) if t in cand_names]
+    tools = [t for t in agent_response_tools_to_use if t in cand_names]
     agent_response["tools_to_use"] = tools
 
     if (agent_response.get("solver_mode") == "direct_tools_exec"
-            and len(tools) != 1):
+            and len(tools) > 1):
         agent_response["solver_mode"] = "codegen"
-    agent_response["solver_reason"] = "Multiple tools selected requires orchestration."
 
     # --- Robust defaults if model is sparse/quiet ---
     if not cand_names:
@@ -512,9 +523,6 @@ async def assess_solvability_stream(
         # If exactly one candidate selected → prefer direct_tools_exec; else codegen
         if not agent_response.get("solver_mode"):
             agent_response["solver_mode"] = "direct_tools_exec" if len(tools) == 1 else "codegen"
-
-    if not agent_response.get("solvable") and not agent_response.get("clarifying_questions"):
-        agent_response["clarifying_questions"] = ["Add one concrete detail so I can tailor the next step."]
 
     return out
 

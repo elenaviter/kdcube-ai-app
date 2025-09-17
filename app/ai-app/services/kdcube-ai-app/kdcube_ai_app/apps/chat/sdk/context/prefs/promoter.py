@@ -55,30 +55,29 @@ async def promote_user_preferences(
     now = int(time.time())
     REASON_W = reason_weights or REASON_WEIGHTS
 
-    # latest opposing timestamps per key
-    latest_opposing: Dict[str, int] = {}
+    last_pos: Dict[str, int] = {}
+    last_neg: Dict[str, int] = {}
     seen_by_key: Dict[str, List[Dict[str, Any]]] = {}
     challenged_at_by_key: Dict[str, int] = {}
 
     for a in items:
+        if a.get("scope") == "user":
+            continue # don't count user-scope records toward promotion evidence
         key = a.get("key")
+        if not key:
+            continue
         seen_by_key.setdefault(key, []).append(a)
         if a.get("scope") == "user":
             challenged_at = int(a.get("challenged_at") or 0)
             if challenged_at:
                 challenged_at_by_key[key] = max(challenged_at_by_key.get(key, 0), challenged_at)
 
-    for key, arr in seen_by_key.items():
-        arr_sorted = sorted(
-            arr,
-            key=lambda r: int(r.get("last_seen_at") or r.get("created_at") or 0),
-            reverse=True
-        )
-        pos_ts = next((int(r.get("last_seen_at") or r.get("created_at") or 0)
-                       for r in arr_sorted if r.get("desired") is True), 0)
-        neg_ts = next((int(r.get("last_seen_at") or r.get("created_at") or 0)
-                       for r in arr_sorted if r.get("desired") is False), 0)
-        latest_opposing[key] = max(pos_ts, neg_ts)
+        # polarity buckets for "opposing evidence" checks
+        seen_ts = int(a.get("last_seen_at") or a.get("created_at") or 0)
+        if bool(a.get("desired")):
+            last_pos[key] = max(last_pos.get(key, 0), seen_ts)
+        else:
+            last_neg[key] = max(last_neg.get(key, 0), seen_ts)
 
     # buckets per (key, desired, semantic value)
     buckets: Dict[Tuple[str, bool, int], Dict[str, Any]] = {}
@@ -122,7 +121,10 @@ async def promote_user_preferences(
 
         pol = policy_for_key(key)
         decay = _decay_score(conf, seen_ts, pol.half_life_days)
-        w = (reason_weights or REASON_WEIGHTS).get(reason, 0.75)
+        w = (REASON_W or REASON_WEIGHTS).get(reason, 0.75)
+        # tiny freshness bump for assertions seen in the last ~24h
+        if (time.time() - seen_ts) < 86400:
+            decay = min(1.2, decay * 1.05)
 
         # per-conversation edges from GraphCtx loader
         conv_edges = a.get("_conversations") or []
@@ -151,9 +153,17 @@ async def promote_user_preferences(
         distinct_days = len(rec["days"])
         avg_decayed = rec["score_sum"] / max(1, rec["support"])
 
-        recent_conflict = latest_opposing.get(key, 0) >= (now - pol.conflict_horizon_days * 86400)
+        # opposing = evidence of the opposite polarity within horizon
+        opposing_ts = (last_neg if rec["desired"] else last_pos).get(key, 0)
+        recent_conflict = opposing_ts >= (now - pol.conflict_horizon_days * 86400)
         challenged_recent = challenged_at_by_key.get(key, 0) >= (now - pol.conflict_horizon_days * 86400)
 
+        if "[" in key and key.endswith("]"):
+            skipped.append({"key": key, "desired": desired, "value": rec["value"],
+                            "support": rec["support"], "distinct_convs": distinct_convs,
+                            "distinct_days": distinct_days, "avg_decayed": round(avg_decayed,3),
+                            "reason": "object_scoped"})
+            continue
         if recent_conflict or challenged_recent:
             blocked.append({"key": key, "desired": desired,
                             "reason": ("recent_conflict" if recent_conflict else "challenged_recent")})

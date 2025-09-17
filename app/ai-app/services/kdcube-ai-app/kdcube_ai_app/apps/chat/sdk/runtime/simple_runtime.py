@@ -88,13 +88,72 @@ class _InProcessRuntime:
 
         def _runner():
             old_env = dict(os.environ)
+
+            os.environ["OUTPUT_DIR"] = str(output_dir)
+            # Align snippet runtime context with package runner
+            from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, SOURCE_ID_CV
+            t_out = OUTDIR_CV.set(str(output_dir))
+            last_sid = _max_sid_from_context(output_dir)
+            t_sid = SOURCE_ID_CV.set({"next": int(last_sid) + 1})
+
             try:
-                os.environ["OUTPUT_DIR"] = str(output_dir)
                 self._ensure_modules_on_sys_modules(tool_modules)
+
+                # Prepare source: fix JSON booleans/null and inject the same runtime header
+                injected_header = """
+        # === AGENT-RUNTIME HEADER (auto-injected, do not edit) ===
+        from pathlib import Path
+        import json as _json
+        from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV
+        from io_tools import tools as agent_io_tools
+        
+        OUTPUT_DIR = OUTDIR_CV.get()
+        if not OUTPUT_DIR:
+            raise RuntimeError("OUTPUT_DIR missing in run context")
+        OUTPUT = Path(OUTPUT_DIR)
+        
+        async def fail(description: str,
+                       where: str = "",
+                       error: str = "",
+                       details: str = "",
+                       managed: bool = True,
+                       out_dyn: dict | None = None):
+            try:
+                g = globals()
+                contract = g.get("CONTRACT", {}) or {}
+                objective = g.get("objective") or g.get("OBJECTIVE") or ""
+            except Exception:
+                contract, objective = {}, ""
+            payload = {
+                "ok": False,
+                "objective": str(objective or description),
+                "contract": contract,
+                "out_dyn": (out_dyn or {}),
+                "error": {
+                    "where": (where or "runtime"),
+                    "details": str(details or ""),
+                    "error": str(error or ""),
+                    "description": description,
+                    "managed": bool(managed),
+                 }
+            }
+            return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
+        # === END HEADER ===
+        """
+                src = _fix_json_bools(code)
+                src = _inject_header_after_future(src, injected_header)
+
                 glb = {"__name__": "__main__"}
-                exec(compile(code, "<solver_snippet>", "exec"), glb, glb)
+                exec(compile(src, "<solver_snippet>", "exec"), glb, glb)
             finally:
+                # reset context vars and env
+                try:
+                    OUTDIR_CV.reset(t_out)
+                    SOURCE_ID_CV.reset(t_sid)
+                except Exception:
+                    pass
                 os.environ.clear(); os.environ.update(old_env)
+
 
         try:
             await asyncio.wait_for(asyncio.to_thread(_runner), timeout=timeout_s)
@@ -109,7 +168,7 @@ class _InProcessRuntime:
         *,
         workdir: pathlib.Path,
         output_dir: pathlib.Path,
-        tool_modules: List[Tuple[str, object]],   # <-- CHANGED
+        tool_modules: List[Tuple[str, object]],
         timeout_s: int = 90,
     ) -> Dict[str, Any]:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -135,16 +194,53 @@ class _InProcessRuntime:
                 src = _fix_json_bools(src)
 
                 # 2) Inject the OUTPUT_DIR header (after any __future__)
-                injected_header = """
+                from textwrap import dedent
+
+                injected_header = dedent('''\
 # === AGENT-RUNTIME HEADER (auto-injected, do not edit) ===
 from pathlib import Path
+import json as _json
 from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV
+from io_tools import tools as agent_io_tools
+
 OUTPUT_DIR = OUTDIR_CV.get()
 if not OUTPUT_DIR:
     raise RuntimeError("OUTPUT_DIR missing in run context")
 OUTPUT = Path(OUTPUT_DIR)
+
+async def fail(description: str,
+               where: str = "",
+               error: str = "",
+               details: str = "",
+               managed: bool = True,
+               out_dyn: dict | None = None):
+    """
+    Runtime failure helper.
+    - Writes result.json with a normalized failure envelope.
+    - Pulls CONTRACT/objective from main globals if present (else falls back).
+    """
+    try:
+        g = globals()
+        contract = g.get("CONTRACT", {}) or {}
+        objective = g.get("objective") or g.get("OBJECTIVE") or ""
+    except Exception:
+        contract, objective = {}, ""
+    payload = {
+        "ok": False,
+        "objective": str(objective or description),
+        "contract": contract,
+        "out_dyn": (out_dyn or {}),
+        "error": {
+            "where": (where or "runtime"),
+            "details": str(details or ""),
+            "error": str(error or ""),
+            "description": description,
+            "managed": bool(managed),
+         }
+    }
+    return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
 # === END HEADER ===
-"""
+''')
                 src = _inject_header_after_future(src, injected_header)
 
                 # 3) Persist the rewritten file and run it

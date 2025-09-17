@@ -65,15 +65,61 @@ class SharedScratchpad:
 
 
 class TurnScratchpad:
-    def __init__(self):
+    def __init__(self, user, conversation_id, turn_id, text, attachments=None):
+
+        self.user = user
+        self.conversation_id = conversation_id
+        self.turn_id = turn_id
+
         self.timings = []
-        self.user_message: Optional[str] = None
+
+        # User section
+        self.user_text = text
+        self.uvec = None
+        self.user_attachments = attachments
+
+        self.tlog = new_turn_log(user_id=user, conversation_id=conversation_id, turn_id=turn_id)
+
+        # Answer section
+        self.answer = None
+        self.avec = None
+        self.turn_summary = None
+        self.final_internal_thinking = None
+
+        # User memory
+        self.user_memory = None
+
+        # same as filtered_guess_ctx_str but as list
+        self.context_log_history = None
+
+        self.solver_result_interpretation_instruction = ""
+        self.turn_artifact = None
+        self.context_stack = []
+        self.turn_stack = []
+
+        # exact-reference
+        self.exact_turn_ids: List[str] = []
+
+        # current turn
         self.proposed_facts: List[Dict[str, Any]] = []
         self.exceptions: List[Dict[str, Any]] = []
         self.short_artifacts: List[Dict[str, Any]] = []
+
+        # clarification flow
         self.clarification_questions: List[str] = []
         self.user_shortcuts: List[str] = []
+
+        # preferences and policies
+        self.conversation_snapshot: Dict[str, Any] = {}
         self.extracted_prefs: Dict[str, Any] = {"assertions": [], "exceptions": []}
+        self.policy = None
+        self.policy_summary = None
+        self.pref_view = None
+        # previous turn conversation
+        self.previous_turn_conversation_metadata: Optional[Dict[str, Any]] = None
+
+        # Feedback extracted from current user message about a previous turn (if any)
+        self.detected_feedback: Optional[dict] = None
 
     def propose_fact(
             self,
@@ -125,6 +171,8 @@ class TurnLog(BaseModel):
     ended_at_iso: Optional[str] = None
     entries: List[TurnLogEntry] = Field(default_factory=list)
 
+    state: Optional[Dict[str, Any]] = Field(default_factory=dict)
+
     def _nowt(self) -> str:
         return datetime.utcnow().strftime("%H:%M:%S")
 
@@ -137,23 +185,48 @@ class TurnLog(BaseModel):
     def attachments(self, msg: str, **kw): self.add("attachments", msg, **kw)
     def solver(self, msg: str, **kw): self.add("solver", msg, **kw)
     def answer(self, msg: str, **kw): self.add("answer", msg, **kw)
-    def turn_summary(self, turn_summary: dict, **kw):
+    def prefs(self, prefs):
         try:
-            if isinstance(turn_summary, dict):
-                if turn_summary["objective"]:
-                    self.objective(turn_summary["objective"])
-                if turn_summary.get("done"):
-                    self.solver("done: " + "; ".join(map(str, turn_summary["done"][:6])))
-                if turn_summary.get("not_done"):
-                    self.solver("open: " + "; ".join(map(str, turn_summary["not_done"][:6])))
-                if turn_summary.get("assumptions"):
-                    self.note("assumptions: " + "; ".join(map(str, turn_summary["assumptions"][:6])))
-                if turn_summary.get("risks"):
-                    self.note("risks: " + "; ".join(map(str, turn_summary["risks"][:6])))
-                if turn_summary.get("notes"):
-                    self.answer(turn_summary["notes"])
-                if turn_summary.get("prefs"):
-                    turn_prefs = turn_summary["prefs"]
+            compact_prefs = []
+            for a in (prefs.get("assertions") or [])[:6]:
+                compact_prefs.append(f"{a.get('key')}={a.get('value')} {'(avoid)' if not a.get('desired', True) else ''}")
+            for e in (prefs.get("exceptions") or [])[:3]:
+                compact_prefs.append(f"EXC[{e.get('rule_key')}]: {e.get('value')}")
+            if compact_prefs:
+                self.note("extracted prefs: " + "; ".join(compact_prefs))
+        except Exception:
+            pass
+
+    def feedback(self, feedback: str):
+        self.note("user feedback: " + feedback)
+
+    def policy(self, policy):
+        _tlog_policy = {
+            "do": policy.get("do", {}),
+            "avoid": policy.get("avoid", {}),
+            "allow_if": policy.get("allow_if", {}),
+            "reasons": (policy.get("reasons") or [])[:6]
+        }
+        self.note("policy: " + json.dumps(_tlog_policy, ensure_ascii=False))
+
+    def turn_summary(self, turn_summary: dict, **kw):
+        order = ["objective", "prefs", "assumptions", "done", "not_done", "risks", "notes"]
+        def process_o(o):
+            if o in turn_summary and turn_summary[o]:
+                if o == "objective" and not self.objective_entry:
+                    self.objective(turn_summary[o])
+                elif o == "done":
+                    self.solver("done: " + "; ".join(map(str, turn_summary[o][:6])))
+                elif o == "not_done":
+                    self.solver("open: " + "; ".join(map(str, turn_summary[o][:6])))
+                elif o == "assumptions":
+                    self.note("assumptions: " + "; ".join(map(str, turn_summary[o][:6])))
+                elif o == "risks":
+                    self.note("risks: " + "; ".join(map(str, turn_summary[o][:6])))
+                elif o == "notes":
+                    self.answer(turn_summary[o])
+                elif o == "prefs":
+                    turn_prefs = turn_summary[o]
                     try:
                         compact_prefs = []
                         for a in (turn_prefs.get("assertions") or [])[:6]:
@@ -164,6 +237,10 @@ class TurnLog(BaseModel):
                             self.note("prefs: " + "; ".join(compact_prefs))
                     except Exception:
                         pass
+        try:
+            if isinstance(turn_summary, dict):
+                for o in order:
+                    process_o(o)
         except Exception:
             pass
 
@@ -171,11 +248,11 @@ class TurnLog(BaseModel):
 
     @property
     def user_entry(self):
-        return next((d.model_dump() for d in self.entries if d.area == "user"), None)
+        return next((d.model_dump_json() for d in self.entries if d.area == "user"), None)
 
     @property
     def objective_entry(self):
-        return next((d.model_dump() for d in self.entries if d.area == "objective"), None)
+        return next((d.model_dump_json() for d in self.entries if d.area == "objective"), None)
 
     def to_markdown(self, header: str="[turn_log]") -> str:
         lines = [header]
@@ -188,3 +265,8 @@ class TurnLog(BaseModel):
 def new_turn_log(user_id: str, conversation_id: str, turn_id: str) -> TurnLog:
     return TurnLog(user_id=user_id, conversation_id=conversation_id, turn_id=turn_id, started_at_iso=datetime.utcnow().isoformat()+"Z")
 
+def _turn_id_from_tags_safe(tags: List[str]) -> Optional[str]:
+    for t in tags or []:
+        if isinstance(t, str) and t.startswith("turn:"):
+            return t.split(":",1)[1]
+    return None

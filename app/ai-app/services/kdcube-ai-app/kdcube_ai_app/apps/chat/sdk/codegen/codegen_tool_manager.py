@@ -7,7 +7,7 @@ import os
 import sys
 import traceback
 import uuid
-from dataclasses import dataclass
+
 from typing import Callable, Dict, Any, Awaitable, Optional, List, Tuple
 import pathlib
 import importlib.util
@@ -18,9 +18,12 @@ import json
 import asyncio
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
+from kdcube_ai_app.apps.chat.sdk.codegen.contracts import ToolModuleSpec, SolutionPlan, PlannedTool, SolveResult, \
+    SolutionExecution
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 import kdcube_ai_app.apps.chat.sdk.codegen.project_retrieval as project_retrieval
 from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase, AgentLogger
+from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad
 from kdcube_ai_app.apps.chat.sdk.runtime.simple_runtime import _InProcessRuntime
 from kdcube_ai_app.apps.chat.sdk.codegen.team import (
     tool_router_stream,
@@ -66,31 +69,6 @@ def _resolve_tools(specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             raise ValueError(f"Tool spec for alias={alias} must have 'module' or 'ref'.")
         resolved.append({"ref": str(file_path), "alias": alias, "use_sk": use_sk})
     return resolved
-
-
-# ---------- Data ----------
-
-@dataclass
-class PlannedTool:
-    id: str
-    params: Dict[str, Any]
-    reason: str
-    read: bool
-    write: bool
-    mode: str = "execute"  # or "draft"
-
-@dataclass
-class ToolDecision:
-    mode: str                 # "llm_only" | "tools"
-    tools: List[PlannedTool]  # subset of candidates with concrete params
-    confidence: float
-    reasoning: str
-
-@dataclass
-class ToolModuleSpec:
-    ref: str                 # dotted path or file path (abs/rel)
-    use_sk: bool = False     # introspect via Semantic Kernel metadata
-    alias: Optional[str] = None  # import alias for 'tools' (unique per module)
 
 # ---------- Manager ----------
 
@@ -431,6 +409,7 @@ class CodegenToolManager:
 
         allowed_plugins = set(allowed_plugins) if allowed_plugins else set()
         allowed_plugins.add("io_tools")
+        allowed_plugins.add("ctx_tools")
         allowed_plugins = list(allowed_plugins)
 
         return [{
@@ -443,26 +422,64 @@ class CodegenToolManager:
 
     # -------- router / solvability --------
 
-    async def decide(self, *, ctx: Dict[str, Any], allowed_plugins: Optional[List[str]] = None, allowed_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    async def plan(self, *,
+                     ctx: Dict[str, Any],
+                     scratchpad: TurnScratchpad,
+                     allowed_plugins: Optional[List[str]] = None,
+                     allowed_ids: Optional[List[str]] = None,
+                     ) -> Dict[str, Any]:
         rid = ctx.get("request_id") or "req-unknown"
 
         t0 = time.perf_counter()
 
         tr = await self._run_tool_router({**ctx}, allowed_plugins=allowed_plugins, allowed_ids=allowed_ids)
         t_router_ms = int((time.perf_counter() - t0) * 1000)
-        await self._emit_event(rid, etype="tools.suggest", title="Tool Candidates Generated",
-                               step="candidates", data=tr, timing={"elapsed_ms": t_router_ms})
+        await self._emit_event(rid, etype="tools.suggest",
+                               title="Tool Candidates Generated",
+                               step="candidates",
+                               data=tr,
+                               timing={"elapsed_ms": t_router_ms})
+        sv_ret = {}
+        sv = {}
 
-        t1 = time.perf_counter()
-        sv = await self._run_solvability(ctx, tr.get("candidates") or [])
-        t_solv_ms = int((time.perf_counter() - t1) * 1000)
-        await self._emit_event(rid, etype="tools.decision", title="Solvability Decision",
-                               step="decision", data=sv, timing={"elapsed_ms": t_solv_ms})
+        tr_error = tr.get("__service", {}).get("error")
+        if not tr_error:
+            tr_note = (f"[solver.tool_router]: Notes: {tr.get('notes') or ''}. Selected tools={tr.get('candidates') or []}.")
+            scratchpad.tlog.note(tr_note)
 
-        decision = self._materialize_decision(tr, sv)
+            t1 = time.perf_counter()
+            sv_ret = await self._run_solvability(ctx, tr.get("candidates") or [])
+            sv = sv_ret.get("agent_response")
+
+            t_solv_ms = int((time.perf_counter() - t1) * 1000)
+            await self._emit_event(rid, etype="solver.plan", title="Solvability Decision",
+                                   step="plan", data=sv, timing={"elapsed_ms": t_solv_ms})
+
+        sv_error = sv_ret.get("__service", {}).get("error")
+        plan = self._materialize_decision(tr, sv_ret)
+
+        if plan.error:
+            if tr_error:
+                self.log.log(f"[Solver.Tool Selector]. Error: {tr_error}", level="ERROR")
+                scratchpad.tlog.note((f"[solver.tool_router]: planning failed — tool selection error: {plan.tool_selector_error}\n"
+                                      f"Tool selector reasoning was: {plan.tool_selector_internal_thinking}\n."
+                                      f"Tool selector plan was: {plan.tool_selector_raw_data}. It failed."))
+            if sv_error:
+                scratchpad.tlog.note(f"[Solver.Solvability] ERROR during attempt to plan the solution: {plan.solvability_error}")
+                scratchpad.tlog.note(f"[solver.solvability] User request is not solved, plan failed. "
+                                     f"Solvability reasoning was: {plan.solvability_internal_thinking}.\n"
+                                     f"Solvability plan was  {plan.solvability_raw_data}. It failed.")
+        else:
+            solvability_note = (f"[Solver.Solvability] decision: solving mode={plan.mode}, confidence={plan.confidence}, "
+                                f"solvability_reasoning={plan.reasoning}, ")
+            if plan.mode != "llm_only":
+                solvability_note += (f"tools={[t.id for t in (plan.tools or [])]}, "
+                                     f"When solved, these slots must be filled: contract_dyn={plan.contract_dyn}. If the slots are not filled, the user request is not solved.")
+            solvability_note += f"instructions_for_downstream={plan.instructions_for_downstream}, "
+            scratchpad.tlog.note(solvability_note)
+
         return {
-            "clarifying_questions": list((sv.get("clarifying_questions") or [])[:2]),
-            "decision": decision,
+            "plan": plan,
             "tr": tr,
             "sv": sv,
         }
@@ -486,22 +503,34 @@ class CodegenToolManager:
         )
         logging_helpers.log_agent_packet(self.AGENT_NAME, "tool router", out)
         tr = out.get("agent_response") or {"candidates": [], "notes": ""}
+        elog = out.setdefault("log", {})
+        internal_thinking = out.get("internal_thinking")
+        error = elog.get("error")
+        __service = {
+            "internal_thinking": internal_thinking,
+            "raw_data": elog.get("raw_data")
+        }
+        if error:
+            __service["error"] = error
+
         cands = []
         for c in (tr.get("candidates") or []):
             tool_id = c.get("name")  # EXPECTS qualified id, e.g., "agent_tools.web_search"
             info = next((e for e in self.tools_info if e["id"] == tool_id), None)
             params_schema = (info or {}).get("doc", {}).get("args", {})
+            purpose = (info or {}).get("doc", {}).get("purpose", "")
             cands.append({
                 "id": tool_id,
-                "title": tool_id,
+                "purpose": purpose,
                 "reason": c.get("reason", ""),
-                "read": True,
-                "write": False,
                 "params_schema": params_schema,
-                "suggested_params": c.get("parameters") or {},
+                "suggested_parameters": c.get("parameters") or {},
                 "confidence": c.get("confidence", 0.0)
             })
-        return {"candidates": cands, "notes": tr.get("notes", ""), "today": _today_str()}
+        return {
+            "candidates": cands, "notes": tr.get("notes", ""), "today": _today_str(),
+            "__service": __service
+        }
 
     async def _run_solvability(self, ctx: Dict[str, Any], candidates: List[Dict[str, Any]]) -> Dict[str, Any]:
         out = await assess_solvability_stream(
@@ -509,27 +538,34 @@ class CodegenToolManager:
             ctx["text"],
             candidates=[{
                 "name": c["id"],  # still pass qualified ids
+                "purpose": c.get("purpose", ""),
                 "reason": c.get("reason", ""),
                 "confidence": c.get("confidence", 0.0),
-                "parameters": c.get("suggested_params", {}),
+                "suggested_parameters": c.get("suggested_parameters", {}),
             } for c in candidates],
             policy_summary=(ctx.get("policy_summary") or ""),
             prefs_hint=(ctx.get("prefs_hint") or {}),
-            is_spec_domain=ctx.get("is_spec_domain"),
+            # is_spec_domain=ctx.get("is_spec_domain"),
             topics=ctx.get("topics") or [],
             on_thinking_delta=self._mk_thinking_streamer("solvability"),
             max_tokens=2000,
         )
         logging_helpers.log_agent_packet(self.AGENT_NAME, "solvability", out)
-        return out.get("agent_response") or {
-            "solvable": bool(candidates),
-            "confidence": 0.5,
-            "reasoning": "fallback",
-            "tools_to_use": [c["id"] for c in candidates],
-            "clarifying_questions": [],
-        }
+        # return out.get("agent_response") or {"error": "no response from solvability"}
+        return out
 
-    def _materialize_decision(self, tr: Dict[str, Any], sv: Dict[str, Any]) -> ToolDecision:
+    def _materialize_decision(self,
+                              tr: Dict[str, Any],
+                              sv_ret: Dict[str, Any]) -> SolutionPlan:
+        tr_service = tr.get("__service")
+        sv_service = sv_ret.get("__service")
+
+        tr_error = tr_service.get("error")
+        sv_error = {"error": "no response from solvability"} if not sv_ret.get("agent_response") else None
+        sv_error = sv_service.get("error") or sv_error
+
+        sv = sv_ret.get("agent_response")
+
         cbyid = {c["id"]: c for c in (tr.get("candidates") or [])}
         tools: List[PlannedTool] = []
         if sv.get("solvable") and sv.get("tools_to_use"):
@@ -538,18 +574,50 @@ class CodegenToolManager:
                     c = cbyid[tid]
                     tools.append(PlannedTool(
                         id=tid,
-                        params=c.get("suggested_params", {}),
+                        purpose=c.get("purpose", ""),
+                        params=c.get("suggested_parameters", {}),
                         reason=c.get("reason", ""),
-                        read=c.get("read", True),
-                        write=c.get("write", False),
-                        mode="execute",
+                        confidence=c.get("confidence", 0.0),
                     ))
-        mode = "tools" if tools else "llm_only"
-        return ToolDecision(
-            mode=mode,
-            tools=tools,
-            confidence=float(sv.get("confidence", 0.0)),
-            reasoning=sv.get("reasoning", "")
+        mode = sv.get("solver_mode") if tools else "llm_only"
+
+        error = ""
+        failure_presentation = {}
+        if tr_error:
+            error += (f"Solver.Tool Selector error. Thinking: {tr_service.get('internal_thinking')}\n"
+                      f"Raw output: {tr_service.get('internal_thinking')}\n"
+                      f"Error: {tr_service.get('error')}\n"
+                      )
+            failure_presentation["solver.tool_router"] = tr_service
+        if sv_error:
+            failure_presentation["solver.solvability"] = sv_service
+            error += (f"Solver.Solvability error. Thinking: {sv_service.get('internal_thinking')}\n"
+                      f"Raw output: {sv_service.get('internal_thinking')}\n"
+                      f"Error: {sv_service.get('error')}\n"
+                      )
+        if error.strip() == "":
+            error = None
+            failure_presentation = None
+        else:
+            failure_presentation = {
+                "markdown": error,
+                "struct": failure_presentation
+            }
+        return SolutionPlan(
+            mode=mode,                                   # of how to solve the problem
+            tools=tools,                                 # subset of candidates with concrete params
+            confidence=float(sv.get("confidence", 0.0)), # that the problem is solvable with the chosen tools
+            reasoning=sv.get("reasoning", ""),           # solvability reasoning
+            clarification_questions=list((sv.get("clarifying_questions") or [])),
+            instructions_for_downstream=sv.get("instructions_for_downstream", ""),
+            error=error,
+            failure_presentation=failure_presentation,
+            tool_router_notes=tr.get("notes", ""),       # notes of the tool router
+            contract_dyn=sv.get("output_contract_dyn", {}),     # slot -> description. What products will be produced by solver if the problem is solved
+            service={
+                "tool_router": tr_service,
+                "solvability": sv_service
+            },
         )
 
     # -------- solution entry point --------
@@ -566,7 +634,9 @@ class CodegenToolManager:
             prefs_hint: Optional[dict] = None,
             extra_task_hint: Optional[Dict[str, Any]] = None,
             context_hint: str = "",
-    ) -> Dict[str, Any]:
+            materialize_turn_ids: Optional[List[str]] = None,
+            scratchpad: TurnScratchpad = None
+    ) -> SolveResult:
         """
         Orchestrate routing/solvability and, when in 'codegen' mode, return a clean normalized envelope:
           {
@@ -582,67 +652,57 @@ class CodegenToolManager:
           }
         """
         topics = topics or []
+        # Build targeted program history only from the materialized turns the classifier chose
+        program_history = []
+        if materialize_turn_ids:
+            try:
+                # 1) Build program history (you already do this)
+                program_history = await project_retrieval._build_program_history_from_turn_ids(self, turn_ids=materialize_turn_ids, scope="track", days=365)
 
-        try:
-            program_history = \
-                await project_retrieval._build_program_history(self,
-                                                               user_text=user_text,
-                                                               scope="track", days=365, top_k=6)
-        except Exception as ex:
-            self.log.log(f"Error building program history: {traceback.format_exc()}", "ERROR")
-            program_history = []
+            except Exception:
+                program_history = []
 
         history_hint = project_retrieval._history_digest(program_history, limit=3)
         context_hint = (context_hint or "")
         context_hint = (
             f"{context_hint}\n"
-            f"Prior programs (for reuse): {history_hint}. "
-            f"The downstream program can read them under OUTPUT_DIR/context.json → program_history[]."
+            f"Relevant prior runs (selected by classifier): {history_hint}. "
+            f"They are available under OUTPUT_DIR/context.json → program_history[]."
         ).strip()
 
+        result: Dict[str, Any] = {
+            "plan": None,
+            "execution": None,
+        }
+
         # 1) Router + Solvability (scoped)
-        tm_out = await self.decide(
+        tm_out = await self.plan(
             ctx={
                 "request_id": request_id,
                 "text": user_text,
                 "topics": topics,
-                "is_spec_domain": ("domain_tools" in (allowed_plugins or [])),  # caller can scope via allowed_plugins already
                 "policy_summary": policy_summary,
                 "context_hint": context_hint,
-                "topic_hint": topic_hint or ", ".join((topics or [])[:3]),
+                "topic_hint": topic_hint or ", ".join((topics or [])),
                 "prefs_hint": prefs_hint or {},
             },
-            allowed_plugins=allowed_plugins
+            allowed_plugins=allowed_plugins,
+            scratchpad=scratchpad
         )
-        sv = tm_out.get("sv") or {}
-        contract_dyn = sv.get("output_contract_dyn") or {}
+        plan: SolutionPlan = tm_out.get("plan")
+        result["plan"] = plan
 
-        decision: ToolDecision = tm_out.get("decision")
-        chosen = [t.id for t in (decision.tools or [])]
-        sv_mode = (tm_out.get("sv") or {}).get("solver_mode")
-        mode = sv_mode or ("direct_tools_exec" if chosen else "llm_only")
+        if plan.error:
+            return SolveResult(result)
 
-        result: Dict[str, Any] = {
-            "mode": mode,
-            "decision": {
-                "confidence": getattr(decision, "confidence", 0.0),
-                "reasoning": getattr(decision, "reasoning", ""),
-                "tools": [t.__dict__ for t in (decision.tools or [])],
-                "clarifying_questions": tm_out.get("clarifying_questions") or [],
-            },
-            "contract_dyn": contract_dyn,  #
-            "artifacts": [],
-            "deliverables": {},            # <— by slot name
-            "citations": [],
-            "out": [],
-            "calls": [],
-        }
+        chosen = [t.id for t in (plan.tools or [])]
+        mode = plan.mode or ("direct_tools_exec" if chosen else "llm_only")
 
         # ---- direct execution (simple, one tool typical) ----
         if mode == "direct_tools_exec":
             steps = [{
                 "tool": chosen[0],
-                "args": (decision.tools[0].params or {}),
+                "args": (plan.tools[0].params or {}),
                 "save_as": chosen[0]
             }]
             exec_res = await self.execute_plan(steps, allowed_plugins=allowed_plugins)
@@ -654,17 +714,21 @@ class CodegenToolManager:
                 f"by executing {chosen[0]}. Treat them as system-provided context for this turn; cite any URLs within."
             )
             result["execution_id"] = None
-            return result
+            # tlog for direct exec
+            try:
+                scratchpad.tlog.solver(f"[solver.execution] mode=direct_tools_exec tool={chosen[0]} steps={len(exec_res.get('steps') or [])}")
+            except Exception:
+                pass
+            return SolveResult(result)
 
         # ---- codegen flow ----
         if mode == "codegen":
             # always include IO utils so codegen can persist files/JSON
-            support_ids = [e["id"] for e in self.tools_info if (e.get("plugin_alias") or "") == "io_tools"]
+            support_ids = [e["id"] for e in self.tools_info if (e.get("plugin_alias") or "") in ["io_tools", "ctx_tools"]]
             adapters = self.adapters_for_codegen(
                 allowed_plugins=allowed_plugins,
                 allowed_ids=list(set(chosen) | set(support_ids)),
             )
-
             cg_res = await self.run_code_gen(
                 request_id=request_id,
                 user_text=user_text,
@@ -685,7 +749,7 @@ class CodegenToolManager:
             out_items: List[Dict[str, Any]] = (solver_json or {}).get("out") or []
 
             # Deliverables: STRICTLY ONE artifact per contract slot
-            contract_keys = set(contract_dyn.keys()) if isinstance(contract_dyn, dict) else set()
+            contract_keys = set(plan.contract_dyn.keys()) if isinstance(plan.contract_dyn, dict) else set()
 
             by_slot_single: Dict[str, Dict[str, Any]] = {}
             for art in out_items:
@@ -697,35 +761,88 @@ class CodegenToolManager:
                 by_slot_single[slot_name] = art
 
             deliverables = {
-                k: {"description": contract_dyn[k], "value": by_slot_single.get(k)}
+                k: {"description": plan.contract_dyn[k], "value": by_slot_single.get(k)}
                 for k in contract_keys
             }
-
             # Citations: any citable inline out item
             citations = []
             for a in out_items:
                 if a.get("type") == "inline" and bool(a.get("citable")):
                     citations.append(a)
 
+            execution = SolutionExecution(
+                deliverables=deliverables,
+                citations=citations,
+                calls=self._group_calls_sequential(out_items)
+            )
             result["codegen"] = cg_res
-            result["out"] = out_items
-            result["deliverables"] = deliverables
-            result["citations"] = citations
-            result["calls"] = self._group_calls_sequential(out_items)
+            result["execution"] = execution
+            sr = SolveResult(result)
 
-            # Attach execution id if solver exposed it (fallback to run_id)
-            exec_id = None
+            # PROJECT LOG → tlog
+            pl = (deliverables or {}).get("project_log") or {}
+            v = pl.get("value")
+            if isinstance(v, dict):
+                pl_text = v.get("value") or v.get("text") or ""
+            elif isinstance(v, str):
+                pl_text = v
+            else:
+                pl_text = ""
+
+            # ---- tlog summary for downstream answer agent
             try:
-                exec_id = (solver_json or {}).get("execution_id") or cg_res.get("run_id")
-            except Exception:
-                exec_id = cg_res.get("run_id")
-            result["execution_id"] = exec_id
+                ok = bool((solver_json or {}).get("ok"))
+                contract = plan.contract_dyn or {}
+                filled = sorted([k for k,v in (deliverables or {}).items() if isinstance(v.get("value"), dict)])
+                missing = sorted(list(set(contract.keys()) - set(filled)))
+                status = "ok" if ok else "failed"
+                scratchpad.tlog.solver(f"[solver] mode=codegen; status={status}; filled={filled}; missing={missing}; result_interpretation_instruction={sr.interpretation_instruction()}")
 
-            return result
+                if pl_text:
+                    scratchpad.tlog.note(f"[project_log]\n{pl_text.strip()[:4000]}")
+                    # error details (if any)
+                try:
+                    for c in (execution.calls or []):
+                        tool_id = c.get("tool_id","")
+                        order = c.get("order")
+                        outputs_n = len(c.get("outputs") or [])
+                        inputs_n = len(c.get("input") or [])
+                        l = f"[solver.calls] order={order} tool={tool_id} inputs_n={inputs_n} outputs={outputs_n} "
+                        self.log.log(l)
+                        scratchpad.tlog.note(l)
+                except Exception:
+                    pass
+
+                if not ok and isinstance(solver_json, dict):
+                    err = solver_json.get("error") or {}
+                    """
+                    "error": {
+                        "where": (where or "runtime"),
+                        "details": str(details or ""),
+                        "error": str(error or ""),
+                        "description": description,
+                        "managed": bool(managed),
+                    }
+                    """
+                    description = err.get("description")
+                    error = err.get("error")
+                    where = err.get("where") or ""
+                    details = err.get("details") or ""
+                    if any([description, where, details]):
+                        execution.error = f"where={where} error={error} details={details} description={description}"
+                        scratchpad.tlog.note(f"[solver.error] {execution.error}")
+                        failure_md = ("### Solver JSON Failure",
+                                      "```json",
+                                      json.dumps(solver_json, ensure_ascii=False, indent=2),
+                                      "```")
+                        execution.failure_presentation = (
+                            { "markdown": failure_md, "struct": err }
+                        )
+            except Exception:
+                pass
 
         # ---- llm only (no tools) ----
-        result["execution_id"] = None
-        return result
+        return SolveResult(result)
 
 
     # -------- execution & artifact promotion --------
@@ -832,12 +949,19 @@ class CodegenToolManager:
                         "ok": True, "tool": tool_id, "args": args, "save_as": s.get("save_as"),
                         "return": parsed, "elapsed_ms": elapsed, "call_id": call_seq
                     })
-                    return out
+                    # naive promotion: if tool returned our normalized out[] put it through
+                    if isinstance(parsed, dict) and isinstance(parsed.get("out"), list):
+                        for it in parsed["out"]:
+                            if isinstance(it, dict):
+                                it.setdefault("tool_id", tool_id)
+                                it.setdefault("input", args)
+                                out["out"].append(it)
                 except Exception as e:
                     elapsed = int((time.perf_counter() - t0) * 1000)
                     out["steps"].append({"ok": False, "tool": tool_id, "args": args, "error": f"{type(e).__name__}: {e}", "elapsed_ms": elapsed})
         finally:
             SOURCE_ID_CV.reset(token_sid)
+        return out
 
     # -------- codegen runtime --------
 
@@ -918,16 +1042,43 @@ class CodegenToolManager:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
 
-            context = {"request_id": request_id,
-                       "program_history": program_history or [],
-                       "topics": topics,
-                       "prefs_hint": prefs_hint or {},
-                       "policy_summary": policy_summary,
-                       "today": _today_str(),
-                       "notes": notes,
-                       "run_id": run_id,
-                       "result_interpretation_instruction": result_interpretation_instruction,
-                       "internal_thinking": internal_thinking,}
+            # derive brief + latest materials from history
+            latest_presentation = ""
+            latest_solver_failure = ""
+            latest_turn_log = ""
+            try:
+                if program_history:
+                    # 2) Reconcile & get canonical sources (and rewritten tokens in-place)
+                    rec = project_retrieval.reconcile_citations_for_context(program_history, max_sources=60, rewrite_tokens_in_place=True)
+                    canonical_sources = rec["canonical_sources"]   # ← pass this to context.json["sources"]
+
+                    # 3) Choose the “current” editable (usually newest run)
+                    latest = next(iter(program_history[0].values()), {}) if program_history else {}
+                    canvas_md = (latest.get("project_canvas") or {}).get("text") or (latest.get("project_canvas") or {}).get("value") or ""
+
+                    exec_id, inner = next(iter(program_history[0].items()))
+                    latest_presentation = inner.get("program_presentation") if isinstance(inner.get("program_presentation"), str) else ""
+                    latest_solver_failure = inner.get("solver_failure") if isinstance(inner.get("solver_failure"), str) else ""
+                    latest_turn_log = ((inner.get("project_log") or {}).get("text") or "")
+            except Exception:
+                pass
+
+            context = {
+                "request_id": request_id,
+                "program_history": program_history or [],
+                "program_history_brief": project_retrieval._history_digest(program_history, limit=3),
+                "latest_program_presentation": latest_presentation,
+                "latest_solver_failure": latest_solver_failure,
+                "latest_turn_log": latest_turn_log,
+                "topics": topics,
+                "prefs_hint": prefs_hint or {},
+                "policy_summary": policy_summary,
+                "today": _today_str(),
+                "notes": notes,
+                "run_id": run_id,
+                "result_interpretation_instruction": result_interpretation_instruction,
+                "internal_thinking": internal_thinking,
+            }
             # write runtime inputs
             self.write_runtime_inputs(
                 output_dir=outdir,
@@ -984,7 +1135,7 @@ class CodegenToolManager:
                 "notes": next_spec.get("notes") or {},
             }
             requested = set(current_task_spec["tools_selected"] or [])
-            support_ids = [e["id"] for e in self.tools_info if (e.get("plugin") or "") == "agent_io_tools"]
+            support_ids = [e["id"] for e in self.tools_info if (e.get("plugin_alias") or "") in ["io_tools", "ctx_tools"]]
             adapters = self.adapters_for_codegen(allowed_ids=list(requested | set(support_ids)))
 
         return {

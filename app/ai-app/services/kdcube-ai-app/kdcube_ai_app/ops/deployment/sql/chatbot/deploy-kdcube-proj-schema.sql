@@ -95,16 +95,6 @@ CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_um_user_lastseen  ON <SCHEMA>.user_memor
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_um_fact_tsv       ON <SCHEMA>.user_memory USING gin (to_tsvector('simple', fact));
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_um_tags_gin       ON <SCHEMA>.user_memory USING gin (tags);
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_um_emb_ivf        ON <SCHEMA>.user_memory USING ivfflat (embedding vector_cosine_ops) WITH (lists=50);
--- active memory only
-CREATE OR REPLACE VIEW <SCHEMA>.user_memory_active AS
-SELECT * FROM <SCHEMA>.user_memory
-WHERE expires_at IS NULL OR expires_at > now();
-
--- Optional (but nice): dedupe guard per user by normalized text hash
-ALTER TABLE <SCHEMA>.user_memory
-    ADD COLUMN IF NOT EXISTS fact_sha1 TEXT;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_<SCHEMA>_um_user_factsha
-  ON <SCHEMA>.user_memory (user_id, fact_sha1);
 
 -- ---------- Turn-level preferences extracted from NL (assertions + exceptions) ----------
 CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_prefs (
@@ -175,24 +165,6 @@ CREATE OR REPLACE VIEW <SCHEMA>.rag_chunks_active AS
 SELECT * FROM <SCHEMA>.rag_chunks
 WHERE expires_at IS NULL OR expires_at > now();
 
--- ---------- Convenience: latest summaries per conversation ----------
--- You said you’ll store summaries as artifacts with tag 'kind:conversation.summary'
-CREATE OR REPLACE VIEW <SCHEMA>.conv_last_conversation_summary AS
-SELECT DISTINCT ON (user_id, conversation_id)
-    id, user_id, conversation_id, message_id, role, text, s3_uri, ts, tags, track_id
-FROM <SCHEMA>.conv_messages
-WHERE role = 'artifact' AND tags @> ARRAY['kind:conversation.summary']::text[]
-ORDER BY user_id, conversation_id, ts DESC;
-
--- Optional: latest turn summary in a conversation (tag 'kind:turn.summary')
-CREATE OR REPLACE VIEW <SCHEMA>.conv_last_turn_summary AS
-SELECT DISTINCT ON (user_id, conversation_id)
-    id, user_id, conversation_id, message_id, role, text, s3_uri, ts, tags, track_id
-FROM <SCHEMA>.conv_messages
-WHERE role = 'artifact' AND tags @> ARRAY['kind:turn.summary']::text[]
-ORDER BY user_id, conversation_id, ts DESC;
-
-
 CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_track_programs (
                                                             program_id      TEXT PRIMARY KEY,
                                                             track_id        TEXT NOT NULL,
@@ -212,3 +184,34 @@ CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_track_programs (
     );
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_programs_track_updated
   ON <SCHEMA>.conv_track_programs (track_id, updated_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_track_tickets (
+   ticket_id   TEXT PRIMARY KEY,
+   track_id    TEXT NOT NULL,
+   user_id     TEXT NOT NULL,
+   conversation_id TEXT NOT NULL,
+   turn_id     TEXT,
+   title       TEXT NOT NULL,
+   description TEXT NOT NULL DEFAULT '',
+   status      TEXT NOT NULL DEFAULT 'open',
+   priority    SMALLINT NOT NULL DEFAULT 3,
+   assignee    TEXT,
+   tags        TEXT[] NOT NULL DEFAULT '{}',
+   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    embedding   VECTOR(1536),
+    data JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_track
+  ON <SCHEMA>.conv_track_tickets (track_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_status
+  ON <SCHEMA>.conv_track_tickets (status, priority DESC);
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_embedding
+  ON <SCHEMA>.conv_track_tickets USING ivfflat (embedding vector_cosine_ops) WITH (lists=50);
+
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_conv_user
+  ON <SCHEMA>.conv_track_tickets (conversation_id, user_id, updated_at DESC);  -- NEW
+
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_tickets_turn
+  ON <SCHEMA>.conv_track_tickets (turn_id);
