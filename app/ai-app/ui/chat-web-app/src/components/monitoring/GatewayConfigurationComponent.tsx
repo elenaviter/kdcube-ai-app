@@ -265,7 +265,7 @@ export const GatewayConfigurationComponent = ({ gatewayConfiguration, capacityTr
                 </div>
 
                 {/* Additional backpressure settings */}
-                <div className="mt-2 pt-2 border-t border-gray-200">
+                <div className="mt-2 pt-2 border-t border-gray-400">
                     <div className="grid grid-cols-2 gap-3">
                         <div className="flex justify-between text-xs">
                             <span className="text-gray-600">Capacity Buffer:</span>

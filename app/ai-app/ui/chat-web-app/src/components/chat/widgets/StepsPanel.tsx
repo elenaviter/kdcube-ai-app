@@ -44,7 +44,7 @@ export const StepsPanel: React.FC<{
     };
     const color = (s:string)=> s==='completed' ? 'text-green-600 bg-green-50 border-green-200'
         : s==='started' ? 'text-blue-600 bg-blue-50 border-blue-200'
-            : s==='error' ? 'text-red-600 bg-red-50 border-red-200' : 'text-gray-600 bg-gray-50 border-gray-200';
+            : s==='error' ? 'text-red-600 bg-red-50 border-red-200' : 'text-gray-600 bg-gray-50 border-gray-400';
 
     const human = (s:string)=>({
         classifier:'Domain Classification',
@@ -58,13 +58,13 @@ export const StepsPanel: React.FC<{
     } as any)[s] || s.replace('_',' ').replace(/\b\w/g,l=>l.toUpperCase());
 
     return (
-        <div className="bg-white border-l border-gray-200 flex flex-col relative" style={{width}}>
+        <div className="bg-white border-l border-gray-400 flex flex-col relative" style={{width}}>
             <div className="absolute left-0 top-0 bottom-0 w-1 cursor-col-resize hover:bg-blue-300 group" onMouseDown={md}>
                 <div className="absolute left-0 top-1/2 transform -translate-y-1/2 -translate-x-1 opacity-0 group-hover:opacity-100">
                     <GripVertical size={16} className="text-gray-400"/>
                 </div>
             </div>
-            <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 flex items-center justify-between">
+            <div className="px-4 py-3 border-b border-gray-400 bg-gray-50 flex items-center justify-between">
                 <div>
                     <h3 className="font-semibold text-gray-900 text-sm">Execution Steps</h3>
                     <p className="text-xs text-gray-500 mt-1">

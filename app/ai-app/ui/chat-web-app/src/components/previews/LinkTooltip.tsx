@@ -51,7 +51,7 @@ const LinkTooltip = ({ resource, isVisible, onClose, position }: LinkTooltipProp
 
     return (
         <div
-            className="fixed z-50 bg-white shadow-xl rounded-lg border border-gray-200 w-80 overflow-hidden animate-fade-in"
+            className="fixed z-50 bg-white shadow-xl rounded-lg border border-gray-400 w-80 overflow-hidden animate-fade-in"
             style={{
                 left: position?.x || '50%',
                 top: position?.y || '50%',

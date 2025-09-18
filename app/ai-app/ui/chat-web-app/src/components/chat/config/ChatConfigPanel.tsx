@@ -250,7 +250,7 @@ export const ChatConfigPanel: React.FC<Props> = ({
 
     return (
         <div className={cn(
-            "bg-white border-r border-gray-200 p-6 overflow-y-auto w-[min(48vw,640px)] min-w-[360px]",
+            "bg-white border-r border-gray-400 p-6 overflow-y-auto w-[min(48vw,640px)] min-w-[360px]",
             className
         )}>
             <div className="flex items-center justify-between mb-6">

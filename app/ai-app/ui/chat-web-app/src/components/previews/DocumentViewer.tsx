@@ -55,10 +55,10 @@ const NavigationSidebar: React.FC<{
             </button>
 
             {/* Sidebar */}
-            <div className={`fixed left-0 top-0 h-full w-80 bg-white border-r border-gray-200 transform transition-transform z-40 ${
+            <div className={`fixed left-0 top-0 h-full w-80 bg-white border-r border-gray-400 transform transition-transform z-40 ${
                 isOpen ? 'translate-x-0' : '-translate-x-full'
             }`}>
-                <div className="p-4 border-b border-gray-200">
+                <div className="p-4 border-b border-gray-400">
                     <h3 className="font-semibold text-gray-800">Document Segments</h3>
                     <p className="text-sm text-gray-600">{navigation.length} segments found</p>
                 </div>
@@ -158,7 +158,7 @@ const ContentRenderer: React.FC<{
                 }`}
                 onClick={() => onLineClick?.(index + 1)}
             >
-                <span className="flex-shrink-0 w-12 text-xs text-gray-400 text-right pr-3 py-1 bg-gray-50 border-r border-gray-200 cursor-pointer hover:bg-gray-100">
+                <span className="flex-shrink-0 w-12 text-xs text-gray-400 text-right pr-3 py-1 bg-gray-50 border-r border-gray-400 cursor-pointer hover:bg-gray-100">
                     {index + 1}
                 </span>
                 <span className="flex-1 px-3 py-1 font-mono text-sm whitespace-pre-wrap">
@@ -195,7 +195,7 @@ const ContentRenderer: React.FC<{
                     className={`flex ${isInCurrentSegment ? 'bg-blue-50 border-l-4 border-l-blue-400' : ''}`}
                     onClick={() => onLineClick?.(lineNumber)}
                 >
-                    <span className="flex-shrink-0 w-12 text-xs text-gray-400 text-right pr-3 py-1 bg-gray-50 border-r border-gray-200 cursor-pointer hover:bg-gray-100">
+                    <span className="flex-shrink-0 w-12 text-xs text-gray-400 text-right pr-3 py-1 bg-gray-50 border-r border-gray-400 cursor-pointer hover:bg-gray-100">
                         {lineNumber}
                     </span>
                     <div
@@ -214,11 +214,11 @@ const ContentRenderer: React.FC<{
             style={{ fontSize: `${scale * 14}px` }}
         >
             {mimeType === 'text/markdown' || mimeType.includes('markdown') ? (
-                <div className="border border-gray-200 rounded">
+                <div className="border border-gray-400 rounded">
                     {renderMarkdown(content)}
                 </div>
             ) : (
-                <div className="border border-gray-200 rounded">
+                <div className="border border-gray-400 rounded">
                     {renderLineNumbers(content)}
                 </div>
             )}
@@ -236,8 +236,8 @@ const DocumentMinimap: React.FC<{
     const minimapHeight = 200;
 
     return (
-        <div className="w-16 bg-gray-100 border-l border-gray-200 flex flex-col">
-            <div className="p-2 text-xs font-medium text-gray-600 border-b border-gray-200">
+        <div className="w-16 bg-gray-100 border-l border-gray-400 flex flex-col">
+            <div className="p-2 text-xs font-medium text-gray-600 border-b border-gray-400">
                 Map
             </div>
             <div className="flex-1 relative p-1">
@@ -365,7 +365,7 @@ const EnhancedDocumentViewer: React.FC<EnhancedDocumentViewerProps> = ({
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50">
             <div className="h-full w-full bg-white flex flex-col">
                 {/* Header */}
-                <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-gray-50">
+                <div className="flex items-center justify-between p-4 border-b border-gray-400 bg-gray-50">
                     <div className="flex items-center space-x-4">
                         <div>
                             <h3 className="text-lg font-semibold">
@@ -531,7 +531,7 @@ const EnhancedDocumentViewer: React.FC<EnhancedDocumentViewerProps> = ({
                 </div>
 
                 {/* Footer */}
-                <div className="border-t border-gray-200 px-6 py-3 bg-gray-50 text-sm text-gray-500">
+                <div className="border-t border-gray-400 px-6 py-3 bg-gray-50 text-sm text-gray-500">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-4">
                             <span>Resource: {content.resource_id} (v{content.version})</span>

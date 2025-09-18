@@ -161,7 +161,7 @@ const MarkdownRenderer = (
             ) : (
                 <div className="p-6">
                         <pre
-                            className="font-mono text-gray-800 whitespace-pre-wrap bg-gray-50 p-4 rounded border border-gray-200 h-full"
+                            className="font-mono text-gray-800 whitespace-pre-wrap bg-gray-50 p-4 rounded border border-gray-400 h-full"
                             style={{fontSize: `${fontSize}px`}}
                         >
                             {content || ''}

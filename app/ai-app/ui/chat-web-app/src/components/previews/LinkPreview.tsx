@@ -92,7 +92,7 @@ const LinkPreview = ({ url, isVisible, onClose }: LinkPreviewProps) => {
 
     return (
         <div
-            className="absolute z-50 bg-white shadow-lg rounded-lg border border-gray-200 w-80 overflow-hidden animate-fade-in"
+            className="absolute z-50 bg-white shadow-lg rounded-lg border border-gray-400 w-80 overflow-hidden animate-fade-in"
             style={{
                 marginTop: '10px',
                 animation: 'fadeIn 0.2s ease-in-out'

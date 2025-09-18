@@ -71,7 +71,7 @@ const SimpleHTMLPreview = ({ isOpen, onClose, file, originalUrl }: SimpleHTMLPre
             <div className="fixed inset-0 flex items-center justify-center z-50 p-4">
                 <div className="bg-white rounded-lg shadow-xl w-full max-w-6xl h-5/6 overflow-hidden">
                     {/* Header */}
-                    <div className="flex items-center justify-between p-4 border-b border-gray-200">
+                    <div className="flex items-center justify-between p-4 border-b border-gray-400">
                         <div className="flex items-center space-x-3">
                             <Globe className="text-blue-600" size={20} />
                             <div>

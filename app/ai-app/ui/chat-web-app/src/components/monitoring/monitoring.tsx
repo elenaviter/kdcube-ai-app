@@ -573,7 +573,7 @@ const SystemMonitor = () => {
             case 'half_open':
                 return 'text-yellow-600 bg-yellow-50 border-yellow-200';
             default:
-                return 'text-gray-600 bg-gray-50 border-gray-200';
+                return 'text-gray-600 bg-gray-50 border-gray-400';
         }
     };
 
@@ -931,7 +931,7 @@ const SystemMonitor = () => {
                             <div className="space-y-2">
                                 {Object.entries(getFilteredQueues()).map(([queueType, queue]) => (
                                     <div key={queueType} className={`p-2 rounded border ${
-                                        queue.blocked ? 'border-red-200 bg-red-50' : 'border-gray-200 bg-gray-50'
+                                        queue.blocked ? 'border-red-200 bg-red-50' : 'border-gray-400 bg-gray-50'
                                     }`}>
                                         <div className="flex items-center justify-between mb-1">
                                             <div className="flex items-center gap-2">
@@ -1483,8 +1483,8 @@ const SystemMonitor = () => {
 // Create a SystemMonitorPanel component
 export const SystemMonitorPanel = ({onClose}) => {
     return (
-        <div className="h-full w-full bg-white border-l border-gray-200 flex flex-col">
-            <div className="flex items-center justify-between p-3 bg-gray-50 border-b border-gray-200 flex-shrink-0">
+        <div className="h-full w-full bg-white border-l border-gray-400 flex flex-col">
+            <div className="flex items-center justify-between p-3 bg-gray-50 border-b border-gray-400 flex-shrink-0">
                 <h3 className="text-sm font-semibold flex items-center text-gray-900">
                     <Server size={16} className="mr-2 text-green-600"/>
                     System Monitor
