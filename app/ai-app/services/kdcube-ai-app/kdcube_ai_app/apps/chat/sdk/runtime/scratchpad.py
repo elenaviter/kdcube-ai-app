@@ -121,6 +121,9 @@ class TurnScratchpad:
         # Feedback extracted from current user message about a previous turn (if any)
         self.detected_feedback: Optional[dict] = None
 
+        # citations
+        self.citations: List[Dict] = []
+
     def propose_fact(
             self,
             *,
