@@ -584,8 +584,11 @@ const ChatInterface = ({
     };
 
     const sendMessage = (message?: string) => {
+        if (isProcessing)
+            return;
         message = message || userInput.trim();
-        if (!message && userInputFiles.length < 1) return;
+        if (!message && userInputFiles.length < 1)
+            return;
         onSendMessage?.(message, userInputFiles).then(() => {
             setUserInput("")
             setUserInputFiles([])
