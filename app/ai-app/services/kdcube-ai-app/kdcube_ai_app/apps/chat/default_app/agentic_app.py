@@ -926,6 +926,7 @@ class ChatWorkflow:
     def __init__(self,
                  config: Config,
                  communicator: ChatCommunicator,
+                 pg_pool: Optional[Any] = None,
                  streaming: bool = True):
 
         self.storage = AIBundleStorage(
@@ -944,6 +945,11 @@ class ChatWorkflow:
 
         # unified communicator
         self.comm = communicator
+
+        # db connection pool (asyncpg)
+        self.pg_pool = pg_pool
+
+        # event emitters
         self.emit = AIBEmitters(self.comm)
 
         # current turn id
