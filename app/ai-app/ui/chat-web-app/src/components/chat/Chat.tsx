@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // Chat.tsx
 import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {
@@ -12,7 +17,8 @@ import {
     Settings,
     Sparkles,
     Wifi,
-    WifiOff, X
+    WifiOff,
+    X
 } from "lucide-react";
 import {
     ChatCompleteEnvelope,
@@ -34,22 +40,28 @@ import {
 
 import {useAuthManagerContext} from "../auth/AuthManager";
 import {
-    getChatBaseAddress,
     getChatSocketAddress,
     getChatSocketSocketIOPath,
     getKBAPIBaseAddress,
-    getWorkingScope
+    getWorkingScope,
+    showExampleAssistantFileSteps,
+    showExampleAssistantMessage,
+    showExampleAssistantSourceSteps
 } from "../../AppConfig";
 
 import {
-    AssistantThinkingItem, BundleInfo,
+    AssistantThinkingItem,
+    BundleInfo,
     ChatLogItem,
+    ChatMessageData,
     createAssistantChatStep,
     createAssistantThinkingItem,
     createChatMessage,
     createDownloadItem,
     createSourceLinks,
-    DownloadItem, EmbedderInfo, ModelInfo,
+    DownloadItem,
+    EmbedderInfo,
+    ModelInfo,
     RichLink,
     StepUpdate,
 } from "./types/chat";
@@ -61,6 +73,11 @@ import {ConfigProvider, useConfigProvider} from "./ChatConfigProvider.tsx";
 import KBPanel from "../kb/KBPanel.tsx";
 import {SystemMonitorPanel} from "../monitoring/monitoring.tsx";
 import EnhancedKBSearchResults from "./SearchResults.tsx";
+import {
+    getExampleAssistantFileSteps,
+    getExampleAssistantMessage,
+    getExampleAssistantSourceSteps
+} from "./ChatInterface/debug.ts";
 
 /* ============================
    Local Socket.IO hook (v1)
@@ -162,22 +179,6 @@ const UpdatedSearchResultsHistory = ({searchHistory, onClose, kbEndpoint}: {
     );
 };
 
-interface ChatMessage {
-    id: number;
-    sender: "user" | "assistant";
-    text: string;
-    timestamp: Date;
-    isError?: boolean;
-    attachments?: File[] //only relevant for user message
-    metadata?: {
-        turn_id?: string;
-    };
-}
-
-/* ==========
-   Component
-   ========== */
-
 const SingleChatApp: React.FC = () => {
     const configProvider = useMemo(() => new ConfigProvider({
         storageKey: 'ai_assistant_config_v1',
@@ -219,18 +220,20 @@ const SingleChatApp: React.FC = () => {
     const activeTurnIdRef = useRef<string | null>(null);
 
     // Messages state — greeting pinned to epoch so it’s always the first item.
-    const [messages, setMessages] = useState<ChatMessage[]>([
+    const [messages, setMessages] = useState<ChatMessageData[]>([
         {
             id: 1,
             sender: "assistant",
             text: "Hello! I'm your AI assistant application and currently under active development.",
             timestamp: new Date(0),
-            metadata: {},
+            isGreeting: true,
+            metadata: {
+                turn_id: "greeting_0"
+            },
         }
     ])
 
     // Streaming control
-    const streamingTaskIdRef = useRef<string | null>(null);
     const streamingMsgIdRef = useRef<number | null>(null);
     const deltaBufferRef = useRef<string>('');
     const flushTimerRef = useRef<number | null>(null);
@@ -569,7 +572,7 @@ const SingleChatApp: React.FC = () => {
                 }
             },
 
-            onChatStart: (env: ChatStartEnvelope) => {
+                onChatStart: (env: ChatStartEnvelope) => {
                 console.log("chat.start:", env);
                 const turnId = env.conversation?.turn_id;
                 if (turnId) reconcileTurnId(turnId);
@@ -646,6 +649,7 @@ const SingleChatApp: React.FC = () => {
                 deactivateThinking(turnId, ts);
 
                 if (streamingMsgIdRef.current == null) {
+                    console.log("streaming")
                     setMessages((prev) => {
                         const last = prev[prev.length - 1];
                         if (last && last.sender === "assistant" && (last.text ?? "") === "" && !last.isError) {
@@ -807,7 +811,7 @@ const SingleChatApp: React.FC = () => {
             const clientTurnId = `turn_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
             activeTurnIdRef.current = clientTurnId;
 
-            const userMessage: ChatMessage = {
+            const userMessage: ChatMessageData = {
                 id: Date.now(),
                 sender: "user",
                 text: message.trim(),
@@ -867,100 +871,43 @@ const SingleChatApp: React.FC = () => {
     const hideKB = () => setShowKB(false);
     const toggleSystemMonitor = () => setShowSystemMonitor(prev => !prev);
 
-    const chatLogItems: ChatLogItem[] = useMemo(() => {
-        const items: ChatLogItem[] = [];
-        const toItem = (m: ChatMessage) => createChatMessage(m);
-        const steps = [...currentSteps];
-        const allMessages = [...messages];
+    const chatLogItems = useMemo(() => {
+        const items :ChatLogItem[] = [];
+        const addItem = (item: ChatLogItem) => {
+            items.push(item);
+        }
 
-        const greetings = allMessages.filter((m) => m.sender === "assistant" && m.timestamp.getTime() === 0);
-        greetings.forEach((g) => items.push(toItem(g)));
+        const chatMessages = showExampleAssistantMessage() ? [...messages, getExampleAssistantMessage()] : messages;
 
-        const userMsgs = allMessages.filter((m) => m.sender === "user").sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+        chatMessages.forEach((msg) => {
+            addItem(createChatMessage(msg))
+        })
 
-        const nextUserOrInfinity = (idx: number) => (idx + 1 < userMsgs.length ? userMsgs[idx + 1].timestamp.getTime() : Number.POSITIVE_INFINITY);
+        const steps = [...currentSteps]
+        if (showExampleAssistantFileSteps()) {
+            steps.push(...getExampleAssistantFileSteps())
+        }
+        if (showExampleAssistantSourceSteps()) {
+            steps.push(...getExampleAssistantSourceSteps())
+        }
 
-        userMsgs.forEach((uMsg, idx) => {
-            const tid = uMsg.metadata?.turn_id;
-            const startT = uMsg.timestamp.getTime();
-            const endT = nextUserOrInfinity(idx);
+        steps.forEach((s) => {
+            addItem(createAssistantChatStep(s))
+        })
+        steps.forEach((s) => {
+            if (s.step === "file" && s.status === "completed" && !!s.data?.rn && !!s.data?.filename) {
 
-            items.push(toItem(uMsg));
+                addItem(createDownloadItem(s))
+            } else if (s.step === "citations" && s.status === "completed" && !!s.data?.count && !!s.data?.items) {
+                addItem(createSourceLinks(s))
+            }
+        })
 
-            const turnSteps = steps
-                .filter((s) => (s.turn_id ? s.turn_id === tid : s.timestamp.getTime() >= startT && s.timestamp.getTime() < endT))
-                .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-            turnSteps.forEach((s) => items.push(createAssistantChatStep(s)));
-
-            const turnThinking = thinkingItems
-                .filter((t) => (t.turn_id ? t.turn_id === tid : t.timestamp.getTime() >= startT && t.timestamp.getTime() < endT))
-                .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-            turnThinking.forEach((t) => items.push(t));
-
-            const downloadItems = steps
-                .filter((s) => ((s.turn_id ? s.turn_id === tid : s.timestamp.getTime() >= startT
-                        && s.timestamp.getTime() < endT)
-                    && s.step === "file"
-                    && s.status === "completed"
-                    && !!s.data?.rn
-                    && !!s.data?.filename
-
-                ))
-                .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-                // .map(createDownloadItem)
-                .map((s => {
-                    //console.log("DOWNLOAD ITEM", s);
-                    return createDownloadItem(s);
-                }));
-            items.push(...downloadItems);
-
-            const sourceItems = steps
-                .filter((s) => ((s.turn_id ? s.turn_id === tid : s.timestamp.getTime() >= startT
-                        && s.timestamp.getTime() < endT)
-                    && s.step === "citations"
-                    && s.status === "completed"
-                    && !!s.data?.count
-                    && !!s.data?.items
-
-                ))
-                .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-                // .map(createDownloadItem)
-                .map((s => {
-                    //console.log("DOWNLOAD ITEM", s);
-                    return createSourceLinks(s);
-                }));
-            items.push(...sourceItems);
-
-            const assistantMsgs = allMessages
-                .filter(
-                    (m) =>
-                        m.sender === "assistant" &&
-                        m.timestamp.getTime() !== 0 &&
-                        (m.metadata?.turn_id ? m.metadata?.turn_id === tid : m.timestamp.getTime() >= startT && m.timestamp.getTime() < endT)
-                )
-                .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
-            assistantMsgs.forEach((m) => items.push(toItem(m)));
-        });
-
-        const firstUserTime = userMsgs[0]?.timestamp.getTime() ?? Number.POSITIVE_INFINITY;
-        const strayStepItems = steps
-            .filter((s) => s.timestamp.getTime() < firstUserTime && !s.turn_id)
-            .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-            .map(createAssistantChatStep);
-        items.push(...strayStepItems);
-
-        const strayAssistants = allMessages
-            .filter((m) => m.sender === "assistant" && m.timestamp.getTime() > 0 && !m.metadata?.turn_id && m.timestamp.getTime() < firstUserTime)
-            .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
-            .map(toItem);
-        items.push(...strayAssistants);
-
+        thinkingItems.forEach((s) => {addItem(s)})
         return items;
-    }, [messages, currentSteps, thinkingItems]);
+    }, [messages, currentSteps, thinkingItems])
 
-    /* ===== UI chrome ===== */
-
-    const renderFullHeader = () => {
+        const renderFullHeader = () => {
         return (
             <div className="bg-white border-b border-gray-200 px-6 py-4">
                 <div className="flex items-center justify-between">
@@ -1096,6 +1043,8 @@ const SingleChatApp: React.FC = () => {
 
         return () => window.removeEventListener('resize', handleResize);
     }, []);
+
+
 
     const chatContextValue: ChatInterfaceContextValue = {
         chatLogItems: chatLogItems,

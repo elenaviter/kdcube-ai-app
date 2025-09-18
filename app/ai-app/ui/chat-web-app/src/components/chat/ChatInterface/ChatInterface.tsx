@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // ChatInterface.tsx
 import {
     AlertCircle,
@@ -5,30 +10,45 @@ import {
     ChevronDown,
     ChevronUp,
     Circle,
-    CircleChevronUp,
     CirclePlus,
     ClipboardCopy,
     Database,
-    File,
-    FileText,
+    FileText, LinkIcon,
+    List,
     Loader,
+    MessageCircleMore,
     MessageSquare,
     Play,
-    Search, Send,
+    ScrollText,
+    Search,
+    Send,
     User,
     X,
     Zap,
 } from "lucide-react";
-import React, {createContext, CSSProperties, Fragment, useContext, useEffect, useMemo, useRef, useState} from "react";
+import React, {
+    createContext,
+    CSSProperties, Fragment,
+    ReactNode,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useRef,
+    useState
+} from "react";
 
 import ReactMarkdown from "react-markdown";
 
 import {
+    AssistantChatMessage,
     AssistantChatStep,
     AssistantThinkingItem,
     ChatLogItem,
     ChatMessage,
     DownloadItem,
+    SourceLinks,
+    StepDerivedItem,
     UserChatMessage
 } from "../types/chat.ts";
 import {Hint} from "../../Hints.tsx";
@@ -79,13 +99,13 @@ const getStepIcon = (step: AssistantChatStep, iconSize = 14, className = "m-auto
 const getStepColor = (step: AssistantChatStep): string => {
     switch (step.status) {
         case "completed":
-            return "text-green-600 ";
+            return "text-green-800 ";
         case "started":
-            return "text-blue-600";
+            return "text-blue-800";
         case "error":
-            return "text-red-600";
+            return "text-red-800";
         default:
-            return "text-gray-600";
+            return "text-gray-800";
     }
 };
 
@@ -100,13 +120,14 @@ const formatSeconds = (sec: number): string => {
 
 const DownloadItemsPanel = ({items, onClick}: { items: DownloadItem[], onClick?: (item: DownloadItem) => void; }) => {
     if (!items || !items.length) return null;
+
     return (
-        <div className="flex justify-start">
+        <div className="flex justify-start mt-2">
             <div className="w-full flex flex-row flex-wrap">
                 {items.map((item, index) => (
                     <div key={index}>
                         <button
-                            className="m-2 text-gray-700 flex items-center text-sm cursor-pointer hover:text-black hover:underline"
+                            className="my-1 mr-2 text-gray-700 flex items-center text-sm cursor-pointer hover:text-black hover:underline"
                             onClick={() => onClick && onClick(item)}>
                             <span className="inline-block mr-1">{getFileIcon(item.filename, 24, item.mimeType)}</span>
                             <span className="inline-block">{item.filename}</span>
@@ -118,86 +139,17 @@ const DownloadItemsPanel = ({items, onClick}: { items: DownloadItem[], onClick?:
     )
 }
 
-/* ---------- child component to keep hooks outside loops ---------- */
-const StepItem: React.FC<{
-    step: AssistantChatStep;
-    isLast: boolean;
-    defaultExpanded: boolean;
-}> = ({step, isLast, defaultExpanded}) => {
-    const [isExpanded, setIsExpanded] = useState(defaultExpanded);
-    useEffect(() => setIsExpanded(defaultExpanded), [defaultExpanded]);
+const ThinkingItem = ({item}: { item: AssistantThinkingItem }) => {
+    const [expanded, setExpanded] = useState<boolean>(false)
+    const onExpandThinkingItemClick = () => {
+        setExpanded(!expanded)
+    }
 
-    const markdown = step.getMarkdown();
-
-    return (
-        <Fragment>
-            <div className={`flex flex-row text-sm ${getStepColor(step)}`}>
-                <div className="flex w-6 h-6">{getStepIcon(step)}</div>
-                <span className="my-auto font-bold">{getStepName(step)}</span>
-                {markdown && (
-                    <div className="flex w-4 h-6 cursor-pointer" onClick={() => setIsExpanded(v => !v)}>
-                        {isExpanded ? <ChevronUp size={16} className="m-auto"/> :
-                            <ChevronDown size={16} className="m-auto"/>}
-                    </div>
-                )}
-                <div/>
-            </div>
-
-            <div className={`flex flex-row text-sm ${getStepColor(step)}`}>
-                <div className={`w-3 ml-3${isLast ? "" : " border-l-2 border-dotted"}`}/>
-                {markdown && isExpanded && (
-                    <div
-                        className="
-              mb-1 not-prose
-              leading-[1.4]
-              [&_*]:leading-[1.4]
-              [&_p]:my-1 [&_p:last-child]:mb-0
-              [&_ul]:my-1 [&_ol]:my-1
-              [&_li]:my-0.5
-              [&_blockquote]:my-1
-            "
-                    >
-                        <ReactMarkdown
-                            remarkPlugins={remarkPlugins}
-                            rehypePlugins={rehypePlugins as any}
-                            components={markdownComponentsTight}
-                            linkTarget="_blank"
-                            skipHtml={false}
-                        >
-                            {markdown}
-                        </ReactMarkdown>
-                    </div>
-                )}
-                {!isLast && <div className="h-2"/>}
-            </div>
-        </Fragment>
-    );
-};
-/** ---------- THINKING ITEM (per turn, rows per agent, markdown, show duration only after completed) ---------- */
-const ThinkingItem: React.FC<{ item: AssistantThinkingItem }> = ({item}) => {
-    const [open, setOpen] = useState(false); // collapsed by default
-    const toggle = () => setOpen(v => !v);
-    const onKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            toggle();
-        }
-    };
-
-    // keep the global header ticking while overall thinking is active
-    const [, setTick] = useState(0);
-    useEffect(() => {
-        if (!item.active) return;
-        const t = setInterval(() => setTick(v => (v + 1) % 1000), 500);
-        return () => clearInterval(t);
-    }, [item.active]);
-
-    const active = item.active !== false;
+    const active = item.active;
     const endedAt = item.endedAt;
     const endMs = active ? Date.now() : endedAt?.getTime() ?? Date.now();
     const durSec = Math.max(0, Math.round(((endMs - item.timestamp.getTime()) / 1000) * 10) / 10);
-
-    const agentKeys = useMemo(() => Object.keys(item.agents || {}), [item.agents]);
+    const agentKeys = Object.keys(item.agents || {})
 
     const getAgentSecondsIfCompleted = (agent: string): number | null => {
         const meta = item.agentTimes?.[agent];
@@ -207,49 +159,23 @@ const ThinkingItem: React.FC<{ item: AssistantThinkingItem }> = ({item}) => {
     };
 
     return (
-        <div className="w-full">
-            {/* tiny CSS for animated gradient text (scoped) */}
-            <style>{`
-        @keyframes sheen {
-          0% { background-position: 0% 50%; }
-          100% { background-position: 200% 50%; }
-        }
-        .thinking-animated {
-          background: linear-gradient(90deg, #9ca3af, #6b7280, #9ca3af);
-          background-size: 200% 100%;
-          -webkit-background-clip: text;
-          background-clip: text;
-          color: transparent;
-          animation: sheen 2s linear infinite;
-        }
-      `}</style>
-
-            <div
-                className={`flex items-center justify-between px-3 py-2 rounded-lg border border-gray-400 cursor-pointer select-none
-                    ${active ? "bg-gray-100" : "bg-gray-50"}`}
-                onClick={toggle}
-                onKeyDown={onKeyDown}
-                role="button"
-                tabIndex={0}
-                aria-expanded={open}
-                aria-controls={`thinking-body-${item.id}`}
-                title={open ? "Collapse" : "Expand"}
+        <div>
+            <button
+                className={`flex items-center justify-between px-3 py-2 cursor-pointer select-none`}
+                onClick={() => {
+                    onExpandThinkingItemClick()
+                }}
+                title={expanded ? "Collapse" : "Expand"}
             >
                 <div className="flex items-center gap-2">
-                    <span className={`text-sm font-medium ${active ? "thinking-animated" : "text-gray-700"}`}>
-                        {active ? "Thinking" : `Thought for ${formatSeconds(durSec)}`}
-                    </span>
+                        <span className={`text-sm font-medium ${active ? "thinking-animated" : "text-gray-700"}`}>
+                            {active ? "Thinking" : `Thought for ${formatSeconds(durSec)}`}
+                        </span>
                 </div>
-                <span className="text-gray-500">
-                    {open ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}
-                </span>
-            </div>
-
-            {open && (
-                <div
-                    id={`thinking-body-${item.id}`}
-                    className="px-3 py-2 text-xs text-slate-700 bg-gray-50 border border-t-0 border-gray-400 rounded-b-lg"
-                >
+                <span className="text-gray-500">{expanded ? <ChevronUp size={16}/> : <ChevronDown size={16}/>}</span>
+            </button>
+            {expanded && (
+                <div className="px-3 py-2 text-xs text-slate-700">
                     {agentKeys.length === 0 ? (
                         <div className="text-gray-500 italic">No thoughts yet…</div>
                     ) : (
@@ -257,28 +183,19 @@ const ThinkingItem: React.FC<{ item: AssistantThinkingItem }> = ({item}) => {
                             {agentKeys.map((agent) => {
                                 const secs = getAgentSecondsIfCompleted(agent);
                                 return (
-                                    <div key={agent} className="rounded-md border border-gray-400 bg-white">
+                                    <div key={agent}>
                                         <div
-                                            className="px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-gray-600 bg-gray-100 rounded-t-md flex items-center justify-between">
+                                            className="px-2 py-1 font-medium uppercase tracking-wide text-gray-600 rounded-t-md flex items-center justify-between">
                                             <span>{agent || "agent"}</span>
                                             {/* Only show when completed */}
                                             {secs != null ? (
-                                                <span className="text-[10px] text-gray-500">{formatSeconds(secs)}</span>
+                                                <span className="text-gray-500">{formatSeconds(secs)}</span>
                                             ) : null}
                                         </div>
-                                        <div
-                                            className="
-    px-3 py-2 text-[12px] not-prose
-    leading-[1.4] [&_*]:leading-[1.4]
-    [&_p]:my-1 [&_p:last-child]:mb-0
-    [&_ul]:my-1 [&_ol]:my-1
-    [&_li]:my-0.5
-    [&_blockquote]:my-1
-  "
-                                        >
+                                        <div>
                                             <ReactMarkdown
                                                 remarkPlugins={remarkPlugins}
-                                                rehypePlugins={rehypePlugins as any}
+                                                rehypePlugins={rehypePlugins}
                                                 components={markdownComponentsTight}
                                                 linkTarget="_blank"
                                                 skipHtml={false}
@@ -294,39 +211,273 @@ const ThinkingItem: React.FC<{ item: AssistantThinkingItem }> = ({item}) => {
                 </div>
             )}
         </div>
+    )
+}
+
+const SunkenButton = (
+    {children, onClick, pressed = false, disabled = false, className = ""}:
+    { children: ReactNode, onClick?: () => unknown, pressed?: boolean, disabled?: boolean, className?: string }
+) => {
+    return (
+        <button
+            onClick={() => {
+                onClick?.();
+            }}
+            disabled={disabled}
+            className={`p-1 transition-all duration-150 border-1 border-gray-200 ${disabled ? "text-gray-300" : "hover:bg-slate-200 cursor-pointer"}  ${pressed ? '' : 'hover:bg-gray-50'} ${className}`}
+            style={{
+                boxShadow: pressed
+                    ? 'inset 3px 3px 6px rgba(0,0,0,0.2), inset -3px -3px 6px rgba(255,255,255,0.8)'
+                    : ''
+            }}
+        >
+            {children}
+        </button>
     );
 };
 
+const UserMessage = ({message}: { message: UserChatMessage }) => {
+    return (
+        <div key={message.id} className="flex justify-end">
+            <div className="flex flex-row p-3 rounded-2xl bg-gray-200 text-black">
+                <div className="flex flex-col">
+                    {(message as UserChatMessage).attachments && (<div className="flex flex-row gap-1 flex-wrap">
+                        {(message as UserChatMessage).attachments?.map((attachment: File) => (
+                            <div
+                                className="flex items-center border-2 px-2 py-1 rounded-xl border-gray-300 bg-gray-100">{getFileIcon(attachment.name, 18, undefined, "mr-1")}{attachment.name}</div>
+                        ))}
+                    </div>)}
+                    {message.text &&
+                        <p className="text-sm leading-relaxed whitespace-pre-wrap pt-1">{message.text}</p>}
+                </div>
+                <div
+                    className="w-8 h-8 rounded-full bg-gray-300 ml-3 flex items-center justify-center flex-shrink-0">
+                    <User size={16} className="text-gray-600"/>
+                </div>
+            </div>
+        </div>
+    )
+}
+
+type AssistantMessageTab = "message" | "sources" | "steps"
+
 const AssistantMessage = (
-    {message, showMetadata}:
+    {message, items, onDownloadItemClick, processing = false, showMetadata = false}:
     {
-        message: ChatMessage,
-        showMetadata: boolean,
+        message?: AssistantChatMessage,
+        items?: ChatLogItem[],
+        onDownloadItemClick?: (item: DownloadItem) => void
+        processing?: boolean,
+        showMetadata?: boolean,
     }
 ) => {
     const mdRed = useRef<HTMLDivElement>(null);
-    const copyClick = () => {
-        copyMarkdownToClipboard(message.text, mdRed.current?.innerHTML);
+
+    const [tab, setTab] = useState<AssistantMessageTab>("message")
+    const isPressed = (tabName: AssistantMessageTab) => tab === tabName
+
+    const files = useMemo(() => {
+        return items?.filter(item => item instanceof DownloadItem) || []
+    }, [items])
+
+    const sources = useMemo(() => {
+        return items?.filter(item => item instanceof SourceLinks) || []
+    }, [items])
+
+    const steps = useMemo(() => {
+        return items?.filter(item => item instanceof AssistantChatStep).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()) || []
+    }, [items])
+
+    const thinkingItems = useMemo(() => {
+        return items?.filter(item => item instanceof AssistantThinkingItem).sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime()) || []
+    }, [items])
+
+    const renderMessage = useCallback(() => {
+        if (!message) return null
+
+        const copyClick = () => {
+            if (message)
+                copyMarkdownToClipboard(message.text, mdRed.current?.innerHTML).catch((err) => {
+                    console.error("Could not copy message", err);
+                });
+        }
+
+        return (<div className="pb-1">
+            <DownloadItemsPanel items={files} onClick={onDownloadItemClick}/>
+            <ReactMarkdown
+                remarkPlugins={remarkPlugins}
+                rehypePlugins={rehypePlugins}
+                components={markdownComponents}
+                linkTarget="_blank"
+                skipHtml={false}
+            >
+                {message.text}
+            </ReactMarkdown>
+            <div
+                className="flex flex-row space-x-2 w-full justify-start transition-all duration-300 ease-out"
+            >
+                <Hint content="Copied" trigger="click" autohideDelay={2000} className={"text-nowrap"}>
+                    <Hint content="Copy to clipboard">
+                        <button className="cursor-pointer" onClick={copyClick}>
+                            <ClipboardCopy size={16} className="text-gray-400 hover:text-gray-600"/>
+                        </button>
+                    </Hint>
+                </Hint>
+            </div>
+
+        </div>)
+    }, [message, files])
+
+    const [expandedSteps, setExpandedSteps] = useState<Map<number, boolean>>(new Map())
+
+    const onExpandStepClick = (i: number) => {
+        setExpandedSteps((prevState) => {
+            const state = new Map(prevState)
+            if (state.has(i)) {
+                state.set(i, !state.get(i));
+            } else {
+                state.set(i, true);
+            }
+            return state
+        })
     }
 
+
+    const renderSteps = useCallback(() => {
+        return (
+            <div className="flex flex-col my-2">
+                {steps?.map((step, i, arr) => {
+                        const markdown = step.getMarkdown()
+                        const isExpanded = expandedSteps.has(i) ?
+                            expandedSteps.get(i) : (i === arr.length - 1 && step.status !== 'completed') || step.status === 'error'
+                        return (
+                            <div key={i}>
+                                <div className={`flex flex-row text-sm ${getStepColor(step)}`}>
+                                    <div className="flex w-6 h-6">{getStepIcon(step)}</div>
+                                    <span className="my-auto font-bold">{getStepName(step)}</span>
+                                    {markdown && (
+                                        <button className="flex w-4 h-6 cursor-pointer"
+                                                onClick={() => onExpandStepClick(i)}>
+                                            {isExpanded ? <ChevronUp size={16} className="m-auto"/> :
+                                                <ChevronDown size={16} className="m-auto"/>}
+                                        </button>
+                                    )}
+                                    <div/>
+                                </div>
+                                {isExpanded && markdown && (
+                                    <div className="ml-5 transition-all duration-300 ease-out overflow-x-hidden">
+                                        <ReactMarkdown
+                                            remarkPlugins={remarkPlugins}
+                                            rehypePlugins={rehypePlugins as any}
+                                            components={markdownComponentsTight}
+                                            linkTarget="_blank"
+                                            skipHtml={false}
+                                        >
+                                            {markdown}
+                                        </ReactMarkdown>
+                                    </div>
+                                )}
+                            </div>
+                        )
+                    }
+                )}
+            </div>
+        )
+    }, [steps, expandedSteps])
+
+    const renderSources = useCallback(() => {
+        if (sources.length === 0) return null
+        const renderSource = (source: SourceLinks, key: React.Key) => {
+            return (
+                <Fragment key={`source_${key}`}>
+                    {source.links.map((link, i) => {
+                        return (
+                            <a key={`source_link_${key}_${i}`} href={link.url} target="_blank" className="p-0.5 flex-1 rounded-sm border-1 border-gray-200 text-gray-800 cursor-pointer">
+                                <div className="w-full p-1 flex flex-row items-center">
+                                    <LinkIcon size={28} className="mx-2"/>
+                                    <div className="flex-1 min-w-0 hover:underline">
+                                        <h1 className="font-bold truncate max-w-[95%]">{link.title || link.url}</h1>
+                                        <h2 className="truncate max-w-[95%]">{link.url}</h2>
+                                    </div>
+                                </div>
+                            </a>
+                        )
+                    })}
+                </Fragment>
+            )
+        }
+        return (<div className="flex flex-col my-2 space-y-2">
+            {sources.map(renderSource)}
+        </div>)
+    }, [sources])
+
+    const renderItems = () => {
+        switch (tab) {
+            case "message":
+                return renderMessage()
+            case "steps":
+                return renderSteps()
+            case "sources":
+                return renderSources()
+            default:
+                return "Unknown tab"
+        }
+    }
+
+    const renderThinkingItems = useCallback(() => {
+        if (thinkingItems.length === 0) {
+            return null
+        }
+
+        return (
+            <div
+                className="flex flex-col rounded-lg mb-2 border border-gray-200 [&>div:not(:last-child)]:border-b [&>div:not(:last-child)]:border-gray-200">
+                {thinkingItems.map((item, i) => {
+                        return (
+                            <ThinkingItem key={`thinking-item-${i}`} item={item}/>
+                        )
+                    }
+                )}
+            </div>
+        )
+    }, [thinkingItems])
+
     return (
-        <div key={message.id} className="flex justify-start">
+        <div key={message?.id || "nomessage"} className="flex justify-start">
+
             <div className="flex flex-col w-full">
                 <div
-                    className={`px-3 pt-2 ${message.isError ? "text-red-800" : "text-gray-800"} prose max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2`}
+                    className={`px-3 pt-2 ${message?.isError ? "text-red-800" : "text-gray-800"} max-w-none`}
                     ref={mdRed}>
-                    <ReactMarkdown
-                        remarkPlugins={remarkPlugins}
-                        rehypePlugins={rehypePlugins}
-                        components={markdownComponents}
-                        linkTarget="_blank"
-                        skipHtml={false}
-                    >
-                        {message.text}
-                    </ReactMarkdown>
+                    {!message?.isGreeting && (<div
+                        className="flex flex-row w-full [&_button:first-child]:rounded-l-md [&_button:last-child]:rounded-r-md">
+                        <SunkenButton pressed={isPressed("message")} onClick={() => setTab("message")}>
+                            <div className="inline-flex items-center mr-1">{
+                                processing ?
+                                    <Loader size={14} className="animate-spin mr-2"/> :
+                                    <MessageCircleMore size={18} className="mx-0.5"/>}
+                                Message
+                            </div>
+                        </SunkenButton>
+                        <SunkenButton pressed={isPressed("steps")} disabled={steps.length < 1}
+                                      onClick={() => setTab("steps")}>
+                            <div className="inline-flex items-center mr-1"><List size={18}
+                                                                                 className="mx-0.5"/>Steps{steps.length > 0 ? ` (${steps.length})` : ""}
+                            </div>
+                        </SunkenButton>
+                        <SunkenButton pressed={isPressed("sources")} disabled={sources.length < 1}
+                                      onClick={() => setTab("sources")}>
+                            <div className="inline-flex items-center mr-1"><ScrollText size={18}
+                                                                                       className="mx-0.5"/>
+                                Sources{sources.length > 0 ? ` (${sources.reduce((previousValue, currentValue) => {return previousValue + currentValue.links.length}, 0)})` : ""}
+                            </div>
+                        </SunkenButton>
+                    </div>)}
+                    {renderItems()}
+                    {renderThinkingItems()}
                 </div>
 
-                {showMetadata && message.metadata && (
+                {showMetadata && message?.metadata && (
                     <div className="mt-2 text-xs text-gray-500 space-y-1">
                         {message.metadata.is_our_domain !== undefined && (
                             <div className="flex items-center">
@@ -348,18 +499,6 @@ const AssistantMessage = (
                         )}
                     </div>
                 )}
-
-                <div
-                    className="flex flex-row space-x-2 w-full justify-start transition-all duration-300 ease-out pl-3 pb-3"
-                >
-                    <Hint content="Copied" trigger="click" autohideDelay={2000} className={"text-nowrap"}>
-                        <Hint content="Copy to clipboard">
-                            <button className="cursor-pointer" onClick={copyClick}>
-                                <ClipboardCopy size={16} className="mt-0.5 text-gray-400 hover:text-gray-600"/>
-                            </button>
-                        </Hint>
-                    </Hint>
-                </div>
             </div>
         </div>
     )
@@ -447,123 +586,128 @@ const ChatInterface = ({
     const sendMessage = (message?: string) => {
         message = message || userInput.trim();
         if (!message && userInputFiles.length < 1) return;
-        onSendMessage(message, userInputFiles).then(() => {
+        onSendMessage?.(message, userInputFiles).then(() => {
             setUserInput("")
             setUserInputFiles([])
         });
     };
 
-    const renderMessage = (message: ChatMessage) => {
-        const isUserMessage = message instanceof UserChatMessage;
-
-        const renderUserMessage = () => (
-            <div key={message.id} className="flex justify-end">
-                <div className="flex flex-row p-3 rounded-2xl bg-gray-200 text-black">
-                    <div className="flex flex-col">
-                        {(message as UserChatMessage).attachments && (<div className="flex flex-row gap-1 flex-wrap">
-                            {(message as UserChatMessage).attachments?.map((attachment: File) => (
-                                <div
-                                    className="flex items-center border-2 px-2 py-1 rounded-xl border-gray-300 bg-gray-100">{getFileIcon(attachment.name, 18, undefined, "mr-1")}{attachment.name}</div>
-                            ))}
-                        </div>)}
-                        {message.text &&
-                            <p className="text-sm leading-relaxed whitespace-pre-wrap pt-1">{message.text}</p>}
-                    </div>
-                    <div
-                        className="w-8 h-8 rounded-full bg-gray-300 ml-3 flex items-center justify-center flex-shrink-0">
-                        <User size={16} className="text-gray-600"/>
-                    </div>
-                </div>
-            </div>
-        );
-
-        return isUserMessage ? renderUserMessage() :
-            <AssistantMessage message={message} showMetadata={showMetadata}/>;
-    };
-
-    const renderDownloadItem = (items: DownloadItem[], i: number) => {
-        return [<DownloadItemsPanel items={items} key={i} onClick={onDownloadItemClick}/>]
+    const getTurnIdFromChatLogItem = (item: ChatLogItem) => {
+        if (item instanceof ChatMessage) {
+            return item.metadata?.turn_id
+        } else if (item instanceof AssistantThinkingItem) {
+            return item.turn_id
+        } else if (item instanceof StepDerivedItem) {
+            return item.turnId
+        } else if (item instanceof AssistantChatStep) {
+            return item.turn_id
+        }
+        return null;
     }
 
-    const renderChatMessageGroup = (messageGroup: ChatMessage[]) => messageGroup.map(renderMessage);
+    const turnGroups = useMemo(() => {
+        return chatLogItems?.reduce((acc, item) => {
+            const turnId = getTurnIdFromChatLogItem(item);
 
-    const renderAssistantChatStepGroup = (messageGroup: AssistantChatStep[], groupIndex: number) => {
-        return [
-            <div key={`chat-log-item-group-${groupIndex}`} className="flex flex-col pl-2">
-                {messageGroup.map((v, i) => (
-                    <StepItem
-                        key={`${groupIndex}-${i}-${v.step}`}
-                        step={v}
-                        isLast={i === messageGroup.length - 1}
-                        defaultExpanded={i === messageGroup.length - 1}
-                    />
-                ))}
-            </div>,
-        ];
-    };
+            if (turnId) {
+                if (acc.has(turnId)) {
+                    acc.get(turnId)?.push(item);
+                } else {
+                    acc.set(turnId, [item]);
+                }
+            } else {
 
-    const renderAssistantThinkingGroup = (group: AssistantThinkingItem[], groupIndex: number) => {
-        return [
-            <div key={`thinking-group-${groupIndex}`} className="flex flex-col">
-                {group.map((it, i) => (
-                    <ThinkingItem key={`thinking-${groupIndex}-${i}-${it.id}`} item={it}/>
-                ))}
-            </div>,
-        ];
-    };
-
-    const renderChatLogItems = (items: ChatLogItem[]) => {
-        // group consecutive items of same type
-        const groups: ChatLogItem[][] = [];
-        let currentType: any;
-        let group: ChatLogItem[] = [];
-        for (const item of items) {
-            if (!currentType || !(item instanceof currentType)) {
-                if (group.length) groups.push(group);
-                group = [];
-                currentType = item.constructor;
+                console.warn("Item has no turnId. Skipping", item);
             }
-            group.push(item);
-        }
-        if (group.length) groups.push(group);
+            return acc
+        }, new Map<string, ChatLogItem[]>()) || new Map<string, ChatLogItem[]>()
+    }, [chatLogItems])
 
-        const out: React.ReactNode[] = [];
-        groups.forEach((g, i) => {
-            if (g[0] instanceof ChatMessage) out.push(...renderChatMessageGroup(g as ChatMessage[]));
-            else if (g[0] instanceof AssistantChatStep) out.push(...renderAssistantChatStepGroup(g as AssistantChatStep[], i));
-            else if (g[0] instanceof AssistantThinkingItem) out.push(...renderAssistantThinkingGroup(g as AssistantThinkingItem[], i));
-            else if (g[0] instanceof DownloadItem) out.push(...renderDownloadItem(g as DownloadItem[], i));
-        });
-        return out;
-    };
+    const turnOrder = useMemo(() => {
+        return chatLogItems?.filter((item) => {
+            return item instanceof ChatMessage
+        }).sort((a, b) => {
+            return a.timestamp.getTime() - b.timestamp.getTime()
+        }).reduce((acc, item) => {
+            const turnId = getTurnIdFromChatLogItem(item);
+            if (turnId && !acc.includes(turnId)) {
+                acc.push(turnId);
+            }
+            return acc;
+        }, [] as string[]) || []
+    }, [chatLogItems]);
+
+    const renderTurnGroup = (groupId: string) => {
+        const items = turnGroups.get(groupId) || [];
+        if (!items)
+            return null;
+        const messages = []
+        const assistantMessages: AssistantChatMessage[] = []
+        const assistantItems = []
+        for (const item of items) {
+            if (item instanceof ChatMessage) {
+                messages.push(item);
+                if (item instanceof AssistantChatMessage)
+                    assistantMessages.push(item);
+            } else {
+                assistantItems.push(item);
+            }
+        }
+
+        const children = []
+        for (const message of messages) {
+            if (message instanceof UserChatMessage) {
+                children.push(<UserMessage key={message.id} message={message}/>)
+            } else if (message instanceof AssistantChatMessage) {
+                const msgIndex = assistantMessages.indexOf(message);
+                const startTime = msgIndex > 0 ? assistantMessages[msgIndex - 1].timestamp.getTime() : 0;
+                const stopTime = message.timestamp.getTime();
+                const msgItems = assistantItems.filter((item) => {
+                    const time = item.timestamp.getTime();
+                    return time >= startTime && time <= stopTime;
+                })
+                children.push(<AssistantMessage key={message.id} message={message} showMetadata={false}
+                                                items={msgItems} onDownloadItemClick={onDownloadItemClick}/>)
+            }
+        }
+
+        if (assistantMessages.length == 0) {
+            children.push(<AssistantMessage showMetadata={false} items={assistantItems}/>)
+        }
+
+        return (
+            <div key={`group-${groupId}`}>
+                {children}
+            </div>
+        )
+    }
+
+    const renderChatLogItems = () => {
+        return (
+            <>
+                {turnOrder.map((groupId) => renderTurnGroup(groupId))}
+            </>
+        )
+    }
 
     const renderFollowUpQuestions = () => {
         const disabled = !userInputEnabled || isProcessing;
-        const stateClass = disabled ? "cursor-auto text-gray-400" : "cursor-pointer hover:border-gray-400 hover:bg-slate-400"
         if (!isProcessing && followUpQuestion) {
             return (
-                <div className="flex flex-row items-start w-full flex-wrap space-x-1 space-y-4">
+                <div className="flex flex-row items-start w-full flex-wrap space-x-1 space-y-1 pl-3">
                     {followUpQuestion.map((q, i) => {
-                        return (<button key={`follow-up-question-${i}`} onClick={() => {
-                            sendMessage(q)
-                        }} disabled={disabled}>
-                            <span
-                                className={`text-nowrap rounded-2xl p-2 border border-gray-400 bg-slate-100  ${stateClass}`}>{q}</span>
+                        return (<button key={`follow-up-question-${i}`}
+                                        className="px-3 py-1 text-xs bg-white text-gray-700 border border-gray-200 rounded-full hover:bg-gray-50 hover:border-gray-300 disabled:opacity-50"
+                                        onClick={() => {
+                                            sendMessage(q)
+                                        }} disabled={disabled}>
+                            {q}
                         </button>)
                     })}
                 </div>
             )
         }
         return null
-    }
-
-    const renderProcessing = () => {
-        return isProcessing ? (
-            <div className="flex items-center text-gray-500 text-xs mt-2">
-                <Loader size={14} className="animate-spin mr-2"/>
-                <span>Working…</span>
-            </div>
-        ) : null
     }
 
     const renderChatLog = () => {
@@ -580,9 +724,10 @@ const ChatInterface = ({
                     ref={logContainerRef}
                     onScroll={onScroll}
                 >
-                    <div className="border-r border-l border-gray-200 mx-auto min-h-full bg-slate-50" style={elementStyle}>
-                        <div className="px-10 py-4" >
-                            {renderChatLogItems(chatLogItems)}
+                    <div className="border-r border-l border-gray-200 mx-auto min-h-full bg-slate-50"
+                         style={elementStyle}>
+                        <div className="px-10 py-4">
+                            {renderChatLogItems()}
                             {renderProcessing()}
                             {renderFollowUpQuestions()}
                         </div>
@@ -593,6 +738,15 @@ const ChatInterface = ({
             </div>
         )
     };
+
+    const renderProcessing = () => {
+        return isProcessing ? (
+            <div className="flex items-center text-gray-500 mt-2 ml-4">
+                <Loader size={16} className="animate-spin mr-2"/>
+                <span>Working…</span>
+            </div>
+        ) : null
+    }
 
     const renderUserInput = () => {
         const inputDisabled = !userInputEnabled || isLocked;
@@ -644,7 +798,6 @@ const ChatInterface = ({
                                     value={userInput}
                                     onChange={(e) => setUserInput(e.target.value)}
                                     onKeyDown={(e) => {
-                                        console.log(e.key, userInputEnabled)
                                         if (userInputEnabled && e.key === "Enter" && !e.shiftKey) {
                                             e.preventDefault();
                                             sendMessage();

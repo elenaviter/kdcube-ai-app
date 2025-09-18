@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 // ChatService.ts
 import {Manager, Socket} from "socket.io-client";
 import {getChatBaseAddress} from "../../AppConfig.ts";

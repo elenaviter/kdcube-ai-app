@@ -1,3 +1,8 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2025 Elena Viter
+ */
+
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import rehypeSanitize, {defaultSchema} from "rehype-sanitize";
@@ -6,6 +11,7 @@ import remarkBreaks from "remark-breaks";
 import rehypeRaw from "rehype-raw";
 import MermaidDiagram from "../../MermaidDiagram.tsx";
 import 'highlight.js/styles/a11y-light.min.css'
+import {PluggableList} from "react-markdown/lib/react-markdown";
 
 const mdSanitizeSchema = {
     ...defaultSchema,
@@ -35,13 +41,13 @@ const mdSanitizeSchema = {
     },
 };
 
-export const remarkPlugins = [remarkGfm, remarkBreaks /*, remarkMath*/];
+export const remarkPlugins = [remarkGfm, remarkBreaks /*, remarkMath*/] as PluggableList;
 export const rehypePlugins = [
     rehypeRaw,
     [rehypeSanitize, mdSanitizeSchema],
     rehypeHighlight,
     /* rehypeKatex */
-] as any;
+] as PluggableList;
 
 const codeRender = ({inline, className, children, ...props}) => {
     const languageName = /language-(\w+)/.exec(className || '')?.[1];
