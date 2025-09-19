@@ -244,6 +244,9 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, 'health_checker'):
         await app.state.health_checker.stop_monitoring()
 
+    if hasattr(app.state, 'pg_pool'):
+        await app.state.pg_pool.close()
+
     logger.info("Chat service stopped")
 
 

@@ -11,6 +11,15 @@ def _superscript_num(n: int) -> str:
     _map = {"0":"⁰","1":"¹","2":"²","3":"³","4":"⁴","5":"⁵","6":"⁶","7":"⁷","8":"⁸","9":"⁹"}
     return "".join(_map.get(ch, ch) for ch in str(n))
 
+def _is_image_url(url: str) -> bool:
+    """Check if URL points to an image based on extension"""
+    if not url:
+        return False
+    image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.tiff'}
+    # Remove query parameters and check extension
+    clean_url = url.split('?')[0].lower()
+    return any(clean_url.endswith(ext) for ext in image_extensions)
+
 def build_citation_map(citations: List[Dict]) -> Dict[int, Dict]:
     """Build citation map from sr.citations() format"""
     by_id = {}
@@ -65,13 +74,18 @@ def _normalize_sources(sources_json: Optional[str]) -> tuple[dict[int, dict], li
                 order.append(sid)
     return by_id, order
 
-def _replace_citation_tokens(md: str, by_id: dict[int, dict]) -> str:
+def _replace_citation_tokens(md: str, by_id: dict[int, dict], embed_images: bool = True) -> str:
     """
     Replace [[S:1]] or [[S:1,4]] or [[S:1-15]] with inline links:
       [[S:3]] -> [³](https://example "Title")
       [[S:1,4]] -> [¹](url1 "Title1") [⁴](url4 "Title4")
       [[S:1-15]] -> [¹](url1 "Title1") [²](url2 "Title2") ... [¹⁵](url15 "Title15")
+    Can embed images or create links
     Unknown ids are dropped from the replacement; if none are known, the token is removed.
+    Args:
+        md: Markdown content with [[S:n]] tokens
+        by_id: Citation map {id: {url, title, text}}
+        embed_images: If True, convert image URLs to embedded images instead of links
     """
     if not by_id:
         return md
@@ -98,20 +112,119 @@ def _replace_citation_tokens(md: str, by_id: dict[int, dict]) -> str:
             elif part.isdigit():
                 ids.append(int(part))
 
-        pieces = []
-        for i in ids:
-            meta = by_id.get(i)
-            if not meta:
-                continue
-            url = meta.get("url") or meta.get("href")
-            title = (meta.get("title") or url or "").replace('"', "'")
-            if not url:
-                continue
-            sup = _superscript_num(i)
-            pieces.append(f"[{sup}]({url} \"{title}\")")
-        return " " + " ".join(pieces) if pieces else ""
+        # Only use the FIRST citation number from the group
+        if ids:
+            first_id = ids[0]  # Take only the first ID
+            meta = by_id.get(first_id)
+            if meta:
+                url = meta.get("url") or meta.get("href", "")
+                title = (meta.get("title") or meta.get("text", "") or url or "").replace('"', "'")
+
+                if url:
+                    if embed_images and _is_image_url(url):
+                        # Embed as image with caption
+                        alt_text = title[:100] + "..." if len(title) > 100 else title
+                        return f"\n\n![{alt_text}]({url})\n*Source {first_id}: {title}*\n"
+                    else:
+                        # Regular link with superscript
+                        sup = _superscript_num(first_id)
+                        return f"[{sup}]({url} \"{title}\")"
+
+        return ""
 
     return pat.sub(_one, md)
+
+# def _replace_citation_tokens(md: str, by_id: dict[int, dict], embed_images: bool = True) -> str:
+#     """
+#     Replace [[S:1]] or [[S:1,4]] or [[S:1-15]] with inline links:
+#       [[S:3]] -> [³](https://example "Title")
+#       [[S:1,4]] -> [¹](url1 "Title1") [⁴](url4 "Title4")
+#       [[S:1-15]] -> [¹](url1 "Title1") [²](url2 "Title2") ... [¹⁵](url15 "Title15")
+#     Can embed images or create links
+#     Unknown ids are dropped from the replacement; if none are known, the token is removed.
+#     Args:
+#         md: Markdown content with [[S:n]] tokens
+#         by_id: Citation map {id: {url, title, text}}
+#         embed_images: If True, convert image URLs to embedded images instead of links
+#     """
+#     if not by_id:
+#         return md
+#
+#     pat = re.compile(r"\[\[S:([0-9,\s\-]+)]]")
+#
+#     def _one(m: re.Match) -> str:
+#         ids_str = m.group(1)
+#         ids = []
+#
+#         # Handle both comma-separated and ranges
+#         parts = ids_str.split(",")
+#         for part in parts:
+#             part = part.strip()
+#             if "-" in part:
+#                 # Handle range like "1-15"
+#                 try:
+#                     start, end = part.split("-", 1)
+#                     start_num = int(start.strip())
+#                     end_num = int(end.strip())
+#                     ids.extend(range(start_num, end_num + 1))
+#                 except ValueError:
+#                     continue
+#             elif part.isdigit():
+#                 ids.append(int(part))
+#
+#         pieces = []
+#         for i in ids:
+#             meta = by_id.get(i)
+#             if not meta:
+#                 continue
+#
+#             url = meta.get("url") or meta.get("href", "")
+#             title = (meta.get("title") or meta.get("text", "") or url or "").replace('"', "'")
+#
+#             if not url:
+#                 continue
+#
+#             if embed_images and _is_image_url(url):
+#                 # Embed as image with caption
+#                 alt_text = title[:100] + "..." if len(title) > 100 else title
+#                 pieces.append(f"\n\n![{alt_text}]({url})\n*Source {i}: {title}*\n")
+#             else:
+#                 # Regular link with superscript
+#                 sup = _superscript_num(i)
+#                 pieces.append(f"[{sup}]({url} \"{title}\")")
+#
+#         return " ".join(pieces) if pieces else ""
+#
+#     return pat.sub(_one, md)
+
+def _create_clean_sources_section(by_id: dict[int, dict], order: list[int]) -> str:
+    """
+    Create a much cleaner sources section with better formatting
+    """
+    if not by_id or not order:
+        return ""
+
+    lines = ["", "---", "", "## References", ""]
+
+    for sid in order:
+        meta = by_id.get(sid) or {}
+        url = meta.get("url") or meta.get("href") or ""
+        title = meta.get("title") or ""
+
+        if not url:
+            continue
+
+        # Clean up title
+        if not title or title == url:
+            title = f"Source {sid}"
+
+        # Truncate very long titles
+        if len(title) > 80:
+            title = title[:77] + "..."
+
+        lines.append(f"{sid}. [{title}]({url})")
+
+    return "\n" + "\n".join(lines) + "\n"
 
 def _append_sources_section(md: str, by_id: dict[int, dict], order: list[int]) -> str:
     """

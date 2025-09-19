@@ -58,42 +58,47 @@ except Exception:
     async_playwright = None  # We'll error with a clear message later.
 
 def _use_anchors_compat(md: MarkdownIt) -> None:
-    """Apply anchors_plugin with args compatible across mdit-py-plugins versions."""
+    """Apply anchors_plugin with args compatible across mdit-py-plugins versions - NO PARAGRAPH SYMBOLS."""
     for opts in (
-            dict(permalink=True, permalink_symbol="¶", permalink_space=False),  # snake_case
-            dict(permalink=True, permalinkSymbol="¶", permalinkSpace=False),    # camelCase
-            dict(permalink=True),                                               # minimal
+            dict(permalink=False),                                              # Disable permalinks entirely
+            dict(permalink=True, permalink_symbol="", permalink_space=False),   # Empty symbol (snake_case)
+            dict(permalink=True, permalinkSymbol="", permalinkSpace=False),     # Empty symbol (camelCase)
+            dict(permalink=True),                                               # Minimal fallback
     ):
         try:
             md.use(anchors_plugin, **opts)
             return
         except TypeError:
             continue
-    md.use(anchors_plugin)
-
+    # Final fallback - try without any options
+    try:
+        md.use(anchors_plugin)
+    except Exception:
+        # If anchors plugin fails entirely, skip it
+        pass
 # -----------------------------
 # Defaults / Templates / CSS
 # -----------------------------
 
 _DEFAULT_CSS = """
 @page { size: A4; margin: 16mm; }
-html, body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji"; font-size: 11pt; line-height: 1.55; color: #111; }
+html, body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji"; font-size: 11pt; line-height: 1.55; color: #111; font-weight: normal; }
 main { max-width: 180mm; margin: 0 auto; }
 h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.2em 0 0.5em; font-weight: 700; }
 h1 { font-size: 1.9rem; border-bottom: 1px solid #e6e6e6; padding-bottom: 0.2em; }
 h2 { font-size: 1.5rem; margin-top: 1.6em; }
 h3 { font-size: 1.2rem; }
-p { margin: 0.7em 0; }
-a { color: #005bbb; text-decoration: none; }
+p { margin: 0.7em 0; font-weight: normal; }
+a { color: #005bbb; text-decoration: none; font-weight: normal; }
 a:hover { text-decoration: underline; }
 ul, ol { margin: 0.6em 0 0.6em 1.4em; }
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
 pre { padding: 0.8em; overflow: auto; border-radius: 8px; background: #f6f8fa; border: 1px solid #eee; }
 code { background: #f2f4f7; padding: 0.1em 0.3em; border-radius: 4px; }
-blockquote { border-left: 3px solid #ddd; margin: 0.8em 0; padding: 0.1em 1em; color: #555; background: #fafafa; }
+blockquote { border-left: 3px solid #ddd; margin: 0.8em 0; padding: 0.1em 1em; color: #555; background: #fafafa; font-weight: normal; }
 table { border-collapse: collapse; margin: 1em 0; width: 100%; }
-th, td { border: 1px solid #e5e7eb; padding: 0.5em 0.6em; vertical-align: top; }
-th { background: #f8fafc; text-align: left; }
+th, td { border: 1px solid #e5e7eb; padding: 0.5em 0.6em; vertical-align: top; font-weight: normal; }
+th { background: #f8fafc; text-align: left; font-weight: bold; }
 hr { border: 0; border-top: 1px solid #e5e7eb; margin: 2em 0; }
 
 img { max-width: 100%; }
@@ -398,6 +403,7 @@ class AsyncMarkdownPDF:
             *,
             title: str = "Document",
             base_dir: Optional[str | Path] = None,
+            extra_css: Optional[Iterable[str]] = None,
     ) -> Path:
         out = Path(output_pdf)
         base_href = self._base_href_for(Path(base_dir) if base_dir else None)
