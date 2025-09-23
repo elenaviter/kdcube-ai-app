@@ -4,6 +4,8 @@
 # chat/sdk/codegen/codegen_tool_manager.py
 
 import os
+from dataclasses import asdict
+
 import sys
 import traceback
 import uuid
@@ -460,23 +462,23 @@ class CodegenToolManager:
 
         if plan.error:
             if tr_error:
-                self.log.log(f"[Solver.Tool Selector]. Error: {tr_error}", level="ERROR")
-                scratchpad.tlog.note((f"[solver.tool_router]: planning failed — tool selection error: {plan.tool_selector_error}\n"
-                                      f"Tool selector reasoning was: {plan.tool_selector_internal_thinking}\n."
-                                      f"Tool selector plan was: {plan.tool_selector_raw_data}. It failed."))
+                self.log.log(f"solver.tool_router]. Error: {tr_error}", level="ERROR")
+                scratchpad.tlog.solver((f"[tool_router]: planning failed — tool selection error: {plan.tool_selector_error}\n"
+                                      f"tool_router reasoning was: {plan.tool_selector_internal_thinking}\n."
+                                      f"tool_router plan was: {plan.tool_selector_raw_data}. It failed."))
             if sv_error:
-                scratchpad.tlog.note(f"[Solver.Solvability] ERROR during attempt to plan the solution: {plan.solvability_error}")
-                scratchpad.tlog.note(f"[solver.solvability] User request is not solved, plan failed. "
+                scratchpad.tlog.solver(f"[solvability] ERROR during attempt to plan the solution: {plan.solvability_error}")
+                scratchpad.tlog.solver(f"[solver.solvability] User request is not solved, plan failed. "
                                      f"Solvability reasoning was: {plan.solvability_internal_thinking}.\n"
                                      f"Solvability plan was  {plan.solvability_raw_data}. It failed.")
         else:
-            solvability_note = (f"[Solver.Solvability] decision: solving mode={plan.mode}, confidence={plan.confidence}, "
+            solvability_note = (f"[solvability] decision: solving mode={plan.mode}, confidence={plan.confidence}, "
                                 f"solvability_reasoning={plan.reasoning}, ")
             if plan.mode != "llm_only":
                 solvability_note += (f"tools={[t.id for t in (plan.tools or [])]}, "
                                      f"When solved, these slots must be filled: contract_dyn={plan.contract_dyn}. If the slots are not filled, the user request is not solved.")
             solvability_note += f"instructions_for_downstream={plan.instructions_for_downstream}, "
-            scratchpad.tlog.note(solvability_note)
+            scratchpad.tlog.solver(solvability_note)
 
         return {
             "plan": plan,
@@ -618,6 +620,7 @@ class CodegenToolManager:
                 "tool_router": tr_service,
                 "solvability": sv_service
             },
+            solvable=sv.get("solvable", False),
         )
 
     # -------- solution entry point --------
@@ -693,10 +696,16 @@ class CodegenToolManager:
         result["plan"] = plan
 
         if plan.error:
+            self.log.log(f"[solver] planning failure. Plan: {asdict(plan)}. Skip execution", level="ERROR")
+            return SolveResult(result)
+
+        if not plan.solvable:
+            self.log.log(f"[solver] plan is not solvable. Plan: {asdict(plan)}. Skip execution", level="ERROR")
             return SolveResult(result)
 
         chosen = [t.id for t in (plan.tools or [])]
-        mode = plan.mode or ("direct_tools_exec" if chosen else "llm_only")
+        plan.mode = plan.mode or ("direct_tools_exec" if chosen else "llm_only")
+        mode = plan.mode
 
         # ---- direct execution (simple, one tool typical) ----
         if mode == "direct_tools_exec":
@@ -799,17 +808,20 @@ class CodegenToolManager:
                 scratchpad.tlog.solver(f"[solver] mode=codegen; status={status}; filled={filled}; missing={missing}; result_interpretation_instruction={sr.interpretation_instruction()}")
 
                 if pl_text:
-                    scratchpad.tlog.note(f"[project_log]\n{pl_text.strip()[:4000]}")
+                    scratchpad.tlog.solver(f"[solve.log]\n{pl_text.strip()[:4000]}")
                     # error details (if any)
                 try:
+                    tlog_line = ""
                     for c in (execution.calls or []):
                         tool_id = c.get("tool_id","")
                         order = c.get("order")
-                        outputs_n = len(c.get("outputs") or [])
-                        inputs_n = len(c.get("input") or [])
-                        l = f"[solver.calls] order={order} tool={tool_id} inputs_n={inputs_n} outputs={outputs_n} "
+                        outputs = c.get("outputs") or []
+                        inputs = c.get("input") or []
+                        l = f"[solver.calls] order={order} tool={tool_id} inputs={inputs} outputs={outputs} "
                         self.log.log(l)
-                        scratchpad.tlog.note(l)
+                        tlog_line += f"{tool_id};"
+                    if tlog_line:
+                        scratchpad.tlog.solver(f"[tools.calls]: {tlog_line}")
                 except Exception:
                     pass
 

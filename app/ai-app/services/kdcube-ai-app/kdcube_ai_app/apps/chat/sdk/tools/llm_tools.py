@@ -72,11 +72,16 @@ class LLMTools:
         # ----- Build prompt -----
         # Base rules apply to both modes
         sys_lines = [
+            "You are a professional summarizer. Always output properly formatted Markdown text.",
             "Summarize for a busy reader. Be factual and non-speculative.",
-            "- style=brief   → one short paragraph (3–5 concise sentences).",
-            "- style=bullets → 3–6 compact bullets.",
-            "- style=one_line→ ≤ 28 words.",
-            "No preface. Markdown only.",
+            "OUTPUT FORMAT REQUIREMENTS:",
+            "- ALWAYS format your response as clean Markdown",
+            "- Use proper Markdown syntax for headings, lists, emphasis, etc.",
+            "- style=brief   → one well-formatted paragraph (3–5 concise sentences)",
+            "- style=bullets → 3–6 compact bullet points using proper Markdown list syntax (-)",
+            "- style=one_line→ single sentence ≤ 28 words",
+            "- Never include explanatory text, prefaces, or meta-commentary",
+            "- Output ONLY the Markdown-formatted summary content",
         ]
 
         # Construct user payload depending on mode
@@ -84,7 +89,7 @@ class LLMTools:
             # Summarize the provided text; ignore citation features entirely
             src_block = ""
             content = (text or "")[:10000]
-            user = f"mode=text; style={style}\n\n{content}"
+            user = f"mode=text; style={style}\n\nSummarize the following text in Markdown format:\n\n{content}"
 
         else:
             # Summarize provided sources; optionally emit [[S:<sid>]] tokens
@@ -120,16 +125,18 @@ class LLMTools:
             # Add explicit citation rules only in sources mode
             if cite_sources:
                 sys_lines += [
-                    "CITATIONS:",
-                    "- Insert inline citation tokens at the end of the sentence/bullet they support: [[S:<sid>]]",
+                    "",
+                    "CITATION REQUIREMENTS:",
+                    "- Insert inline citation tokens at the end of sentences/bullets: [[S:<sid>]]",
                     "- Multiple sources allowed: [[S:1,3]]. Use only provided sid values; never invent.",
+                    "- Citations are part of the Markdown output - include them naturally in the text",
                     "- If a claim is general, you may omit a token.",
                 ]
 
             # Provide a compact sid→title map to reduce hallucination
             compact_map = "\n".join([f"- {r['sid']}: {r['title'][:80]}" for r in rows]) if rows else ""
             src_block = f"SOURCE IDS:\n{compact_map}\n" if compact_map else ""
-            user = f"mode=sources; style={style}; cite_sources={bool(cite_sources)}\n{src_block}\n{digest}"
+            user = f"mode=sources; style={style}; cite_sources={bool(cite_sources)}\n{src_block}\nSummarize these sources in Markdown format:\n\n{digest}"
 
         sys_prompt = "\n".join(sys_lines)
 
@@ -199,25 +206,35 @@ class LLMTools:
 
         # ---- System rules ----
         rules = [
-            "Edit deterministically. Preserve meaning unless the instruction requires changes.",
-            "Do NOT invent facts, numbers, or events.",
-            "If tone is specified, apply consistently.",
-            "If keep_formatting=true: preserve Markdown structure and section order; you may rewrite sentences inside blocks.",
-            "Return ONLY the edited text (Markdown). No commentary.",
+            "You are a professional content editor. Always output properly formatted Markdown text.",
+            "",
+            "OUTPUT REQUIREMENTS:",
+            "- Return ONLY the edited text in clean, well-formatted Markdown",
+            "- Use proper Markdown syntax for all formatting (headings, lists, emphasis, code, etc.)",
+            "- Never include explanations, commentary, or meta-text",
+            "- The entire response should be valid Markdown content",
+            "",
+            "EDITING RULES:",
+            "- Edit deterministically. Preserve meaning unless the instruction requires changes.",
+            "- Do NOT invent facts, numbers, or events.",
+            "- If tone is specified, apply consistently.",
+            "- If keep_formatting=true: preserve Markdown structure and section order; you may rewrite sentences inside blocks.",
         ]
         rules += [
-            "Do not alter or renumber existing [[S:n]] tokens. Remove a token only if you delete the entire supported claim/sentence."
+            "- Do not alter or renumber existing [[S:n]] tokens. Remove a token only if you delete the entire supported claim/sentence."
         ]
         rules += [
-            "If the input contains <!--GUIDANCE_START--> ... <!--GUIDANCE_END-->, treat it as internal instructions: apply them, then REMOVE the entire block from the output."
+            "- If the input contains <!--GUIDANCE_START--> ... <!--GUIDANCE_END-->, treat it as internal instructions: apply them, then REMOVE the entire block from the output."
         ]
         if forbid_new_facts_without_sources:
-            rules.append("Any NEW or materially CHANGED factual claim must be grounded in provided sources.")
+            rules.append("- Any NEW or materially CHANGED factual claim must be grounded in provided sources.")
         if cite_sources and rows:
             rules += [
-                "CITATIONS:",
+                "",
+                "CITATION REQUIREMENTS:",
                 "- Insert [[S:<sid>]] after sentences/bullets that contain NEW or materially CHANGED factual claims,",
                 "- Use provided sid values only; never invent sids.",
+                "- Citations are part of the Markdown output - include them naturally in the text",
                 "- If a sentence is rearranged but unchanged factually, do not cite it.",
             ]
 
@@ -231,9 +248,9 @@ class LLMTools:
         body = (text or "")[:15000]
         if rows:
             digest = "\n\n---\n\n".join([f"[sid:{r['sid']}] {r['title']}\n{r['text']}" for r in rows])[:total_budget]
-            ask = f"{header}\n---\nTEXT (original):\n{body}\n\n---\nSOURCES DIGEST:\n{digest}"
+            ask = f"{header}\n---\nEDIT THE FOLLOWING MARKDOWN TEXT:\n{body}\n\n---\nSOURCES DIGEST:\n{digest}"
         else:
-            ask = f"{header}\n---\nTEXT (original):\n{body}"
+            ask = f"{header}\n---\nEDIT THE FOLLOWING MARKDOWN TEXT:\n{body}"
 
         buf = []
         async def on_delta(d):

@@ -71,6 +71,7 @@ class SolutionPlan:
     tool_router_notes: Optional[str] = None
     contract_dyn: Optional[Dict[str, str]] = None  # slot -> description
     service: Optional[dict] = None
+    solvable: Optional[bool] = None
 
     @property
     def tool_selector_internal_thinking(self) -> str:
@@ -140,7 +141,7 @@ class SolveResult:
     @property
     def failure(self):
         """Error message if the solve failed."""
-        return self.plan.error or self.execution.error
+        return self.plan.error or (not self.execution and self.plan.mode != "llm_only") or (self.execution and self.execution.error)
 
     @property
     def program_presentation(self):
@@ -217,7 +218,11 @@ class SolveResult:
     # ----- reasoning & hints from the first codegen round -----
     def interpretation_instruction(self) -> str:
         r = self._first_round()
-        return r.get("result_interpretation_instruction") or ""
+        exec_instruction = r.get("result_interpretation_instruction")
+        if not exec_instruction:
+            if not self.plan.solvable:
+                return f"The objective is considered as not solvable.\nReasoning: {self.plan.reasoning}.\nMessage for answer consolidator: {self.plan.instructions_for_downstream}"
+        return ""
 
     def round_reasoning(self) -> str:
         r = self._first_round()
