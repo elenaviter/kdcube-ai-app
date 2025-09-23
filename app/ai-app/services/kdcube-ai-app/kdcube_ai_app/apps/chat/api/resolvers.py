@@ -502,3 +502,4 @@ async def get_pg_pool():
         ssl=_settings.PGSSL,
         init=_init_conn,
     )
+    return _pg_pool
