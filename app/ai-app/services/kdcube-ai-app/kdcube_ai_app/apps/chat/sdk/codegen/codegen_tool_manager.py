@@ -790,9 +790,9 @@ class CodegenToolManager:
 
             # PROJECT LOG → tlog
             pl = (deliverables or {}).get("project_log") or {}
-            v = pl.get("value")
+            v = pl.get("output")
             if isinstance(v, dict):
-                pl_text = v.get("value") or v.get("text") or ""
+                pl_text = v.get("output") or v.get("text") or ""
             elif isinstance(v, str):
                 pl_text = v
             else:
