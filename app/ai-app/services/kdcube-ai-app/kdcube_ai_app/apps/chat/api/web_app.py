@@ -42,7 +42,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
-from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest
+from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 from kdcube_ai_app.apps.chat.api.socketio.chat import create_socketio_chat_handler
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
         import inspect
         from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
         from kdcube_ai_app.infra.plugin.agentic_loader import get_workflow_instance
-        from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config
+        from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
 
         if comm is None:
             raise RuntimeError("agentic_app_func: ChatCommunicator is required")
@@ -376,7 +376,7 @@ async def check_embeddings_endpoint(request: ConfigRequest,
                                     session: UserSession = Depends(auth_without_pressure())):
     """Test embedding configuration"""
     try:
-        from kdcube_ai_app.apps.chat.sdk.inventory import probe_embeddings
+        from kdcube_ai_app.infra.service_hub.inventory import probe_embeddings
         return probe_embeddings(request)
     except Exception as e:
         import traceback

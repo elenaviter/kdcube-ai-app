@@ -8,7 +8,7 @@ from typing import Optional, Tuple, List, Dict, Any
 from urllib.parse import urlparse, unquote
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
-from kdcube_ai_app.apps.chat.sdk.inventory import _mid
+from kdcube_ai_app.infra.service_hub.inventory import _mid
 from kdcube_ai_app.apps.chat.sdk.storage.rn import (
     rn_message, rn_attachment, rn_execution_file
 )

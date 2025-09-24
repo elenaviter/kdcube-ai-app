@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, conlist
 from datetime import datetime, timezone
 import json
 
-from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase
+from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 from kdcube_ai_app.apps.chat.sdk.streaming.streaming import _add_3section_protocol, _stream_agent_sections_to_json
 
 def _today_str() -> str:

@@ -21,7 +21,7 @@ from datetime import datetime
 import textwrap
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
-from kdcube_ai_app.apps.chat.sdk.inventory import Config, AgentLogger, _mid
+from kdcube_ai_app.infra.service_hub.inventory import Config, AgentLogger, _mid
 from kdcube_ai_app.apps.chat.sdk.util import _json_schema_of
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.apps.chat.sdk.storage.ai_bundle_storage import AIBundleStorage

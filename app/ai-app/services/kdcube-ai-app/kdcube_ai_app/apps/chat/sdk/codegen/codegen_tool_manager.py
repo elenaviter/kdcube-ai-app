@@ -24,7 +24,7 @@ from kdcube_ai_app.apps.chat.sdk.codegen.contracts import ToolModuleSpec, Soluti
     SolutionExecution
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 import kdcube_ai_app.apps.chat.sdk.codegen.project_retrieval as project_retrieval
-from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase, AgentLogger
+from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad
 from kdcube_ai_app.apps.chat.sdk.runtime.simple_runtime import _InProcessRuntime
 from kdcube_ai_app.apps.chat.sdk.codegen.team import (
@@ -790,7 +790,7 @@ class CodegenToolManager:
 
             # PROJECT LOG → tlog
             pl = (deliverables or {}).get("project_log") or {}
-            v = pl.get("output")
+            v = pl.get("value")
             if isinstance(v, dict):
                 pl_text = v.get("output") or v.get("text") or ""
             elif isinstance(v, str):

@@ -9,7 +9,7 @@ import datetime
 import pathlib, json
 from typing import Optional, Sequence, List, Dict, Any
 
-from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase
+from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnLog
 
 from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore

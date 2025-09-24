@@ -11,7 +11,7 @@ import tokenize
 from typing import Dict, Any, List, Tuple
 from textwrap import dedent
 
-from kdcube_ai_app.apps.chat.sdk.inventory import AgentLogger
+from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
 def _inject_header_after_future(src: str, header: str) -> str:
     lines = src.splitlines(True)

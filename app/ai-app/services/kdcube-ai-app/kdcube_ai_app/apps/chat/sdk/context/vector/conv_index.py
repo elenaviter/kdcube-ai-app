@@ -448,6 +448,7 @@ class ConvIndex:
             if op not in valid_ops:
                 continue
             val = _normalize_ts_for_sql(tf.get("value") or datetime.utcnow())
+            val = _coerce_ts(val)
             args.append(val)
             where.append(f"m.ts {op} ${len(args)}::timestamptz")
 
@@ -919,6 +920,7 @@ class ConvIndex:
         the stored payload/blob, write a new blob via ConversationStore first,
         then set s3_uri/text here to point this index row at the new content.
         """
+        ts_dt = _coerce_ts(ts)
         if not id and not message_id:
             raise ValueError("update_message requires either id or message_id")
         sets, args = [], []
@@ -933,7 +935,7 @@ class ConvIndex:
             args.append(s3_uri)
         if ts is not None:
             sets.append(f"ts = ${len(args)+1}::timestamptz")
-            args.append(_normalize_ts_for_sql(ts))
+            args.append(ts_dt)
         if not sets:
             return 0  # nothing to do
 

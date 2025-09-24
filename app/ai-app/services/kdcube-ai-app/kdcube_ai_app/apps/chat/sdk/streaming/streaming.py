@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, Callable, Tuple, List
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase, AgentLogger
+from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger
 from kdcube_ai_app.apps.chat.sdk.util import _json_loads_loose
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,7 @@ def _add_3section_protocol(base: str, json_shape_hint: str) -> str:
               "3) <<< BEGIN STRUCTURED JSON >>>\n"
               f"   ```json\n{json_shape_hint}\n```\n"
               "Return exactly these three sections, in order, once."
+              "CRITICAL: Do NOT emit any closing markers like <<< END USER-FACING THINKING >>> or </USER-FACING THINKING>.\n"
     )
 
 
@@ -543,4 +544,141 @@ async def _stream_agent_sections_to_json(
         },
         "internal_thinking": internal_thinking,
         "user_thinking": user_thinking,
+    }
+
+# =============================================================================
+# Simple (non-sectioned) structured-output streaming
+# =============================================================================
+
+async def _stream_simple_structured_json(
+        svc: ModelServiceBase,
+        *,
+        client_name: str,
+        client_role: str,
+        sys_prompt: str,
+        user_msg: str,
+        schema_model,
+        temperature: float = 0.2,
+        max_tokens: int = 1200,
+        ctx: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Stream plain text (no 3-part protocol), buffer everything, then parse it as JSON
+    matching `schema_model`. If parsing fails, run the service format fixer once and
+    validate again. Returns {agent_response, log:{error, raw_data}}.
+
+    Prompting tip: tell the model "Return ONLY a JSON object ..." and (optionally)
+    include a fenced `json` schema hint. The parser tolerates code fences in output.
+    """
+    run_logger = AgentLogger("SimpleStructuredStream", getattr(svc.config, "log_level", "INFO"))
+    run_logger.start_operation(
+        "simple_structured_stream",
+        client_role=client_role,
+        client_name=client_name,
+        system_prompt_len=len(sys_prompt),
+        user_msg_len=len(user_msg),
+        expected_format=getattr(schema_model, "__name__", str(schema_model)),
+    )
+
+    raw_text_parts: List[str] = []
+
+    async def on_delta(piece: str):
+        if piece:
+            raw_text_parts.append(piece)
+
+    async def on_complete(_):
+        run_logger.log_step("stream_complete", {"chars": sum(len(p) for p in raw_text_parts)})
+
+    # ---- stream with model ----
+    client = svc.get_client(client_name)
+    cfg = svc.describe_client(client, role=client_role)
+    messages = [SystemMessage(content=sys_prompt), HumanMessage(content=user_msg)]
+
+    await svc.stream_model_text_tracked(
+        client,
+        messages,
+        on_delta=on_delta,
+        on_complete=on_complete,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        client_cfg=cfg,
+        role=client_role,
+    )
+
+    raw_text = "".join(raw_text_parts)
+
+    # ---- parse helpers ----
+    def _strip_fences(s: str) -> str:
+        s = s.strip()
+        if s.startswith("```"):
+            nl = s.find("\n")
+            s = s[nl + 1:] if nl >= 0 else ""
+            end = s.rfind("```")
+            if end >= 0:
+                s = s[:end]
+        return s.strip().strip("`")
+
+    def _extract_object_tail(s: str) -> Optional[str]:
+        s = _strip_fences(s)
+        if not s:
+            return None
+        m = re.search(r"\{.*\}\s*$", s, re.S)
+        return m.group(0) if m else None
+
+    def _try_parse(s: str) -> Optional[Dict[str, Any]]:
+        obj = _extract_object_tail(s or "")
+        if not obj:
+            return None
+        try:
+            loaded = _json_loads_loose(obj) or {}
+            return schema_model.model_validate(loaded).model_dump()
+        except Exception:
+            return None
+
+    data = _try_parse(raw_text)
+    error = None
+
+    if data is None and raw_text.strip():
+        # one-shot format fix
+        fix = await svc.format_fixer.fix_format(
+            raw_output=raw_text,
+            expected_format=getattr(schema_model, "__name__", str(schema_model)),
+            input_data=user_msg,
+            system_prompt=sys_prompt,
+        )
+        if fix.get("success"):
+            try:
+                data = schema_model.model_validate(fix["data"]).model_dump()
+            except Exception as ex:
+                error = f"JSON parse after format fix failed: {ex}"
+                data = None
+
+    if data is None:
+        # safest default
+        try:
+            data = schema_model.model_validate({}).model_dump()
+        except Exception:
+            data = {}
+
+    try:
+        run_logger.finish_operation(
+            True,
+            "simple_structured_stream_complete",
+            result_preview={
+                "error": error,
+                "chars": len(raw_text),
+                "has_agent_response": bool(data),
+                "provider": getattr(cfg, "provider", None),
+                "model": getattr(cfg, "model_name", None),
+            },
+        )
+    except Exception:
+        pass
+
+    return {
+        "agent_response": data,
+        "log": {
+            "error": error,
+            "raw_data": raw_text,
+        },
     }

@@ -125,6 +125,9 @@ class GraphCtx:
         Also stamps meta_updated_at.
         """
         ck = f"{tenant}:{project}:{conversation}"
+        # Strip None so we never delete props by accident
+        safe_fields = {k: v for k, v in (fields or {}).items() if v is not None}
+
         async with self._driver.session() as s:
             await s.run(
                 """
@@ -132,8 +135,43 @@ class GraphCtx:
                 SET c += $fields,
                     c.meta_updated_at = $now
                 """,
-                ck=ck, fields=fields or {}, now=_now_sec()
+                ck=ck, fields=safe_fields, now=_now_sec()
             )
+
+    async def set_conversation_blob(
+            self, *, tenant: str, project: str, conversation: str, key: str, value: Any
+    ) -> None:
+        ck = f"{tenant}:{project}:{conversation}"
+        blob_json = _stable_json(value)  # deterministic JSON
+        blob_hash = _value_hash(None, blob_json)
+
+        async with self._driver.session() as s:
+            await s.run(
+                """
+                MERGE (c:Conversation {key:$ck})
+                SET c[$json_key] = $blob_json,
+                    c[$hash_key] = $blob_hash,
+                    c.meta_updated_at = $now
+                """,
+                ck=ck,
+                json_key=f"{key}_json",
+                hash_key=f"{key}_hash",
+                blob_json=blob_json,
+                blob_hash=blob_hash,
+                now=_now_sec()
+            )
+
+    async def get_conversation_blob(
+            self, *, tenant: str, project: str, conversation: str, key: str
+    ) -> Optional[dict]:
+        meta = await self.get_conversation_meta(tenant=tenant, project=project, conversation=conversation)
+        raw = meta.get(f"{key}_json")
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
 
     async def get_conversation_meta(self, *, tenant: str, project: str, conversation: str) -> Dict[str, Any]:
         ck = f"{tenant}:{project}:{conversation}"

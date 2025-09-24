@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List
 
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AnyMessage
 
-from kdcube_ai_app.apps.chat.sdk.inventory import (
+from kdcube_ai_app.infra.service_hub.inventory import (
     Config,
     ModelServiceBase,   # we rely on the base router
     AgentLogger,

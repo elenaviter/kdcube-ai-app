@@ -16,7 +16,7 @@ from fastapi import Depends, HTTPException, Request, APIRouter
 
 from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure, REDIS_URL
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
-from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest
+from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest
 from kdcube_ai_app.apps.chat.sdk.protocol import ServiceCtx, ConversationCtx
 from kdcube_ai_app.auth.sessions import UserSession
 
@@ -210,7 +210,7 @@ async def get_bundle_suggestions(
     Load (or reuse singleton) bundle instance and, if defined, call its `suggestions(...)`.
     Returns generic JSON from the bundle, or an empty suggestions list when not implemented.
     """
-    from kdcube_ai_app.apps.chat.sdk.inventory import ConfigRequest, create_workflow_config
+    from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
     from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
     from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
 

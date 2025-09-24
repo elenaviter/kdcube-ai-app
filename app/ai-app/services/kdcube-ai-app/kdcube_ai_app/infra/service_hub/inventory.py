@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# chat/sdk/inventory.py — minimal, clean, role-mapped, cached clients
+# infra/service_hub/inventory.py — minimal, clean, role-mapped, cached clients
 
 import asyncio
 import json

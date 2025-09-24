@@ -2,7 +2,7 @@ from typing import Dict, Any, List, Optional
 import json
 
 from kdcube_ai_app.apps.chat.sdk.context.policy.policy import PreferenceExtractionOut
-from kdcube_ai_app.apps.chat.sdk.inventory import ModelServiceBase
+from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 from kdcube_ai_app.apps.chat.sdk.util import _today_str
 
 

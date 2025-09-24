@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.embeddings import Embeddings
 
-from kdcube_ai_app.apps.chat.sdk.inventory import AgentLogger, CustomEmbeddings, Config
+from kdcube_ai_app.infra.service_hub.inventory import AgentLogger, CustomEmbeddings, Config
 from kdcube_ai_app.apps.chat.sdk.storage.ai_bundle_storage import AIBundleStorage
 
 class _PrecomputedThenRealEmbeddings(Embeddings):
