@@ -32,6 +32,8 @@ from kdcube_ai_app.infra.accounting.usage import (
 from kdcube_ai_app.infra.llm.llm_data_model import ModelRecord, AIProvider, AIProviderName
 from kdcube_ai_app.infra.llm.util import get_service_key_fn
 from kdcube_ai_app.infra.embedding.embedding import get_embedding
+from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec
+
 
 # =========================
 # ids/util
@@ -212,6 +214,8 @@ class Config:
 
         self.tenant = os.getenv("TENANT_ID", None)
         self.project = os.getenv("DEFAULT_PROJECT_NAME", None)
+
+        self.ai_bundle_spec: Optional[AgenticBundleSpec] = None
 
     # ----- embedding config -----
     def set_embedder(self, embedder_id: str, custom_endpoint: str | None = None):
@@ -447,12 +451,16 @@ def ms_structured_meta_extractor(model_service, _client, system_prompt: str, use
         "max_tokens": kw.get("max_tokens"),
     }
 
-def ms_freeform_meta_extractor(model_service, _client, messages, *a, **kw):
+# def ms_freeform_meta_extractor(model_service, _client, messages, *a, **kw):
+def ms_freeform_meta_extractor(model_service, _client = None, messages = None, *a, **kw):
     try:
+        if not messages:
+            messages = kw.get("messages") or []
         prompt_chars = sum(len(getattr(m, "content", "") or "") for m in (messages or []))
     except Exception:
         prompt_chars = 0
     client_cfg = kw.get("client_cfg")
+
     return {
         "selected_model": (client_cfg.model_name if client_cfg else None),
         "provider": (client_cfg.provider if client_cfg else None),
@@ -1284,15 +1292,37 @@ if __name__ == "__main__":
 
     async def streaming():
 
-        from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+        # from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-        model_name = "gpt-4o-mini"
-        client = ChatOpenAI(model=model_name, stream_usage=True)
+        # model_name = "gpt-4o-mini"
+        # model_name = "claude-3-7-sonnet-20250219"
+        # client = ChatOpenAI(model=model_name, stream_usage=True)
         msgs = [SystemMessage(content="You are concise."), HumanMessage(content="Say hi!")]
+        # async for evt in base_service.stream_model_text(client, msgs):
+        #     print(evt)
+        m = "claude-3-7-sonnet-20250219"
+        # m = "claude-sonnet-4-20250514"
+        role = "segment_enrichment"
+        req = ConfigRequest(
+            openai_api_key=os.environ.get("OPENAI_API_KEY"),
+            claude_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            selected_model=m,
+            role_models={ role: {"provider": "anthropic", "model": m}},
+        )
+        ms = ModelServiceBase(create_workflow_config(req))
+        client = ms.get_client(role)
 
-        base_service = ModelServiceBase(Config(default_llm_model=model_name))
-        async for evt in base_service.stream_model_text(client, msgs):
-            print(evt)
+        async def on_delta(d):
+            print(d)
+        await ms.stream_model_text_tracked(
+            client,
+            msgs,
+            on_delta=on_delta,
+            role=role,
+            temperature=0.3,
+            max_tokens=500,
+            debug=True
+        )
         print()
 
     asyncio.run(streaming())
