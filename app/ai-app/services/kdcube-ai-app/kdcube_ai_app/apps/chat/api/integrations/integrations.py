@@ -198,12 +198,13 @@ async def admin_reset_bundles_from_env(
         "count": len(reg.bundles)
     }
 
-@router.post("/integrations/bundles/{tenant}/{project}/operations/suggestions")
+@router.post("/integrations/bundles/{tenant}/{project}/operations/{operation}")
 async def get_bundle_suggestions(
         tenant: str,
         project: str,
         payload: BundleSuggestionsRequest,
         request: Request,
+        operation: str = "suggestions", # news, etc.
         session: UserSession = Depends(get_user_session_dependency()),
 ):
     """
@@ -213,12 +214,6 @@ async def get_bundle_suggestions(
     from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
     from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
     from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
-
-
-    # 1) Resolve bundle from the in-process registry (keeps processor-owned semantics)
-    # spec_resolved = resolve_bundle(payload.bundle_id, override=None)
-    # if not spec_resolved:
-    #     raise HTTPException(status_code=404, detail=f"Unknown bundle_id: {payload.bundle_id}")
 
     config_data = {}
 
@@ -234,6 +229,7 @@ async def get_bundle_suggestions(
     if payload and payload.bundle_id:
         config_request.agentic_bundle_id = payload.bundle_id
 
+    # 1) Resolve bundle from the in-process registry (keeps processor-owned semantics)
     spec_resolved = resolve_bundle(config_request.agentic_bundle_id, override=None)
     # 2) Build minimal workflow config (project-aware; defaults elsewhere)
     try:
@@ -280,41 +276,32 @@ async def get_bundle_suggestions(
         logger.exception(f"[get_bundle_suggestions.{tenant}.{project}] Failed to load bundle {asdict(spec)}")
         raise HTTPException(status_code=500, detail=f"Failed to load bundle: {e}")
 
-    # 4) Call suggestions() if available (support sync/async)
-    if not hasattr(workflow, "suggestions") or not callable(getattr(workflow, "suggestions")):
+    # 4) Call op() if available (support sync/async)
+    if not hasattr(workflow, operation) or not callable(getattr(workflow, operation)):
         # Graceful, generic reply if not implemented
-        return {
-            "status": "ok",
-            "tenant": tenant,
-            "project": project,
-            "bundle_id": spec_resolved.id,
-            "conversation_id": payload.conversation_id,
-            "suggestions": [],
-            "note": "bundle does not implement suggestions()",
-        }
+        # return {
+        #     "status": "ok",
+        #     "tenant": tenant,
+        #     "project": project,
+        #     "bundle_id": spec_resolved.id,
+        #     "conversation_id": payload.conversation_id,
+        #     operation: None,
+        #     "error": f"bundle does not support operation {operation}"
+        # }
+        raise HTTPException(status_code=404, detail=f"Bundle does not support operation {operation}")
 
     try:
         user_id = session.user_id or session.fingerprint
-        fn = getattr(workflow, "suggestions")
+        fn = getattr(workflow, operation)
         if inspect.iscoroutinefunction(fn):
-            # result = await fn(
-            #     user_id=user_id,
-            #     conversation_id=payload.conversation_id,
-            #     tenant=tenant,
-            #     project=project,
-            # )
-            result = await fn()
+            result = await fn(user_id=user_id,
+                              fingerprint=session.fingerprint)
         else:
-            result = fn()
-            # result = fn(
-            #     user_id=user_id,
-            #     conversation_id=payload.conversation_id,
-            #     tenant=tenant,
-            #     project=project,
-            # )
+            result = fn(user_id=user_id,
+                        fingerprint=session.fingerprint)
     except Exception as e:
         # Let bundles raise and still keep a predictable envelope here
-        raise HTTPException(status_code=500, detail=f"suggestions() failed: {e}")
+        raise HTTPException(status_code=500, detail=f"{operation}() failed: {e}")
 
     # 5) Envelope the bundle’s generic JSON
     return {
@@ -323,5 +310,5 @@ async def get_bundle_suggestions(
         "project": project,
         "bundle_id": spec_resolved.id,
         "conversation_id": payload.conversation_id,
-        "suggestions": result,  # arbitrary JSON from bundle
+        operation: result,  # arbitrary JSON from bundle
     }
