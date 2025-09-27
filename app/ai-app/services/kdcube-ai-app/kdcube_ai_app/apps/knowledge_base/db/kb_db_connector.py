@@ -298,8 +298,9 @@ class KnowledgeBaseConnector:
 
             enrichment_used = False
             enrichment_rn = None
-            connector_summary = segment.get("summary", "") or ""
+            summary = segment.get("summary", "") or ""
 
+            tags = []
             if enrichment and enrichment.get("success"):
                 enrichment_rn = enrichment.get("rn")
                 enriched_text = enrichment.get("retrieval_doc") or content
@@ -308,7 +309,8 @@ class KnowledgeBaseConnector:
                     content = enriched_text
 
                 md = enrichment.get("metadata") or {}
-                connector_summary = md.get("summary", "") or connector_summary
+                summary = md.get("summary", "") or summary
+                tags = md.get("key_concepts", []) or tags
 
                 extensions["enrichment"] = {
                     "rn": enrichment.get("rn"),
@@ -318,7 +320,23 @@ class KnowledgeBaseConnector:
                 }
                 enrichment_used = True
             else:
-                extensions["enrichment"] = {}
+                # ---- fallback to resource.metadata.enrichment ----
+                res_meta = kb.get_resource(resource_id)
+                res_enr = (res_meta.metadata or {}).get("enrichment") if res_meta else None
+                if isinstance(res_enr, dict):
+                    summary = res_enr.get("summary", "") or summary
+                    tags = res_enr.get("key_concepts", []) or tags
+                    extensions["enrichment"] = {
+                        "rn": None,
+                        "metadata": res_enr,
+                        "source": "resource_metadata",
+                        "is_table": False,
+                        "is_image": False,
+                    }
+                    enrichment_used = True
+                else:
+                    extensions["enrichment"] = {}
+
             extensions["datasource"] = {
                 "rn": resource_metadata.rn if resource_metadata else None,
                 "title": resource_metadata.title if resource_metadata else None,
@@ -337,8 +355,12 @@ class KnowledgeBaseConnector:
 
             # Entities from metadata stage, as you already do
             entities = metadata_record.get("entities", [])
-            if not isinstance(entities, list):
-                entities = []
+            if not isinstance(entities, list) or not entities:
+                # take what we computed at resource time
+                res_meta = kb.get_resource(resource_id)
+                res_entities = (res_meta.metadata or {}).get("entities") if res_meta else None
+                if isinstance(res_entities, list):
+                    entities = res_entities
 
             enhanced_segment = {
                 "id": segment_id,
@@ -347,9 +369,9 @@ class KnowledgeBaseConnector:
                 "rn": segment.get("rn"),
                 "title": title,
                 "content": content,                     # <- GLUED TEXT
-                "summary": connector_summary,           # <- prefer enrichment summary
+                "summary": summary,                     # <- prefer enrichment summary
                 "entities": entities,
-                "tags": [],
+                "tags": tags,
                 "word_count": len(content.split()) if content else 0,
                 "sentence_count": (content.count('.') + content.count('!') + content.count('?')) if content else 0,
                 "processed_at": metadata_record.get("processed_at"),

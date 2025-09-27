@@ -12,25 +12,50 @@ from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, ConfigRe
 
 class SegmentMetadata(BaseModel):
     summary: str = Field(description="1-2 sentence summary.")
-    keywords: List[str] = Field(description="5-7 key topics.")
+    key_concepts: List[str] = Field(description="5–15 contextual keywords as '<key>.<value>'; first dot separates; values may contain dots.")
     hypothetical_questions: List[str] = Field(description="3-5 questions the chunk could answer.")
     table_summary: Optional[str] = Field(default=None, description="Only if the chunk is a table.")
 
 
 def create_embedding_text(meta: SegmentMetadata, content: str) -> str:
-    kws = ", ".join(meta.keywords or [])
-    return f"Summary: {meta.summary}\nKeywords: {kws}\nContent: {content[:1000]}\n"
+    kws = ", ".join(meta.key_concepts or [])
+    return f"Summary: {meta.summary}\nKey concepts: {kws}\nContent: {content[:1000]}\n"
+
+# def _build_prompt(chunk_text: str, is_table: bool = False, is_image: bool = False) -> Tuple[str, str]:
+#     sys = (
+#         "You are an expert in data documenting and indexing. Return STRICT JSON with this json schema: "
+#         f"{SegmentMetadata.model_json_schema()}"
+#         "Key concepts extraction rule:\n"
+#         "<key> describes concept type (domain, topic, fact, metric, method, treatment, tech, tool, org, role, policy, event, condition, risk, guideline, gene, dataset, location, date, name, issue, concept, key_point, novel_concept, and other categories)."
+#         'Include ≥1 "domain" and ≥1 "topic" concept\n'
+#         '<value> is the corresponding value.\n'
+#         "Examples: 'study.clinical trial', 'condition.left ventricular dysfunction', 'risk.cardiovascular risk', 'novel_concept.Attack Resilience Index'. It is similar to 'key words' but key makes the 'context' for value, in scope of this chunk.\n"
+#         "No commentary. No markdown fences."
+#     )
+#     image = "This chunk is a DIAGRAM or an IMAGE. Summarize infographics.\n" if is_table else ""
+#     table = "This chunk is a TABLE. Summarize insights.\n" if is_table else ""
+#
+#     usr = f"{table}{image}Chunk:\n---\n{chunk_text[:3000]}\n---\nReturn ONLY JSON."
+#     return sys, usr
 
 def _build_prompt(chunk_text: str, is_table: bool = False, is_image: bool = False) -> Tuple[str, str]:
     sys = (
-        "You are an expert in data documenting and indexing. Return STRICT JSON with this json schema: "
-        f"{SegmentMetadata.model_json_schema()}"
+        "You are an expert indexer. Return STRICT JSON matching this json schema:\n"
+        f"{SegmentMetadata.model_json_schema()}\n"
+        "Key_concepts extraction rule:\n"
+        "key concepts = contextual keywords as \"<key>.<value>\":\n"
+        "• 5–15 items; use lowercase keys; first dot is the separator (values may contain dots/spaces).\n"
+        "• Keys: describes concept type - domain, topic, fact, metric, method, treatment, tech, tool, org, role, policy, event, "
+        "condition, risk, guideline, gene, dataset, location, date, name, issue, concept, key_point, novel_concept and other categories.\n"
+        "• Include ≥1 \"domain\" and ≥1 \"topic\". No duplicates. If unsure, use \"novel_concept\".\n"
+        "Examples: 'study.clinical trial', 'condition.left ventricular dysfunction', 'risk.cardiovascular risk', 'novel_concept.Attack Resilience Index'.\n"
         "No commentary. No markdown fences."
     )
-    image = "This chunk is a DIAGRAM or an IMAGE. Summarize infographics.\n" if is_table else ""
-    table = "This chunk is a TABLE. Summarize insights.\n" if is_table else ""
 
-    usr = f"{table}{image}Chunk:\n---\n{chunk_text[:3000]}\n---\nReturn ONLY JSON."
+    image_hint = "This chunk is a DIAGRAM or an IMAGE. Summarize infographic cues.\n" if is_image else ""
+    table_hint = "This chunk is a TABLE. Summarize insights in table_summary.\n" if is_table else ""
+
+    usr = f"{table_hint}{image_hint}Chunk:\n---\n{chunk_text[:3000]}\n---\nReturn ONLY JSON."
     return sys, usr
 
 class EnrichmentModule(ProcessingModule):
@@ -139,7 +164,7 @@ class EnrichmentModule(ProcessingModule):
                                content_max_sym: int = -1) -> str:
         # lines = [
         #     f"Summary: {meta.summary}",
-        #     "Keywords: " + ", ".join(meta.keywords or [])
+        #     "Key concepts: " + ", ".join(meta.key_concepts or [])
         # ]
         lines = []
         if is_table and meta.table_summary:

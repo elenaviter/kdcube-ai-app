@@ -451,24 +451,29 @@ class ContextualRetrievalSegmenter:
         return True  # Default to allowing grouping if unclear
 
     def _find_parent_context(self, segments: List['BaseSegment']) -> Optional[str]:
-        """Find the parent context (major section heading) for a group of segments."""
-        # Look for level-1 heading in the first segment
-        first_seg = segments[0]
+        if not segments:
+            return None
 
+        first_seg = segments[0]
         if first_seg.heading_level == 1:
             return f"# {first_seg.heading}"
 
-        # If no level-1 heading found, extract from section numbering
+        # if any segment in the group has an H1, use the first one
+        for seg in segments:
+            if seg.heading_level == 1 and seg.heading:
+                return f"# {seg.heading}"
+
+        # Existing numbering-based fallback
         section_num = self._extract_section_number(first_seg.heading) or self._extract_section_number(first_seg.subheading)
         if section_num:
             major_section = self._get_major_section_number(section_num)
-            # Look for a heading that starts with this major section number
             for seg in segments:
                 for heading_text in [seg.heading, seg.subheading]:
                     if heading_text and heading_text.startswith(f"{major_section} "):
                         return f"# {heading_text}"
 
         return None
+
 
     def _normalize_heading_levels(self, segments: List['BaseSegment']) -> List[Tuple[str, str, int]]:
         """

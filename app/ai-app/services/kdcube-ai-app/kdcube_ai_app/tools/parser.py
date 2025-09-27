@@ -452,16 +452,12 @@ class MarkdownParser:
 
     def _rows_improved(self, headings, lines) -> List[Dict]:
         """
-        FIXED: Improved parser that correctly identifies hierarchical relationships.
-
-        Strategy:
-        1. Create segments based on actual heading structure
-        2. Only create parent-child relationships for genuine hierarchies
-        3. Recognize peer-level headings correctly
+        Improved parser that preserves parent headings even if their own body is empty.
+        This ensures an H1 with no body still becomes the parent for the first H2/H3.
         """
         rows = []
 
-        # Handle content before first heading
+        # Content before the first heading
         if headings and headings[0]["heading_start"] > 0:
             rows.append({
                 "heading": "",
@@ -471,60 +467,44 @@ class MarkdownParser:
                 "subheading_level": None
             })
 
-        # Track the current context hierarchy
-        heading_stack = []  # Stack of (level, title) tuples
+        heading_stack: list[tuple[int, str]] = []  # (level, title)
 
         for idx, h in enumerate(headings):
             level = h["level"]
             title = h["title"]
 
-            # Get the body content for this heading
+            # Maintain stack FIRST (so parents exist even if this heading has no body)
+            heading_stack = [(lvl, ttl) for (lvl, ttl) in heading_stack if lvl < level]
+            heading_stack.append((level, title))
+
+            parent_level, parent_title = (heading_stack[-2] if len(heading_stack) >= 2 else (None, ""))
+
+            # Compute body for this heading
             body_start = h["body_start"]
-            body_end = (
-                headings[idx + 1]["heading_start"]
-                if idx + 1 < len(headings)
-                else len(lines)
-            )
+            body_end = headings[idx + 1]["heading_start"] if idx + 1 < len(headings) else len(lines)
             body = "\n".join(lines[body_start:body_end]).strip()
 
-            # Skip empty bodies
+            # If there is no body under this heading, we don't emit a row,
+            # but the stack already recorded the parent context for the next headings.
             if not body:
                 continue
 
-            # Update the heading stack to maintain proper hierarchy
-            # Remove any headings at this level or deeper
-            heading_stack = [(stack_level, stack_title) for stack_level, stack_title in heading_stack
-                             if stack_level < level]
-
-            # Add this heading to the stack
-            heading_stack.append((level, title))
-
-            # Determine parent-child relationship
-            parent_heading = ""
-            parent_level = None
-
-            if len(heading_stack) >= 2:
-                # The parent is the second-to-last item in the stack
-                parent_level, parent_heading = heading_stack[-2]
-
-            # Create the segment with proper level information
-            if level == 1 or not parent_heading:
-                # Top-level heading or orphaned heading
+            # Emit with proper parent-child relation and levels
+            if level == 1 or not parent_title:
                 rows.append({
                     "heading": title,
                     "subheading": "",
                     "text": body,
                     "heading_level": level,
-                    "subheading_level": None
+                    "subheading_level": None,
                 })
             else:
-                # This is a genuine subheading with a parent
                 rows.append({
-                    "heading": parent_heading,
+                    "heading": parent_title,
                     "subheading": title,
                     "text": body,
                     "heading_level": parent_level,
-                    "subheading_level": level
+                    "subheading_level": level,
                 })
 
         return rows

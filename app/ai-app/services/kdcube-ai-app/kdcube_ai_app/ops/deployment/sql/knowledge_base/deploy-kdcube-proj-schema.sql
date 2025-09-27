@@ -5,6 +5,7 @@
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;  -- For fuzzy text search
 CREATE EXTENSION IF NOT EXISTS btree_gin; -- For composite indexes
+CREATE EXTENSION IF NOT EXISTS unaccent;
 
 CREATE SCHEMA IF NOT EXISTS <SCHEMA>;
 
@@ -171,28 +172,46 @@ COMMENT ON COLUMN <SCHEMA>.retrieval_segment.provider IS 'Provider identifier in
 
 -- Enhanced search vector with metadata (schema-specific function name)
 CREATE OR REPLACE FUNCTION <SCHEMA>.update_search_vector_<SCHEMA>()
-    RETURNS TRIGGER AS
+RETURNS TRIGGER AS
 $$
 DECLARE
-    entities_text TEXT := '';
-    entity_item JSONB;
+  tag text;
+  tags_text_raw   text := '';  -- "topic.vendor risk"
+  tags_text_split text := '';  -- "topic vendor risk"
+  tags_keys       text := '';  -- "topic"
+  tags_vals       text := '';  -- "vendor risk"
 BEGIN
-    -- Extract text from entities for search indexing
-    FOR entity_item IN SELECT jsonb_array_elements(NEW.entities)
-    LOOP
-        entities_text := entities_text || ' ' || (entity_item->>'key') || ' ' || (entity_item->>'value');
+  -- Expand tags into multiple token streams
+  IF NEW.tags IS NOT NULL THEN
+    FOREACH tag IN ARRAY NEW.tags LOOP
+      tags_text_raw   := tags_text_raw   || ' ' || tag;
+      tags_text_split := tags_text_split || ' ' || replace(tag, '.', ' ');
+      IF position('.' IN tag) > 0 THEN
+        tags_keys := tags_keys || ' ' || split_part(tag, '.', 1);
+        tags_vals := tags_vals || ' ' || split_part(tag, '.', 2);
+      END IF;
     END LOOP;
+  END IF;
 
-    -- Build search vector with weighted content
-    NEW.search_vector :=
-        setweight(to_tsvector('english', COALESCE(NEW.title, '')), 'A') ||
-        setweight(to_tsvector('english', COALESCE(NEW.content, '')), 'B') ||
-        setweight(to_tsvector('english', COALESCE(entities_text, '')), 'A') ||  -- Boost entity terms
-        setweight(to_tsvector('english', array_to_string(NEW.tags, ' ')), 'B');  -- Boost tags
+  NEW.search_vector :=
+      -- Titles and contextual tags get top weight
+      setweight(to_tsvector('english', COALESCE(NEW.title, '')),        'A')
+    || setweight(to_tsvector('english', COALESCE(tags_text_raw, '')),   'A')  -- "key.value"
+    || setweight(to_tsvector('english', COALESCE(tags_text_split, '')), 'A')  -- "key value"
 
-    RETURN NEW;
+      -- Key alone has context, medium weight
+    || setweight(to_tsvector('english', COALESCE(tags_keys, '')),       'B')
+
+      -- Value alone is weak context; set to low weight OR comment out to disable
+    || setweight(to_tsvector('english', COALESCE(tags_vals, '')),       'C')
+
+      -- Body content remains background signal
+    || setweight(to_tsvector('english', COALESCE(NEW.content, '')),     'B');
+
+  RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
 
 -- Function to extract entity values for indexing (schema-specific function name)
 CREATE OR REPLACE FUNCTION <SCHEMA>.extract_entity_values_<SCHEMA>(entities_json JSONB)
@@ -258,19 +277,19 @@ CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_ds_mod_text
   WHERE (metadata->'metadata'->>'modified_time_iso') IS NOT NULL
     AND metadata->'metadata'->>'modified_time_iso' <> '';
 
--- ✅ combined with provider (still TEXT, still immutable)
--- only if you filter on these often
-CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_provider
-  ON <SCHEMA>.retrieval_segment ( ( (extensions->'datasource'->>'provider') ) );
-
-CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_pub
-  ON <SCHEMA>.retrieval_segment ( ( NULLIF(extensions->'datasource'->>'published_time_iso','') ) );
-
-CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_mod
-  ON <SCHEMA>.retrieval_segment ( ( NULLIF(extensions->'datasource'->>'modified_time_iso','') ) );
-
-CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_exp
-  ON <SCHEMA>.retrieval_segment ( ( NULLIF(extensions->'datasource'->>'expiration','') ) );
+-- -- ✅ combined with provider (still TEXT, still immutable)
+-- -- only if you filter on these often
+-- CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_provider
+--   ON <SCHEMA>.retrieval_segment ( ( (extensions->'datasource'->>'provider') ) );
+--
+-- CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_pub
+--   ON <SCHEMA>.retrieval_segment ( ( NULLIF(extensions->'datasource'->>'published_time_iso','') ) );
+--
+-- CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_mod
+--   ON <SCHEMA>.retrieval_segment ( ( NULLIF(extensions->'datasource'->>'modified_time_iso','') ) );
+--
+-- CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_ext_exp
+--   ON <SCHEMA>.retrieval_segment ( ( NULLIF(extensions->'datasource'->>'expiration','') ) );
 
 -------------------------------------------------------------------------------
 -- 6) Trigger (with clean IF NOT EXISTS logic)
@@ -302,9 +321,14 @@ CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_search_vector
     ON <SCHEMA>.retrieval_segment USING GIN (search_vector);
 
 -- Semantic similarity index (schema-specific name)
-CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_embedding
-    ON <SCHEMA>.retrieval_segment USING ivfflat (embedding vector_cosine_ops)
-WITH (lists=100);
+-- CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_embedding
+--     ON <SCHEMA>.retrieval_segment USING ivfflat (embedding vector_cosine_ops)
+-- WITH (lists=100);
+
+-- Check if supported!
+CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_embedding_hnsw
+  ON <SCHEMA>.retrieval_segment
+  USING hnsw (embedding vector_cosine_ops);
 
 -- Entity search indices (schema-specific names)
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_rs_entities_gin

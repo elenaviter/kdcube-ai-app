@@ -4,7 +4,7 @@
 # kdcube_ai_app/apps/knowledge_base/modules/extraction.py
 from __future__ import annotations
 
-import os, re
+import os, re, logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union, Protocol
@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 from kdcube_ai_app.apps.knowledge_base.modules.base import ProcessingModule
 from kdcube_ai_app.tools.parser import SimpleHtmlParser
 
-
+logger = logging.getLogger(__name__)
 # --------- tiny data holders ---------
 @dataclass
 class AssetEntry:
@@ -210,6 +210,18 @@ class ExternalStrategy:
             return [build_from_html(0, html, meta={})]
 
         if isinstance(self.external, dict):
+            meta = self.external.get("metadata") or {}
+            mime = (meta.get("mime") or "").lower()
+            if mime == "text/markdown":
+                md = self.external.get("content") or ""
+                title = self.external.get("title") or ""
+                return [ExtractionEntry(
+                    index=0,
+                    content_filename="extraction_0.md",
+                    content_bytes=md.encode("utf-8"),
+                    metadata={"mime": "text/markdown", "title": title, **meta},
+                    assets={}
+                )]
             # accept HtmlPostPayload-like dict
             if self.external.get("type") == "html_post":
                 html = self.external.get("html") or ""
@@ -220,7 +232,6 @@ class ExternalStrategy:
                 return [build_from_html(0, html, meta=self.external.get("metadata") or {}, pre_images=pre_images)]
             # fallback generic dict: same keys as before
             html = self.external.get("content") or ""
-            meta = self.external.get("metadata") or {}
             pre_images = (self.external.get("images") or None)
             return [build_from_html(0, html, meta=meta, pre_images=pre_images)]
 
@@ -239,6 +250,37 @@ class ExternalStrategy:
             return out
 
         raise ValueError("Unsupported external_extraction type")
+
+class MarkdownPassThroughStrategy:
+    """Persist provided Markdown as extraction_0.md (no conversion)."""
+    def __init__(self, external: str | dict, *, title: str = "", meta: dict | None = None):
+        self.external = external
+        self.title = title or ""
+        self.meta = meta or {}
+
+    def run(self) -> List[ExtractionEntry]:
+        logger.info(f"MarkdownPassThroughStrategy.run. external type {type(self.external)}")
+        if isinstance(self.external, dict):
+            md = self.external.get("content") or self.external.get("markdown") or ""
+            meta = {**self.external.get("metadata", {}), **self.meta}
+            title = self.external.get("title") or self.title
+        else:
+            md = str(self.external)
+            meta = dict(self.meta)
+            title = self.title
+
+        # Optionally prepend a title as H1 if not already present
+        if title and not md.lstrip().startswith("# "):
+            md = f"# {title}\n\n{md}"
+
+        return [ExtractionEntry(
+            index=0,
+            content_filename="extraction_0.md",
+            content_bytes=md.encode("utf-8"),
+            metadata={"mime": "text/markdown", **meta},
+            assets={}
+        )]
+
 
 class HtmlPassThroughStrategy:
     def __init__(self, storage, resource_id: str, version: str, raw_filename: Optional[str],
@@ -451,6 +493,14 @@ class ExtractionModule(ProcessingModule):
 
         # external_extraction wins
         if "external_extraction" in kwargs and kwargs["external_extraction"] is not None:
+            payload = kwargs["external_extraction"]
+            if isinstance(payload, dict) and (payload.get("type") in {"markdown", "md"}):
+                return MarkdownPassThroughStrategy(
+                    payload,
+                    title=payload.get("title") or "",
+                    meta=payload.get("metadata") or {}
+                ).run()
+
             opts = {**DEFAULT_DL_OPTS, **(kwargs or {})}
             if html_to_markdown:
                 return HtmlToMarkdownStrategy(

@@ -194,15 +194,14 @@ class AsyncSegmentEmbeddingProcessor:
                                 },
                                  seed_system_resources=seed_resources):
                 # Run embedding generation in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
                 ctx = contextvars.copy_context()
-                embedding = await loop.run_in_executor(
-                    self.thread_pool,
-                    lambda: ctx.run(get_embedding,
+                embedding = await asyncio.to_thread(
+                    lambda: ctx.run(
+                        get_embedding,
                         model=model_record,
                         text=text,
                         size=embedding_size,
-                        self_hosted_serving_endpoint=self.self_hosted_serving_endpoint
+                        self_hosted_serving_endpoint=self.self_hosted_serving_endpoint,
                     )
                 )
 
@@ -363,7 +362,8 @@ class AsyncSegmentEmbeddingProcessor:
 
         finally:
             # Clean up thread pool
-            self.thread_pool.shutdown(wait=False)
+            # self.thread_pool.shutdown(wait=False)
+            pass
 
         total_duration = (datetime.now() - start_time).total_seconds()
         self.logger.info(f"Parallel processing completed in {total_duration:.2f}s: "

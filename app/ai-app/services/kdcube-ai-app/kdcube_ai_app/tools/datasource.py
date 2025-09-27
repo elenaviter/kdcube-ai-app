@@ -2,17 +2,21 @@
 # Copyright (c) 2025 Elena Viter
 
 # tools/datasource.py
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Dict, Optional, Union, Any, List, Literal
 
 import hashlib, os, re
 from urllib.parse import urlparse, urlunparse
+from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
 
 from pydantic import Field, BaseModel, validator
 
+from kdcube_ai_app.apps.utils.sql_dt_utils import _parse_utc_instant
 from kdcube_ai_app.tools.processing import record_timing, \
     DataSourceExtractionResult
 from kdcube_ai_app.tools.content_type import is_text_mime_type, is_html_mime_type, \
@@ -549,3 +553,104 @@ def deterministic_url_filename(url: str, mime: str, default_ext: str = ".html") 
     ext = ext or ext_for_mime(mime, default_ext)
     base = tail if tail != "index" else f"{host}--{tail}"
     return f"{base}--{short}{ext}"
+
+rm_excluded_fields = {'content_hash', 'ef_uri', 'extraction_info', 'status'}
+class ResourceMetadata(BaseModel):
+    """Metadata for a knowledge base resource."""
+    id: str = Field(..., description="Resource ID")
+    source_id: str = Field(..., description="Original source identifier")
+    source_type: str = Field(..., description="Type of source (file, url, raw_text)")
+    uri: str = Field(..., description="Original URI of the source")
+    filename: str = Field(..., description="Original filename")
+    name: str = Field(..., description="Display name")
+    mime: Optional[str] = Field(None, description="MIME type")
+    encoding: Optional[str] = Field("utf-8", description="Text encoding")
+    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
+    ef_uri: Optional[str] = Field(None, description="Internal storage URI")
+    rn: Optional[str] = Field(None, description="Resource Name")
+    version: str = Field(..., description="Current version")
+    size_bytes: Optional[int] = Field(None, description="Size of the resource in bytes")
+    content_hash: Optional[str] = Field(None, description="SHA-256 hash of content")
+    extraction_info: Optional[Dict[str, Any]] = Field(
+        None, description="Extraction metadata if available"
+    )
+    description: Optional[str] = Field(None, description="Description")
+    title: Optional[str] = Field(None, description="Title")
+    summary: Optional[str] = Field(None, description="Summary")
+    status: Optional[str] = Field(None, description="resource status. Usually for transmission needs.")
+    provider: Optional[str] = Field(None, description="Optional provider info")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Extra info")
+    expiration: Optional[str] = Field(None, description="Expiration timestamp")
+    def light(self):
+        return self.model_dump(exclude=rm_excluded_fields)
+
+def _effective_resource_instant(resource_metadata: ResourceMetadata) -> datetime | None:
+    """Prefer modified, else published from resource metadata."""
+    md = getattr(resource_metadata, "metadata", {}) or {}
+    candidates = [md.get("modified_time_iso"), md.get("published_time_iso")]
+    for c in candidates:
+        dt = _parse_utc_instant(c)
+        if dt:
+            return dt
+    return None
+
+def _effective_item_instant(item: Any) -> Optional[datetime]:
+    """
+    Prefer updated/modified, else published.
+    Works with objects (attrs) or dict-like (keys).
+    """
+    # Try attributes first (duck-typing), then mapping keys.
+    def _get(name: str):
+        if hasattr(item, name):
+            v = getattr(item, name)
+            return v() if callable(v) else v
+        if isinstance(item, dict):
+            return item.get(name)
+        return None
+
+    candidates = [
+        _get("modified_time_iso"),
+        _get("published_time_iso")
+    ]
+    for c in candidates:
+        dt = _parse_utc_instant(c)
+        if dt:
+            return dt
+    return None
+
+from typing import Optional
+
+class TimestampedDict(dict):
+    """
+    Dict-like shim that exposes publication/modified attributes.
+    """
+
+    @property
+    def modified_time_iso(self) -> Optional[str]:
+        return self.get("modified_time_iso") or self.get("updated_at")
+
+    @property
+    def published_time_iso(self) -> Optional[str]:
+        return self.get("published_time_iso") or self.get("created_at")
+
+def is_item_publication_date_changed(
+        item: TimestampedDict,
+        resource_metadata: ResourceMetadata, tolerance_seconds: int = 1
+) -> bool:
+    """
+    Return True if we should reingest:
+      - timestamps differ beyond tolerance, or
+      - one/both timestamps missing (→ reingest).
+    Mirrors is_post_publication_date_changed, but generic.
+    """
+    if not resource_metadata:
+        return True
+
+    item_dt = _effective_item_instant(item)
+    res_dt  = _effective_resource_instant(resource_metadata)
+
+    if item_dt and res_dt:
+        return not (abs((item_dt - res_dt).total_seconds()) <= tolerance_seconds)
+
+    # Missing timestamps → err on reingest
+    return True

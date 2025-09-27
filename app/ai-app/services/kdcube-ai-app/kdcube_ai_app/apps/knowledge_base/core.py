@@ -23,45 +23,14 @@ from kdcube_ai_app.storage.storage import IStorageBackend, create_storage_backen
 from kdcube_ai_app.apps.knowledge_base.storage import KnowledgeBaseCollaborativeStorage
 
 from kdcube_ai_app.tools.datasource import (URLDataElement, FileDataElement,
-    RawTextDataElement, DataElement, create_data_element, IngestModifiers,
-                                            canonicalize_url, source_name_from_url)
+                                            RawTextDataElement, DataElement, create_data_element, IngestModifiers,
+                                            canonicalize_url, source_name_from_url, ResourceMetadata)
 from kdcube_ai_app.tools.content_type import is_text_mime_type
 from kdcube_ai_app.tools.parser import MarkdownParser
 from kdcube_ai_app.apps.knowledge_base.modules.base import ModuleFactory
 from kdcube_ai_app.apps.knowledge_base.index.content_index import FSContentIndexManager, DBContentIndexManager
 
 logger = logging.getLogger("KnowledgeBase.Core")
-
-rm_excluded_fields = {'content_hash', 'ef_uri', 'extraction_info', 'status'}
-class ResourceMetadata(BaseModel):
-    """Metadata for a knowledge base resource."""
-    id: str = Field(..., description="Resource ID")
-    source_id: str = Field(..., description="Original source identifier")
-    source_type: str = Field(..., description="Type of source (file, url, raw_text)")
-    uri: str = Field(..., description="Original URI of the source")
-    filename: str = Field(..., description="Original filename")
-    name: str = Field(..., description="Display name")
-    mime: Optional[str] = Field(None, description="MIME type")
-    encoding: Optional[str] = Field("utf-8", description="Text encoding")
-    timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
-    ef_uri: Optional[str] = Field(None, description="Internal storage URI")
-    rn: Optional[str] = Field(None, description="Resource Name")
-    version: str = Field(..., description="Current version")
-    size_bytes: Optional[int] = Field(None, description="Size of the resource in bytes")
-    content_hash: Optional[str] = Field(None, description="SHA-256 hash of content")
-    extraction_info: Optional[Dict[str, Any]] = Field(
-        None, description="Extraction metadata if available"
-    )
-    description: Optional[str] = Field(None, description="Description")
-    title: Optional[str] = Field(None, description="Title")
-    summary: Optional[str] = Field(None, description="Summary")
-    status: Optional[str] = Field(None, description="resource status. Usually for transmission needs.")
-    provider: Optional[str] = Field(None, description="Optional provider info")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Extra info")
-    expiration: Optional[str] = Field(None, description="Expiration timestamp")
-    def light(self):
-        return self.model_dump(exclude=rm_excluded_fields)
-
 
 def _extract_filesystem_path(uri: str) -> str:
     """

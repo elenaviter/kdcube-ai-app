@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# sdk/util.py
+# utils/util.py
 
 from collections.abc import Mapping, Set as _Set
 
