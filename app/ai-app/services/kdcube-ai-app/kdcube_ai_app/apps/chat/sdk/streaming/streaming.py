@@ -66,7 +66,7 @@ def _add_3section_protocol(base: str, json_shape_hint: str) -> str:
             base.rstrip()
             + "\n\nCRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY:\n"
               "• Produce THREE sections in this exact order. Use each START marker below exactly once.\n"
-              "• Do NOT write any closing tags like <<< END … >>>.\n"
+              "• Do NOT write any closing tags/markers like <<< END … >>> or </…>.\n"
               "• The third section must be a fenced JSON block and contain ONLY JSON.\n\n"
               "1) <<< BEGIN INTERNAL THINKING >>>\n"
               "   (private notes in Markdown; not shown to user)\n"
@@ -75,7 +75,6 @@ def _add_3section_protocol(base: str, json_shape_hint: str) -> str:
               "3) <<< BEGIN STRUCTURED JSON >>>\n"
               f"   ```json\n{json_shape_hint}\n```\n"
               "Return exactly these three sections, in order, once."
-              "CRITICAL: Do NOT emit any closing markers like <<< END USER-FACING THINKING >>> or </USER-FACING THINKING>.\n"
     )
 
 

@@ -25,6 +25,11 @@ EDITABLE_SLOT_NAMES = {
     "body_md","report_md","article_md","content_md","project_canvas", "project_log"
 }
 
+_CITATION_OPTIONAL_ATTRS = (
+    "provider", "published_time_iso", "modified_time_iso", "expiration",
+    # harmless extras we may get from KB
+    "mime", "source_type", "rn",
+)
 
 CANVAS_SLOTS = { "project_canvas" }
 PROJECT_LOG_SLOTS = { "project_log" }
@@ -57,14 +62,20 @@ def _norm_citation(it: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     title = (it or {}).get("title") or (it or {}).get("description") or url
     text  = (it or {}).get("text") or (it or {}).get("body") or (it or {}).get("value_preview") or ""
-
-    sid = (it or {}).get("sid")
+    sid   = (it or {}).get("sid")
     try:
         sid = int(sid) if sid is not None and str(sid).strip() != "" else None
     except Exception:
         sid = None
 
-    return {"url": url, "title": title, "text": text, **({"sid": sid} if sid is not None else {})}
+    # ⬇️ carry rich attrs if present
+    out = {"url": url, "title": title, "text": text}
+    if sid is not None:
+        out["sid"] = sid
+    for k in _CITATION_OPTIONAL_ATTRS:
+        if it.get(k) not in (None, ""):
+            out[k] = it[k]
+    return out
 
 def _pick_canvas_slot(d_items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
@@ -212,7 +223,11 @@ def _normalize_url(u: str) -> str:
     except Exception:
         return (u or "").strip()
 
-_CITABLE_TOOL_IDS = {"generic_tools.web_search", "generic_tools.browsing", "ctx_tools.merge_sources"}
+_CITABLE_TOOL_IDS = {
+    "generic_tools.web_search", "generic_tools.browsing",
+    "ctx_tools.merge_sources",
+
+}
 
 def _extract_citable_items_from_out_items(out_items: list[dict]) -> list[dict]:
     rows = []
@@ -222,7 +237,7 @@ def _extract_citable_items_from_out_items(out_items: list[dict]) -> list[dict]:
         if r.get("type") != "inline" or not bool(r.get("citable")):
             continue
         tid = (r.get("tool_id") or "").lower()
-        if not (tid in _CITABLE_TOOL_IDS or tid.endswith(".kb_search")):
+        if not (tid in _CITABLE_TOOL_IDS or tid.endswith(".kb_search") or tid.endswith(".kb_search_advanced")):
             continue
         out = r.get("output")
         pack = out if isinstance(out, list) else ([out] if isinstance(out, dict) else [])
@@ -234,11 +249,14 @@ def _extract_citable_items_from_out_items(out_items: list[dict]) -> list[dict]:
                 item = {
                     "url": url,
                     "title": c.get("title") or c.get("description") or url,
-                    "text": c.get("text") or c.get("body") or "",
+                    "text": c.get("text") or c.get("body") or c.get("content") or "",
                     "sid": c.get("sid"),
                     "_tool_id": r.get("tool_id") or "",
                     "_resource_id": r.get("resource_id") or "",
                 }
+                for k in _CITATION_OPTIONAL_ATTRS:
+                    if c.get(k):
+                        item[k] = c[k]
                 rows.append(item)
     return rows
 
@@ -350,7 +368,15 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
     for run_id, meta, it in flat:
         u = it["url"]
         if u not in by_url:
-            by_url[u] = {"url": u, "title": it["title"], "text": it.get("text","")}
+            by_url[u] = {
+                "url": u,
+                "title": it["title"],
+                "text": it.get("text",""),
+            }
+            # ⬇️ copy rich attrs if present
+            for k in  _CITATION_OPTIONAL_ATTRS:
+                if it.get(k):
+                    by_url[u][k] = it[k]
             ordered_urls.append(u)
 
     # Limit length
@@ -362,12 +388,16 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
     canonical_sources = []
     for u in ordered_urls:
         src = by_url[u]
-        canonical_sources.append({
+        row = {
             "sid": global_sid_of_url[u],
             "url": u,
             "title": src.get("title") or u,
             "text": src.get("text",""),
-        })
+        }
+        for k in _CITATION_OPTIONAL_ATTRS:
+            if src.get(k):
+                row[k] = src[k]
+        canonical_sources.append(row)
 
     # 4) Build per-run sid maps (old → global)
     sid_maps: dict[str, dict[int,int]] = {}

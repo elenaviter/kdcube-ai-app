@@ -12,6 +12,13 @@ except Exception:
 
 _SID_RE = re.compile(r"\[\[S:(\d+(?:,\d+)*)\]\]")
 
+# ⬇️ Centralize of ptional citation attributes we preserve
+_CITATION_OPTIONAL_ATTRS = (
+    "provider", "published_time_iso", "modified_time_iso", "expiration",
+    # harmless extras we may get from KB
+    "mime", "source_type", "rn",
+)
+
 def _norm_url(u: str) -> str:
     # conservative normalization: lowercase scheme+host; strip trailing slash
     # (don’t over-normalize; avoid changing meaning)
@@ -33,25 +40,41 @@ def _as_rows(val) -> List[Dict[str, Any]]:
             val = json.loads(val)
         except Exception:
             return []
-    # Accept dict-of-dicts {"1":{...}} or list-of-dicts
+
+    def process_rich_attrs(citation: Dict[str, Any], source: Dict[str, Any]) -> None:
+        for k in _CITATION_OPTIONAL_ATTRS:
+            if k in source and source[k] not in (None, ""):
+                citation[k] = source[k]
+
     if isinstance(val, dict):
         rows = []
         for k, v in val.items():
             if not isinstance(v, dict): continue
             sid = int(v.get("sid") or k) if str(k).isdigit() else v.get("sid")
-            rows.append({"sid": sid, "title": v.get("title",""), "url": v.get("url",""), "text": v.get("text") or v.get("body") or ""})
+            citation = {
+                "sid": sid,
+                "title": v.get("title",""),
+                "url": v.get("url",""),
+                "text": v.get("text") or v.get("body") or v.get("content") or "",
+            }
+            process_rich_attrs(citation, v)
+            rows.append(citation)
         return rows
+
     if isinstance(val, list):
         rows = []
         for v in val:
             if not isinstance(v, dict): continue
-            rows.append({
+            citation = {
                 "sid": v.get("sid"),
                 "title": v.get("title",""),
                 "url": v.get("url") or v.get("href") or "",
                 "text": v.get("text") or v.get("body") or v.get("content") or "",
-            })
+            }
+            process_rich_attrs(citation, v)
+            rows.append(citation)
         return rows
+
     return []
 
 def _max_sid(rows: List[Dict[str,Any]]) -> int:
@@ -98,10 +121,13 @@ def _norm_sources(items: Any) -> List[Dict[str, Any]]:
         sid = s.get("sid")
         title = s.get("title") or ""
         url = s.get("url") or s.get("href") or ""
-        text = s.get("text") or s.get("body") or ""
+        text = s.get("text") or s.get("body") or s.get("content") or ""
         if sid is None and not url and not text:
             continue
         row = {"sid": sid, "title": title, "url": url, "text": text}
+        for k in _CITATION_OPTIONAL_ATTRS:
+            if k in s and s[k] not in (None, ""):
+                row[k] = s[k]
         out.append(row)
     return out
 
@@ -110,13 +136,27 @@ def _dedupe_sources(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]) -> L
     last_sid = 0
     for s in prior or []:
         url = (s.get("url") or "").strip().lower()
-        by_url[url] = dict(s)
+        row = dict(s)
+        by_url[url] = row
         if isinstance(s.get("sid"), int):
             last_sid = max(last_sid, int(s["sid"]))
+
     next_sid = last_sid + 1
     for s in new or []:
         url = (s.get("url") or "").strip().lower()
+        if not url:
+            continue
         if url in by_url:
+            existing = by_url[url]
+            # prefer richer title/text
+            if len(s.get("title","")) > len(existing.get("title","")):
+                existing["title"] = s.get("title","")
+            if len(s.get("text","")) > len(existing.get("text","")):
+                existing["text"] = s.get("text","")
+            # fill in optional attrs if missing
+            for k in _CITATION_OPTIONAL_ATTRS:
+                if not existing.get(k) and s.get(k):
+                    existing[k] = s[k]
             continue
         row = dict(s)
         if row.get("sid") in (None, "", 0):
@@ -176,14 +216,19 @@ def _flatten_history_citations(history: List[Dict[str, Any]]) -> List[Dict[str, 
             url = _norm_url(c.get("url") or c.get("href") or "")
             if not url:
                 continue
-            flat.append({
+            row = {
                 "run_id": run_id,
                 "url": url,
                 "title": c.get("title") or c.get("description") or url,
                 "text": c.get("text") or c.get("body") or "",
                 "sid": c.get("sid"),
-            })
+            }
+            for k in _CITATION_OPTIONAL_ATTRS:
+                if c.get(k):
+                    row[k] = c[k]
+            flat.append(row)
     return flat
+
 
 def _reconcile_history_sources(
         history: List[Dict[str, Any]],
@@ -210,7 +255,11 @@ def _reconcile_history_sources(
         if u in seen:
             continue
         seen.add(u)
-        canonical.append({"url": u, "title": row["title"], "text": row["text"]})
+        dst = {"url": u, "title": row["title"], "text": row["text"]}
+        for k in _CITATION_OPTIONAL_ATTRS:
+            if row.get(k):
+                dst[k] = row[k]
+        canonical.append(dst)
         if len(canonical) >= max_sources:
             break
 
@@ -348,6 +397,9 @@ class ContextTools:
                     existing["title"] = source.get("title", "")
                 if len(source.get("text", "")) > len(existing.get("text", "")):
                     existing["text"] = source.get("text", "")
+                for k in _CITATION_OPTIONAL_ATTRS:
+                    if not existing.get(k) and source.get(k):
+                        existing[k] = source[k]
                 continue
 
             # Assign SID: use existing if valid, otherwise assign new
@@ -358,12 +410,11 @@ class ContextTools:
             else:
                 max_sid = max(max_sid, sid)
 
-            by_url[url] = {
-                "sid": sid,
-                "title": source.get("title", ""),
-                "url": url,
-                "text": source.get("text", "")
-            }
+            row = {"sid": sid, "title": source.get("title", ""), "url": url, "text": source.get("text", "")}
+            for k in _CITATION_OPTIONAL_ATTRS:
+                if source.get(k):
+                    row[k] = source[k]
+            by_url[url] = row
 
         merged = sorted(by_url.values(), key=lambda x: x["sid"])
         return json.dumps(merged, ensure_ascii=False)
