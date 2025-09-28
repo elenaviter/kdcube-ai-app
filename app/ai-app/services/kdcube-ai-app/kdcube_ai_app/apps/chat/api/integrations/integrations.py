@@ -268,7 +268,7 @@ async def get_bundle_suggestions(
     )
     try:
         # I need to create communicator here:
-        wf_config.ai_bundle_spec = spec
+        wf_config.ai_bundle_spec = spec_resolved
         communicator = None #
         workflow, _init_state, _mod = get_workflow_instance(
             spec, wf_config, communicator=bound_comm,

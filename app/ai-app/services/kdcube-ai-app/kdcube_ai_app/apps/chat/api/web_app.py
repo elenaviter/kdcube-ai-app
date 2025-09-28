@@ -115,6 +115,7 @@ async def lifespan(app: FastAPI):
             workflow = _Fallback(wf_config, communicator=comm)
             create_initial_state_fn = lambda _ctx: {}
         else:
+            wf_config.ai_bundle_spec = spec_resolved
             spec = dict(path=spec_resolved.path, module=spec_resolved.module, singleton=bool(spec_resolved.singleton))
             workflow, create_initial_state_fn, _ = get_workflow_instance(
                 type("Spec", (), spec),

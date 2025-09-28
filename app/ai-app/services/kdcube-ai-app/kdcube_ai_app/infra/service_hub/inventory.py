@@ -32,7 +32,7 @@ from kdcube_ai_app.infra.accounting.usage import (
 from kdcube_ai_app.infra.llm.llm_data_model import ModelRecord, AIProvider, AIProviderName
 from kdcube_ai_app.infra.llm.util import get_service_key_fn
 from kdcube_ai_app.infra.embedding.embedding import get_embedding
-from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec
+from kdcube_ai_app.infra.plugin.bundle_registry import BundleSpec
 
 
 # =========================
@@ -219,7 +219,7 @@ class Config:
         self.tenant = os.getenv("TENANT_ID", None)
         self.project = os.getenv("DEFAULT_PROJECT_NAME", None)
 
-        self.ai_bundle_spec: Optional[AgenticBundleSpec] = None
+        self.ai_bundle_spec: Optional[BundleSpec] = None
 
     # ----- embedding config -----
     def set_embedder(self, embedder_id: str, custom_endpoint: str | None = None):
