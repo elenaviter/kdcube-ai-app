@@ -30,9 +30,6 @@ logger = logging.getLogger("Conversations.API")
 
 router = APIRouter()
 
-# Reuse system components you already provision
-conversation_browser, conversation_index, conversation_store = get_conversation_system(get_pg_pool())
-
 # -------------------- Models --------------------
 
 class ConversationListItem(BaseModel):
@@ -71,7 +68,7 @@ async def list_conversations(
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid started_after timestamp")
 
-    data = await conversation_browser.list_conversations(
+    data = await router.state.conversation_browser.list_conversations(
         user_id=session.user_id,
         last_n=last_n,
         started_after=sa,
@@ -90,7 +87,7 @@ async def conversation_details(
     if not session.user_id:
         raise HTTPException(status_code=401, detail="No user in session")
 
-    out = await conversation_browser.get_conversation_details(
+    out = await router.state.conversation_browser.get_conversation_details(
         user_id=session.user_id,
         conversation_id=conversation_id,
     )
@@ -120,7 +117,7 @@ async def fetch_conversation(
     if not session.user_id:
         raise HTTPException(status_code=401, detail="No user in session")
 
-    data = await conversation_browser.fetch_conversation_artifacts(
+    data = await router.state.conversation_browser.fetch_conversation_artifacts(
         user_id=session.user_id,
         conversation_id=conversation_id,
         turn_ids=(req.turn_ids or None),

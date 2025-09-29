@@ -37,7 +37,7 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
     get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant, _announce_startup,
-    get_pg_pool
+    get_pg_pool, get_conversation_system
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -202,6 +202,12 @@ async def lifespan(app: FastAPI):
         app.state.heartbeat_manager = heartbeat_manager
         app.state.processor = processor
         app.state.health_checker = health_checker
+
+        # Reuse system components you already provision
+        conversation_browser, conversation_index, conversation_store = await get_conversation_system(app.state.pg_pool)
+        app.state.conversation_browser = conversation_browser
+        app.state.conversation_index = conversation_index
+        app.state.conversation_store = conversation_store
 
         # Start services
         await middleware.init_redis()
