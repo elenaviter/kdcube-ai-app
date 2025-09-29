@@ -161,7 +161,11 @@ const WithOAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
 const WithHardcodedAuth = ({children}: { children: ReactNode | ReactNode[] }) => {
     return (
         <AuthContext value={{
-            getUserProfile: () => undefined,
+            getUserProfile: () => {
+               return {
+                   roles: ['kdcube:role:super-admin']
+               }
+            },
             getUserAuthToken: () => getHardcodedAuthToken(),
             getUserIdToken: () => null,
             getRoutes: () => null,
