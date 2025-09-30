@@ -946,6 +946,8 @@ class ChatWorkflow:
         # unified communicator
         self.comm = communicator
 
+        self.config = config
+
         # db connection pool (asyncpg)
         self.pg_pool = pg_pool
 
@@ -1223,7 +1225,7 @@ class ChatWorkflow:
         nodes.insert(2, "classifier")
         return nodes
 
-    def suggestions(self):
+    def suggestions(self, **kwargs):
         return [
             "What light, watering, and soil do my common houseplants need?",
             "Why are my leaves yellow/brown/curling, and how do I fix it?",
