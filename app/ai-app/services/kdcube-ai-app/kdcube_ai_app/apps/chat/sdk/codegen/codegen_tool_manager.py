@@ -546,6 +546,7 @@ class CodegenToolManager:
                 "suggested_parameters": c.get("suggested_parameters", {}),
             } for c in candidates],
             policy_summary=(ctx.get("policy_summary") or ""),
+            context_hint=(ctx.get("context_hint") or ""),
             prefs_hint=(ctx.get("prefs_hint") or {}),
             # is_spec_domain=ctx.get("is_spec_domain"),
             topics=ctx.get("topics") or [],
@@ -665,12 +666,18 @@ class CodegenToolManager:
             except Exception:
                 program_history = []
 
-        history_hint = project_retrieval._history_digest(program_history, limit=3)
+        current_turn = {
+            "user": {
+                "text": user_text,
+            }
+        }
+
+        # history_hint = project_retrieval._history_digest(program_history, limit=3)
         context_hint = (context_hint or "")
         context_hint = (
             f"{context_hint}\n"
-            f"Relevant prior runs (selected by classifier): {history_hint}. "
-            f"They are available under OUTPUT_DIR/context.json → program_history[]."
+            # f"Relevant prior runs (selected by classifier): {history_hint}. "
+            # f"They are available under OUTPUT_DIR/context.json → program_history[]."
         ).strip()
 
         result: Dict[str, Any] = {
@@ -750,6 +757,7 @@ class CodegenToolManager:
                 constraints={"prefer_direct_tools_exec": True, "minimize_logic": True, "concise": True, "line_budget": 80},
                 max_rounds=1,
                 program_history=program_history,
+                current_turn=current_turn
             )
 
             # Extract solver JSON and derived blocks
@@ -994,6 +1002,7 @@ class CodegenToolManager:
             max_rounds: int = 1,
             timeout_s=120,
             program_history: Optional[List[dict]] = None,
+            current_turn: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Materialize + run codegen once (or a few times with chaining) and collect outputs."""
         from kdcube_ai_app.apps.chat.sdk.codegen.team import _today_str
@@ -1058,13 +1067,15 @@ class CodegenToolManager:
             latest_presentation = ""
             latest_solver_failure = ""
             latest_turn_log = ""
+            prev_user_text = ""
+            prev_assistant_text = ""
             try:
                 if program_history:
                     # 2) Reconcile & get canonical sources (and rewritten tokens in-place)
                     rec = project_retrieval.reconcile_citations_for_context(program_history, max_sources=60, rewrite_tokens_in_place=True)
                     canonical_sources = rec["canonical_sources"]   # ← pass this to context.json["sources"]
 
-                    # 3) Choose the “current” editable (usually newest run)
+                    # 3) Choose the "current" editable (usually newest run)
                     latest = next(iter(program_history[0].values()), {}) if program_history else {}
                     canvas_md = (latest.get("project_canvas") or {}).get("text") or (latest.get("project_canvas") or {}).get("value") or ""
 
@@ -1072,6 +1083,10 @@ class CodegenToolManager:
                     latest_presentation = inner.get("program_presentation") if isinstance(inner.get("program_presentation"), str) else ""
                     latest_solver_failure = inner.get("solver_failure") if isinstance(inner.get("solver_failure"), str) else ""
                     latest_turn_log = ((inner.get("project_log") or {}).get("text") or "")
+
+                    # newest prior messages (use the same newest history record)
+                    prev_user_text = (inner.get("user") or "") or ""
+                    prev_assistant_text = (inner.get("assistant") or "") or ""
             except Exception:
                 pass
 
@@ -1091,6 +1106,11 @@ class CodegenToolManager:
                 "run_id": run_id,
                 "result_interpretation_instruction": result_interpretation_instruction,
                 "internal_thinking": internal_thinking,
+                # Conversation slice for this run (minimal, last-only)
+                "current_turn": current_turn if current_turn else {},
+                "current_user": {"text": (current_turn.get("user") or {}).get("text","")},
+                "previous_user": {"text": prev_user_text},
+                "previous_assistant": {"text": prev_assistant_text},
             }
             # write runtime inputs
             self.write_runtime_inputs(

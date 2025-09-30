@@ -295,20 +295,31 @@ class ContextTools:
     Exposes: fetch_working_set(), merge_sources()
     """
 
+    # @kernel_function(
+    #     name="fetch_working_set",
+    #     description=(
+    #         "Retrieve the latest project state for editing workflows. "
+    #         "Gets the most recent project canvas, citations, and media from prior runs. "
+    #         "Use this at the start of edit/update requests to build upon existing work."
+    #     )
+    # )
+    # async def fetch_working_set(
+    #         self,
+    #         select: Annotated[str, "Selection method: 'latest' (most recent with content)", {"enum": ["latest"]}] = "latest",
+    # ) -> Annotated[dict, "dict with {existing_project_canvas: str, existing_project_log: str, existing_sources: [{sid,title,url,text}]}. Use existing_project_canvas as base content to edit."]:
+    # ) -> Annotated[dict, "dict with {project_canvas: str, project_log_md: str, sources: [{sid,title,url,text}], media: []}. Use canvas_md as base content to edit."]:
     @kernel_function(
         name="fetch_working_set",
         description=(
-            "Retrieve the latest project state for editing workflows. "
-            "Gets the most recent project canvas, citations, and media from prior runs. "
-            "Use this at the start of edit/update requests to build upon existing work."
+                "Get selected past project state (canvas/log/sources/media) plus a small chat slice (past user/assistant messages, current turn user message). "
+                "Call when: (1) starting an edit/update turn to build on existing work; "
+                "(2) you need the full current user message."
         )
     )
     async def fetch_working_set(
             self,
             select: Annotated[str, "Selection method: 'latest' (most recent with content)", {"enum": ["latest"]}] = "latest",
-    ) -> Annotated[dict, "dict with {existing_project_canvas: str, existing_project_log: str, existing_sources: [{sid,title,url,text}]}. Use existing_project_canvas as base content to edit."]:
-    # ) -> Annotated[dict, "dict with {project_canvas: str, project_log_md: str, sources: [{sid,title,url,text}], media: []}. Use canvas_md as base content to edit."]:
-
+    ) -> Annotated[dict, "dict with { existing_selection:{exec_id,select}, existing_project_canvas:str (Markdown; global [[S:n]]), existing_project_log:str (Markdown; global [[S:n]]), existing_sources:[{sid,title,url,text,...}] (canonical; global SIDs), existing_media:[...], current_user:{text}, previous_user?:{text}, previous_assistant?:{text} }. Use existing_project_canvas as the base when editing; treat existing_sources as prior_sources; read only minimal spans from chat messages."]:
 
         goal_kind: Annotated[str, "Optional filter by project type (unused currently)"] = "",
         query: Annotated[str, "Optional search query for specific content (unused currently)"] = ""
@@ -345,6 +356,11 @@ class ContextTools:
         # IMPORTANT: always return the canonical (cross-turn) sources here
         sources = canonical_sources
 
+        current_turn = ctx.get("current_turn")
+        current_user_prompt = current_turn.get("user")
+        previous_user_prompt = (ctx.get("previous_user") or {})
+        previous_assistant_reply = (ctx.get("previous_assistant") or {})
+
         return {
             # "reused": reused,
             "existing_selection": {"exec_id": exec_id or "", "select": select},
@@ -352,6 +368,25 @@ class ContextTools:
             "existing_project_log": project_log,
             "existing_sources": sources,   # ← global, deduped, contiguous SIDs
             "existing_media": media,
+            "current_user": {"text": (current_user_prompt or {}).get("text","")},
+            "previous_user": {"text": (previous_user_prompt or {}).get("text","")},
+            "previous_assistant": {"text": (previous_assistant_reply or {}).get("text","")},
+
+            # "current_user_prompt": {
+            #     "text": current_user_prompt.get("text"),
+            #     "attachments": [
+            #         {
+            #             "id": "att-001",
+            #             "name": "budget.xlsx",
+            #             "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            #             "size": 123456,
+            #             "sha256": "<hex>",
+            #             "uri": "store://…",              # or file path if you mount it
+            #             "notes": "optional"
+            #         }
+            #     ],
+            #     "spans": []   # optional: We will do this later with LLM which will "zone" the user input and give these hints. We will also share these hints to codegen so it is aware on what we have
+            # }
         }
 
     @kernel_function(

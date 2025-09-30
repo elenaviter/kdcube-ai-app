@@ -1,3 +1,5 @@
+from typing import List, Dict, Any
+
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex
@@ -24,6 +26,90 @@ async def get_pg_pool(_settings):
     )
     return _pg_pool
 
+async def _build_program_history_from_turn_ids(
+        context_rag_client,
+        user_id,
+        conversation_id: str,
+        turn_ids: List[str],
+        scope: str = "track", days: int = 365) -> List[Dict[str, Any]]:
+    """
+    For each turn_id, materialize: program presentation (if present), project_canvas / project_log
+    from deliverables, and citations tied to the run. Returns the same shape as _build_program_history().
+    """
+    out = []
+    seen_runs = set()
+
+    for tid in turn_ids:
+        mat = await context_rag_client.materialize_turn(
+            user_id=user_id,conversation_id=conversation_id,
+            turn_id=tid, scope=scope, days=days, with_payload=True
+        )
+
+        # Unpack rich envelopes (payload + ts + tags)
+        prez_env = (mat.get("presentation") or {})
+        dels_env = mat.get("deliverables") or {}
+        assistant_env = mat.get("assistant") or {}
+        user_env = mat.get("user") or {}
+        solver_failure_env = mat.get("solver_failure") or {}
+        citables_env = mat.get("citables") or {}
+
+        prez = ((prez_env or {}).get("payload") or {}).get("payload") or {}
+        dels = ((dels_env or {}).get("payload") or {}).get("payload") or {}
+        citables = ((citables_env or {}).get("payload") or {}).get("payload") or {}
+        assistant = ((((assistant_env or {}).get("payload") or {}).get("payload") or {})).get("completion") or ""
+        user = (((user_env or {}).get("payload") or {}).get("payload") or {}).get("prompt") or ""
+
+        d_items = list((dels or {}).get("items") or [])
+        cite_items =  list((citables or {}).get("items") or [])
+        round_reason = (dels or {}).get("round_reasoning") or ""
+
+        # Prefer assistant ts, else user ts
+        ts_val = assistant_env.get("ts") or user_env.get("ts") or ""
+
+        # codegen_run_id priority: deliverables.payload -> tags -> presentation markdown
+        codegen_run_id = (dels or {}).get("execution_id") or ""
+
+        # Presentation markdown (if present)
+        pres_md = (prez.get("markdown") or "") if isinstance(prez, dict) else ""
+
+        # Citations bundle (if we have run id)
+        cites = {"items": cite_items}
+
+        # Extract canvas/log from deliverables items
+        # canvas = _pick_canvas_slot(d_items) or {}
+        # project_log = _pick_project_log_slot(d_items) or {}
+
+        _norm_citation = lambda x: x
+        canvas, project_log = {}, {}
+
+        exec_id = codegen_run_id
+        if exec_id in seen_runs:
+            continue
+        seen_runs.add(exec_id)
+
+        # Solver failure (markdown, if any)
+        solver_failure = ((solver_failure_env or {}).get("payload") or {}).get("payload") or {}
+        solver_failure_md = (solver_failure.get("markdown") or "") if isinstance(solver_failure, dict) else ""
+
+        ret = {
+            **({"program_presentation": pres_md} if pres_md else {}),
+            **({"project_canvas": {"format": canvas.get("format","markdown"), "text": canvas.get("value","")}} if canvas else {}),
+            **({"project_log": {"format": project_log.get("format","markdown"), "text": project_log.get("value","")}} if project_log else {}),
+            **({"solver_failure": solver_failure_md} if solver_failure_md else {}),
+            **({"web_links_citations": {"items": [_norm_citation(c) for c in cites["items"] if _norm_citation(c)]}}),
+            **{"media": []},
+            "ts": ts_val,
+            **({"codegen_run_id": codegen_run_id} if codegen_run_id else {}),
+            **({"round_reasoning": round_reason} if round_reason else {}),
+            "assistant": assistant,
+            "user": user,
+        }
+        out.append({exec_id: ret})
+
+    # newest first
+    out.sort(key=lambda e: next(iter(e.values())).get("ts","") or "", reverse=True)
+    return out
+
 async def main():
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv())
@@ -42,7 +128,17 @@ async def main():
     conversation_id = "7c41b8e3-27cd-48ff-840e-9e158d1ee193"
     conversation_id = "a"
 
+    conversation_id = ""
+    tid = "turn_1759189840133_bo6bum"
+    scope = "track"
+    days = 365
+    # mat = await ctx_client.materialize_turn(
+    #     turn_id=tid, scope=scope, days=days, with_payload=True
+    # )
+    conversation_id = "e2298386-90fa-4a3e-9dde-ec5f040539d8"
+    pro = await _build_program_history_from_turn_ids(ctx_client, user_id=user_id, conversation_id=conversation_id, turn_ids=[tid], scope=scope, days=days)
     conversation_id = "01c414d5-ef92-402a-ae1b-77d493961329"
+
     turns = await conv_idx.get_conversation_turn_ids_from_tags(user_id=user_id, conversation_id=conversation_id)
     print(f"Turns: {turns}")
 

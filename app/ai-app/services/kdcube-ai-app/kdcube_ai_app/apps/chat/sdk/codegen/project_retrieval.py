@@ -155,6 +155,10 @@ async def _build_program_history_from_turn_ids(self, *,
         prez = ((prez_env or {}).get("payload") or {}).get("payload") or {}
         dels = ((dels_env or {}).get("payload") or {}).get("payload") or {}
         citables = ((citables_env or {}).get("payload") or {}).get("payload") or {}
+
+        assistant = ((((assistant_env or {}).get("payload") or {}).get("payload") or {})).get("completion") or ""
+        user = (((user_env or {}).get("payload") or {}).get("payload") or {}).get("prompt") or ""
+
         d_items = list((dels or {}).get("items") or [])
         cite_items =  list((citables or {}).get("items") or [])
         round_reason = (dels or {}).get("round_reasoning") or ""
@@ -194,6 +198,8 @@ async def _build_program_history_from_turn_ids(self, *,
             "ts": ts_val,
             **({"codegen_run_id": codegen_run_id} if codegen_run_id else {}),
             **({"round_reasoning": round_reason} if round_reason else {}),
+            "assistant": assistant,
+            "user": user,
         }
         out.append({exec_id: ret})
 
