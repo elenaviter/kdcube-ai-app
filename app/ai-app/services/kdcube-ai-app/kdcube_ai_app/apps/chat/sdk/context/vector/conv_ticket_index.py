@@ -31,8 +31,18 @@ class ConvTicketIndex:
     @staticmethod
     def get_context_pins(t: Ticket) -> List[str]:
         d = dict(getattr(t, "data", {}) or {})
-        pins = d.get("context_pins") or d.get("last_materialize_turn_ids") or []
+        pins = d.get("context_pins") or []
         return [p for p in pins if isinstance(p, str) and p.strip()]
+
+    @staticmethod
+    def get_memory_pins(t: Ticket) -> List[str]:
+        d = dict(getattr(t, "data", {}) or {})
+        return [p for p in (d.get("memory_pins") or []) if isinstance(p, str) and p.strip()]
+
+    @staticmethod
+    def get_selected_bucket_ids(t: Ticket) -> List[str]:
+        d = dict(getattr(t, "data", {}) or {})
+        return [bid for bid in (d.get("selected_bucket_ids") or []) if isinstance(bid, str) and bid.strip()]
 
     async def set_context_pins(self, *, ticket_id: str, pins: List[str]) -> None:
         await self.store.update_ticket(
