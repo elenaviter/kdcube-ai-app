@@ -232,6 +232,7 @@ class ContextRAGClient:
             conversation_id=conversation_id,
             bundle_id=bundle_id,
             role="artifact", text=md,
+            id="turn.log",
             payload=payload,
             meta={"kind": "turn.log", "turn_id": turn_id, "track_id": track_id},
             embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
@@ -313,6 +314,15 @@ class ContextRAGClient:
             user_id=user_id, conversation_id=conversation_id, track_id=track_id,
             roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
         )
+
+        # 8) files of the certain mime types (e.g., textual)
+        files = await self.recent(
+            kinds=("artifact:codegen.program.files",),
+            scope=scope, days=days, limit=3, ctx=ctx,
+            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
+            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
+        )
+
         def first(results: dict) -> Optional[dict]:
             arr = next(iter(results.get("items") or []), None)
             return arr
@@ -325,6 +335,7 @@ class ContextRAGClient:
             "citables": first(citables),
             "solver_failure": first(solver_failure),
             "turn_log": first(turn_log),
+            "files": first(files),
         }
 
     async def append_reaction_to_turn_log(self, *,
@@ -344,6 +355,7 @@ class ContextRAGClient:
             text=f"[turn.log.reaction]\n{reaction}",
             payload=payload,
             meta={"kind": "turn.log.reaction", "turn_id": turn_id, "track_id": track_id},
+            id="turn.log.reaction",
             embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
             fingerprint=fingerprint
         )
@@ -381,7 +393,9 @@ class ContextRAGClient:
             tenant=tenant, project=project, user=user_id, fingerprint=None,
             conversation_id=conversation_id,
             bundle_id=bundle_id,
-            role="artifact", text=content_str,
+            role="artifact",
+            text=content_str,
+            id=kind,
             payload=content,
             meta={"kind": kind, "turn_id": turn_id, "track_id": track_id},
             embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
@@ -459,6 +473,7 @@ class ContextRAGClient:
             tenant=tenant, project=project, user=user_id, fingerprint=None,
             conversation_id=conversation_id, bundle_id=bundle_id,
             role="artifact", text=content_str,
+            id=kind,
             payload=content,
             meta={"kind": kind, "turn_id": turn_id, "track_id": track_id},
             embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,

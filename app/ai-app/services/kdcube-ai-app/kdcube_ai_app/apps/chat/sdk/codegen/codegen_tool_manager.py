@@ -72,6 +72,333 @@ def _resolve_tools(specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         resolved.append({"ref": str(file_path), "alias": alias, "use_sk": use_sk})
     return resolved
 
+    # -------- call grouping (ordered) --------
+
+def _group_calls_sequential(out_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Group normalized out[] into *ordered* calls by sequence:
+    consecutive items with identical (tool_id, tool_input) belong to the same call.
+    This preserves call order and avoids merging separate identical calls.
+    Returns:
+      [{"order": i, "tool_id": "...", "input": {...}, "outputs":[out-item,...]}]
+    """
+    calls: List[Dict[str, Any]] = []
+    cur: Optional[Dict[str, Any]] = None
+
+    def _same(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        return (a.get("tool_id") or "") == (b.get("tool_id") or "") and (a.get("input") or {}) == (b.get("input") or {})
+
+    for it in (out_items or []):
+        if not isinstance(it, dict):
+            continue
+        base = {"tool_id": it.get("tool_id") or "", "input": it.get("input") or {}}
+        if cur and _same(cur, base):
+            cur["outputs"].append(it)
+        else:
+            if cur:
+                calls.append(cur)
+            cur = {"tool_id": base["tool_id"], "input": base["input"], "outputs": [it]}
+    if cur:
+        calls.append(cur)
+    for i, c in enumerate(calls, 1):
+        c["order"] = i
+    return calls
+
+def _extract_solver_json_from_round(r0: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Fetch the primary JSON payload (first output item with kind=json)."""
+    items = (r0.get("outputs") or {}).get("items", [])
+    for it in items:
+        data = it.get("data")
+        if isinstance(data, dict) and data.get("ok") is not None:
+            return data
+    return None
+
+def analyze_execution(rounds,
+                      plan: SolutionPlan,
+                      scratchpad: TurnScratchpad,
+                      log: AgentLogger)-> SolutionExecution:
+
+    # # Extract solver JSON and derived blocks
+    round = next(iter(rounds or []), None)
+    solver_json = _extract_solver_json_from_round(round) if round else {}
+
+    out_items: List[Dict[str, Any]] = (solver_json or {}).get("out") or []
+
+    # Deliverables: STRICTLY ONE artifact per contract slot
+    contract_keys = set(plan.contract_dyn.keys()) if isinstance(plan.contract_dyn, dict) else set()
+
+    by_slot_single: Dict[str, Dict[str, Any]] = {}
+    for art in out_items:
+        rid = str(art.get("resource_id") or "")
+        if not rid.startswith("slot:"):
+            continue
+        slot_name = rid.split(":", 1)[1]  # after 'slot:' prefix
+        # last write wins if duplicates (shouldn't happen)
+        by_slot_single[slot_name] = art
+
+    deliverables = {
+        k: {
+            "description": (plan.contract_dyn[k] or {}).get("description"),
+            "value": by_slot_single.get(k),
+            "type": (plan.contract_dyn[k] or {}).get("type"),
+        }
+        for k in contract_keys
+    }
+
+    # Citations: any citable inline out item
+    citations = []
+    for a in out_items:
+        if a.get("type") == "inline" and bool(a.get("citable")):
+            citations.append(a)
+
+    execution = SolutionExecution(
+        deliverables=deliverables,
+        citations=citations,
+        calls=_group_calls_sequential(out_items),
+        result_interpretation_instruction=round.get("result_interpretation_instruction") if round else None,
+    )
+
+    missing_text_surrogates = []
+    for slot_name, spec in (deliverables or {}).items():
+        art = spec.get("value") or {}
+        if isinstance(art, dict) and art.get("type") == "file":
+            # mime = (art.get("mime") or "").strip()
+            # if project_retrieval._is_binary_mime(mime):
+            # output = art.get("output")
+            txt = ((art.get("output") or {}).get("text") or "").strip()
+            if not txt:
+                missing_text_surrogates.append(slot_name)
+    if missing_text_surrogates:
+        msg = f"file slots missing 'text' surrogate: {missing_text_surrogates}"
+        scratchpad.tlog.note(f"[solver.validation_error] {msg}")
+        execution.error = (execution.error + " | " if execution.error else "") + msg
+
+    # PROJECT LOG → tlog
+    pl = (deliverables or {}).get("project_log") or {}
+    v = pl.get("value")
+    if isinstance(v, dict):
+        pl_text = (v.get("output") or {}).get("text") or ""
+    elif isinstance(v, str):
+        pl_text = v
+    else:
+        pl_text = ""
+
+    try:
+        solver_json = solver_json or {}
+        ok = bool(solver_json.get("ok"))
+        contract = plan.contract_dyn or {}
+        filled = sorted([k for k,v in (deliverables or {}).items() if isinstance(v.get("value"), dict)])
+        missing = sorted(list(set(contract.keys()) - set(filled)))
+        status = "ok" if ok else "failed"
+        scratchpad.tlog.solver(f"[solver] mode=codegen; status={status}; filled={filled}; missing={missing}; result_interpretation_instruction={execution.result_interpretation_instruction or plan.result_interpretation_instruction(solved = ok)}")
+
+        validation_error = {"missing": missing, "contract": contract} if len(filled) != len(contract) else {}
+
+        if validation_error:
+            solver_json["validation_error"] = validation_error
+
+        if pl_text:
+            scratchpad.tlog.solver(f"[solve.log]\n{pl_text.strip()[:4000]}")
+
+        # Log tool calls
+        try:
+            tlog_line = ""
+            for c in (execution.calls or []):
+                tool_id = c.get("tool_id","")
+                order = c.get("order")
+                outputs = c.get("outputs") or []
+                inputs = c.get("input") or []
+                l = f"[solver.calls] order={order} tool={tool_id} inputs={inputs} outputs={outputs} "
+                log.log(l)
+                tlog_line += f"{tool_id};"
+            if tlog_line:
+                scratchpad.tlog.solver(f"[tools.calls]: {tlog_line}")
+        except Exception:
+            pass
+
+        if not ok:
+            err = solver_json.get("error") or {}
+            validation_error = solver_json.get("validation_error") or {}
+
+            # ✅ Extract these at the top level to avoid scope issues
+            missing_list = validation_error.get("missing", [])
+            filled_list = validation_error.get("filled", [])
+            contract_dict = validation_error.get("contract", {})
+
+            # Extract runtime error details
+            description = err.get("description", "")
+            error = err.get("error", "")
+            where = err.get("where", "")
+            details = err.get("details", "")
+            managed = err.get("managed", False)
+
+            # Build comprehensive error message
+            error_parts = []
+
+            # Add runtime error if present
+            if any([description, where, details, error]):
+                runtime_error = f"where={where} error={error} details={details}"
+                error_parts.append(runtime_error)
+                scratchpad.tlog.note(f"[solver.runtime_error] {runtime_error}")
+
+            # Add validation error if present
+            if validation_error:
+                validation_summary = (
+                    f"validation_failed: {len(filled_list)}/{len(contract_dict)} deliverables satisfied; "
+                    f"filled={filled_list}; missing={missing_list}"
+                )
+                error_parts.append(validation_summary)
+                scratchpad.tlog.note(f"[solver.validation_error] {validation_summary}")
+
+            # Set execution.error with combined information
+            execution.error = " | ".join(error_parts) if error_parts else "Unknown solver failure"
+
+            # ✅ IMPROVED: Build better failure presentation
+            failure_sections = []
+
+            # === VALIDATION ERROR SECTION ===
+            if validation_error:
+                validation_md = [
+                    "## Contract Validation Failure",
+                    "",
+                    f"**Status:** {len(filled_list)}/{len(contract_dict)} deliverables satisfied",
+                    "",
+                ]
+
+                # Show filled slots first (success)
+                if filled_list:
+                    validation_md.extend([
+                        "### ✅ Produced Deliverables",
+                        ""
+                    ])
+                    for key in filled_list:
+                        slot_spec = deliverables.get(key, {})
+                        artifact = slot_spec.get("value") or {}
+                        slot_type = artifact.get("type") or slot_spec.get("type") or "unknown"
+                        desc = slot_spec.get("description") or contract_dict.get(key, {}).get("description", "")
+
+                        # Show basic info about what was produced
+                        validation_md.append(f"**`{key}`** ({slot_type})")
+                        if desc:
+                            validation_md.append(f"  - {desc}")
+
+                        # Add format/mime info
+                        if slot_type == "inline":
+                            fmt = artifact.get("format", "")
+                            if fmt:
+                                validation_md.append(f"  - Format: {fmt}")
+                        elif slot_type == "file":
+                            mime = artifact.get("mime", "")
+                            output = artifact.get("output") or {}
+                            path = output.get("path", "")
+                            if path:
+                                validation_md.append(f"  - Path: {path}")
+                            if mime:
+                                validation_md.append(f"  - MIME: {mime}")
+                        validation_md.append("")
+
+                # Show missing slots (failure)
+                if missing_list:
+                    validation_md.extend([
+                        "### ❌ Missing Deliverables",
+                        ""
+                    ])
+                    for key in missing_list:
+                        spec = contract_dict.get(key, {})
+                        slot_type = spec.get("type", "unknown")
+                        desc = spec.get("description", "")
+
+                        validation_md.append(f"**`{key}`** ({slot_type})")
+                        if desc:
+                            validation_md.append(f"  - {desc}")
+                        validation_md.append("")
+
+                failure_sections.append("\n".join(validation_md))
+
+            # === RUNTIME ERROR SECTION ===
+            if any([description, where, details, error]):
+                runtime_md = [
+                    "## Runtime Error",
+                    "",
+                    f"**Location:** `{where or 'unknown'}`",
+                    f"**Error Type:** `{error or 'UnknownError'}`",
+                    "",
+                ]
+
+                if description:
+                    runtime_md.extend([
+                        "### Description",
+                        description,
+                        "",
+                    ])
+
+                if details:
+                    runtime_md.extend([
+                        "### Details",
+                        "```",
+                        str(details)[:1000],
+                        "```",
+                        "",
+                    ])
+
+                failure_sections.append("\n".join(runtime_md))
+
+            # === COMBINED FAILURE PRESENTATION ===
+            if failure_sections:
+                combined_md = [
+                    "# Solver Execution Failure",
+                    "",
+                    f"**Status:** {status}",
+                    f"**Deliverables:** {len(filled_list)}/{len(contract_dict)} satisfied",
+                    "",
+                    "---",
+                    "",
+                ]
+
+                # ADD: Instructions for downstream (from plan)
+                instructions = plan.instructions_for_downstream or ""
+                if instructions:
+                    combined_md.extend([
+                        "## Solver was instructed this way:",
+                        "",
+                        instructions.strip(),
+                        "",
+                    ])
+
+                combined_md.append("---")
+                combined_md.append("")
+
+                combined_md.append("\n\n---\n\n".join(failure_sections))
+
+                execution.failure_presentation = {
+                    "markdown": "\n".join(combined_md),
+                    "struct": {
+                        "runtime_error": err if any([description, where, details, error]) else None,
+                        "validation_error": {
+                            "filled": filled_list,
+                            "missing": missing_list,
+                            "total": len(contract_dict)
+                        } if validation_error else None,
+                        "status": status,
+                        "instructions_for_downstream": instructions,
+                    }
+                }
+
+                scratchpad.tlog.note(
+                    f"[solver.failure] Validation: {len(filled_list)}/{len(contract_dict)} slots; "
+                    f"Runtime errors: {'yes' if err else 'no'}"
+                )
+
+    except Exception as e:
+        log.log(f"[solver] error during tlog summary\n" + traceback.format_exc(), level="ERROR")
+        execution.error = f"tlog_summary_error: {str(e)}"
+        execution.failure_presentation = {
+            "markdown": f"### Internal Error\n\nFailed to process solver results:\n```\n{traceback.format_exc()}\n```",
+            "struct": {"internal_error": str(e)}
+        }
+
+    return execution
+
 # ---------- Manager ----------
 
 class CodegenToolManager:
@@ -113,6 +440,11 @@ class CodegenToolManager:
         self.tools_info: List[Dict[str, Any]] = []   # flattened entries across modules
 
         used_aliases: set[str] = set()
+
+        async def _emit_delta(text: str, idx: int, meta: dict | None = None, completed: bool = False):
+            marker = (meta or {}).get("marker", "answer")
+            await self.comm.delta(text=text, index=idx, marker=marker, completed=completed)
+
 
         for spec in specs:
             mod_name, mod = self._load_tools_module(spec.ref)
@@ -665,17 +997,25 @@ class CodegenToolManager:
 
             except Exception:
                 program_history = []
+        # build a clear last working canvas for solvability
+        try:
+            last_mat_working_canvas = project_retrieval._compose_last_materialized_canvas_block(program_history)
+        except Exception:
+            last_mat_working_canvas = "(no prior canvas)"
 
         current_turn = {
             "user": {
-                "text": user_text,
-            }
+                "prompt": user_text
+            },
+            "ts": scratchpad.started_at
         }
 
         # history_hint = project_retrieval._history_digest(program_history, limit=3)
         context_hint = (context_hint or "")
         context_hint = (
             f"{context_hint}\n"
+            f"Suggested last working canvas and the works produced on it:\n"
+            f"{last_mat_working_canvas}\n"
             # f"Relevant prior runs (selected by classifier): {history_hint}. "
             # f"They are available under OUTPUT_DIR/context.json → program_history[]."
         ).strip()
@@ -760,106 +1100,10 @@ class CodegenToolManager:
                 current_turn=current_turn
             )
 
-            # Extract solver JSON and derived blocks
             rounds = cg_res.get("rounds") or []
-            solver_json = self._extract_solver_json_from_round(rounds[0]) if rounds else {}
-            out_items: List[Dict[str, Any]] = (solver_json or {}).get("out") or []
-
-            # Deliverables: STRICTLY ONE artifact per contract slot
-            contract_keys = set(plan.contract_dyn.keys()) if isinstance(plan.contract_dyn, dict) else set()
-
-            by_slot_single: Dict[str, Dict[str, Any]] = {}
-            for art in out_items:
-                rid = str(art.get("resource_id") or "")
-                if not rid.startswith("slot:"):
-                    continue
-                slot_name = rid.split(":", 1)[1]  # after 'slot:' prefix
-                # last write wins if duplicates (shouldn't happen)
-                by_slot_single[slot_name] = art
-
-            deliverables = {
-                k: {"description": plan.contract_dyn[k], "value": by_slot_single.get(k)}
-                for k in contract_keys
-            }
-            # Citations: any citable inline out item
-            citations = []
-            for a in out_items:
-                if a.get("type") == "inline" and bool(a.get("citable")):
-                    citations.append(a)
-
-            execution = SolutionExecution(
-                deliverables=deliverables,
-                citations=citations,
-                calls=self._group_calls_sequential(out_items)
-            )
+            execution = analyze_execution(rounds=rounds, plan=plan, scratchpad=scratchpad, log=self.log)
             result["codegen"] = cg_res
             result["execution"] = execution
-            sr = SolveResult(result)
-
-            # PROJECT LOG → tlog
-            pl = (deliverables or {}).get("project_log") or {}
-            v = pl.get("value")
-            if isinstance(v, dict):
-                pl_text = v.get("output") or v.get("text") or ""
-            elif isinstance(v, str):
-                pl_text = v
-            else:
-                pl_text = ""
-
-            # ---- tlog summary for downstream answer agent
-            try:
-                ok = bool((solver_json or {}).get("ok"))
-                contract = plan.contract_dyn or {}
-                filled = sorted([k for k,v in (deliverables or {}).items() if isinstance(v.get("value"), dict)])
-                missing = sorted(list(set(contract.keys()) - set(filled)))
-                status = "ok" if ok else "failed"
-                scratchpad.tlog.solver(f"[solver] mode=codegen; status={status}; filled={filled}; missing={missing}; result_interpretation_instruction={sr.interpretation_instruction()}")
-
-                if pl_text:
-                    scratchpad.tlog.solver(f"[solve.log]\n{pl_text.strip()[:4000]}")
-                    # error details (if any)
-                try:
-                    tlog_line = ""
-                    for c in (execution.calls or []):
-                        tool_id = c.get("tool_id","")
-                        order = c.get("order")
-                        outputs = c.get("outputs") or []
-                        inputs = c.get("input") or []
-                        l = f"[solver.calls] order={order} tool={tool_id} inputs={inputs} outputs={outputs} "
-                        self.log.log(l)
-                        tlog_line += f"{tool_id};"
-                    if tlog_line:
-                        scratchpad.tlog.solver(f"[tools.calls]: {tlog_line}")
-                except Exception:
-                    pass
-
-                if not ok and isinstance(solver_json, dict):
-                    err = solver_json.get("error") or {}
-                    """
-                    "error": {
-                        "where": (where or "runtime"),
-                        "details": str(details or ""),
-                        "error": str(error or ""),
-                        "description": description,
-                        "managed": bool(managed),
-                    }
-                    """
-                    description = err.get("description")
-                    error = err.get("error")
-                    where = err.get("where") or ""
-                    details = err.get("details") or ""
-                    if any([description, where, details]):
-                        execution.error = f"where={where} error={error} details={details} description={description}"
-                        scratchpad.tlog.note(f"[solver.error] {execution.error}")
-                        failure_md = ("### Solver JSON Failure",
-                                      "```json",
-                                      json.dumps(solver_json, ensure_ascii=False, indent=2),
-                                      "```")
-                        execution.failure_presentation = (
-                            { "markdown": failure_md, "struct": err }
-                        )
-            except Exception:
-                pass
 
         # ---- llm only (no tools) ----
         return SolveResult(result)
@@ -1037,6 +1281,28 @@ class CodegenToolManager:
         }
 
         remaining = max(1, int(max_rounds))
+        # TODO: MAYBE WE NEED TO RECONCILE THE HISTORY BEFOREHAND?
+        # Also look inside this function, it uses the "web_links_citations". So not only we must reconcile the history here also (for local usage though so copy)
+        # but also we need in reconcile to update the web_links_citations per turn. No?
+
+        program_history_reconciled = program_history or []
+        program_history.insert(0, {"current_turn": current_turn })
+
+        if program_history:
+            import copy
+            program_history_reconciled = copy.deepcopy(program_history)
+
+            # Single call does everything: rewrite tokens, update deliverables, update web_links_citations
+            rec = project_retrieval.reconcile_citations_for_context(
+                program_history_reconciled,
+                max_sources=60,
+                rewrite_tokens_in_place=True
+            )
+            canonical_sources = rec["canonical_sources"]
+            self.log.log(f"Canonical sources: {canonical_sources}")
+
+        program_playbook = project_retrieval.build_program_playbook(program_history_reconciled, max_turns=5)
+        self.log.log(f"Program playbook: {json.dumps(program_playbook or {}, indent=2)}")
         while remaining > 0:
             # stream codegen
             cg_stream = await solver_codegen_stream(
@@ -1044,9 +1310,11 @@ class CodegenToolManager:
                 task=current_task_spec,
                 adapters=adapters,
                 solvability=solvability,
+                program_playbook=program_playbook,
                 on_thinking_delta=self._mk_thinking_streamer("solver_codegen"),
                 ctx="solver_codegen"
             )
+            logging_helpers.log_agent_packet(self.AGENT_NAME, "codegen router", cg_stream)
             cg = (cg_stream or {}).get("agent_response") or {}
             internal_thinking = (cg_stream or {}).get("internal_thinking") or ""
             files = cg.get("files") or []
@@ -1069,35 +1337,47 @@ class CodegenToolManager:
             latest_turn_log = ""
             prev_user_text = ""
             prev_assistant_text = ""
-            try:
-                if program_history:
+
+            # try:
+                # if program_history:
                     # 2) Reconcile & get canonical sources (and rewritten tokens in-place)
-                    rec = project_retrieval.reconcile_citations_for_context(program_history, max_sources=60, rewrite_tokens_in_place=True)
-                    canonical_sources = rec["canonical_sources"]   # ← pass this to context.json["sources"]
+                    # rec = project_retrieval.reconcile_citations_for_context(program_history, max_sources=60, rewrite_tokens_in_place=True)
+                    # canonical_sources = rec["canonical_sources"]   # ← pass this to context.json["sources"]
 
                     # 3) Choose the "current" editable (usually newest run)
-                    latest = next(iter(program_history[0].values()), {}) if program_history else {}
-                    canvas_md = (latest.get("project_canvas") or {}).get("text") or (latest.get("project_canvas") or {}).get("value") or ""
+                    # latest = next(iter(program_history[0].values()), {}) if program_history else {}
+                    # canvas_md = (latest.get("project_canvas") or {}).get("text") or (latest.get("project_canvas") or {}).get("value") or ""
 
-                    exec_id, inner = next(iter(program_history[0].items()))
-                    latest_presentation = inner.get("program_presentation") if isinstance(inner.get("program_presentation"), str) else ""
-                    latest_solver_failure = inner.get("solver_failure") if isinstance(inner.get("solver_failure"), str) else ""
-                    latest_turn_log = ((inner.get("project_log") or {}).get("text") or "")
+                    # exec_id, inner = next(iter(program_history[0].items()))
+                    # latest_presentation = inner.get("program_presentation") if isinstance(inner.get("program_presentation"), str) else ""
+                    # latest_solver_failure = inner.get("solver_failure") if isinstance(inner.get("solver_failure"), str) else ""
+                    # latest_turn_log = ((inner.get("project_log") or {}).get("text") or "")
 
                     # newest prior messages (use the same newest history record)
-                    prev_user_text = (inner.get("user") or "") or ""
-                    prev_assistant_text = (inner.get("assistant") or "") or ""
-            except Exception:
-                pass
+                    # prev_user_text = (inner.get("user") or "") or ""
+                    # prev_assistant_text = (inner.get("assistant") or "") or ""
+
+            # except Exception:
+            #     pass
+
+            for turn in program_history:
+                turn_program = next(iter(turn.values()), {})
+                if turn_program:
+                    deliverables = turn_program.get("deliverables") or []
+                    files = [d for d in deliverables if d.get("value", {}).get("type") == "file"]
+                    # caution! side-effect: patch path in place
+                    await project_retrieval._rehost_previous_files(files, workdir)
 
             contract_out = solvability.get("output_contract_dyn") if isinstance(solvability, dict) else {}
+
             context = {
                 "request_id": request_id,
                 "program_history": program_history or [],
-                "program_history_brief": project_retrieval._history_digest(program_history, limit=3),
-                "latest_program_presentation": latest_presentation,
-                "latest_solver_failure": latest_solver_failure,
-                "latest_turn_log": latest_turn_log,
+                "program_playbook": program_playbook,
+                # "program_history_brief": project_retrieval._history_digest(program_history, limit=3),
+                # "latest_program_presentation": latest_presentation,
+                # "latest_solver_failure": latest_solver_failure,
+                # "latest_turn_log": latest_turn_log,
                 "topics": topics,
                 "prefs_hint": prefs_hint or {},
                 "policy_summary": policy_summary,
@@ -1108,9 +1388,9 @@ class CodegenToolManager:
                 "internal_thinking": internal_thinking,
                 # Conversation slice for this run (minimal, last-only)
                 "current_turn": current_turn if current_turn else {},
-                "current_user": {"text": (current_turn.get("user") or {}).get("text","")},
-                "previous_user": {"text": prev_user_text},
-                "previous_assistant": {"text": prev_assistant_text},
+                "current_user": (current_turn or {}).get("user"),
+                # "previous_user": {"text": prev_user_text},
+                # "previous_assistant": {"text": prev_assistant_text}
             }
             # write runtime inputs
             self.write_runtime_inputs(
@@ -1131,7 +1411,8 @@ class CodegenToolManager:
                                                      files={},
                                                      timeout_s=timeout_s,
                                                      globals={
-                                                         "CONTRACT": contract_out
+                                                         "CONTRACT": contract_out,
+                                                         "COMM_SPEC": self.comm._export_comm_spec_for_runtime(),
                                                      })
             collected = self.collect_outputs(output_dir=outdir, outputs=outputs)
 
@@ -1190,15 +1471,6 @@ class CodegenToolManager:
         }
 
     # -------- runtime IO & exec --------
-
-    def _extract_solver_json_from_round(self, r0: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Fetch the primary JSON payload (first output item with kind=json)."""
-        items = (r0.get("outputs") or {}).get("items", [])
-        for it in items:
-            data = it.get("data")
-            if isinstance(data, dict) and data.get("ok") is not None:
-                return data
-        return None
 
     def write_runtime_inputs(self, *, output_dir: pathlib.Path, context: Dict[str, Any], task: Dict[str, Any]) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1263,38 +1535,6 @@ class CodegenToolManager:
                 item["key"] = key
             out["items"].append(item)
         return out
-
-    # -------- call grouping (ordered) --------
-
-    def _group_calls_sequential(self, out_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Group normalized out[] into *ordered* calls by sequence:
-        consecutive items with identical (tool_id, tool_input) belong to the same call.
-        This preserves call order and avoids merging separate identical calls.
-        Returns:
-          [{"order": i, "tool_id": "...", "input": {...}, "outputs":[out-item,...]}]
-        """
-        calls: List[Dict[str, Any]] = []
-        cur: Optional[Dict[str, Any]] = None
-
-        def _same(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
-            return (a.get("tool_id") or "") == (b.get("tool_id") or "") and (a.get("input") or {}) == (b.get("input") or {})
-
-        for it in (out_items or []):
-            if not isinstance(it, dict):
-                continue
-            base = {"tool_id": it.get("tool_id") or "", "input": it.get("input") or {}}
-            if cur and _same(cur, base):
-                cur["outputs"].append(it)
-            else:
-                if cur:
-                    calls.append(cur)
-                cur = {"tool_id": base["tool_id"], "input": base["input"], "outputs": [it]}
-        if cur:
-            calls.append(cur)
-        for i, c in enumerate(calls, 1):
-            c["order"] = i
-        return calls
 
     # -------- comm helpers --------
 

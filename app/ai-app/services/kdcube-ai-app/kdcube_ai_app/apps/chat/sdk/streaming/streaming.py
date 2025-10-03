@@ -126,189 +126,570 @@ CLOSING_MARKER_PATTERNS = [
 CLOSING_MARKER_HOLDBACK = 50  # Hold back more aggressively in user mode
 
 
+# class _SectionsStreamParser:
+#     """
+#     Enhanced parser that prevents streaming of closing markers by using
+#     aggressive buffering and pre-scanning in user mode.
+#     """
+#
+#     def __init__(self, on_user: Callable[[str, bool], Any]):
+#         self.buf = ""
+#         self.mode: str = "pre"  # pre -> internal -> user -> json
+#         self.emit_from: int = 0
+#         self.internal_parts: List[str] = []
+#         self.user_parts: List[str] = []
+#         self.json_tail: str = ""
+#         self._on_user = on_user
+#         self._user_buffer = ""  # Special buffer for user content to prevent marker leakage
+#
+#     def _safe_window_end(self) -> int:
+#         # Everything before this index is safe to emit (no risk of cutting a marker)
+#         return max(self.emit_from, len(self.buf) - HOLDBACK)
+#
+#     def _safe_user_window_end(self) -> int:
+#         # More conservative window for user mode to prevent closing marker leakage
+#         return max(self.emit_from, len(self.buf) - CLOSING_MARKER_HOLDBACK)
+#
+#     def _contains_closing_marker(self, text: str) -> bool:
+#         """Check if text contains any closing markers."""
+#         for pattern in CLOSING_MARKER_PATTERNS:
+#             if pattern.search(text):
+#                 return True
+#         return False
+#
+#     def _extract_safe_user_content(self, text: str) -> Tuple[str, str]:
+#         """
+#         Extract content that's safe to emit, stopping before any closing marker.
+#         Returns (safe_content, remaining_text).
+#         """
+#         # Find the earliest closing marker
+#         earliest_match = None
+#         earliest_pos = len(text)
+#
+#         for pattern in CLOSING_MARKER_PATTERNS:
+#             match = pattern.search(text)
+#             if match and match.start() < earliest_pos:
+#                 earliest_match = match
+#                 earliest_pos = match.start()
+#
+#         if earliest_match:
+#             # Extract content before the marker
+#             safe_content = text[:earliest_pos]
+#             remaining = text[earliest_pos:]
+#             return safe_content, remaining
+#         else:
+#             return text, ""
+#
+#     async def _flush_user_buffer(self, final: bool = False):
+#         """Flush accumulated user content, checking for closing markers."""
+#         if not self._user_buffer:
+#             return
+#
+#         if final:
+#             # At end of stream, emit everything after stripping markers
+#             cleaned = _strip_service_markers_from_user(self._user_buffer)
+#             if cleaned:
+#                 await self._on_user(cleaned, False)
+#                 self.user_parts.append(cleaned)
+#             self._user_buffer = ""
+#         else:
+#             # Extract safe content that doesn't contain closing markers
+#             safe_content, remaining = self._extract_safe_user_content(self._user_buffer)
+#
+#             if safe_content:
+#                 cleaned = _strip_service_markers_from_user(safe_content)
+#                 if cleaned:
+#                     await self._on_user(cleaned, False)
+#                     self.user_parts.append(cleaned)
+#
+#             self._user_buffer = remaining
+#
+#     async def feed(self, piece: str, prev_len_hint: Optional[int] = None):
+#         """Feed a new streamed piece."""
+#         if not piece:
+#             return
+#         prev_len = len(self.buf) if prev_len_hint is None else prev_len_hint
+#         self.buf += piece
+#
+#         # Iterate until we can't progress further for this piece
+#         while True:
+#             if self.mode == "pre":
+#                 m, which = _find_earliest(
+#                     self.buf,
+#                     prev_len,
+#                     [(INT_RE, "internal"), (USER_RE, "user"), (JSON_RE, "json")],
+#                 )
+#                 if not m:
+#                     break  # wait for more bytes
+#                 self.emit_from = _skip_ws(self.buf, m.end())
+#                 self.mode = which
+#                 continue
+#
+#             if self.mode == "internal":
+#                 # Next can be USER or JSON (model may skip USER)
+#                 m, which = _find_earliest(
+#                     self.buf, prev_len, [(USER_RE, "user"), (JSON_RE, "json")]
+#                 )
+#                 if m and m.start() >= self.emit_from:
+#                     self.internal_parts.append(self.buf[self.emit_from : m.start()])
+#                     self.emit_from = _skip_ws(self.buf, m.end())
+#                     if which == "json":
+#                         self.json_tail = self.buf[self.emit_from :]
+#                         self.mode = "json"
+#                         break
+#                     self.mode = "user"
+#                     continue
+#
+#                 # Accumulate safe internal slice (not emitted)
+#                 safe_end = self._safe_window_end()
+#                 if safe_end > self.emit_from:
+#                     self.internal_parts.append(self.buf[self.emit_from : safe_end])
+#                     self.emit_from = safe_end
+#                 break
+#
+#             if self.mode == "user":
+#                 # Check for JSON transition
+#                 m, _ = _find_earliest(self.buf, prev_len, [(JSON_RE, "json")])
+#                 if m and m.start() >= self.emit_from:
+#                     # Add remaining content to user buffer before transitioning
+#                     chunk = self.buf[self.emit_from : m.start()]
+#                     if chunk:
+#                         self._user_buffer += chunk
+#
+#                     # Flush user buffer and transition to JSON
+#                     await self._flush_user_buffer(final=True)
+#                     self.emit_from = _skip_ws(self.buf, m.end())
+#                     self.json_tail = self.buf[self.emit_from :]
+#                     self.mode = "json"
+#                     break
+#
+#                 # Accumulate user content in buffer with conservative windowing
+#                 safe_end = self._safe_user_window_end()
+#                 if safe_end > self.emit_from:
+#                     chunk = self.buf[self.emit_from : safe_end]
+#                     if chunk:
+#                         self._user_buffer += chunk
+#                         self.emit_from = safe_end
+#
+#                         # Try to flush safe content from buffer
+#                         await self._flush_user_buffer(final=False)
+#                 break
+#
+#             if self.mode == "json":
+#                 self.json_tail += piece
+#                 break
+#
+#             break  # safety
+#
+#     async def finalize(self):
+#         """Flush any remaining content at end-of-stream."""
+#         if self.mode == "internal" and self.emit_from < len(self.buf):
+#             self.internal_parts.append(self.buf[self.emit_from :])
+#         elif self.mode == "user":
+#             # Add any remaining buffer content
+#             if self.emit_from < len(self.buf):
+#                 self._user_buffer += self.buf[self.emit_from :]
+#             # Flush user buffer with final=True to strip markers
+#             await self._flush_user_buffer(final=True)
+#
+#     # Convenience results
+#     @property
+#     def internal(self) -> str:
+#         return "".join(self.internal_parts).strip()
+#
+#     @property
+#     def user(self) -> str:
+#         return "".join(self.user_parts).strip()
+#
+#     @property
+#     def json(self) -> str:
+#         return self.json_tail
+
+
 class _SectionsStreamParser:
     """
-    Enhanced parser that prevents streaming of closing markers by using
-    aggressive buffering and pre-scanning in user mode.
+    Modes:
+      pre   -> before any BEGIN markers; we buffer until we see a BEGIN
+      internal -> after <<< BEGIN INTERNAL THINKING >>>, captured only
+      user  -> after <<< BEGIN USER-FACING THINKING >>>, streamed via callback
+      json  -> after <<< BEGIN STRUCTURED JSON >>>, captured only
     """
+    import re as _re
 
-    def __init__(self, on_user: Callable[[str, bool], Any]):
+    # BEGIN markers (existing)
+    _INT_RE  = _re.compile(r"<<<?\s*BEGIN\s+INTERNAL\s+THINKING\s*>>>?", _re.I)
+    _USER_RE = _re.compile(r"<<<?\s*BEGIN\s+USER[-–—]?\s*FACING\s*THINKING\s*>>>?", _re.I)
+    _JSON_RE = _re.compile(r"<<<?\s*BEGIN\s+STRUCTURED\s+JSON\s*>>>?", _re.I)
+
+    # NEW: things we never want to leak to the UI during USER streaming
+    _UNWANTED_USER_MARKERS = [
+        _re.compile(r"<<<?\s*END\s+USER[-–—]?\s*FACING\s*THINKING\s*>>>?", _re.I),
+        _re.compile(r"<<<?\s*END\s+INTERNAL\s+THINKING\s*>>>?", _re.I),
+        _re.compile(r"<<<?\s*END\s+STRUCTURED\s+JSON\s*>>>?", _re.I),
+        # If the model echoes a BEGIN back into the user-facing stream, scrub it too:
+        _re.compile(r"<<<?\s*BEGIN\s+USER[-–—]?\s*FACING\s*THINKING\s*>>>?", _re.I),
+    ]
+
+    def __init__(self, *, on_user):
         self.buf = ""
-        self.mode: str = "pre"  # pre -> internal -> user -> json
-        self.emit_from: int = 0
-        self.internal_parts: List[str] = []
-        self.user_parts: List[str] = []
-        self.json_tail: str = ""
-        self._on_user = on_user
-        self._user_buffer = ""  # Special buffer for user content to prevent marker leakage
+        self.mode = "pre"
+        self.emit_from = 0
+        self.on_user = on_user
+        self.internal = ""
+        self.user = ""
+        self.json = ""
+        # keep small holdback so we don’t cut markers across chunk boundaries
+        self.HOLDBACK = 48
 
-    def _safe_window_end(self) -> int:
-        # Everything before this index is safe to emit (no risk of cutting a marker)
-        return max(self.emit_from, len(self.buf) - HOLDBACK)
+    def _strip_unwanted_user_markers(self, s: str) -> str:
+        for pat in self._UNWANTED_USER_MARKERS:
+            s = pat.sub("", s)
+        return s
 
-    def _safe_user_window_end(self) -> int:
-        # More conservative window for user mode to prevent closing marker leakage
-        return max(self.emit_from, len(self.buf) - CLOSING_MARKER_HOLDBACK)
+    def _skip_ws(self, i: int) -> int:
+        while i < len(self.buf) and self.buf[i] in (" ", "\t", "\r", "\n"):
+            i += 1
+        return i
 
-    def _contains_closing_marker(self, text: str) -> bool:
-        """Check if text contains any closing markers."""
-        for pattern in CLOSING_MARKER_PATTERNS:
-            if pattern.search(text):
-                return True
-        return False
-
-    def _extract_safe_user_content(self, text: str) -> Tuple[str, str]:
-        """
-        Extract content that's safe to emit, stopping before any closing marker.
-        Returns (safe_content, remaining_text).
-        """
-        # Find the earliest closing marker
-        earliest_match = None
-        earliest_pos = len(text)
-
-        for pattern in CLOSING_MARKER_PATTERNS:
-            match = pattern.search(text)
-            if match and match.start() < earliest_pos:
-                earliest_match = match
-                earliest_pos = match.start()
-
-        if earliest_match:
-            # Extract content before the marker
-            safe_content = text[:earliest_pos]
-            remaining = text[earliest_pos:]
-            return safe_content, remaining
-        else:
-            return text, ""
-
-    async def _flush_user_buffer(self, final: bool = False):
-        """Flush accumulated user content, checking for closing markers."""
-        if not self._user_buffer:
-            return
-
-        if final:
-            # At end of stream, emit everything after stripping markers
-            cleaned = _strip_service_markers_from_user(self._user_buffer)
-            if cleaned:
-                await self._on_user(cleaned, False)
-                self.user_parts.append(cleaned)
-            self._user_buffer = ""
-        else:
-            # Extract safe content that doesn't contain closing markers
-            safe_content, remaining = self._extract_safe_user_content(self._user_buffer)
-
-            if safe_content:
-                cleaned = _strip_service_markers_from_user(safe_content)
-                if cleaned:
-                    await self._on_user(cleaned, False)
-                    self.user_parts.append(cleaned)
-
-            self._user_buffer = remaining
-
-    async def feed(self, piece: str, prev_len_hint: Optional[int] = None):
-        """Feed a new streamed piece."""
+    async def feed(self, piece: str):
         if not piece:
             return
-        prev_len = len(self.buf) if prev_len_hint is None else prev_len_hint
+        prev_len = len(self.buf)
         self.buf += piece
 
-        # Iterate until we can't progress further for this piece
+        def _search(pat):
+            start = max(0, prev_len - self.HOLDBACK, self.emit_from - self.HOLDBACK)
+            return pat.search(self.buf, start)
+
         while True:
             if self.mode == "pre":
-                m, which = _find_earliest(
-                    self.buf,
-                    prev_len,
-                    [(INT_RE, "internal"), (USER_RE, "user"), (JSON_RE, "json")],
-                )
+                m = (_SectionsStreamParser._INT_RE.search(self.buf, max(0, prev_len - self.HOLDBACK))
+                     or _SectionsStreamParser._USER_RE.search(self.buf, max(0, prev_len - self.HOLDBACK))
+                     or _SectionsStreamParser._JSON_RE.search(self.buf, max(0, prev_len - self.HOLDBACK)))
                 if not m:
-                    break  # wait for more bytes
-                self.emit_from = _skip_ws(self.buf, m.end())
-                self.mode = which
+                    # nothing yet; just wait (do not emit anything in pre)
+                    break
+
+                tag = m.re
+                pre_slice = self.buf[self.emit_from:m.start()]
+                if pre_slice:
+                    # internal prelude lives here; we don’t show it
+                    self.internal += pre_slice
+                self.emit_from = self._skip_ws(m.end())
+
+                if tag is _SectionsStreamParser._INT_RE:
+                    self.mode = "internal"
+                elif tag is _SectionsStreamParser._USER_RE:
+                    self.mode = "user"
+                else:
+                    self.mode = "json"
                 continue
 
             if self.mode == "internal":
-                # Next can be USER or JSON (model may skip USER)
-                m, which = _find_earliest(
-                    self.buf, prev_len, [(USER_RE, "user"), (JSON_RE, "json")]
-                )
-                if m and m.start() >= self.emit_from:
-                    self.internal_parts.append(self.buf[self.emit_from : m.start()])
-                    self.emit_from = _skip_ws(self.buf, m.end())
-                    if which == "json":
-                        self.json_tail = self.buf[self.emit_from :]
-                        self.mode = "json"
-                        break
-                    self.mode = "user"
-                    continue
-
-                # Accumulate safe internal slice (not emitted)
-                safe_end = self._safe_window_end()
-                if safe_end > self.emit_from:
-                    self.internal_parts.append(self.buf[self.emit_from : safe_end])
-                    self.emit_from = safe_end
-                break
-
-            if self.mode == "user":
-                # Check for JSON transition
-                m, _ = _find_earliest(self.buf, prev_len, [(JSON_RE, "json")])
-                if m and m.start() >= self.emit_from:
-                    # Add remaining content to user buffer before transitioning
-                    chunk = self.buf[self.emit_from : m.start()]
-                    if chunk:
-                        self._user_buffer += chunk
-
-                    # Flush user buffer and transition to JSON
-                    await self._flush_user_buffer(final=True)
-                    self.emit_from = _skip_ws(self.buf, m.end())
-                    self.json_tail = self.buf[self.emit_from :]
-                    self.mode = "json"
+                # look for next begin (USER or JSON)
+                m_user = _search(_SectionsStreamParser._USER_RE)
+                m_json = _search(_SectionsStreamParser._JSON_RE)
+                m = min([x for x in (m_user, m_json) if x], key=lambda x: x.start()) if (m_user or m_json) else None
+                if not m:
+                    # accumulate internal silently
+                    # keep small safe end (no need to stream)
+                    safe_end = max(self.emit_from, len(self.buf) - self.HOLDBACK)
+                    if safe_end > self.emit_from:
+                        self.internal += self.buf[self.emit_from:safe_end]
+                        self.emit_from = safe_end
                     break
 
-                # Accumulate user content in buffer with conservative windowing
-                safe_end = self._safe_user_window_end()
-                if safe_end > self.emit_from:
-                    chunk = self.buf[self.emit_from : safe_end]
-                    if chunk:
-                        self._user_buffer += chunk
-                        self.emit_from = safe_end
+                self.internal += self.buf[self.emit_from:m.start()]
+                self.emit_from = self._skip_ws(m.end())
+                self.mode = "user" if m.re is _SectionsStreamParser._USER_RE else "json"
+                continue
 
-                        # Try to flush safe content from buffer
-                        await self._flush_user_buffer(final=False)
-                break
+            if self.mode == "user":
+                # look for JSON begin (end of user section)
+                m_json = _search(_SectionsStreamParser._JSON_RE)
+                if not m_json:
+                    # stream a safe window (but scrub unwanted markers)
+                    safe_end = max(self.emit_from, len(self.buf) - self.HOLDBACK)
+                    if safe_end > self.emit_from:
+                        raw = self.buf[self.emit_from:safe_end]
+                        cleaned = self._strip_unwanted_user_markers(raw)
+                        if cleaned:
+                            await self.on_user(cleaned, completed=False)
+                            self.user += cleaned
+                        self.emit_from = safe_end
+                    break
+
+                # emit everything up to JSON marker (scrubbed), then switch
+                raw = self.buf[self.emit_from:m_json.start()]
+                cleaned = self._strip_unwanted_user_markers(raw)
+                if cleaned:
+                    await self.on_user(cleaned, completed=False)
+                    self.user += cleaned
+                self.emit_from = self._skip_ws(m_json.end())
+                self.mode = "json"
+                # json section begins; loop to handle tail capture
+                continue
 
             if self.mode == "json":
-                self.json_tail += piece
+                # rest is JSON tail; just accumulate
+                self.json += self.buf[self.emit_from:]
+                self.emit_from = len(self.buf)
                 break
 
             break  # safety
 
     async def finalize(self):
-        """Flush any remaining content at end-of-stream."""
-        if self.mode == "internal" and self.emit_from < len(self.buf):
-            self.internal_parts.append(self.buf[self.emit_from :])
+        # flush any remaining text per mode
+        if self.mode == "internal":
+            self.internal += self.buf[self.emit_from:]
         elif self.mode == "user":
-            # Add any remaining buffer content
-            if self.emit_from < len(self.buf):
-                self._user_buffer += self.buf[self.emit_from :]
-            # Flush user buffer with final=True to strip markers
-            await self._flush_user_buffer(final=True)
-
-    # Convenience results
-    @property
-    def internal(self) -> str:
-        return "".join(self.internal_parts).strip()
-
-    @property
-    def user(self) -> str:
-        return "".join(self.user_parts).strip()
-
-    @property
-    def json(self) -> str:
-        return self.json_tail
-
+            raw = self.buf[self.emit_from:]
+            cleaned = self._strip_unwanted_user_markers(raw)
+            if cleaned:
+                await self.on_user(cleaned, completed=False)
+                self.user += cleaned
+        elif self.mode == "json":
+            self.json += self.buf[self.emit_from:]
+        # caller will send the completed=True signal
 
 # =============================================================================
 # Public streaming entrypoint
 # =============================================================================
+
+# async def _stream_agent_sections_to_json(
+#         svc: ModelServiceBase,
+#         *,
+#         client_name: str,
+#         client_role: str,
+#         sys_prompt: str,
+#         user_msg: str,
+#         schema_model,
+#         on_thinking_delta=None,
+#         temperature: float = 0.2,
+#         max_tokens: int = 1200,
+#         ctx: Optional[Any] = None,
+# ) -> Dict[str, Any]:
+#     """
+#     Stream 3 sections using ONLY paranoid markers:
+#       1) <<< BEGIN INTERNAL THINKING >>> (capture only)
+#       2) <<< BEGIN USER-FACING THINKING >>> (stream via on_thinking_delta)
+#       3) <<< BEGIN STRUCTURED JSON >>> (strict; returned)
+#
+#     The parser keeps a small rolling HOLDBACK so we never cut a marker across chunk
+#     boundaries, but otherwise streams promptly. Service markers are never emitted
+#     to the UI.
+#     """
+#     run_logger = AgentLogger("ThreeSectionStream", getattr(svc.config, "log_level", "INFO"))
+#     run_logger.start_operation(
+#         "three_section_stream",
+#         client_role=client_role,
+#         client_name=client_name,
+#         system_prompt_len=len(sys_prompt),
+#         user_msg_len=len(user_msg),
+#         expected_format=getattr(schema_model, "__name__", str(schema_model)),
+#     )
+#
+#     deltas = 0
+#
+#     async def _emit_user(piece: str, completed: bool = False, **kwargs):
+#         nonlocal deltas
+#         if not piece and not completed:
+#             return
+#         if on_thinking_delta is not None:
+#             await on_thinking_delta(piece or "", completed, **kwargs)
+#             if piece:
+#                 deltas += 1
+#
+#     parser = _SectionsStreamParser(on_user=_emit_user)
+#
+#     async def on_delta(piece: str):
+#         await parser.feed(piece)
+#
+#     async def on_complete(ret):
+#         await parser.finalize()
+#         # send the "completed" signal to the UI
+#         await _emit_user("", completed=True)
+#         run_logger.log_step("stream_complete", {"deltas": deltas})
+#
+#     # ---- stream with model ----
+#     client = svc.get_client(client_name)
+#     cfg = svc.describe_client(client, role=client_role)
+#
+#     messages = [SystemMessage(content=sys_prompt), HumanMessage(content=user_msg)]
+#     await svc.stream_model_text_tracked(
+#         client,
+#         messages,
+#         on_delta=on_delta,
+#         on_complete=on_complete,
+#         temperature=temperature,
+#         max_tokens=max_tokens,
+#         client_cfg=cfg,
+#         role=client_role,
+#     )
+#
+#     internal_thinking = parser.internal
+#     user_thinking = parser.user
+#     json_tail = parser.json
+#
+#     # ---- parse JSON (tolerate fenced block) ----
+#     def _try_parse_json(raw_json: str) -> Optional[Dict[str, Any]]:
+#         raw = (raw_json or "").strip()
+#         # handle fenced block if present
+#         if raw.startswith("```"):
+#             nl = raw.find("\n")
+#             raw = raw[nl + 1 :] if nl >= 0 else ""
+#             end = raw.rfind("```")
+#             if end >= 0:
+#                 raw = raw[:end]
+#         raw = raw.strip().strip("`")
+#         if not raw:
+#             return None
+#         m = re.search(r"\{.*\}\s*$", raw, re.S)
+#         if not m:
+#             return None
+#         try:
+#             loaded = _json_loads_loose(m.group(0)) or {}
+#             return schema_model.model_validate(loaded).model_dump()
+#         except Exception:
+#             return None
+#
+#     data = _try_parse_json(json_tail)
+#     raw_data = json_tail
+#     error = None
+#
+#     if data is None and json_tail.strip():
+#         # try format fixer once
+#         fix = await svc.format_fixer.fix_format(
+#             raw_output=json_tail,
+#             expected_format=getattr(schema_model, "__name__", str(schema_model)),
+#             input_data=user_msg,
+#             system_prompt=sys_prompt,
+#         )
+#         if fix.get("success"):
+#             try:
+#                 data = schema_model.model_validate(fix["data"]).model_dump()
+#             except Exception as ex:
+#                 error = f"JSON parse after format fix failed: {ex}"
+#                 data = None
+#
+#
+#     # Retry streaming once if JSON missing entirely (model stopped early)
+#     # if data is None and not json_tail.strip():
+#     #     produced = []
+#     #     if internal_thinking or parser.mode in ("user", "json"):
+#     #         produced.append("<<< BEGIN INTERNAL THINKING >>>\n" + internal_thinking)
+#     #     if user_thinking or parser.mode == "json":
+#     #         produced.append("<<< BEGIN USER-FACING THINKING >>>\n" + user_thinking)
+#     #     seed_assistant = "\n".join(produced).strip()
+#     #
+#     #     continue_note = (
+#     #         "You already produced the earlier sections shown above. "
+#     #         "Continue by producing ONLY the remaining sections in the exact order, starting with "
+#     #         "<<< BEGIN STRUCTURED JSON >>>. "
+#     #         "Return the remaining sections exactly once."
+#     #     )
+#     #     sys_prompt_retry = sys_prompt + "\n\n[CONTINUE]\n" + continue_note
+#     #
+#     #     buf2 = ""
+#     #     mode2 = "pre"
+#     #     emit_from2 = 0
+#     #     json_tail2 = ""
+#     #
+#     #     def _safe_window_end2(current_len: int) -> int:
+#     #         return max(emit_from2, current_len - HOLDBACK)
+#     #
+#     #     async def on_delta_retry(piece: str):
+#     #         nonlocal buf2, mode2, emit_from2, json_tail2
+#     #         if not piece:
+#     #             return
+#     #         prev_len2 = len(buf2)
+#     #         buf2 += piece
+#     #
+#     #         if mode2 == "pre":
+#     #             m = JSON_RE.search(buf2, max(0, prev_len2 - HOLDBACK))
+#     #             if m:
+#     #                 emit_from2 = _skip_ws(buf2, m.end())
+#     #                 json_tail2 = buf2[emit_from2:]
+#     #                 mode2 = "json"
+#     #             return
+#     #
+#     #         if mode2 == "json":
+#     #             json_tail2 += piece
+#     #             return
+#     #
+#     #     retry_msgs = [SystemMessage(content=sys_prompt_retry), HumanMessage(content=user_msg)]
+#     #     if seed_assistant:
+#     #         retry_msgs.append(AIMessage(content=seed_assistant))
+#     #
+#     #     await svc.stream_model_text_tracked(
+#     #         client,
+#     #         retry_msgs,
+#     #         on_delta=on_delta_retry,
+#     #         on_complete=None,
+#     #         temperature=temperature,
+#     #         max_tokens=max_tokens,
+#     #         client_cfg=cfg,
+#     #         role=client_role,
+#     #     )
+#     #
+#     #     data = _try_parse_json(json_tail2)
+#     #     if data is None and json_tail2.strip():
+#     #         fix2 = await svc.format_fixer.fix_format(
+#     #             raw_output=json_tail2,
+#     #             expected_format=getattr(schema_model, "__name__", str(schema_model)),
+#     #             input_data=user_msg,
+#     #             system_prompt=sys_prompt_retry,
+#     #         )
+#     #         if fix2.get("success"):
+#     #             try:
+#     #                 data = schema_model.model_validate(fix2["data"]).model_dump()
+#     #             except Exception:
+#     #                 data = None
+#
+#     if data is None:
+#         try:
+#             data = schema_model.model_validate({}).model_dump()
+#         except Exception:
+#             data = {}
+#
+#     try:
+#         run_logger.log_step(
+#             "streaming_with_structured_output",
+#             {
+#                 "error": error,
+#                 "internal_chars": len(internal_thinking),
+#                 "user_chars": len(user_thinking),
+#                 "json_tail_chars": len(parser.json),
+#                 "provider": getattr(cfg, "provider", None),
+#                 "model": getattr(cfg, "model_name", None),
+#                 "role": client_role,
+#             },
+#         )
+#     except Exception:
+#         pass
+#
+#     run_logger.finish_operation(
+#         True,
+#         "three_section_stream_complete",
+#         result_preview={
+#             "error": error,
+#             "internal_len": len(internal_thinking),
+#             "user_len": len(user_thinking),
+#             "has_agent_response": bool(data),
+#             "provider": getattr(cfg, "provider", None),
+#             "model": getattr(cfg, "model_name", None),
+#         },
+#     )
+#
+#     return {
+#         "agent_response": data,
+#         "log": {
+#             "error": error,
+#             "raw_data": raw_data
+#         },
+#         "internal_thinking": internal_thinking,
+#         "user_thinking": user_thinking,
+#     }
 
 async def _stream_agent_sections_to_json(
         svc: ModelServiceBase,
@@ -425,80 +806,6 @@ async def _stream_agent_sections_to_json(
             except Exception as ex:
                 error = f"JSON parse after format fix failed: {ex}"
                 data = None
-
-
-    # Retry streaming once if JSON missing entirely (model stopped early)
-    # if data is None and not json_tail.strip():
-    #     produced = []
-    #     if internal_thinking or parser.mode in ("user", "json"):
-    #         produced.append("<<< BEGIN INTERNAL THINKING >>>\n" + internal_thinking)
-    #     if user_thinking or parser.mode == "json":
-    #         produced.append("<<< BEGIN USER-FACING THINKING >>>\n" + user_thinking)
-    #     seed_assistant = "\n".join(produced).strip()
-    #
-    #     continue_note = (
-    #         "You already produced the earlier sections shown above. "
-    #         "Continue by producing ONLY the remaining sections in the exact order, starting with "
-    #         "<<< BEGIN STRUCTURED JSON >>>. "
-    #         "Return the remaining sections exactly once."
-    #     )
-    #     sys_prompt_retry = sys_prompt + "\n\n[CONTINUE]\n" + continue_note
-    #
-    #     buf2 = ""
-    #     mode2 = "pre"
-    #     emit_from2 = 0
-    #     json_tail2 = ""
-    #
-    #     def _safe_window_end2(current_len: int) -> int:
-    #         return max(emit_from2, current_len - HOLDBACK)
-    #
-    #     async def on_delta_retry(piece: str):
-    #         nonlocal buf2, mode2, emit_from2, json_tail2
-    #         if not piece:
-    #             return
-    #         prev_len2 = len(buf2)
-    #         buf2 += piece
-    #
-    #         if mode2 == "pre":
-    #             m = JSON_RE.search(buf2, max(0, prev_len2 - HOLDBACK))
-    #             if m:
-    #                 emit_from2 = _skip_ws(buf2, m.end())
-    #                 json_tail2 = buf2[emit_from2:]
-    #                 mode2 = "json"
-    #             return
-    #
-    #         if mode2 == "json":
-    #             json_tail2 += piece
-    #             return
-    #
-    #     retry_msgs = [SystemMessage(content=sys_prompt_retry), HumanMessage(content=user_msg)]
-    #     if seed_assistant:
-    #         retry_msgs.append(AIMessage(content=seed_assistant))
-    #
-    #     await svc.stream_model_text_tracked(
-    #         client,
-    #         retry_msgs,
-    #         on_delta=on_delta_retry,
-    #         on_complete=None,
-    #         temperature=temperature,
-    #         max_tokens=max_tokens,
-    #         client_cfg=cfg,
-    #         role=client_role,
-    #     )
-    #
-    #     data = _try_parse_json(json_tail2)
-    #     if data is None and json_tail2.strip():
-    #         fix2 = await svc.format_fixer.fix_format(
-    #             raw_output=json_tail2,
-    #             expected_format=getattr(schema_model, "__name__", str(schema_model)),
-    #             input_data=user_msg,
-    #             system_prompt=sys_prompt_retry,
-    #         )
-    #         if fix2.get("success"):
-    #             try:
-    #                 data = schema_model.model_validate(fix2["data"]).model_dump()
-    #             except Exception:
-    #                 data = None
 
     if data is None:
         try:

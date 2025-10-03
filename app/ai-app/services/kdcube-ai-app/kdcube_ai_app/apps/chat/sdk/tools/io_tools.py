@@ -9,6 +9,7 @@ from typing import Annotated, Optional, Any, Dict, List, Tuple
 import semantic_kernel as sk
 
 from kdcube_ai_app.apps.chat.sdk.runtime.workdir_discovery import resolve_output_dir
+from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_from_text
 
 try:
     from semantic_kernel.functions import kernel_function
@@ -79,6 +80,7 @@ def _normalize_out_dyn(out_dyn: Dict[str, Any]) -> List[Dict[str, Any]]:
       - output: <inline string/object> | <relative file path>
       - format: optional (markdown|json|plain_text|url|yaml|xml|object)
       - mime: for files only
+      - text
       - citable: bool (inline URLs default to True)
       - description: str
       - input: {}   # reserved, empty for program slots
@@ -89,86 +91,58 @@ def _normalize_out_dyn(out_dyn: Dict[str, Any]) -> List[Dict[str, Any]]:
         v, use_fmt = _coerce_value_and_format(value, fmt)
         if not use_fmt:
             use_fmt = _detect_format_from_value(v)
+        sources_used = extract_citation_sids_from_text(v)
         row = {
             "resource_id": f"slot:{slot}",
             "type": "inline",
             "tool_id": "program",
-            "output": v,
+            "output": { "text": v },
             "citable": bool(citable),
             "description": desc or "",
-            "input": {}
+            "input": {},
         }
         if use_fmt:
             row["format"] = use_fmt
+        if sources_used:
+            row["sources_used"] = sources_used
         artifacts.append(row)
 
-    def push_file(slot: str, relpath: str, *, mime: Optional[str], desc: str):
+    def push_file(slot: str, relpath: str, *, mime: Optional[str], desc: str, text: str, citable: bool = False):
+
+        sources_used = extract_citation_sids_from_text(text)
         row = {
             "resource_id": f"slot:{slot}",
             "type": "file",
             "tool_id": "program",
-            "output": relpath,
+            "output": { "path": relpath, "text": text },
             "mime": (mime or _guess_mime(relpath)),
             "citable": False,
             "description": desc or "",
-            "input": {}
+            "input": {},
         }
+        if sources_used:
+            row["sources_used"] = sources_used
         artifacts.append(row)
 
     for slot, val in (out_dyn or {}).items():
-        desc = ""
-        fmt: Optional[str] = None
-        citable = False
-        mime = None
 
-        # Normalize several accepted shapes
-        if isinstance(val, str):
-            push_inline(slot, val, fmt=None, desc="", citable=False)
+        slot_type = val.get("type")
+        desc = val.get("description") or val.get("desc") or ""
+        citable = bool(val.get("citable", False))
+        fmt = val.get("format")
+
+        if slot_type == "file":
+            mime = val.get("mime") or None
+            text_surrogate = val.get("text")  # may be None; program SHOULD have set this
+            if text_surrogate is None:
+                text_surrogate = ""
+            filepath = val.get("path")
+            push_file(slot, filepath, mime=mime, desc=desc, text=text_surrogate)
             continue
-
-        if isinstance(val, dict):
-            desc = val.get("description") or val.get("desc") or ""
-            citable = bool(val.get("citable", False))
-            fmt = val.get("format")
-
+        if slot_type == "inline":
             if "value" in val:
                 push_inline(slot, val["value"], fmt=fmt, desc=desc, citable=citable)
                 continue
-
-            if "inline" in val:
-                push_inline(slot, val["inline"], fmt=fmt or "plain_text", desc=desc, citable=citable)
-                continue
-            if "text" in val:
-                push_inline(slot, val["text"], fmt=fmt or "plain_text", desc=desc, citable=citable)
-                continue
-            if "markdown" in val:
-                push_inline(slot, val["markdown"], fmt=fmt or "markdown", desc=desc, citable=citable)
-                continue
-            if "json" in val:
-                push_inline(slot, val["json"], fmt=fmt or "json", desc=desc, citable=citable)
-                continue
-            if "yaml" in val:
-                push_inline(slot, val["yaml"], fmt=fmt or "yaml", desc=desc, citable=citable)
-                continue
-            if "xml" in val:
-                push_inline(slot, val["xml"], fmt=fmt or "xml", desc=desc, citable=citable)
-                continue
-            if "url" in val and isinstance(val["url"], str):
-                push_inline(slot, val["url"], fmt=fmt or "url", desc=desc, citable=True)
-                continue
-
-            file_key = "file" if "file" in val else ("path" if "path" in val else None)
-            if file_key and isinstance(val[file_key], str):
-                mime = val.get("mime") or None
-                push_file(slot, val[file_key], mime=mime, desc=desc)
-                continue
-
-        # Fallback
-        try:
-            as_str = json.dumps(val, ensure_ascii=False) if not isinstance(val, str) else val
-        except Exception:
-            as_str = str(val)
-        push_inline(slot, as_str, fmt=None, desc=desc, citable=False)
 
     return artifacts
 
@@ -362,7 +336,7 @@ class AgentIO:
                 "RESULT SHAPE (authoritative):\n"
                 "  - ok: bool (required)\n"
                 "  - objective: str (recommended)\n"
-                "  - contract: dict(slot->description)\n"
+                "  - contract: dict(slot-> {description, type})\n"
                 "  - out_dyn:  dict(slot->VALUE)\n"
                 "  - error: dict with keys error, where, details, managed: optional keys for failures\n"
         )
@@ -403,7 +377,7 @@ class AgentIO:
             rid = a.get("resource_id")
             if rid:
                 return ("rid", rid)
-            return ("fallback", a.get("type"), a.get("output") or a.get("path"))
+            return ("fallback", a.get("type"), (a.get("output") or {}).get("text") or a.get("path"))
 
         seen = set()
         merged_out: List[Dict[str, Any]] = []

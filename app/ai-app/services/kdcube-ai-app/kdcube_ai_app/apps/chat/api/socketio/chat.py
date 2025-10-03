@@ -345,7 +345,7 @@ class SocketIOChatHandler:
 
         # If you want to pass it to your workers:
         message_data = data.get("message", {})
-        message_data["conversation_id"] = "e2298386-90fa-4a3e-9dde-ec5f040539d8"
+        message_data["conversation_id"] = "5c0a6bb8-2fcd-4b40-ab10-a78991d1d77c"
         logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
         try:
             socket_session = await self.sio.get_session(sid)

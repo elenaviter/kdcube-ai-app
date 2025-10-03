@@ -338,7 +338,7 @@ class AsyncMarkdownPDF:
             enable_mathjax=self.enable_mathjax,
         )
 
-    async def _render_pdf(self, html_content: str, output_pdf: Path, title: str, base_dir: Optional[Path]):
+    async def _render_pdf(self, html_content: str, output_pdf: Path, title: str, base_dir: Optional[Path], render_delay_ms: int = 0):
         """Render HTML to PDF via Chromium. Uses a temporary file:// URL for robust asset loading."""
         await self.start()  # ensure browser exists
         header_tpl = self.pdf_options.header_html or _DEFAULT_HEADER
@@ -360,6 +360,9 @@ class AsyncMarkdownPDF:
             page = await context.new_page()
 
             await page.goto(html_path.as_uri(), wait_until="load")
+            # Optional extra wait for client-side chart libs (Chart.js, etc.)
+            if render_delay_ms and render_delay_ms > 0:
+                await page.wait_for_timeout(min(render_delay_ms, 10000))
 
             if self.enable_mathjax:
                 try:
@@ -394,6 +397,30 @@ class AsyncMarkdownPDF:
                 tmp_dir.rmdir()
             except Exception:
                 pass
+    async def convert_html_string(
+            self,
+            html: str,
+            output_pdf: str | Path,
+            *,
+            title: str = "Document",
+            base_dir: Optional[str | Path] = None,
+    ) -> Path:
+        """
+        Render raw HTML (as-is) to PDF. No Markdown conversion, no template CSS injected.
+        Header/footer behavior is controlled by self.pdf_options (set by caller).
+        Relative asset resolution:
+          - If base_dir is provided, the temp HTML is written inside base_dir so that
+            file:// relative paths resolve naturally without injecting <base>.
+          - Otherwise, a temporary directory is used (relative paths may not resolve).
+        """
+        out = Path(output_pdf)
+        await self._render_pdf(
+            html_content=html,
+            output_pdf=out,
+            title=title,
+            base_dir=Path(base_dir) if base_dir else None,
+        )
+        return out
 
     # ---------- public API ----------
     async def convert_string(

@@ -80,6 +80,7 @@ class ConversationStore:
         turn_id: str,
         role: str,
         text: str,
+        id: str|None = None,
         bundle_id: str|None = None,
         payload: Any | None = None,
         meta: Dict | None = None,
@@ -93,7 +94,7 @@ class ConversationStore:
         RN is generated HERE and written into the record.
         """
         msg_ts = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
-        message_id = _mid(role, msg_ts)
+        message_id = f"{_mid(role, msg_ts)}{'-' + id if id else ''}"
         who, user_or_fp = self._who_and_id(user, fingerprint)
 
         rel = self._join(

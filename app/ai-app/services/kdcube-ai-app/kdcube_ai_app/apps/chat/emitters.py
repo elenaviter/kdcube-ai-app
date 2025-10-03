@@ -4,15 +4,17 @@
 # chat/emitters.py
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Optional, Callable, Awaitable, Dict
-import os
+from dataclasses import dataclass, field
+from typing import Any, Optional, Callable, Awaitable, Dict, List, Tuple
+import os, logging, time
 
 from kdcube_ai_app.apps.chat.sdk.protocol import (
     ChatEnvelope, ServiceCtx, ConversationCtx, _iso_now
 )
+from kdcube_ai_app.apps.chat.sdk.util import ensure_event_markdown
 from kdcube_ai_app.infra.orchestration.app.communicator import ServiceCommunicator
 
+logger = logging.getLogger(__name__)
 
 # map protocol type → client socket event
 _EVENT_MAP = {
@@ -22,6 +24,36 @@ _EVENT_MAP = {
     "chat.complete": "chat_complete",
     "chat.error": "chat_error",
 }
+
+# inside chat/emitters.py (anywhere above ChatCommunicator)
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+@dataclass
+class _DeltaChunk:
+    ts: int
+    idx: int
+    text: str
+
+@dataclass
+class _DeltaAggregate:
+    conversation_id: str
+    turn_id: str
+    agent: str
+    marker: str
+    ts_first: int = 0
+    ts_last: int = 0
+    chunks: List[_DeltaChunk] = field(default_factory=list)
+
+    def append(self, *, ts: int, idx: int, text: str):
+        if not self.ts_first:
+            self.ts_first = ts
+        self.ts_last = ts
+        self.chunks.append(_DeltaChunk(ts=ts, idx=idx, text=text))
+
+    def merged_text(self) -> str:
+        # preserve original order by idx, then ts
+        return "".join([c.text for c in sorted(self.chunks, key=lambda c: (c.idx, c.ts))])
 
 
 class ChatRelayCommunicator:
@@ -157,6 +189,7 @@ class ChatCommunicator:
         # default room = session_id
         self.room = self.room or self.conversation.get("session_id")
         self.target_sid = self.target_sid or self.conversation.get("socket_id")
+        self._delta_cache: dict[Tuple[str, str, str, str], _DeltaAggregate] = {}
 
     # ---------- low-level ----------
     async def emit(self, event: str, data: dict):
@@ -168,11 +201,69 @@ class ChatCommunicator:
             session_id=self.conversation.get("session_id"),
         )
 
+    # ----- internal buffer helpers -----
+    def _record_delta(self, *, text: str, index: int, agent: str, marker: str):
+        if not text:
+            return
+        conv_id = (self.conversation or {}).get("conversation_id") or ""
+        turn_id = (self.conversation or {}).get("turn_id") or ""
+        key = (conv_id, turn_id, agent or "assistant", marker or "answer")
+        agg = self._delta_cache.get(key)
+        if not agg:
+            agg = _DeltaAggregate(conversation_id=conv_id, turn_id=turn_id,
+                                  agent=agent or "assistant", marker=marker or "answer")
+            self._delta_cache[key] = agg
+        agg.append(ts=_now_ms(), idx=int(index), text=text)
+
+    def get_delta_aggregates(self, *, conversation_id: str | None = None,
+                             turn_id: str | None = None,
+                             agent: str | None = None,
+                             marker: str | None = None,
+                             merge_text: bool = True) -> list[dict]:
+        """
+        Returns a list of dicts:
+          {agent, marker, conversation_id, turn_id, ts_first, ts_last, text, chunks:[{ts, idx, text}]}
+        Filter by any of the fields if provided.
+        """
+        out = []
+        for (cid, tid, a, m), agg in self._delta_cache.items():
+            if conversation_id and cid != conversation_id: continue
+            if turn_id and tid != turn_id: continue
+            if agent and a != agent: continue
+            if marker and m != marker: continue
+            out.append({
+                "conversation_id": cid,
+                "turn_id": tid,
+                "agent": a,
+                "marker": m,
+                "ts_first": agg.ts_first,
+                "ts_last": agg.ts_last,
+                "text": agg.merged_text() if merge_text else "",
+                "chunks": [{"ts": c.ts, "idx": c.idx, "text": c.text} for c in agg.chunks],
+            })
+        # order by first appearance
+        out.sort(key=lambda r: (r["ts_first"], r["agent"], r["marker"]))
+        return out
+
+    def clear_delta_aggregates(self, *, conversation_id: str | None = None,
+                               turn_id: str | None = None):
+        """Clear cache for a specific turn (or everything if not specified)."""
+        if not conversation_id and not turn_id:
+            self._delta_cache.clear()
+            return
+        keys = list(self._delta_cache.keys())
+        for k in keys:
+            cid, tid, _, _ = k
+            if conversation_id and cid != conversation_id: continue
+            if turn_id and tid != turn_id: continue
+            self._delta_cache.pop(k, None)
+
     # ---------- envelopes ----------
     def _base_env(self, typ: str) -> Dict[str, Any]:
         return {
             "type": typ,
             "timestamp": _iso_now(),
+            "ts": int(time.time() * 1000),
             "service": dict(self.service or {}),
             "conversation": {
                 "session_id": self.conversation.get("session_id"),
@@ -183,7 +274,18 @@ class ChatCommunicator:
         }
 
     async def emit_enveloped(self, env: dict):
-        """Pass-through for already-formed envelopes (route by .type)."""
+        # sniff and record deltas coming through the generic path
+        try:
+            if (env or {}).get("type") in ("chat.delta", "chat.assistant.delta"):
+                d = (env or {}).get("delta") or {}
+                text = (d.get("text") or env.get("text") or "")
+                idx  = int(d.get("index") or env.get("idx") or 0)
+                marker = (d.get("marker") or "answer")
+                agent  = ((env.get("event") or {}).get("agent") or "assistant")
+                self._record_delta(text=text, index=idx, agent=agent, marker=marker)
+        except Exception:
+            pass
+
         typ = (env or {}).get("type")
         route = {
             "chat.start": "chat_start",
@@ -219,6 +321,13 @@ class ChatCommunicator:
         env["idx"] = int(index)
         if kwargs:
             env["extra"] = kwargs
+
+        # record before sending
+        try:
+            self._record_delta(text=text, index=index, agent=agent, marker=marker)
+        except Exception:
+            pass
+
         await self.emit("chat_delta", env)
 
     async def complete(self, *, data: dict):
@@ -244,6 +353,7 @@ class ChatCommunicator:
             markdown: str | None = None,
             route: str | None = None,    # optional override for socket event name
             status: str = "update",      # e.g. "started" | "completed" | "update"
+            auto_markdown: bool = True, # try to fill in event.markdown if missing
     ):
         """
         Generic typed chat event with full wrapping (service/conversation).
@@ -259,9 +369,81 @@ class ChatCommunicator:
             "status": status,
             "step": step,
         })
+        env["data"] = data or {}
         if markdown:
             env["event"]["markdown"] = markdown
-        env["data"] = data or {}
+        elif auto_markdown:
+            try:
+                ensure_event_markdown(env)  # fills env['event']['markdown'] if missing
+            except Exception:
+                pass
 
         socket_event = route or "chat_step"
         await self.emit(socket_event, env)
+
+    def _export_comm_spec_for_runtime(self) -> dict:
+        """
+        Produce a minimal, process-safe JSON spec to rebuild a communicator in the runtime.
+        We try to extract redis_url/channel from the relay-based emitter; fall back to env/defaults.
+        """
+        comm = self
+
+        # Defaults if we can't introspect
+        channel   = "chat.events"
+        service   = {}
+        conversation = {}
+        room = None
+        target_sid = None
+
+        if comm is not None:
+            # payloads for identity
+            try:
+                service = dict(comm.service or {})
+            except Exception:
+                pass
+            try:
+                conversation = dict(comm.conversation or {})
+            except Exception:
+                pass
+            room = getattr(comm, "room", None)
+            target_sid = getattr(comm, "target_sid", None)
+
+            # Try to extract redis details from Relay adapter
+            try:
+                emitter = getattr(comm, "emitter", None)
+                relay = getattr(emitter, "_relay", None)
+                # ChatRelayCommunicator has _comm (ServiceCommunicator) and _channel
+                if relay is not None:
+                    channel = getattr(relay, "_channel", channel)
+            except Exception:
+                pass
+
+        return {
+            "channel": channel,
+            "service": service,
+            "conversation": conversation,
+            "room": room,
+            "target_sid": target_sid,
+        }
+
+class _RelayEmitterAdapter:
+    """
+    Async adapter that lets ChatCommunicator 'await emitter.emit(...)' while
+    internally publishing via ChatRelayCommunicator's ServiceCommunicator.
+    """
+    def __init__(self, relay: ChatRelayCommunicator):
+        self._relay = relay
+
+    async def emit(self, event: str, data: dict, *, room: Optional[str] = None,
+                   target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        try:
+            # Route to the relay’s pub/sub channel. 'session_id' takes priority, else fall back to room.
+            self._relay._comm.pub(  # underlying transport publisher
+                event=event,
+                data=data,
+                target_sid=target_sid,
+                session_id=session_id or room,
+                channel=self._relay._channel,
+            )
+        except Exception as e:
+            logger.error(f"Relay emit failed for event '{event}': {e}")

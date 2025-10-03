@@ -79,120 +79,6 @@ def _format_assistant_internal_block(title: str, items: list[dict]) -> str:
 
     return "\n".join(out)
 
-# def _messages_with_context(
-#         system_text: str,
-#         prior_pairs: list[dict],
-#         current_user_text: str,
-#         current_context_items: list[dict],
-#         turn_artifact: dict
-# ) -> list:
-#     """
-#     Build:
-#       [SystemMessage(main_sys),
-#        (for each prior pair) HumanMessage(<prior user + prior artifacts>), AIMessage(<prior assistant>),
-#        HumanMessage(<current user + current ctx> [+ separate TURN SOLUTION / FAILURE block])]
-#     """
-#     def _turn_artifact_heading(ta: Optional[dict]) -> Tuple[str, Optional[str]]:
-#         if not ta:
-#             return "", None
-#         txt = ta.get("text")
-#         meta = ta.get("meta") or {}
-#         kind = meta.get("kind") or ""
-#         # we only care about heading/type; content is handled below
-#         if isinstance(txt, str):
-#             if "[codegen.program.presentation]" in txt.lower() or kind == "codegen.program.presentation":
-#                 return "TURN SOLUTION — Program Presentation (generated this turn)", "presentation"
-#             elif "[solver.failure]" in txt.lower() or kind == "solver.failure":
-#                 return "TURN SOLUTION FAILURE — Failure explanation (generated this turn)", "failure"
-#         return "", None
-#
-#     def _format_ctx_block(title: str, items: list[dict]) -> str:
-#         return _format_context_block(title, items) if items else ""
-#
-#     msgs = [SystemMessage(content=system_text)]
-#
-#     # 1) Prior (materialized) turns — chronological
-#     for p in prior_pairs or []:
-#         u = p.get("user") or {}
-#         a = p.get("assistant") or {}
-#         arts = p.get("artifacts") or []
-#         compressed_log = p.get("compressed_log") or None
-#         turn_ctx = ""
-#         if compressed_log:
-#             turn_ctx = compressed_log.ctx_used_bullets
-#         ts_u = _iso(u.get("ts"))
-#
-#         # prefer assistant turn timestamp; fall back to user-side if missing
-#         ts_turn = _iso(a.get("ts") or u.get("ts"))
-#         # Attach the turn timestamp to each artifact’s title and meta (no IDs)
-#         arts_with_ts = []
-#         for art in arts:
-#             art2 = dict(art) if isinstance(art, dict) else {"type": "text", "content": str(art)}
-#             # carry over or synthesize a human title; then append ISO ts
-#             base_title = (art2.get("title") or _source_title(art2)).strip()
-#             titled = f"{base_title} — [{ts_turn}]" if ts_turn else base_title
-#             art2["title"] = titled
-#             # stash ts in meta for downstream consumers
-#             meta = dict(art2.get("meta") or {})
-#             if ts_turn:
-#                 meta["turn_ts"] = ts_turn
-#             art2["meta"] = meta
-#             arts_with_ts.append(art2)
-#         u_text = (u.get("text") or "").strip()
-#         ctx_block = _format_ctx_block("Context — not authored by the user", arts_with_ts)
-#         u_payload = (f"[{ts_u}]\n{u_text}" + (f"\n\n{ctx_block}" if ctx_block else "")).strip()
-#         msgs.append(HumanMessage(content=u_payload))
-#         msgs.append(AIMessage(content=(a.get("text") or "").strip()))
-#
-#     # 2) Current turn
-#     #    - Always label current non-artifact context as "Context — not authored by the user"
-#     #    - Render artifact (if any) as its own block with a dedicated heading
-#     ta_heading, ta_type = _turn_artifact_heading(turn_artifact)
-#     solution_hint = ""
-#     if ta_type == "presentation":
-#         solution_hint = (
-#             "\n\n[TURN SOLUTION]\n"
-#             "The block below is the solver’s Program Presentation for this turn. "
-#             "Use it as the primary answer. If it’s incomplete, ask for the missing inputs or present the partial result and request confirmation."
-#         )
-#     elif ta_type == "failure":
-#         solution_hint = (
-#             "\n\n[TURN SOLUTION FAILURE]\n"
-#             "The block below is the solver’s explanation of why it could not produce a solution for this turn. "
-#             "Use it to consider our ability to solve the user request and gently inform the user about the limitation in their request completion and possible next steps."
-#         )
-#
-#     # Current turn: base payload
-#     cur_payload = current_user_text.strip()
-#
-#     if solution_hint:
-#         cur_payload += solution_hint
-#
-#     # Current, non-artifact context
-#     ctx_curr = _format_ctx_block("Context — not authored by the user", current_context_items)
-#     if ctx_curr:
-#         cur_payload += ("\n\n" + ctx_curr)
-#
-#     # Current artifact as a separate block
-#     if ta_heading and isinstance(turn_artifact, dict):
-#         ta_text = (turn_artifact.get("text") or "").strip()
-#         if ta_text:
-#             # add the current-turn timestamp to the title & meta as well
-#             try:
-#                 # we don’t have `a`/`u` here; use “now” for current turn’s artifact
-#                 ts_current = _dt.datetime.utcnow().isoformat()+"Z"
-#             except Exception:
-#                 ts_current = None
-#             ta_block = _format_ctx_block(ta_heading, [{
-#                 "type": "text",
-#                 "title": (ta_heading + (f" — [{ts_current}]" if ts_current else "")),
-#                 "content": ta_text
-#             }])
-#             cur_payload += ("\n\n" + ta_block)
-#
-#     msgs.append(HumanMessage(content=cur_payload))
-#     return msgs
-
 def _messages_with_context(
         system_text: str,
         prior_pairs: list[dict],
@@ -217,9 +103,9 @@ def _messages_with_context(
         # we only care about heading/type; content is handled below
         if isinstance(txt, str):
             if "[codegen.program.presentation]" in txt.lower() or kind == "codegen.program.presentation":
-                return "TURN SOLUTION — Program Presentation (generated this turn)", "presentation"
+                return "TURN SOLUTION — Program Presentation (THIS TURN)", "presentation"
             elif "[solver.failure]" in txt.lower() or kind == "solver.failure":
-                return "TURN SOLUTION FAILURE — Failure explanation (generated this turn)", "failure"
+                return "TURN SOLUTION FAILURE — Execution failed (THIS TURN)", "failure"
         return "", None
 
     def _format_ctx_block(title: str, items: list[dict]) -> str:
@@ -298,48 +184,86 @@ def _messages_with_context(
 
         msgs.append(AIMessage(content="\n\n".join([s for s in assistant_parts if s.strip()])))
 
-    # 2) Current turn
-    #    - Always label current non-artifact context as "Context — not authored by the user"
-    #    - Render artifact (if any) as its own block with a dedicated heading
+    # ✅ 2) Current turn - REORGANIZED for clarity
     ta_heading, ta_type = _turn_artifact_heading(turn_artifact)
-    solution_hint = ""
-    if ta_type == "presentation":
-        solution_hint = (
-            "\n\n[TURN SOLUTION]\n"
-            "The block below is the solver’s Program Presentation for this turn. "
-            "Use it as the primary answer. If it’s incomplete, ask for the missing inputs or present the partial result and request confirmation."
+
+    # Get current timestamp
+    try:
+        ts_current = _dt.datetime.utcnow().isoformat() + "Z"
+    except Exception:
+        ts_current = ""
+
+    # Build payload in LOGICAL order
+    payload_parts: List[str] = []
+
+    # A) User message with timestamp (like prior turns)
+    payload_parts.append(f"[{ts_current}]")
+    payload_parts.append(current_user_text.strip())
+    payload_parts.append("")  # blank line
+
+    # B) Split context items into current turn vs earlier turns
+    current_turn_items = []
+    earlier_items = []
+
+    for item in (current_context_items or []):
+        txt = (item.get("text") or item.get("content") or "").strip()
+        if not txt:
+            continue
+        # Items with [turn_log], [objective], [note] are current turn
+        if any(marker in txt for marker in ["[turn_log]", "[objective]", "[note]", "[ctx.used]", "[solver"]):
+            current_turn_items.append(item)
+        # Items with [EARLIER TURNS] or turn_id are earlier context
+        elif "[EARLIER TURNS" in txt or "turn_id]" in txt:
+            earlier_items.append(item)
+        else:
+            current_turn_items.append(item)  # default to current
+
+    # C) Show current turn context first
+    if current_turn_items:
+        ctx_block = _format_context_block(
+            "Context — not authored by the user",
+            current_turn_items
         )
-    elif ta_type == "failure":
-        solution_hint = (
-            "\n\n[TURN SOLUTION FAILURE]\n"
-            "The block below is the solver’s explanation of why it could not produce a solution for this turn. "
-            "Use it to consider our ability to solve the user request and gently inform the user about the limitation in their request completion and possible next steps."
-        )
+        if ctx_block:
+            payload_parts.append(ctx_block)
+            payload_parts.append("")
 
-    # Current turn: base payload
-    cur_payload = current_user_text.strip()
-    if solution_hint:
-        cur_payload += solution_hint
-
-    # Current, non-artifact context (user-facing)
-    ctx_curr = _format_ctx_block("Context — not authored by the user", current_context_items)
-    if ctx_curr:
-        cur_payload += ("\n\n" + ctx_curr)
-
-    # Current artifact as a separate block (user-facing: shown below user msg)
-    if ta_heading and isinstance(turn_artifact, dict):
+    # D) Then the solution/failure artifact (the actual content)
+    if ta_type and turn_artifact:
         ta_text = (turn_artifact.get("text") or "").strip()
         if ta_text:
-            try:
-                ts_current = _dt.datetime.utcnow().isoformat()+"Z"
-            except Exception:
-                ts_current = None
-            ta_block = _format_context_block(ta_heading, [{
-                "type": "text",
-                "title": (ta_heading + (f" — [{ts_current}]" if ts_current else "")),
-                "content": ta_text
-            }])
-            cur_payload += ("\n\n" + ta_block)
+            # Title with timestamp
+            artifact_title = f"{ta_heading} — [{ts_current}]" if ts_current else ta_heading
 
-    msgs.append(HumanMessage(content=cur_payload))
+            # Format as context block but with special heading
+            if ta_type == "presentation":
+                intro = (
+                    "### TURN SOLUTION — Program Presentation (generated this turn)\n"
+                    "_This block is system-provided context related to this message; **not** authored by the user._\n"
+                    "_Use this as the primary answer. If incomplete, present the partial result and request clarification._"
+                )
+            else:  # failure
+                intro = (
+                    "### TURN SOLUTION FAILURE — Execution Failed (generated this turn)\n"
+                    "_This block is system-provided context related to this message; **not** authored by the user._\n"
+                    "_The solver could not complete the request. Use this to inform the user about limitations and suggest next steps._"
+                )
+
+            payload_parts.append(intro)
+            payload_parts.append("[solver.failure]" if ta_type == "failure" else "[codegen.program.presentation]")
+            payload_parts.append(ta_text)
+            payload_parts.append("")
+
+    # E) Earlier context goes last (lower priority)
+    if earlier_items:
+        earlier_block = _format_context_block(
+            "Context — not authored by the user",
+            earlier_items
+        )
+        if earlier_block:
+            payload_parts.append("---")
+            payload_parts.append("")
+            payload_parts.append(earlier_block)
+
+    msgs.append(HumanMessage(content="\n".join([p for p in payload_parts if p is not None])))
     return msgs

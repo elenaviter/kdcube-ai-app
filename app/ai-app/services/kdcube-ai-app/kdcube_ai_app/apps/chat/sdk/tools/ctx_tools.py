@@ -10,72 +10,15 @@ try:
 except Exception:
     from semantic_kernel.utils.function_decorator import kernel_function
 
-_SID_RE = re.compile(r"\[\[S:(\d+(?:,\d+)*)\]\]")
+# ---- Working set from context.json ----
+from kdcube_ai_app.apps.chat.sdk.runtime.workdir_discovery import resolve_output_dir
 
-# ⬇️ Centralize of ptional citation attributes we preserve
-_CITATION_OPTIONAL_ATTRS = (
-    "provider", "published_time_iso", "modified_time_iso", "expiration",
-    # harmless extras we may get from KB
-    "mime", "source_type", "rn",
+from kdcube_ai_app.apps.chat.sdk.tools.citations import (
+    CITATION_OPTIONAL_ATTRS,
+    normalize_url,
+    normalize_sources_any,
+    sids_in_text,
 )
-
-def _norm_url(u: str) -> str:
-    # conservative normalization: lowercase scheme+host; strip trailing slash
-    # (don’t over-normalize; avoid changing meaning)
-    u = (u or "").strip()
-    if not u: return ""
-    try:
-        from urllib.parse import urlsplit, urlunsplit
-        sp = urlsplit(u)
-        host = (sp.netloc or "").lower()
-        path = sp.path.rstrip("/") or sp.path
-        return urlunsplit((sp.scheme.lower(), host, path, sp.query, sp.fragment))
-    except Exception:
-        return u
-
-def _as_rows(val) -> List[Dict[str, Any]]:
-    if not val: return []
-    if isinstance(val, str):
-        try:
-            val = json.loads(val)
-        except Exception:
-            return []
-
-    def process_rich_attrs(citation: Dict[str, Any], source: Dict[str, Any]) -> None:
-        for k in _CITATION_OPTIONAL_ATTRS:
-            if k in source and source[k] not in (None, ""):
-                citation[k] = source[k]
-
-    if isinstance(val, dict):
-        rows = []
-        for k, v in val.items():
-            if not isinstance(v, dict): continue
-            sid = int(v.get("sid") or k) if str(k).isdigit() else v.get("sid")
-            citation = {
-                "sid": sid,
-                "title": v.get("title",""),
-                "url": v.get("url",""),
-                "text": v.get("text") or v.get("body") or v.get("content") or "",
-            }
-            process_rich_attrs(citation, v)
-            rows.append(citation)
-        return rows
-
-    if isinstance(val, list):
-        rows = []
-        for v in val:
-            if not isinstance(v, dict): continue
-            citation = {
-                "sid": v.get("sid"),
-                "title": v.get("title",""),
-                "url": v.get("url") or v.get("href") or "",
-                "text": v.get("text") or v.get("body") or v.get("content") or "",
-            }
-            process_rich_attrs(citation, v)
-            rows.append(citation)
-        return rows
-
-    return []
 
 def _max_sid(rows: List[Dict[str,Any]]) -> int:
     m = 0
@@ -86,10 +29,6 @@ def _max_sid(rows: List[Dict[str,Any]]) -> int:
         except Exception:
             pass
     return m
-
-# ---- Working set from context.json ----
-from kdcube_ai_app.apps.chat.sdk.runtime.workdir_discovery import resolve_output_dir
-
 def _outdir() -> pathlib.Path:
     return resolve_output_dir()
 
@@ -102,101 +41,16 @@ def _read_context() -> Dict[str, Any]:
     except Exception:
         return {}
 
-def _latest_with_canvas(history: List[Dict[str, Any]]) -> Tuple[Optional[str], Dict[str, Any]]:
+def _latest_with_deliverables(history: List[Dict[str, Any]]) -> Tuple[Optional[str], Dict[str, Any]]:
     for item in history or []:
         try:
             exec_id, inner = next(iter(item.items()))
-            text = ((inner.get("project_canvas") or {}).get("text") or "").strip()
-            if text:
+            files = (inner.get("deliverables") or [])
+            if files:
                 return exec_id, inner
         except Exception:
             continue
     return None, {}
-
-def _norm_sources(items: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    for s in items or []:
-        if not isinstance(s, dict):
-            continue
-        sid = s.get("sid")
-        title = s.get("title") or ""
-        url = s.get("url") or s.get("href") or ""
-        text = s.get("text") or s.get("body") or s.get("content") or ""
-        if sid is None and not url and not text:
-            continue
-        row = {"sid": sid, "title": title, "url": url, "text": text}
-        for k in _CITATION_OPTIONAL_ATTRS:
-            if k in s and s[k] not in (None, ""):
-                row[k] = s[k]
-        out.append(row)
-    return out
-
-def _dedupe_sources(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    by_url = {}
-    last_sid = 0
-    for s in prior or []:
-        url = (s.get("url") or "").strip().lower()
-        row = dict(s)
-        by_url[url] = row
-        if isinstance(s.get("sid"), int):
-            last_sid = max(last_sid, int(s["sid"]))
-
-    next_sid = last_sid + 1
-    for s in new or []:
-        url = (s.get("url") or "").strip().lower()
-        if not url:
-            continue
-        if url in by_url:
-            existing = by_url[url]
-            # prefer richer title/text
-            if len(s.get("title","")) > len(existing.get("title","")):
-                existing["title"] = s.get("title","")
-            if len(s.get("text","")) > len(existing.get("text","")):
-                existing["text"] = s.get("text","")
-            # fill in optional attrs if missing
-            for k in _CITATION_OPTIONAL_ATTRS:
-                if not existing.get(k) and s.get(k):
-                    existing[k] = s[k]
-            continue
-        row = dict(s)
-        if row.get("sid") in (None, "", 0):
-            row["sid"] = next_sid
-            next_sid += 1
-        by_url[url] = row
-    return list(by_url.values())
-
-# --- reconcile
-def _sids_in_text(md: str) -> List[int]:
-    found = set()
-    for m in _SID_RE.finditer(md or ""):
-        for part in (m.group(1) or "").split(","):
-            try:
-                found.add(int(part))
-            except Exception:
-                pass
-    return sorted(found)
-
-
-# --- reconciliation helpers (cross-turn) ---
-
-def _rewrite_tokens_to_global(md: str, sid_map: Dict[int, int]) -> str:
-    if not md or not sid_map:
-        return md or ""
-
-    def repl(m):
-        body = m.group(1)
-        new_ids = []
-        for part in body.split(","):
-            part = part.strip()
-            if not part.isdigit():
-                continue
-            old = int(part)
-            new = sid_map.get(old)
-            if new:
-                new_ids.append(str(new))
-        # drop the token entirely if nothing maps
-        return f"[[S:{','.join(new_ids)}]]" if new_ids else ""
-    return _SID_RE.sub(repl, md)
 
 def _flatten_history_citations(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
@@ -213,7 +67,8 @@ def _flatten_history_citations(history: List[Dict[str, Any]]) -> List[Dict[str, 
         for c in cites:
             if not isinstance(c, dict):
                 continue
-            url = _norm_url(c.get("url") or c.get("href") or "")
+            # url = _norm_url(c.get("url") or c.get("href") or "")
+            url = normalize_url(c.get("url") or c.get("href") or "")
             if not url:
                 continue
             row = {
@@ -223,7 +78,7 @@ def _flatten_history_citations(history: List[Dict[str, Any]]) -> List[Dict[str, 
                 "text": c.get("text") or c.get("body") or "",
                 "sid": c.get("sid"),
             }
-            for k in _CITATION_OPTIONAL_ATTRS:
+            for k in CITATION_OPTIONAL_ATTRS:
                 if c.get(k):
                     row[k] = c[k]
             flat.append(row)
@@ -256,7 +111,7 @@ def _reconcile_history_sources(
             continue
         seen.add(u)
         dst = {"url": u, "title": row["title"], "text": row["text"]}
-        for k in _CITATION_OPTIONAL_ATTRS:
+        for k in CITATION_OPTIONAL_ATTRS:
             if row.get(k):
                 dst[k] = row[k]
         canonical.append(dst)
@@ -295,105 +150,13 @@ class ContextTools:
     Exposes: fetch_working_set(), merge_sources()
     """
 
-    # @kernel_function(
-    #     name="fetch_working_set",
-    #     description=(
-    #         "Retrieve the latest project state for editing workflows. "
-    #         "Gets the most recent project canvas, citations, and media from prior runs. "
-    #         "Use this at the start of edit/update requests to build upon existing work."
-    #     )
-    # )
-    # async def fetch_working_set(
-    #         self,
-    #         select: Annotated[str, "Selection method: 'latest' (most recent with content)", {"enum": ["latest"]}] = "latest",
-    # ) -> Annotated[dict, "dict with {existing_project_canvas: str, existing_project_log: str, existing_sources: [{sid,title,url,text}]}. Use existing_project_canvas as base content to edit."]:
-    # ) -> Annotated[dict, "dict with {project_canvas: str, project_log_md: str, sources: [{sid,title,url,text}], media: []}. Use canvas_md as base content to edit."]:
-    @kernel_function(
-        name="fetch_working_set",
-        description=(
-                "Get selected past project state (canvas/log/sources/media) plus a small chat slice (past user/assistant messages, current turn user message). "
-                "Call when: (1) starting an edit/update turn to build on existing work; "
-                "(2) you need the full current user message."
-        )
-    )
-    async def fetch_working_set(
-            self,
-            select: Annotated[str, "Selection method: 'latest' (most recent with content)", {"enum": ["latest"]}] = "latest",
-    ) -> Annotated[dict, "dict with { existing_selection:{exec_id,select}, existing_project_canvas:str (Markdown; global [[S:n]]), existing_project_log:str (Markdown; global [[S:n]]), existing_sources:[{sid,title,url,text,...}] (canonical; global SIDs), existing_media:[...], current_user:{text}, previous_user?:{text}, previous_assistant?:{text} }. Use existing_project_canvas as the base when editing; treat existing_sources as prior_sources; read only minimal spans from chat messages."]:
-
-        goal_kind: Annotated[str, "Optional filter by project type (unused currently)"] = "",
-        query: Annotated[str, "Optional search query for specific content (unused currently)"] = ""
-
-        ctx = _read_context()
-        hist: List[Dict[str, Any]] = ctx.get("program_history") or []
-
-        # Build canonical sources + per-run SID maps
-        canonical_sources, sid_maps = _reconcile_history_sources(hist, max_sources=80)
-
-        exec_id, inner = _latest_with_canvas(hist)
-        reused = bool(exec_id and inner)
-
-        project_canvas = ""
-        project_log = ""
-        media = []
-
-        if reused:
-            pc = inner.get("project_canvas") or {}
-            pl = inner.get("project_log") or {}
-
-            project_canvas = (pc.get("text") or "").strip()
-            project_log = (pl.get("text") or "").strip()
-
-            # Rewrite [[S:n]] tokens in the latest texts to the canonical SIDs (if we have a map)
-            sid_map = sid_maps.get(exec_id, {})
-            if sid_map:
-                project_canvas = _rewrite_tokens_to_global(project_canvas, sid_map)
-                project_log = _rewrite_tokens_to_global(project_log, sid_map)
-
-            # Keep whatever media you store (unchanged)
-            media = (inner.get("media") or {}).get("items") or []
-
-        # IMPORTANT: always return the canonical (cross-turn) sources here
-        sources = canonical_sources
-
-        current_turn = ctx.get("current_turn")
-        current_user_prompt = current_turn.get("user")
-        previous_user_prompt = (ctx.get("previous_user") or {})
-        previous_assistant_reply = (ctx.get("previous_assistant") or {})
-
-        return {
-            # "reused": reused,
-            "existing_selection": {"exec_id": exec_id or "", "select": select},
-            "existing_project_canvas": project_canvas,
-            "existing_project_log": project_log,
-            "existing_sources": sources,   # ← global, deduped, contiguous SIDs
-            "existing_media": media,
-            "current_user": {"text": (current_user_prompt or {}).get("text","")},
-            "previous_user": {"text": (previous_user_prompt or {}).get("text","")},
-            "previous_assistant": {"text": (previous_assistant_reply or {}).get("text","")},
-
-            # "current_user_prompt": {
-            #     "text": current_user_prompt.get("text"),
-            #     "attachments": [
-            #         {
-            #             "id": "att-001",
-            #             "name": "budget.xlsx",
-            #             "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            #             "size": 123456,
-            #             "sha256": "<hex>",
-            #             "uri": "store://…",              # or file path if you mount it
-            #             "notes": "optional"
-            #         }
-            #     ],
-            #     "spans": []   # optional: We will do this later with LLM which will "zone" the user input and give these hints. We will also share these hints to codegen so it is aware on what we have
-            # }
-        }
-
     @kernel_function(
         name="merge_sources",
         description=(
-                "Combine multiple citation source collections into a unified, deduplicated list. "
-                "Pass all source collections in a single JSON array. REQUIRED when using multiple source tools."
+                    "• Input is a JSON array of collections: [[sources1], [sources2], ...].\n"
+                    "• Dedupes by URL; preserves richer title/text; assigns or preserves SIDs.\n"
+                    "• Use this BEFORE inserting new citations into any slot text; keep SIDs stable."
+                    "Pass all source collections in a single JSON array. REQUIRED when using multiple source tools."
         )
     )
     async def merge_sources(
@@ -411,7 +174,7 @@ class ContextTools:
 
         all_sources = []
         for collection in collections:
-            all_sources.extend(_as_rows(collection))
+            all_sources.extend(normalize_sources_any(collection))
 
         if not all_sources:
             return "[]"
@@ -421,7 +184,7 @@ class ContextTools:
         max_sid = 0
 
         for source in all_sources:
-            url = _norm_url(source.get("url", ""))
+            url = normalize_url(source.get("url", ""))
             if not url:
                 continue
 
@@ -432,7 +195,7 @@ class ContextTools:
                     existing["title"] = source.get("title", "")
                 if len(source.get("text", "")) > len(existing.get("text", "")):
                     existing["text"] = source.get("text", "")
-                for k in _CITATION_OPTIONAL_ATTRS:
+                for k in CITATION_OPTIONAL_ATTRS:
                     if not existing.get(k) and source.get(k):
                         existing[k] = source[k]
                 continue
@@ -446,7 +209,7 @@ class ContextTools:
                 max_sid = max(max_sid, sid)
 
             row = {"sid": sid, "title": source.get("title", ""), "url": url, "text": source.get("text", "")}
-            for k in _CITATION_OPTIONAL_ATTRS:
+            for k in CITATION_OPTIONAL_ATTRS:
                 if source.get(k):
                     row[k] = source[k]
             by_url[url] = row
@@ -454,25 +217,17 @@ class ContextTools:
         merged = sorted(by_url.values(), key=lambda x: x["sid"])
         return json.dumps(merged, ensure_ascii=False)
 
-    # @kernel_function(
-    #     name="reconcile_citations",
-    #     description=(
-    #         "Validate that all [[S:n]] citation tokens in content have corresponding sources. "
-    #         "Optionally removes unused sources to keep the source list clean. "
-    #         "Use before final output to ensure citation integrity."
-    #     )
-    # )
     async def reconcile_citations(
             self,
-            project_canvas: Annotated[str, "Markdown content containing [[S:n]] citation tokens"],
+            content: Annotated[str, "Markdown content containing [[S:n]] citation tokens"],
             sources_json: Annotated[str, "JSON array of available sources"],
             drop_unreferenced: Annotated[bool, "Remove sources not cited in the content"] = True,
-    ) -> Annotated[str, "JSON object: {project_canvas:str, sources:[...], warnings:[str]}. Use sources for final file generation."]:
-        rows = _as_rows(sources_json)
+    ) -> Annotated[str, "JSON object: {content:str, sources:[...], warnings:[str]}. Use sources for final file generation."]:
+        rows = normalize_sources_any(sources_json)
         # index by sid
         by_sid = {int(r["sid"]): r for r in rows if r.get("sid") is not None}
 
-        used = set(_sids_in_text(project_canvas))
+        used = set(sids_in_text(content))
         warnings = []
 
         # check for missing SIDs in sources
@@ -484,8 +239,172 @@ class ContextTools:
         keep_sids = used if drop_unreferenced else set(by_sid.keys())
         pruned = [by_sid[s] for s in sorted(keep_sids) if s in by_sid]
 
-        ret = {"project_canvas": project_canvas, "sources": pruned, "warnings": warnings}
+        ret = {"content": content, "sources": pruned, "warnings": warnings}
         return json.dumps(ret, ensure_ascii=False)
+
+    @kernel_function(
+        name="fetch_turn_artifacts",
+        description=(
+                "Retrieve artifacts from specific historical turns by turn_id.\n"
+                "\n"
+                "WHEN TO USE\n"
+                "• After reading the program playbook in OUTPUT_DIR/context.json\n"
+                "• When you need specific artifacts from identified prior turns\n"
+                "• For targeted retrieval (not just 'latest')\n"
+                "\n"
+                "WHAT YOU RECEIVE\n"
+                "Map of turn_id → turn data:\n"
+                "{\n"
+                "  '<turn_id>': {\n"
+                "    'ts': '2025-10-02',\n"
+                "    'program_log': {text: str, format: str},\n"
+                "    'user_msg:str,      # user message on the turn\n"
+                "    'deliverables': {\n"
+                "      '<slot_name>': {\n"
+                "        'type': 'file' | 'inline',\n"
+                "        'text': str,              # ALWAYS present; authoritative text representation\n"
+                "        'description': str,\n"
+                "        'format': str,            # for inline\n"
+                "        'mime': str,              # for file\n"
+                "        'path': str,              # for file (OUTPUT_DIR-relative if rehosted)\n"
+                "        'sources_used': list[{sid:str, url:str, title: str, body?:str}],    # [{sid:str, url:str, title: str, body?:str}\n" 
+                "      }\n"
+                "    }\n"
+                "  }\n"
+                "}\n"
+                "\n"
+                "HOW TO USE\n"
+                "1. Read program_playbook from context.json to identify current turn id and 'relevant' turn_ids\n"
+                "2. Call this function with specific turn_ids\n"
+                "3. Access artifacts via result[turn_id]['deliverables'][slot_name]['text']\n"
+                "4. For structured content (code/JSON/etc), parse the 'text' field\n"
+                "5. If the user's message needed, get it via result[turn_id]['user_msg'].\n"
+                "\n"
+                "LIMITS\n"
+                "• Returns up to 10 turns\n"
+                "• Text fields may be truncated for very large artifacts"
+        ),
+    )
+    async def fetch_turn_artifacts(
+            self,
+            turn_ids: Annotated[
+                str,
+                "JSON array of turn_ids to fetch: [\"turn_123\", \"turn_456\"]",
+            ],
+    ) -> Annotated[
+        str,
+        "JSON object mapping turn_id → {ts, program_log, deliverables}",
+    ]:
+        try:
+            ids = json.loads(turn_ids)
+            if not isinstance(ids, list):
+                ids = [ids]
+        except:
+            return json.dumps({"error": "Invalid turn_ids format; expected JSON array"})
+
+        ctx = _read_context()
+        hist: List[Dict[str, Any]] = ctx.get("program_history") or []
+
+        # Build index
+        by_id = {}
+        for rec in hist:
+            try:
+                exec_id, meta = next(iter(rec.items()))
+                by_id[exec_id] = meta
+            except:
+                continue
+
+        # Build result
+        from kdcube_ai_app.apps.chat.sdk.codegen.project_retrieval import reconcile_citations_for_context
+
+        mini_history = []
+        for tid in ids[:10]:
+            if tid in by_id:
+                mini_history.append({tid: by_id[tid]})
+
+        # Reconcile citations across these turns (in-place rewriting)
+        reconciled = reconcile_citations_for_context(
+            mini_history,
+            max_sources=80,
+            rewrite_tokens_in_place=True  # This patches [[S:n]] in text
+        )
+
+        canonical_sources = reconciled["canonical_sources"]  # [{sid, url, title, text, ...}]
+        sid_maps = reconciled["sid_maps"]  # {run_id: {old_sid -> global_sid}}
+
+        # Quick lookup by global SID
+        sources_by_sid = {s["sid"]: s for s in canonical_sources}
+        # ===== END KEY ADDITION =====
+
+        # Build result (now with reconciled citations)
+        result = {}
+
+        for tid in ids[:10]:  # limit to 10
+            meta = by_id.get(tid)
+            if not meta:
+                continue
+
+            ts = (meta.get("ts") or "")[:10]
+
+            # Program log
+            pl = (meta.get("project_log") or {})
+            pl_text = (pl.get("text") or pl.get("value") or "").strip()
+            pl_fmt = pl.get("format") or "markdown"
+
+            # Deliverables
+            deliverables_list = meta.get("deliverables") or []
+            assistant = meta.get("assistant") or {}
+            user_msg = (meta.get("user") or {}).get("prompt") or ""
+            turn_log = meta.get("turn_log") or {}
+            deliverables_dict = {}
+
+            # Get global sources for this turn
+            # turn_sources = ((meta.get("web_links_citations") or {}).get("items")) or []
+            # sid_to_source = {ts["sid"]: ts for ts in turn_sources}
+            for d in deliverables_list:
+                slot_name = d.get("slot")
+                if not slot_name or slot_name in {"project_log", "project_canvas"}:
+                    continue
+
+                artifact = d.get("value") or {}
+                text = artifact.get("text") or ""
+
+                slot_data = {
+                    "type": artifact.get("type") or "inline",
+                    "description": d.get("description") or "",
+                    "text": text
+                }
+
+                # Type-specific fields
+                if slot_data["type"] == "file":
+                    slot_data["mime"] = artifact.get("mime") or "application/octet-stream"
+                    slot_data["path"] = artifact.get("path") or ""
+                    slot_data["filename"] = artifact.get("filename") or ""
+                else:
+                    slot_data["format"] = artifact.get("format") or "text"
+
+                # ===== Materialize sources_used =====
+                # Extract SIDs used in this slot's text
+                from kdcube_ai_app.apps.chat.sdk.tools.citations import sids_in_text
+
+                sids_used = sids_in_text(slot_data["text"])
+
+                slot_data["sources_used"] = [
+                    sources_by_sid[sid] for sid in sids_used if sid in sources_by_sid
+                ]
+
+                deliverables_dict[slot_name] = slot_data
+
+            result[tid] = {
+                "ts": ts,
+                "turn_log": (meta.get("turn_log") or "")[:1000],
+                "program_log": {"text": pl_text, "format": pl_fmt} if pl_text else None,
+                "deliverables": deliverables_dict,
+                "user_msg": user_msg
+                # "sources": turn_sources
+            }
+
+        return json.dumps(result, ensure_ascii=False)
 
 kernel = sk.Kernel()
 tools = ContextTools()

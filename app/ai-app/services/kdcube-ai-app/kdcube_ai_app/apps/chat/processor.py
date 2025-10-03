@@ -17,32 +17,11 @@ from typing import Optional, Dict, Any, Iterable
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload, ServiceCtx, ConversationCtx
-from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator
+from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator, _RelayEmitterAdapter
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-class _RelayEmitterAdapter:
-    """
-    Async adapter that lets ChatCommunicator 'await emitter.emit(...)' while
-    internally publishing via ChatRelayCommunicator's ServiceCommunicator.
-    """
-    def __init__(self, relay: ChatRelayCommunicator):
-        self._relay = relay
-
-    async def emit(self, event: str, data: dict, *, room: Optional[str] = None,
-                   target_sid: Optional[str] = None, session_id: Optional[str] = None):
-        try:
-            # Route to the relay’s pub/sub channel. 'session_id' takes priority, else fall back to room.
-            self._relay._comm.pub(  # underlying transport publisher
-                event=event,
-                data=data,
-                target_sid=target_sid,
-                session_id=session_id or room,
-                channel=self._relay._channel,
-            )
-        except Exception as e:
-            logger.error(f"Relay emit failed for event '{event}': {e}")
 
 class EnhancedChatRequestProcessor:
     """

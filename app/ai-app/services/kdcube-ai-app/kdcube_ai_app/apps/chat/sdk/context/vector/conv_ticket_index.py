@@ -29,6 +29,11 @@ class ConvTicketIndex:
         return datetime.datetime.utcnow().isoformat() + "Z"
 
     @staticmethod
+    def get_route_decision(t: Ticket) -> List[str]:
+        d = dict(getattr(t, "data", {}) or {})
+        return d.get("route_decision")
+
+    @staticmethod
     def get_context_pins(t: Ticket) -> List[str]:
         d = dict(getattr(t, "data", {}) or {})
         pins = d.get("context_pins") or []

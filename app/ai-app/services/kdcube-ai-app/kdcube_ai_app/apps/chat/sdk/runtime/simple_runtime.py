@@ -112,6 +112,7 @@ class _InProcessRuntime:
 # === AGENT-RUNTIME HEADER (auto-injected, do not edit) ===
 from pathlib import Path
 import json as _json
+import os
 from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV
 from io_tools import tools as agent_io_tools
 
@@ -152,6 +153,46 @@ async def fail(description: str,
     }
     return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
 # === END HEADER ===
+# === CHAT COMMUNICATOR RECONSTRUCTION ===
+from kdcube_ai_app.apps.chat.sdk.protocol import (
+    ChatEnvelope, ServiceCtx, ConversationCtx
+)
+from kdcube_ai_app.apps.chat.emitters import (ChatRelayCommunicator, ChatCommunicator, _RelayEmitterAdapter)
+from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import set_comm
+
+def _rebuild_communicator_from_spec(spec: dict) -> ChatCommunicator:
+    """
+    Build a fresh, process-safe communicator using Redis relay.
+    - Works in-thread, cross-thread, and in a separate process/container.
+    """
+    redis_url = (spec or {}).get("redis_url") or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    channel   = (spec or {}).get("channel")   or "chat.events"
+
+    relay = ChatRelayCommunicator(redis_url=redis_url, channel=channel)
+    emitter = _RelayEmitterAdapter(relay)
+
+    svc = ServiceCtx(**(spec.get("service") or {}))
+    conv = ConversationCtx(**(spec.get("conversation") or {}))
+
+    comm = ChatCommunicator(
+        emitter=emitter,
+        service=svc.model_dump() if hasattr(svc, "model_dump") else dict(svc),
+        conversation=conv.model_dump() if hasattr(conv, "model_dump") else dict(conv),
+        room=spec.get("room"),
+        target_sid=spec.get("target_sid"),
+    )
+    return comm
+
+# If COMM_SPEC was injected, materialize & register the communicator singleton.
+try:
+    _COMM_SPEC = globals().get("COMM_SPEC") or {}
+    if _COMM_SPEC:
+        _comm_obj = _rebuild_communicator_from_spec(_COMM_SPEC)
+        set_comm(_comm_obj)
+except Exception as _comm_err:
+    # Non-fatal: tools that emit will just no-op if no communicator is present.
+    pass
+# === END COMMUNICATOR SETUP ===
 ''').replace('<GLOBALS_SRC>', globals_src)
                 src = _fix_json_bools(code)
                 src = _inject_header_after_future(src, injected_header)
@@ -217,6 +258,7 @@ async def fail(description: str,
 # === AGENT-RUNTIME HEADER (auto-injected, do not edit) ===
 from pathlib import Path
 import json as _json
+import os
 from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV
 from io_tools import tools as agent_io_tools
 
@@ -257,6 +299,45 @@ async def fail(description: str,
     }
     return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
 # === END HEADER ===
+# === CHAT COMMUNICATOR RECONSTRUCTION ===
+from kdcube_ai_app.apps.chat.sdk.protocol import (
+    ChatEnvelope, ServiceCtx, ConversationCtx
+)
+from kdcube_ai_app.apps.chat.emitters import (ChatRelayCommunicator, ChatCommunicator, _RelayEmitterAdapter)
+from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import set_comm
+def _rebuild_communicator_from_spec(spec: dict) -> ChatCommunicator:
+    """
+    Build a fresh, process-safe communicator using Redis relay.
+    - Works in-thread, cross-thread, and in a separate process/container.
+    """
+    redis_url = (spec or {}).get("redis_url") or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    channel   = (spec or {}).get("channel")   or "chat.events"
+
+    relay = ChatRelayCommunicator(redis_url=redis_url, channel=channel)
+    emitter = _RelayEmitterAdapter(relay)
+
+    svc = ServiceCtx(**(spec.get("service") or {}))
+    conv = ConversationCtx(**(spec.get("conversation") or {}))
+
+    comm = ChatCommunicator(
+        emitter=emitter,
+        service=svc.model_dump() if hasattr(svc, "model_dump") else dict(svc),
+        conversation=conv.model_dump() if hasattr(conv, "model_dump") else dict(conv),
+        room=spec.get("room"),
+        target_sid=spec.get("target_sid"),
+    )
+    return comm
+
+# If COMM_SPEC was injected, materialize & register the communicator singleton.
+try:
+    _COMM_SPEC = globals().get("COMM_SPEC") or {}
+    if _COMM_SPEC:
+        _comm_obj = _rebuild_communicator_from_spec(_COMM_SPEC)
+        set_comm(_comm_obj)
+except Exception as _comm_err:
+    # Non-fatal: tools that emit will just no-op if no communicator is present.
+    pass
+# === END COMMUNICATOR SETUP ===
 ''').replace('<GLOBALS_SRC>', globals_src)
                 src = _inject_header_after_future(src, injected_header)
 

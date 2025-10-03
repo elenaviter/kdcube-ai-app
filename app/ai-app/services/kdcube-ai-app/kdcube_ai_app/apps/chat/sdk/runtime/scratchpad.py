@@ -141,6 +141,8 @@ class TurnScratchpad:
         # citations
         self.citations: List[Dict] = []
 
+        self.started_at = datetime.utcnow().isoformat() + "Z"
+
     def propose_fact(
             self,
             *,

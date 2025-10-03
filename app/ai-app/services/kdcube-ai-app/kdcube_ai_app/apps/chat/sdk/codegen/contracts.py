@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 from pydantic import BaseModel, Field
-import json
+import json, logging
 import itertools
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+log = logging.getLogger(__name__)
 
 class ProgramInputs(BaseModel):
     objective: str = ""
@@ -17,28 +19,25 @@ class ProgramInputs(BaseModel):
     constraints: Dict[str, object] = Field(default_factory=dict)
     tools_selected: List[str] = Field(default_factory=list)
 
-class FileRef(BaseModel):
-    filename: str
-    key: Optional[str] = None     # conversation-store key (if rehosted)
-    mime: Optional[str] = None
-    size: Optional[int] = None
-    description: str = ""
-    slot: Optional[str] = None
-    tool_id: Optional[str] = None
-
-class InlineRef(BaseModel):
-    mime: Optional[str] = None
-    citable: bool = False
-    description: str = ""
-    value_preview: str = ""       # short preview for indexing/UX
-    slot: Optional[str] = None
-    tool_id: Optional[str] = None
-
 class Deliverable(BaseModel):
     slot: str
     description: str = ""
-    files: List[FileRef] = Field(default_factory=list)
-    inlines: List[InlineRef] = Field(default_factory=list)
+    tool_id: Optional[str] = None
+    mime: Optional[str] = None
+    text: Optional[str] = None
+    _type: Optional[str] = None
+
+class FileRef(Deliverable):
+    filename: str
+    key: Optional[str] = None     # conversation-store key (if rehosted)
+    size: Optional[int] = None
+    _type="file"
+
+class InlineRef(Deliverable):
+    citable: bool = False
+    value_preview: str = ""       # short preview for indexing/UX
+    _type="inline"
+
 
 class ProgramBrief(BaseModel):
     title: str = "Codegen Program"
@@ -103,6 +102,13 @@ class SolutionPlan:
         sv_service = (self.service or {}).get("solvability") or {}
         return sv_service.get("error")
 
+    def result_interpretation_instruction(self, solved: bool) -> str:
+        if not self.solvable:
+            return f"The objective is considered as not solvable.\nReasoning: {self.reasoning}.\nMessage for answer consolidator: {self.instructions_for_downstream}"
+        if not solved:
+            return f"The objective was considered solvable with reasoning: {self.reasoning}.\nIt was not solved (see solver errors). \nMessage for answer consolidator: {self.instructions_for_downstream}"
+        return ""
+
 @dataclass
 class SolutionExecution:
     error: Optional[str] = None
@@ -111,6 +117,7 @@ class SolutionExecution:
     citations: Optional[List[dict]] = None
     calls: Optional[List[dict]] = None  # tool calls made
     deliverables: Optional[Dict[str, Any]] = None  # slot -> {description, value}
+    result_interpretation_instruction: Optional[str] = None
 
 
 @dataclass
@@ -147,8 +154,19 @@ class SolveResult:
     def program_presentation(self):
         return _build_program_presentation_for_answer_agent(
             sr=self,
-            citations=self.citations(),
+            citations=None,#self.citations(),
             codegen_run_id=self.run_id(),
+            include_unused_citations=False,  # ← Filter unused
+        )
+
+    @property
+    def program_presentation_ext(self):
+        return _build_program_presentation_for_answer_agent(
+            sr=self,
+            citations=None,
+            codegen_run_id=self.run_id(),
+            extended=True,
+            include_unused_citations=False,  # ← Filter unused
         )
 
     def program_brief(self, rehosted_files: List[dict]) -> Tuple[str, ProgramBrief]:
@@ -202,10 +220,6 @@ class SolveResult:
         exec_ = self.execution
         return {} if exec_ is None or exec_.deliverables is None else exec_.deliverables
 
-    def deliverable_slots(self) -> Set[str]:
-        """Names of contract slots."""
-        return set(self.deliverables_map().keys())
-
     def deliverables_out(self) -> List[Dict[str, Any]]:
         """Flattened SINGLE artifact per slot (if present)."""
         out: List[Dict[str, Any]] = []
@@ -217,12 +231,11 @@ class SolveResult:
 
     # ----- reasoning & hints from the first codegen round -----
     def interpretation_instruction(self) -> str:
-        r = self._first_round()
-        exec_instruction = r.get("result_interpretation_instruction")
-        if not exec_instruction:
-            if not self.plan.solvable:
-                return f"The objective is considered as not solvable.\nReasoning: {self.plan.reasoning}.\nMessage for answer consolidator: {self.plan.instructions_for_downstream}"
-        return ""
+        # r = self._first_round()
+        exec_instruction = self.execution.result_interpretation_instruction if self.execution else ""
+        if exec_instruction:
+            return exec_instruction
+        return self.plan.result_interpretation_instruction(False) if self.plan.mode != "llm_only" else ""
 
     def round_reasoning(self) -> str:
         r = self._first_round()
@@ -252,47 +265,6 @@ class SolveResult:
     def outdir_workdir(self) -> Tuple[Optional[str], Optional[str]]:
         r = self._first_round()
         return (r.get("outdir"), r.get("workdir"))
-
-    # ----- citations: url+title(+text) only -----
-    # def citations(self) -> List[Dict[str, Any]]:
-    #     """
-    #     Extract citable items from result.json['out'] and normalize:
-    #       [{url, title, text?}, ...]
-    #     """
-    #     cites: List[Dict[str, Any]] = []
-    #     for row in self.out_items():
-    #         if not isinstance(row, dict):
-    #             continue
-    #         if row.get("type") != "inline" or not bool(row.get("citable")):
-    #             continue
-    #
-    #         data = row.get("output") or row.get("value")
-    #         # Unified downstream expects url+title
-    #         def _push(d: Dict[str, Any]):
-    #             d = d or {}
-    #             url = str(d.get("url") or "").strip()
-    #             if not url:
-    #                 return
-    #             d["url"] = url
-    #             cites.append({**d,
-    #                           "tool_id": row.get("tool_id") or "",
-    #                           "resource_id": row.get("resource_id") or ""})
-    #
-    #         if isinstance(data, list):
-    #             for c in data:
-    #                 if isinstance(c, dict):
-    #                     _push(c)
-    #         elif isinstance(data, dict):
-    #             _push(data)
-    #
-    #     # dedupe by URL
-    #     seen, uniq = set(), []
-    #     for c in cites:
-    #         u = c.get("url")
-    #         if u and u not in seen:
-    #             seen.add(u)
-    #             uniq.append(c)
-    #     return uniq
 
     def citations(self) -> List[Dict[str, Any]]:
         """
@@ -384,6 +356,61 @@ class SolveResult:
                 normalized.append(rec)
         return normalized
 
+    def citations_with_usage(self) -> List[Dict[str, Any]]:
+        """
+        Returns citations with 'used' field indicating whether the citation
+        appears in any deliverable's sources_used.
+
+        Returns:
+            [{url, title, sid?, used: bool, ...}, ...]
+        """
+        all_citations = self.citations()  # Get base citations
+        if not all_citations:
+            return []
+
+        # Collect all SIDs actually used in deliverables
+        used_sids: Set[int] = set()
+
+        deliverables = self.deliverables_map() or {}
+        for slot_name, spec in deliverables.items():
+            artifact = (spec or {}).get("value")
+            if not isinstance(artifact, dict):
+                continue
+
+            # Check sources_used field (added by io_tools)
+            sources_used_sids = artifact.get("sources_used") or []
+            for sid in sources_used_sids:
+                try:
+                    used_sids.add(int(sid))
+                except (ValueError, TypeError):
+                    continue
+
+        # Mark each citation with usage status
+        result = []
+        for c in all_citations:
+            citation = dict(c)  # copy
+            sid = c.get("sid")
+            if sid is not None:
+                try:
+                    citation["used"] = int(sid) in used_sids
+                except (ValueError, TypeError):
+                    citation["used"] = False
+            else:
+                # No SID means it wasn't numbered, treat as unused
+                citation["used"] = False
+            result.append(citation)
+
+        # Log only unused citations
+        unused_citations = [c for c in result if not c.get("used", False)]
+        if unused_citations:
+            log.info(f"Unused citations ({len(unused_citations)}):")
+            for c in unused_citations:
+                log.info(f"  - SID {c.get('sid')}: {c.get('title', c.get('url'))}")
+        return result
+
+    def citations_used_only(self) -> List[Dict[str, Any]]:
+        """Returns only citations that appear in deliverables."""
+        return [c for c in self.citations_with_usage() if c.get("used", False)]
 
     def indexable_tool_ids(self) -> Set[str]:
         """
@@ -441,50 +468,40 @@ def _program_brief_from_contract(sr: SolveResult,
     # deliverables shape here: {slot: {"description": str, "value": [artifact,...]}}
     struct_delivs: List[Deliverable] = []
     for slot, dv in (deliverables or {}).items():
-        desc = (dv.get("description") or "") if isinstance(dv, dict) else ""
-        files: List[FileRef] = []
-        inlines: List[InlineRef] = []
+        desc = dv.get("description") or ""
 
         v_raw = (dv.get("value") if isinstance(dv, dict) else None)
-        vals: List[Any] = (v_raw if isinstance(v_raw, list) else ([v_raw] if isinstance(v_raw, dict) else []))
 
-        for it in vals:
-            if not isinstance(it, dict):
-                # inline preview from unknown type
-                inlines.append(InlineRef(
-                    mime="application/json",
-                    citable=False,
-                    description="result",
-                    value_preview=(json.dumps(it, ensure_ascii=False)[:280]),
-                    slot=slot, tool_id=None
-                ))
-                continue
-            if it.get("type") == "file":
-                files.append(FileRef(
-                    filename=(it.get("filename") or it.get("path") or "").split("/")[-1],
-                    key=it.get("key"),
-                    mime=it.get("mime"),
-                    size=it.get("size"),
-                    description=it.get("description") or "",
-                    slot=slot,
-                    tool_id=it.get("tool_id"),
-                ))
-            else:
-                val = it.get("value")
-                if not isinstance(val, str):
-                    try:
-                        val = json.dumps(val, ensure_ascii=False)
-                    except Exception:
-                        val = str(val)
-                inlines.append(InlineRef(
-                    mime=it.get("mime"),
-                    citable=bool(it.get("citable")),
-                    description=it.get("description") or "",
-                    value_preview=(val or "")[:280],
-                    slot=slot,
-                    tool_id=it.get("tool_id"),
-                ))
-        struct_delivs.append(Deliverable(slot=slot, description=desc, files=files, inlines=inlines))
+        slot_type = dv.get("type") or ""
+        deliverable = None
+        if slot_type == "inline":
+            artifact = dv.get("value") or {}
+            output = artifact.get("output") or {}
+            deliverable = InlineRef(
+                mime="application/json",
+                citable=False,
+                description=desc,
+                value_preview=(json.dumps(output.get("text"), ensure_ascii=False)[:280]),
+                text=output.get("text") or "",
+                slot=slot,
+                tool_id=None
+            )
+
+        if slot_type == "file":
+            artifact = dv.get("value") or {}
+            output = artifact.get("output") or {}
+            deliverable = FileRef(
+                filename=(output.get("path") or "").split("/")[-1],
+                key=artifact.get("key"),
+                mime=artifact.get("mime"),
+                size=artifact.get("size"),
+                description=desc,
+                slot=slot,
+                tool_id=artifact.get("tool_id"),
+                text=output.get("text") or "",
+            )
+        if deliverable:
+            struct_delivs.append(deliverable)
 
     # include rehosted file metadata if caller passed it (helps UX/debug)
     # rehosted_files: [{slot, key, filename, mime, size, tool_id, description, owner_id, rn}]
@@ -498,15 +515,8 @@ def _program_brief_from_contract(sr: SolveResult,
             description=rf.get("description") or "",
             slot=rf.get("slot"),
             tool_id=rf.get("tool_id"),
+            text=rf.get("text") or "",
         ))
-    if by_slot_extra:
-        for d in struct_delivs:
-            extras = by_slot_extra.get(d.slot) or []
-            # avoid duplicates by filename+key
-            seen = {(f.filename, f.key) for f in d.files}
-            for e in extras:
-                if (e.filename, e.key) not in seen:
-                    d.files.append(e)
 
     brief_struct = ProgramBrief(
         title=title[:120],
@@ -552,10 +562,10 @@ def _program_brief_from_contract(sr: SolveResult,
         lines.append("\n## Deliverables")
         for d in struct_delivs:
             lines.append(f"- {d.slot}: {d.description}")
-            for f in d.files:
-                lines.append(f"  - file: {f.filename}" + (f" ({f.mime})" if f.mime else "") + (f" [key:{f.key}]" if f.key else ""))
-            if d.inlines:
-                lines.append(f"  - inline: {len(d.inlines)} item(s)")
+            if d._type == "file":
+                lines.append(f"  - file: {d.filename}" + (f" ({d.mime})" if d.mime else "") + "; descr: " + d.description)
+            if d._type == "inline":
+                lines.append(f"  - inline: descr: {d.description}")
 
     brief_text = "\n".join(lines).rstrip()
     return brief_text, brief_struct
@@ -591,112 +601,101 @@ def _build_program_presentation_for_answer_agent(
         citations: Optional[List[Dict[str, Any]]] = None,
         codegen_run_id: Optional[str] = None,
         include_reasoning: bool = True,
+        extended: bool = False,
+        include_unused_citations: bool = False,  # control unused citations
 ) -> str:
-    """
-    Compact execution context for the answer agent:
-    - OUT items (name/desc/in/out)
-    - Deliverables (by slot)
-    - Files (rehosted + types)
-    - Result interpretation instruction
-    - Notes
-    - Citations
-    """
+    def _artifact_text(art: Dict[str, Any]) -> str:
+        if not isinstance(art, dict):
+            return ""
+        output = art.get("output") or {}
+        return (output.get("text") or "").strip()
+
+    def _first_round_note() -> str:
+        r0 = (sr.rounds() or [{}])[0]
+        return _last_non_empty_note(r0.get("notes"))
+
     lines: List[str] = []
     lines.append("# Program Presentation")
     if codegen_run_id:
         lines.append(f"_Run ID: `{codegen_run_id}`_")
 
-    # Optional reasoning from this round
+    # Optional reasoning
     if include_reasoning:
         reasoning = sr.round_reasoning()
         if reasoning:
             lines.append("\n## Solver reasoning (for this turn)")
             lines.append(reasoning)
 
-    # OUT items: name/desc/in/out
-    out_items = sr.out_items() or []
-    if out_items:
-        lines.append("\n## Program OUT")
-        for it in out_items:
-            rid = it.get("resource_id") or ""
-            desc = it.get("description") or ""
-            inp = it.get("input") or {}
-            outp = it.get("output") or {}
-            # preview input/output compactly
-            in_prev = _kv_preview(inp, 8) if isinstance(inp, dict) else (str(inp)[:160] + ("…" if len(str(inp)) > 160 else ""))
-            out_prev = _kv_preview(outp, 8) if isinstance(outp, dict) else (str(outp)[:160] + ("…" if len(str(outp)) > 160 else ""))
-            lines.append(f"- `{rid}` — {desc}")
-            if in_prev:
-                lines.append(f"  - **in:** {in_prev}")
-            if out_prev:
-                lines.append(f"  - **out:** {out_prev}")
-
-    # Deliverables (by slot)
+    # Pull deliverables map once
     dmap = sr.deliverables_map() or {}
-    if dmap:
-        lines.append("\n## Deliverables")
-        for slot, spec in dmap.items():
-            desc = (spec or {}).get("description") or ""
 
-            v_raw = (spec or {}).get("value")
-            vals = v_raw if isinstance(v_raw, list) else ([v_raw] if isinstance(v_raw, dict) else [])
+    # --- Project Log ---
+    log_spec = dmap.get("project_log") or {}
+    log_art = (log_spec.get("output") if isinstance(log_spec, dict) else None) or {}
+    log_body = _artifact_text(log_art)
+    lines.append("\n## Solver project log")
+    lines.append("```")
+    lines.append(log_body if log_body else "(empty)")
+    lines.append("```")
 
-            # vals = (spec or {}).get("value") or []
-            lines.append(f"- **{slot}** — {desc}")
-            files_cnt = 0
-            inline_cnt = 0
-            for v in vals:
-                if not isinstance(v, dict):
-                    continue
-                if v.get("type") == "file":
-                    files_cnt += 1
-                else:
-                    inline_cnt += 1
-            if files_cnt:
-                lines.append(f"  - files: {files_cnt}")
-            if inline_cnt:
-                lines.append(f"  - inline: {inline_cnt}")
+    # --- Produced Slots (exclude canvas/log) ---
+    lines.append("\n### Produced slots")
+    for slot, spec in (dmap.items() if isinstance(dmap, dict) else []):
+        if slot in {"project_canvas", "project_log"}:
+            continue
+        desc = (spec or {}).get("description") or ""
+        art = (spec or {}).get("value")
+        art = art if isinstance(art, dict) else {}
 
-    # Files (across deliverables)
-    all_files: List[Tuple[str, str, str]] = []  # (filename, slot, mime)
-    for slot, spec in (dmap or {}).items():
-        v_raw = (spec or {}).get("value")
-        vals = v_raw if isinstance(v_raw, list) else ([v_raw] if isinstance(v_raw, dict) else [])
-        for v in vals:
-            if isinstance(v, dict) and v.get("type") == "file":
-                name = (v.get("path") or v.get("filename") or "").split("/")[-1]
-                mime = v.get("mime") or ""
-                all_files.append((name, slot, mime))
-    if all_files:
-        lines.append("\n## Files")
-        for name, slot, mime in all_files[:24]:
-            lines.append(f"- {name}{f' ({mime})' if mime else ''} [slot: {slot}]")
-        if len(all_files) > 24:
-            lines.append(f"- … and {len(all_files)-24} more")
+        slot_type = (art.get("type") or (spec or {}).get("type") or "inline").strip().lower()
 
-    # How to interpret the results
+        lines.append(f"\n### {slot} ({slot_type})")
+        lines.append(f"Description: {desc}" if desc else "Description:")
+
+        if slot_type == "file":
+            fname = (art.get("path") or art.get("filename") or "").split("/")[-1]
+            mime = art.get("mime") or ""
+            if fname:
+                lines.append(f"Filename: {fname}")
+            if mime:
+                lines.append(f"Mime: {mime}")
+
+        if extended:
+            lines.append("#### Text repr")
+            body = _artifact_text(art)
+            lines.append("```")
+            lines.append(body if body else "(empty)")
+            lines.append("```")
+
+    # How to interpret
     rii = sr.interpretation_instruction()
     if rii:
         lines.append("\n## How to interpret these results")
         lines.append(rii.strip())
 
-    # Last round note (if any)
-    r0 = (sr.rounds() or [{}])[0]
-    last_note = _last_non_empty_note(r0.get("notes"))
+    # Notes
+    last_note = _first_round_note()
     if last_note:
         lines.append("\n## Solver notes")
         lines.append(last_note)
 
-    # Citations
-    if citations:
-        urls = dict()
-        for c in citations:
+    # Citations (up to 50) — keep as compact bullets for navigation
+    # Citations - filter by usage
+    citations_to_show = citations if citations else sr.citations_with_usage()
+
+    # Filter out unused if requested
+    if not include_unused_citations:
+        citations_to_show = [c for c in citations_to_show if c.get("used", True)]
+
+    if citations_to_show:
+        uniq = {}
+        for c in citations_to_show:
             u = (c or {}).get("url") or ""
-            if u and u not in urls:
-                urls[u] = (c or {}).get("title") or ""
-        if urls:
+            if u and u not in uniq:
+                uniq[u] = (c or {}).get("title") or ""
+        if uniq:
             lines.append("\n## Citations")
-            for url, title in itertools.islice(urls.items(), 50):
+            for url, title in itertools.islice(uniq.items(), 50):
                 lines.append(f"- [{title}]({url})")
 
     return "\n".join(lines).strip()

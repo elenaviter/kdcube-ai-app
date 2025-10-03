@@ -1102,6 +1102,18 @@ class ModelServiceBase:
                 sys, usr = "", ""
             return {"system_preview": sys, "user_preview": usr}
 
+        def _msg_history(ms: List[BaseMessage]) -> dict:
+            history = []
+            try:
+                for m in ms:
+                    role = "system" if isinstance(m, SystemMessage) else "user" if isinstance(m, HumanMessage) else "assistant" if isinstance(m, AIMessage) else "unknown"
+                    history.append({"role": role, "content": (m.content or "")})
+            except Exception:
+               pass
+            return {"history": history}
+
+        msg_data = _msg_history(messages) if debug else _msg_preview(messages)
+
         slog.start_operation(
             "stream_model_text_tracked",
             provider=cfg.provider,
@@ -1110,7 +1122,7 @@ class ModelServiceBase:
             temperature=temperature,
             max_tokens=max_tokens,
             msg_count=len(messages),
-            **_msg_preview(messages),
+            **msg_data
         )
 
         final_chunks: list[str] = []
