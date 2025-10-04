@@ -14,9 +14,8 @@ import uuid
 import time
 import logging
 from datetime import datetime
-from typing import Any, Optional, Dict
+from typing import Any, Dict
 import hashlib
-from pathlib import Path
 import re
 
 import socketio
@@ -345,7 +344,7 @@ class SocketIOChatHandler:
 
         # If you want to pass it to your workers:
         message_data = data.get("message", {})
-        message_data["conversation_id"] = "5c0a6bb8-2fcd-4b40-ab10-a78991d1d77c"
+        # message_data["conversation_id"] = "5c0a6bb8-2fcd-4b40-ab10-a78991d1d77c"
         logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
         try:
             socket_session = await self.sio.get_session(sid)
