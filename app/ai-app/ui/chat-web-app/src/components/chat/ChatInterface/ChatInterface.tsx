@@ -57,7 +57,7 @@ import {copyMarkdownToClipboard} from "../../Clipboard.ts";
 import {getFileIcon} from "../../FileIcons.tsx";
 import {markdownComponents, markdownComponentsTight, rehypePlugins, remarkPlugins} from "./markdownRenderUtils.tsx";
 import {selectFileAdvanced} from "../../shared.ts";
-import {useWordStreamEffect} from "../../WordStreamingEffects.tsx";
+import {closeUpMarkdown, useWordStreamEffect} from "../../WordStreamingEffects.tsx";
 
 interface ChatInterfaceProps {
     lockMessage?: string;
@@ -201,7 +201,7 @@ const ThinkingItem = ({item}: { item: AssistantThinkingItem }) => {
                                                 linkTarget="_blank"
                                                 skipHtml={false}
                                             >
-                                                {item.agents[agent] || ""}
+                                                {closeUpMarkdown(item.agents[agent] || "")}
                                             </ReactMarkdown>
                                         </div>
                                     </div>
@@ -274,7 +274,6 @@ const AssistantMessage = (
 ) => {
     const mdRed = useRef<HTMLDivElement>(null);
 
-
     const streamedText = useWordStreamEffect(
         message?.text ?? "",
         50,
@@ -319,7 +318,7 @@ const AssistantMessage = (
                 linkTarget="_blank"
                 skipHtml={false}
             >
-                {message.isGreeting ? message.text : streamedText}
+                {closeUpMarkdown(message.isGreeting ? message.text : streamedText)}
             </ReactMarkdown>
             <div
                 className="flex flex-row space-x-2 w-full justify-start transition-all duration-300 ease-out"
@@ -381,7 +380,7 @@ const AssistantMessage = (
                                             linkTarget="_blank"
                                             skipHtml={false}
                                         >
-                                            {markdown}
+                                            {closeUpMarkdown(markdown)}
                                         </ReactMarkdown>
                                     </div>
                                 )}

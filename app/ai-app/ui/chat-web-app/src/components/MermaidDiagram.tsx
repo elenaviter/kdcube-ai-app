@@ -20,13 +20,13 @@ function MermaidDiagram({chart}: { chart: string }) {
 
     useEffect(() => {
         if (svg) {
-            console.log(`Using cached SVG (${idRef.current})`)
+            console.debug(`Using cached SVG (${idRef.current})`)
         } else {
             setRendering(true);
             mermaid.render(idRef.current, chart).then((svg) => {
                 svgCache.set(chart, svg.svg)
                 setSvg(svg.svg)
-                console.log(`MermaidDiagram rendered (${idRef.current})`);
+                console.debug(`MermaidDiagram rendered (${idRef.current})`);
             }).catch((e) => {
                 console.error(e);
             }).finally(() => setRendering(false));
