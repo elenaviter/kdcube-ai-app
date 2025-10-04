@@ -33,13 +33,6 @@ function MermaidDiagram({chart}: { chart: string }) {
         }
     }, [chart, svg]);
 
-    // useEffect(() => {
-    //     return () => {
-    //         console.log("cleanup");
-    //         svgCache.delete(chart);
-    //     }
-    // });
-
     if (rendering) {
         return <Loader2 className="animate-spin"/>
     }

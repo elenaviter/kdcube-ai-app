@@ -38,6 +38,7 @@ function closeUpCodeBlocks(text: string, onlyFull = ['mermaid']) {
             const trimmedLine = line.trim();
             const lineBlockType = trimmedLine.substring(0, 3)
             const lineLang = trimmedLine.substring(3)
+
             if (lineBlockType.length > 0) {
                 if (currentBlockType.length > 0 && currentBlockType !== lineBlockType) {
                     // we assume that new code block opening is actually part of code
@@ -47,6 +48,7 @@ function closeUpCodeBlocks(text: string, onlyFull = ['mermaid']) {
                     result.push(...codeLines, line)
                     codeLines = []
                     currentLang = ""
+                    currentBlockType = ""
                     continue
                 }
                 if (currentBlockType.length === 0) {
@@ -60,7 +62,7 @@ function closeUpCodeBlocks(text: string, onlyFull = ['mermaid']) {
             if (currentBlockType.length > 0) {
                 codeLines.push(line)
             } else {
-            result.push(line);
+                result.push(line);
             }
         }
     }
