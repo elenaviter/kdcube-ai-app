@@ -24,9 +24,12 @@ from kdcube_ai_app.apps.chat.sdk.codegen.contracts import ToolModuleSpec, Soluti
     SolutionExecution
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 import kdcube_ai_app.apps.chat.sdk.codegen.project_retrieval as project_retrieval
+from kdcube_ai_app.apps.chat.sdk.runtime.snapshot import build_portable_spec
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad
-from kdcube_ai_app.apps.chat.sdk.runtime.simple_runtime import _InProcessRuntime
+# from kdcube_ai_app.apps.chat.sdk.runtime.simple_runtime import _InProcessRuntime
+from kdcube_ai_app.apps.chat.sdk.runtime.iso_runtime import _InProcessRuntime, build_current_tool_imports, \
+    build_packages_installed_block, _merge_timeout_result
 from kdcube_ai_app.apps.chat.sdk.codegen.team import (
     tool_router_stream,
     assess_solvability_stream,
@@ -187,6 +190,9 @@ def analyze_execution(rounds,
         solver_json = solver_json or {}
         ok = bool(solver_json.get("ok"))
         contract = plan.contract_dyn or {}
+        if not contract:
+            # runtime wrote it too; safe to read for slot specs
+            contract = (solver_json or {}).get("contract") or {}
         filled = sorted([k for k,v in (deliverables or {}).items() if isinstance(v.get("value"), dict)])
         missing = sorted(list(set(contract.keys()) - set(filled)))
         status = "ok" if ok else "failed"
@@ -440,11 +446,6 @@ class CodegenToolManager:
         self.tools_info: List[Dict[str, Any]] = []   # flattened entries across modules
 
         used_aliases: set[str] = set()
-
-        async def _emit_delta(text: str, idx: int, meta: dict | None = None, completed: bool = False):
-            marker = (meta or {}).get("marker", "answer")
-            await self.comm.delta(text=text, index=idx, marker=marker, completed=completed)
-
 
         for spec in specs:
             mod_name, mod = self._load_tools_module(spec.ref)
@@ -1097,7 +1098,8 @@ class CodegenToolManager:
                 constraints={"prefer_direct_tools_exec": True, "minimize_logic": True, "concise": True, "line_budget": 80},
                 max_rounds=1,
                 program_history=program_history,
-                current_turn=current_turn
+                current_turn=current_turn,
+                timeout_s=300
             )
 
             rounds = cg_res.get("rounds") or []
@@ -1303,6 +1305,11 @@ class CodegenToolManager:
 
         program_playbook = project_retrieval.build_program_playbook(program_history_reconciled, max_turns=5)
         self.log.log(f"Program playbook: {json.dumps(program_playbook or {}, indent=2)}")
+
+        alias_map = {m["alias"]: m["name"] for m in self._modules}
+        current_tool_imports = build_current_tool_imports(alias_map)
+        code_packages = build_packages_installed_block()
+
         while remaining > 0:
             # stream codegen
             cg_stream = await solver_codegen_stream(
@@ -1312,7 +1319,9 @@ class CodegenToolManager:
                 solvability=solvability,
                 program_playbook=program_playbook,
                 on_thinking_delta=self._mk_thinking_streamer("solver_codegen"),
-                ctx="solver_codegen"
+                ctx="solver_codegen",
+                current_tool_imports=current_tool_imports,
+                code_packages=code_packages
             )
             logging_helpers.log_agent_packet(self.AGENT_NAME, "codegen router", cg_stream)
             cg = (cg_stream or {}).get("agent_response") or {}
@@ -1404,16 +1413,48 @@ class CodegenToolManager:
                     }
                 }
             )
+            spec = build_portable_spec(
+                svc=self.svc,
+                chat_comm=self.comm,
+                # integrations={"ctx_client": self.context_rag_client},
+            )
 
-            # run + collect
-            run_res = await self.run_main_py_package(workdir=workdir,
-                                                     output_dir=outdir,
-                                                     files={},
-                                                     timeout_s=timeout_s,
-                                                     globals={
-                                                         "CONTRACT": contract_out,
-                                                         "COMM_SPEC": self.comm._export_comm_spec_for_runtime(),
-                                                     })
+            run_res = await self.run_main_py_package(
+                workdir=workdir,
+                output_dir=outdir,
+                files={},
+                timeout_s=timeout_s,
+                globals={
+                    "CONTRACT": contract_out,
+                    "COMM_SPEC": self.comm._export_comm_spec_for_runtime(),
+                    "PORTABLE_SPEC_JSON": spec.to_json(),
+                    "TOOL_ALIAS_MAP": alias_map,
+                },
+            )
+
+            # # run + collect
+            # spec = build_portable_spec(
+            #     model_config_request=config_request,
+            #     chat_comm=self.comm,                  # your ChatCommunicator, or None
+            #     integrations={"ctx_client": self.context_rag_client},  # optional
+            # )
+            # run_res = await self.run_main_py_package(workdir=workdir,
+            #                                          output_dir=outdir,
+            #                                          files={},
+            #                                          timeout_s=timeout_s,
+            #                                          globals={
+            #                                              "CONTRACT": contract_out,
+            #                                              "COMM_SPEC": self.comm._export_comm_spec_for_runtime(),
+            #                                          })
+            if run_res.get("error") == "timeout":
+                # Attach a small synthetic result so downstream shows a clear failure
+                timeout_reason = f"Solver runtime exceeded {timeout_s}s and was terminated."
+                # write a tiny result.json so collect_outputs sees something
+                try:
+                    _merge_timeout_result(outdir / "result.json", objective=user_text, seconds=timeout_s)
+                except Exception:
+                    pass
+
             collected = self.collect_outputs(output_dir=outdir, outputs=outputs)
 
             round_rec = {

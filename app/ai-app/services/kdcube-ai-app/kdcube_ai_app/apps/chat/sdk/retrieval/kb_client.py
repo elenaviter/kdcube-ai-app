@@ -83,8 +83,8 @@ class KBClient:
                 database=self._settings.PGDATABASE,
                 ssl=self._settings.PGSSL,
                 max_inactive_connection_lifetime=300.0,
-                max_size=int(os.getenv("PGPOOL_MAX_SIZE", "10")),
-                min_size=int(os.getenv("PGPOOL_MIN_SIZE", "1")),
+                min_size=int(os.getenv("PGPOOL_MIN_SIZE", "0")),   # 0 so idle workers release conns
+                max_size=int(os.getenv("PGPOOL_MAX_SIZE", "2")),   # keep this SMALL in child runtimes
                 init=_init_conn,
                 server_settings={"application_name": "kdcube-kb-client"},
             )

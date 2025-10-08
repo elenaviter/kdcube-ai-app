@@ -257,8 +257,11 @@ class ContextTools:
                 "{\n"
                 "  '<turn_id>': {\n"
                 "    'ts': '2025-10-02',\n"
+                "    'status': 'success' | 'failed: solver_error' | 'answered_by_assistant' | 'no_activity'\n"
                 "    'program_log': {text: str, format: str},\n"
-                "    'user_msg:str,      # user message on the turn\n"
+                "    'user_msg':str,           # user message on the turn\n"
+                "    'assistant_msg':str,      # assistant message on the turn. \n"
+                "    'solver_failure':str | null,  # non-empty if the solver experienced failure on this turn. \n"
                 "    'deliverables': {\n"
                 "      '<slot_name>': {\n"
                 "        'type': 'file' | 'inline',\n"
@@ -274,11 +277,15 @@ class ContextTools:
                 "}\n"
                 "\n"
                 "HOW TO USE\n"
-                "1. Read program_playbook from context.json to identify current turn id and 'relevant' turn_ids\n"
-                "2. Call this function with specific turn_ids\n"
-                "3. Access artifacts via result[turn_id]['deliverables'][slot_name]['text']\n"
+                "1. Examine the Program History Playbook to understand which turn_ids you need and which artifacts you need.\n"
+                "1. Call this function with specific turn_ids. 'current_turn' turn id is for current turn.\n"
+                "3. Access solver artifacts (deliverables) via result[turn_id]['deliverables'][slot_name]['text']\n"
                 "4. For structured content (code/JSON/etc), parse the 'text' field\n"
-                "5. If the user's message needed, get it via result[turn_id]['user_msg'].\n"
+                "5. For editing bases when solver failed for the relevant turn (or didn’t run): result[tid]['assistant_msg'] is authoritative (what the user saw).\n"                
+                "6. If the user's message needed, get it via result[turn_id]['user_msg'].\n"
+                "7. If assistant message needed, get it via result[turn_id]['assistant_msg'].\n"
+                "8. With file deliverables, treat all text fields as authoritative text representations; do not re-crawl files directly unless you need binary content (rare).\n"
+                
                 "\n"
                 "LIMITS\n"
                 "• Returns up to 10 turns\n"
@@ -353,7 +360,7 @@ class ContextTools:
 
             # Deliverables
             deliverables_list = meta.get("deliverables") or []
-            assistant = meta.get("assistant") or {}
+            assistant = (meta.get("assistant") or "").strip()
             user_msg = (meta.get("user") or {}).get("prompt") or ""
             turn_log = meta.get("turn_log") or {}
             deliverables_dict = {}
@@ -395,12 +402,25 @@ class ContextTools:
 
                 deliverables_dict[slot_name] = slot_data
 
+            solver_failure = (meta.get("solver_failure") or "").strip() or None
+            if deliverables_list:
+                status = "success"
+            elif solver_failure:
+                status = "failed: solver_error"
+            elif assistant:
+                status = "answered_by_assistant"
+            else:
+                status = "no_activity"
+
             result[tid] = {
                 "ts": ts,
+                "status": status,
                 "turn_log": (meta.get("turn_log") or "")[:1000],
+                "solver_failure": solver_failure,
                 "program_log": {"text": pl_text, "format": pl_fmt} if pl_text else None,
                 "deliverables": deliverables_dict,
-                "user_msg": user_msg
+                "user_msg": user_msg or "",
+                "assistant_msg": assistant or ""
                 # "sources": turn_sources
             }
 

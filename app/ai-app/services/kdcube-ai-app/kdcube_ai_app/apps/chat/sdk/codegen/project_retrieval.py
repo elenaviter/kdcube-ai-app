@@ -8,6 +8,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Dict, List, Optional
 import re
+import uuid as _uuid
 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     CITATION_OPTIONAL_ATTRS,
@@ -144,7 +145,7 @@ async def _build_program_history_from_turn_ids(self, *,
         ts_val = assistant_env.get("ts") or user_env.get("ts") or ""
 
         # codegen_run_id priority: deliverables.payload -> tags -> presentation markdown
-        codegen_run_id = (dels or {}).get("execution_id") or ""
+        codegen_run_id = (dels or {}).get("execution_id") or f"cg-{_uuid.uuid4().hex[:8]}"
 
         # Presentation markdown (if present)
         pres_md = (prez.get("markdown") or "") if isinstance(prez, dict) else ""
@@ -501,11 +502,25 @@ def build_program_playbook(history: list[dict], *, max_turns: int = 5) -> str:
           Preview: [first 100 chars...] (...N more chars)
           ⚠ Use fetch_turn_artifacts(["turn_id"]) to retrieve full content
       Sources: (numbered list with titles and abbreviated links)
+    Ordering per turn:
+      1) User Request
+      2) Program Log
+      3) Deliverables (if solver ran & succeeded) OR Solver Failure (if failed)
+      4) Assistant Response (full unless solver succeeded, in which case truncated)
+
+    Other guarantees:
+      - TURN_ID and a copy-pasteable fetch hint
+      - Status: success | failed: solver_error | answered_by_assistant | no_activity
+      - No "No deliverables" noise when solver didn't run
     """
+
     if not history:
         return "(no program history)"
 
-    sections = []
+    def _size(s: str | None) -> int:
+        return len(s or "")
+
+    sections: list[str] = []
 
     for idx, rec in enumerate(history[:max_turns]):
         try:
@@ -513,139 +528,155 @@ def build_program_playbook(history: list[dict], *, max_turns: int = 5) -> str:
         except Exception:
             continue
 
-        is_current = (idx == 0)  # First entry is always current turn
+        is_current = (idx == 0)
         turn_label = "CURRENT TURN" if is_current else "HISTORICAL"
 
-        # Timestamp with minutes: 2025-10-02T16:55:45Z -> 2025-10-02 16:55
-        ts_full = meta.get("ts") or ""
+        # Timestamp → "YYYY-MM-DD HH:MM"
+        ts_full = (meta.get("ts") or "").strip()
         ts = ts_full[:16].replace("T", " ") if len(ts_full) >= 16 else (ts_full[:10] or "(no date)")
 
-        # User request (especially important for current turn)
+        # Core materials
         user_text = ((meta.get("user") or {}).get("prompt") or "").strip()
-        user_preview = _short_with_count(user_text, 200) if user_text else "(no user message)"
+        assistant_text = (meta.get("assistant") or "").strip()
+        solver_failure_md = (meta.get("solver_failure") or "").strip()
 
         # Program log
-        pl = (meta.get("project_log") or {})
+        pl = meta.get("project_log") or {}
         pl_text = (pl.get("text") or pl.get("value") or "").strip()
-        pl_size = len(pl_text) if pl_text else 0
-        pl_preview = _short_with_count(pl_text, 300) if pl_text else "(no log yet)"
+        pl_size = _size(pl_text)
 
-        # Sources (global for this turn)
-        sources = ((meta.get("web_links_citations") or {}).get("items")) or []
-        sources_lines = []
-        for i, src in enumerate(sources[:20], 1):  # limit to 20
-            if not isinstance(src, dict):
-                continue
-            title = (src.get("title") or "").strip()
-            url = (src.get("url") or "").strip()
-            if not title and not url:
-                continue
-
-            # Abbreviated URL (domain only)
-            domain = ""
-            if url:
-                try:
-                    from urllib.parse import urlparse
-                    parsed = urlparse(url)
-                    domain = parsed.netloc or ""
-                except:
-                    domain = url[:30]
-
-            if title and domain:
-                sources_lines.append(f"  {i}. {_short_with_count(title, 80)} ({domain})")
-            elif title:
-                sources_lines.append(f"  {i}. {_short_with_count(title, 80)}")
-            elif url:
-                sources_lines.append(f"  {i}. {_short_with_count(url, 100)}")
-
-        # Deliverables
+        # Deliverables & sources
         deliverables = meta.get("deliverables") or []
-        del_lines = []
+        sources = ((meta.get("web_links_citations") or {}).get("items")) or []
 
-        for d in deliverables:
-            slot_name = d.get("slot") or "(unnamed)"
-            if slot_name in {"project_log", "project_canvas"}:
-                continue  # Already shown above
+        # Did solver run?
+        solver_ran = bool(deliverables or solver_failure_md or pl_text)
 
-            artifact = d.get("value") or {}
-            slot_type = artifact.get("type") or "inline"
-            desc = d.get("description") or "(no description)"
+        # Status
+        if deliverables:
+            status = "success"
+        elif solver_failure_md:
+            status = "failed: solver_error"
+        elif assistant_text and not solver_ran:
+            status = "answered_by_assistant"
+        else:
+            status = "no_activity"
 
-            # Get text preview and size
-            output = artifact.get("output") or {}
-            text = output.get("text") or artifact.get("value") or ""
-            if isinstance(text, dict):
-                text = str(text)
-            else:
-                text = str(text or "")
-
-            text_size = len(text)
-            text_preview = _short_with_count(text, 150) if text else "[empty]"
-
-            # Format with size info
-            if slot_type == "file":
-                mime = artifact.get("mime") or "unknown"
-                filename = output.get("filename") or output.get("path") or "(no filename)"
-                del_lines.append(f"  • {slot_name} (file: {mime})")
-                del_lines.append(f"    Filename: {filename}")
-                del_lines.append(f"    Size: {text_size:,} chars")
-            else:
-                fmt = artifact.get("format") or "text"
-                del_lines.append(f"  • {slot_name} (inline: {fmt})")
-                del_lines.append(f"    Size: {text_size:,} chars")
-
-            del_lines.append(f"    Description: {desc}")
-
-            if text:
-                del_lines.append(f"    Preview: {text_preview}")
-
-            # Add fetch instruction if content is substantial
-            if text_size > 300:
-                del_lines.append(f"    ⚠ Full content available via fetch_turn_artifacts([\"{exec_id}\"])")
-
-        # Build section header
-        section = [
-            f"## Turn {exec_id} — {ts} [{turn_label}]",
+        # ----- Header -----
+        header_lines = [
+            f"## Turn {exec_id or '(missing_exec_id)'} — {ts} [{turn_label}]",
+            f"TURN_ID: {exec_id or '(missing_exec_id)'}",
+            f"Status: {status}",
+            f"Fetch with: ctx_tools.fetch_turn_artifacts([\"{exec_id}\"])",
             "",
         ]
 
-        # User request (important context)
-        section.extend([
+        body_lines: list[str] = []
+
+        # 1) User Request
+        body_lines += [
             "**User Request:**",
-            user_preview,
+            _short_with_count(user_text, 200) if user_text else "(no user message)",
             "",
-        ])
+        ]
 
-        # Program log
+        # 2) Program Log
         if pl_text:
-            section.extend([
+            body_lines += [
                 f"**Program Log:** ({pl_size:,} chars)",
-                pl_preview,
+                _short_with_count(pl_text, 400),
                 "",
-            ])
+            ]
             if pl_size > 300:
-                section.append(f"⚠ Full log via fetch_turn_artifacts([\"{exec_id}\"])")
-                section.append("")
+                body_lines.append(f"⚠ Full log via fetch_turn_artifacts([\"{exec_id}\"])")
+                body_lines.append("")
 
-        # Deliverables
-        if del_lines:
-            section.append("**Deliverables:**")
-            section.extend(del_lines)
-            section.append("")
-        else:
-            section.append("*No deliverables yet*" if is_current else "*No deliverables*")
-            section.append("")
+        # 3) Deliverables or Failure — only if solver ran
+        if solver_ran:
+            if deliverables:
+                body_lines.append("**Deliverables:**")
+                for d in deliverables:
+                    slot_name = d.get("slot") or "(unnamed)"
+                    if slot_name in {"project_log", "project_canvas"}:
+                        continue
+                    artifact = d.get("value") or {}
+                    slot_type = artifact.get("type") or "inline"
+                    desc = d.get("description") or "(no description)"
 
-        # Sources
-        if sources_lines:
-            section.append(f"**Sources:** ({len(sources)} total)")
-            section.extend(sources_lines)
-            section.append("")
+                    # Prefer file/text surrogate if present; else inline value
+                    text = artifact.get("text") or artifact.get("value") or ""
+                    if isinstance(text, dict):
+                        text = str(text)
+                    text_size = _size(text)
+                    text_preview = _short_with_count(text, 150) if text else "[empty]"
 
-        sections.append("\n".join(section))
+                    if slot_type == "file":
+                        mime = artifact.get("mime") or "unknown"
+                        filename = artifact.get("filename") or artifact.get("path") or "(no filename)"
+                        body_lines += [
+                            f"  • {slot_name} (file: {mime})",
+                            f"    Filename: {filename}",
+                            f"    Size: {text_size:,} chars",
+                            f"    Description: {desc}",
+                        ]
+                    else:
+                        fmt = artifact.get("format") or "text"
+                        body_lines += [
+                            f"  • {slot_name} (inline: {fmt})",
+                            f"    Size: {text_size:,} chars",
+                            f"    Description: {desc}",
+                        ]
+                    if text:
+                        body_lines.append(f"    Preview: {text_preview}")
+                    if text_size > 300:
+                        body_lines.append(f"    ⚠ Full content via fetch_turn_artifacts([\"{exec_id}\"])")
+                body_lines.append("")
+            elif solver_failure_md:
+                body_lines += [
+                    "**Solver Failure:**",
+                    _short_with_count(solver_failure_md, 800),
+                    "",
+                ]
+            # else: solver_ran but no deliverables or failure text — extremely rare; omit noise
 
-    if not sections:
-        return "(no program history)"
+        # 4) Assistant Response
+        if assistant_text:
+            body_lines.append("**Assistant Response (shown to user):**")
+            if status == "success":
+                # Only truncate when solver succeeded
+                body_lines.append(_short_with_count(assistant_text, 600))
+            else:
+                # Failed / answered_by_assistant / no_activity → show full
+                body_lines.append(assistant_text)
+            body_lines.append("")
+
+        # Sources (compact, end of block)
+        if sources:
+            from urllib.parse import urlparse
+            src_lines = []
+            for i, src in enumerate(sources[:20], 1):
+                if not isinstance(src, dict):
+                    continue
+                title = (src.get("title") or "").strip()
+                url = (src.get("url") or "").strip()
+                domain = ""
+                if url:
+                    try:
+                        domain = urlparse(url).netloc or ""
+                    except Exception:
+                        domain = url[:30]
+                if title and domain:
+                    src_lines.append(f"  {i}. {_short_with_count(title, 80)} ({domain})")
+                elif title:
+                    src_lines.append(f"  {i}. {_short_with_count(title, 80)}")
+                elif url:
+                    src_lines.append(f"  {i}. {_short_with_count(url, 100)}")
+            if src_lines:
+                body_lines.append(f"**Sources:** ({len(sources)} total)")
+                body_lines += src_lines
+                body_lines.append("")
+
+        sections.append("\n".join(header_lines + body_lines))
 
     header = [
         "# Program History Playbook",
