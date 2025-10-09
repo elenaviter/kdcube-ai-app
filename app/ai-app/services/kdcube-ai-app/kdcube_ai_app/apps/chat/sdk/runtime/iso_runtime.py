@@ -563,6 +563,7 @@ except Exception as _comm_err:
                 # 1) PortableSpec (if caller provided as GLOBAL, prefer that; else allow env to be already set)
                 if globals and "PORTABLE_SPEC" in globals and isinstance(globals["PORTABLE_SPEC"], str):
                     os.environ["PORTABLE_SPEC"] = globals["PORTABLE_SPEC"]
+                    del globals["PORTABLE_SPEC"]
 
                 # 2) Tool module names (for service binding in child)
                 tool_module_names = [name for name, _ in (tool_modules or []) if name]
