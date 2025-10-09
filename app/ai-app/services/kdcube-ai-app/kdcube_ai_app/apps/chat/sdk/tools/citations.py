@@ -586,3 +586,69 @@ def _append_sources_section(md: str, by_id: Dict[int, Dict[str, Any]], order: Li
 
 def _create_clean_sources_section(by_id: Dict[int, Dict[str, Any]], order: List[int]) -> str:
     return create_clean_references_section(by_id, order)
+
+
+# --- HTML helpers: turn [S:...] markers into links/superscripts -------------
+def _render_html_sup_links(ids: List[int], cmap: Dict[int, Dict[str, str]]) -> str:
+    """
+    Render a <sup class="cite" data-sids="1,3">…</sup> block whose content is a series
+    of <a ...><span>[S:1]</span></a> links (target=_blank). If a url is missing, keep plain text.
+    """
+    if not ids:
+        return ""
+    parts = []
+    for sid in ids:
+        rec = cmap.get(sid) or cmap.get(str(sid)) or {}
+        url = (rec.get("url") or "").strip()
+        label = f"[S:{sid}]"
+        if url:
+            parts.append(
+                f'<a href="{url}" target="_blank" rel="noopener noreferrer">{label}</a>'
+            )
+        else:
+            parts.append(label)
+    inner = " ".join(parts)
+    data_sids = ",".join(str(i) for i in ids)
+    return f'<sup class="cite" data-sids="{data_sids}">{inner}</sup>'
+
+def replace_html_citations(
+        html: str,
+        citation_map: Dict[int, Dict[str, str]],
+        keep_unresolved: bool = True,
+        first_only: bool = False,
+) -> str:
+    """
+    Process HTML:
+      1) Replace [[S:...]] tokens with a single <sup class="cite">...</sup> containing links.
+      2) Replace existing <sup class="cite" data-sids="...">…</sup> placeholders with linked content.
+    """
+    if not isinstance(html, str) or not citation_map:
+        return html or ""
+
+    # 1) Replace [[S:...]] tokens
+    def _sub_tokens(m: re.Match) -> str:
+        ids = _expand_ids(m.group(1))
+        if first_only and ids:
+            ids = ids[:1]
+        rendered = _render_html_sup_links(ids, citation_map)
+        if rendered:
+            return rendered
+        return m.group(0) if keep_unresolved else ""
+
+    out = CITE_TOKEN_RE.sub(_sub_tokens, html)
+
+    # 2) Replace existing <sup class="cite" data-sids="...">…</sup> placeholders
+    def _sub_html_sup(m: re.Match) -> str:
+        tag = m.group(0)
+        # extract data-sids="..."
+        m_ids = re.search(r'data-sids="([^"]+)"', tag, flags=re.I)
+        if not m_ids:
+            return tag
+        ids = _expand_ids(m_ids.group(1))
+        if first_only and ids:
+            ids = ids[:1]
+        rendered = _render_html_sup_links(ids, citation_map)
+        return rendered or tag
+
+    out = HTML_CITE_RE.sub(_sub_html_sup, out)
+    return out
