@@ -301,6 +301,9 @@ _PROGRESS = {
     "out_dyn": {},        # slot_name -> slot dict (inline/file)
 }
 
+_FINALIZED = False  # prevents late checkpoints from overwriting the final result
+
+
 def set_progress(*, objective=None, status=None, story_append=None, out_dyn_patch=None, flush=False):
     if objective is not None:
         _PROGRESS["objective"] = str(objective)
@@ -647,6 +650,7 @@ _PROGRESS = {
     "story": [],          # list[str]
     "out_dyn": {},        # slot_name -> slot dict (inline/file)
 }
+_FINALIZED = False  # prevents late checkpoints from overwriting the final result
 
 def _build_project_log_md() -> str:
     lines = []
@@ -697,7 +701,7 @@ def _refresh_project_log_slot():
         "value": md,
     }
 
-def set_progress(*, objective=None, status=None, story_append=None, out_dyn_patch=None, flush=False):
+async def set_progress(*, objective=None, status=None, story_append=None, out_dyn_patch=None, flush=False):
     if objective is not None:
         _PROGRESS["objective"] = str(objective)
     if status is not None:
@@ -711,23 +715,18 @@ def set_progress(*, objective=None, status=None, story_append=None, out_dyn_patc
         od = _PROGRESS["out_dyn"]
         for k, v in (out_dyn_patch or {}).items():
             od[k] = v
-    # ALWAYS refresh project_log inside out_dyn
+
     _refresh_project_log_slot()
 
-    if flush:
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                loop.create_task(_write_checkpoint(reason="progress", managed=True))
-            else:
-                loop.run_until_complete(_write_checkpoint(reason="progress", managed=True))
-        except Exception:
-            pass
-
+    if flush and not globals().get("_FINALIZED", False):
+        await _write_checkpoint(reason="progress", managed=True)
+        
 # initialize with an empty log so it's present even before first set_progress()
 _refresh_project_log_slot()
 
 async def _write_checkpoint(reason: str = "checkpoint", managed: bool = True):
+    if globals().get("_FINALIZED", False):
+        return
     try:
         # ensure log is up-to-date at checkpoint time
         _refresh_project_log_slot()
@@ -758,6 +757,7 @@ async def done():
         "contract": (g.get("CONTRACT") or {}),
         "out_dyn": dict(_PROGRESS.get("out_dyn") or {})
     }
+    globals()["_FINALIZED"] = True  # ← set BEFORE writing final file
     return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
 
 async def fail(description: str,
@@ -788,10 +788,13 @@ async def fail(description: str,
             "managed": bool(managed),
         }
     }
+    globals()["_FINALIZED"] = True  # ← set BEFORE writing final file
     return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
 
 def _on_term(signum, frame):
     try:
+        if globals().get("_FINALIZED", False):
+            return
         loop = asyncio.get_event_loop()
         if loop.is_running():
             loop.create_task(_write_checkpoint(reason=f"signal:{signum}", managed=True))
@@ -830,12 +833,21 @@ def _sync_shutdown_all():
     except Exception:
         pass
 
+def _on_atexit():
+    try:
+        if globals().get("_FINALIZED", False):
+            return
+        asyncio.run(_write_checkpoint(reason="atexit", managed=True))
+    except Exception:
+        pass
+
 try:
     signal.signal(signal.SIGTERM, _on_term)
     signal.signal(signal.SIGINT, _on_term)
 except Exception:
     pass
-atexit.register(lambda: asyncio.run(_write_checkpoint(reason="atexit", managed=True)))
+# atexit.register(lambda: asyncio.run(_write_checkpoint(reason="atexit", managed=True)))
+atexit.register(_on_atexit)
 atexit.register(_sync_shutdown_all)
 
 # === END HEADER ===
