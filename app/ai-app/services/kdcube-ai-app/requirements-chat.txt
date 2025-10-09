@@ -44,3 +44,10 @@ python-docx
 python-pptx
 chardet
 orjson
+
+plotly
+kaleido
+graphviz
+seaborn
+diagrams
+pyvis

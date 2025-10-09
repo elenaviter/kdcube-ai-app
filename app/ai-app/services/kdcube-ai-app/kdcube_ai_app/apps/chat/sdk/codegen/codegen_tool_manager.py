@@ -1099,7 +1099,7 @@ class CodegenToolManager:
                 max_rounds=1,
                 program_history=program_history,
                 current_turn=current_turn,
-                timeout_s=300
+                timeout_s=600
             )
 
             rounds = cg_res.get("rounds") or []
