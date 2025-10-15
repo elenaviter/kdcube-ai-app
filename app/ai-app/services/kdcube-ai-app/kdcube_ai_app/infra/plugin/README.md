@@ -81,7 +81,7 @@ import asyncio, time
 from typing import Dict, Any
 from kdcube_ai_app.infra.plugin.agentic_loader import agentic_workflow, agentic_initial_state
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
-from kdcube_ai_app.apps.chat.sdk.inventory import Config
+from kdcube_ai_app.infra.service_hub.inventory import Config
 
 BUNDLE_ID = "demo.hello"
 

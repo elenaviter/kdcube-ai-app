@@ -87,13 +87,14 @@ class ConversationStore:
         embedding: List[float] | None = None,
         user_type: str = "anonymous",
         ttl_days: int = 365,
-        track_id: Optional[str] = None
+        track_id: Optional[str] = None,
+        msg_ts: Optional[str] = None,
     ) -> Tuple[str, str, str]:
         """
         Persist a message JSON. Returns (uri, message_id, rn).
         RN is generated HERE and written into the record.
         """
-        msg_ts = time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
+        msg_ts = msg_ts or time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
         message_id = f"{_mid(role, msg_ts)}{'-' + id if id else ''}"
         who, user_or_fp = self._who_and_id(user, fingerprint)
 

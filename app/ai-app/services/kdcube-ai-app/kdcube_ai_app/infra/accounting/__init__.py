@@ -153,7 +153,7 @@ class SystemResource:
 @dataclass
 class AccountingEvent:
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    timestamp: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 
     # dynamic snapshot of context at event creation
     context: Dict[str, Any] = field(default_factory=dict)

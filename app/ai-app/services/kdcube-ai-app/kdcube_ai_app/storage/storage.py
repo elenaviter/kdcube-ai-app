@@ -69,6 +69,34 @@ class IStorageBackend(ABC):
         """Get last modified time."""
         pass
 
+    # ---------- Async convenience wrappers (default: run sync in a thread) ----------
+    async def exists_a(self, path: str) -> bool:
+        return await asyncio.to_thread(self.exists, path)
+
+    async def read_bytes_a(self, path: str) -> bytes:
+        return await asyncio.to_thread(self.read_bytes, path)
+
+    async def write_bytes_a(self, path: str, data: bytes, meta: Optional[dict] = None) -> None:
+        return await asyncio.to_thread(self.write_bytes, path, data, meta)
+
+    async def read_text_a(self, path: str, encoding: str = "utf-8") -> str:
+        return await asyncio.to_thread(self.read_text, path, encoding)
+
+    async def write_text_a(self, path: str, content: str, encoding: str = "utf-8") -> None:
+        return await asyncio.to_thread(self.write_text, path, content, encoding)
+
+    async def list_dir_a(self, path: str) -> List[str]:
+        return await asyncio.to_thread(self.list_dir, path)
+
+    async def delete_a(self, path: str) -> None:
+        return await asyncio.to_thread(self.delete, path)
+
+    async def get_size_a(self, path: str) -> int:
+        return await asyncio.to_thread(self.get_size, path)
+
+    async def get_modified_time_a(self, path: str) -> datetime:
+        return await asyncio.to_thread(self.get_modified_time, path)
+
 
 class LocalFileSystemBackend(IStorageBackend):
     """Local filesystem storage backend."""
@@ -145,6 +173,11 @@ class S3StorageBackend(IStorageBackend):
 
         # Initialize S3 client
         session_kwargs = {}
+        # Keep for async session reuse
+        self._aws_access_key_id = aws_access_key_id
+        self._aws_secret_access_key = aws_secret_access_key
+        self._region_name = region_name
+
         if aws_access_key_id:
             session_kwargs['aws_access_key_id'] = aws_access_key_id
         if aws_secret_access_key:
@@ -170,6 +203,28 @@ class S3StorageBackend(IStorageBackend):
 
         session = boto3.Session(**session_kwargs)
         return session.client('s3')
+
+    # ---------- Async (native) client helpers ----------
+    def _build_async_session_kwargs(self) -> dict:
+        # mirror sync creds/region config
+        return {
+            k: v for k, v in dict(
+                aws_access_key_id=getattr(self, "_aws_access_key_id", None),
+                aws_secret_access_key=getattr(self, "_aws_secret_access_key", None),
+                region_name=getattr(self, "_region_name", None),
+            ).items() if v
+        }
+
+    async def _get_async_client(self):
+        try:
+            import aioboto3
+        except ImportError as e:
+            raise ImportError("aioboto3 is required for async S3 methods (pip install aioboto3)") from e
+
+        # We build a short-lived client per call via async context managers below.
+        # If you want connection reuse, you can lift this into a pool and reuse it.
+        session = aioboto3.Session(**self._build_async_session_kwargs())
+        return session.client("s3")
 
     def _get_s3_key(self, path: str) -> str:
         """Convert local path to S3 key."""
@@ -376,6 +431,173 @@ class S3StorageBackend(IStorageBackend):
         except Exception as e:
             raise FileNotFoundError(f"Cannot get modified time of {path} from S3: {e}")
 
+    # ---------- Native async overrides (no threads) ----------
+    async def exists_a(self, path: str) -> bool:
+        key = self._get_s3_key(path)
+        async with (await self._get_async_client()) as s3:
+            if key.endswith("/"):
+                paginator = s3.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=key, Delimiter="/", PaginationConfig={"MaxItems": 1}):
+                    if page.get("KeyCount", 0) > 0:
+                        return True
+                return False
+            # try head_object, fallback to prefix
+            try:
+                await s3.head_object(Bucket=self.bucket_name, Key=key)
+                return True
+            except Exception:
+                prefix = key if key.endswith("/") else key + "/"
+                paginator = s3.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix, Delimiter="/", PaginationConfig={"MaxItems": 1}):
+                    if page.get("KeyCount", 0) > 0:
+                        return True
+                return False
+
+    async def read_bytes_a(self, path: str) -> bytes:
+        key = self._get_s3_key(path)
+        async with (await self._get_async_client()) as s3:
+            try:
+                resp = await s3.get_object(Bucket=self.bucket_name, Key=key)
+                body = resp["Body"]
+                return await body.read()
+            except Exception as e:
+                raise FileNotFoundError(f"Cannot read {path} from S3: {e}")
+
+    async def write_bytes_a(self, path: str, data: bytes, meta: Optional[dict] = None) -> None:
+        key = self._get_s3_key(path)
+        put_kwargs: Dict[str, Any] = {
+            "Bucket": self.bucket_name,
+            "Key": key,
+            "Body": data,
+        }
+        # Copy of your sync metadata logic
+        content_type = None
+        if meta:
+            content_type = (
+                    meta.get("ContentType")
+                    or meta.get("content_type")
+                    or meta.get("mime")
+                    or meta.get("mime_type")
+            )
+        if not content_type:
+            guessed_type, guessed_encoding = mimetypes.guess_type(path)
+            if guessed_type:
+                content_type = guessed_type
+            if guessed_encoding:
+                put_kwargs["ContentEncoding"] = guessed_encoding
+
+        if content_type:
+            put_kwargs["ContentType"] = content_type
+
+        header_names = [
+            "ContentEncoding",
+            "CacheControl",
+            "ContentDisposition",
+            "ContentLanguage",
+            "Expires",
+            "ACL",
+            "StorageClass",
+        ]
+
+        if meta:
+            for name in header_names:
+                if name in meta:
+                    put_kwargs[name] = meta[name]
+                elif name.lower() in meta:
+                    put_kwargs[name] = meta[name.lower()]
+
+            metadata: Dict[str, str] = {}
+            if isinstance(meta.get("Metadata"), dict):
+                metadata.update({str(k): str(v) for k, v in meta["Metadata"].items()})
+
+            reserved = set(["ContentType", "content_type", "mime", "mime_type"] + header_names + ["Metadata"])
+            leftovers = {k: v for k, v in meta.items() if k not in reserved}
+            if leftovers:
+                metadata.update({str(k): str(v) for k, v in leftovers.items()})
+
+            if metadata:
+                put_kwargs["Metadata"] = metadata
+
+        async with (await self._get_async_client()) as s3:
+            try:
+                await s3.put_object(**put_kwargs)
+            except Exception as e:
+                raise IOError(f"Cannot write {path} to S3: {e}")
+
+    async def read_text_a(self, path: str, encoding: str = "utf-8") -> str:
+        data = await self.read_bytes_a(path)
+        return data.decode(encoding)
+
+    async def write_text_a(self, path: str, content: str, encoding: str = "utf-8") -> None:
+        await self.write_bytes_a(path, content.encode(encoding))
+
+    async def list_dir_a(self, path: str) -> List[str]:
+        prefix = self._get_s3_key(path).rstrip("/") + "/"
+        items: List[str] = []
+        async with (await self._get_async_client()) as s3:
+            try:
+                paginator = s3.get_paginator("list_objects_v2")
+                async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix, Delimiter="/"):
+                    for p in page.get("CommonPrefixes", []):
+                        dir_name = p["Prefix"][len(prefix):].rstrip("/")
+                        if dir_name:
+                            items.append(dir_name)
+                    for obj in page.get("Contents", []):
+                        file_name = obj["Key"][len(prefix):]
+                        if file_name and "/" not in file_name:
+                            items.append(file_name)
+                return items
+            except Exception as e:
+                logger.error(f"Cannot list directory {path} in S3: {e}")
+                return []
+
+    async def delete_a(self, path: str) -> None:
+        key = self._get_s3_key(path)
+        async with (await self._get_async_client()) as s3:
+            try:
+                # Collect children (if prefix)
+                prefix = key.rstrip("/") + "/"
+                paginator = s3.get_paginator("list_objects_v2")
+                to_delete: List[Dict[str, str]] = []
+                async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=prefix):
+                    for obj in page.get("Contents", []):
+                        to_delete.append({"Key": obj["Key"]})
+
+                if to_delete:
+                    # Delete in batches of 1000
+                    for i in range(0, len(to_delete), 1000):
+                        batch = {"Objects": to_delete[i:i + 1000]}
+                        await s3.delete_objects(Bucket=self.bucket_name, Delete=batch)
+                else:
+                    # Try single key
+                    try:
+                        await s3.delete_object(Bucket=self.bucket_name, Key=key)
+                    except Exception:
+                        # Best-effort; ignore missing
+                        pass
+            except Exception as e:
+                logger.error(f"Cannot delete {path} from S3: {e}")
+                raise
+
+    async def get_size_a(self, path: str) -> int:
+        key = self._get_s3_key(path)
+        async with (await self._get_async_client()) as s3:
+            try:
+                head = await s3.head_object(Bucket=self.bucket_name, Key=key)
+                return int(head["ContentLength"])
+            except Exception as e:
+                raise FileNotFoundError(f"Cannot get size of {path} from S3: {e}")
+
+    async def get_modified_time_a(self, path: str) -> datetime:
+        key = self._get_s3_key(path)
+        async with (await self._get_async_client()) as s3:
+            try:
+                head = await s3.head_object(Bucket=self.bucket_name, Key=key)
+                # aiobotocore returns tz-aware datetime; match your sync behavior (naive)
+                lm = head["LastModified"]
+                return lm.replace(tzinfo=None) if getattr(lm, "tzinfo", None) else lm
+            except Exception as e:
+                raise FileNotFoundError(f"Cannot get modified time of {path} from S3: {e}")
 
 def create_storage_backend(storage_uri: str, **kwargs) -> IStorageBackend:
     """Factory function to create storage backends from URI."""
@@ -423,7 +645,7 @@ class InMemoryObject:
     def modified(self):
         return self.__modified
 
-
+import threading
 class InMemoryStorageBackend(IStorageBackend):
     """In-memory storage backend."""
 
@@ -431,16 +653,23 @@ class InMemoryStorageBackend(IStorageBackend):
         self.max_total_size = max_total_size
         self.max_file_size = max_file_size
         self.__fs_objects: Dict[str, InMemoryObject] = {}
-        self.__lock = asyncio.Lock()
+        self.__lock = threading.RLock()
         self.__total_size = 0
 
+    # @contextmanager
+    # def __with_lock(self):
+    #     try:
+    #         yield self.__lock.acquire()
+    #     finally:
+    #         if self.__lock is not None and self.__lock.locked():
+    #             self.__lock.release()
     @contextmanager
     def __with_lock(self):
+        self.__lock.acquire()
         try:
-            yield self.__lock.acquire()
+            yield
         finally:
-            if self.__lock is not None and self.__lock.locked():
-                self.__lock.release()
+            self.__lock.release()
 
     def __prefix_exists(self, path: str) -> bool:
         return any(k.startswith(path) for k in self.__fs_objects.keys())

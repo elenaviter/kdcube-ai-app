@@ -105,6 +105,21 @@ def _tokens_for_event(ev: Dict[str, Any]) -> int:
     except Exception:
         return 0
 
+def _spent_seed(service_type: str) -> Dict[str, int]:
+    if service_type == "llm":
+        return {"input": 0, "output": 0}
+    if service_type == "embedding":
+        return {"tokens": 0}
+    # for any future service types you may want to add later, keep empty
+    return {}
+
+def _accumulate_compact(spent: Dict[str, int], ev_usage: Dict[str, Any], service_type: str) -> None:
+    if service_type == "llm":
+        spent["input"]  = int(spent.get("input", 0))  + int(ev_usage.get("input_tokens") or 0)
+        spent["output"] = int(spent.get("output", 0)) + int(ev_usage.get("output_tokens") or 0)
+    elif service_type == "embedding":
+        spent["tokens"] = int(spent.get("tokens", 0)) + int(ev_usage.get("embedding_tokens") or 0)
+
 # -----------------------------
 # Calculator
 # -----------------------------
@@ -347,6 +362,86 @@ class AccountingCalculator:
         except Exception:
             return []
 
+    def usage_rollup_compact(
+            self,
+            query: AccountingQuery,
+            *,
+            include_zero: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Return a compact list grouped by (service_type, provider, model_or_service)
+        with the aggregated token spend per service kind.
+
+        Output:
+          [
+            { "service": "llm", "provider": "openai", "model": "gpt-4o-mini",
+              "spent": { "input": N, "output": M } },
+            { "service": "embedding", "provider": "openai", "model": "text-embedding-3-small",
+              "spent": { "tokens": K } }
+          ]
+        """
+        # normalize alias
+        if query.client_id and not query.app_bundle_id:
+            query.app_bundle_id = query.client_id
+
+        paths = self._iter_event_paths(query)
+
+        # group key → spent dict
+        rollup: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+
+        max_files = query.hard_file_limit if query.hard_file_limit and query.hard_file_limit > 0 else None
+        processed = 0
+
+        for p in paths:
+            if max_files is not None and processed >= max_files:
+                break
+            processed += 1
+
+            # read + parse event
+            try:
+                raw = self.fs.read_text(p)
+                ev = json.loads(raw)
+            except Exception:
+                continue
+
+            if not self._match(ev, query):
+                continue
+
+            service = str(ev.get("service_type") or "").strip()
+            if not service:
+                continue  # skip malformed
+
+            provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
+            model    = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
+
+            key = (service, provider, model)
+            spent = rollup.get(key)
+            if not spent:
+                spent = _spent_seed(service)
+                rollup[key] = spent
+
+            usage = _extract_usage(ev) or {}
+            _accumulate_compact(spent, usage, service)
+
+        # build sorted, pretty list
+        items: List[Dict[str, Any]] = []
+        for (service, provider, model) in sorted(rollup.keys()):
+            spent = rollup[(service, provider, model)]
+            if not include_zero:
+                # drop groups that stayed all zeros (defensive)
+                if service == "llm" and (spent.get("input", 0) == 0 and spent.get("output", 0) == 0):
+                    continue
+                if service == "embedding" and spent.get("tokens", 0) == 0:
+                    continue
+            items.append({
+                "service": service,
+                "provider": provider or None,
+                "model": model or None,
+                "spent": {k: int(v) for k, v in spent.items()}
+            })
+
+        return items
+
 class RateCalculator(AccountingCalculator):
     def time_series(
             self,
@@ -483,11 +578,12 @@ class RateCalculator(AccountingCalculator):
 
         return {"granularity": granularity, "series": rate_series}
 
-    def query_turn_usage(
+    async def query_turn_usage(
             self,
             *,
             tenant_id: str,
             project_id: str,
+            conversation_id: str,
             turn_id: str,
             app_bundle_id: Optional[str] = None,
             date_hint: Optional[str] = None,          # "YYYY-MM-DD" if you know it; else we scan 2 recent days
@@ -523,7 +619,7 @@ class RateCalculator(AccountingCalculator):
 
         for p in paths:
             try:
-                ev = json.loads(self.fs.read_text(p))
+                ev = json.loads(await self.fs.read_text_a(p))
             except Exception:
                 continue
 
@@ -554,20 +650,22 @@ class RateCalculator(AccountingCalculator):
             "tokens": sum(_tokens_for_event(e) for e in evs),
         }
 
-    def tokens_for_turn(
+    async def tokens_for_turn(
             self,
             *,
             tenant_id: str,
             project_id: str,
             turn_id: str,
+            conversation_id: str = None,
             app_bundle_id: Optional[str] = None,
             date_hint: Optional[str] = None,
             service_types: Optional[List[str]] = None,
             hard_file_limit: Optional[int] = 5000,
     ) -> int:
-        r = self.query_turn_usage(
+        r = await self.query_turn_usage(
             tenant_id=tenant_id,
             project_id=project_id,
+            conversation_id=conversation_id,
             turn_id=turn_id,
             app_bundle_id=app_bundle_id,
             date_hint=date_hint,
@@ -575,6 +673,101 @@ class RateCalculator(AccountingCalculator):
             hard_file_limit=hard_file_limit,
         )
         return int(r.get("tokens") or 0)
+
+    async def turn_usage_rollup_compact(
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            conversation_id: str,
+            turn_id: str,
+            app_bundle_id: Optional[str] = None,
+            date_hint: Optional[str] = None,
+            service_types: Optional[List[str]] = None,
+            hard_file_limit: Optional[int] = 5000,
+            include_zero: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Convenience for a single turn. Applies same grouping as usage_rollup_compact,
+        but filters to events that belong to the given turn.
+        """
+        q = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        # Build candidate paths (just like query_turn_usage)
+        if date_hint:
+            q.date_from = date_hint
+            q.date_to = date_hint
+            paths = self._iter_event_paths(q)
+        else:
+            from datetime import datetime, timedelta
+            today = datetime.utcnow().date()
+            yday = today - timedelta(days=1)
+            candidates = []
+            for d in (yday.isoformat(), today.isoformat()):
+                q.date_from, q.date_to = d, d
+                candidates.extend(list(self._iter_event_paths(q)))
+            paths = candidates
+
+        # Now do the same rollup but filtered by turn_id
+        rollup: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+        max_files = q.hard_file_limit if q.hard_file_limit and q.hard_file_limit > 0 else None
+        processed = 0
+
+        for p in paths:
+            if max_files is not None and processed >= max_files:
+                break
+            processed += 1
+
+            try:
+                ev = json.loads(await self.fs.read_text_a(p))
+            except Exception:
+                continue
+
+            # quick service filter already applied by q.service_types; keep tenant/project/bundle match
+            if app_bundle_id and (ev.get("app_bundle_id") or (ev.get("context") or {}).get("app_bundle_id")) != app_bundle_id:
+                ctx_ab = (ev.get("context") or {}).get("app_bundle_id")
+                if ctx_ab != app_bundle_id:
+                    continue
+
+            md_tid = (ev.get("metadata") or {}).get("turn_id")
+            ctx_tid = (ev.get("context") or {}).get("turn_id")
+            if md_tid != turn_id and ctx_tid != turn_id:
+                continue
+
+            service  = str(ev.get("service_type") or "").strip()
+            provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
+            model    = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
+
+            key = (service, provider, model)
+            spent = rollup.get(key)
+            if not spent:
+                spent = _spent_seed(service)
+                rollup[key] = spent
+
+            usage = _extract_usage(ev) or {}
+            _accumulate_compact(spent, usage, service)
+
+        items: List[Dict[str, Any]] = []
+        for (service, provider, model) in sorted(rollup.keys()):
+            spent = rollup[(service, provider, model)]
+            if not include_zero:
+                if service == "llm" and (spent.get("input", 0) == 0 and spent.get("output", 0) == 0):
+                    continue
+                if service == "embedding" and spent.get("tokens", 0) == 0:
+                    continue
+            items.append({
+                "service": service,
+                "provider": provider or None,
+                "model": model or None,
+                "spent": {k: int(v) for k, v in spent.items()}
+            })
+        return items
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -674,24 +867,12 @@ def _group_key(ev: Dict[str, Any], group_by: List[str]) -> Tuple[Any, ...]:
         out.append(ev.get(g) if g in ev else ctx.get(g))
     return tuple(out)
 
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv, find_dotenv
-    load_dotenv(find_dotenv())
-
-    import os
-    from kdcube_ai_app.storage.storage import create_storage_backend
-
-    logging.basicConfig(level=logging.INFO)
-
-    bundle_id = "with.codegen"
-    tenant = os.getenv("DEFAULT_TENANT", "home")
-    project = os.getenv("DEFAULT_PROJECT_NAME", "demo")
-    user_id = os.getenv("TEST_USER_ID")
+def example_1(tenant, project, bundle_id):
 
     kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
     backend = create_storage_backend(kdcube_path)
     calc = RateCalculator(backend, base_path="accounting")
+    user_id = os.getenv("TEST_USER_ID")
 
     # q = AccountingQuery(
     #     tenant_id=tenant,
@@ -752,3 +933,167 @@ if __name__ == "__main__":
         group_by=["session_id"]
     )
     print()
+
+async def example_2(tenant, project, bundle_id):
+
+    turn_id = "turn_1760550498939_cr526c"
+    kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
+    backend = create_storage_backend(kdcube_path)
+    calc = RateCalculator(backend, base_path="accounting")
+
+    from datetime import datetime
+    tokens = await calc.tokens_for_turn(
+        tenant_id=tenant,
+        project_id=project,
+        turn_id=turn_id,
+        app_bundle_id=bundle_id,
+        date_hint=datetime.utcnow().date().isoformat(),   # optional optimization
+        service_types=["llm","embedding"],
+    )
+    print(f"Tokens: {tokens}")
+
+def price_table():
+    sonnet_45 = "claude-sonnet-4-5-20250929"
+    haiku_3 = "claude-3-5-haiku-20241022"
+    return {
+        "accounting": {
+            "llm": [
+                {
+                    "model": sonnet_45,
+                    "provider": "anthropic",
+                    "input_tokens_1M": 3.00,
+                    "output_tokens_1M": 15.00,
+                    "cache_write_tokens_1M": 3.75,
+                    "cache_read_tokens_1M": 0.30
+                },
+                {
+                    "model": "claude-3-5-haiku-20241022",
+                    "provider": "anthropic",
+                    "input_tokens_1M": 0.80,
+                    "output_tokens_1M": 4.00,
+                    "cache_write_tokens_1M": 1.00,
+                    "cache_read_tokens_1M": 0.08
+                },
+                {
+                    "model": "gpt-5",
+                    "provider": "openai",
+                    "input_tokens_1M": 3.00,
+                    "output_tokens_1M": 12.00,
+                    "cache_write_tokens_1M": 3.75,
+                    "cache_read_tokens_1M": 0.30
+                }
+            ],"embedding": [
+                {
+                    "model": "text-embedding-3-small",
+                    "provider": "openai",
+                    "tokens_1M": 0.02
+                }
+            ]
+        }
+    }
+async def example_grouped_calc(tenant, project, bundle_id):
+
+    turn_id = "turn_1760567405208_apw68b" #" "turn_1760550498939_cr526c"
+    conversation_id = "88f56ef9-36fc-4a4f-8f27-5d53ff19dd03"
+    kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
+    backend = create_storage_backend(kdcube_path)
+    calc = RateCalculator(backend, base_path="accounting")
+
+    rollup = calc.usage_rollup_compact(
+        AccountingQuery(
+            tenant_id=tenant,
+            project_id=project,
+            app_bundle_id=bundle_id,
+            date_from="2025-10-15",
+            date_to="2025-10-15",
+            service_types=["llm","embedding"],
+        )
+    )
+
+    # per-turn rollup
+    rollup = await calc.turn_usage_rollup_compact(
+        tenant_id=tenant,
+        project_id=project,
+        conversation_id=conversation_id,
+        turn_id=turn_id,
+        app_bundle_id=bundle_id,
+        date_hint="2025-10-15",
+        service_types=["llm","embedding"],
+    )
+
+    # Weighted LLM tokens (ignore provider for weighting):
+    #   tokens = input_tokens * 0.4 + output_tokens * 1.0
+    llm_input_sum = sum(int(item.get("spent", {}).get("input", 0)) for item in rollup if item.get("service") == "llm")
+    llm_output_sum = sum(int(item.get("spent", {}).get("output", 0)) for item in rollup if item.get("service") == "llm")
+    weighted_tokens = int(llm_input_sum * 0.4 + llm_output_sum * 1.0)
+
+    configuration = price_table()
+    # Compute estimated spend (no cache accounting yet)
+    acct_cfg = (configuration or {}).get("accounting", {})
+    llm_pricelist = acct_cfg.get("llm", []) or []
+    emb_pricelist = acct_cfg.get("embedding", []) or []
+
+    def _find_llm_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
+        for p in llm_pricelist:
+            if p.get("provider") == provider and p.get("model") == model:
+                return p
+        return None
+
+    def _find_emb_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
+        for p in emb_pricelist:
+            if p.get("provider") == provider and p.get("model") == model:
+                return p
+        return None
+
+    cost_total_usd = 0.0
+    cost_breakdown = []
+    for item in rollup:
+        service = item.get("service")
+        provider = item.get("provider")
+        model = item.get("model")
+        spent = item.get("spent", {}) or {}
+
+        cost_usd = 0.0
+        if service == "llm":
+            # price: input_tokens_1M and output_tokens_1M
+            pr = _find_llm_price(provider, model)
+            if pr:
+                cost_usd = (
+                        (float(spent.get("input", 0)) / 1_000_000.0) * float(pr.get("input_tokens_1M", 0.0))
+                        + (float(spent.get("output", 0)) / 1_000_000.0) * float(pr.get("output_tokens_1M", 0.0))
+                )
+        elif service == "embedding":
+            pr = _find_emb_price(provider, model)
+            if pr:
+                cost_usd = (float(spent.get("tokens", 0)) / 1_000_000.0) * float(pr.get("tokens_1M", 0.0))
+
+        cost_total_usd += cost_usd
+        cost_breakdown.append({
+            "service": service,
+            "provider": provider,
+            "model": model,
+            "cost_usd": cost_usd,
+        })
+
+    # Log weighted tokens and cost estimate
+    print(
+        f"[Conversation id: {conversation_id}; Turn id: {turn_id}] Weighted tokens (LLM only): {weighted_tokens}"
+    )
+    print(
+        f"[Conversation id: {conversation_id}; Turn id: {turn_id}] Estimated spend (no cache): {cost_total_usd:.6f} USD; breakdown: {json.dumps(cost_breakdown, ensure_ascii=False)}"
+    )
+    print()
+if __name__ == "__main__":
+    from dotenv import load_dotenv, find_dotenv
+    load_dotenv(find_dotenv())
+
+    import os, asyncio
+    from kdcube_ai_app.storage.storage import create_storage_backend
+
+    logging.basicConfig(level=logging.INFO)
+
+    bundle_id = "with.codegen"
+    tenant = os.getenv("DEFAULT_TENANT", "home")
+    project = os.getenv("DEFAULT_PROJECT_NAME", "demo")
+
+    asyncio.run(example_grouped_calc(tenant=tenant, project=project, bundle_id=bundle_id))

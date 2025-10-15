@@ -68,6 +68,56 @@ def _coerce_value_and_format(val: Any, fmt: Optional[str]) -> Tuple[Any, Optiona
         return val, "json"
     return val, f
 
+def _stringify_for_format(v: Any, fmt: Optional[str]) -> str:
+    """
+    Return a string representation of `v` suitable for the given `fmt`.
+    - json  → pretty JSON (UTF-8, unicode kept)
+    - yaml  → YAML (falls back to JSON if pyyaml missing or dump fails)
+    - markdown/html/text/plain → str(v)
+    - default: dict/list → pretty JSON, else str(v)
+    """
+    # bytes → best-effort decode
+    if isinstance(v, (bytes, bytearray)):
+        try:
+            return v.decode("utf-8", errors="replace")
+        except Exception:
+            return v.decode("latin-1", errors="replace")
+
+    # strings stay as-is
+    if isinstance(v, str):
+        return v
+
+    f = (fmt or "").strip().lower()
+
+    if f == "json":
+        try:
+            return json.dumps(v, ensure_ascii=False, indent=2)
+        except Exception:
+            # last-ditch
+            return str(v)
+
+    if f == "yaml":
+        try:
+            import yaml as _yaml  # local import to avoid hard dep at module import
+            return _yaml.safe_dump(v, allow_unicode=True, sort_keys=False)
+        except Exception:
+            # fall back to JSON pretty
+            try:
+                return json.dumps(v, ensure_ascii=False, indent=2)
+            except Exception:
+                return str(v)
+
+    if f in ("markdown", "html", "text", "plain_text", "plaintext"):
+        return str(v)
+
+    # default fallback: objects/arrays → pretty JSON, otherwise str()
+    try:
+        if isinstance(v, (dict, list, tuple)):
+            return json.dumps(v, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return str(v)
+
 
 def _normalize_out_dyn(out_dyn: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
@@ -87,41 +137,47 @@ def _normalize_out_dyn(out_dyn: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     artifacts: List[Dict[str, Any]] = []
 
-    def push_inline(slot: str, value: Any, *, fmt: Optional[str], desc: str, citable: bool):
+    def push_inline(slot: str, value: Any, *, fmt: Optional[str], desc: str, citable: bool, sources_used: Any = None):
         v, use_fmt = _coerce_value_and_format(value, fmt)
         if not use_fmt:
             use_fmt = _detect_format_from_value(v)
-        sources_used = extract_citation_sids_from_text(v)
+        text_str = _stringify_for_format(v, use_fmt)
+
+        parsed_sids = extract_citation_sids_from_text(text_str)
+
         row = {
             "resource_id": f"slot:{slot}",
             "type": "inline",
             "tool_id": "program",
-            "output": { "text": v },
+            "output": {"text": text_str},
             "citable": bool(citable),
             "description": desc or "",
             "input": {},
         }
         if use_fmt:
             row["format"] = use_fmt
-        if sources_used:
+        if sources_used is not None and sources_used != []:
             row["sources_used"] = sources_used
+        if parsed_sids:
+            row["sources_used_sids"] = parsed_sids
         artifacts.append(row)
 
-    def push_file(slot: str, relpath: str, *, mime: Optional[str], desc: str, text: str, citable: bool = False):
-
-        sources_used = extract_citation_sids_from_text(text)
+    def push_file(slot: str, relpath: str, *, mime: Optional[str], desc: str, text: str, citable: bool = False, sources_used: Any = None):
+        parsed_sids = extract_citation_sids_from_text(text or "")
         row = {
             "resource_id": f"slot:{slot}",
             "type": "file",
             "tool_id": "program",
-            "output": { "path": relpath, "text": text },
+            "output": {"path": relpath, "text": text or ""},
             "mime": (mime or _guess_mime(relpath)),
             "citable": False,
             "description": desc or "",
             "input": {},
         }
-        if sources_used:
+        if sources_used is not None and sources_used != []:
             row["sources_used"] = sources_used
+        if parsed_sids:
+            row["sources_used_sids"] = parsed_sids
         artifacts.append(row)
 
     for slot, val in (out_dyn or {}).items():
@@ -131,17 +187,23 @@ def _normalize_out_dyn(out_dyn: Dict[str, Any]) -> List[Dict[str, Any]]:
         citable = bool(val.get("citable", False))
         fmt = val.get("format")
 
+        sources_used = val.get("sources_used")
+
         if slot_type == "file":
             mime = val.get("mime") or None
             text_surrogate = val.get("text")  # may be None; program SHOULD have set this
+            if sources_used:
+                print(f"File Slot {slot}; {sources_used}")
             if text_surrogate is None:
                 text_surrogate = ""
             filepath = val.get("path")
-            push_file(slot, filepath, mime=mime, desc=desc, text=text_surrogate)
+            push_file(slot, filepath, mime=mime, desc=desc, text=text_surrogate, sources_used=sources_used)
             continue
         if slot_type == "inline":
             if "value" in val:
-                push_inline(slot, val["value"], fmt=fmt, desc=desc, citable=citable)
+                if sources_used:
+                    print(f"Inline Slot {slot}; {sources_used}")
+                push_inline(slot, val["value"], fmt=fmt, desc=desc, citable=citable, sources_used=sources_used)
                 continue
 
     return artifacts
@@ -208,6 +270,23 @@ def _promote_tool_calls(raw_files: Dict[str, List[str]], outdir: pathlib.Path) -
             else:
                 base["type"] = "file"
                 base["mime"] = "application/json"
+
+            # carry used_sources from llm tool outputs
+            try:
+                if isinstance(tool_output, dict):
+                    if tool_id.endswith("generate_content_llm"):
+                        us = tool_output.get("used_sources")
+                        if us:
+                            base["used_sources"] = us
+                            base["sources_used"] = us  # convenience alias
+                        # Also add SIDs inferred from content (if any)
+                        content = tool_output.get("content")
+                        if isinstance(content, str):
+                            sids = extract_citation_sids_from_text(content)
+                            if sids:
+                                base["sources_used_sids"] = sids
+            except Exception:
+                pass
 
             promos.append(base)
     return promos

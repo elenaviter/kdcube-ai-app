@@ -20,6 +20,8 @@ asyncpg
 ddgs
 semantic-kernel
 reportlab
+aioboto3
+aiobotocore
 
 bs4
 mdit-py-plugins
@@ -51,3 +53,5 @@ graphviz
 seaborn
 diagrams
 pyvis
+
+rich
