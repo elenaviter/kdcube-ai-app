@@ -69,26 +69,26 @@ class ConversationStore:
 
     # ---------- messages ----------
 
-    def put_message(
-        self,
-        *,
-        tenant: str,
-        project: str,
-        user: Optional[str],
-        fingerprint: Optional[str],
-        conversation_id: str,
-        turn_id: str,
-        role: str,
-        text: str,
-        id: str|None = None,
-        bundle_id: str|None = None,
-        payload: Any | None = None,
-        meta: Dict | None = None,
-        embedding: List[float] | None = None,
-        user_type: str = "anonymous",
-        ttl_days: int = 365,
-        track_id: Optional[str] = None,
-        msg_ts: Optional[str] = None,
+    async def put_message(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user: Optional[str],
+            fingerprint: Optional[str],
+            conversation_id: str,
+            turn_id: str,
+            role: str,
+            text: str,
+            id: str|None = None,
+            bundle_id: str|None = None,
+            payload: Any | None = None,
+            meta: Dict | None = None,
+            embedding: List[float] | None = None,
+            user_type: str = "anonymous",
+            ttl_days: int = 365,
+            track_id: Optional[str] = None,
+            msg_ts: Optional[str] = None,
     ) -> Tuple[str, str, str]:
         """
         Persist a message JSON. Returns (uri, message_id, rn).
@@ -129,7 +129,7 @@ class ConversationStore:
             },
             "track_id": track_id
         }
-        self.backend.write_bytes(rel, json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"), meta=_JSON_META)
+        await self.backend.write_bytes_a(rel, json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"), meta=_JSON_META)
         return self._uri_for_path(rel), message_id, rn
 
     def list_conversation(
@@ -199,7 +199,7 @@ class ConversationStore:
 
     # ---------- attachments (role-aware, turn in path) ----------
 
-    def put_attachment(
+    async def put_attachment(
         self,
         *,
         tenant: str,
@@ -235,7 +235,7 @@ class ConversationStore:
         rel = self._join(base, rel_name)
 
         meta = {"ContentType": mime} if mime else None
-        self.backend.write_bytes(rel, data, meta=meta)
+        await self.backend.write_bytes_a(rel, data, meta=meta)
 
         # RN is the logical filename (without timestamp) OR the actual stored name?
         # To keep dereferencing simple, we use the stored name.
@@ -244,7 +244,7 @@ class ConversationStore:
 
     # ---------- execution snapshot (role-aware RNs in manifest) ----------
 
-    def put_execution_snapshot(
+    async def put_execution_snapshot(
         self,
         *,
         tenant: str,
@@ -270,7 +270,7 @@ class ConversationStore:
             "executions", user_type, user_or_fp, conversation_id, turn_id, codegen_run_id
         )
 
-        def _copy_tree(src: Optional[str], kind: str) -> Tuple[Optional[str], List[dict]]:
+        async def _copy_tree(src: Optional[str], kind: str) -> Tuple[Optional[str], List[dict]]:
             if not src:
                 return None, []
             srcp = pathlib.Path(src)
@@ -285,7 +285,7 @@ class ConversationStore:
                 key = self._join(root_rel, rel_under)
                 data = p.read_bytes()
                 ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-                self.backend.write_bytes(key, data, meta={"ContentType": ctype})
+                await self.backend.write_bytes_a(key, data, meta={"ContentType": ctype})
                 url = self._uri_for_path(key)
 
                 files_meta.append({
@@ -299,8 +299,8 @@ class ConversationStore:
                 })
             return self._uri_for_path(root_rel), files_meta
 
-        out_root, out_files = _copy_tree(out_dir, "out")
-        pkg_root, pkg_files = _copy_tree(pkg_dir, "pkg")
+        out_root, out_files = await _copy_tree(out_dir, "out")
+        pkg_root, pkg_files = await _copy_tree(pkg_dir, "pkg")
         return {"roots": {"out": out_root, "pkg": pkg_root}, "files": out_files + pkg_files}
 
     async def close(self):
