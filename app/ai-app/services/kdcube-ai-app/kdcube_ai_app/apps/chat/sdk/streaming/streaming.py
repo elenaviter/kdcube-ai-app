@@ -97,6 +97,23 @@ def _add_3section_protocol(base: str, json_shape_hint: str) -> str:
               "Return exactly these three sections, in order, once."
     )
 
+def _get_3section_protocol(json_shape_hint: str) -> str:
+    """
+    Get a strict output protocol to the system prompt telling the model to use the
+    paranoid markers. We explicitly tell it NOT to emit END markers.
+    """
+    return ("\n\nCRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY:\n"
+            "• Produce THREE sections in this exact order. Use each START marker below exactly once.\n"
+            "• Do NOT write any closing tags/markers like <<< END … >>> or </…>.\n"
+            "• The third section must be a fenced JSON block and contain ONLY JSON.\n\n"
+            "1) <<< BEGIN INTERNAL THINKING >>>\n"
+            "   (private notes in Markdown; not shown to user)\n"
+            "2) <<< BEGIN USER-FACING THINKING >>>\n"
+            "   (short, user-friendly status; Markdown only — no JSON)\n"
+            "3) <<< BEGIN STRUCTURED JSON >>>\n"
+            f"   ```json\n{json_shape_hint}\n```\n"
+            "Return exactly these three sections, in order, once."
+            )
 
 # chat/sdk/streaming/streaming.py
 
@@ -119,6 +136,23 @@ def _add_2section_protocol(base: str, json_shape_hint: str) -> str:
               "2) <<< BEGIN STRUCTURED JSON >>>\n"
               f"   ```json\n{json_shape_hint}\n```\n"
               "Return exactly these two sections, in order, once."
+    )
+
+def _get_2section_protocol(json_shape_hint: str) -> str:
+    """
+    Strict 2-part protocol:
+      1) INTERNAL THINKING (streamed to user, with optional redaction)
+      2) STRUCTURED JSON (buffered, validated)
+    """
+    return (
+        "\n\nCRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY:\n"
+        "• Produce TWO sections in this exact order. Use each START marker below exactly once.\n"
+        "• Do NOT write any closing tags/markers like <<< END... >>> or </…>.\n\n"
+        "1) <<< BEGIN INTERNAL THINKING >>>\n"
+        "   (brief progress notes in Markdown; avoid credentials & long stack traces)\n"
+        "2) <<< BEGIN STRUCTURED JSON >>>\n"
+        f"   ```json\n{json_shape_hint}\n```\n"
+        "Return exactly these two sections, in order, once."
     )
 
 _REDACTIONS = [
@@ -360,7 +394,7 @@ async def _stream_agent_sections_to_json(
         *,
         client_name: str,
         client_role: str,
-        sys_prompt: str,
+        sys_prompt: str|SystemMessage,
         user_msg: str,
         schema_model,
         on_thinking_delta=None,
@@ -379,11 +413,12 @@ async def _stream_agent_sections_to_json(
     to the UI.
     """
     run_logger = AgentLogger("ThreeSectionStream", getattr(svc.config, "log_level", "INFO"))
+    sys_message_len = len(sys_prompt) if isinstance(sys_prompt, str) else len(sys_prompt.content)
     run_logger.start_operation(
         "three_section_stream",
         client_role=client_role,
         client_name=client_name,
-        system_prompt_len=len(sys_prompt),
+        system_prompt_len=sys_message_len,
         user_msg_len=len(user_msg),
         expected_format=getattr(schema_model, "__name__", str(schema_model)),
     )
@@ -414,7 +449,8 @@ async def _stream_agent_sections_to_json(
     client = svc.get_client(client_name)
     cfg = svc.describe_client(client, role=client_role)
 
-    messages = [SystemMessage(content=sys_prompt), HumanMessage(content=user_msg)]
+    system_message = SystemMessage(content=sys_prompt) if isinstance(sys_prompt, str) else sys_prompt
+    messages = [system_message, HumanMessage(content=user_msg)]
     await svc.stream_model_text_tracked(
         client,
         messages,
@@ -553,7 +589,7 @@ async def _stream_simple_structured_json(
         *,
         client_name: str,
         client_role: str,
-        sys_prompt: str,
+        sys_prompt: str|SystemMessage,
         user_msg: str,
         schema_model,
         temperature: float = 0.2,
@@ -569,11 +605,13 @@ async def _stream_simple_structured_json(
     include a fenced `json` schema hint. The parser tolerates code fences in output.
     """
     run_logger = AgentLogger("SimpleStructuredStream", getattr(svc.config, "log_level", "INFO"))
+
+    sys_message_len = len(sys_prompt) if isinstance(sys_prompt, str) else len(sys_prompt.content)
     run_logger.start_operation(
         "simple_structured_stream",
         client_role=client_role,
         client_name=client_name,
-        system_prompt_len=len(sys_prompt),
+        system_prompt_len=sys_message_len,
         user_msg_len=len(user_msg),
         expected_format=getattr(schema_model, "__name__", str(schema_model)),
     )
@@ -590,7 +628,8 @@ async def _stream_simple_structured_json(
     # ---- stream with model ----
     client = svc.get_client(client_name)
     cfg = svc.describe_client(client, role=client_role)
-    messages = [SystemMessage(content=sys_prompt), HumanMessage(content=user_msg)]
+    system_message = SystemMessage(content=sys_prompt) if isinstance(sys_prompt, str) else sys_prompt
+    messages = [system_message, HumanMessage(content=user_msg)]
 
     await svc.stream_model_text_tracked(
         client,
@@ -818,7 +857,7 @@ async def _stream_agent_two_sections_to_json(
         *,
         client_name: str,
         client_role: str,
-        sys_prompt: str,
+        sys_prompt: str|SystemMessage,
         user_msg: str,
         schema_model,
         on_progress_delta=None,
@@ -832,11 +871,12 @@ async def _stream_agent_two_sections_to_json(
       2) STRUCTURED JSON    -> buffered & validated against schema_model
     """
     run_logger = AgentLogger("TwoSectionStream", getattr(svc.config, "log_level", "INFO"))
+    sys_message_len = len(sys_prompt) if isinstance(sys_prompt, str) else len(sys_prompt.content)
     run_logger.start_operation(
         "two_section_stream",
         client_role=client_role,
         client_name=client_name,
-        system_prompt_len=len(sys_prompt),
+        system_prompt_len=sys_message_len,
         user_msg_len=len(user_msg),
         expected_format=getattr(schema_model, "__name__", str(schema_model)),
     )
@@ -862,7 +902,8 @@ async def _stream_agent_two_sections_to_json(
     # model call
     client = svc.get_client(client_name)
     cfg = svc.describe_client(client, role=client_role)
-    messages = [SystemMessage(content=sys_prompt), HumanMessage(content=user_msg)]
+    system_message = SystemMessage(content=sys_prompt) if isinstance(sys_prompt, str) else sys_prompt
+    messages = [system_message, HumanMessage(content=user_msg)]
     await svc.stream_model_text_tracked(
         client,
         messages,
