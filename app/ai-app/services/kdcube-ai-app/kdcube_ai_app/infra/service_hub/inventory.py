@@ -582,7 +582,7 @@ class FormatFixerService:
         try:
             import anthropic
             self.claude_client = anthropic.Anthropic(api_key=config.claude_api_key)
-            self.logger.log_step("claude_client_initialized", {"model": config.format_fixer_model})
+            # self.logger.log_step("claude_client_initialized", {"model": config.format_fixer_model})
         except ImportError:
             self.claude_client = None
             self.logger.log_error(ImportError("anthropic package not available"), "Claude client initialization")

@@ -4,6 +4,9 @@
 # infra/accounting/usage.py
 from dataclasses import dataclass
 from typing import Dict, Any, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ClientConfigHint:
@@ -79,6 +82,7 @@ class ServiceUsage:
 def _norm_usage_dict(u: Dict[str, Any]) -> Dict[str, int]:
     """Normalize OpenAI/Anthropic/custom usage into prompt/completion/total."""
     u = u or {}
+
     prompt = u.get("prompt_tokens") or u.get("input_tokens") or 0
     compl  = u.get("completion_tokens") or u.get("output_tokens") or 0
     cache_creation_input_tokens = u.get("cache_creation_input_tokens") or 0
@@ -104,6 +108,7 @@ def _approx_tokens_by_chars(text: str) -> Dict[str, int]:
 def _structured_usage_extractor(result, *_a, **_kw) -> ServiceUsage:
     """track_llm usage_extractor for dicts returned by call_model_with_structure."""
     try:
+        logger.info(f"Usage {result.get('usage')}")
         u = _norm_usage_dict(result.get("usage") or {})
         return ServiceUsage(
             input_tokens=u["prompt_tokens"],

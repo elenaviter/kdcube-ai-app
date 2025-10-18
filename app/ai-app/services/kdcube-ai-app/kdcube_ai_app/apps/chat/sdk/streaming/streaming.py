@@ -918,6 +918,40 @@ async def _stream_agent_two_sections_to_json(
     # ----- parse the JSON section -----
     raw_json = parser.json  # keep original for logs
 
+    def _defence(s: str):
+        """
+        Extract content from the outermost code fence, handling nested fences.
+        Works for ```json, ```python, or plain ``` blocks.
+        """
+        if not s:
+            return None
+        s = s.lstrip()
+
+        # Find FIRST fence opening (could be ```json, ```python, or just ```)
+        fence_start = s.find('```')
+        if fence_start == -1:
+            # No fences, try JSON braces
+            first_brace = s.find('{')
+            last_brace = s.rfind('}')
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                return s[first_brace:last_brace + 1]
+            return None
+
+        # Skip past the opening fence and optional language tag
+        content_start = s.find('\n', fence_start)
+        if content_start == -1:
+            return None
+        content_start += 1  # Skip the newline
+
+        # Find LAST closing fence
+        last_fence = s.rfind('```')
+        if last_fence == -1 or last_fence <= fence_start:
+            return None
+
+        # Extract content between first opening and last closing
+        content = s[content_start:last_fence].strip()
+        return content
+
     def _extract_object_tail(s: str) -> Optional[str]:
         """
         After the STRUCTURED JSON marker (already cut), extract structured output:
@@ -949,7 +983,7 @@ async def _stream_agent_two_sections_to_json(
 
     data = None
     err = None
-    tail = _extract_object_tail(raw_json) or ""
+    tail = _defence(raw_json) or ""
 
     if tail:
         try:
