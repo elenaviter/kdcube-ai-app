@@ -353,7 +353,7 @@ class TurnLog(BaseModel):
         self.note("policy: " + json.dumps(_tlog_policy, ensure_ascii=False))
 
     def turn_summary(self, turn_summary: dict, **kw):
-        order = ["objective", "prefs", "assumptions", "done", "not_done", "risks", "notes"]
+        order = ["objective", "prefs", "assumptions", "done", "not_done", "risks", "notes", "answer"]
         turn_summary_entries = []
         def process_o(o):
             if o in turn_summary and turn_summary[o]:
@@ -394,6 +394,10 @@ class TurnLog(BaseModel):
                             turn_summary_entries.append(f"• prefs: {cp}")
                     except Exception:
                         pass
+                elif o == "answer":
+                    answer = turn_summary[o]
+                    self.answer(answer)
+                    turn_summary_entries.append(f"• answer summary: {answer} ")
         try:
             if isinstance(turn_summary, dict):
                 for o in order:
