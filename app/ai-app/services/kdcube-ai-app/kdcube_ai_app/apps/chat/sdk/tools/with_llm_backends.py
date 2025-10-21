@@ -1,0 +1,1250 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
+# chat/sdk/tools/with_llm_backends.py
+
+import json
+import re, yaml, jsonschema
+import time
+from typing import Annotated, Optional, List, Dict, Any, Tuple, Set
+import logging
+
+from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import delta as emit_delta, get_comm
+
+from kdcube_ai_app.apps.chat.sdk.tools.citations import split_safe_citation_prefix, replace_citation_tokens_streaming, \
+    extract_sids, build_citation_map_from_sources, citations_present_inline, MD_CITE_RE
+from kdcube_ai_app.apps.chat.sdk.tools.md_utils import CODE_FENCE_RE
+from kdcube_ai_app.infra.accounting import with_accounting
+
+logger = logging.getLogger("with_llm_backends")
+# # ----------------------------- helpers -----------------------------
+
+
+_ZWSP = "\u200b"
+def _strip_bom_zwsp(s: str) -> str:
+    # remove UTF-8 BOM and zero-width spaces that models sometimes prepend
+    if not s:
+        return s
+    s = s.lstrip("\ufeff").replace(_ZWSP, "")
+    return s.strip()
+
+def _unwrap_fenced_block(text: str, lang: str | None = None) -> str:
+    """
+    If text contains a ```<lang> ... ``` or ``` ... ``` block, return the inner.
+    Otherwise return text unchanged (stripped). Works with ``` and ~~~ fences.
+    """
+    if not text:
+        return text
+    # prefer language-specific fence first
+    if lang:
+        m = re.search(rf"```{lang}\s*([\s\S]*?)\s*```", text, flags=re.I)
+        if not m:
+            m = re.search(rf"~~~{lang}\s*([\s\S]*?)\s*~~~", text, flags=re.I)
+        if m:
+            return m.group(1).strip()
+
+    # any fenced block
+    m = re.search(r"```(?:\w+)?\s*([\s\S]*?)\s*```", text, flags=re.I)
+    if not m:
+        m = re.search(r"~~~(?:\w+)?\s*([\s\S]*?)\s*~~~", text, flags=re.I)
+    if m:
+        return m.group(1).strip()
+
+    return text.strip()
+
+def _extract_json_object(text: str) -> str | None:
+    """Last-resort: pull the largest {...} region if fencing/extra prose remains."""
+    if not text:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return text[start:end+1].strip()
+    return None
+
+def _remove_end_marker_everywhere(text: str, marker: str) -> str:
+    """
+    Remove the exact end marker. Also remove standalone lines that are only angle brackets
+    *when and only when* those lines are adjacent to where the marker would be.
+    Does NOT delete arbitrary '>>>' inside normal text.
+    """
+    if not text or not marker:
+        return text
+
+    s = text.replace(marker, "")
+
+    # If the model streamed marker fragments on separate lines, they tend to be lines
+    # containing only < or > runs. Strip such lines only if they are "empty-bracket lines".
+    # (Multiline, safe.)
+    s = re.sub(r"(?m)^(?:\s*[<>]{2,}\s*)+$", "", s)
+
+    return s.strip()
+
+def _split_safe_marker_prefix(chunk: str, marker: str) -> tuple[str, int]:
+    """
+    If the end of `chunk` is a dangling prefix of `marker`, withhold it.
+    Returns (safe_prefix, dangling_len).
+    Example: marker="<<<GENERATION FINISHED>>>"
+    chunk ending with "<<<GENER" -> withhold that suffix.
+    """
+    if not chunk or not marker:
+        return chunk, 0
+    # longest dangling first
+    max_k = min(len(chunk), len(marker) - 1)
+    for k in range(max_k, 0, -1):
+        if chunk.endswith(marker[:k]):
+            return chunk[:-k], k
+    return chunk, 0
+
+def _strip_code_fences(text: str, allow: bool) -> str:
+    if allow:
+        return text
+    # Remove outermost triple-fence blocks when requested not to use them
+    return CODE_FENCE_RE.sub("", text).strip()
+
+def _remove_marker(text: str, marker: str) -> str:
+    return text.replace(marker, "").strip()
+
+def _json_pointer_get(root, ptr: str):
+    if not ptr or ptr == "/":
+        return root
+    cur = root
+    for part in ptr.strip("/").split("/"):
+        part = part.replace("~1", "/").replace("~0", "~")
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
+
+def _dfs_string_contains_inline_cite(node) -> bool:
+    if isinstance(node, str): # _MD_CITE_RE
+        return bool(MD_CITE_RE.search(node))
+    if isinstance(node, list):
+        return any(_dfs_string_contains_inline_cite(x) for x in node)
+    if isinstance(node, dict):
+        return any(_dfs_string_contains_inline_cite(v) for v in node.values())
+    return False
+
+def _validate_sidecar(payload: Any, path: str, valid_sids: Set[int]) -> Tuple[bool, str]:
+    arr = _json_pointer_get(payload, path)
+    if not isinstance(arr, list) or not arr:
+        return False, "sidecar_missing_or_empty"
+    for it in arr:
+        if not isinstance(it, dict):
+            return False, "sidecar_item_not_object"
+        p, s = it.get("path"), it.get("sids")
+        if not isinstance(p, str):
+            return False, "sidecar_item_path_missing"
+        if not (isinstance(s, list) and all(isinstance(x, int) for x in s)):
+            return False, "sidecar_item_sids_invalid"
+        if not set(s).issubset(valid_sids):
+            return False, "sidecar_item_unknown_sid"
+        # Optional: ensure pointer resolves to a string (best-effort)
+        target = _json_pointer_get(payload, p)
+        if target is None and p != "/":
+            # we allow missing for minimal robustness but flag it
+            return False, "sidecar_target_not_string"
+    return True, "sidecar_ok"
+
+def _parse_json(text: str) -> Tuple[Optional[Any], Optional[str]]:
+    try:
+        return json.loads(text), None
+    except Exception as e:
+        return None, f"json_parse_error: {e}"
+
+def _parse_yaml(text: str) -> Tuple[Optional[Any], Optional[str]]:
+    if yaml is None:
+        return None, "yaml_not_available"
+    try:
+        return yaml.safe_load(text), None
+    except Exception as e:
+        return None, f"yaml_parse_error: {e}"
+
+def _validate_json_schema(obj: Any, schema_json: str) -> Tuple[bool, str]:
+    if not schema_json:
+        return True, "no_schema"
+    if jsonschema is None:
+        return True, "jsonschema_not_available"
+    try:
+        schema = json.loads(schema_json)
+    except Exception as e:
+        return False, f"schema_json_invalid: {e}"
+    try:
+        jsonschema.validate(obj, schema)
+        return True, "schema_ok"
+    except jsonschema.exceptions.ValidationError as e:
+        return False, f"schema_validation_error: {e.message}"
+
+def _basic_html_ok(s: str) -> bool:
+    if not s:
+        return False
+    low = s.strip().lower()
+    # accept if looks like an HTML doc
+    if "<!doctype html" in low or "<html" in low:
+        # also require a plausible end
+        return ("</html>" in low) or ("</body>" in low)
+    return False
+
+
+def _format_ok(out: str, fmt: str) -> Tuple[bool, str]:
+    if fmt == "html":
+        ok = _basic_html_ok(out)
+        return (ok, "html_ok" if ok else "html_basic_check_failed")
+    if fmt in ("markdown", "text"):
+        # Always OK structurally; semantic completeness is handled by citations/marker.
+        return (len(out.strip()) > 0, "nonempty")
+    # if fmt == "json":
+    #     obj, err = _parse_json(out)
+    #     return (obj is not None, err or "json_ok")
+    if fmt == "json":
+        obj, err = _parse_json(out)
+        return ((obj is not None), ("json_ok" if obj is not None else err or "json_parse_error"))
+    if fmt == "yaml":
+        obj, err = _parse_yaml(out)
+        return (obj is not None, err or "yaml_ok")
+    return False, "unknown_format"
+
+
+import re as _re
+
+HTML_CITE_RE = _re.compile(
+    r'(?is)<sup[^>]*class=["\'][^"\']*\bcite\b[^"\']*["\'][^>]*>\s*\[S:\s*\d+(?:\s*[,–-]\s*\d+)*\]\s*</sup>'
+)
+# _FOOTNOTES_BLOCK_RE = _re.compile(
+#     r'(?is)<(?:div|section)[^>]*class=["\'][^"\']*\bfootnotes\b[^"\']*["\'][^>]*>.*?\[S:\s*\d+(?:\s*[,–-]\s*\d+)*\].*?</(?:div|section)>'
+# )
+# _SOURCES_HEADING_RE = _re.compile(r'(?is)<h[1-6][^>]*>\s*(?:sources?|references?)\s*</h[1-6]>')
+
+# Footnotes block that lists [S:n] style references inside a .footnotes container
+HTML_FOOTNOTES_RE = re.compile(
+    r'<(?:div|section)[^>]*class="[^"]*\bfootnotes\b[^"]*"[^>]*>.*?\[S:\s*\d+.*?</(?:div|section)>',
+    re.I | re.S
+)
+# Also allow a generic "Sources" section containing [S:n]
+HTML_SOURCES_RE = re.compile(
+    r'<h[1-6][^>]*>\s*Sources\s*</h[1-6]>.*?\[S:\s*\d+',
+    re.I | re.S
+)
+
+USAGE_TAG_RE = re.compile(r"\[\[\s*USAGE\s*:\s*([0-9,\s\-]+)\s*\]\]", re.I)
+
+# hold back partial tails like "[[", "[[U", "[[USAGE:", or a half-closed tag
+USAGE_SUFFIX_PATS = [
+    re.compile(r"\[\[$"),                              # "[[" at end
+    re.compile(r"\[\[\s*U\s*$", re.I),
+    re.compile(r"\[\[\s*US\s*$", re.I),
+    re.compile(r"\[\[\s*USA\s*$", re.I),
+    re.compile(r"\[\[\s*USAG\s*$", re.I),
+    re.compile(r"\[\[\s*USAGE\s*:\s*[0-9,\s\-]*$", re.I),
+    re.compile(r"\[\[\s*USAGE\s*:\s*[0-9,\s\-]*\]$", re.I),  # missing final ']'
+]
+
+def _split_safe_usage_prefix(chunk: str) -> tuple[str, int]:
+    if not chunk:
+        return "", 0
+    for pat in USAGE_SUFFIX_PATS:
+        m = pat.search(chunk)
+        if m and m.end() == len(chunk):
+            return chunk[:m.start()], len(chunk) - m.start()
+    return chunk, 0
+
+def citations_present_inline(content: str, fmt: str) -> bool:
+    """
+    Minimal presence test for inline citations in a rendered document.
+    - markdown/text: looks for [[S:n...]] tokens
+    - html: EITHER <sup class="cite" data-sids="...">…</sup>
+            OR a footnotes/sources section containing [S:n] markers.
+    """
+    if fmt in ("markdown", "text"):
+        return bool(MD_CITE_RE.search(content))
+    if fmt == "html":
+        return (
+                bool(HTML_CITE_RE.search(content)) or
+                bool(HTML_FOOTNOTES_RE.search(content)) or
+                bool(HTML_SOURCES_RE.search(content))
+        )
+    return False
+
+
+def _json_pointer_delete(root: Any, ptr: str) -> Any:
+    """
+    Return a shallow-copied object with the node at `ptr` removed (best-effort).
+    Designed for removing the sidecar path before schema validation.
+    Supports dict parents; list indices are ignored safely.
+    """
+    if not ptr or ptr == "/":
+        return root
+    cur = root
+    parent = None
+    key = None
+    parts = ptr.strip("/").split("/")
+    for raw in parts:
+        part = raw.replace("~1", "/").replace("~0", "~")
+        parent, key = cur, part
+        if isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        elif isinstance(cur, list):
+            try:
+                idx = int(part)
+                cur = cur[idx] if 0 <= idx < len(cur) else None
+            except Exception:
+                cur = None
+        else:
+            cur = None
+        if cur is None:
+            break
+
+    # remove only when parent is a dict and key exists
+    if isinstance(parent, dict) and key in parent:
+        new_root = json.loads(json.dumps(root))  # cheap deep copy that’s schema-safe
+        p2 = new_root
+        for raw in parts[:-1]:
+            part = raw.replace("~1", "/").replace("~0", "~")
+            p2 = p2.get(part) if isinstance(p2, dict) else None
+            if p2 is None:
+                return root
+        if isinstance(p2, dict):
+            p2.pop(parts[-1].replace("~1", "/").replace("~0", "~"), None)
+            return new_root
+    return root
+
+async def generate_content_llm(
+        _SERVICE,
+        agent_name:  Annotated[str, "Name of this content creator, short, to distinguish this author in the sequence of generative calls."],
+        instruction: Annotated[str, "What to produce (goal/contract)."],
+        input_context: Annotated[str, "Optional base text or data to use."] = "",
+        target_format: Annotated[str, "html|markdown|json|yaml|text",
+                                 {"enum": ["html", "markdown", "json", "yaml", "text"]}] = "markdown",
+        schema_json: Annotated[str,
+                                "Optional JSON Schema. If provided (and target_format is json|yaml), "
+                                "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
+        sources_json: Annotated[str, "JSON array of sources: {sid:int, title:str, url?:str, text:str}."] = "[]",
+        cite_sources: Annotated[bool, "If true and sources provided, require citations (inline for Markdown/HTML; sidecar for JSON/YAML)."] = False,
+        citation_embed: Annotated[str, "auto|inline|sidecar|none",
+                                  {"enum": ["auto", "inline", "sidecar", "none"]}] = "auto",
+        citation_container_path: Annotated[str, "JSON Pointer for sidecar path (json/yaml)."] = "/_citations",
+        allow_inline_citations_in_strings: Annotated[bool, "Permit [[S:n]] tokens inside JSON/YAML string fields."] = False,
+        # end_marker: Annotated[str, "Completion marker appended by the model at the very end."] = "<<<GENERATION FINISHED>>>",
+        max_tokens: Annotated[int, "Per-round token cap.", {"min": 256, "max": 8000}] = 7000,
+        max_rounds: Annotated[int, "Max generation/repair rounds.", {"min": 1, "max": 10}] = 4,
+        code_fences: Annotated[bool, "Allow triple-backtick fenced blocks in output."] = True,
+        continuation_hint: Annotated[str, "Optional extra hint used on continuation rounds."] = "",
+        strict: Annotated[bool, "Require format OK and (if provided) schema OK and citations (if requested)."] = True,
+        role: str = "tool.generator"
+) -> Annotated[str, 'JSON string: {ok, content, format, finished, retries, reason, stats, sources_used: [ { "sid": 1, "url": "...", "title": "...", "text": "..." }, ... ]}']:
+    """
+    Returns JSON string:
+      {
+        "ok": true/false,
+        "content": "<final text>",
+        "format": "<target_format>",
+        "finished": true/false,        # saw end_marker
+        "retries": <int>,              # rounds used - 1
+        "reason": "<last failure reason or ''>",
+        "stats": { "rounds": n, "bytes": len(content), "validated": "format|schema|both|none", "citations": "present|missing|n/a" }
+      }
+    """
+
+    from langchain_core.messages import SystemMessage, HumanMessage
+    from kdcube_ai_app.infra.accounting import _get_context
+    context = _get_context()
+    context_snapshot = context.to_dict()
+    logger.info(f"[Context snapshot]:\n{context_snapshot}")
+
+    track_id = context_snapshot.get("track_id")
+    bundle_id = context_snapshot.get("app_bundle_id")
+
+    # --------- normalize inputs ---------
+    tgt = (target_format or "markdown").lower().strip()
+    if tgt not in ("html", "markdown", "json", "yaml", "text"):
+        tgt = "markdown"
+
+    # auto embedding policy
+    eff_embed = citation_embed
+    if citation_embed == "auto":
+        if tgt in ("markdown", "text"):
+            eff_embed = "inline"
+        elif tgt == "html":
+            # prefer footnotes when the instruction hints so
+            eff_embed = "inline"  # keep protocol name, but validation will accept footnotes
+        else:
+            eff_embed = "sidecar"
+
+    sids = extract_sids(sources_json)
+    have_sources = bool(sids)
+    require_citations = bool(cite_sources and have_sources)
+
+    end_marker: Annotated[str, "Completion marker appended by the model at the very end."] = "<<<GENERATION FINISHED>>>"
+    def _scrub_emit_once(s: str) -> str:
+        if not s:
+            return s
+        # strip the exact completion marker
+        s = _remove_end_marker_everywhere(s, end_marker)
+        # strip any complete hidden usage tag occurrences
+        s = USAGE_TAG_RE.sub("", s)
+        return s
+
+
+    # --------- system prompt (format + citation rules) ---------
+    sys_lines = [
+        "You are a precise generator. Produce ONLY the requested artifact in the requested format.",
+        "NEVER include meta-explanations. Do not apologize. No prefaces. No trailing notes.",
+        "If continuing, resume exactly where you left off.",
+        "",
+        f"TARGET FORMAT: {tgt}",
+        "GENERAL OUTPUT RULES:",
+        "- Keep the output self-contained.",
+        "- Avoid placeholders like 'TBD' unless explicitly requested.",
+    ]
+
+    if tgt == "markdown":
+        sys_lines += [
+            "MARKDOWN RULES:",
+            "- Use proper headings, lists, tables, and code blocks as needed.",
+        ]
+    elif tgt == "html":
+        sys_lines += [
+            "HTML RULES:",
+            "- Produce a complete HTML document with <html>, <head>, and <body>.",
+            "- Ensure tags are properly closed; keep attributes well-formed.",
+        ]
+    elif tgt in ("json", "yaml"):
+        sys_lines += [
+            f"{tgt.upper()} RULES:",
+            "- Produce syntactically correct structured output.",
+            "- Do not add commentary outside the structured document.",
+        ]
+
+    # Citation rules
+    if require_citations:
+        if tgt in ("markdown", "text") and eff_embed == "inline":
+            sys_lines += [
+                "",
+                "CITATION REQUIREMENTS (MARKDOWN/TEXT):",
+                "- Insert [[S:<sid>]] tokens at the end of sentences/bullets that contain NEW or materially CHANGED factual claims.",
+                "- Multiple sources allowed: [[S:1,3]] for enumeration and [[S:2-4]] for inclusive range. Use only the provided sid values. Never invent.",
+                "",
+                "CODE BLOCK CITATION RULES:",
+                "- NEVER place citation tokens inside code fences (```) of any kind.",
+                "- ESPECIALLY: Do NOT put citations inside Mermaid diagrams, JSON blocks, YAML blocks, or any other fenced code.",
+                "- Instead, place citations in the explanatory prose BEFORE or AFTER the code block.",
+                "- Example: 'The timeline shows ... [[S:2]]\n```mermaid\n...(no citations here)...\n```\nNote: Data from source [[S:2]]'",
+            ]
+        elif tgt == "html" and eff_embed == "inline":
+            sys_lines += [
+                "",
+                "CITATION REQUIREMENTS (HTML):",
+                '- Insert <sup class="cite" data-sids="1,3">[S:1,3]</sup> immediately after the sentence/phrase introducing NEW or materially CHANGED facts.',
+                "- Use only provided sid values. Never invent.",
+            ]
+        elif tgt in ("json", "yaml") and eff_embed == "sidecar":
+            sys_lines += [
+                "",
+                "CITATION REQUIREMENTS (STRUCTURED, SIDECAR):",
+                f'- Do NOT put citation tokens in the main payload. Add a sidecar array at JSON Pointer "{citation_container_path}" with objects:',
+                '  { "path": "<JSON Pointer to the string field containing the claim>", "sids": [<sid>, ...] }',
+                "- 'path' MUST point to an existing string field in the returned document.",
+            ]
+            if allow_inline_citations_in_strings:
+                sys_lines += [
+                    "- Inline tokens [[S:n]] inside string fields are permitted but sidecar remains required."
+                ]
+
+        sys_lines+= [
+            (
+                "### SOURCE RELEVANCE POLICY\n"
+                "- Only use sources that directly support the requested topic and the claims you make.\n"
+                "- If source is off-topic (different domain/subject, spammy listing, irrelevant brand/news), exclude it from reasoning and citations.\n"
+                "- Do not cite a source unless it substantively supports the sentence you attach it to.\n"
+                "- Prefer primary/official documents and regulator/standards bodies over tertiary blogs or low-quality aggregators.\n"
+                "- If most results are off-topic, state this briefly and proceed without those sources (or ask for better sources in minimal wording).\n"
+                "- Keep sources_json restricted to sources actually used for claims; never force citations just to satisfy a requirement.\n"
+            )
+        ]
+
+
+    # end marker rule
+    sys_lines += [
+        "",
+        f"COMPLETION: End your output with the exact marker: {end_marker}",
+        "Do not add any text after the marker."
+    ]
+
+    if have_sources and not require_citations:
+        sys_lines += [
+            "",
+            "USAGE TELEMETRY (INVISIBLE TO USER):",
+            "- If sources are provided but citations are not required, you MUST record which source IDs you actually relied on.",
+            "- Do this by inserting a single line `[[USAGE:<sid(s)>]]` immediately BEFORE the completion marker.",
+            "- Example: [[USAGE:1,3,5]]",
+            "- Do NOT add any other commentary around it.",
+        ]
+
+    schema_text_for_prompt = ""
+    if schema_json:
+        logger.warning(f"schema_json={schema_json} provided. target_format={tgt}")
+        if tgt in ("json", "yaml"):
+            try:
+                # Pretty + bounded length so we don't blow the context
+                _schema_obj = json.loads(schema_json)
+                schema_text_for_prompt = json.dumps(_schema_obj, ensure_ascii=False, indent=2)
+                # Optional: hard cap to avoid massive schemas
+                if len(schema_text_for_prompt) > 6000:
+                    schema_text_for_prompt = schema_text_for_prompt[:6000] + "\n/* …truncated for prompt… */"
+            except Exception:
+                # If the provided schema isn't valid JSON, don't stop; just skip embedding
+                schema_text_for_prompt = ""
+        else:
+            logger.warning(f"schema_json={schema_json} provided but target_format={tgt}; schema will not be enforced.")
+
+    if schema_text_for_prompt:
+        sys_lines += [
+            "",
+            "SCHEMA CONFORMANCE (MANDATORY):",
+            "- You MUST return output that VALIDATES against the following JSON Schema.",
+            "- Do not add commentary outside the structured document.",
+            "- Do not invent fields not permitted by the schema.",
+            "- Omit optional fields rather than inventing values.",
+            "",
+            "JSON SCHEMA (authoritative):",
+            schema_text_for_prompt
+        ]
+    # Build minimal sources digest and sid map
+    sid_map = ""
+    digest = ""
+    rows: List[Dict[str, Any]] = []
+    if have_sources:
+        try:
+            raw_sources = json.loads(sources_json) if sources_json else []
+        except Exception:
+            raw_sources = []
+        for s in raw_sources or []:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("sid")
+            title = s.get("title") or ""
+            body = s.get("text") or s.get("body") or s.get("content") or ""
+            if sid is None:
+                continue
+            rows.append({"sid": int(sid), "title": title, "text": body})
+        sid_map = "\n".join([f"- {r['sid']}: {r['title'][:160]}" for r in rows])
+        total_budget = 10000
+        per = max(600, total_budget // max(1, len(rows))) if rows else 0
+        parts = []
+        for r in rows:
+            t = (r["text"] or "")[:per]
+            parts.append(f"[sid:{r['sid']}] {r['title']}\n{t}".strip())
+        digest = "\n\n---\n\n".join(parts)[:total_budget]
+
+    sys_prompt = "\n".join(sys_lines)
+
+    # --------- streaming + rounds ---------
+    buf_all: List[str] = []
+    finished = False
+    reason = ""
+    used_rounds = 0
+
+    # keep index across rounds so UI sees a single, growing stream
+    emitted_count = 0
+
+    # Build citation map once (we’ll only use it if tgt == "markdown")
+    citation_map = build_citation_map_from_sources(sources_json)
+
+    for round_idx in range(max_rounds):
+        used_rounds = round_idx + 1
+
+        # Compose user prompt for this round
+        if round_idx == 0:
+            header = [
+                f"INSTRUCTION:\n{instruction}",
+                f"TARGET FORMAT: {tgt}",
+            ]
+            if input_context:
+                header.append(f"INPUT CONTEXT:\n{input_context[:12000]}")
+            if rows:
+                header.append(f"SOURCE IDS:\n{sid_map}")
+                header.append(f"SOURCES DIGEST:\n{digest}")
+            user = "\n\n".join(header)
+        else:
+            produced_so_far = "".join(buf_all)[-20000:]  # keep last 20k chars
+            cont_hint = continuation_hint or "Continue exactly from where you left off."
+            user = (
+                f"{cont_hint}\n\n"
+                f"YOU ALREADY PRODUCED (partial, do not repeat):\n{produced_so_far}\n\n"
+                f"Resume and complete the {tgt.upper()} output. Append, do not restart."
+            )
+            if rows and require_citations:
+                user += "\n\nRemember the CITATION REQUIREMENTS."
+
+        # ---- STREAM ONE ROUND ----
+        round_buf: List[str] = []
+        author = agent_name or "Content Generator LLM"
+
+        # Streaming state ONLY for emitted (user-visible) text
+        stream_buf = ""            # buffer for streaming (we convert & emit from here)
+        emit_from = 0
+        EMIT_HOLDBACK = 32         # keep some tail to avoid splitting tokens
+        MIN_CHUNK = 12            # emit if we have at least this much new text
+        MAX_STALL_SEC = 0.5       # force a small emit at least twice per second
+        last_emit_t = time.monotonic()
+
+        # emitted_count = 0          # index for UI deltas
+
+        async def _emit_visible(text: str):
+            nonlocal emitted_count
+            if not text:
+                return
+            text = _scrub_emit_once(text)  # strip *exact* marker from the to-be-emitted chunk
+            out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
+            if get_comm():
+                await emit_delta(out, index=emitted_count, marker="thinking", agent=author)
+                emitted_count += 1
+
+        async def _flush_safe(force: bool = False):
+            """Emit a safe prefix of stream_buf (don’t split [[S:…]]), leave tail in buffer."""
+            nonlocal emit_from
+            if emit_from >= len(stream_buf):
+                return
+            # safe end: don’t emit the final EMIT_HOLDBACK chars unless force
+            safe_end = len(stream_buf) if force else max(emit_from, len(stream_buf) - EMIT_HOLDBACK)
+            if safe_end <= emit_from:
+                return
+            raw_slice = stream_buf[emit_from:safe_end]
+
+            # 1) avoid cutting citation tokens
+            safe_chunk, dangling1 = split_safe_citation_prefix(raw_slice)
+
+            # 1.5) avoid cutting the hidden [[USAGE:...]] tag
+            safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
+
+            # 2) avoid cutting the end-marker
+            safe_chunk, dangling2 = _split_safe_marker_prefix(safe_chunk, end_marker)
+
+            if safe_chunk:
+                await _emit_visible(safe_chunk)
+                emit_from += len(safe_chunk)
+            # if dangling > 0, keep it in the tail for the next delta
+
+        async def on_delta(piece: str):
+            nonlocal stream_buf, emitted_count
+            if not piece:
+                return
+            round_buf.append(piece)      # RAW for validation/detection
+            stream_buf += piece          # RAW for safe splitting; DO NOT scrub here
+
+            if tgt == "markdown":
+                await _flush_safe(force=False)
+            else:
+                # non-md: emit immediately, but still avoid cutting a marker
+                raw_slice = piece
+                safe_chunk, _ = _split_safe_usage_prefix(raw_slice)
+                safe_chunk, _ = _split_safe_marker_prefix(raw_slice, end_marker)
+                if get_comm():
+                    await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="thinking", agent=author)
+                    emitted_count += 1
+
+        async def on_complete(_):  # noqa: ARG001
+            # flush remaining visible text safely
+            if tgt == "markdown":
+                await _flush_safe(force=True)
+
+        role = role or "tool.generator"
+        client = _SERVICE.get_client(role)
+        async with with_accounting(bundle_id,
+                                   track_id=track_id,
+                                   agent=role,
+                                   metadata={
+                                       "track_id": track_id,
+                                       "agent": role,
+                                       "agent_name": agent_name
+                                   }):
+            await _SERVICE.stream_model_text_tracked(
+                client,
+                [SystemMessage(content=sys_prompt), HumanMessage(content=user)],
+                on_delta=on_delta,
+                on_complete=on_complete,
+                temperature=0.2,
+                max_tokens=max_tokens,
+                role=role,
+            )
+
+        chunk = "".join(round_buf)
+        buf_all.append(chunk)
+
+        # Did we see the end marker in cumulative text?
+        cumulative = "".join(buf_all)
+        if end_marker in cumulative:
+            finished = True
+            break
+
+    # -------- post-processing / validation --------
+    content_raw = "".join(buf_all)
+
+    # --- usage tag extraction (from the RAW buffer that still has the tag) ---
+    usage_sids: List[int] = []
+    m_usage = USAGE_TAG_RE.search(content_raw or "")
+    if m_usage:
+        try:
+            ids_str = m_usage.group(1) or ""
+            for part in ids_str.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if "-" in part:
+                    a, b = [int(x.strip()) for x in part.split("-", 1)]
+                    lo, hi = (a, b) if a <= b else (b, a)
+                    usage_sids.extend(range(lo, hi + 1))
+                elif part.isdigit():
+                    usage_sids.append(int(part))
+        except Exception:
+            pass
+        # remove the usage tag from the content BEFORE we do any more cleaning
+        content_raw = USAGE_TAG_RE.sub("", content_raw)
+
+    # normalize & de-dup
+    usage_sids = sorted(set(usage_sids))
+
+    # If we never saw marker but have something, proceed to validate anyway
+    reason = "finished_with_marker" if finished else "no_end_marker"
+
+    # Strip fences (optionally) and remove marker
+    # content_clean = _strip_code_fences(content_raw, allow=code_fences)
+    # Remove the marker early
+    content_raw = _remove_marker(content_raw, end_marker)
+
+    if tgt in ("json", "yaml"):
+        # Always unwrap fenced blocks and strip BOM/ZWSP
+        content_clean = _unwrap_fenced_block(content_raw, lang=tgt)
+        content_clean = _strip_bom_zwsp(content_clean)
+    else:
+        # honor code_fences only for non-structured formats
+        content_clean = _strip_code_fences(content_raw, allow=code_fences)
+        content_clean = _strip_bom_zwsp(content_clean)
+
+    # --------- Validation phase ---------
+    fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
+
+    schema_ok = True
+    schema_reason = "no_schema"
+    payload_obj = None
+
+    if tgt == "json":
+        payload_obj, parse_err = _parse_json(content_clean)
+        if parse_err:
+            fmt_ok = False
+            fmt_reason = parse_err
+        if schema_json and payload_obj is not None:
+            schema_ok, schema_reason = _validate_json_schema(payload_obj, schema_json)
+            if not schema_ok and citation_container_path:
+                # Retry validation with sidecar removed (schema might not model it)
+                pruned = _json_pointer_delete(payload_obj, citation_container_path)
+                if pruned is not payload_obj:
+                    schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
+                    if schema_ok2:
+                        schema_ok = True
+                        schema_reason = "schema_ok_without_sidecar"
+    elif tgt == "yaml":
+        payload_obj, parse_err = _parse_yaml(content_clean)
+        if parse_err:
+            fmt_ok = False
+            fmt_reason = parse_err
+        # If we got a Python obj and a JSON schema is provided, try to validate by dumping to JSON
+        if schema_json and payload_obj is not None:
+            try:
+                as_json = json.loads(json.dumps(payload_obj))
+                schema_ok, schema_reason = _validate_json_schema(as_json, schema_json)
+                if not schema_ok and citation_container_path:
+                    pruned = _json_pointer_delete(as_json, citation_container_path)
+                    if pruned is not as_json:
+                        schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
+                        if schema_ok2:
+                            schema_ok = True
+                            schema_reason = "schema_ok_without_sidecar"
+            except Exception as e:
+                schema_ok, schema_reason = False, f"yaml_to_json_coercion_failed: {e}"
+
+    # Citations validation
+    citations_status = "n/a"
+    citations_ok = True
+    valid_sids = set(sids)
+
+    if require_citations:
+        if tgt in ("markdown", "text") and eff_embed == "inline":
+            citations_ok = citations_present_inline(content_clean, tgt)
+            citations_status = "present" if citations_ok else "missing"
+        elif tgt == "html" and eff_embed == "inline":
+            # Accept inline OR footnotes-style
+            citations_ok = citations_present_inline(content_clean, tgt)
+            citations_status = "present" if citations_ok else "missing"
+        elif tgt in ("json", "yaml") and eff_embed == "sidecar":
+            if payload_obj is None:
+                # try parse one more time best-effort
+                payload_obj, _ = (_parse_json(content_clean) if tgt == "json"
+                                  else _parse_yaml(content_clean))
+            if payload_obj is not None:
+                ok, why = _validate_sidecar(payload_obj, citation_container_path, valid_sids)
+                citations_ok = ok
+                citations_status = "present" if ok else f"missing:{why}"
+                # optionally accept inline-in-strings as additional signal
+                if allow_inline_citations_in_strings and not ok:
+                    if _dfs_string_contains_inline_cite(payload_obj):
+                        citations_ok = True
+                        citations_status = "present_inline_only"
+            else:
+                citations_ok = False
+                citations_status = "missing:payload_not_parsed"
+
+    # Overall status
+    validated_tag = (
+        "none" if not fmt_ok and (not schema_ok if tgt in ("json", "yaml") else True)
+        else "format" if fmt_ok and (tgt not in ("json", "yaml"))
+        else "schema" if (tgt in ("json", "yaml") and schema_ok and not fmt_ok)
+        else "both" if fmt_ok and (schema_ok or tgt not in ("json", "yaml"))
+        else "none"
+    )
+
+    ok = fmt_ok and (schema_ok if tgt in ("json", "yaml") else True) and (citations_ok if require_citations else True)
+
+    # If strict and not ok but rounds remain, attempt one focused repair pass
+    # (We already exhausted rounds for generation; one more compact attempt to repair.)
+    if strict and not ok and max_rounds > 0:
+        repair_reasons = []
+        if not fmt_ok:
+            repair_reasons.append(f"format_invalid: {fmt_reason}")
+        if tgt in ("json", "yaml") and not schema_ok:
+            repair_reasons.append(f"schema_invalid: {schema_reason}")
+        if require_citations and not citations_ok:
+            repair_reasons.append(f"citations_invalid: {citations_status}")
+        repair_msg = "; ".join(repair_reasons)
+
+        repair_instruction = [
+            f"REPAIR the existing {tgt.upper()} WITHOUT changing previously generated semantics.",
+            "Fix ONLY the issues listed:",
+            f"- {repair_msg}",
+        ]
+        if tgt in ("json", "yaml") and schema_json:
+            repair_instruction.append("Ensure the output VALIDATES against the provided JSON Schema.")
+        if require_citations:
+            if tgt in ("markdown", "text"):
+                repair_instruction.append("Add inline tokens [[S:n]] at claim boundaries. Use only provided sids.")
+            elif tgt == "html":
+                repair_instruction.append('Add <sup class="cite" data-sids="...">[S:...]</sup> after each claim.')
+            elif tgt in ("json", "yaml"):
+                repair_instruction.append(f'Populate sidecar at {citation_container_path} with items {{ "path": "<ptr>", "sids": [..] }} (use only provided sids).')
+
+        # run a compact repair call
+        repair_sys = "You repair documents precisely. Return ONLY the fixed artifact; no comments; no preface."
+        if require_citations:
+            repair_sys += " Citations are mandatory as per the specified protocol."
+
+        payload_for_repair = content_clean[-24000:]  # last 24k for safety
+        if have_sources and digest:
+            # include sid map minimally
+            payload_for_repair = (
+                f"SOURCE IDS:\n{sid_map}\n\n"
+                f"SOURCES DIGEST (reference for citations):\n{digest}\n\n"
+                f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
+            )
+        else:
+            payload_for_repair = f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
+
+        role = "tool.generator"
+        client = _SERVICE.get_client(role)
+
+        # --- Repair streaming with the SAME Markdown substitution behavior ---
+        repair_buf: List[str] = []   # RAW repair text
+        rep_stream_buf = ""
+        rep_emit_from = 0
+        REP_EMIT_HOLDBACK = 32
+        # rep_emitted_count = 0
+        rep_author = agent_name or "Content Generator LLM"
+
+        async def _rep_emit_visible(text: str):
+            nonlocal emitted_count
+            if not text:
+                return
+            text = _scrub_emit_once(text)                     # ← scrub here
+            out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
+            if get_comm():
+                await emit_delta(out, index=emitted_count, marker="thinking", agent=rep_author)
+                emitted_count += 1
+
+        async def _rep_flush_safe(force: bool = False):
+            nonlocal rep_emit_from
+            if rep_emit_from >= len(rep_stream_buf):
+                return
+            safe_end = len(rep_stream_buf) if force else max(rep_emit_from, len(rep_stream_buf) - REP_EMIT_HOLDBACK)
+            if safe_end <= rep_emit_from:
+                return
+            raw_slice = rep_stream_buf[rep_emit_from:safe_end]
+
+            # 1) avoid cutting citation tokens
+            safe_chunk, dangling1 = split_safe_citation_prefix(raw_slice)
+
+            # 1.5) avoid cutting the hidden [[USAGE:...]] tag
+            safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
+
+            # 2) avoid cutting the end-marker
+            safe_chunk, dangling2 = _split_safe_marker_prefix(safe_chunk, end_marker)
+
+            if safe_chunk:
+                await _rep_emit_visible(safe_chunk)
+                rep_emit_from += len(safe_chunk)
+
+        async def on_delta_repair(piece: str):
+            nonlocal rep_stream_buf, emitted_count
+            if not piece:
+                return
+            repair_buf.append(piece)         # RAW (unmodified)
+            rep_stream_buf += piece          # for visible stream
+            if tgt == "markdown":
+                await _rep_flush_safe(force=False)
+            else:
+                # non-md: emit immediately, but still avoid cutting a marker
+                raw_slice = piece
+                safe_chunk, _ = _split_safe_usage_prefix(raw_slice)
+                safe_chunk, _ = _split_safe_marker_prefix(raw_slice, end_marker)
+
+                if get_comm():
+                    await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="thinking", agent=rep_author)
+                    emitted_count += 1
+
+        async def on_complete_repair(_):
+            if tgt == "markdown":
+                await _rep_flush_safe(force=True)
+        async with with_accounting(bundle_id,
+                                   track_id=track_id,
+                                   agent=role,
+                                   metadata={
+                                       "track_id": track_id,
+                                       "agent": role,
+                                       "agent_name": agent_name
+                                   }):
+            await _SERVICE.stream_model_text_tracked(
+                client,
+                [SystemMessage(content=repair_sys), HumanMessage(content="\n".join(repair_instruction) + "\n\n" + payload_for_repair)],
+                on_delta=on_delta_repair,
+                on_complete=on_complete_repair,
+                temperature=0.1,
+                max_tokens=min(max_tokens, 4000),
+                role=role,
+            )
+
+        repaired = "".join(repair_buf)
+        if tgt in ("json", "yaml"):
+            repaired = _unwrap_fenced_block(repaired, lang=tgt)
+            repaired = _strip_bom_zwsp(repaired)
+        else:
+            repaired = _strip_code_fences(repaired, allow=code_fences).strip()
+
+        # Re-validate after repair
+        content_clean = repaired or content_clean
+        fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
+
+        if tgt == "json":
+            payload_obj, parse_err = _parse_json(content_clean)
+            if parse_err:
+                fmt_ok = False
+                fmt_reason = parse_err
+            if schema_json and payload_obj is not None:
+                schema_ok, schema_reason = _validate_json_schema(payload_obj, schema_json)
+                if not schema_ok and citation_container_path:
+                    # Retry validation with sidecar removed (schema might not model it)
+                    pruned = _json_pointer_delete(payload_obj, citation_container_path)
+                    if pruned is not payload_obj:
+                        schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
+                        if schema_ok2:
+                            schema_ok = True
+                            schema_reason = "schema_ok_without_sidecar"
+        elif tgt == "yaml":
+            payload_obj, parse_err = _parse_yaml(content_clean)
+            if parse_err:
+                fmt_ok = False
+                fmt_reason = parse_err
+            if schema_json and payload_obj is not None:
+                try:
+                    as_json = json.loads(json.dumps(payload_obj))
+                    schema_ok, schema_reason = _validate_json_schema(as_json, schema_json)
+                    if not schema_ok and citation_container_path:
+                        pruned = _json_pointer_delete(as_json, citation_container_path)
+                        if pruned is not as_json:
+                            schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
+                            if schema_ok2:
+                                schema_ok = True
+                                schema_reason = "schema_ok_without_sidecar"
+                except Exception as e:
+                    schema_ok, schema_reason = False, f"yaml_to_json_coercion_failed: {e}"
+
+        citations_ok = True
+        citations_status = "n/a"
+        if require_citations:
+            if tgt in ("markdown", "text", "html") and eff_embed == "inline":
+                citations_ok = citations_present_inline(content_clean, tgt)
+                citations_status = "present" if citations_ok else "missing"
+            elif tgt in ("json", "yaml") and eff_embed == "sidecar":
+                if payload_obj is None:
+                    payload_obj, _ = (_parse_json(content_clean) if tgt == "json" else _parse_yaml(content_clean))
+                if payload_obj is not None:
+                    ok2, why2 = _validate_sidecar(payload_obj, citation_container_path, valid_sids)
+                    citations_ok = ok2
+                    citations_status = "present" if ok2 else f"missing:{why2}"
+                    if allow_inline_citations_in_strings and not ok2:
+                        if _dfs_string_contains_inline_cite(payload_obj):
+                            citations_ok = True
+                            citations_status = "present_inline_only"
+                else:
+                    citations_ok = False
+                    citations_status = "missing:payload_not_parsed"
+
+        validated_tag = (
+            "none" if not fmt_ok and (not schema_ok if tgt in ("json", "yaml") else True)
+            else "format" if fmt_ok and (tgt not in ("json", "yaml"))
+            else "schema" if (tgt in ("json", "yaml") and schema_ok and not fmt_ok)
+            else "both" if fmt_ok and (schema_ok or tgt not in ("json", "yaml"))
+            else "none"
+        )
+        ok = fmt_ok and (schema_ok if tgt in ("json", "yaml") else True) and (citations_ok if require_citations else True)
+        reason = repair_msg if not ok else (reason or "repaired_ok")
+        repair_reasons.append(reason)
+
+    # --- derive used_sids from the artifact itself ---
+    artifact_used_sids: List[int] = []
+
+    if tgt in ("markdown", "text", "html"):
+        # best-effort: extract from inline tokens or <sup class="cite"...>
+        # For HTML we can opportunistically reuse the same MD pattern plus the HTML sup placeholder
+        from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_from_text as _extract_sids_from_text
+        artifact_used_sids = _extract_sids_from_text(content_clean)
+
+    elif tgt in ("json", "yaml"):
+        # collect from sidecar if present
+        try:
+            if payload_obj is None:
+                payload_obj, _ = (_parse_json(content_clean) if tgt == "json" else _parse_yaml(content_clean))
+            if payload_obj is not None and citation_container_path:
+                sc = _json_pointer_get(payload_obj, citation_container_path)
+                if isinstance(sc, list):
+                    buf = []
+                    for it in sc:
+                        if isinstance(it, dict) and isinstance(it.get("sids"), list):
+                            for x in it["sids"]:
+                                if isinstance(x, int):
+                                    buf.append(x)
+                    artifact_used_sids = sorted(set(buf))
+        except Exception:
+            pass
+
+    # Combine with telemetry (if present)
+    combined_used_sids = sorted(set((artifact_used_sids or []) + (usage_sids or [])))
+    # Resolve used_sources (expand to url/title when possible)
+    sources_used = []
+    if combined_used_sids:
+        cm = build_citation_map_from_sources(sources_json)
+        for sid in combined_used_sids:
+            meta = cm.get(sid) or {}
+            sources_used.append({
+                "sid": sid,
+                "url": meta.get("url", ""),
+                "title": meta.get("title", ""),
+                "text": meta.get("text") or meta.get("body") or meta.get("content") or "",
+            })
+
+    # --------- finalize ---------
+    out = {
+        "ok": bool(ok),
+        "content": content_clean,
+        "format": tgt,
+        "finished": bool(finished),
+        "retries": max(0, used_rounds - 1),
+        "reason": ("" if ok else (fmt_reason if not fmt_ok else schema_reason if tgt in ("json", "yaml") and not schema_ok else citations_status)),
+        "stats": {
+            "rounds": used_rounds,
+            "bytes": len(content_clean.encode("utf-8")),
+            "validated": validated_tag,
+            "citations": citations_status if require_citations else "n/a"
+        },
+        "sources_used": sources_used,
+    }
+    return json.dumps(out)
+
+async def sources_reconciler(
+        _SERVICE,
+        objective: Annotated[str, "Objective (what we are trying to achieve with these sources)."],
+        queries: Annotated[List[str], "Array of [q1, q2, ...]"],
+        sources_list: Annotated[List[Dict[str, Any]], 'Array of {"sid": int, "title": str, "body": str}'],
+        max_items: Annotated[int, "Optional: cap of kept sources (default 12)."] = 12
+) -> Annotated[str, 'JSON array of kept sources: [{sid, verdict, o_relevance, q_relevance:[{qid,score}], reasoning}]']:
+
+    assert _SERVICE, "ReconcileTools not bound to service"
+
+    _RECONCILER_INSTRUCTION = """
+        You are a strict source reconciler.
+    
+    GOAL
+    - Input: (1) objective, (2) queries (qid→string), (3) sources [{sid,title,body}]. 
+    - Return ONLY sources relevant to the objective AND at least one query.
+    - If a source is irrelevant, DO NOT include it  at all (omit it entirely).
+    - Output MUST validate against the provided JSON Schema.
+    
+    SCORING
+    - o_relevance: overall support for objective (0..1).
+    - q_relevance: per-query [{qid,score}] (0..1).
+    Anchors: 0.90–1.00=direct; 0.60–0.89=mostly; 0.30–0.59=weak; <0.30=irrelevant.
+    
+    HEURISTICS (conservative)
+    - Prefer official/primary sources (standards/regulators/vendor docs) over SEO blogs.
+    - Penalize generic landing pages requiring click-through.
+    - Use title/heading/body overlap; dedupe near-duplicates.
+    - When uncertain, drop.
+    
+    OUTPUT (JSON ONLY)
+    - Array of kept items ONLY: {sid, o_relevance, q_relevance:[{qid,score}], reasoning}
+    - Reasoning ≤320 chars; cite concrete clues.
+    - No prose outside JSON.
+    """.strip()
+
+    _RECONCILER_SCHEMA = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "required": ["sid", "o_relevance", "q_relevance", "reasoning"],
+            "properties": {
+                "sid": {"type": "integer"},
+                "o_relevance": {"type": "number", "minimum": 0, "maximum": 1},
+                "q_relevance": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["qid", "score"],
+                        "properties": {
+                            "qid": {"type": "string"},
+                            "score": {"type": "number", "minimum": 0, "maximum": 1}
+                        }
+                    }
+                },
+                "reasoning": {"type": "string", "maxLength": 320}
+            }
+        },
+        "minItems": 0
+    }
+
+    # --- Normalize inputs ---
+    queries_dict: Dict[str, str] = {
+        str(i + 1): (q or "").strip()
+        for i, q in enumerate(queries or [])
+        if (q or "").strip()
+    }
+
+    prepared_sources: List[Dict[str, Any]] = []
+    for row in (sources_list or []):
+        try:
+            sid = int(row.get("sid"))
+        except Exception:
+            continue
+        title = (row.get("title") or "").strip()
+        text = (row.get("body") or row.get("text") or row.get("content") or "").strip()
+        if not (sid and (title or text)):
+            continue
+        prepared_sources.append({"sid": sid, "title": title, "text": text})
+
+    input_ctx = {
+        "objective": (objective or "").strip(),
+        "queries": queries_dict
+    }
+
+    schema_str = json.dumps(_RECONCILER_SCHEMA, ensure_ascii=False)
+
+    # NOTE: generate_content_llm sets its own role internally; don't pass role=...
+    llm_resp_s = await generate_content_llm(
+        _SERVICE=_SERVICE,
+        agent_name="Sources Reconciler",
+        instruction=_RECONCILER_INSTRUCTION,
+        input_context=json.dumps(input_ctx, ensure_ascii=False),
+        target_format="json",
+        schema_json=schema_str,
+        sources_json=json.dumps(prepared_sources, ensure_ascii=False),
+        cite_sources=False,
+        max_rounds=2,
+        max_tokens=1200,
+        strict=True,
+        role="tool.source.reconciler"
+    )
+
+    # --- Parse tool envelope ---
+    try:
+        env = json.loads(llm_resp_s) if llm_resp_s else {}
+    except Exception:
+        logger.exception("sources_reconciler: cannot parse LLM envelope")
+        env = {}
+
+    ok = bool(env.get("ok"))
+    content_str = env.get("content") or ""
+    reason = env.get("reason") or ""
+    stats = env.get("stats") or {}
+
+    if not ok:
+        logger.warning("sources_reconciler: LLM not-ok. reason=%s stats=%s", reason, stats)
+
+    # Strip accidental fences
+    raw = content_str.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw
+        if "```" in raw:
+            raw = raw.rsplit("```", 1)[0]
+
+    # --- Parse reconciled array (kept-only) ---
+    try:
+        arr = json.loads(raw) if raw else []
+    except Exception:
+        logger.exception("sources_reconciler: invalid JSON content from model")
+        arr = []
+
+    # Coerce/clean; there should be NO dropped items in arr by contract
+    kept: List[Dict[str, Any]] = []
+    for it in arr if isinstance(arr, list) else []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            sid = int(it.get("sid"))
+        except Exception:
+            continue
+        try:
+            orel = float(it.get("o_relevance"))
+        except Exception:
+            orel = 0.0
+
+        # normalize q_relevance
+        qrel_in = it.get("q_relevance") or []
+        qrel_out = []
+        for qr in qrel_in:
+            if not isinstance(qr, dict):
+                continue
+            qid = str(qr.get("qid"))
+            try:
+                score = float(qr.get("score"))
+            except Exception:
+                continue
+            qrel_out.append({"qid": qid, "score": score})
+
+        reasoning = (it.get("reasoning") or "").strip()
+        kept.append({
+            "sid": sid,
+            "o_relevance": orel,
+            "q_relevance": qrel_out,
+            "reasoning": reasoning[:320]
+        })
+
+    # Sort + cap
+    kept.sort(key=lambda x: x.get("o_relevance", 0.0), reverse=True)
+    if isinstance(max_items, int) and max_items > 0:
+        kept = kept[:max_items]
+
+    # --- Logging: brief analytics
+    kept_sids = [k["sid"] for k in kept]
+    logger.info(
+        "sources_reconciler: objective='%s' kept=%d sids=%s stats=%s reason=%s",
+        (objective or "")[:160], len(kept), kept_sids[:12], stats, reason
+    )
+
+    return json.dumps(kept, ensure_ascii=False)
