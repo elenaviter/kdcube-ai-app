@@ -440,33 +440,37 @@ def _shorten(s: str, n: int) -> str:
     s = (s or "").strip()
     return s if len(s) <= n else (s[:n-1] + "…")
 
-def _defence(s: str, none_on_failure: bool = True):
+def _defence(s: str, none_on_failure: bool = True, format: str = "json"):
     """
     Extract content from the outermost code fence, handling nested fences.
     Works for ```json, ```python, or plain ``` blocks.
+
+    Args:
+        format: Content type - if 'mermaid' or 'html', skips JSON brace fallback
     """
     default_ret = None if none_on_failure else s
     if not s:
         return default_ret
     s = s.lstrip()
 
-    # Find FIRST fence opening (could be ```json, ```python, or just ```)
     fence_start = s.find('```')
     if fence_start == -1:
-        # No fences, try JSON braces
-        first_brace = s.find('{')
-        last_brace = s.rfind('}')
-        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-            return s[first_brace:last_brace + 1]
+        # No fences - only extract JSON for actual JSON/code content
+        # Don't mangle Mermaid/HTML which may have {} in syntax
+        if format not in ("mermaid", "html", "xml", "yaml", "markdown"):
+            first_brace = s.find('{')
+            last_brace = s.rfind('}')
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                return s[first_brace:last_brace + 1]
         return default_ret
 
-    # Skip past the opening fence and optional language tag
+    # Skip past opening fence and language tag
     content_start = s.find('\n', fence_start)
     if content_start == -1:
         return default_ret
     content_start += 1  # Skip the newline
 
-    # Find LAST closing fence
+    # Find last closing fence
     last_fence = s.rfind('```')
     if last_fence == -1 or last_fence <= fence_start:
         return default_ret

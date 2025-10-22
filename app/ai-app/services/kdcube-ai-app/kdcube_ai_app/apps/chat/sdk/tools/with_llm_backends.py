@@ -15,6 +15,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.citations import split_safe_citation_pref
     extract_sids, build_citation_map_from_sources, citations_present_inline, MD_CITE_RE
 from kdcube_ai_app.apps.chat.sdk.tools.md_utils import CODE_FENCE_RE
 from kdcube_ai_app.infra.accounting import with_accounting
+from kdcube_ai_app.infra.service_hub.inventory import create_cached_human_message
 
 logger = logging.getLogger("with_llm_backends")
 # # ----------------------------- helpers -----------------------------
@@ -331,7 +332,8 @@ async def generate_content_llm(
         code_fences: Annotated[bool, "Allow triple-backtick fenced blocks in output."] = True,
         continuation_hint: Annotated[str, "Optional extra hint used on continuation rounds."] = "",
         strict: Annotated[bool, "Require format OK and (if provided) schema OK and citations (if requested)."] = True,
-        role: str = "tool.generator"
+        role: str = "tool.generator",
+        cache_instruction: bool=True
 ) -> Annotated[str, 'JSON string: {ok, content, format, finished, retries, reason, stats, sources_used: [ { "sid": 1, "url": "...", "title": "...", "text": "..." }, ... ]}']:
     """
     Returns JSON string:
@@ -350,7 +352,7 @@ async def generate_content_llm(
     from kdcube_ai_app.infra.accounting import _get_context
     context = _get_context()
     context_snapshot = context.to_dict()
-    logger.info(f"[Context snapshot]:\n{context_snapshot}")
+    logger.warning(f"[Context snapshot]:\n{context_snapshot}")
 
     track_id = context_snapshot.get("track_id")
     bundle_id = context_snapshot.get("app_bundle_id")
@@ -551,106 +553,119 @@ async def generate_content_llm(
     # Build citation map once (we’ll only use it if tgt == "markdown")
     citation_map = build_citation_map_from_sources(sources_json)
 
+    def _build_user_blocks_for_round(round_idx: int) -> List[dict]:
+        """
+        Compose the HumanMessage as Anthropic-friendly blocks.
+        The instruction is ALWAYS included, and is cacheable when cache_instruction=True.
+        Non-instruction blocks are not cached (they can vary per round).
+        """
+        blocks: List[dict] = []
+
+        # 1) Instruction (ALWAYS include; cache if requested)
+        #    Your helper expects: {"text": "...", "cache": bool}
+        blocks.append({"text": f"INSTRUCTION:\n{instruction}", "cache": bool(cache_instruction)})
+
+        # 2) Stable metadata for the task (non-cached)
+        blocks.append({"text": f"TARGET FORMAT: {tgt}", "cache": False})
+
+        # 3) Input context (may be large; non-cached, truncated once here)
+        if input_context:
+            blocks.append({"text": f"INPUT CONTEXT:\n{input_context[:12000]}", "cache": False})
+
+        # 4) Sources (sid map + digest), non-cached
+        if rows:
+            if round_idx == 0:
+                # On the first round, include full sid map + digest
+                if sid_map:
+                    blocks.append({"text": f"SOURCE IDS:\n{sid_map}", "cache": False})
+                if digest:
+                    blocks.append({"text": f"SOURCES DIGEST:\n{digest}", "cache": False})
+            else:
+                # On retries, keep brief reminder to avoid bloat
+                blocks.append({"text": "Remember the SOURCE IDS and DIGEST from earlier in this turn.", "cache": False})
+                if require_citations:
+                    blocks.append({"text": "Remember the CITATION REQUIREMENTS.", "cache": False})
+
+        if round_idx > 0:
+            # 5) Continuation guidance + tail of produced content (non-cached)
+            produced_so_far = "".join(buf_all)[-20000:]
+            cont_hint = continuation_hint or "Continue exactly from where you left off."
+            blocks.append({"text": cont_hint, "cache": False})
+            blocks.append({"text": "YOU ALREADY PRODUCED (partial, do not repeat):", "cache": False})
+            blocks.append({"text": produced_so_far, "cache": False})
+            blocks.append({"text": f"Resume and complete the {tgt.upper()} output. Append, do not restart.", "cache": False})
+
+        return blocks
+
     for round_idx in range(max_rounds):
         used_rounds = round_idx + 1
-
-        # Compose user prompt for this round
-        if round_idx == 0:
-            header = [
-                f"INSTRUCTION:\n{instruction}",
-                f"TARGET FORMAT: {tgt}",
-            ]
-            if input_context:
-                header.append(f"INPUT CONTEXT:\n{input_context[:12000]}")
-            if rows:
-                header.append(f"SOURCE IDS:\n{sid_map}")
-                header.append(f"SOURCES DIGEST:\n{digest}")
-            user = "\n\n".join(header)
-        else:
-            produced_so_far = "".join(buf_all)[-20000:]  # keep last 20k chars
-            cont_hint = continuation_hint or "Continue exactly from where you left off."
-            user = (
-                f"{cont_hint}\n\n"
-                f"YOU ALREADY PRODUCED (partial, do not repeat):\n{produced_so_far}\n\n"
-                f"Resume and complete the {tgt.upper()} output. Append, do not restart."
-            )
-            if rows and require_citations:
-                user += "\n\nRemember the CITATION REQUIREMENTS."
 
         # ---- STREAM ONE ROUND ----
         round_buf: List[str] = []
         author = agent_name or "Content Generator LLM"
-
-        # Streaming state ONLY for emitted (user-visible) text
-        stream_buf = ""            # buffer for streaming (we convert & emit from here)
+        stream_buf = ""
         emit_from = 0
-        EMIT_HOLDBACK = 32         # keep some tail to avoid splitting tokens
-        MIN_CHUNK = 12            # emit if we have at least this much new text
-        MAX_STALL_SEC = 0.5       # force a small emit at least twice per second
+        EMIT_HOLDBACK = 32
+        MIN_CHUNK = 12
+        MAX_STALL_SEC = 0.5
         last_emit_t = time.monotonic()
-
-        # emitted_count = 0          # index for UI deltas
 
         async def _emit_visible(text: str):
             nonlocal emitted_count
             if not text:
                 return
-            text = _scrub_emit_once(text)  # strip *exact* marker from the to-be-emitted chunk
+            text = _scrub_emit_once(text)
             out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
             if get_comm():
                 await emit_delta(out, index=emitted_count, marker="thinking", agent=author)
                 emitted_count += 1
 
         async def _flush_safe(force: bool = False):
-            """Emit a safe prefix of stream_buf (don’t split [[S:…]]), leave tail in buffer."""
             nonlocal emit_from
             if emit_from >= len(stream_buf):
                 return
-            # safe end: don’t emit the final EMIT_HOLDBACK chars unless force
             safe_end = len(stream_buf) if force else max(emit_from, len(stream_buf) - EMIT_HOLDBACK)
             if safe_end <= emit_from:
                 return
             raw_slice = stream_buf[emit_from:safe_end]
-
-            # 1) avoid cutting citation tokens
             safe_chunk, dangling1 = split_safe_citation_prefix(raw_slice)
-
-            # 1.5) avoid cutting the hidden [[USAGE:...]] tag
             safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
-
-            # 2) avoid cutting the end-marker
             safe_chunk, dangling2 = _split_safe_marker_prefix(safe_chunk, end_marker)
-
             if safe_chunk:
                 await _emit_visible(safe_chunk)
                 emit_from += len(safe_chunk)
-            # if dangling > 0, keep it in the tail for the next delta
 
         async def on_delta(piece: str):
             nonlocal stream_buf, emitted_count
             if not piece:
                 return
-            round_buf.append(piece)      # RAW for validation/detection
-            stream_buf += piece          # RAW for safe splitting; DO NOT scrub here
-
+            round_buf.append(piece)
+            stream_buf += piece
             if tgt == "markdown":
                 await _flush_safe(force=False)
             else:
-                # non-md: emit immediately, but still avoid cutting a marker
                 raw_slice = piece
                 safe_chunk, _ = _split_safe_usage_prefix(raw_slice)
-                safe_chunk, _ = _split_safe_marker_prefix(raw_slice, end_marker)
+                safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
                 if get_comm():
                     await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="thinking", agent=author)
                     emitted_count += 1
 
-        async def on_complete(_):  # noqa: ARG001
-            # flush remaining visible text safely
+        async def on_complete(_):
             if tgt == "markdown":
                 await _flush_safe(force=True)
 
         role = role or "tool.generator"
         client = _SERVICE.get_client(role)
+        cfg = _SERVICE.describe_client(client, role=role)
+
+        # ✅ Build cached HumanMessage blocks with the instruction ALWAYS present
+        user_blocks = _build_user_blocks_for_round(round_idx)
+        human_msg = create_cached_human_message(user_blocks, cache_last=False)
+
+        # System message can stay as-is (string). If you want to cache parts, you already use create_cached_system_message elsewhere.
+        sys_msg = SystemMessage(content=sys_prompt)
+
         async with with_accounting(bundle_id,
                                    track_id=track_id,
                                    agent=role,
@@ -661,18 +676,18 @@ async def generate_content_llm(
                                    }):
             await _SERVICE.stream_model_text_tracked(
                 client,
-                [SystemMessage(content=sys_prompt), HumanMessage(content=user)],
+                messages=[sys_msg, human_msg],
                 on_delta=on_delta,
                 on_complete=on_complete,
                 temperature=0.2,
                 max_tokens=max_tokens,
+                client_cfg=cfg,
                 role=role,
             )
 
         chunk = "".join(round_buf)
         buf_all.append(chunk)
 
-        # Did we see the end marker in cumulative text?
         cumulative = "".join(buf_all)
         if end_marker in cumulative:
             finished = True
@@ -816,7 +831,7 @@ async def generate_content_llm(
             repair_reasons.append(f"schema_invalid: {schema_reason}")
         if require_citations and not citations_ok:
             repair_reasons.append(f"citations_invalid: {citations_status}")
-        repair_msg = "; ".join(repair_reasons)
+            repair_msg = "; ".join(repair_reasons)
 
         repair_instruction = [
             f"REPAIR the existing {tgt.upper()} WITHOUT changing previously generated semantics.",
@@ -1168,7 +1183,8 @@ async def sources_reconciler(
         max_rounds=2,
         max_tokens=1200,
         strict=True,
-        role="tool.source.reconciler"
+        role="tool.source.reconciler",
+        cache_instruction=True
     )
 
     # --- Parse tool envelope ---
@@ -1242,7 +1258,7 @@ async def sources_reconciler(
 
     # --- Logging: brief analytics
     kept_sids = [k["sid"] for k in kept]
-    logger.info(
+    logger.warning(
         "sources_reconciler: objective='%s' kept=%d sids=%s stats=%s reason=%s",
         (objective or "")[:160], len(kept), kept_sids[:12], stats, reason
     )

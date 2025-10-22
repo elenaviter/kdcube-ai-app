@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 import json, re
 
+from kdcube_ai_app.apps.chat.sdk.context.vector.conv_ticket_store import Ticket
+
 LINE_RE = re.compile(r'^(?P<time>\d{2}:\d{2}:\d{2})\s+\[(?P<tag>[^\]]+)\]\s*(?P<content>.*)$')
 
 # ============================================================================
@@ -110,7 +112,7 @@ class TurnScratchpad:
         self.relevant_turn_ids: List[str] = []
 
         # ticket flow
-        self.open_ticket: Optional[dict] = None
+        self.open_ticket: Optional[dict|Ticket] = None
         self.ticket_answer_text: Optional[str] = None
         self.ticket_resolved: bool = False
         self.ticket_resolved_with_answer: bool = False

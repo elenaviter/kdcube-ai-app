@@ -858,7 +858,7 @@ async def _stream_agent_two_sections_to_json(
         client_name: str,
         client_role: str,
         sys_prompt: str|SystemMessage,
-        user_msg: str,
+        user_msg: str|HumanMessage,
         schema_model,
         on_progress_delta=None,
         temperature: float = 0.2,
@@ -903,7 +903,8 @@ async def _stream_agent_two_sections_to_json(
     client = svc.get_client(client_name)
     cfg = svc.describe_client(client, role=client_role)
     system_message = SystemMessage(content=sys_prompt) if isinstance(sys_prompt, str) else sys_prompt
-    messages = [system_message, HumanMessage(content=user_msg)]
+    user_message = HumanMessage(content=user_msg) if isinstance(user_msg, str) else user_msg
+    messages = [system_message, user_message]
     await svc.stream_model_text_tracked(
         client,
         messages,

@@ -318,7 +318,7 @@ class ContextTools:
         ensure_prefix_fn = lambda id: id if id.startswith("turn_") else f"turn_{id}"
         log.info(f"[signal control]: turn_ids before preproc: {turn_ids}")
         ids = [ensure_prefix_fn(id) for id in ids]
-        log.info(f"[signal control]: turn_ids after preproc: {turn_ids}")
+        log.info(f"[signal control]: turn_ids after preproc: {ids}")
 
         # Build index
         by_id = {}

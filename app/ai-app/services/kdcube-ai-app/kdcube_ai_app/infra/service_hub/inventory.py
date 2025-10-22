@@ -116,6 +116,77 @@ def create_cached_system_message(content: Union[str, List[dict]], cache_last: bo
             ]
         }
     )
+def create_cached_human_message(content: Union[str, List[dict]], cache_last: bool = False) -> HumanMessage:
+    """
+    Create a HumanMessage with caching enabled for Anthropic.
+
+    Args:
+        content: Either a string (entire message cached) or list of dicts with text/cache info
+        cache_last: If True and content is string, mark it for caching
+
+    Examples:
+        # Cache entire system message:
+        msg = create_cached_human_message("Bla.", cache_last=True)
+
+        # Cache specific parts:
+        msg = create_cached_human_message([
+            {"text": "Bla.", "cache": False},
+            {"text": "Bla", "cache": True},  # This part cached
+        ])
+    """
+    if isinstance(content, str):
+        if cache_last:
+            # Mark for caching via additional_kwargs
+            return HumanMessage(
+                content=content,
+                additional_kwargs={"cache_control": {"type": "ephemeral"}}
+            )
+        return HumanMessage(content=content)
+
+    # Multi-part system message with selective caching
+    # Store structure in additional_kwargs for Anthropic conversion
+    return HumanMessage(
+        content="",  # Will be ignored; blocks used instead
+        additional_kwargs={
+            "message_blocks": [
+                {
+                    "type": "text",
+                    "text": block["text"],
+                    **({"cache_control": {"type": "ephemeral"}} if block.get("cache") else {})
+                }
+                for block in content
+            ]
+        }
+    )
+# --- helper: normalize anthropic blocks (text-only; extend for img/audio if needed) ---
+def _normalize_anthropic_blocks(blocks: list, default_cache_ctrl: dict | None = None) -> list:
+    norm = []
+    for b in blocks:
+        if not isinstance(b, dict):
+            # treat raw strings as text blocks
+            norm.append({"type": "text", "text": str(b)})
+            continue
+
+        btype = b.get("type") or "text"
+        if btype != "text":
+            # pass-through non-text blocks untouched (extend here if you support more)
+            norm.append(b)
+            continue
+
+        text = b.get("text")
+        if text is None:
+            # tolerate {"type":"text","content": "..."} or similar
+            text = b.get("content", "")
+        blk = {"type": "text", "text": str(text)}
+
+        # preserve explicit cache_control on the block, else apply default if provided
+        if "cache_control" in b:
+            blk["cache_control"] = b["cache_control"]
+        elif default_cache_ctrl:
+            blk["cache_control"] = default_cache_ctrl
+        norm.append(blk)
+    return norm
+
 
 def _extract_system_prompt_text(system_prompt: Union[str, SystemMessage]) -> str:
     """
@@ -1026,14 +1097,46 @@ class ModelServiceBase:
                         sys_blocks.append(block)
 
                 elif isinstance(m, HumanMessage):
+                    message_blocks = (m.additional_kwargs or {}).get("message_blocks")
                     cache_ctrl = (m.additional_kwargs or {}).get("cache_control")
-                    msg_block = {"role": "user", "content": m.content}
-                    # Anthropic allows cache_control on message content too
-                    if cache_ctrl:
-                        msg_block["content"] = [
-                            {"type": "text", "text": m.content, "cache_control": cache_ctrl}
-                        ]
-                    convo.append(msg_block)
+
+                    if message_blocks:
+                        # Use provided blocks (pass-through), but normalize into Anthropic content format
+                        # If you want to apply a default cache_control to text blocks lacking one, set default_cache_ctrl=cache_ctrl
+                        content_blocks = []
+                        for b in message_blocks:
+                            if isinstance(b, dict):
+                                # keep non-text blocks as-is; ensure text blocks have proper shape
+                                if b.get("type") == "text":
+                                    blk = {"type": "text", "text": b.get("text", "")}
+                                    if "cache_control" in b:
+                                        blk["cache_control"] = b["cache_control"]
+                                    elif cache_ctrl:
+                                        # optional: apply message-level cache_control when block doesn't specify one
+                                        blk["cache_control"] = cache_ctrl
+                                    content_blocks.append(blk)
+                                else:
+                                    content_blocks.append(b)
+                            else:
+                                # raw string -> text block
+                                blk = {"type": "text", "text": str(b)}
+                                if cache_ctrl:
+                                    blk["cache_control"] = cache_ctrl
+                                content_blocks.append(blk)
+
+                        convo.append({"role": "user", "content": content_blocks})
+
+                    else:
+                        if cache_ctrl:
+                            convo.append({
+                                "role": "user",
+                                "content": [{"type": "text", "text": m.content, "cache_control": cache_ctrl}]
+                            })
+                        else:
+                            convo.append({
+                                "role": "user",
+                                "content": [{"type": "text", "text": m.content}]
+                            })
 
                 elif isinstance(m, AIMessage):
                     convo.append({"role": "assistant", "content": m.content})

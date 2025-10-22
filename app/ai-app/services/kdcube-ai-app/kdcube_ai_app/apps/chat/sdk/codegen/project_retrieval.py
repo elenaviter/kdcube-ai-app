@@ -433,6 +433,7 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
                     new_text = _rewrite_md_citation_tokens(text, sid_map)
                     artifact["text"] = new_text
                     used_sids_in_turn.update(sids_in_text(new_text))
+
             # ===== UPDATE web_links_citations =====
             # Replace with canonical sources that are actually used in this turn
             if used_sids_in_turn:
@@ -582,6 +583,7 @@ def build_program_playbook(history: list[dict], *, max_turns: int = 5) -> str:
                     artifact = d.get("value") or {}
                     slot_type = artifact.get("type") or "inline"
                     desc = d.get("description") or "(no description)"
+                    is_draft = bool(artifact.get("draft"))
 
                     # Prefer file/text surrogate if present; else inline value
                     text = artifact.get("text") or artifact.get("value") or ""
@@ -590,22 +592,33 @@ def build_program_playbook(history: list[dict], *, max_turns: int = 5) -> str:
                     text_size = _size(text)
                     text_preview = _short_with_count(text, 150) if text else "[empty]"
 
+                    # Draft marker in slot name
+                    draft_marker = " [DRAFT]" if is_draft else ""
+
                     if slot_type == "file":
                         mime = artifact.get("mime") or "unknown"
                         filename = artifact.get("filename") or artifact.get("path") or "(no filename)"
                         body_lines += [
-                            f"  • {slot_name} (file: {mime})",
+                            f"  • {slot_name}{draft_marker} (file: {mime})",
                             f"    Filename: {filename}",
                             f"    Size: {text_size:,} chars",
                             f"    Description: {desc}",
                         ]
+                        # Draft status explanation
+                        if is_draft:
+                            body_lines.append("    Status: Incomplete — file rendering failed but text available")
+
                     else:
                         fmt = artifact.get("format") or "text"
                         body_lines += [
-                            f"  • {slot_name} (inline: {fmt})",
+                            f"  • {slot_name}{draft_marker} (inline: {fmt})",
                             f"    Size: {text_size:,} chars",
                             f"    Description: {desc}",
                         ]
+                        # Draft status explanation
+                        if is_draft:
+                            body_lines.append("    Status: Incomplete — partial content available")
+
                     if text:
                         body_lines.append(f"    Preview: {text_preview}")
                     if text_size > 300:
@@ -802,13 +815,13 @@ def _compose_last_materialized_canvas_block(history: list[dict]) -> str:
     mat = (meta.get("project_log_materialized") or {})
     txt = (mat.get("text") or "").strip()
     if txt:
-        return f"# Project Canvas (materialized)\n\n{txt}"
+        return f"# Project Log (materialized)\n\n{txt}"
 
     # 2) Fallback to non-materialized canvas
     raw = (meta.get("project_log") or {})
     txt = (raw.get("text") or raw.get("value") or "").strip()
     if txt:
-        return f"# Project Canvas\n\n{txt}"
+        return f"# Project Log\n\n{txt}"
 
     # 3) Fallback to last program presentation
     prez = (meta.get("program_presentation") or "").strip()

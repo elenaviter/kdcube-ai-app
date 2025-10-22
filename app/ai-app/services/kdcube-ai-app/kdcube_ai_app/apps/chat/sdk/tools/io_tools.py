@@ -362,7 +362,6 @@ def _promote_tool_calls(raw_files: Dict[str, List[str]], outdir: pathlib.Path) -
                         us = tool_output.get("sources_used")
                         if us:
                             base["sources_used"] = us
-                            base["sources_used"] = us  # convenience alias
                         # Also add SIDs inferred from content (if any)
                         content = tool_output.get("content")
                         if isinstance(content, str):
