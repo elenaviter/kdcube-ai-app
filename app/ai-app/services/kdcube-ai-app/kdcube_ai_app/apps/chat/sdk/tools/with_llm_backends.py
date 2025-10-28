@@ -313,6 +313,7 @@ def _json_pointer_delete(root: Any, ptr: str) -> Any:
 async def generate_content_llm(
         _SERVICE,
         agent_name:  Annotated[str, "Name of this content creator, short, to distinguish this author in the sequence of generative calls."],
+        artifact_name: Annotated[str, "Name of the artifact being produced (for tracking)."],
         instruction: Annotated[str, "What to produce (goal/contract)."],
         input_context: Annotated[str, "Optional base text or data to use."] = "",
         target_format: Annotated[str, "html|markdown|json|yaml|text",
@@ -356,6 +357,8 @@ async def generate_content_llm(
 
     track_id = context_snapshot.get("track_id")
     bundle_id = context_snapshot.get("app_bundle_id")
+
+    artifact_name = artifact_name or agent_name
 
     # --------- normalize inputs ---------
     tgt = (target_format or "markdown").lower().strip()
@@ -516,6 +519,7 @@ async def generate_content_llm(
     sid_map = ""
     digest = ""
     rows: List[Dict[str, Any]] = []
+
     if have_sources:
         try:
             raw_sources = json.loads(sources_json) if sources_json else []
@@ -617,7 +621,7 @@ async def generate_content_llm(
             text = _scrub_emit_once(text)
             out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
             if get_comm():
-                await emit_delta(out, index=emitted_count, marker="thinking", agent=author)
+                await emit_delta(out, index=emitted_count, marker="canvas", agent=author, format=tgt or "markdown", artifact_name=artifact_name)
                 emitted_count += 1
 
         async def _flush_safe(force: bool = False):
@@ -648,12 +652,16 @@ async def generate_content_llm(
                 safe_chunk, _ = _split_safe_usage_prefix(raw_slice)
                 safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
                 if get_comm():
-                    await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="thinking", agent=author)
+                    await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="canvas", agent=author, format=tgt or "markdown", artifact_name=artifact_name)
                     emitted_count += 1
 
         async def on_complete(_):
+
+            nonlocal emitted_count
             if tgt == "markdown":
                 await _flush_safe(force=True)
+            emitted_count += 1
+            await emit_delta("", completed=True, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
 
         role = role or "tool.generator"
         client = _SERVICE.get_client(role)
@@ -882,7 +890,7 @@ async def generate_content_llm(
             text = _scrub_emit_once(text)                     # ← scrub here
             out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
             if get_comm():
-                await emit_delta(out, index=emitted_count, marker="thinking", agent=rep_author)
+                await emit_delta(out, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
                 emitted_count += 1
 
         async def _rep_flush_safe(force: bool = False):
@@ -922,12 +930,15 @@ async def generate_content_llm(
                 safe_chunk, _ = _split_safe_marker_prefix(raw_slice, end_marker)
 
                 if get_comm():
-                    await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="thinking", agent=rep_author)
+                    await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
                     emitted_count += 1
 
         async def on_complete_repair(_):
+            nonlocal emitted_count
             if tgt == "markdown":
                 await _rep_flush_safe(force=True)
+            emitted_count += 1
+            await emit_delta("", completed=True, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
         async with with_accounting(bundle_id,
                                    track_id=track_id,
                                    agent=role,
