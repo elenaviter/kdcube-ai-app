@@ -525,3 +525,19 @@ def isoz(ts: str | None) -> str:
         return _dt.datetime.fromisoformat(s.replace("Z","+00:00")).astimezone(_dt.timezone.utc).isoformat().replace("+00:00","Z")
     except Exception:
         return ts
+
+import tiktoken
+
+# Get the tokenizer for text-embedding-3-small (uses cl100k_base encoding)
+encoding = tiktoken.get_encoding("cl100k_base")
+
+# Maximum tokens for text-embedding-3-small
+MAX_TOKENS = 8191
+
+def truncate_text_by_tokens(text, max_tokens=MAX_TOKENS):
+    """Truncate text to fit within token limit"""
+    tokens = encoding.encode(text)
+    if len(tokens) > max_tokens:
+        tokens = tokens[:max_tokens]
+        text = encoding.decode(tokens)
+    return text
