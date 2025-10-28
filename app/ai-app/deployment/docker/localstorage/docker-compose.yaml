@@ -89,6 +89,22 @@ services:
       timeout: 10s
       retries: 20
 
+  clamav:
+    image: mkodockx/docker-clamav:alpine
+    container_name: kdcube-local-clamav
+    restart: unless-stopped
+    environment:
+       - FRESHCLAM_CHECKS=24 # update DB hourly-ish (24/day)
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - clamav-db:/var/lib/clamav # persist signature DB
+    ports:
+      - "3310:3310"
+
 volumes:
   postgres-data:
     driver: local
@@ -131,6 +147,13 @@ volumes:
       type: none
       o: bind
       device: ./data/neo4j/import
+
+  clamav-db:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/clamav-db
 
 networks:
   default:

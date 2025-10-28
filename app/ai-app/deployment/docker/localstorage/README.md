@@ -1,5 +1,5 @@
 ```shell
-mkdir -p ./data/{postgres,redis,neo4j/{data,logs,plugins,import}}
+mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import}}
 ```
 
 ```shell

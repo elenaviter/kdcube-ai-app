@@ -33,6 +33,7 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
     ServiceCtx, ConversationCtx,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
+from kdcube_ai_app.infra.gateway.safe_preflight import PreflightConfig, preflight_async
 from kdcube_ai_app.tools.file_text_extractor import DocumentTextExtractor
 
 logger = logging.getLogger(__name__)
@@ -318,54 +319,15 @@ class SocketIOChatHandler:
 
         data = args[0]
 
-        attachments_meta = data.get("attachment_meta", [])
-        attachments = []
-        for idx, f in enumerate(attachments_meta):
-            mime = f.get("mime", "application/pdf")
-            name = f.get("filename")
-            raw = args[1 + idx] if len(args) > 1 + idx else None
-            if raw and isinstance(raw, (bytes, bytearray, memoryview)):
-                raw_bytes = bytes(raw)
-                attachments.append({"raw": raw_bytes, "name": name, "mime": mime})
-
-        extractor = DocumentTextExtractor()
-        attachments_text = []
-        for a in attachments:
-            text, info = extractor.extract(a["raw"], a.get("name") or "file", a.get("mime"))
-            attachments_text.append({
-                "name": a.get("name"),
-                "mime": info.mime,
-                "ext": info.ext,
-                "size": len(a["raw"]),
-                "meta": info.meta,
-                "warnings": info.warnings,
-                "text": text,  # plain text of the document
-            })
-
-        # If you want to pass it to your workers:
+        # Defer heavy work (attachment extraction) until AFTER gateway checks.
+        # ------- collect only cheap info up-front -------
         message_data = data.get("message", {})
-        # message_data["conversation_id"] = "5c0a6bb8-2fcd-4b40-ab10-a78991d1d77c"
+        # message_data["conversation_id"] = "565fbaea-c54c-4e0e-a73a-0ddb3aed158f"
         logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
+
         try:
             socket_session = await self.sio.get_session(sid)
             user_session_data = (socket_session or {}).get("user_session", {})
-
-            # basic validation
-            message = (message_data or {}).get("text") or (message_data or {}).get("message") or ""
-
-            if attachments_text:
-                message += "\nATTACHMENTS:\n"
-                for idx, a in enumerate(attachments_text):
-                    message += f"{idx + 1}. Name: {a['name']}; Mime: {a['mime']}\n{a['text']}\n...\n"
-            if not message:
-                svc = ServiceCtx(request_id=str(uuid.uuid4()))
-                conv = ConversationCtx(
-                    session_id=user_session_data.get("session_id", "unknown"),
-                    conversation_id=message_data.get("conversation_id") or user_session_data.get("session_id", "unknown"),
-                    turn_id=f"turn_{uuid.uuid4().hex[:8]}",
-                )
-                self._comm.emit_error(svc, conv, error='Missing "message"', target_sid=sid, session_id=conv.session_id)
-                return
 
             # rebuild lightweight UserSession
             session = UserSession(
@@ -412,10 +374,72 @@ class SocketIOChatHandler:
                 self._comm.emit_error(svc, conv, error="System check failed", target_sid=sid, session_id=session.session_id)
                 logger.error("gateway check failed: %s", e)
                 return
+
+            enable_av = os.getenv("APP_AV_SCAN", "1") == "1"   # default ON
+            av_timeout = float(os.getenv("APP_AV_TIMEOUT_S", "3.0"))
+
+            cfg = PreflightConfig(av_scan=enable_av, av_timeout_s=av_timeout)
+            # ------- ONLY NOW: parse attachments & extract text -------
+            max_bytes = int(getattr(self, "max_upload_mb", 20)) * 1024 * 1024
+            attachments_meta = data.get("attachment_meta", [])
+            attachments = []
+            for idx, f in enumerate(attachments_meta):
+                mime = f.get("mime", "application/pdf")
+                name = f.get("filename")
+                raw = args[1 + idx] if len(args) > 1 + idx else None
+                if raw and isinstance(raw, (bytes, bytearray, memoryview)):
+                    raw_bytes = bytes(raw)
+                    # quick size guard (cheap)
+                    if len(raw_bytes) > max_bytes:
+                        logger.warning("attachment '%s' rejected: %d > max %d", name, len(raw_bytes), max_bytes)
+                        continue
+                    pf = await preflight_async(raw_bytes, name, mime, cfg)
+                    if not pf.allowed:
+                        logger.warning(f"attachment '{name}' rejected. reasons={pf.reasons}, {pf.meta}.")
+                        continue
+                    else:
+                        logger.info(f"attachment '{name}' accepted.")
+                    attachments.append({"raw": raw_bytes, "name": name, "mime": mime})
+
+            extractor = DocumentTextExtractor()
+            attachments_text = []
+            for a in attachments:
+                try:
+                    text, info = extractor.extract(a["raw"], a.get("name") or "file", a.get("mime"))
+                    attachments_text.append({
+                        "name": a.get("name"),
+                        "mime": info.mime,
+                        "ext": info.ext,
+                        "size": len(a["raw"]),
+                        "meta": info.meta,
+                        "warnings": info.warnings,
+                        "text": text,
+                    })
+                except Exception as ex:
+                    logger.error("extract failed for '%s': %s", a.get("name"), ex)
+
+            # ------- build message (same as before) -------
+            message = (message_data or {}).get("text") or (message_data or {}).get("message") or ""
+
+            if attachments_text:
+                message += "\nATTACHMENTS:\n"
+                for idx, a in enumerate(attachments_text):
+                    message += f"{idx + 1}. Name: {a['name']}; Mime: {a['mime']}\n{a['text']}\n...\n"
+            if not message:
+                svc = ServiceCtx(request_id=str(uuid.uuid4()))
+                conv = ConversationCtx(
+                    session_id=user_session_data.get("session_id", "unknown"),
+                    conversation_id=message_data.get("conversation_id") or user_session_data.get("session_id", "unknown"),
+                    turn_id=f"turn_{uuid.uuid4().hex[:8]}",
+                )
+                self._comm.emit_error(svc, conv, error='Missing "message"', target_sid=sid, session_id=conv.session_id)
+                return
+
+
             tenant_id = message_data.get("tenant_id") or get_tenant()
             project_id = message_data.get("project")
 
-            # accounting envelope
+            # bundle resolution,accounting envelope, payload assembly, enqueue, and ack...
             request_id = str(uuid.uuid4())
 
             agentic_bundle_id = message_data.get("bundle_id")
@@ -438,12 +462,10 @@ class SocketIOChatHandler:
             turn_id = message_data.get("turn_id") or f"turn_{uuid.uuid4().hex[:8]}"
             conversation_id = message_data.get("conversation_id") or session.session_id
 
-            ext_config = message_data.get("config")
-            if not ext_config:
-                ext_config = {}
-            if not "tenant" in ext_config:
+            ext_config = message_data.get("config") or {}
+            if "tenant" not in ext_config:
                 ext_config["tenant"] = tenant_id
-            if not "project" in ext_config and project_id:
+            if "project" not in ext_config and project_id:
                 ext_config["project"] = project_id
 
             if not spec_resolved:

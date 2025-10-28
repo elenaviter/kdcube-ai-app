@@ -162,6 +162,8 @@ services:
       - APP_NEO4J_URI=bolt://neo4j:7687
       - CHAT_PUBLIC_URL=http://localhost:5173/chatbot/api/chat
       - PYTHONUNBUFFERED=1
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
     tty: true
     volumes:
       - ./kb-storage:/kb-storage
@@ -224,6 +226,27 @@ services:
       - chat-external
       - chat-internal
 
+  clamav:
+    image: clamav/clamav:stable
+    container_name: chat-clamav
+    restart: unless-stopped
+    networks:
+      - chat-internal
+    environment:
+      - CLAMD_START=1
+      - FRESHCLAM_CHECKS=24        # update DB hourly-ish (24/day)
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    volumes:
+      - clamav-db:/var/lib/clamav   # persist signature DB
+    ports:
+      # expose only internally; no host mapping needed
+      - "3310:3310"
+
+
 networks:
   chat-external:
     driver: bridge
@@ -237,3 +260,4 @@ volumes:
   neo4j-logs:
   neo4j-plugins:
   neo4j-import:
+  clamav-db:
