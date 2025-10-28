@@ -49,7 +49,7 @@ class ContextRAGClient:
         user = user_id or ctx.get("user_id")
         conv = conversation_id or ctx.get("conversation_id")
         track = track_id or ctx.get("track_id")
-        bundle = bundle_id or ctx.get("bundle_id")
+        bundle = bundle_id or ctx.get("bundle_id") or ctx.get("app_bundle_id")
         return user, conv, track, bundle
 
     # ---------- public API ----------
