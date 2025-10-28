@@ -301,8 +301,10 @@ class FileAccountingStorage(IAccountingStorage):
 
         # Original file write logic
         try:
+            event_dict = event.to_dict()
+
             rel_path = f"{self.base_path}/{self.path_strategy(event)}" if self.path_strategy else self._default_path(event)
-            content = json.dumps(event.to_dict(), indent=2)
+            content = json.dumps(event_dict, indent=2)
             # loop = asyncio.get_event_loop()
             # await loop.run_in_executor(None, lambda: self.storage_backend.write_text(rel_path, content))
             await self.storage_backend.write_text_a(rel_path, content)
@@ -651,24 +653,34 @@ class with_accounting:
 
 def grouped_by_component_and_seed() -> "callable":
     """
-    Returns a function(event) -> relative path like:
-      <tenant>/<project>/<YYYY.MM.DD>/<component|type|id|version>/usage_<timestamp>.json
-    or, if no seeds:
-      <tenant>/<project>/<YYYY.MM.DD>/<component>/usage_<timestamp>.json
+    Returns a function(event) -> relative path with conversation-aware filenames.
+
+    Directory structure (unchanged):
+      <tenant>/<project>/<YYYY.MM.DD>/<service_type>/<group>/
+
+    Filename rules (optimized for prefix filtering):
+      - If conversation_id exists: cb|<user_id>|<conversation_id>|<turn_id>|<ts>.json
+      - Else (no conversation):     kb|<ts>.json
+
+    Timestamp at END enables efficient prefix filtering:
+      - All files for user: prefix = "cb|user-123|"
+      - All files for conversation: prefix = "cb|user-123|conv-abc|"
+      - Specific turn: prefix = "cb|user-123|conv-abc|turn-001|"
     """
     def _strategy(event) -> str:
-        # date folder: 2025.07.28
         dt = datetime.fromisoformat(event.timestamp.replace('Z', '+00:00')) if event.timestamp else datetime.now()
         date_folder = f"{dt.year:04d}.{dt.month:02d}.{dt.day:02d}"
+        ts = dt.strftime("%Y%m%d_%H%M%S_%f")[:-3]  # milliseconds precision
 
-        # group folder
+        # Build directory structure (unchanged)
         component = (event.component or event.context.get("component") or "unknown")
-        tenant   = (event.tenant_id or event.context.get("tenant_id") or "unknown")
-        project  = (event.project_id or event.context.get("project_id") or "unknown")
-
+        tenant = (event.tenant_id or event.context.get("tenant_id") or "unknown")
+        project = (event.project_id or event.context.get("project_id") or "unknown")
         service_type = event.service_type.value if hasattr(event.service_type, "value") else str(event.service_type)
+
+        # Determine group folder (unchanged)
         if event.seed_system_resources:
-            r = event.seed_system_resources[0]  # pick the primary seed
+            r = event.seed_system_resources[0]
             rtype = (r.resource_type or "res").strip()
             source_id = r.metadata.get("source_id") if r.metadata else None
             rid = (source_id or "unknown").strip()
@@ -677,13 +689,27 @@ def grouped_by_component_and_seed() -> "callable":
         else:
             group = component
 
-        # filename with ms; add short id suffix to avoid rare collisions
-        ts = dt.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        filename = f"usage_{ts}-{event.event_id[:8]}.json"
+        dir_path = f"{tenant}/{project}/{date_folder}/{service_type}/{group}"
 
-        # final path UNDER your base_path
-        return f"{tenant}/{project}/{date_folder}/{service_type}/{group}/{filename}"
+        # Extract conversation context for filename
+        user_id = event.user_id or event.context.get("user_id")
+        conversation_id = event.context.get("conversation_id") or event.metadata.get("conversation_id")
+        turn_id = event.context.get("turn_id") or event.metadata.get("turn_id")
+
+        # Build filename with timestamp at END for prefix filtering
+        if conversation_id:
+            # Conversation-based: cb|<user>|<conv>|<turn>|<ts>.json
+            user_part = user_id or "unknown"
+            turn_part = turn_id or "unknown"
+            filename = f"cb|{user_part}|{conversation_id}|{turn_part}|{ts}.json"
+        else:
+            # Knowledge-based: kb|<ts>.json
+            filename = f"kb|{ts}.json"
+
+        return f"{dir_path}/{filename}"
+
     return _strategy
+
 
 def _new_context_with(**fields) -> AccountingContext:
     ctx = AccountingContext()

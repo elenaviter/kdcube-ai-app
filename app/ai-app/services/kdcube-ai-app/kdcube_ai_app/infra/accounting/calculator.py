@@ -3,41 +3,23 @@
 
 # infra/accounting/calculator.py
 """
-Read-only usage aggregation on top of the accounting event store.
+Optimized read-only usage aggregation leveraging conversation-aware file naming.
 
-- Works with any IStorageBackend (LocalFileSystemBackend, S3StorageBackend, InMemoryStorageBackend).
-- Scans the accounting base path and sums usage from JSON events.
-- Filters by tenant, project, date range, bundle (app_bundle_id), user/session, provider/model/service_type/component.
-- Optional group_by to get rollups per field (e.g., "service_type", "session_id", ...).
+NEW FILENAME FORMAT:
+- Conversation-based: cb|<user_id>|<conversation_id>|<turn_id>|<timestamp>.json
+- Knowledge-based: kb|<timestamp>.json
 
-Example
--------
-from kdcube_ai_app.storage.storage import create_storage_backend
-from kdcube_ai_app.infra.accounting.calculator import AccountingCalculator, AccountingQuery
-
-backend = create_storage_backend("file:///Users/you/path/to/data/kdcube")
-calc = AccountingCalculator(backend, base_path="accounting")
-
-q = AccountingQuery(
-    tenant_id="home",
-    project_id="demo",
-    app_bundle_id="kdcube.demo.1",             # set in with_accounting(..., app_bundle_id=...)
-    # session_id="abc123",
-    date_from="2025-09-28",                    # inclusive
-    date_to="2025-09-29",                      # inclusive
-    service_types=["llm", "embedding"],        # or None for all
-)
-
-res = calc.query_usage(q, group_by=["service_type", "model_or_service"])
-print(res["total"])       # grand totals across filtered events
-print(res["groups"])      # nested dict keyed by tuples ("llm", "gpt-4o-mini"), etc.
+This enables efficient prefix filtering:
+- All files for user: "cb|user-123|"
+- All files for conversation: "cb|user-123|conv-abc|"
+- Specific turn: "cb|user-123|conv-abc|turn-001|"
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from datetime import datetime, date
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -50,7 +32,7 @@ logger = logging.getLogger("AccountingCalculator")
 # -----------------------------
 @dataclass
 class AccountingQuery:
-    # storage location (root: "<base_path>/<tenant>/<project>/...")
+    # storage location
     tenant_id: Optional[str] = None
     project_id: Optional[str] = None
 
@@ -58,22 +40,94 @@ class AccountingQuery:
     date_from: Optional[str] = None
     date_to: Optional[str] = None
 
+    # NEW: conversation-aware filters (enable prefix optimization)
+    user_id: Optional[str] = None
+    conversation_id: Optional[str] = None
+    turn_id: Optional[str] = None
+
     # context filters (exact match if provided)
     app_bundle_id: Optional[str] = None
-    client_id: Optional[str] = None            # alias for app_bundle_id (if you prefer that name)
-    user_id: Optional[str] = None
+    client_id: Optional[str] = None
     session_id: Optional[str] = None
     component: Optional[str] = None
     provider: Optional[str] = None
     model_or_service: Optional[str] = None
-    service_types: Optional[List[str]] = None  # e.g., ["llm", "embedding"]
+    service_types: Optional[List[str]] = None
 
-    # free-form extra predicate (event dict -> bool) if you need it
+    # free-form predicate
     predicate: Optional[Any] = None
 
-    # safety: max number of files to read (None = unlimited)
+    # safety: max number of files to read
     hard_file_limit: Optional[int] = None
 
+
+# -----------------------------
+# Filename parsing helpers
+# -----------------------------
+def _parse_filename(filename: str) -> Optional[Dict[str, str]]:
+    """
+    Parse new filename format:
+    - cb|<user>|<conv>|<turn>|<ts>.json
+    - kb|<ts>.json
+
+    Returns dict with keys: type, user_id, conversation_id, turn_id, timestamp
+    """
+    if not filename.endswith('.json'):
+        return None
+
+    parts = filename[:-5].split('|')  # Remove .json and split
+
+    if len(parts) == 2 and parts[0] == 'kb':
+        # Knowledge-based file
+        return {
+            'type': 'kb',
+            'user_id': None,
+            'conversation_id': None,
+            'turn_id': None,
+            'timestamp': parts[1]
+        }
+    elif len(parts) == 5 and parts[0] == 'cb':
+        # Conversation-based file
+        return {
+            'type': 'cb',
+            'user_id': parts[1],
+            'conversation_id': parts[2],
+            'turn_id': parts[3],
+            'timestamp': parts[4]
+        }
+
+    # Old format or unknown - return None to trigger full scan
+    return None
+
+
+def _build_filename_prefix(user_id: Optional[str] = None,
+                           conversation_id: Optional[str] = None,
+                           turn_id: Optional[str] = None) -> Optional[str]:
+    """
+    Build prefix for efficient file filtering.
+
+    Examples:
+    - user_id only: "cb|user-123|"
+    - user + conv: "cb|user-123|conv-abc|"
+    - user + conv + turn: "cb|user-123|conv-abc|turn-001|"
+    """
+    if not user_id:
+        return None
+
+    prefix = f"cb|{user_id}|"
+
+    if conversation_id:
+        prefix += f"{conversation_id}|"
+
+        if turn_id:
+            prefix += f"{turn_id}|"
+
+    return prefix
+
+
+# -----------------------------
+# Usage accumulation helpers
+# -----------------------------
 _BUCKETS = {
     "1m": 60,
     "5m": 300,
@@ -90,30 +144,14 @@ def _floor_bucket(ts: datetime, granularity: str) -> str:
     start = epoch - (epoch % s)
     return datetime.utcfromtimestamp(start).isoformat(timespec="seconds") + "Z"
 
-def _merge_usage(a: Dict[str, Any], b: Dict[str, Any]) -> None:
-    _accumulate(a, b)
-
-def _tokens_for_event(ev: Dict[str, Any]) -> int:
-    u = ev.get("usage") or {}
-    tot = u.get("total_tokens")
-    if tot is None:
-        tot = (u.get("input_tokens") or 0) + (u.get("output_tokens") or 0)
-    # include embeddings “as tokens” (approx ok)
-    tot += int(u.get("embedding_tokens") or 0)
-    try:
-        return int(tot)
-    except Exception:
-        return 0
-
 def _spent_seed(service_type: str) -> Dict[str, int]:
     """Create initial spent dict with all possible token types."""
     if service_type == "llm":
         return {
             "input": 0,
             "output": 0,
-            "cache_creation": 0,  # Total cache writes (all types)
+            "cache_creation": 0,
             "cache_read": 0,
-            # Detailed cache write breakdown (Anthropic)
             "cache_5m_write": 0,
             "cache_1h_write": 0,
         }
@@ -121,19 +159,15 @@ def _spent_seed(service_type: str) -> Dict[str, int]:
         return {"tokens": 0}
     return {}
 
-# In calculator.py
-
 def _accumulate_compact(spent: Dict[str, int], ev_usage: Dict[str, Any], service_type: str) -> None:
     """Accumulate token usage including detailed cache breakdowns."""
     if service_type == "llm":
-        spent["input"]  = int(spent.get("input", 0))  + int(ev_usage.get("input_tokens") or 0)
+        spent["input"] = int(spent.get("input", 0)) + int(ev_usage.get("input_tokens") or 0)
         spent["output"] = int(spent.get("output", 0)) + int(ev_usage.get("output_tokens") or 0)
         spent["cache_read"] = int(spent.get("cache_read", 0)) + int(ev_usage.get("cache_read_tokens") or 0)
 
-        # Handle detailed cache_creation breakdown if present
         cache_creation = ev_usage.get("cache_creation")
         if isinstance(cache_creation, dict):
-            # Anthropic detailed breakdown
             cache_5m = int(cache_creation.get("ephemeral_5m_input_tokens") or 0)
             cache_1h = int(cache_creation.get("ephemeral_1h_input_tokens") or 0)
 
@@ -141,79 +175,172 @@ def _accumulate_compact(spent: Dict[str, int], ev_usage: Dict[str, Any], service
             spent["cache_1h_write"] = int(spent.get("cache_1h_write", 0)) + cache_1h
             spent["cache_creation"] = int(spent.get("cache_creation", 0)) + cache_5m + cache_1h
         else:
-            # Legacy: total cache_creation_tokens without breakdown
-            # This handles both OpenAI (no cache_creation dict) and old format
             cache_total = int(ev_usage.get("cache_creation_tokens") or 0)
             if cache_total > 0:
                 spent["cache_creation"] = int(spent.get("cache_creation", 0)) + cache_total
-                # For backward compatibility: assume it's 5m if no breakdown
                 spent["cache_5m_write"] = int(spent.get("cache_5m_write", 0)) + cache_total
 
     elif service_type == "embedding":
         spent["tokens"] = int(spent.get("tokens", 0)) + int(ev_usage.get("embedding_tokens") or 0)
+
+_USAGE_KEYS = [
+    "input_tokens", "output_tokens",
+    "cache_creation_tokens", "cache_read_tokens", "cache_creation",
+    "total_tokens", "embedding_tokens", "embedding_dimensions", "search_queries",
+    "search_results", "image_count", "image_pixels", "audio_seconds", "requests",
+    "cost_usd",
+]
+
+def _new_usage_acc() -> Dict[str, Any]:
+    acc = {k: (0.0 if k in ("audio_seconds", "cost_usd") else 0) for k in _USAGE_KEYS}
+    acc["cache_creation"] = None
+    return acc
+
+def _extract_usage(ev: Dict[str, Any]) -> Dict[str, Any] | None:
+    u = ev.get("usage")
+    if not isinstance(u, dict):
+        return None
+
+    out = {}
+    for k in _USAGE_KEYS:
+        v = u.get(k)
+
+        if k == "cache_creation":
+            if isinstance(v, dict):
+                out[k] = dict(v)
+            else:
+                out[k] = None
+            continue
+
+        if v is None:
+            out[k] = 0.0 if k in ("audio_seconds", "cost_usd") else 0
+        else:
+            if k in ("audio_seconds", "cost_usd"):
+                out[k] = float(v)
+            elif isinstance(v, (int, float)):
+                out[k] = int(v)
+            else:
+                out[k] = v
+
+    return out
+
+def _accumulate(acc: Dict[str, Any], usage: Dict[str, Any]) -> None:
+    for k in _USAGE_KEYS:
+        if k == "cache_creation":
+            continue
+        elif k == "cost_usd":
+            acc["cost_usd"] = float(acc.get("cost_usd", 0.0)) + float(usage.get("cost_usd", 0.0))
+        elif k == "audio_seconds":
+            acc[k] = float(acc.get(k, 0.0)) + float(usage.get(k, 0.0))
+        else:
+            acc[k] = int(acc.get(k, 0)) + int(usage.get(k, 0))
+
+def _finalize_cost(acc: Dict[str, Any]) -> None:
+    pass
+
+def _group_key(ev: Dict[str, Any], group_by: List[str]) -> Tuple[Any, ...]:
+    ctx = ev.get("context") or {}
+    dt_label = None
+    if "date" in group_by:
+        ts = ev.get("timestamp")
+        try:
+            d = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
+            dt_label = d.isoformat()
+        except Exception:
+            dt_label = None
+
+    out: List[Any] = []
+    for g in group_by:
+        if g == "date":
+            out.append(dt_label)
+            continue
+        out.append(ev.get(g) if g in ev else ctx.get(g))
+    return tuple(out)
+
+def _tokens_for_event(ev: Dict[str, Any]) -> int:
+    u = ev.get("usage") or {}
+    tot = u.get("total_tokens")
+    if tot is None:
+        tot = (u.get("input_tokens") or 0) + (u.get("output_tokens") or 0)
+    tot += int(u.get("embedding_tokens") or 0)
+    try:
+        return int(tot)
+    except Exception:
+        return 0
+
+
 # -----------------------------
-# Calculator
+# Date helpers
+# -----------------------------
+def _parse_iso_date(s: str) -> date:
+    return datetime.strptime(s, "%Y-%m-%d").date()
+
+def _looks_dot_date(s: str) -> bool:
+    if len(s) != 10:
+        return False
+    try:
+        datetime.strptime(s, "%Y.%m.%d")
+        return True
+    except Exception:
+        return False
+
+class _DateRange:
+    def __init__(self, dfrom: Optional[str], dto: Optional[str]):
+        self.df = _parse_iso_date(dfrom) if dfrom else None
+        self.dt = _parse_iso_date(dto) if dto else None
+
+    def contains_dot(self, dot_date: str) -> bool:
+        try:
+            d = datetime.strptime(dot_date, "%Y.%m.%d").date()
+        except Exception:
+            return True
+        return self._contains(d)
+
+    def contains_iso(self, iso_date: str) -> bool:
+        try:
+            d = _parse_iso_date(iso_date)
+        except Exception:
+            return True
+        return self._contains(d)
+
+    def _contains(self, d: date) -> bool:
+        if self.df and d < self.df:
+            return False
+        if self.dt and d > self.dt:
+            return False
+        return True
+
+
+# -----------------------------
+# Calculator (OPTIMIZED)
 # -----------------------------
 class AccountingCalculator:
     def __init__(self, storage_backend: IStorageBackend, *, base_path: str = "accounting"):
-        """
-        base_path — the same you gave to FileAccountingStorage (default "accounting")
-        """
         self.fs = storage_backend
         self.base = base_path.strip("/")
 
-    # ---------- public API ----------
-
-    def query_usage(
-            self,
-            query: AccountingQuery,
-            *,
-            group_by: Optional[List[str]] = None,
-            include_event_count: bool = True,
-    ) -> Dict[str, Any]:
-        """
-        Read matching events and return totals + optional grouped totals.
-
-        group_by: list of event fields to roll up by.
-                  Supported keys include: "service_type", "provider", "model_or_service",
-                  "app_bundle_id", "user_id", "session_id", "component", "date" (YYYY-MM-DD).
-        """
-        # normalize alias
-        if query.client_id and not query.app_bundle_id:
-            query.app_bundle_id = query.client_id
-
-        events_iter = self._iter_event_paths(query)
-        total, groups, n_events = self._aggregate(events_iter, query, group_by or [])
-        out = {
-            "filters": asdict(query),
-            "total": total,
-            "groups": groups if group_by else {},
-        }
-        if include_event_count:
-            out["event_count"] = n_events
-        return out
-
-    # ---------- core scan ----------
+    # ---------- Optimized path iteration ----------
 
     def _iter_event_paths(self, query: AccountingQuery) -> Iterable[str]:
         """
-        Yield event file paths (relative to backend base) under:
-           accounting/<tenant>/<project>/<date-pattern>/<service_type>/...
+        Yield event file paths with optimization for conversation-aware queries.
 
-        Supports:
-          - grouped_by_component_and_seed(): dates like "YYYY.MM.DD"
-          - legacy default path(): "YYYY/MM/DD"
+        OPTIMIZATION: When user_id/conversation_id/turn_id are specified,
+        use prefix filtering instead of listing all files.
         """
-        # discover tenant layer
+        # Normalize alias
+        if query.client_id and not query.app_bundle_id:
+            query.app_bundle_id = query.client_id
+
+        # Discover tenant roots
         tenant_roots = []
         if query.tenant_id:
             tenant_roots = [f"{self.base}/{query.tenant_id}"]
         else:
-            # all tenants
             for t in self._safe_listdir(self.base):
                 tenant_roots.append(f"{self.base}/{t}")
 
-        # project layer
+        # Project layer
         project_roots = []
         for troot in tenant_roots:
             if query.project_id:
@@ -222,27 +349,30 @@ class AccountingCalculator:
                 for p in self._safe_listdir(troot):
                     project_roots.append(f"{troot}/{p}")
 
-        # date layer
+        # Date layer
         wanted_dates = _DateRange(query.date_from, query.date_to)
-        for proot in project_roots:
-            # First, "YYYY.MM.DD"
-            dot_dates = [d for d in self._safe_listdir(proot) if _looks_dot_date(d)]
-            # Then, legacy "YYYY/MM/DD"
-            years = [y for y in self._safe_listdir(proot) if y.isdigit() and len(y) == 4 and y not in dot_dates]
 
-            # scan dot-date layout
+        for proot in project_roots:
+            # Get date directories (both formats)
+            dot_dates = [d for d in self._safe_listdir(proot) if _looks_dot_date(d)]
+            years = [y for y in self._safe_listdir(proot)
+                    if y.isdigit() and len(y) == 4 and y not in dot_dates]
+
+            # Scan dot-date layout (primary)
             for d in sorted(dot_dates):
                 if not wanted_dates.contains_dot(d):
                     continue
                 droot = f"{proot}/{d}"
                 yield from self._iter_events_under_date_root(droot, query)
 
-            # scan legacy yyyy/mm/dd layout
+            # Scan legacy yyyy/mm/dd layout
             for y in sorted(years):
                 yroot = f"{proot}/{y}"
-                for m in sorted([m for m in self._safe_listdir(yroot) if m.isdigit() and len(m) == 2]):
+                for m in sorted([m for m in self._safe_listdir(yroot)
+                                if m.isdigit() and len(m) == 2]):
                     mroot = f"{yroot}/{m}"
-                    for dd in sorted([dd for dd in self._safe_listdir(mroot) if dd.isdigit() and len(dd) == 2]):
+                    for dd in sorted([dd for dd in self._safe_listdir(mroot)
+                                     if dd.isdigit() and len(dd) == 2]):
                         d_iso = f"{y}-{m}-{dd}"
                         if not wanted_dates.contains_iso(d_iso):
                             continue
@@ -250,44 +380,136 @@ class AccountingCalculator:
                         yield from self._iter_events_under_date_root(droot, query)
 
     def _iter_events_under_date_root(self, date_root: str, query: AccountingQuery) -> Iterable[str]:
-        # service type layer (llm, embedding, web_search, ...)
+        """
+        Iterate events under a date root with prefix optimization.
+
+        Structure: <date_root>/<service_type>/<group>/files
+        """
         stypes = self._safe_listdir(date_root)
+
         for st in sorted(stypes):
+            # Filter by service type
             if query.service_types and st not in query.service_types:
                 continue
+
             st_root = f"{date_root}/{st}"
 
-            # next can be either:
-            # - grouped: <group>/<usage_*.json>
-            # - flat: usage_*.json
-            # Try grouped first.
+            # List group directories
             groups = self._safe_listdir(st_root)
-            if any(name.endswith(".json") for name in groups):
-                # flat
-                for fname in groups:
-                    if fname.endswith(".json"):
-                        yield f"{st_root}/{fname}"
+
+            # Check if this is flat (files directly) or grouped (subdirs)
+            has_json_files = any(name.endswith('.json') for name in groups)
+
+            if has_json_files:
+                # Flat structure
+                yield from self._iter_files_in_group(st_root, query)
             else:
-                # grouped dirs
+                # Grouped structure
                 for g in groups:
                     groot = f"{st_root}/{g}"
-                    for fname in self._safe_listdir(groot):
-                        if fname.endswith(".json"):
-                            yield f"{groot}/{fname}"
+                    yield from self._iter_files_in_group(groot, query)
 
-    # ---------- aggregation ----------
+    def _iter_files_in_group(self, group_path: str, query: AccountingQuery) -> Iterable[str]:
+        """
+        Iterate files in a group directory with prefix optimization.
+
+        KEY OPTIMIZATION: Use prefix filtering when possible.
+        """
+        # Build prefix for efficient filtering
+        prefix = _build_filename_prefix(
+            user_id=query.user_id,
+            conversation_id=query.conversation_id,
+            turn_id=query.turn_id
+        )
+
+        if prefix:
+            # OPTIMIZED: Use prefix filtering
+            filenames = self.fs.list_with_prefix(group_path, prefix)
+        else:
+            # Fallback: List all files
+            filenames = [f for f in self._safe_listdir(group_path) if f.endswith('.json')]
+
+        for fname in filenames:
+            yield f"{group_path}/{fname}"
+
+    def _safe_listdir(self, path: str) -> List[str]:
+        try:
+            return self.fs.list_dir(path)
+        except Exception:
+            return []
+
+    # ---------- Filter helpers ----------
+
+    def _match(self, ev: Dict[str, Any], query: AccountingQuery) -> bool:
+        """Filter event by query criteria."""
+        def eq(k: str, qv: Optional[str]) -> bool:
+            if qv is None:
+                return True
+            evv = ev.get(k) or (ev.get("context") or {}).get(k)
+            return evv == qv
+
+        if not eq("tenant_id", query.tenant_id):
+            return False
+        if not eq("project_id", query.project_id):
+            return False
+        if not eq("app_bundle_id", query.app_bundle_id):
+            return False
+        if not eq("user_id", query.user_id):
+            return False
+        if not eq("conversation_id", query.conversation_id):
+            return False
+        if not eq("turn_id", query.turn_id):
+            return False
+        if not eq("session_id", query.session_id):
+            return False
+        if not eq("component", query.component):
+            return False
+        if not eq("provider", query.provider):
+            return False
+        if not eq("model_or_service", query.model_or_service):
+            return False
+
+        if query.service_types:
+            st = ev.get("service_type")
+            if st not in query.service_types:
+                return False
+
+        # Date window
+        if query.date_from or query.date_to:
+            ts = ev.get("timestamp")
+            try:
+                dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
+            except Exception:
+                dt = None
+            if dt:
+                d = dt.date()
+                if query.date_from and d < _parse_iso_date(query.date_from):
+                    return False
+                if query.date_to and d > _parse_iso_date(query.date_to):
+                    return False
+
+        if query.predicate and callable(query.predicate):
+            try:
+                if not bool(query.predicate(ev)):
+                    return False
+            except Exception:
+                return False
+
+        return True
+
+    # ---------- Aggregation ----------
 
     def _aggregate(
-            self,
-            paths: Iterable[str],
-            query: AccountingQuery,
-            group_by: List[str],
+        self,
+        paths: Iterable[str],
+        query: AccountingQuery,
+        group_by: List[str],
     ) -> Tuple[Dict[str, Any], Dict[Tuple[Any, ...], Dict[str, Any]], int]:
+        """Aggregate usage from event files."""
         totals = _new_usage_acc()
         groups: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         count = 0
 
-        # apply hard file limit if specified
         max_files = query.hard_file_limit if query.hard_file_limit and query.hard_file_limit > 0 else None
         processed = 0
 
@@ -312,7 +534,6 @@ class AccountingCalculator:
 
             usage = _extract_usage(ev)
             if not usage:
-                # keep counting events even with empty usage
                 count += 1
                 continue
 
@@ -326,12 +547,11 @@ class AccountingCalculator:
 
             count += 1
 
-        # compute cost_usd as sum if any sub-values present
         _finalize_cost(totals)
         for k in groups:
             _finalize_cost(groups[k])
 
-        # prettify groups: map tuple key -> { field_name:value,..., usage... }
+        # Prettify groups
         pretty_groups: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         for k_tuple, usage_dict in groups.items():
             labels = {group_by[i]: k_tuple[i] for i in range(len(group_by))}
@@ -340,84 +560,45 @@ class AccountingCalculator:
 
         return totals, pretty_groups, count
 
-    # ---------- filter ----------
+    # ---------- Public API ----------
 
-    def _match(self, ev: Dict[str, Any], query: AccountingQuery) -> bool:
-        def eq(k: str, qv: Optional[str]) -> bool:
-            if qv is None:
-                return True
-            evv = ev.get(k) or (ev.get("context") or {}).get(k)
-            return evv == qv
+    def query_usage(
+        self,
+        query: AccountingQuery,
+        *,
+        group_by: Optional[List[str]] = None,
+        include_event_count: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Read matching events and return totals + optional grouped totals.
 
-        if not eq("tenant_id", query.tenant_id): return False
-        if not eq("project_id", query.project_id): return False
-        if not eq("app_bundle_id", query.app_bundle_id): return False
-        if not eq("user_id", query.user_id): return False
-        if not eq("session_id", query.session_id): return False
-        if not eq("component", query.component): return False
-        if not eq("provider", query.provider): return False
-        if not eq("model_or_service", query.model_or_service): return False
+        OPTIMIZED: Automatically uses prefix filtering when user_id/conversation_id/turn_id
+        are specified in the query.
+        """
+        events_iter = self._iter_event_paths(query)
+        total, groups, n_events = self._aggregate(events_iter, query, group_by or [])
 
-        if query.service_types:
-            st = ev.get("service_type")
-            if st not in query.service_types:
-                return False
-
-        # date window (from event.timestamp)
-        if query.date_from or query.date_to:
-            ts = ev.get("timestamp")
-            try:
-                # supports both with and without Z
-                dt = datetime.fromisoformat(ts.replace("Z", "+00:00")) if ts else None
-            except Exception:
-                dt = None
-            if dt:
-                d = dt.date()
-                if query.date_from and d < _parse_iso_date(query.date_from): return False
-                if query.date_to and d > _parse_iso_date(query.date_to): return False
-
-        if query.predicate and callable(query.predicate):
-            try:
-                if not bool(query.predicate(ev)):
-                    return False
-            except Exception:
-                return False
-
-        return True
-
-    # ---------- utils ----------
-
-    def _safe_listdir(self, path: str) -> List[str]:
-        try:
-            return self.fs.list_dir(path)
-        except Exception:
-            return []
+        out = {
+            "filters": asdict(query),
+            "total": total,
+            "groups": groups if group_by else {},
+        }
+        if include_event_count:
+            out["event_count"] = n_events
+        return out
 
     def usage_rollup_compact(
-            self,
-            query: AccountingQuery,
-            *,
-            include_zero: bool = False,
+        self,
+        query: AccountingQuery,
+        *,
+        include_zero: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Return a compact list grouped by (service_type, provider, model_or_service)
-        with the aggregated token spend per service kind.
+        Return compact list grouped by (service_type, provider, model_or_service).
 
-        Output:
-          [
-            { "service": "llm", "provider": "openai", "model": "gpt-4o-mini",
-              "spent": { "input": N, "output": M } },
-            { "service": "embedding", "provider": "openai", "model": "text-embedding-3-small",
-              "spent": { "tokens": K } }
-          ]
+        OPTIMIZED: Uses prefix filtering when applicable.
         """
-        # normalize alias
-        if query.client_id and not query.app_bundle_id:
-            query.app_bundle_id = query.client_id
-
         paths = self._iter_event_paths(query)
-
-        # group key → spent dict
         rollup: Dict[Tuple[str, str, str], Dict[str, int]] = {}
 
         max_files = query.hard_file_limit if query.hard_file_limit and query.hard_file_limit > 0 else None
@@ -428,7 +609,6 @@ class AccountingCalculator:
                 break
             processed += 1
 
-            # read + parse event
             try:
                 raw = self.fs.read_text(p)
                 ev = json.loads(raw)
@@ -440,10 +620,10 @@ class AccountingCalculator:
 
             service = str(ev.get("service_type") or "").strip()
             if not service:
-                continue  # skip malformed
+                continue
 
             provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
-            model    = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
+            model = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
 
             key = (service, provider, model)
             spent = rollup.get(key)
@@ -454,12 +634,10 @@ class AccountingCalculator:
             usage = _extract_usage(ev) or {}
             _accumulate_compact(spent, usage, service)
 
-        # build sorted, pretty list
         items: List[Dict[str, Any]] = []
         for (service, provider, model) in sorted(rollup.keys()):
             spent = rollup[(service, provider, model)]
             if not include_zero:
-                # drop groups that stayed all zeros (defensive)
                 if service == "llm" and (spent.get("input", 0) == 0 and spent.get("output", 0) == 0):
                     continue
                 if service == "embedding" and spent.get("tokens", 0) == 0:
@@ -473,59 +651,200 @@ class AccountingCalculator:
 
         return items
 
-class RateCalculator(AccountingCalculator):
-    def time_series(
-            self,
-            query: AccountingQuery,
-            *,
-            granularity: str = "1h",
-            group_by: Optional[List[str]] = None,
-            include_event_count: bool = True,
+    # ---------- NEW: User-level queries ----------
+
+    def usage_by_user(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        date_from: str,
+        date_to: str,
+        app_bundle_id: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Query (1): Spendings per user in given timeframe.
+
+        Returns:
+          {
+            "user-123": {"total": {...}, "rollup": [...]},
+            "user-456": {"total": {...}, "rollup": [...]},
+            ...
+          }
+
+        OPTIMIZED: Groups results by user without pre-filtering (must scan all users).
+        """
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        # Group by user_id
+        result = self.query_usage(query, group_by=["user_id"])
+
+        # Reorganize by user
+        by_user: Dict[str, Dict[str, Any]] = {}
+        for key_tuple, usage in result["groups"].items():
+            user_id = usage.get("user_id")
+            if user_id:
+                by_user[user_id] = {"total": usage}
+
+        # Add compact rollup per user
+        for user_id in by_user.keys():
+            user_query = AccountingQuery(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                user_id=user_id,
+                date_from=date_from,
+                date_to=date_to,
+                app_bundle_id=app_bundle_id,
+                service_types=service_types,
+                hard_file_limit=hard_file_limit,
+            )
+            by_user[user_id]["rollup"] = self.usage_rollup_compact(user_query)
+
+        return by_user
+
+    def usage_all_users(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        date_from: str,
+        date_to: str,
+        app_bundle_id: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Return usage grouped into fixed time buckets.
-        Output:
+        Query (2): Total spendings for all users in given timeframe.
+
+        Returns:
           {
-            "granularity": "1h",
-            "series": [
-              {
-                "bucket": "2025-09-28T10:00:00Z",
-                "total": { ... usage sums ... },
-                "groups": { (key...): { ... usage ... }, ... },
-                "event_count": N
-              },
-              ...
-            ]
+            "total": {...},
+            "rollup": [...],
+            "user_count": N
           }
         """
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        result = self.query_usage(query, group_by=["user_id"])
+
+        # Count unique users
+        user_count = len([k for k in result["groups"].keys() if k[0]])  # Filter out None user_ids
+
+        return {
+            "total": result["total"],
+            "rollup": self.usage_rollup_compact(query),
+            "user_count": user_count,
+            "event_count": result.get("event_count", 0)
+        }
+
+    def usage_user_conversation(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        user_id: str,
+        conversation_id: str,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        app_bundle_id: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Query (3): Usage for specific user conversation in given timeframe.
+
+        HIGHLY OPTIMIZED: Uses prefix "cb|<user>|<conversation>|" for efficient filtering.
+        """
+        # Auto-set date range if not provided
+        if not date_from and not date_to:
+            from datetime import datetime, timedelta
+            today = datetime.utcnow().date()
+            date_from = (today - timedelta(days=7)).isoformat()
+            date_to = today.isoformat()
+
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        result = self.query_usage(query, group_by=["turn_id"])
+        rollup = self.usage_rollup_compact(query)
+
+        return {
+            "total": result["total"],
+            "rollup": rollup,
+            "turns": result["groups"],
+            "event_count": result.get("event_count", 0)
+        }
+
+
+# -----------------------------
+# RateCalculator (extends with time-series and async methods)
+# -----------------------------
+class RateCalculator(AccountingCalculator):
+    """Extended calculator with rate stats and async methods."""
+
+    def time_series(
+        self,
+        query: AccountingQuery,
+        *,
+        granularity: str = "1h",
+        group_by: Optional[List[str]] = None,
+        include_event_count: bool = True,
+    ) -> Dict[str, Any]:
+        """Return usage grouped into fixed time buckets."""
         if granularity not in _BUCKETS:
             raise ValueError(f"granularity must be one of {list(_BUCKETS)}")
 
-        # 1) collect paths once
         paths = list(self._iter_event_paths(query))
         max_files = query.hard_file_limit if query.hard_file_limit and query.hard_file_limit > 0 else None
         if max_files is not None:
             paths = paths[:max_files]
 
-        # 2) scan + bucket
-        series: Dict[str, Dict[str, Any]] = {}  # bucket_label -> {total, groups, count}
+        series: Dict[str, Dict[str, Any]] = {}
         gby = group_by or []
+
         for p in paths:
             try:
                 raw = self.fs.read_text(p)
                 ev = json.loads(raw)
             except Exception:
                 continue
+
             if not self._match(ev, query):
                 continue
 
-            # bucket label from event timestamp
             ts = ev.get("timestamp")
             try:
                 dt = datetime.fromisoformat((ts or "").replace("Z", "+00:00"))
             except Exception:
-                # fallback: unknown timestamp → skip bucketed rates
                 continue
+
             bucket = _floor_bucket(dt, granularity)
 
             slot = series.get(bucket)
@@ -534,7 +853,7 @@ class RateCalculator(AccountingCalculator):
                 series[bucket] = slot
 
             usage = _extract_usage(ev) or _new_usage_acc()
-            _merge_usage(slot["total"], usage)
+            _accumulate(slot["total"], usage)
             slot["event_count"] += 1
 
             if gby:
@@ -543,9 +862,8 @@ class RateCalculator(AccountingCalculator):
                 if not grp:
                     grp = _new_usage_acc()
                     slot["groups"][key] = grp
-                _merge_usage(grp, usage)
+                _accumulate(grp, usage)
 
-        # finalize cost fields and prettify groups
         out_series = []
         for bucket in sorted(series.keys()):
             slot = series[bucket]
@@ -569,21 +887,17 @@ class RateCalculator(AccountingCalculator):
         return {"granularity": granularity, "series": out_series}
 
     def rate_stats(
-            self,
-            query: AccountingQuery,
-            *,
-            granularity: str = "1h",
-            group_by: Optional[List[str]] = None,
+        self,
+        query: AccountingQuery,
+        *,
+        granularity: str = "1h",
+        group_by: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        Convert time_series buckets into per-second rates.
-        Adds:
-          - req_rate_per_sec  (requests / bucket_seconds)
-          - tok_rate_per_sec  (total_tokens / bucket_seconds)
-        """
+        """Convert time_series buckets into per-second rates."""
         ts = self.time_series(query, granularity=granularity, group_by=group_by)
         bucket_secs = _BUCKETS[granularity]
         rate_series = []
+
         for row in ts["series"]:
             total = dict(row["total"])
             req = float(total.get("requests", 0) or 0)
@@ -609,32 +923,29 @@ class RateCalculator(AccountingCalculator):
 
         return {"granularity": granularity, "series": rate_series}
 
+    # ---------- Async methods for turn-level queries ----------
+
     async def query_turn_usage(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            conversation_id: str,
-            turn_id: str,
-            app_bundle_id: Optional[str] = None,
-            date_from: Optional[str] = None,
-            date_to: Optional[str] = None,
-            date_hint: Optional[str] = None,          # "YYYY-MM-DD" if you know it; else we scan 2 recent days
-            service_types: Optional[List[str]] = None, # e.g. ["llm","embedding"]
-            hard_file_limit: Optional[int] = 5000,
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        conversation_id: str,
+        turn_id: str,
+        app_bundle_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        date_hint: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = 5000,
     ) -> Dict[str, Any]:
         """
-        Query usage for a specific turn, supporting multi-day spans.
-        """
-        q = AccountingQuery(
-            tenant_id=tenant_id,
-            project_id=project_id,
-            app_bundle_id=app_bundle_id,
-            service_types=service_types,
-            hard_file_limit=hard_file_limit,
-        )
+        Query (4): Usage for specific user turn in conversation.
 
-        # Build paths based on date range
+        HIGHLY OPTIMIZED: Uses prefix "cb|<user>|<conversation>|<turn>|" for maximum efficiency.
+        """
+        # Build date range
         if date_from or date_to:
             if not date_from:
                 from datetime import datetime, timedelta
@@ -644,26 +955,30 @@ class RateCalculator(AccountingCalculator):
                 from datetime import datetime, timedelta
                 date_from_dt = datetime.strptime(date_from, "%Y-%m-%d").date()
                 date_to = (date_from_dt + timedelta(days=1)).isoformat()
-
-            q.date_from = date_from
-            q.date_to = date_to
-            paths = list(self._iter_event_paths(q))
-
         elif date_hint:
-            q.date_from = date_hint
-            q.date_to = date_hint
-            paths = list(self._iter_event_paths(q))
-
+            date_from = date_hint
+            date_to = date_hint
         else:
             from datetime import datetime, timedelta
             today = datetime.utcnow().date()
             yesterday = today - timedelta(days=1)
-            candidates = []
-            for d in (yesterday.isoformat(), today.isoformat()):
-                q.date_from, q.date_to = d, d
-                candidates.extend(list(self._iter_event_paths(q)))
-            paths = candidates
+            date_from = yesterday.isoformat()
+            date_to = today.isoformat()
 
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            app_bundle_id=app_bundle_id,
+            date_from=date_from,
+            date_to=date_to,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        paths = list(self._iter_event_paths(query))
         totals = _new_usage_acc()
         count = 0
         evs: List[Dict[str, Any]] = []
@@ -674,15 +989,7 @@ class RateCalculator(AccountingCalculator):
             except Exception:
                 continue
 
-            if app_bundle_id:
-                ev_bundle = ev.get("app_bundle_id") or (ev.get("context") or {}).get("app_bundle_id")
-                if ev_bundle != app_bundle_id:
-                    continue
-
-            # turn id may be recorded under metadata or context
-            md_tid = (ev.get("metadata") or {}).get("turn_id")
-            ctx_tid = (ev.get("context") or {}).get("turn_id")
-            if md_tid != turn_id and ctx_tid != turn_id:
+            if not self._match(ev, query):
                 continue
 
             usage = _extract_usage(ev) or {}
@@ -700,24 +1007,27 @@ class RateCalculator(AccountingCalculator):
         }
 
     async def tokens_for_turn(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            turn_id: str,
-            conversation_id: str = None,
-            app_bundle_id: Optional[str] = None,
-            date_from: Optional[str] = None,
-            date_to: Optional[str] = None,
-            date_hint: Optional[str] = None,
-            service_types: Optional[List[str]] = None,
-            hard_file_limit: Optional[int] = 5000,
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        turn_id: str,
+        conversation_id: str = None,
+        user_id: Optional[str] = None,
+        app_bundle_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        date_hint: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = 5000,
     ) -> int:
+        """Quick token count for a turn."""
         r = await self.query_turn_usage(
             tenant_id=tenant_id,
             project_id=project_id,
             conversation_id=conversation_id,
             turn_id=turn_id,
+            user_id=user_id,
             app_bundle_id=app_bundle_id,
             date_from=date_from,
             date_to=date_to,
@@ -727,91 +1037,34 @@ class RateCalculator(AccountingCalculator):
         )
         return int(r.get("tokens") or 0)
 
-    def _rollup_from_event_dicts(
-            self,
-            events: List[Dict[str, Any]],
-            include_zero: bool = False,
-    ) -> List[Dict[str, Any]]:
-        """Shared rollup logic that works on event dicts from memory cache."""
-        rollup: Dict[Tuple[str, str, str], Dict[str, int]] = {}
-
-        for ev in events:
-            service = str(ev.get("service_type") or "").strip()
-            if not service:
-                continue
-
-            provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
-            model = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
-
-            key = (service, provider, model)
-            spent = rollup.get(key)
-            if not spent:
-                spent = _spent_seed(service)
-                rollup[key] = spent
-
-            usage = _extract_usage(ev) or {}
-            _accumulate_compact(spent, usage, service)
-
-        items: List[Dict[str, Any]] = []
-        for (service, provider, model) in sorted(rollup.keys()):
-            spent = rollup[(service, provider, model)]
-            if not include_zero:
-                if service == "llm" and (spent.get("input", 0) == 0 and spent.get("output", 0) == 0):
-                    continue
-                if service == "embedding" and spent.get("tokens", 0) == 0:
-                    continue
-            items.append({
-                "service": service,
-                "provider": provider or None,
-                "model": model or None,
-                "spent": {k: int(v) for k, v in spent.items()}
-            })
-
-        return items
-
     async def turn_usage_rollup_compact(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            conversation_id: str,
-            turn_id: str,
-            app_bundle_id: Optional[str] = None,
-            date_from: Optional[str] = None,           # ← NEW: "YYYY-MM-DD"
-            date_to: Optional[str] = None,
-            date_hint: Optional[str] = None,
-            service_types: Optional[List[str]] = None,
-            hard_file_limit: Optional[int] = 5000,
-            include_zero: bool = False,
-            use_memory_cache: bool = False,  # For fast in-turn reads
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        conversation_id: str,
+        turn_id: str,
+        app_bundle_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        date_hint: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = 5000,
+        include_zero: bool = False,
+        use_memory_cache: bool = False,
     ) -> List[Dict[str, Any]]:
         """
-        Convenience for a single turn. Applies same grouping as usage_rollup_compact,
-        but filters to events that belong to the given turn.
+        Compact rollup for a single turn.
 
-        Args:
-            date_from: Start date (inclusive), e.g., "2025-10-15"
-            date_to: End date (inclusive), e.g., "2025-10-16"
-            date_hint: DEPRECATED - use date_from/date_to instead. If provided and
-                       date_from/date_to are None, will scan only that single day.
-          use_memory_cache: If True, read from in-memory cache instead of storage.
-                Useful for fast mid-turn cost calculations.
-                Events are still written to storage immediately.
-
-        Note: If neither date_from/date_to nor date_hint are provided, defaults to
-              scanning yesterday and today.
+        HIGHLY OPTIMIZED: Uses prefix filtering + optional memory cache.
         """
-
-        # Build rollup dict
-        rollup: Dict[Tuple[str, str, str], Dict[str, int]] = {}
-        # === GET EVENTS (cache or files) ===
         if use_memory_cache:
-            # Read from memory cache
+            # Fast path: read from memory cache
             from kdcube_ai_app.infra.accounting import _get_context
             ctx = _get_context()
             cached_events = ctx.get_cached_events()
 
-            # Convert to dicts and filter to this turn
             events = []
             for event in cached_events:
                 ev = event.to_dict()
@@ -835,16 +1088,7 @@ class RateCalculator(AccountingCalculator):
 
                 events.append(ev)
         else:
-            # Read from storage (existing logic)
-            q = AccountingQuery(
-                tenant_id=tenant_id,
-                project_id=project_id,
-                app_bundle_id=app_bundle_id,
-                service_types=service_types,
-                hard_file_limit=hard_file_limit,
-            )
-
-            # Build paths based on date range
+            # Slow path: read from storage with prefix optimization
             if date_from or date_to:
                 if not date_from:
                     from datetime import datetime, timedelta
@@ -854,59 +1098,53 @@ class RateCalculator(AccountingCalculator):
                     from datetime import datetime, timedelta
                     date_from_dt = datetime.strptime(date_from, "%Y-%m-%d").date()
                     date_to = (date_from_dt + timedelta(days=1)).isoformat()
-                q.date_from = date_from
-                q.date_to = date_to
-                paths = list(self._iter_event_paths(q))
             elif date_hint:
-                q.date_from = date_hint
-                q.date_to = date_hint
-                paths = list(self._iter_event_paths(q))
+                date_from = date_hint
+                date_to = date_hint
             else:
                 from datetime import datetime, timedelta
                 today = datetime.utcnow().date()
                 yesterday = today - timedelta(days=1)
-                candidates = []
-                for d in (yesterday.isoformat(), today.isoformat()):
-                    q.date_from, q.date_to = d, d
-                    candidates.extend(list(self._iter_event_paths(q)))
-                paths = candidates
+                date_from = yesterday.isoformat()
+                date_to = today.isoformat()
 
-            # Read events from files
+            query = AccountingQuery(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                app_bundle_id=app_bundle_id,
+                date_from=date_from,
+                date_to=date_to,
+                service_types=service_types,
+                hard_file_limit=hard_file_limit,
+            )
+
+            paths = list(self._iter_event_paths(query))
             events = []
-            max_files = hard_file_limit if hard_file_limit and hard_file_limit > 0 else None
-            processed = 0
 
             for p in paths:
-                if max_files is not None and processed >= max_files:
-                    break
-                processed += 1
-
                 try:
                     ev = json.loads(await self.fs.read_text_a(p))
                 except Exception:
                     continue
 
-                # Filter by turn_id
-                md_tid = (ev.get("metadata") or {}).get("turn_id")
-                ctx_tid = (ev.get("context") or {}).get("turn_id")
-                if md_tid != turn_id and ctx_tid != turn_id:
+                if not self._match(ev, query):
                     continue
-
-                # Filter by bundle
-                if app_bundle_id:
-                    ev_bundle = ev.get("app_bundle_id") or (ev.get("context") or {}).get("app_bundle_id")
-                    if ev_bundle != app_bundle_id:
-                        continue
 
                 events.append(ev)
 
-        # === PROCESS EVENTS (same logic for both paths) ===
+        # Process events (same logic for both paths)
+        rollup: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+
         for ev in events:
-            service  = str(ev.get("service_type") or "").strip()
+            service = str(ev.get("service_type") or "").strip()
             if not service:
                 continue
+
             provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
-            model    = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
+            model = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
 
             key = (service, provider, model)
             spent = rollup.get(key)
@@ -916,7 +1154,8 @@ class RateCalculator(AccountingCalculator):
 
             usage = _extract_usage(ev) or {}
             _accumulate_compact(spent, usage, service)
-        # === BUILD OUTPUT ===
+
+        # Build output
         items: List[Dict[str, Any]] = []
         for (service, provider, model) in sorted(rollup.keys()):
             spent = rollup[(service, provider, model)]
@@ -931,160 +1170,55 @@ class RateCalculator(AccountingCalculator):
                 "model": model or None,
                 "spent": {k: int(v) for k, v in spent.items()}
             })
+
         return items
 
-    def _agent_breakdown_from_event_dicts(
-            self,
-            events: List[Dict[str, Any]],
-            include_zero: bool = False,
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Groups usage by agent, then by (service, provider, model).
-
-        Input: List of event dicts (from memory cache)
-        Output: {
-            "answer_generator": [
-                {"service": "llm", "provider": "anthropic", "model": "...", "spent": {...}},
-                ...
-            ],
-            "solver.codegen": [...],
-            ...
-        }
-        """
-        # Nested rollup: agent -> (service, provider, model) -> spent tokens
-        agent_rollup: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
-
-        for ev in events:
-            # Extract which agent made this call
-            agent = (
-                    (ev.get("metadata") or {}).get("agent") or
-                    (ev.get("context") or {}).get("agent") or
-                    "unknown"
-            )
-
-            service = str(ev.get("service_type") or "").strip()
-            if not service:
-                continue
-
-            provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
-            model = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
-
-            # Initialize agent bucket if needed
-            if agent not in agent_rollup:
-                agent_rollup[agent] = {}
-
-            key = (service, provider, model)
-            spent = agent_rollup[agent].get(key)
-            if not spent:
-                spent = _spent_seed(service)  # {"input": 0, "output": 0, ...}
-                agent_rollup[agent][key] = spent
-
-            # Accumulate tokens for this agent+model combo
-            usage = _extract_usage(ev) or {}
-            _accumulate_compact(spent, usage, service)
-
-        # Convert to output format
-        result: Dict[str, List[Dict[str, Any]]] = {}
-        for agent in sorted(agent_rollup.keys()):
-            items: List[Dict[str, Any]] = []
-            for (service, provider, model) in sorted(agent_rollup[agent].keys()):
-                spent = agent_rollup[agent][(service, provider, model)]
-
-                # Skip zero entries unless requested
-                if not include_zero:
-                    if service == "llm" and (spent.get("input", 0) == 0 and spent.get("output", 0) == 0):
-                        continue
-                    if service == "embedding" and spent.get("tokens", 0) == 0:
-                        continue
-
-                items.append({
-                    "service": service,
-                    "provider": provider or None,
-                    "model": model or None,
-                    "spent": {k: int(v) for k, v in spent.items()}
-                })
-
-            if items:  # Only include agents that have usage
-                result[agent] = items
-
-        return result
-
-
     async def turn_usage_by_agent(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            conversation_id: str,
-            turn_id: str,
-            app_bundle_id: Optional[str] = None,
-            date_from: Optional[str] = None,
-            date_to: Optional[str] = None,
-            service_types: Optional[List[str]] = None,
-            hard_file_limit: Optional[int] = 5000,
-            include_zero: bool = False,
-            use_memory_cache: bool = False,  # For fast in-turn reads
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        conversation_id: str,
+        turn_id: str,
+        app_bundle_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = 5000,
+        include_zero: bool = False,
+        use_memory_cache: bool = False,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Return usage grouped by agent, then by (service, provider, model).
 
-        Args:
-            use_memory_cache: If True, read from in-memory cache instead of storage.
-        Output:
-          {
-            "answer_generator": [
-              {"service": "llm", "provider": "anthropic", "model": "...", "spent": {...}},
-              ...
-            ],
-            "precheck_gate": [...],
-            ...
-          }
+        HIGHLY OPTIMIZED: Uses prefix filtering + optional memory cache.
         """
-
-        # Nested rollup: agent -> (service, provider, model) -> spent
-        agent_rollup: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
-
-        # === GET EVENTS (cache or files) ===
         if use_memory_cache:
-            # Read from memory cache
             from kdcube_ai_app.infra.accounting import _get_context
             ctx = _get_context()
             cached_events = ctx.get_cached_events()
 
-            # Convert to dicts and filter
             events = []
             for event in cached_events:
                 ev = event.to_dict()
 
-                # Filter by turn_id
                 md_tid = (ev.get("metadata") or {}).get("turn_id")
                 ctx_tid = (ev.get("context") or {}).get("turn_id")
                 if md_tid != turn_id and ctx_tid != turn_id:
                     continue
 
-                # Filter by bundle
                 if app_bundle_id:
                     ev_bundle = ev.get("app_bundle_id") or (ev.get("context") or {}).get("app_bundle_id")
                     if ev_bundle != app_bundle_id:
                         continue
 
-                # Filter by service type
                 if service_types:
                     if ev.get("service_type") not in service_types:
                         continue
 
                 events.append(ev)
         else:
-            # Read from storage (existing logic)
-            q = AccountingQuery(
-                tenant_id=tenant_id,
-                project_id=project_id,
-                app_bundle_id=app_bundle_id,
-                service_types=service_types,
-                hard_file_limit=hard_file_limit,
-            )
-
-            # Build paths
             if date_from or date_to:
                 if not date_from:
                     from datetime import datetime, timedelta
@@ -1094,55 +1228,48 @@ class RateCalculator(AccountingCalculator):
                     from datetime import datetime, timedelta
                     date_from_dt = datetime.strptime(date_from, "%Y-%m-%d").date()
                     date_to = (date_from_dt + timedelta(days=1)).isoformat()
-                q.date_from = date_from
-                q.date_to = date_to
-                paths = list(self._iter_event_paths(q))
             else:
                 from datetime import datetime, timedelta
                 today = datetime.utcnow().date()
                 yesterday = today - timedelta(days=1)
-                candidates = []
-                for d in (yesterday.isoformat(), today.isoformat()):
-                    q.date_from, q.date_to = d, d
-                    candidates.extend(list(self._iter_event_paths(q)))
-                paths = candidates
+                date_from = yesterday.isoformat()
+                date_to = today.isoformat()
 
-            # Read events from files
+            query = AccountingQuery(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                app_bundle_id=app_bundle_id,
+                date_from=date_from,
+                date_to=date_to,
+                service_types=service_types,
+                hard_file_limit=hard_file_limit,
+            )
+
+            paths = list(self._iter_event_paths(query))
             events = []
-            max_files = hard_file_limit if hard_file_limit and hard_file_limit > 0 else None
-            processed = 0
 
             for p in paths:
-                if max_files is not None and processed >= max_files:
-                    break
-                processed += 1
-
                 try:
                     ev = json.loads(await self.fs.read_text_a(p))
                 except Exception:
                     continue
 
-                # Filter by turn_id
-                md_tid = (ev.get("metadata") or {}).get("turn_id")
-                ctx_tid = (ev.get("context") or {}).get("turn_id")
-                if md_tid != turn_id and ctx_tid != turn_id:
+                if not self._match(ev, query):
                     continue
-
-                # Filter by bundle
-                if app_bundle_id:
-                    ev_bundle = ev.get("app_bundle_id") or (ev.get("context") or {}).get("app_bundle_id")
-                    if ev_bundle != app_bundle_id:
-                        continue
 
                 events.append(ev)
 
-        # === PROCESS EVENTS (same logic for both paths) ===
+        # Process events - group by agent
+        agent_rollup: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+
         for ev in events:
-            # Extract agent
             agent = (
-                    (ev.get("metadata") or {}).get("agent") or
-                    (ev.get("context") or {}).get("agent") or
-                    "unknown"
+                (ev.get("metadata") or {}).get("agent") or
+                (ev.get("context") or {}).get("agent") or
+                "unknown"
             )
 
             service = str(ev.get("service_type") or "").strip()
@@ -1152,7 +1279,6 @@ class RateCalculator(AccountingCalculator):
             provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
             model = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
 
-            # Initialize agent bucket if needed
             if agent not in agent_rollup:
                 agent_rollup[agent] = {}
 
@@ -1165,7 +1291,7 @@ class RateCalculator(AccountingCalculator):
             usage = _extract_usage(ev) or {}
             _accumulate_compact(spent, usage, service)
 
-        # === BUILD OUTPUT ===
+        # Build output
         result: Dict[str, List[Dict[str, Any]]] = {}
 
         for agent in sorted(agent_rollup.keys()):
@@ -1187,148 +1313,17 @@ class RateCalculator(AccountingCalculator):
                     "spent": {k: int(v) for k, v in spent.items()}
                 })
 
-            if items:  # Only include agents that have usage
+            if items:
                 result[agent] = items
 
         return result
 
+
 # -----------------------------
-# Helpers
+# Price calculation helpers
 # -----------------------------
-def _parse_iso_date(s: str) -> date:
-    return datetime.strptime(s, "%Y-%m-%d").date()
-
-def _looks_dot_date(s: str) -> bool:
-    # "YYYY.MM.DD"
-    if len(s) != 10: return False
-    try:
-        datetime.strptime(s, "%Y.%m.%d")
-        return True
-    except Exception:
-        return False
-
-class _DateRange:
-    def __init__(self, dfrom: Optional[str], dto: Optional[str]):
-        self.df = _parse_iso_date(dfrom) if dfrom else None
-        self.dt = _parse_iso_date(dto) if dto else None
-
-    def contains_dot(self, dot_date: str) -> bool:
-        # dot_date: "YYYY.MM.DD"
-        try:
-            d = datetime.strptime(dot_date, "%Y.%m.%d").date()
-        except Exception:
-            return True  # don't filter if unknown format; we'll re-check via timestamp inside the file
-        return self._contains(d)
-
-    def contains_iso(self, iso_date: str) -> bool:
-        try:
-            d = _parse_iso_date(iso_date)
-        except Exception:
-            return True
-        return self._contains(d)
-
-    def _contains(self, d: date) -> bool:
-        if self.df and d < self.df: return False
-        if self.dt and d > self.dt: return False
-        return True
-
-# build a fresh accumulator with all usage keys we may see
-_USAGE_KEYS = [
-    "input_tokens", "output_tokens",
-    "cache_creation_tokens", "cache_read_tokens", "cache_creation",
-    "total_tokens", "embedding_tokens", "embedding_dimensions", "search_queries",
-    "search_results", "image_count", "image_pixels", "audio_seconds", "requests",
-    "cost_usd",
-]
-
-def _new_usage_acc() -> Dict[str, Any]:
-    acc = {k: (0.0 if k in ("audio_seconds", "cost_usd") else 0) for k in _USAGE_KEYS}
-    acc["cache_creation"] = None  # Will be dict or None
-    return acc
-
-def _extract_usage(ev: Dict[str, Any]) -> Dict[str, Any] | None:
-    u = ev.get("usage")
-    if not isinstance(u, dict):
-        return None
-
-    out = {}
-    for k in _USAGE_KEYS:
-        v = u.get(k)
-
-        # Special handling for cache_creation (can be a dict)
-        if k == "cache_creation":
-            if isinstance(v, dict):
-                # Anthropic: preserve nested structure
-                out[k] = dict(v)  # shallow copy
-            else:
-                # Not present or not a dict
-                out[k] = None
-            continue
-
-        # Regular numeric fields
-        if v is None:
-            out[k] = 0.0 if k in ("audio_seconds", "cost_usd") else 0
-        else:
-            if k in ("audio_seconds", "cost_usd"):
-                out[k] = float(v)
-            elif isinstance(v, (int, float)):
-                out[k] = int(v)
-            else:
-                out[k] = v
-
-    return out
-
-def _accumulate(acc: Dict[str, Any], usage: Dict[str, Any]) -> None:
-    for k in _USAGE_KEYS:
-        if k == "cache_creation":
-            # Don't sum cache_creation dict, it's handled separately in _accumulate_compact
-            continue
-        elif k == "cost_usd":
-            acc["cost_usd"] = float(acc.get("cost_usd", 0.0)) + float(usage.get("cost_usd", 0.0))
-        elif k == "audio_seconds":
-            acc[k] = float(acc.get(k, 0.0)) + float(usage.get(k, 0.0))
-        else:
-            acc[k] = int(acc.get(k, 0)) + int(usage.get(k, 0))
-
-def _finalize_cost(acc: Dict[str, Any]) -> None:
-    # If cost stayed 0.0 across all, keep it 0.0 (not None) for clarity.
-    pass
-
-def _group_key(ev: Dict[str, Any], group_by: List[str]) -> Tuple[Any, ...]:
-    ctx = ev.get("context") or {}
-    # allow grouping by "date" (YYYY-MM-DD) extracted from timestamp
-    dt_label = None
-    if "date" in group_by:
-        ts = ev.get("timestamp")
-        try:
-            d = datetime.fromisoformat(ts.replace("Z", "+00:00")).date()
-            dt_label = d.isoformat()
-        except Exception:
-            dt_label = None
-
-    out: List[Any] = []
-    for g in group_by:
-        if g == "date":
-            out.append(dt_label)
-            continue
-        out.append(ev.get(g) if g in ev else ctx.get(g))
-    return tuple(out)
-
-
-# ----
-# Cost Calculation
-# ----
 def price_table():
-    """
-    Enhanced price table with separate cache type pricing.
-
-    For Anthropic models:
-    - cache_pricing.5m: Standard 5-minute cache (write = input price, read = 10% of input)
-    - cache_pricing.1h: Extended 1-hour cache (write = 1.25x input, read = 10% of input)
-
-    For OpenAI models:
-    - Automatic caching, use legacy cache_write/cache_read fields
-    """
+    """Enhanced price table with separate cache type pricing."""
     sonnet_45 = "claude-sonnet-4-5-20250929"
     haiku_4 = "claude-haiku-4-5-20251001"
 
@@ -1339,18 +1334,16 @@ def price_table():
                 "provider": "anthropic",
                 "input_tokens_1M": 3.00,
                 "output_tokens_1M": 15.00,
-                # Detailed cache pricing by type
                 "cache_pricing": {
                     "5m": {
-                        "write_tokens_1M": 3.00,   # Same as input
-                        "read_tokens_1M": 0.30      # 90% discount
+                        "write_tokens_1M": 3.00,
+                        "read_tokens_1M": 0.30
                     },
                     "1h": {
-                        "write_tokens_1M": 3.75,   # 25% premium
-                        "read_tokens_1M": 0.30      # 90% discount (same as 5m)
+                        "write_tokens_1M": 3.75,
+                        "read_tokens_1M": 0.30
                     }
                 },
-                # Legacy fallback (for backward compatibility)
                 "cache_write_tokens_1M": 3.00,
                 "cache_read_tokens_1M": 0.30
             },
@@ -1365,7 +1358,7 @@ def price_table():
                         "read_tokens_1M": 0.1
                     },
                     "1h": {
-                        "write_tokens_1M": 2,   # 25% premium
+                        "write_tokens_1M": 2,
                         "read_tokens_1M": 0.1
                     }
                 },
@@ -1383,7 +1376,7 @@ def price_table():
                         "read_tokens_1M": 0.08
                     },
                     "1h": {
-                        "write_tokens_1M": 1.00,   # 25% premium
+                        "write_tokens_1M": 1.00,
                         "read_tokens_1M": 0.08
                     }
                 },
@@ -1401,21 +1394,20 @@ def price_table():
                         "read_tokens_1M": 0.03
                     },
                     "1h": {
-                        "write_tokens_1M": 0.30,   # 20% premium (older model)
+                        "write_tokens_1M": 0.30,
                         "read_tokens_1M": 0.03
                     }
                 },
                 "cache_write_tokens_1M": 0.25,
                 "cache_read_tokens_1M": 0.03
             },
-            # OpenAI models - no detailed cache breakdown needed
             {
                 "model": "gpt-4o",
                 "provider": "openai",
                 "input_tokens_1M": 2.50,
                 "output_tokens_1M": 10.00,
-                "cache_write_tokens_1M": 0.00,  # Automatic/free
-                "cache_read_tokens_1M": 1.25     # 50% discount
+                "cache_write_tokens_1M": 0.00,
+                "cache_read_tokens_1M": 1.25
             },
             {
                 "model": "gpt-4o-mini",
@@ -1458,23 +1450,11 @@ def price_table():
 
 
 def _calculate_agent_costs(
-        agent_usage: Dict[str, List[Dict[str, Any]]],
-        llm_pricelist: List[Dict[str, Any]],
-        emb_pricelist: List[Dict[str, Any]],
+    agent_usage: Dict[str, List[Dict[str, Any]]],
+    llm_pricelist: List[Dict[str, Any]],
+    emb_pricelist: List[Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
-    """
-    Calculate costs per agent.
-
-    Returns:
-      {
-        "answer_generator": {
-          "total_cost_usd": 0.045,
-          "breakdown": [...],
-          "tokens": {"input": 1000, "output": 500, ...}
-        },
-        ...
-      }
-    """
+    """Calculate costs per agent."""
     def _find_llm_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
         for p in llm_pricelist:
             if p.get("provider") == provider and p.get("model") == model:
@@ -1508,7 +1488,6 @@ def _calculate_agent_costs(
             spent = item.get("spent", {}) or {}
 
             cost_usd = 0.0
-            cost_details = {}
 
             if service == "llm":
                 pr = _find_llm_price(provider, model)
@@ -1538,7 +1517,6 @@ def _calculate_agent_costs(
 
                     cost_usd = input_cost + output_cost + cache_write_cost + cache_read_cost
 
-                    # Update token summary
                     token_summary["input"] += spent.get("input", 0)
                     token_summary["output"] += spent.get("output", 0)
                     token_summary["cache_5m_write"] += spent.get("cache_5m_write", 0)

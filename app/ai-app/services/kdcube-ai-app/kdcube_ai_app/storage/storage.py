@@ -97,6 +97,22 @@ class IStorageBackend(ABC):
     async def get_modified_time_a(self, path: str) -> datetime:
         return await asyncio.to_thread(self.get_modified_time, path)
 
+    def list_with_prefix(self, path: str, prefix: str) -> List[str]:
+        """
+        List files in a directory that start with the given prefix.
+
+        Args:
+            path: Directory path to search in
+            prefix: Filename prefix to filter by (e.g., "cb|user-123|")
+
+        Returns:
+            List of filenames (not full paths) that match the prefix
+        """
+        pass
+
+    async def list_with_prefix_a(self, path: str, prefix: str) -> List[str]:
+        """Async version of list_with_prefix"""
+        return await asyncio.to_thread(self.list_with_prefix, path, prefix)
 
 class LocalFileSystemBackend(IStorageBackend):
     """Local filesystem storage backend."""
@@ -152,6 +168,26 @@ class LocalFileSystemBackend(IStorageBackend):
 
     def get_modified_time(self, path: str) -> datetime:
         return datetime.fromtimestamp(self._resolve_path(path).stat().st_mtime)
+
+    def list_with_prefix(self, path: str, prefix: str) -> List[str]:
+        """
+        List files in a directory that start with the given prefix.
+        Much more efficient than list_dir() + filter for large directories.
+        """
+        resolved = self._resolve_path(path)
+        if not resolved.is_dir():
+            return []
+
+        # Use glob for efficient prefix matching
+        # Convert prefix to a glob pattern
+        pattern = f"{prefix}*"
+
+        matching_files = []
+        for item in resolved.glob(pattern):
+            if item.is_file():
+                matching_files.append(item.name)
+
+        return matching_files
 
 
 class S3StorageBackend(IStorageBackend):
@@ -599,6 +635,68 @@ class S3StorageBackend(IStorageBackend):
             except Exception as e:
                 raise FileNotFoundError(f"Cannot get modified time of {path} from S3: {e}")
 
+    def list_with_prefix(self, path: str, prefix: str) -> List[str]:
+        """
+        List files in S3 directory that start with the given prefix.
+        Uses S3's native prefix filtering for efficiency.
+        """
+        # Build the full S3 prefix
+        dir_prefix = self._get_s3_key(path).rstrip("/") + "/"
+        full_prefix = dir_prefix + prefix
+
+        items: List[str] = []
+
+        try:
+            paginator = self.s3_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=self.bucket_name, Prefix=full_prefix):
+                for obj in page.get('Contents', []):
+                    # Extract just the filename (not the full key)
+                    full_key = obj['Key']
+                    if full_key.startswith(dir_prefix):
+                        filename = full_key[len(dir_prefix):]
+                        # Only include files directly in this directory (no subdirs)
+                        if '/' not in filename:
+                            items.append(filename)
+            return items
+        except Exception as e:
+            import logging
+            logger = logging.getLogger("S3Storage")
+            logger.error(f"Cannot list files with prefix {prefix} in {path}: {e}")
+            return []
+
+
+    # =============================================================================
+    # S3StorageBackend async implementation
+    # =============================================================================
+
+    async def list_with_prefix_a(self, path: str, prefix: str) -> List[str]:
+        """
+        Async version - list files in S3 directory that start with the given prefix.
+        Uses S3's native prefix filtering for efficiency.
+        """
+        dir_prefix = self._get_s3_key(path).rstrip("/") + "/"
+        full_prefix = dir_prefix + prefix
+
+        items: List[str] = []
+
+        async with (await self._get_async_client()) as s3:
+            try:
+                paginator = s3.get_paginator('list_objects_v2')
+                async for page in paginator.paginate(Bucket=self.bucket_name, Prefix=full_prefix):
+                    for obj in page.get('Contents', []):
+                        full_key = obj['Key']
+                        if full_key.startswith(dir_prefix):
+                            filename = full_key[len(dir_prefix):]
+                            # Only include files directly in this directory (no subdirs)
+                            if '/' not in filename:
+                                items.append(filename)
+                return items
+            except Exception as e:
+                import logging
+                logger = logging.getLogger("S3Storage")
+                logger.error(f"Cannot list files with prefix {prefix} in {path}: {e}")
+                return []
+
 def create_storage_backend(storage_uri: str, **kwargs) -> IStorageBackend:
     """Factory function to create storage backends from URI."""
     parsed = urlparse(storage_uri)
@@ -738,3 +836,20 @@ class InMemoryStorageBackend(IStorageBackend):
             if path in self.__fs_objects:
                 return self.__fs_objects[path].modified
         raise FileNotFoundError(f"{path} not found in storage")
+
+    def list_with_prefix(self, path: str, prefix: str) -> List[str]:
+        """
+        List files in memory storage that start with the given prefix.
+        """
+        dir_prefix = path if path.endswith('/') else path + '/'
+
+        with self.__with_lock():
+            matching_files = []
+            for key in self.__fs_objects.keys():
+                if key.startswith(dir_prefix):
+                    filename = key[len(dir_prefix):]
+                    # Only files directly in this directory (no subdirs)
+                    if '/' not in filename and filename.startswith(prefix):
+                        matching_files.append(filename)
+            return matching_files
+
