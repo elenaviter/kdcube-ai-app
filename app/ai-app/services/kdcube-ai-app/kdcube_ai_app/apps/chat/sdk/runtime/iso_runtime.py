@@ -206,8 +206,12 @@ from io_tools import tools as agent_io_tools
 
 import logging, sys
 if not logging.getLogger().handlers:
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(name)s: %(message)s")
-
+    logging.basicConfig(
+        level=logging.INFO,
+        stream=sys.stderr,
+        format="%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+        
 logger = logging.getLogger("agent.runtime")
 # --- Directories / CV fallbacks ---
 OUTPUT_DIR = OUTDIR_CV.get() or os.environ.get("OUTPUT_DIR")

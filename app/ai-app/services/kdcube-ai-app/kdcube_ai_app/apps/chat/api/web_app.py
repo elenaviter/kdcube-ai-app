@@ -659,6 +659,10 @@ mount_resources_router(app)
 from kdcube_ai_app.apps.chat.api.conversations import mount_conversations_router
 mount_conversations_router(app)
 
+# Mount opex router
+from kdcube_ai_app.apps.chat.api.opex import mount_opex_router
+mount_opex_router(app)
+
 # ================================
 # RUN APPLICATION
 # ================================

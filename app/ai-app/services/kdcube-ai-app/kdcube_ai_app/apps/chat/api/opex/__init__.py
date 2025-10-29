@@ -2,17 +2,17 @@
 # Copyright (c) 2025 Elena Viter
 
 """
-Modular integrations api management system using FastAPI routers.
-File: api/integrations/__init__.py
+Modular opex api management system using FastAPI routers.
+File: api/opex/__init__.py
 """
 from typing import Callable
 
 from fastapi import FastAPI
 
-from .integrations import router as integrations_router
+from .opex import router as opex_router
 
 
-def mount_integrations_routers(app: FastAPI):
+def mount_opex_router(app: FastAPI):
     """
     Mount all monitoring routers to the FastAPI app.
 
@@ -22,14 +22,14 @@ def mount_integrations_routers(app: FastAPI):
     """
 
     # Mount content rebuild router
-    integrations_router.state = app.state
+    opex_router.state = app.state
     app.include_router(
-        integrations_router,
-        prefix="",
-        tags=["CB integrations"],
+        opex_router,
+        prefix="/api/opex",
+        tags=["CB opex"],
     )
     return app
 
 
 # Export for convenience
-__all__ = ["mount_integrations_routers"]
+__all__ = ["mount_opex_router"]

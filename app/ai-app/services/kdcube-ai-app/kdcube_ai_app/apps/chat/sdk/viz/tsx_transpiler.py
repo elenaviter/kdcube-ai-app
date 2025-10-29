@@ -287,7 +287,6 @@ class ClientSideTSXTranspiler:
         
         {tsx_code}
     </script>
-    {{{{IFRAME_RESIZE_NOTIFIER}}}}
     <script>
         // Error handler
         window.addEventListener('error', function(e) {{

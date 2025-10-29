@@ -1,315 +1,629 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-from dataclasses import asdict
-from typing import Optional, Dict, Any
+from typing import Optional, List
 import logging
-import json
 import os
-import inspect
 
-from datetime import datetime
-from uuid import uuid4
+from pydantic import BaseModel, Field
+from fastapi import Depends, HTTPException, Request, APIRouter, Query
 
-from pydantic import BaseModel
-from fastapi import Depends, HTTPException, Request, APIRouter
-
-from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure, REDIS_URL
-from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
-from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest
-from kdcube_ai_app.apps.chat.sdk.protocol import ServiceCtx, ConversationCtx
+from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure
 from kdcube_ai_app.auth.sessions import UserSession
-
-import kdcube_ai_app.infra.namespaces as namespaces
-from kdcube_ai_app.infra.plugin.bundle_store import (
-    load_registry, BundlesRegistry, BundleEntry
-)
-from kdcube_ai_app.infra.plugin.bundle_registry import (
-    get_all, get_default_id
+from kdcube_ai_app.storage.storage import create_storage_backend
+from kdcube_ai_app.infra.accounting.calculator import (
+    RateCalculator,
+    AccountingQuery,
+    price_table,
+    _calculate_agent_costs
 )
 
 """
-Integrations API
+OPEX Accounting API
 
-File: api/integrations/integrations.py
+File: api/accounting/opex.py
+
+Provides REST endpoints for querying operational expenditure data
+from the accounting system using the RateCalculator.
 """
 
-
-logger = logging.getLogger("KBMonitoring.API")
+logger = logging.getLogger("OPEX.API")
 
 # Create router
 router = APIRouter()
 
-class AdminBundlesUpdateRequest(BaseModel):
-    op: str = "merge"  # "replace" | "merge"
-    bundles: Dict[str, Dict[str, Any]]
-    default_bundle_id: Optional[str] = None
+# =============================================================================
+# Request/Response Models
+# =============================================================================
 
-class BundleSuggestionsRequest(BaseModel):
-    bundle_id: Optional[str] = None
-    conversation_id: Optional[str] = None
-    config_request: Optional[ConfigRequest] = None
+class UsageQueryParams(BaseModel):
+    """Base parameters for usage queries"""
+    tenant: str = Field(..., description="Tenant ID")
+    project: str = Field(..., description="Project ID")
+    date_from: str = Field(..., description="Start date (YYYY-MM-DD)")
+    date_to: str = Field(..., description="End date (YYYY-MM-DD)")
+    app_bundle_id: Optional[str] = Field(None, description="Application bundle ID filter")
+    service_types: Optional[List[str]] = Field(None, description="Service types to include (llm, embedding)")
+    hard_file_limit: Optional[int] = Field(None, description="Maximum files to scan")
 
-def _ensure_chat_communicator(app) -> ChatRelayCommunicator:
+class ConversationQueryParams(UsageQueryParams):
+    """Parameters for conversation-specific queries"""
+    user_id: str = Field(..., description="User ID")
+    conversation_id: str = Field(..., description="Conversation ID")
+
+class TurnQueryParams(ConversationQueryParams):
+    """Parameters for turn-specific queries"""
+    turn_id: str = Field(..., description="Turn ID")
+
+class AgentQueryParams(UsageQueryParams):
+    """Parameters for agent-level queries"""
+    user_id: Optional[str] = Field(None, description="Filter by user ID")
+    conversation_id: Optional[str] = Field(None, description="Filter by conversation ID")
+    turn_id: Optional[str] = Field(None, description="Filter by turn ID")
+
+class UsageResponse(BaseModel):
+    """Standard usage response"""
+    status: str = "ok"
+    total: dict
+    rollup: List[dict]
+    event_count: int = 0
+    cost_estimate: Optional[dict] = None
+
+class UserUsageResponse(BaseModel):
+    """Response for per-user usage"""
+    status: str = "ok"
+    users: dict
+    total_users: int
+    cost_estimate: Optional[dict] = None
+
+class AgentUsageResponse(BaseModel):
+    """Response for agent-level usage"""
+    status: str = "ok"
+    agents: dict
+    total_agents: int
+    cost_estimate: Optional[dict] = None
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+def _get_calculator(request: Request) -> RateCalculator:
     """
-    Return a process-wide ChatRelayCommunicator.
-    Reuse app.state.chat_comm if present, otherwise create one.
-    Prefer the Socket.IO handler's ServiceCommunicator to avoid extra Redis clients.
+    Get or create RateCalculator instance.
+    Reuse from app.state if available to avoid recreating storage backend.
     """
-    comm = getattr(app.state, "chat_comm", None)
-    if comm:
-        return comm
+    calc = getattr(request.app.state, "accounting_calculator", None)
+    if calc:
+        return calc
 
-    # Try reuse the Socket.IO chat handler's ServiceCommunicator (if available)
-    svc_comm = None
-    try:
-        sio_handler = getattr(app.state, "socketio_handler", None)
-        svc_comm = getattr(sio_handler, "_comm", None)  # ServiceCommunicator
-    except Exception:
-        svc_comm = None
+    # Create new calculator
+    kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
+    backend = create_storage_backend(kdcube_path)
+    calc = RateCalculator(backend, base_path="accounting")
 
-    if svc_comm:
-        comm = ChatRelayCommunicator(comm=svc_comm)
-    else:
-        # Fall back to a fresh one (same identity/env as processor/web)
-        comm = ChatRelayCommunicator(
-            redis_url=REDIS_URL,
-            orchestrator_identity=os.environ.get(
-                "ORCHESTRATOR_IDENTITY",
-                f"kdcube_orchestrator_{os.environ.get('ORCHESTRATOR_TYPE', 'dramatiq')}",
-            ),
-        )
+    # Cache on app state
+    request.app.state.accounting_calculator = calc
+    return calc
 
-    app.state.chat_comm = comm
-    return comm
+def _compute_cost_estimate(rollup: List[dict]) -> dict:
+    """
+    Compute cost estimates from rollup data using price table.
+    Returns cost breakdown and total.
+    """
+    configuration = price_table()
+    llm_pricelist = configuration.get("llm", [])
+    emb_pricelist = configuration.get("embedding", [])
 
-@router.get("/landing/bundles")
-async def get_available_bundles(
+    def _find_llm_price(provider: str, model: str):
+        for p in llm_pricelist:
+            if p.get("provider") == provider and p.get("model") == model:
+                return p
+        return None
+
+    def _find_emb_price(provider: str, model: str):
+        for p in emb_pricelist:
+            if p.get("provider") == provider and p.get("model") == model:
+                return p
+        return None
+
+    total_cost = 0.0
+    breakdown = []
+
+    for item in rollup:
+        service = item.get("service")
+        provider = item.get("provider")
+        model = item.get("model")
+        spent = item.get("spent", {}) or {}
+
+        cost_usd = 0.0
+
+        if service == "llm":
+            pr = _find_llm_price(provider, model)
+            if pr:
+                input_cost = (float(spent.get("input", 0)) / 1_000_000.0) * float(pr.get("input_tokens_1M", 0.0))
+                output_cost = (float(spent.get("output", 0)) / 1_000_000.0) * float(pr.get("output_tokens_1M", 0.0))
+                cache_read_cost = (float(spent.get("cache_read", 0)) / 1_000_000.0) * float(pr.get("cache_read_tokens_1M", 0.0))
+
+                cache_write_cost = 0.0
+                cache_pricing = pr.get("cache_pricing")
+
+                if cache_pricing and isinstance(cache_pricing, dict):
+                    cache_5m_tokens = float(spent.get("cache_5m_write", 0))
+                    cache_1h_tokens = float(spent.get("cache_1h_write", 0))
+
+                    if cache_5m_tokens > 0:
+                        price_5m = float(cache_pricing.get("5m", {}).get("write_tokens_1M", 0.0))
+                        cache_write_cost += (cache_5m_tokens / 1_000_000.0) * price_5m
+
+                    if cache_1h_tokens > 0:
+                        price_1h = float(cache_pricing.get("1h", {}).get("write_tokens_1M", 0.0))
+                        cache_write_cost += (cache_1h_tokens / 1_000_000.0) * price_1h
+                else:
+                    cache_write_tokens = float(spent.get("cache_creation", 0))
+                    cache_write_price = float(pr.get("cache_write_tokens_1M", 0.0))
+                    cache_write_cost = (cache_write_tokens / 1_000_000.0) * cache_write_price
+
+                cost_usd = input_cost + output_cost + cache_write_cost + cache_read_cost
+
+        elif service == "embedding":
+            pr = _find_emb_price(provider, model)
+            if pr:
+                cost_usd = (float(spent.get("tokens", 0)) / 1_000_000.0) * float(pr.get("tokens_1M", 0.0))
+
+        total_cost += cost_usd
+        breakdown.append({
+            "service": service,
+            "provider": provider,
+            "model": model,
+            "cost_usd": cost_usd,
+        })
+
+    return {
+        "total_cost_usd": total_cost,
+        "breakdown": breakdown
+    }
+
+# =============================================================================
+# API Endpoints
+# =============================================================================
+
+@router.get("/total")
+async def get_total_usage(
         request: Request,
+        tenant: str = Query(..., description="Tenant ID"),
+        project: str = Query(..., description="Project ID"),
+        date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+        date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+        app_bundle_id: Optional[str] = Query(None, description="App bundle ID"),
+        service_types: Optional[str] = Query(None, description="Comma-separated service types"),
+        hard_file_limit: Optional[int] = Query(None, description="Max files to scan"),
         session: UserSession = Depends(get_user_session_dependency())
 ):
     """
-    Returns configured bundles for selection in the UI.
-    Read from Redis (source of truth), fallback to in-memory if needed.
+    Query total usage for all users in given timeframe.
+
+    Returns:
+        - total: Aggregated usage metrics
+        - rollup: Compact breakdown by (service, provider, model)
+        - user_count: Number of unique users
+        - event_count: Total events processed
+        - cost_estimate: Estimated costs based on price table
     """
     try:
-        redis = request.app.state.middleware.redis  # set in web_app during startup
-        reg = await load_registry(redis)
-    except Exception:
-        # fall back to in-memory (should be rare)
-        reg = BundlesRegistry(
-            default_bundle_id=get_default_id(),
-            bundles={bid: BundleEntry(**info) for bid, info in get_all().items()}
+        calc = _get_calculator(request)
+
+        service_types_list = None
+        if service_types:
+            service_types_list = [s.strip() for s in service_types.split(",")]
+
+        result = calc.usage_all_users(
+            tenant_id=tenant,
+            project_id=project,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit
         )
 
-    return {
-        "available_bundles": {
-            bid: {
-                "id": bid,
-                "name": entry.name,
-                "description": entry.description,
-                "path": entry.path,
-                "module": entry.module,
-                "singleton": bool(entry.singleton),
-            }
-            for bid, entry in reg.bundles.items()
-        },
-        "default_bundle_id": reg.default_bundle_id
-    }
+        # Add cost estimate
+        cost_estimate = None
+        if result.get("rollup"):
+            cost_estimate = _compute_cost_estimate(result["rollup"])
 
-@router.post("/admin/integrations/bundles", status_code=200)
-async def admin_set_bundles(
-        payload: AdminBundlesUpdateRequest,
-        request: Request,
-        session: UserSession = Depends(auth_without_pressure())
-):
-    from kdcube_ai_app.infra.plugin.bundle_registry import (
-        set_registry, upsert_bundles, serialize_to_env, get_all, get_default_id
-    )
-    from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
-
-    if payload.op == "replace":
-        set_registry(payload.bundles, payload.default_bundle_id)
-    elif payload.op == "merge":
-        upsert_bundles(payload.bundles, payload.default_bundle_id)
-    else:
-        raise HTTPException(status_code=400, detail="Invalid op; use 'replace' or 'merge'")
-
-    reg = get_all()
-    default_id = get_default_id()
-    serialize_to_env(reg, default_id)
-    clear_agentic_caches()
-
-    # Publish to all nodes
-    try:
-        msg = {
-            "type": "bundles.update",
-            "op": payload.op,
-            "bundles": payload.bundles,
-            "default_bundle_id": payload.default_bundle_id,
-            "updated_by": session.username or session.user_id or "unknown",
-            "ts": datetime.utcnow().isoformat() + "Z"
+        return {
+            "status": "ok",
+            "total": result["total"],
+            "rollup": result["rollup"],
+            "user_count": result["user_count"],
+            "event_count": result.get("event_count", 0),
+            "cost_estimate": cost_estimate
         }
-        redis = request.app.state.middleware.redis
-        await redis.publish(namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL, json.dumps(msg))
+
     except Exception as e:
-        logger.error(f"Failed to publish config update: {e}")
+        logger.exception(f"[get_total_usage] {tenant}/{project} failed")
+        raise HTTPException(status_code=500, detail=f"Failed to query usage: {str(e)}")
 
-    return {"status": "ok", "default_bundle_id": default_id, "count": len(reg)}
+@router.get("/users")
+async def get_usage_by_user(
+        request: Request,
+        tenant: str = Query(..., description="Tenant ID"),
+        project: str = Query(..., description="Project ID"),
+        date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+        date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+        app_bundle_id: Optional[str] = Query(None, description="App bundle ID"),
+        service_types: Optional[str] = Query(None, description="Comma-separated service types"),
+        hard_file_limit: Optional[int] = Query(None, description="Max files to scan"),
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """
+    Query usage broken down by user.
 
-@router.post("/admin/integrations/bundles/reset-env", status_code=200)
-async def admin_reset_bundles_from_env(
+    Returns:
+        - users: Dict of user_id -> {total, rollup}
+        - total_users: Count of users
+        - cost_estimate: Per-user cost estimates
+    """
+    try:
+        calc = _get_calculator(request)
+
+        service_types_list = None
+        if service_types:
+            service_types_list = [s.strip() for s in service_types.split(",")]
+
+        by_user = calc.usage_by_user(
+            tenant_id=tenant,
+            project_id=project,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit
+        )
+
+        # Add cost estimates per user
+        user_costs = {}
+        for user_id, user_data in by_user.items():
+            if user_data.get("rollup"):
+                user_costs[user_id] = _compute_cost_estimate(user_data["rollup"])
+
+        return {
+            "status": "ok",
+            "users": by_user,
+            "total_users": len(by_user),
+            "cost_estimate": user_costs
+        }
+
+    except Exception as e:
+        logger.exception(f"[get_usage_by_user] {tenant}/{project} failed")
+        raise HTTPException(status_code=500, detail=f"Failed to query user usage: {str(e)}")
+
+@router.get("/conversation")
+async def get_conversation_usage(
+        request: Request,
+        tenant: str = Query(..., description="Tenant ID"),
+        project: str = Query(..., description="Project ID"),
+        user_id: str = Query(..., description="User ID"),
+        conversation_id: str = Query(..., description="Conversation ID"),
+        date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+        date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+        app_bundle_id: Optional[str] = Query(None, description="App bundle ID"),
+        service_types: Optional[str] = Query(None, description="Comma-separated service types"),
+        hard_file_limit: Optional[int] = Query(None, description="Max files to scan"),
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """
+    Query usage for a specific conversation.
+
+    Returns:
+        - total: Aggregated usage
+        - rollup: Compact breakdown
+        - turns: Usage grouped by turn_id
+        - event_count: Total events
+        - cost_estimate: Estimated costs
+    """
+    try:
+        calc = _get_calculator(request)
+
+        service_types_list = None
+        if service_types:
+            service_types_list = [s.strip() for s in service_types.split(",")]
+
+        result = calc.usage_user_conversation(
+            tenant_id=tenant,
+            project_id=project,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit
+        )
+
+        # Add cost estimate
+        cost_estimate = None
+        if result.get("rollup"):
+            cost_estimate = _compute_cost_estimate(result["rollup"])
+
+        return {
+            "status": "ok",
+            "total": result["total"],
+            "rollup": result["rollup"],
+            "turns": result.get("turns", {}),
+            "event_count": result.get("event_count", 0),
+            "cost_estimate": cost_estimate
+        }
+
+    except Exception as e:
+        logger.exception(f"[get_conversation_usage] {tenant}/{project}/{conversation_id} failed")
+        raise HTTPException(status_code=500, detail=f"Failed to query conversation usage: {str(e)}")
+
+@router.get("/turn")
+async def get_turn_usage(
+        request: Request,
+        tenant: str = Query(..., description="Tenant ID"),
+        project: str = Query(..., description="Project ID"),
+        user_id: str = Query(..., description="User ID"),
+        conversation_id: str = Query(..., description="Conversation ID"),
+        turn_id: str = Query(..., description="Turn ID"),
+        date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+        date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+        app_bundle_id: Optional[str] = Query(None, description="App bundle ID"),
+        service_types: Optional[str] = Query(None, description="Comma-separated service types"),
+        hard_file_limit: Optional[int] = Query(5000, description="Max files to scan"),
+        use_memory_cache: bool = Query(False, description="Use in-memory cache if available"),
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """
+    Query usage for a specific turn (async).
+
+    Returns:
+        - turn_id: Turn identifier
+        - event_count: Events in this turn
+        - total_usage: Aggregated metrics
+        - tokens: Total tokens
+        - rollup: Compact breakdown by agent
+        - cost_estimate: Estimated costs
+    """
+    try:
+        calc = _get_calculator(request)
+
+        service_types_list = None
+        if service_types:
+            service_types_list = [s.strip() for s in service_types.split(",")]
+
+        # Get basic turn usage
+        turn_result = await calc.query_turn_usage(
+            tenant_id=tenant,
+            project_id=project,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            user_id=user_id,
+            app_bundle_id=app_bundle_id,
+            date_from=date_from,
+            date_to=date_to,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit
+        )
+
+        # Get compact rollup
+        rollup = await calc.turn_usage_rollup_compact(
+            tenant_id=tenant,
+            project_id=project,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            user_id=user_id,
+            app_bundle_id=app_bundle_id,
+            date_from=date_from,
+            date_to=date_to,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit,
+            use_memory_cache=use_memory_cache
+        )
+
+        # Add cost estimate
+        cost_estimate = None
+        if rollup:
+            cost_estimate = _compute_cost_estimate(rollup)
+
+        return {
+            "status": "ok",
+            "turn_id": turn_id,
+            "event_count": turn_result["event_count"],
+            "total_usage": turn_result["total_usage"],
+            "tokens": turn_result["tokens"],
+            "rollup": rollup,
+            "cost_estimate": cost_estimate
+        }
+
+    except Exception as e:
+        logger.exception(f"[get_turn_usage] {tenant}/{project}/{turn_id} failed")
+        raise HTTPException(status_code=500, detail=f"Failed to query turn usage: {str(e)}")
+
+@router.get("/agents")
+async def get_agent_usage(
+        request: Request,
+        tenant: str = Query(..., description="Tenant ID"),
+        project: str = Query(..., description="Project ID"),
+        date_from: str = Query(..., description="Start date (YYYY-MM-DD)"),
+        date_to: str = Query(..., description="End date (YYYY-MM-DD)"),
+        user_id: Optional[str] = Query(None, description="Filter by user ID"),
+        conversation_id: Optional[str] = Query(None, description="Filter by conversation ID"),
+        turn_id: Optional[str] = Query(None, description="Filter by turn ID"),
+        app_bundle_id: Optional[str] = Query(None, description="App bundle ID"),
+        service_types: Optional[str] = Query(None, description="Comma-separated service types"),
+        hard_file_limit: Optional[int] = Query(None, description="Max files to scan"),
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """
+    Query usage broken down by agent.
+
+    Returns:
+        - agents: Dict of agent_name -> {total, rollup}
+        - total_agents: Count of agents
+        - cost_estimate: Per-agent cost estimates
+    """
+    try:
+        calc = _get_calculator(request)
+
+        service_types_list = None
+        if service_types:
+            service_types_list = [s.strip() for s in service_types.split(",")]
+
+        by_agent = calc.usage_by_agent(
+            tenant_id=tenant,
+            project_id=project,
+            date_from=date_from,
+            date_to=date_to,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit
+        )
+
+        # Add cost estimates per agent
+        agent_costs = {}
+        for agent_name, agent_data in by_agent.items():
+            if agent_data.get("rollup"):
+                agent_costs[agent_name] = _compute_cost_estimate(agent_data["rollup"])
+
+        return {
+            "status": "ok",
+            "agents": by_agent,
+            "total_agents": len(by_agent),
+            "cost_estimate": agent_costs
+        }
+
+    except Exception as e:
+        logger.exception(f"[get_agent_usage] {tenant}/{project} failed")
+        raise HTTPException(status_code=500, detail=f"Failed to query agent usage: {str(e)}")
+
+@router.get("/turn/by-agent")
+async def get_turn_usage_by_agent(
+        request: Request,
+        tenant: str = Query(..., description="Tenant ID"),
+        project: str = Query(..., description="Project ID"),
+        conversation_id: str = Query(..., description="Conversation ID"),
+        turn_id: str = Query(..., description="Turn ID"),
+        user_id: Optional[str] = Query(None, description="User ID"),
+        date_from: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+        date_to: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+        app_bundle_id: Optional[str] = Query(None, description="App bundle ID"),
+        service_types: Optional[str] = Query(None, description="Comma-separated service types"),
+        hard_file_limit: Optional[int] = Query(5000, description="Max files to scan"),
+        use_memory_cache: bool = Query(False, description="Use in-memory cache if available"),
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """
+    Query turn usage broken down by agent (highly optimized with prefix filtering).
+
+    Returns:
+        - agents: Dict of agent_name -> List[{service, provider, model, spent}]
+        - cost_estimate: Per-agent cost estimates
+    """
+    try:
+        calc = _get_calculator(request)
+
+        service_types_list = None
+        if service_types:
+            service_types_list = [s.strip() for s in service_types.split(",")]
+
+        by_agent = await calc.turn_usage_by_agent(
+            tenant_id=tenant,
+            project_id=project,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            user_id=user_id,
+            app_bundle_id=app_bundle_id,
+            date_from=date_from,
+            date_to=date_to,
+            service_types=service_types_list,
+            hard_file_limit=hard_file_limit,
+            use_memory_cache=use_memory_cache
+        )
+
+        # Calculate costs per agent
+        configuration = price_table()
+        llm_pricelist = configuration.get("llm", [])
+        emb_pricelist = configuration.get("embedding", [])
+
+        agent_costs = _calculate_agent_costs(by_agent, llm_pricelist, emb_pricelist)
+
+        return {
+            "status": "ok",
+            "turn_id": turn_id,
+            "agents": by_agent,
+            "total_agents": len(by_agent),
+            "cost_estimate": agent_costs
+        }
+
+    except Exception as e:
+        logger.exception(f"[get_turn_usage_by_agent] {tenant}/{project}/{turn_id} failed")
+        raise HTTPException(status_code=500, detail=f"Failed to query turn agent usage: {str(e)}")
+
+@router.get("/health")
+async def health_check(
+        request: Request,
+        session: UserSession = Depends(get_user_session_dependency())
+):
+    """Health check endpoint for accounting API"""
+    try:
+        calc = _get_calculator(request)
+        return {
+            "status": "ok",
+            "service": "accounting",
+            "calculator": "ready",
+            "backend": calc.fs.__class__.__name__
+        }
+    except Exception as e:
+        logger.exception("[health_check] failed")
+        return {
+            "status": "error",
+            "service": "accounting",
+            "error": str(e)
+        }
+
+# =============================================================================
+# Admin Endpoints
+# =============================================================================
+
+@router.post("/admin/clear-cache")
+async def admin_clear_calculator_cache(
         request: Request,
         session: UserSession = Depends(auth_without_pressure())
 ):
-    from kdcube_ai_app.infra.plugin.bundle_store import reset_registry_from_env
-    from kdcube_ai_app.infra.plugin.bundle_registry import set_registry, serialize_to_env
-    from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
-
-    redis = request.app.state.middleware.redis
-
+    """
+    Clear cached calculator instance (forces recreation with fresh backend).
+    Useful after storage configuration changes.
+    """
     try:
-        # Force overwrite Redis from env
-        reg = await reset_registry_from_env(redis)
-    except ValueError as ve:
-        raise HTTPException(status_code=400, detail=str(ve))
+        if hasattr(request.app.state, "accounting_calculator"):
+            delattr(request.app.state, "accounting_calculator")
 
-    # Mirror to in-memory registry and env for consistency
-    bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
-    set_registry(bundles_dict, reg.default_bundle_id)
-    serialize_to_env(bundles_dict, reg.default_bundle_id)
-    clear_agentic_caches()
+        return {
+            "status": "ok",
+            "message": "Calculator cache cleared"
+        }
+    except Exception as e:
+        logger.exception("[admin_clear_calculator_cache] failed")
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
 
-    # Broadcast to all servers
-    msg = {
-        "type": "bundles.update",
-        "op": "replace",
-        "bundles": bundles_dict,
-        "default_bundle_id": reg.default_bundle_id,
-        "updated_by": session.username or session.user_id or "unknown",
-        "ts": datetime.utcnow().isoformat() + "Z"
-    }
-    await redis.publish(namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL, json.dumps(msg))
-
-    return {
-        "status": "ok",
-        "source": "env",
-        "default_bundle_id": reg.default_bundle_id,
-        "count": len(reg.bundles)
-    }
-
-@router.post("/integrations/bundles/{tenant}/{project}/operations/{operation}")
-async def get_bundle_suggestions(
-        tenant: str,
-        project: str,
-        payload: BundleSuggestionsRequest,
+@router.get("/admin/price-table")
+async def admin_get_price_table(
         request: Request,
-        operation: str = "suggestions", # news, etc.
-        session: UserSession = Depends(get_user_session_dependency()),
+        session: UserSession = Depends(auth_without_pressure())
 ):
     """
-    Load (or reuse singleton) bundle instance and, if defined, call its `suggestions(...)`.
-    Returns generic JSON from the bundle, or an empty suggestions list when not implemented.
+    Get current price table configuration.
     """
-    from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
-    from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
-    from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
-
-    config_data = {}
-
-    config_request = ConfigRequest(**config_data)
-    if not config_request.selected_model:
-        config_request.selected_model = (namespaces.CONFIG.AGENTIC.DEFAULT_LLM_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
-    if not config_request.selected_model:
-        config_request.selected_embedder = (namespaces.CONFIG.AGENTIC.DEFAULT_EMBEDDING_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
-    if not config_request.openai_api_key:
-        config_request.openai_api_key = os.getenv("OPENAI_API_KEY")
-    if not config_request.claude_api_key:
-        config_request.claude_api_key = os.getenv("ANTHROPIC_API_KEY")
-    if payload and payload.bundle_id:
-        config_request.agentic_bundle_id = payload.bundle_id
-
-    # 1) Resolve bundle from the in-process registry (keeps processor-owned semantics)
-    spec_resolved = resolve_bundle(config_request.agentic_bundle_id, override=None)
-    # 2) Build minimal workflow config (project-aware; defaults elsewhere)
     try:
-        wf_config = create_workflow_config(ConfigRequest())
-    except Exception:
-        # If ConfigRequest signature changes, be defensive
-        wf_config = create_workflow_config(ConfigRequest.model_validate({"project": project}))
-
-    chat_comm = _ensure_chat_communicator(request.app)
-
-    svc_ctx = ServiceCtx(
-        request_id=str(uuid4()),
-        tenant=tenant,
-        project=project,
-        user=session.user_id or session.fingerprint,
-    )
-    conv_ctx = ConversationCtx(
-        session_id=session.session_id,
-        conversation_id=payload.conversation_id or session.session_id,
-        turn_id=f"turn_{uuid4().hex[:8]}",
-    )
-
-    # Bind to this session/thread; no socket_id in REST call (target_sid=None)
-    bound_comm = chat_comm.bind(
-        service=svc_ctx.model_dump(),
-        conversation=conv_ctx.model_dump(),
-        session_id=session.session_id,
-        target_sid=None,
-    )
-
-    # --- Instantiate workflow with the bound communicator (new-style) ---
-    spec = AgenticBundleSpec(
-        path=spec_resolved.path,
-        module=spec_resolved.module,
-        singleton=bool(spec_resolved.singleton),
-    )
-    try:
-        # I need to create communicator here:
-        wf_config.ai_bundle_spec = spec_resolved
-        communicator = None #
-        workflow, _init_state, _mod = get_workflow_instance(
-            spec, wf_config, communicator=bound_comm,
-        )
+        return {
+            "status": "ok",
+            "price_table": price_table()
+        }
     except Exception as e:
-        logger.exception(f"[get_bundle_suggestions.{tenant}.{project}] Failed to load bundle {asdict(spec)}")
-        raise HTTPException(status_code=500, detail=f"Failed to load bundle: {e}")
-
-    # 4) Call op() if available (support sync/async)
-    if not hasattr(workflow, operation) or not callable(getattr(workflow, operation)):
-        # Graceful, generic reply if not implemented
-        # return {
-        #     "status": "ok",
-        #     "tenant": tenant,
-        #     "project": project,
-        #     "bundle_id": spec_resolved.id,
-        #     "conversation_id": payload.conversation_id,
-        #     operation: None,
-        #     "error": f"bundle does not support operation {operation}"
-        # }
-        raise HTTPException(status_code=404, detail=f"Bundle does not support operation {operation}")
-
-    try:
-        user_id = session.user_id or session.fingerprint
-        fn = getattr(workflow, operation)
-        if inspect.iscoroutinefunction(fn):
-            result = await fn(user_id=user_id,
-                              fingerprint=session.fingerprint)
-        else:
-            result = fn(user_id=user_id,
-                        fingerprint=session.fingerprint)
-    except Exception as e:
-        # Let bundles raise and still keep a predictable envelope here
-        raise HTTPException(status_code=500, detail=f"{operation}() failed: {e}")
-
-    # 5) Envelope the bundle’s generic JSON
-    return {
-        "status": "ok",
-        "tenant": tenant,
-        "project": project,
-        "bundle_id": spec_resolved.id,
-        "conversation_id": payload.conversation_id,
-        operation: result,  # arbitrary JSON from bundle
-    }
+        logger.exception("[admin_get_price_table] failed")
+        raise HTTPException(status_code=500, detail=f"Failed to get price table: {str(e)}")
