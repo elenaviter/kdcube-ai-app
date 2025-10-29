@@ -677,6 +677,7 @@ def grouped_by_component_and_seed() -> "callable":
         tenant = (event.tenant_id or event.context.get("tenant_id") or "unknown")
         project = (event.project_id or event.context.get("project_id") or "unknown")
         service_type = event.service_type.value if hasattr(event.service_type, "value") else str(event.service_type)
+        agent_name = event.context.get("agent")
 
         # Determine group folder (unchanged)
         if event.seed_system_resources:
@@ -701,7 +702,8 @@ def grouped_by_component_and_seed() -> "callable":
             # Conversation-based: cb|<user>|<conv>|<turn>|<ts>.json
             user_part = user_id or "unknown"
             turn_part = turn_id or "unknown"
-            filename = f"cb|{user_part}|{conversation_id}|{turn_part}|{ts}.json"
+            agent_name_part = agent_name or "unknown"
+            filename = f"cb|{user_part}|{conversation_id}|{turn_part}|{agent_name_part}|{ts}.json"
         else:
             # Knowledge-based: kb|<ts>.json
             filename = f"kb|{ts}.json"

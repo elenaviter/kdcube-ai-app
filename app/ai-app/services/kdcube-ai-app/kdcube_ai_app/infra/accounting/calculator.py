@@ -6,13 +6,14 @@
 Optimized read-only usage aggregation leveraging conversation-aware file naming.
 
 NEW FILENAME FORMAT:
-- Conversation-based: cb|<user_id>|<conversation_id>|<turn_id>|<timestamp>.json
+- Conversation-based: cb|<user_id>|<conversation_id>|<turn_id>|<agent_name>|<timestamp>.json
 - Knowledge-based: kb|<timestamp>.json
 
 This enables efficient prefix filtering:
 - All files for user: "cb|user-123|"
 - All files for conversation: "cb|user-123|conv-abc|"
 - Specific turn: "cb|user-123|conv-abc|turn-001|"
+- Specific agent in turn: "cb|user-123|conv-abc|turn-001|answer_generator|"
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ class AccountingQuery:
     user_id: Optional[str] = None
     conversation_id: Optional[str] = None
     turn_id: Optional[str] = None
+    agent_name: Optional[str] = None  # NEW: agent-level filtering
 
     # context filters (exact match if provided)
     app_bundle_id: Optional[str] = None
@@ -67,10 +69,10 @@ class AccountingQuery:
 def _parse_filename(filename: str) -> Optional[Dict[str, str]]:
     """
     Parse new filename format:
-    - cb|<user>|<conv>|<turn>|<ts>.json
+    - cb|<user>|<conv>|<turn>|<agent>|<ts>.json
     - kb|<ts>.json
 
-    Returns dict with keys: type, user_id, conversation_id, turn_id, timestamp
+    Returns dict with keys: type, user_id, conversation_id, turn_id, agent_name, timestamp
     """
     if not filename.endswith('.json'):
         return None
@@ -84,16 +86,18 @@ def _parse_filename(filename: str) -> Optional[Dict[str, str]]:
             'user_id': None,
             'conversation_id': None,
             'turn_id': None,
+            'agent_name': None,
             'timestamp': parts[1]
         }
-    elif len(parts) == 5 and parts[0] == 'cb':
-        # Conversation-based file
+    elif len(parts) == 6 and parts[0] == 'cb':
+        # Conversation-based file with agent
         return {
             'type': 'cb',
             'user_id': parts[1],
             'conversation_id': parts[2],
             'turn_id': parts[3],
-            'timestamp': parts[4]
+            'agent_name': parts[4],
+            'timestamp': parts[5],
         }
 
     # Old format or unknown - return None to trigger full scan
@@ -102,7 +106,8 @@ def _parse_filename(filename: str) -> Optional[Dict[str, str]]:
 
 def _build_filename_prefix(user_id: Optional[str] = None,
                            conversation_id: Optional[str] = None,
-                           turn_id: Optional[str] = None) -> Optional[str]:
+                           turn_id: Optional[str] = None,
+                           agent_name: Optional[str] = None) -> Optional[str]:
     """
     Build prefix for efficient file filtering.
 
@@ -110,6 +115,7 @@ def _build_filename_prefix(user_id: Optional[str] = None,
     - user_id only: "cb|user-123|"
     - user + conv: "cb|user-123|conv-abc|"
     - user + conv + turn: "cb|user-123|conv-abc|turn-001|"
+    - user + conv + turn + agent: "cb|user-123|conv-abc|turn-001|answer_generator|"
     """
     if not user_id:
         return None
@@ -121,6 +127,9 @@ def _build_filename_prefix(user_id: Optional[str] = None,
 
         if turn_id:
             prefix += f"{turn_id}|"
+
+            if agent_name:
+                prefix += f"{agent_name}|"
 
     return prefix
 
@@ -240,6 +249,8 @@ def _finalize_cost(acc: Dict[str, Any]) -> None:
 
 def _group_key(ev: Dict[str, Any], group_by: List[str]) -> Tuple[Any, ...]:
     ctx = ev.get("context") or {}
+    metadata = ev.get("metadata") or {}
+
     dt_label = None
     if "date" in group_by:
         ts = ev.get("timestamp")
@@ -253,6 +264,16 @@ def _group_key(ev: Dict[str, Any], group_by: List[str]) -> Tuple[Any, ...]:
     for g in group_by:
         if g == "date":
             out.append(dt_label)
+            continue
+        if g == "agent" or g == "agent_name":
+            # Try multiple locations for agent name
+            agent = (
+                metadata.get("agent") or
+                ctx.get("agent") or
+                ev.get("agent") or
+                ev.get("agent_name")
+            )
+            out.append(agent)
             continue
         out.append(ev.get(g) if g in ev else ctx.get(g))
     return tuple(out)
@@ -325,7 +346,7 @@ class AccountingCalculator:
         """
         Yield event file paths with optimization for conversation-aware queries.
 
-        OPTIMIZATION: When user_id/conversation_id/turn_id are specified,
+        OPTIMIZATION: When user_id/conversation_id/turn_id/agent_name are specified,
         use prefix filtering instead of listing all files.
         """
         # Normalize alias
@@ -415,11 +436,12 @@ class AccountingCalculator:
 
         KEY OPTIMIZATION: Use prefix filtering when possible.
         """
-        # Build prefix for efficient filtering
+        # Build prefix for efficient filtering (now includes agent_name)
         prefix = _build_filename_prefix(
             user_id=query.user_id,
             conversation_id=query.conversation_id,
-            turn_id=query.turn_id
+            turn_id=query.turn_id,
+            agent_name=query.agent_name
         )
 
         if prefix:
@@ -468,6 +490,19 @@ class AccountingCalculator:
             return False
         if not eq("model_or_service", query.model_or_service):
             return False
+
+        # Agent name matching (check multiple locations)
+        if query.agent_name:
+            metadata = ev.get("metadata") or {}
+            context = ev.get("context") or {}
+            agent = (
+                metadata.get("agent") or
+                context.get("agent") or
+                ev.get("agent") or
+                ev.get("agent_name")
+            )
+            if agent != query.agent_name:
+                return False
 
         if query.service_types:
             st = ev.get("service_type")
@@ -572,7 +607,7 @@ class AccountingCalculator:
         """
         Read matching events and return totals + optional grouped totals.
 
-        OPTIMIZED: Automatically uses prefix filtering when user_id/conversation_id/turn_id
+        OPTIMIZED: Automatically uses prefix filtering when user_id/conversation_id/turn_id/agent_name
         are specified in the query.
         """
         events_iter = self._iter_event_paths(query)
@@ -799,6 +834,120 @@ class AccountingCalculator:
             "total": result["total"],
             "rollup": rollup,
             "turns": result["groups"],
+            "event_count": result.get("event_count", 0)
+        }
+
+    # ---------- NEW: Agent-level queries ----------
+
+    def usage_by_agent(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        date_from: str,
+        date_to: str,
+        user_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        app_bundle_id: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Query: Spendings per agent in given timeframe/scope.
+
+        Returns:
+          {
+            "answer_generator": {"total": {...}, "rollup": [...]},
+            "solver.codegen": {"total": {...}, "rollup": [...]},
+            ...
+          }
+
+        HIGHLY OPTIMIZED: Uses prefix filtering when user_id/conversation_id/turn_id provided.
+        """
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        # Group by agent
+        result = self.query_usage(query, group_by=["agent_name"])
+
+        # Reorganize by agent
+        by_agent: Dict[str, Dict[str, Any]] = {}
+        for key_tuple, usage in result["groups"].items():
+            agent_name = usage.get("agent_name")
+            if agent_name:
+                by_agent[agent_name] = {"total": usage}
+
+        # Add compact rollup per agent
+        for agent_name in by_agent.keys():
+            agent_query = AccountingQuery(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                agent_name=agent_name,
+                date_from=date_from,
+                date_to=date_to,
+                app_bundle_id=app_bundle_id,
+                service_types=service_types,
+                hard_file_limit=hard_file_limit,
+            )
+            by_agent[agent_name]["rollup"] = self.usage_rollup_compact(agent_query)
+
+        return by_agent
+
+    def usage_for_agent(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        agent_name: str,
+        date_from: str,
+        date_to: str,
+        user_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        app_bundle_id: Optional[str] = None,
+        service_types: Optional[List[str]] = None,
+        hard_file_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Query: Usage for specific agent in given timeframe/scope.
+
+        HIGHLY OPTIMIZED: Uses prefix filtering with agent name for maximum efficiency.
+        """
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=turn_id,
+            agent_name=agent_name,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+
+        result = self.query_usage(query)
+        rollup = self.usage_rollup_compact(query)
+
+        return {
+            "agent_name": agent_name,
+            "total": result["total"],
+            "rollup": rollup,
             "event_count": result.get("event_count", 0)
         }
 
@@ -1193,6 +1342,7 @@ class RateCalculator(AccountingCalculator):
         Return usage grouped by agent, then by (service, provider, model).
 
         HIGHLY OPTIMIZED: Uses prefix filtering + optional memory cache.
+        Now leverages agent name in filename for ultra-efficient filtering.
         """
         if use_memory_cache:
             from kdcube_ai_app.infra.accounting import _get_context
@@ -1266,9 +1416,13 @@ class RateCalculator(AccountingCalculator):
         agent_rollup: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
 
         for ev in events:
+            metadata = ev.get("metadata") or {}
+            context = ev.get("context") or {}
             agent = (
-                (ev.get("metadata") or {}).get("agent") or
-                (ev.get("context") or {}).get("agent") or
+                metadata.get("agent") or
+                context.get("agent") or
+                ev.get("agent") or
+                ev.get("agent_name") or
                 "unknown"
             )
 
@@ -1276,8 +1430,8 @@ class RateCalculator(AccountingCalculator):
             if not service:
                 continue
 
-            provider = str(ev.get("provider") or (ev.get("context") or {}).get("provider") or "").strip()
-            model = str(ev.get("model_or_service") or (ev.get("context") or {}).get("model_or_service") or "").strip()
+            provider = str(ev.get("provider") or context.get("provider") or "").strip()
+            model = str(ev.get("model_or_service") or context.get("model_or_service") or "").strip()
 
             if agent not in agent_rollup:
                 agent_rollup[agent] = {}
