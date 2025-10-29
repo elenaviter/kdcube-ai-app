@@ -353,6 +353,7 @@ async def generate_content_llm(
     context_snapshot = context.to_dict()
     logger.warning(f"[Context snapshot]:\n{context_snapshot}")
 
+    rep_author = agent_name or "Content Generator LLM"
     track_id = context_snapshot.get("track_id")
     bundle_id = context_snapshot.get("app_bundle_id")
 
@@ -880,7 +881,6 @@ async def generate_content_llm(
         rep_emit_from = 0
         REP_EMIT_HOLDBACK = 32
         # rep_emitted_count = 0
-        rep_author = agent_name or "Content Generator LLM"
 
         async def _rep_emit_visible(text: str):
             nonlocal emitted_count
