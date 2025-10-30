@@ -17,7 +17,7 @@ from fastapi import Depends, HTTPException, Request, APIRouter
 from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure, REDIS_URL
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
 from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest
-from kdcube_ai_app.apps.chat.sdk.protocol import ServiceCtx, ConversationCtx
+from kdcube_ai_app.apps.chat.sdk.protocol import ServiceCtx, ConversationCtx, ChatTaskUser
 from kdcube_ai_app.auth.sessions import UserSession
 
 import kdcube_ai_app.infra.namespaces as namespaces
@@ -239,12 +239,20 @@ async def get_bundle_suggestions(
         wf_config = create_workflow_config(ConfigRequest.model_validate({"project": project}))
 
     chat_comm = _ensure_chat_communicator(request.app)
-
+    user = ChatTaskUser(
+        user_type=session.user_type.value,
+        user_id=session.user_id,
+        username=session.username,
+        fingerprint=session.fingerprint,
+        roles=session.roles,
+        permissions=session.permissions,
+    )
     svc_ctx = ServiceCtx(
         request_id=str(uuid4()),
         tenant=tenant,
         project=project,
         user=session.user_id or session.fingerprint,
+        user_obj=user
     )
     conv_ctx = ConversationCtx(
         session_id=session.session_id,

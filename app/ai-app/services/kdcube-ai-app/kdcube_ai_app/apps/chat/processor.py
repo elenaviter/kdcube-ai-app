@@ -313,7 +313,8 @@ class EnhancedChatRequestProcessor:
             request_id=(payload.accounting.envelope or {}).get("request_id", task_id),
             tenant=payload.actor.tenant_id,
             project=payload.actor.project_id,
-            user=payload.user.user_id,
+            user=payload.user.user_id or payload.user.fingerprint,
+            user_obj=payload.user
         )
         conv = ConversationCtx(
             session_id=session_id,

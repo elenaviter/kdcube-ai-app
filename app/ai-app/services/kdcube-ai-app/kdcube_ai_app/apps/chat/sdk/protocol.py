@@ -50,6 +50,7 @@ class ServiceCtx(_ProtoBase):
     tenant: Optional[str] = None
     project: Optional[str] = None
     user: Optional[str] = None
+    user_obj: Optional[ChatTaskUser] = None
 
 
 class ConversationCtx(_ProtoBase):
