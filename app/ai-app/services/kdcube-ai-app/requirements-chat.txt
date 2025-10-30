@@ -55,6 +55,10 @@ graphviz
 seaborn
 diagrams
 pyvis
+python-dateutil
+xlsxwriter
+openpyxl
+httpx
 
 rich
 
