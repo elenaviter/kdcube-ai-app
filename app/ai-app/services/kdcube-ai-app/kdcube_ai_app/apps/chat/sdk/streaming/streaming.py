@@ -961,18 +961,22 @@ async def _stream_agent_two_sections_to_json(
 
     data = None
     err = None
-    tail = _defence(raw_json) or ""
+    raw_json_clean = _sanitize_ws_and_invisibles(raw_json)
+    tail = _defence(raw_json_clean) or ""
 
     if tail:
         try:
             loaded = _json_loads_loose(tail) or {}
             data = schema_model.model_validate(loaded).model_dump()
-        except Exception:
+        except Exception as ex:
+            logger.error(f"[_stream_agent_two_sections_to_json] JSON parse failed: {ex}\n.raw_json={raw_json}\nraw_json_clean={raw_json_clean}\ntail={tail}")
             data = None
 
     if data is None and raw_json.strip():
+
+        fix_input = tail if tail.strip() else raw_json_clean
         fix = await svc.format_fixer.fix_format(
-            raw_output=raw_json,
+            raw_output=fix_input,
             expected_format=getattr(schema_model, "__name__", str(schema_model)),
             input_data=user_msg,
             system_prompt=sys_prompt,
