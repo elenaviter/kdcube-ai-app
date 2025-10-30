@@ -1002,6 +1002,7 @@ async def search_context(
     best_tid = hits[0]["turn_id"] if hits else None
 
     # Materialize payloads for top_k results only
+    final_hits = []
     if with_payload and hits:
         for hit in hits[:top_k]:  # Only top_k hits
             s3_uri = hit.get("s3_uri")
@@ -1013,9 +1014,11 @@ async def search_context(
                         payload = {**payload}
                         del payload["embedding"]
                     hit["payload"] = payload
+                    final_hits.append(hit)
                 except Exception as e:
                     if logger:
                         logger.log(f"Failed to materialize {s3_uri}: {e}", "WARN")
                     hit["payload"] = None
 
-    return best_tid, hits
+
+    return best_tid, final_hits
