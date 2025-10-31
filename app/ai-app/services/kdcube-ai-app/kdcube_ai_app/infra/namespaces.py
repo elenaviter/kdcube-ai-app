@@ -64,4 +64,6 @@ class CONFIG:
 
         SUGGESTIONS_PREFIX = "kdcube:agentic:suggestions:{tenant}:{project}:{bundle_id}"
 
+    KDCUBE_STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH") or os.environ.get("STORAGE_PATH")
+
 
