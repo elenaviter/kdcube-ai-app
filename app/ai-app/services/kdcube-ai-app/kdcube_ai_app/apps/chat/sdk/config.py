@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     OPENAI_MODEL_RERANKER: str = "gpt-4o-mini"
     OPENAI_MODEL_EMBEDDING: str = "text-embedding-3-small"
 
+    ANTHROPIC_API_KEY: str | None = None
+
     # Postgres
     PGHOST: str = Field(default="localhost", alias="POSTGRES_HOST")
     PGPORT: int = Field(default=5434, alias="POSTGRES_PORT")
@@ -41,6 +43,8 @@ class Settings(BaseSettings):
 
     TENANT: str = Field(default="home", alias="TENANT_ID")
     PROJECT: str = Field(default="default-project", alias="DEFAULT_PROJECT_NAME")
+
+    DEFAULT_MODEL_LLM: str | None = "claude-3-7-sonnet-20250219"
 
     # Parse comma-separated CORS into list
     @classmethod

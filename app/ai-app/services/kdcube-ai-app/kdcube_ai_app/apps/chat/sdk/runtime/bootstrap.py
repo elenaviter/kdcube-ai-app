@@ -22,6 +22,7 @@ from kdcube_ai_app.apps.chat.emitters import (
     ChatCommunicator,
     _RelayEmitterAdapter,
 )
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.runtime.portable_spec import PortableSpec
 from kdcube_ai_app.infra.service_hub.inventory import (
     ConfigRequest,
@@ -155,7 +156,9 @@ class _LocalFSBackend:
     It writes under base_dir (defaults to env KDCUBE_STORAGE_PATH or /tmp/kdcube).
     """
     def __init__(self, base_dir: Optional[str] = None):
-        self.base_dir = base_dir or os.environ.get("KDCUBE_STORAGE_PATH") or "/tmp/kdcube"
+        _settings = get_settings()
+        # self.base_dir = base_dir or os.environ.get("KDCUBE_STORAGE_PATH") or "/tmp/kdcube"
+        self.base_dir = base_dir or _settings.STORAGE_PATH or "/tmp/kdcube"
 
     def write_text(self, path: str, content: str, encoding: str = "utf-8") -> None:
         from pathlib import Path

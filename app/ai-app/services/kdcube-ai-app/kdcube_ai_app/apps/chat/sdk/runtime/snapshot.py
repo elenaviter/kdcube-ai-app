@@ -12,6 +12,7 @@ import contextvars
 import asyncio
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.runtime.portable_spec import CommSpec, PortableSpec, ModelConfigSpec, IntegrationsSpec
 from kdcube_ai_app.infra.service_hub.inventory import Config, ModelServiceBase
 
@@ -150,7 +151,9 @@ def build_portable_spec(*, svc: ModelServiceBase, chat_comm: ChatCommunicator, i
         "comm_ctx": _comm_ctx.snapshot_ctxvars(),
         "accounting": _acct.snapshot_ctxvars(),
     }
-    accounting_storage = { "storage_path": os.environ.get("KDCUBE_STORAGE_PATH") }
+    _settings = get_settings()
+    # accounting_storage = { "storage_path": os.environ.get("KDCUBE_STORAGE_PATH") }
+    accounting_storage = { "storage_path": _settings.STORAGE_PATH }
     config_spec = _config_to_model_config_spec(svc.config)
     spec = PortableSpec(
         model_config=config_spec,

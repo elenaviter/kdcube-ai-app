@@ -27,6 +27,7 @@ from kdcube_ai_app.infra.gateway.config import (
 from kdcube_ai_app.infra.gateway.gateway import create_gateway_from_config
 
 from kdcube_ai_app.apps.middleware.gateway import FastAPIGatewayAdapter
+from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, ModelServiceBase, create_workflow_config
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,10 @@ GATEWAY_PROFILE = os.environ.get("GATEWAY_PROFILE", "development").lower()
 GATEWAY_PRESET = os.environ.get("GATEWAY_PRESET", None)  # Optional preset override
 
 # Storage and other configurations (your existing logic)
-STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH")
+
+_settings = get_settings()
+# STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH")
+STORAGE_PATH = _settings.STORAGE_PATH
 
 DEFAULT_PROJECT = os.environ.get("DEFAULT_PROJECT_NAME", None)
 
@@ -531,9 +535,15 @@ async def get_conversation_system(pg_pool) -> Tuple[ContextRAGClient, ConvIndex,
     _conv_index = ConvIndex(pool=pg_pool)
     await _conv_index.init()
 
+    req = ConfigRequest(
+        openai_api_key=_settings.OPENAI_API_KEY,
+        claude_api_key=_settings.ANTHROPIC_API_KEY,
+        selected_model=_settings.DEFAULT_MODEL_LLM,
+    )
+    model_service = ModelServiceBase(create_workflow_config(req))
     _conv_store = ConversationStore(_settings.STORAGE_PATH)
     _conv_browser = ContextRAGClient(conv_idx=_conv_index,
                                   store=_conv_store,
-                                  model_service=None)
+                                  model_service=model_service)
     return _conv_browser, _conv_index, _conv_store
 

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from fastapi import Depends, HTTPException, Request, APIRouter, Query
 
 from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency, auth_without_pressure
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.auth.sessions import UserSession
 from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.infra.accounting.calculator import (
@@ -97,7 +98,9 @@ def _get_calculator(request: Request) -> RateCalculator:
         return calc
 
     # Create new calculator
-    kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
+    _settings = get_settings()
+    # kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
+    kdcube_path = _settings.STORAGE_PATH or "file:///tmp/kdcube_data"
     backend = create_storage_backend(kdcube_path)
     calc = RateCalculator(backend, base_path="accounting")
 

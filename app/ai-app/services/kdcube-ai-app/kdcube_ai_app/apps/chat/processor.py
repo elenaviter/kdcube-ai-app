@@ -14,6 +14,7 @@ import os
 import traceback
 from typing import Optional, Dict, Any, Iterable
 
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
 from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload, ServiceCtx, ConversationCtx
@@ -337,7 +338,9 @@ class EnhancedChatRequestProcessor:
         from kdcube_ai_app.infra.accounting import with_accounting
 
         envelope = AccountingEnvelope.from_dict(payload.accounting.envelope)
-        storage_backend = create_storage_backend(os.environ.get("KDCUBE_STORAGE_PATH"), **{})
+        _settings = get_settings()
+        # storage_backend = create_storage_backend(os.environ.get("KDCUBE_STORAGE_PATH"), **{})
+        storage_backend = create_storage_backend(_settings.STORAGE_PATH, **{})
 
         # 5) Announce start (async)
         msg = (
