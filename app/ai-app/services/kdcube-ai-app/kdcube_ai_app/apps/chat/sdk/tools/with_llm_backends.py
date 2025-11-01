@@ -206,8 +206,21 @@ def _basic_html_ok(s: str) -> bool:
         return ("</html>" in low) or ("</body>" in low)
     return False
 
+import xml.etree.ElementTree as ET
+def _xml_is_wellformed(s: str) -> bool:
+    if not s or not s.strip():
+        return False
+    try:
+        ET.fromstring(s)
+        return True
+    except Exception:
+        return False
+
+def _basic_xml_ok(s: str) -> bool:
+    return _xml_is_wellformed(s)
 
 def _format_ok(out: str, fmt: str) -> Tuple[bool, str]:
+
     if fmt == "html":
         ok = _basic_html_ok(out)
         return (ok, "html_ok" if ok else "html_basic_check_failed")
@@ -223,6 +236,10 @@ def _format_ok(out: str, fmt: str) -> Tuple[bool, str]:
     if fmt == "yaml":
         obj, err = _parse_yaml(out)
         return (obj is not None, err or "yaml_ok")
+    if fmt == "xml":
+        ok = _basic_xml_ok(out)
+        return (ok, "xml_ok" if ok else "xml_basic_check_failed")
+
     return False, "unknown_format"
 
 
@@ -336,7 +353,7 @@ async def generate_content_llm(
         artifact_name: Annotated[str|None, "Name of the artifact being produced (for tracking)."] = "",
         input_context: Annotated[str, "Optional base text or data to use."] = "",
         target_format: Annotated[str, "html|markdown|json|yaml|text",
-                                 {"enum": ["html", "markdown", "json", "yaml", "text"]}] = "markdown",
+                                 {"enum": ["html", "markdown", "json", "yaml", "text", "xml"]}] = "markdown",
         schema_json: Annotated[str,
                                 "Optional JSON Schema. If provided (and target_format is json|yaml), "
                                 "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
@@ -382,7 +399,7 @@ async def generate_content_llm(
 
     # --------- normalize inputs ---------
     tgt = (target_format or "markdown").lower().strip()
-    if tgt not in ("html", "markdown", "json", "yaml", "text"):
+    if tgt not in ("html", "markdown", "json", "yaml", "text", "xml"):
         tgt = "markdown"
 
     # auto embedding policy
@@ -391,16 +408,22 @@ async def generate_content_llm(
         if tgt in ("markdown", "text"):
             eff_embed = "inline"
         elif tgt == "html":
-            # prefer footnotes when the instruction hints so
-            eff_embed = "inline"  # keep protocol name, but validation will accept footnotes
-        else:
+            eff_embed = "inline"
+        elif tgt in ("json", "yaml"):
             eff_embed = "sidecar"
+        elif tgt == "xml":
+            eff_embed = "none"  # XML has no citation protocol here
+        else:
+            eff_embed = "none"
 
     sids = extract_sids(sources_json)
     have_sources = bool(sids)
-    require_citations = bool(cite_sources and have_sources)
+
+    # XML should not demand citations (no inline protocol defined); disable even if user set cite_sources=True
+    require_citations = bool(cite_sources and have_sources and eff_embed != "none")
 
     end_marker: Annotated[str, "Completion marker appended by the model at the very end."] = "<<<GENERATION FINISHED>>>"
+
     def _scrub_emit_once(s: str) -> str:
         if not s:
             return s
@@ -410,6 +433,13 @@ async def generate_content_llm(
         s = USAGE_TAG_RE.sub("", s)
         return s
 
+    # Local safe-stop guard for taggy formats
+    def _trim_to_last_safe_tag_boundary(s: str) -> str:
+        if not s:
+            return s
+        # best-effort: cut to last '>' to avoid dangling <tag
+        i = s.rfind(">")
+        return s[:i+1] if i != -1 else s
 
     # --------- system prompt (format + citation rules) ---------
     sys_lines = [
@@ -423,18 +453,93 @@ async def generate_content_llm(
         "- Avoid placeholders like 'TBD' unless explicitly requested.",
     ]
 
+    # Shared STRUCTURED COMPLETION CONTRACT for tag-based formats
+    structured_contract = [
+        "STRUCTURED COMPLETION CONTRACT (for HTML/XML):",
+        "- Never cut inside a tag or attribute; always finish the current element.",
+        "- If you approach the token limit, STOP only after writing a complete closing tag.",
+        "- Emit a single, cohesive document; no headers/prefaces outside the document.",
+        "- Do not use triple-backtick fences; output raw markup only.",
+    ]
+
     if tgt == "markdown":
         sys_lines += [
             "MARKDOWN RULES:",
             "- Use proper headings, lists, tables, and code blocks as needed.",
         ]
     elif tgt == "html":
-        sys_lines += [
-            "CRITICAL HTML RULES:",
-            "- Produce a complete HTML document with <html>, <head>, and <body>.",
-            "- Ensure tags are properly closed; keep attributes well-formed.",
-            "- If constrained, reduce content but keep a valid DOM tree; never cut tags in the middle."
-        ]
+        sys_lines += ["""
+    You are an HTML generator. Your output MUST be valid, well-formed HTML.
+    
+    CRITICAL RULE: NEVER produce broken HTML. An incomplete document is worthless.
+    
+    TOKEN BUDGET MANAGEMENT:
+    - You have a token budget for this generation (typically 4000-8000 tokens).
+    - You CANNOT see when you're about to hit the limit.
+    - Strategy: Be CONSERVATIVE. Stop early to guarantee closure.
+    
+    SAFE GENERATION PATTERN:
+    1. Calculate safe capacity:
+       - If user requests N items, plan to deliver 60-70% of N
+       - Reserve 15-20% of your budget for structure and closing tags
+       - Examples:
+         • User wants 50 product cards? Plan for 30-35 complete cards
+         • User wants 100 table rows? Plan for 60-70 complete rows
+         • User wants 25 sections? Plan for 15-18 complete sections
+    
+    2. Structure your document:
+       <!DOCTYPE html>
+       <html>
+       <head>
+         <meta charset="UTF-8">
+         <title>...</title>
+       </head>
+       <body>
+         <!-- Add content here -->
+       </body>
+       </html>
+    
+    3. Generate items in batches:
+       - After every 5 items, remind yourself: "Budget check - can I safely add 5 more AND close?"
+       - If uncertain: STOP and close the document
+       - Better to deliver 10 complete items than 15 broken ones
+    
+    4. Closing sequence (MANDATORY):
+       - Close all open elements (div, section, table, ul, etc.)
+       - Close </body>
+       - Close </html>
+       - Add the completion marker
+       - DO NOT add any content after </html>
+    
+    VALID HTML REQUIREMENTS:
+    - Major tags MUST close: <div>...</div>, <section>...</section>, <table>...</table>
+    - Proper nesting: <div><p></p></div>
+    - Self-closing tags OK: <br>, <img>, <hr>, <meta>, <input>
+    - Attributes quoted: <div class="container">
+    - Special characters escaped in text: &lt; &gt; &amp;
+    - ALWAYS close: <body>, <html>, <head>, <title>, <script>, <style>
+    
+    OUTPUT FORMAT:
+    - Pure HTML only (no markdown, no code fences, no explanations)
+    - Start immediately with <!DOCTYPE html>
+    - End with </html> followed by <<<GENERATION FINISHED>>>
+    - No apologetic messages like "Due to space constraints..."
+    
+    EXAMPLES OF SAFE SCALING:
+    - Request: "100 blog post cards" → Deliver: 60-70 complete cards
+    - Request: "50 employee profiles" → Deliver: 30-35 complete profiles
+    - Request: "25 dashboard widgets" → Deliver: 15-18 complete widgets
+    - Request: "10 detailed sections" → Deliver: 6-7 complete sections
+    
+    FAILURE MODES TO AVOID:
+    ❌ <body><div><p>...</p><div>...  [TRUNCATED - no closing </body></html>]
+    ❌ <html><body>...</body></html>Here's the webpage...  [TEXT AFTER </html>]
+    ❌ <div class="item  [ATTRIBUTE NOT CLOSED]
+    ❌ <table><tr><td>...</td>  [TABLE NOT CLOSED]
+    ✅ <html><body><div>...</div><div>...</div></body></html><<<GENERATION FINISHED>>>
+    
+    REMEMBER: Quality over quantity. Valid HTML with fewer items > Invalid HTML with more items.
+    """]
     elif tgt in ("json", "yaml"):
         sys_lines += [
             f"CRITICAL {tgt.upper()} RULES:",
@@ -444,6 +549,71 @@ async def generate_content_llm(
             "- Avoid triple-fence code blocks for structured output; emit raw JSON/YAML only.",
             "- Do not add commentary outside the structured document.",
         ]
+    elif tgt == "xml":
+        sys_lines += ["""
+    You are an XML generator. Your output MUST be valid, well-formed XML.
+    
+    CRITICAL RULE: NEVER produce broken XML. An incomplete document is worthless.
+    
+    TOKEN BUDGET MANAGEMENT:
+    - You have a token budget for this generation (typically 4000-8000 tokens).
+    - You CANNOT see when you're about to hit the limit.
+    - Strategy: Be CONSERVATIVE. Stop early to guarantee closure.
+    
+    SAFE GENERATION PATTERN:
+    1. Calculate safe capacity:
+       - If user requests N items, plan to deliver 60-70% of N
+       - Reserve 15-20% of your budget for structure and closing tags
+       - Examples:
+         • User wants 50 products? Plan for 30-35 complete products
+         • User wants 100 records? Plan for 60-70 complete records
+         • User wants 25 items? Plan for 15-18 complete items
+    
+    2. Structure your document:
+       <?xml version="1.0" encoding="UTF-8"?>
+       <root>
+         <!-- Add items here -->
+       </root>
+    
+    3. Generate items in batches:
+       - After every 5 items, remind yourself: "Budget check - can I safely add 5 more AND close?"
+       - If uncertain: STOP and close the document
+       - Better to deliver 10 complete items than 15 broken ones
+    
+    4. Closing sequence (MANDATORY):
+       - Close all nested elements from deepest to shallowest
+       - Close the root element
+       - Add the completion marker
+       - DO NOT add any content after the root closing tag
+    
+    VALID XML REQUIREMENTS:
+    - Every opening tag has a closing tag: <item>...</item>
+    - Proper nesting: <outer><inner></inner></outer>
+    - Attributes quoted: <item id="123">
+    - No orphaned tags
+    - Special characters escaped: &lt; &gt; &amp; &quot; &apos;
+    
+    OUTPUT FORMAT:
+    - Pure XML only (no markdown, no code fences, no explanations)
+    - Start immediately with <?xml or <root>
+    - End with </root> followed by <<<GENERATION FINISHED>>>
+    - No apologetic messages like "Due to space constraints..."
+    
+    EXAMPLES OF SAFE SCALING:
+    - Request: "100 book entries" → Deliver: 60-70 complete entries
+    - Request: "50 customer records" → Deliver: 30-35 complete records
+    - Request: "25 configuration items" → Deliver: 15-18 complete items
+    - Request: "10 detailed reports" → Deliver: 6-7 complete reports
+    
+    FAILURE MODES TO AVOID:
+    ❌ <items><item>...</item><item>...  [TRUNCATED - no closing </items>]
+    ❌ <items><item>...</item></items>Here's what I generated...  [TEXT AFTER ROOT]
+    ❌ <items><item id="5  [ATTRIBUTE NOT CLOSED]
+    ✅ <items><item id="1">...</item><item id="2">...</item></items><<<GENERATION FINISHED>>>
+    
+    REMEMBER: Quality over quantity. Valid XML with fewer items > Invalid XML with more items.
+    """]
+
 
     # Citation rules
     if require_citations:
@@ -458,7 +628,6 @@ async def generate_content_llm(
                 "- NEVER place citation tokens inside code fences (```) of any kind.",
                 "- ESPECIALLY: Do NOT put citations inside Mermaid diagrams, JSON blocks, YAML blocks, or any other fenced code.",
                 "- Instead, place citations in the explanatory prose BEFORE or AFTER the code block.",
-                "- Example: 'The timeline shows ... [[S:2]]\n```mermaid\n...(no citations here)...\n```\nNote: Data from source [[S:2]]'",
             ]
         elif tgt == "html" and eff_embed == "inline":
             sys_lines += [
@@ -500,6 +669,7 @@ async def generate_content_llm(
         "Do not add any text after the marker."
     ]
 
+    have_sources = bool(sids)
     if have_sources and not require_citations:
         sys_lines += [
             "",
@@ -625,7 +795,9 @@ async def generate_content_llm(
 
         return blocks
 
-    effective_max_rounds = 1 if tgt in ("json", "yaml", "html") else max_rounds
+    # IMPORTANT: single round for big/structured formats (no continuation)
+    effective_max_rounds = 1 if tgt in ("json", "yaml", "html", "xml") else max_rounds
+    logger.warning(f"Effective max rounds={effective_max_rounds}; format={tgt}")
     for round_idx in range(effective_max_rounds):
         used_rounds = round_idx + 1
 
@@ -635,9 +807,6 @@ async def generate_content_llm(
         stream_buf = ""
         emit_from = 0
         EMIT_HOLDBACK = 32
-        MIN_CHUNK = 12
-        MAX_STALL_SEC = 0.5
-        last_emit_t = time.monotonic()
 
         async def _emit_visible(text: str):
             nonlocal emitted_count
@@ -648,21 +817,6 @@ async def generate_content_llm(
             if get_comm():
                 await emit_delta(out, index=emitted_count, marker="canvas", agent=author, format=tgt or "markdown", artifact_name=artifact_name)
                 emitted_count += 1
-
-        # async def _flush_safe(force: bool = False):
-        #     nonlocal emit_from
-        #     if emit_from >= len(stream_buf):
-        #         return
-        #     safe_end = len(stream_buf) if force else max(emit_from, len(stream_buf) - EMIT_HOLDBACK)
-        #     if safe_end <= emit_from:
-        #         return
-        #     raw_slice = stream_buf[emit_from:safe_end]
-        #     safe_chunk, dangling1 = split_safe_citation_prefix(raw_slice)
-        #     safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
-        #     safe_chunk, dangling2 = _split_safe_marker_prefix(safe_chunk, end_marker)
-        #     if safe_chunk:
-        #         await _emit_visible(safe_chunk)
-        #         emit_from += len(safe_chunk)
 
         async def _flush_safe(force: bool = False):
             nonlocal emit_from
@@ -691,28 +845,12 @@ async def generate_content_llm(
                     emit_from += len(safe_chunk)
 
         async def on_delta(piece: str):
-            nonlocal stream_buf, emitted_count
+            nonlocal stream_buf
             if not piece:
                 return
             round_buf.append(piece)
             stream_buf += piece
-            # Use buffer-based flushing for ALL formats
             await _flush_safe(force=False)
-        # async def on_delta(piece: str):
-        #     nonlocal stream_buf, emitted_count
-        #     if not piece:
-        #         return
-        #     round_buf.append(piece)
-        #     stream_buf += piece
-        #     if tgt == "markdown":
-        #         await _flush_safe(force=False)
-        #     else:
-        #         raw_slice = piece
-        #         safe_chunk, _ = _split_safe_usage_prefix(raw_slice)
-        #         safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
-        #         if get_comm():
-        #             await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="canvas", agent=author, format=tgt or "markdown", artifact_name=artifact_name)
-        #             emitted_count += 1
 
         async def on_complete(_):
 
@@ -796,7 +934,8 @@ async def generate_content_llm(
     # Remove the marker early
     content_raw = _remove_marker(content_raw, end_marker)
 
-    if tgt in ("json", "yaml"):
+    # Unwrap/clean
+    if tgt in ("json", "yaml", "xml"):
         # Always unwrap fenced blocks and strip BOM/ZWSP
         # content_clean = _unwrap_fenced_block(content_raw, lang=tgt)
 
@@ -816,6 +955,14 @@ async def generate_content_llm(
         # honor code_fences only for non-structured formats
         content_clean = _strip_code_fences(content_raw, allow=code_fences)
         content_clean = _strip_bom_zwsp(content_clean)
+
+    # If model returned XML/XSL under HTML, accept and validate as XML
+    if tgt == "html" and content_clean.lstrip().startswith(("<?xml", "<xsl:")):
+        tgt = "xml"
+
+    # Safe-stop guard for taggy formats (avoid partial tail)
+    if tgt in ("html", "xml"):
+        content_clean = _trim_to_last_safe_tag_boundary(content_clean)
 
     # --------- Validation phase ---------
     fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
@@ -965,28 +1112,6 @@ async def generate_content_llm(
                 await emit_delta(out, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
                 emitted_count += 1
 
-        # async def _rep_flush_safe(force: bool = False):
-        #     nonlocal rep_emit_from
-        #     if rep_emit_from >= len(rep_stream_buf):
-        #         return
-        #     safe_end = len(rep_stream_buf) if force else max(rep_emit_from, len(rep_stream_buf) - REP_EMIT_HOLDBACK)
-        #     if safe_end <= rep_emit_from:
-        #         return
-        #     raw_slice = rep_stream_buf[rep_emit_from:safe_end]
-        #
-        #     # 1) avoid cutting citation tokens
-        #     safe_chunk, dangling1 = split_safe_citation_prefix(raw_slice)
-        #
-        #     # 1.5) avoid cutting the hidden [[USAGE:...]] tag
-        #     safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
-        #
-        #     # 2) avoid cutting the end-marker
-        #     safe_chunk, dangling2 = _split_safe_marker_prefix(safe_chunk, end_marker)
-        #
-        #     if safe_chunk:
-        #         await _rep_emit_visible(safe_chunk)
-        #         rep_emit_from += len(safe_chunk)
-
         async def _rep_flush_safe(force: bool = False):
             nonlocal rep_emit_from
             if rep_emit_from >= len(rep_stream_buf):
@@ -1022,24 +1147,6 @@ async def generate_content_llm(
             # Use buffer-based flushing for ALL formats
             await _rep_flush_safe(force=False)
 
-        # async def on_delta_repair(piece: str):
-        #     nonlocal rep_stream_buf, emitted_count
-        #     if not piece:
-        #         return
-        #     repair_buf.append(piece)         # RAW (unmodified)
-        #     rep_stream_buf += piece          # for visible stream
-        #     if tgt == "markdown":
-        #         await _rep_flush_safe(force=False)
-        #     else:
-        #         # non-md: emit immediately, but still avoid cutting a marker
-        #         raw_slice = piece
-        #         safe_chunk, _ = _split_safe_usage_prefix(raw_slice)
-        #         safe_chunk, _ = _split_safe_marker_prefix(raw_slice, end_marker)
-        #
-        #         if get_comm():
-        #             await emit_delta(_scrub_emit_once(safe_chunk), index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
-        #             emitted_count += 1
-
         async def on_complete_repair(_):
             nonlocal emitted_count
             # FINAL flush for ALL formats
@@ -1074,6 +1181,14 @@ async def generate_content_llm(
 
         # Re-validate after repair
         content_clean = repaired or content_clean
+
+        # Accept XML if HTML-like check failed but content is XML
+        if tgt == "html" and content_clean.lstrip().startswith(("<?xml", "<xsl:")):
+            tgt = "xml"
+
+        if tgt in ("html", "xml"):
+            content_clean = _trim_to_last_safe_tag_boundary(content_clean)
+
         fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
 
         if tgt == "json":
