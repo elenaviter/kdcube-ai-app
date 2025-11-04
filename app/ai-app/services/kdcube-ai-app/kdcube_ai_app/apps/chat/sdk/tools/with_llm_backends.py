@@ -24,6 +24,16 @@ logger = logging.getLogger("with_llm_backends")
 
 
 _ZWSP = "\u200b"
+_BOM  = "\ufeff"
+
+def _rm_invis(s: str) -> str:
+    # strip zero-width spaces and BOM which break token regexes
+    # also collapse stray NBSPs around brackets/colon (safe)
+    if not s:
+        return s
+    s = s.replace(_ZWSP, "").replace(_BOM, "")
+    return s
+
 def _strip_bom_zwsp(s: str) -> str:
     # remove UTF-8 BOM and zero-width spaces that models sometimes prepend
     if not s:
@@ -372,7 +382,8 @@ async def generate_content_llm(
         continuation_hint: Annotated[str, "Optional extra hint used on continuation rounds."] = "",
         strict: Annotated[bool, "Require format OK and (if provided) schema OK and citations (if requested)."] = True,
         role: str = "tool.generator",
-        cache_instruction: bool=True
+        cache_instruction: bool=True,
+        channel_to_stream: Optional[str]="canvas",
 ) -> Annotated[str, 'JSON string: {ok, content, format, finished, retries, reason, stats, sources_used: [ { "sid": 1, "url": "...", "title": "...", "text": "..." }, ... ]}']:
     """
     Returns JSON string:
@@ -423,6 +434,7 @@ async def generate_content_llm(
 
     # XML should not demand citations (no inline protocol defined); disable even if user set cite_sources=True
     require_citations = bool(cite_sources and have_sources and eff_embed != "none")
+    allowed_sids_line = f"ALLOWED SIDS: {', '.join(str(x) for x in sorted(sids))}" if sids else "ALLOWED SIDS: (none)"
 
     end_marker: Annotated[str, "Completion marker appended by the model at the very end."] = "<<<GENERATION FINISHED>>>"
 
@@ -617,7 +629,14 @@ async def generate_content_llm(
     REMEMBER: Quality over quantity. Valid XML with fewer items > Invalid XML with more items.
     """]
 
-
+    strict_source_boundary = [
+        "",
+        "STRICT SOURCE BOUNDARY:",
+        "- You may ONLY cite sources whose SID is listed below.",
+        "- NEVER invent or reference any SID not listed.",
+        "- If a claim cannot be supported by the provided sources, either omit the claim or present it without a citation.",
+        allowed_sids_line,
+    ]
     # Citation rules
     if require_citations:
         if tgt in ("markdown", "text") and eff_embed == "inline":
@@ -632,6 +651,7 @@ async def generate_content_llm(
                 "- ESPECIALLY: Do NOT put citations inside Mermaid diagrams, JSON blocks, YAML blocks, or any other fenced code.",
                 "- Instead, place citations in the explanatory prose BEFORE or AFTER the code block.",
             ]
+            sys_lines += strict_source_boundary
         elif tgt == "html" and eff_embed == "inline":
             sys_lines += [
                 "",
@@ -639,6 +659,7 @@ async def generate_content_llm(
                 '- Insert <sup class="cite" data-sids="1,3">[S:1,3]</sup> immediately after the sentence/phrase introducing NEW or materially CHANGED facts.',
                 "- Use only provided sid values. Never invent.",
             ]
+            sys_lines += strict_source_boundary
         elif tgt in ("json", "yaml") and eff_embed == "sidecar":
             sys_lines += [
                 "",
@@ -651,6 +672,7 @@ async def generate_content_llm(
                 sys_lines += [
                     "- Inline tokens [[S:n]] inside string fields are permitted but sidecar remains required."
                 ]
+                sys_lines += strict_source_boundary
 
         sys_lines+= [
             (
@@ -663,7 +685,6 @@ async def generate_content_llm(
                 "- Keep sources_json restricted to sources actually used for claims; never force citations just to satisfy a requirement.\n"
             )
         ]
-
 
     # end marker rule
     sys_lines += [
@@ -824,9 +845,10 @@ async def generate_content_llm(
             if not text:
                 return
             text = _scrub_emit_once(text)
+            text = _rm_invis(text)
             out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
             if get_comm():
-                await emit_delta(out, index=emitted_count, marker="canvas", agent=author, format=tgt or "markdown", artifact_name=artifact_name)
+                await emit_delta(out, index=emitted_count, marker=channel_to_stream, agent=author, format=tgt or "markdown", artifact_name=artifact_name)
                 emitted_count += 1
 
         async def _flush_safe(force: bool = False):
@@ -870,7 +892,7 @@ async def generate_content_llm(
             #    await _flush_safe(force=True)
             await _flush_safe(force=True)
             emitted_count += 1
-            await emit_delta("", completed=True, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
+            await emit_delta("", completed=True, index=emitted_count, marker=channel_to_stream, agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
 
         role = role or "tool.generator"
         client = _SERVICE.get_client(role)
@@ -1118,9 +1140,10 @@ async def generate_content_llm(
             if not text:
                 return
             text = _scrub_emit_once(text)                     # ← scrub here
+            text = _rm_invis(text)
             out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
             if get_comm():
-                await emit_delta(out, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
+                await emit_delta(out, index=emitted_count, marker=channel_to_stream, agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
                 emitted_count += 1
 
         async def _rep_flush_safe(force: bool = False):
@@ -1163,7 +1186,7 @@ async def generate_content_llm(
             # FINAL flush for ALL formats
             await _rep_flush_safe(force=True)
             emitted_count += 1
-            await emit_delta("", completed=True, index=emitted_count, marker="canvas", agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
+            await emit_delta("", completed=True, index=emitted_count, marker=channel_to_stream, agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
 
         async with with_accounting(bundle_id,
                                    track_id=track_id,
@@ -1440,7 +1463,8 @@ async def sources_reconciler(
         strict=True,
         role="tool.source.reconciler",
         cache_instruction=True,
-        artifact_name=None
+        artifact_name=None,
+        channel_to_stream="debug"
     )
 
     # --- Parse tool envelope ---
@@ -1633,7 +1657,8 @@ TODAY: {now_iso}
             strict=True,
             role="tool.sources.filter.by.content",
             cache_instruction=True,
-            artifact_name=None
+            artifact_name=None,
+            channel_to_stream="debug"
         )
     except Exception:
         logger.exception("sources_content_filter: LLM call failed; keeping all sources")
