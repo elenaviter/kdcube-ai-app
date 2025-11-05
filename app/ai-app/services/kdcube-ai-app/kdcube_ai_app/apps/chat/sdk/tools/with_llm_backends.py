@@ -429,6 +429,9 @@ async def generate_content_llm(
         else:
             eff_embed = "none"
 
+    if max_tokens < 5500:
+        if tgt in ("html", "xml"):
+            max_tokens = 5500
     sids = extract_sids(sources_json)
     have_sources = bool(sids)
 
@@ -763,7 +766,11 @@ async def generate_content_llm(
         digest = "\n\n---\n\n".join(parts)[:total_budget]
 
     sys_prompt = "\n".join(sys_lines)
-    line_with_token_budget = f"You have {max_tokens} tokens to accomplish this generation task. You must plan the generation content that fully fit this budget."
+
+    line_with_token_budget = f"CRITICAL RULE FOR TOKENS USAGE AND DATA INTEGRITY: You have {max_tokens} tokens to accomplish this generation task. You must plan the generation content that fully fit this budget."
+    if tgt in ("html", "xml", "json", "yaml"):
+        line_with_token_budget += "Your output must pass the format validation."
+
     system_msg = create_cached_system_message([
         {"text": basic_sys_instruction, "cache": True},
         {"text": target_format_sys_instruction, "cache": False},
