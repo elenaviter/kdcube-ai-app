@@ -489,6 +489,8 @@ async def generate_content_llm(
         sys_lines += ["""
     You are an HTML generator. Your output MUST be valid, well-formed HTML.
     
+    ⚠️ CRITICAL FORMAT RULE: Output PURE HTML ONLY. NO markdown. NO code fences (```). NO explanations.
+    Start IMMEDIATELY with <!DOCTYPE html> or the opening tag. End with </html> and the completion marker.
     CRITICAL RULE: NEVER produce broken HTML. An incomplete document is worthless.
     
     TOKEN BUDGET MANAGEMENT:
@@ -975,7 +977,7 @@ async def generate_content_llm(
     content_raw = _remove_marker(content_raw, end_marker)
 
     # Unwrap/clean
-    if tgt in ("json", "yaml", "xml"):
+    if tgt in ("json", "yaml", "xml", "html"):
         # Always unwrap fenced blocks and strip BOM/ZWSP
         # content_clean = _unwrap_fenced_block(content_raw, lang=tgt)
 
