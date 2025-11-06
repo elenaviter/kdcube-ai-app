@@ -438,7 +438,7 @@ class ContextRAGClient:
         payload = {"reaction": reaction}
 
         # Build tags with origin
-        tags = ["kind:turn.log.reaction", f"turn:{turn_id}", f"origin:{origin}"]
+        tags = ["artifact:turn.log.reaction", f"turn:{turn_id}", f"origin:{origin}"]
         if track_id:
             tags.append(f"track:{track_id}")
 
@@ -797,6 +797,282 @@ class ContextRAGClient:
             })
 
         return {"user_id": user_id, "conversation_id": conversation_id, "turns": out_turns}
+
+    async def fetch_feedback_conversations_in_period(
+            self,
+            *,
+            user_id: str,
+            tenant: str,
+            project: str,
+            start_iso: str,
+            end_iso: str,
+            include_turns: bool = False,
+            limit: int = 100,
+            cursor: Optional[str] = None,
+            bundle_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Aggregate conversations (and optionally turns) that have feedback reactions within a time window,
+        using ONLY reaction artifacts (artifact:turn.log.reaction).
+
+        Returns:
+          {
+            "tenant": tenant,
+            "project": project,
+            "window": {"start": start_iso, "end": end_iso},
+            "items": [
+              {
+                "conversation_id": "...",
+                "last_activity_at": "...",  # from list_user_conversations (overall) or fallback to last reaction ts
+                "started_at": "...",        # from list_user_conversations
+                "feedback_counts": {
+                   "total": N, "user": a, "machine": b, "ok": c, "not_ok": d, "neutral": e
+                },
+                # present only when include_turns=True
+                "turns": [
+                  {
+                    "turn_id": "...",
+                    "ts": "<first reaction ts in window for this turn>",
+                    "feedbacks": [
+                      {
+                        "turn_id": "...",
+                        "ts": "...",
+                        "text": "...",
+                        "reaction": "ok" | "not_ok" | "neutral" | None,
+                        "confidence": 1.0,
+                        "origin": "user" | "machine",
+                        "rn": "<meta.rn>"
+                      },
+                      ...
+                    ]
+                  },
+                  ...
+                ]
+              },
+              ...
+            ],
+            "next_cursor": "opaque-or-null"
+          }
+        """
+        import base64, json
+        import datetime as _dt
+
+        # ------- helpers -------
+        def _parse_iso(ts: str) -> _dt.datetime:
+            s = ts.strip()
+            if s.endswith("Z"):
+                s = s[:-1] + "+00:00"
+            return _dt.datetime.fromisoformat(s)
+
+        def _encode_cursor(idx: int) -> str:
+            payload = json.dumps({"i": int(idx)}, separators=(",", ":")).encode("utf-8")
+            return base64.urlsafe_b64encode(payload).decode("ascii")
+
+        def _decode_cursor(cur: Optional[str]) -> int:
+            if not cur:
+                return 0
+            try:
+                data = base64.urlsafe_b64decode(cur.encode("ascii"))
+                obj = json.loads(data.decode("utf-8"))
+                return int(obj.get("i", 0))
+            except Exception:
+                return 0
+
+        # ------- validate window -------
+        start_dt = _parse_iso(start_iso)
+        end_dt = _parse_iso(end_iso)
+        if end_dt < start_dt:
+            raise ValueError("end must be >= start")
+
+        # ------- pull ONLY reaction artifacts in window, across user's conversations -------
+        reactions_res = await self.search(
+            query=None,
+            kinds=("artifact:turn.log.reaction",),
+            scope="user",               # across all conversations for this user
+            days=3650,                  # wide, bounded by timestamp_filters
+            top_k=5000,                 # generous cap; grouping will reduce
+            include_deps=False,
+            with_payload=True,
+            roles=("artifact",),
+            sort="recency",
+            timestamp_filters=[
+                {"op": ">=", "value": start_dt.isoformat()},
+                {"op": "<=", "value": end_dt.isoformat()},
+            ],
+            user_id=user_id,
+            conversation_id=None,
+            bundle_id=bundle_id,
+        )
+        items = reactions_res.get("items") or []
+        if not items:
+            return {
+                "tenant": tenant,
+                "project": project,
+                "window": {"start": start_iso, "end": end_iso},
+                "items": [],
+                "next_cursor": None,
+            }
+
+        # ------- group by conversation, then by turn, aggregating counts and feedbacks -------
+        by_conv: Dict[str, Dict[str, Any]] = {}
+        for it in items:
+            # reaction payload layout (as in your example)
+            # it['payload'] = {
+            #   'conversation_id': ...,
+            #   'payload': {'reaction': {...}},
+            #   'meta': {'rn': ..., 'turn_id': ... , 'origin': ...},
+            #   ...
+            # }
+            p = (it.get("payload") or {})
+            conversation_id = p.get("conversation_id")
+            if not conversation_id:
+                logger.warning("fetch_feedback_conversations_in_period: missing conversation_id in reaction payload; skipping")
+                continue
+
+            meta = p.get("meta") or {}
+            rn = meta.get("rn")  # required in each feedback item
+            # Prefer meta.turn_id; fall back to top-level turn_id
+            tid = meta.get("turn_id") or it.get("turn_id")
+            if not tid:
+                # If somehow no turn_id, skip
+                logger.warning("fetch_feedback_conversations_in_period: missing turn_id in reaction; skipping")
+                continue
+
+            reaction_obj = (p.get("payload") or {}).get("reaction") or {}
+            # Use reaction.ts when present (authoritative), fall back to index ts
+            ts = reaction_obj.get("ts") or it.get("ts")
+            # Normalize fields
+            origin = (reaction_obj.get("origin") or "").strip() or None
+            reaction_val = reaction_obj.get("reaction")  # "ok" | "not_ok" | "neutral" | None
+            confidence = reaction_obj.get("confidence", 0.0)
+            text = reaction_obj.get("text", "")
+
+            # Conversation bucket
+            conv_bucket = by_conv.setdefault(conversation_id, {
+                "conversation_id": conversation_id,
+                "counts": {"total": 0, "user": 0, "machine": 0, "ok": 0, "not_ok": 0, "neutral": 0},
+                "period_last_ts": None,  # latest reaction ts seen in window for this conversation
+                "turns": {},             # turn_id -> { "first_ts": ..., "feedbacks": [ ... ] }
+            })
+
+            # Update conversation-level counts
+            conv_bucket["counts"]["total"] += 1
+            if origin == "user":
+                conv_bucket["counts"]["user"] += 1
+            elif origin == "machine":
+                conv_bucket["counts"]["machine"] += 1
+            if reaction_val == "ok":
+                conv_bucket["counts"]["ok"] += 1
+            elif reaction_val == "not_ok":
+                conv_bucket["counts"]["not_ok"] += 1
+            elif reaction_val in (None, "neutral"):
+                conv_bucket["counts"]["neutral"] += 1
+
+            # Update conversation's latest ts
+            if ts and ((conv_bucket["period_last_ts"] is None) or (ts > conv_bucket["period_last_ts"])):
+                conv_bucket["period_last_ts"] = ts
+
+            # Turn bucket
+            t = conv_bucket["turns"].setdefault(tid, {
+                "turn_id": tid,
+                "first_ts": ts,     # earliest reaction ts for this turn within window
+                "feedbacks": [],    # list of reaction-derived feedbacks
+            })
+            if ts and (t["first_ts"] is None or ts < t["first_ts"]):
+                t["first_ts"] = ts
+
+            # Append feedback (include rn)
+            t["feedbacks"].append({
+                "turn_id": tid,
+                "ts": ts,
+                "text": text,
+                "reaction": reaction_val,
+                "confidence": confidence,
+                "origin": origin,
+                "rn": rn,
+            })
+
+        if not by_conv:
+            return {
+                "tenant": tenant,
+                "project": project,
+                "window": {"start": start_iso, "end": end_iso},
+                "items": [],
+                "next_cursor": None,
+            }
+
+        # ------- enrich with conversation meta (started_at / last_activity_at) -------
+        conv_meta_rows = await self.idx.list_user_conversations(
+            user_id=user_id,
+            since=None,
+            limit=None,
+            days=3650,
+            include_conv_start_text=False,
+            bundle_id=bundle_id,
+        )
+        meta_map = {r["conversation_id"]: r for r in (conv_meta_rows or [])}
+
+        # Build conversation list (sorted by last_activity desc, fallback to period_last_ts)
+        conv_list: List[Dict[str, Any]] = []
+        for cid, data in by_conv.items():
+            meta = meta_map.get(cid) or {}
+            conv_list.append({
+                "conversation_id": cid,
+                "started_at": meta.get("started_at"),
+                "last_activity_at": meta.get("last_activity_at") or data.get("period_last_ts"),
+                "counts": data["counts"],
+                "turns": data["turns"],  # keep dict for now (turn_id -> {...})
+            })
+
+        conv_list.sort(key=lambda x: (x.get("last_activity_at") or ""), reverse=True)
+
+        # ------- pagination over conversations -------
+        start_idx = _decode_cursor(cursor)
+        end_idx = min(len(conv_list), start_idx + max(1, int(limit)))
+        page = conv_list[start_idx:end_idx]
+        next_cursor = _encode_cursor(end_idx) if end_idx < len(conv_list) else None
+
+        # ------- build final items -------
+        items_out: List[Dict[str, Any]] = []
+        for row in page:
+            turns_out = None
+            if include_turns:
+                # Convert {turn_id: {...}} → list, sort by first_ts asc for readability,
+                # and sort feedbacks within each turn by ts asc.
+                turns_map = row["turns"] or {}
+                turns_out = []
+                for tid, tb in turns_map.items():
+                    fbs = list(tb.get("feedbacks") or [])
+                    fbs.sort(key=lambda fb: fb.get("ts") or "")
+                    turns_out.append({
+                        "turn_id": tid,
+                        "ts": tb.get("first_ts"),
+                        "feedbacks": fbs,
+                    })
+                turns_out.sort(key=lambda t: t.get("ts") or "")
+
+            items_out.append({
+                "conversation_id": row["conversation_id"],
+                "last_activity_at": row["last_activity_at"],
+                "started_at": row["started_at"],
+                "feedback_counts": {
+                    "total": row["counts"]["total"],
+                    "user": row["counts"]["user"],
+                    "machine": row["counts"]["machine"],
+                    "ok": row["counts"]["ok"],
+                    "not_ok": row["counts"]["not_ok"],
+                    "neutral": row["counts"]["neutral"],
+                },
+                **({"turns": turns_out} if include_turns else {}),
+            })
+
+        return {
+            "tenant": tenant,
+            "project": project,
+            "window": {"start": start_iso, "end": end_iso},
+            "items": items_out,
+            "next_cursor": next_cursor,
+        }
 
 
     async def save_artifact(

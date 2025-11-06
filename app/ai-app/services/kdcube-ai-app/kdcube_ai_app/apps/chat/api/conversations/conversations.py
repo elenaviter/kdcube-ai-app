@@ -91,6 +91,45 @@ class ConversationFeedbackTurnsRequest(BaseModel):
     )
     days: int = Field(default=365, ge=1, le=3650)
 
+
+class FeedbackPeriodWindow(BaseModel):
+    start: str
+    end: str
+
+class FeedbackCounts(BaseModel):
+    total: int
+    user: int
+    machine: int
+    ok: int
+    not_ok: int
+    neutral: int
+
+class FeedbackTurnSummary(BaseModel):
+    turn_id: str
+    ts: Optional[str] = None
+    feedbacks: Optional[List[dict]] = None   # structured from turn_log.feedbacks[]
+
+class FeedbackConversationItem(BaseModel):
+    conversation_id: str
+    last_activity_at: Optional[str] = None
+    started_at: Optional[str] = None
+    feedback_counts: FeedbackCounts
+    turns: Optional[List[FeedbackTurnSummary]] = None
+
+class ConversationsInPeriodRequest(BaseModel):
+    start: str = Field(..., description="ISO8601 timestamp, inclusive")
+    end: str = Field(..., description="ISO8601 timestamp, inclusive")
+    include_turns: bool = Field(default=False, description="When true, returns turn details with feedbacks")
+    limit: int = Field(default=100, ge=1, le=500, description="Max conversations to return")
+    cursor: Optional[str] = Field(default=None, description="Opaque pagination cursor")
+
+class ConversationsInPeriodResponse(BaseModel):
+    tenant: str
+    project: str
+    window: FeedbackPeriodWindow
+    items: List[FeedbackConversationItem]
+    next_cursor: Optional[str] = None
+
 # -------------------- Endpoints --------------------
 
 @router.get("/{tenant}/{project}", response_model=ConversationListResponse)
@@ -415,3 +454,93 @@ async def fetch_turns_with_feedbacks(
     except Exception as e:
         logger.error(f"Failed to fetch turns-with-feedbacks for conversation={conversation_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to fetch feedback turns: {str(e)}")
+
+@router.post("/{tenant}/{project}/feedback/conversations-in-period", response_model=ConversationsInPeriodResponse)
+async def conversations_with_feedbacks_in_period(
+        tenant: str,
+        project: str,
+        req: ConversationsInPeriodRequest = Body(...),
+        session: UserSession = Depends(get_user_session_dependency()),
+):
+    """
+    Aggregate conversations (and optionally turns) that have feedback reactions within a time window.
+
+    Input:
+      - start/end (ISO8601, inclusive)
+      - include_turns: when true, also materializes involved turns and returns `feedbacks` + `reactions`
+      - limit/cursor: pagination over conversations
+
+    Output:
+      - items[] per conversation with feedback_counts {total,user,machine,ok,not_ok,neutral}
+      - optionally turns[] with per-turn summaries (id, ts, feedbacks[], reactions[])
+      - next_cursor for pagination
+
+    Notes:
+      - Scopes to the authenticated user and the given {tenant}/{project}
+      - Counts are derived from artifacts tagged 'kind:turn.log.reaction'
+      - Turn details (when include_turns=true) are materialized similarly to /turns-with-feedbacks
+    """
+    if not session.user_id:
+        raise HTTPException(status_code=401, detail="No user in session")
+
+    # Validate & parse timestamps
+    try:
+        start_dt = datetime.datetime.fromisoformat(req.start.replace("Z", "+00:00"))
+        end_dt = datetime.datetime.fromisoformat(req.end.replace("Z", "+00:00"))
+        if end_dt < start_dt:
+            raise ValueError("end must be >= start")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid start/end timestamp format (use ISO8601)")
+
+    try:
+        # Keep the implementation detail in the conversation_browser to match your existing architecture
+        # and to allow swapping storage/index strategies without touching the API surface.
+        spec_resolved = resolve_bundle(None, override=None)
+        bundle_id = spec_resolved.id
+
+        result = await router.state.conversation_browser.fetch_feedback_conversations_in_period(
+            user_id=session.user_id,
+            tenant=tenant,
+            project=project,
+            start_iso=req.start,
+            end_iso=req.end,
+            include_turns=bool(req.include_turns),
+            limit=int(req.limit),
+            cursor=(req.cursor or None),
+            bundle_id=bundle_id,
+        )
+
+        # Expected shape of `result`:
+        # {
+        #   "tenant": "...",
+        #   "project": "...",
+        #   "window": { "start": "...", "end": "..." },
+        #   "items": [
+        #       {
+        #         "conversation_id": "...",
+        #         "last_activity_at": "...",
+        #         "started_at": "...",
+        #         "feedback_counts": { "total": 7, "user": 3, "machine": 4, "ok": 4, "not_ok": 2, "neutral": 1 },
+        #         "turns": [
+        #           {
+        #             "turn_id": "...",
+        #             "ts": "...",
+        #             "feedbacks": [ ... ],   # from turn_log.payload.turn_log.feedbacks[]
+        #           }
+        #         ]
+        #       }
+        #   ],
+        #   "next_cursor": "opaque-string-or-null"
+        # }
+
+        # Validate minimal keys; raise if backend returns unexpected shape
+        if not isinstance(result, dict) or "items" not in result or "window" not in result:
+            raise RuntimeError("Backend returned unexpected shape")
+
+        return ConversationsInPeriodResponse(**result)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to summarize conversations with feedbacks in period: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to summarize feedbacks: {str(e)}")
