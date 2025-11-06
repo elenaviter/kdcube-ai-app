@@ -138,6 +138,8 @@ class CSSParser:
         return rules
 
     def _parse_color(self, color_str: str) -> Optional[RGBColor]:
+        if not color_str:
+            return None
         s = color_str.strip().lower()
         if s.startswith('#'):
             s = s[1:]
