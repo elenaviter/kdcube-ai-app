@@ -704,7 +704,13 @@ def estimate_content_height(elements: List[Dict], base_font_size: Pt) -> float:
     return total_in
 
 
-def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
+def render_slide(
+        prs: Presentation,
+        slide_data: Dict[str, Any],
+        css_parser,
+        sources_map: Dict[int, Dict[str, str]],
+        resolve_citations: bool
+):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
     title_text = slide_data.get('title', '')
@@ -753,20 +759,23 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
         subtitle_box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, sub_h)
         tf = subtitle_box.text_frame
         p = tf.paragraphs[0]
-        r = p.add_run(); r.text = subtitle_text
-        r.font.size = subtitle_style.font_size or Pt(18 * scale_factor)
-        r.font.italic = subtitle_style.italic
-        if subtitle_style.color:
-            r.font.color.rgb = subtitle_style.color
+        # Use sources-aware emitter for any links/citations in subtitle
+        _emit_text_with_links_and_citations(
+            p,
+            text=subtitle_text,
+            default_size_pt=(subtitle_style.font_size.pt if subtitle_style.font_size else 18 * scale_factor),
+            bold=False,
+            italic=bool(subtitle_style.italic),
+            color=(subtitle_style.color or DEFAULT_COLORS.get('subtitle')),
+            sources_map=sources_map,
+            resolve_citations=resolve_citations
+        )
         y += sub_h + Inches(0.12 * scale_factor)
 
     # CONTENT
     base_font_pt = 18 * scale_factor
 
     for elem in elements:
-        # clm = elem.get('columns', [])
-        # print("COLUMNS:", len(clm), "L:", len(clm[0]) if clm else 0,
-        #       "R:", len(clm[1]) if len(clm) > 1 else 0)
         if not elem:
             continue
         elem_type = elem.get('type')
@@ -776,16 +785,21 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
         if elem_type in ('h2', 'h3'):
             fs = (style.font_size.pt if style.font_size else (28 if elem_type == 'h2' else 22)) * scale_factor
             box_h = _estimate_runs_height_in_inches(runs, fs, page_w_in, (style.line_height or 1.2))
-            # drawing width stays as Length
             box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, box_h)
             tf = box.text_frame; tf.word_wrap = True
             p = tf.paragraphs[0]
-            for run_data in runs:
-                rr = p.add_run(); rr.text = run_data['text']; rr.font.size = Pt(fs); rr.font.bold = True
-                if run_data.get('color'):
-                    rr.font.color.rgb = run_data['color']
-                elif style.color:
-                    rr.font.color.rgb = style.color
+            # Force bold for headings, but still resolve links/citations inside
+            for run_data in runs or [{'text': ''}]:
+                _emit_text_with_links_and_citations(
+                    p,
+                    text=run_data.get('text', ''),
+                    default_size_pt=fs,
+                    bold=True,
+                    italic=bool(run_data.get('italic', False)),
+                    color=(run_data.get('color') or style.color or DEFAULT_COLORS.get('text')),
+                    sources_map=sources_map,
+                    resolve_citations=resolve_citations
+                )
             y += box_h + Inches(0.08 * scale_factor)
 
         elif elem_type == 'list':
@@ -800,11 +814,14 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                 box = slide.shapes.add_textbox(MARGIN + Inches(0.25), y, w_len, h)
                 tf = box.text_frame; tf.word_wrap = True
                 p = tf.paragraphs[0]; p.level = 0
-                for run_data in runs_i:
-                    rr = p.add_run(); rr.text = run_data['text']; rr.font.size = Pt(fs)
-                    rr.font.bold = run_data.get('bold', False)
-                    if run_data.get('color'):
-                        rr.font.color.rgb = run_data['color']
+                _emit_runs_with_sources(
+                    p,
+                    runs_i,
+                    default_size_pt=fs,
+                    fallback_color=DEFAULT_COLORS.get('text'),
+                    sources_map=sources_map,
+                    resolve_citations=resolve_citations
+                )
                 y += h + Inches(0.06 * scale_factor)
             y += Inches(0.06 * scale_factor)
 
@@ -838,15 +855,15 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
             text_box = slide.shapes.add_textbox(MARGIN + pad_l, y + pad_t, content_w_len, box_h - pad_t - pad_b)
             tf = text_box.text_frame; tf.word_wrap = True
             p = tf.paragraphs[0]
-            for run_data in runs:
-                rr = p.add_run(); rr.text = run_data['text']; rr.font.size = Pt(fs); rr.font.bold = run_data.get('bold', False)
-                if run_data.get('color'):
-                    rr.font.color.rgb = run_data['color']
-                elif style.color:
-                    rr.font.color.rgb = style.color
-
+            _emit_runs_with_sources(
+                p,
+                runs,
+                default_size_pt=fs,
+                fallback_color=(style.color or DEFAULT_COLORS.get('text')),
+                sources_map=sources_map,
+                resolve_citations=resolve_citations
+            )
             y += box_h + Inches(0.12 * scale_factor)
-
 
         elif elem_type == 'columns':
             gap_in = elem.get('gap_in', 0.0)
@@ -875,7 +892,7 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
             csR, padR_l, padR_r, padR_t, padR_b, innerR_in, innerR_len, colH_len_R = compute_col_dims(colR)
 
             # draw backgrounds first (only if there is some content height)
-            min_draw_in = 0.05  # ~0.05" threshold to avoid zero-height ghosts
+            min_draw_in = 0.05
             if csL.background and colH_len_L.inches > min_draw_in:
                 bgL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, col_w_len, colH_len_L)
                 bgL.fill.solid(); bgL.fill.fore_color.rgb = csL.background
@@ -885,17 +902,7 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                 bgR.fill.solid(); bgR.fill.fore_color.rgb = csR.background
                 bgR.line.fill.background()
 
-            # # draw backgrounds first (so they sit behind text)
-            # if csL.background:
-            #     bgL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, col_w_len, colH_len_L)
-            #     bgL.fill.solid(); bgL.fill.fore_color.rgb = csL.background
-            #     bgL.line.fill.background()
-            # if csR.background:
-            #     bgR = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, right_x, y, col_w_len, colH_len_R)
-            #     bgR.fill.solid(); bgR.fill.fore_color.rgb = csR.background
-            #     bgR.line.fill.background()
-
-            # optional: support border-left on column blocks
+            # optional left borders
             if csL.border_left_color and csL.border_left_width:
                 bL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, csL.border_left_width, colH_len_L)
                 bL.fill.solid(); bL.fill.fore_color.rgb = csL.border_left_color; bL.line.fill.background()
@@ -903,7 +910,6 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                 bR = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, right_x, y, csR.border_left_width, colH_len_R)
                 bR.fill.solid(); bR.fill.fore_color.rgb = csR.border_left_color; bR.line.fill.background()
 
-            # now render content inside the padded area
             def render_into(x_left_len, y_top_len, avail_w_len, avail_w_in, elements_in_col):
                 y_col = y_top_len
                 base_pt = 18 * scale_factor
@@ -915,10 +921,18 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                         box = slide.shapes.add_textbox(x_left_len, y_col, avail_w_len, h)
                         tf = box.text_frame; tf.word_wrap = True
                         p = tf.paragraphs[0]
-                        for rd in b.get('runs', []):
-                            rr = p.add_run(); rr.text = rd['text']; rr.font.size = Pt(fs); rr.font.bold = True
-                            if rd.get('color'): rr.font.color.rgb = rd['color']
-                            elif bs.color: rr.font.color.rgb = bs.color
+                        # Force bold for headings inside columns
+                        for rd in b.get('runs', []) or [{'text': ''}]:
+                            _emit_text_with_links_and_citations(
+                                p,
+                                text=rd.get('text', ''),
+                                default_size_pt=fs,
+                                bold=True,
+                                italic=bool(rd.get('italic', False)),
+                                color=(rd.get('color') or bs.color or DEFAULT_COLORS.get('text')),
+                                sources_map=sources_map,
+                                resolve_citations=resolve_citations
+                            )
                         y_col += h + Inches(0.06 * scale_factor)
 
                     elif bt == 'paragraph':
@@ -927,10 +941,14 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                         box = slide.shapes.add_textbox(x_left_len, y_col, avail_w_len, h)
                         tf = box.text_frame; tf.word_wrap = True
                         p = tf.paragraphs[0]
-                        for rd in b.get('runs', []):
-                            rr = p.add_run(); rr.text = rd['text']; rr.font.size = Pt(fs); rr.font.bold = rd.get('bold', False)
-                            if rd.get('color'): rr.font.color.rgb = rd['color']
-                            elif bs.color: rr.font.color.rgb = bs.color
+                        _emit_runs_with_sources(
+                            p,
+                            b.get('runs', []),
+                            default_size_pt=fs,
+                            fallback_color=(bs.color or DEFAULT_COLORS.get('text')),
+                            sources_map=sources_map,
+                            resolve_citations=resolve_citations
+                        )
                         y_col += h + Inches(0.04 * scale_factor)
 
                     elif bt == 'list':
@@ -942,9 +960,14 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                             box = slide.shapes.add_textbox(x_left_len + Inches(0.25), y_col, w_len, h)
                             tf = box.text_frame; tf.word_wrap = True
                             p = tf.paragraphs[0]; p.level = 0
-                            for rd in it.get('runs', []):
-                                rr = p.add_run(); rr.text = rd['text']; rr.font.size = Pt(fs); rr.font.bold = rd.get('bold', False)
-                                if rd.get('color'): rr.font.color.rgb = rd['color']
+                            _emit_runs_with_sources(
+                                p,
+                                it.get('runs', []),
+                                default_size_pt=fs,
+                                fallback_color=DEFAULT_COLORS.get('text'),
+                                sources_map=sources_map,
+                                resolve_citations=resolve_citations
+                            )
                             y_col += h + Inches(0.04 * scale_factor)
                         y_col += Inches(0.02 * scale_factor)
 
@@ -969,11 +992,16 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                         tb = slide.shapes.add_textbox(x_left_len + pad_l, y_col + pad_t, inner_w_len, box_h - pad_t - pad_b)
                         tf = tb.text_frame; tf.word_wrap = True
                         p = tf.paragraphs[0]
-                        for rd in b.get('runs', []):
-                            rr = p.add_run(); rr.text = rd['text']; rr.font.size = Pt(fs); rr.font.bold = rd.get('bold', False)
-                            if rd.get('color'): rr.font.color.rgb = rd['color']
-                            elif bs.color: rr.font.color.rgb = bs.color
+                        _emit_runs_with_sources(
+                            p,
+                            b.get('runs', []),
+                            default_size_pt=fs,
+                            fallback_color=(bs.color or DEFAULT_COLORS.get('text')),
+                            sources_map=sources_map,
+                            resolve_citations=resolve_citations
+                        )
                         y_col += box_h + Inches(0.08 * scale_factor)
+
                     elif bt == 'table':
                         header = b.get('header', [])
                         rows = b.get('rows', [])
@@ -999,7 +1027,6 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                         header_fg = parse_color(th_rules.get('color')) if th_rules else None
                         stripe_bg = parse_color(stripe_rules.get('background-color')) if stripe_rules else None
 
-                        # build table within the column frame
                         tbl = slide.shapes.add_table(1 + len(rows), ncols,
                                                      x_left_len, y_col,
                                                      avail_w_len, header_h + row_h*max(1, len(rows))).table
@@ -1009,12 +1036,17 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                             tc = tbl.cell(0, c)
                             tf = tc.text_frame; tf.clear()
                             p = tf.paragraphs[0]
-                            for rd in cell.get('runs', []):
-                                rr = p.add_run(); rr.text = rd['text']; rr.font.bold = True
+                            _emit_runs_with_sources(
+                                p,
+                                cell.get('runs', []),
+                                default_size_pt=14 * scale_factor,
+                                fallback_color=(header_fg or DEFAULT_COLORS.get('text')),
+                                sources_map=sources_map,
+                                resolve_citations=resolve_citations
+                            )
+                            for rr in p.runs: rr.font.bold = True
                             if header_bg:
                                 tc.fill.solid(); tc.fill.fore_color.rgb = header_bg
-                            if header_fg:
-                                for rr in p.runs: rr.font.color.rgb = header_fg
 
                         # body
                         for r, row in enumerate(rows, start=1):
@@ -1022,8 +1054,14 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                                 tc = tbl.cell(r, c)
                                 tf = tc.text_frame; tf.clear()
                                 p = tf.paragraphs[0]
-                                for rd in cell.get('runs', []):
-                                    rr = p.add_run(); rr.text = rd['text']; rr.font.bold = rd.get('bold', False)
+                                _emit_runs_with_sources(
+                                    p,
+                                    cell.get('runs', []),
+                                    default_size_pt=14 * scale_factor,
+                                    fallback_color=DEFAULT_COLORS.get('text'),
+                                    sources_map=sources_map,
+                                    resolve_citations=resolve_citations
+                                )
                             if stripe_bg and (r % 2 == 0):
                                 for c in range(ncols):
                                     tc = tbl.cell(r, c); tc.fill.solid(); tc.fill.fore_color.rgb = stripe_bg
@@ -1050,7 +1088,7 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
             header = elem.get('header', [])
             rows = elem.get('rows', [])
 
-            # NEW: promote first row to header if no <thead> was present
+            # promote first row to header if no <thead> was present
             if not header and rows:
                 header, rows = rows[0], rows[1:]
 
@@ -1062,10 +1100,9 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                 row_h = Inches(0.35 * scale_factor)
                 header_h = Inches(0.4 * scale_factor)
 
-                # NEW: read CSS colors directly from the parser we were passed
+                # read CSS colors directly from the parser
                 th_rules = css_parser.styles.get('th', {})
                 stripe_rules = css_parser.styles.get('tr:nth-child(even)', {})
-
                 parse_color = CSSParser()._parse_color
                 header_bg = parse_color(th_rules.get('background-color')) if th_rules else None
                 header_fg = parse_color(th_rules.get('color')) if th_rules else None
@@ -1079,12 +1116,17 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                     tc = tbl.cell(0, c)
                     tf = tc.text_frame; tf.clear()
                     p = tf.paragraphs[0]
-                    for rd in cell.get('runs', []):
-                        rr = p.add_run(); rr.text = rd['text']; rr.font.bold = True
+                    _emit_runs_with_sources(
+                        p,
+                        cell.get('runs', []),
+                        default_size_pt=14 * scale_factor,
+                        fallback_color=(header_fg or DEFAULT_COLORS.get('text')),
+                        sources_map=sources_map,
+                        resolve_citations=resolve_citations
+                    )
+                    for rr in p.runs: rr.font.bold = True
                     if header_bg:
                         tc.fill.solid(); tc.fill.fore_color.rgb = header_bg
-                    if header_fg:
-                        for rr in p.runs: rr.font.color.rgb = header_fg
 
                 # body rows
                 for r, row in enumerate(rows, start=1):
@@ -1092,13 +1134,214 @@ def render_slide(prs: Presentation, slide_data: Dict[str, Any], css_parser):
                         tc = tbl.cell(r, c)
                         tf = tc.text_frame; tf.clear()
                         p = tf.paragraphs[0]
-                        for rd in cell.get('runs', []):
-                            rr = p.add_run(); rr.text = rd['text']; rr.font.bold = rd.get('bold', False)
+                        _emit_runs_with_sources(
+                            p,
+                            cell.get('runs', []),
+                            default_size_pt=14 * scale_factor,
+                            fallback_color=DEFAULT_COLORS.get('text'),
+                            sources_map=sources_map,
+                            resolve_citations=resolve_citations
+                        )
                     if stripe_bg and (r % 2 == 0):
                         for c in range(ncols):
                             tc = tbl.cell(r, c); tc.fill.solid(); tc.fill.fore_color.rgb = stripe_bg
 
                 y += header_h + row_h*max(1, len(rows)) + Inches(0.12 * scale_factor)
+
+        elif elem_type == 'paragraph':
+            # (Top-level paragraph — previously missing; safe to handle)
+            fs = (style.font_size.pt if style.font_size else 18) * scale_factor
+            h = _estimate_runs_height_in_inches(runs, fs, page_w_in, (style.line_height or 1.3))
+            box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - 2*MARGIN, h)
+            tf = box.text_frame; tf.word_wrap = True
+            p = tf.paragraphs[0]
+            _emit_runs_with_sources(
+                p,
+                runs,
+                default_size_pt=fs,
+                fallback_color=(style.color or DEFAULT_COLORS.get('text')),
+                sources_map=sources_map,
+                resolve_citations=resolve_citations
+            )
+            y += h + Inches(0.08 * scale_factor)
+
+
+# === Sources / citations helpers ============================================
+
+_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+_CIT_TOKEN_RE = re.compile(r"\[\[S:([0-9,\s]+)\]\]")
+
+def _domain_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        net = urlparse(url).netloc
+        return net or url
+    except Exception:
+        return url
+
+def _normalize_html_citations(html: str) -> str:
+    """
+    Convert <sup class='cite'>…</sup> patterns into [[S:...]] tokens so we can process consistently.
+    Examples handled:
+      <sup class="cite" data-sids="1,3">[S:1,3]</sup> -> [[S:1,3]]
+      <sup class="cite">[S:2]</sup>                   -> [[S:2]]
+    """
+    html = re.sub(
+        r'<sup\s+[^>]*class=["\'][^"\']*\bcite\b[^"\']*["\'][^>]*>\s*\[S:([^\]]+)\]\s*</sup>',
+        r'[[S:\1]]',
+        html,
+        flags=re.I
+    )
+    # Fallback: strip any leftover <sup class="cite">…</sup> tags but keep their inner text
+    html = re.sub(
+        r'<sup\s+[^>]*class=["\'][^"\']*\bcite\b[^"\']*["\'][^>]*>([^<]*)</sup>',
+        r'\1',
+        html,
+        flags=re.I
+    )
+    return html
+
+def _emit_text_with_links_and_citations(
+        paragraph,
+        *,
+        text: str,
+        default_size_pt: float,
+        bold: bool,
+        italic: bool,
+        color: Optional[RGBColor],
+        sources_map: Dict[int, Dict[str, str]],
+        resolve_citations: bool
+):
+    """
+    Split plain text for [text](url) links and [[S:n,n2]] citation tokens,
+    emit as multiple runs with appropriate hyperlink + accent color.
+    """
+    accent = DEFAULT_COLORS.get('primary', RGBColor(0, 102, 204))
+
+    def _emit_run(t, col=color, link=None, b=bold, i=italic):
+        if not t:
+            return
+        r = paragraph.add_run()
+        r.text = t
+        r.font.size = Pt(default_size_pt)
+        r.font.bold = b
+        r.font.italic = i
+        if col:
+            r.font.color.rgb = col
+        if link:
+            try:
+                r.hyperlink.address = link
+            except Exception:
+                pass
+
+    remaining = text
+    while remaining:
+        m_link = _LINK_RE.search(remaining)
+        m_cit  = _CIT_TOKEN_RE.search(remaining) if resolve_citations else None
+
+        matches = []
+        if m_link: matches.append(("link", m_link))
+        if m_cit:  matches.append(("cit",  m_cit))
+
+        if not matches:
+            _emit_run(remaining)
+            break
+
+        kind, m = min(matches, key=lambda x: x[1].start())
+
+        # pre-text
+        if m.start() > 0:
+            _emit_run(remaining[:m.start()])
+
+        if kind == "link":
+            label, url = m.group(1), m.group(2)
+            _emit_run(label, col=accent, link=url)
+        else:
+            # one or more ids
+            raw_ids = m.group(1)
+            ids = []
+            for p in raw_ids.split(','):
+                p = p.strip()
+                if p.isdigit():
+                    ids.append(int(p))
+            # emit each id as separate hyperlink label
+            for idx, sid in enumerate(ids):
+                rec = sources_map.get(sid, {})
+                label = rec.get("title") or f"[{sid}]"
+                url = rec.get("url", "")
+                _emit_run(label, col=accent, link=(url or None))
+                if idx != len(ids) - 1:
+                    _emit_run(" · ")  # small separator
+
+        remaining = remaining[m.end():]
+
+def _emit_runs_with_sources(
+        paragraph,
+        runs: List[Dict[str, Any]],
+        *,
+        default_size_pt: float,
+        fallback_color: Optional[RGBColor],
+        sources_map: Dict[int, Dict[str, str]],
+        resolve_citations: bool
+):
+    """
+    Emit a list of run dicts (as produced by our parser) while resolving links and citations.
+    """
+    for rd in runs or []:
+        txt = rd.get('text') or ''
+        if not txt:
+            continue
+        bold = rd.get('bold', False)
+        italic = rd.get('italic', False)
+        col = rd.get('color') or fallback_color or DEFAULT_COLORS.get('text')
+
+        _emit_text_with_links_and_citations(
+            paragraph,
+            text=txt,
+            default_size_pt=default_size_pt,
+            bold=bold,
+            italic=italic,
+            color=col,
+            sources_map=sources_map,
+            resolve_citations=resolve_citations
+        )
+
+def _add_sources_slide(prs, sources_map: Dict[int, Dict[str, str]], order: List[int]) -> None:
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    # Title
+    title_box = slide.shapes.add_textbox(Inches(0.8), Inches(0.8), Inches(8.4), Inches(0.6))
+    tp = title_box.text_frame.paragraphs[0]
+    r = tp.add_run(); r.text = "Sources"
+    r.font.size = Pt(26); r.font.bold = True
+
+    # Body list
+    y = Inches(1.4)
+    box = slide.shapes.add_textbox(Inches(0.8), y, Inches(8.4), Inches(5.5))
+    tf = box.text_frame
+    p = tf.paragraphs[0]
+
+    for i, sid in enumerate(order):
+        if i > 0:
+            p = tf.add_paragraph()
+        src = sources_map.get(sid, {})
+        title = src.get("title", f"Source {sid}")
+        url = src.get("url", "")
+
+        # [n] Title (domain)
+        label = f"[{sid}] {title}"
+        dr = p.add_run(); dr.text = label
+        dr.font.size = Pt(16); dr.font.bold = False
+
+        if url:
+            dom = _domain_of(url)
+            pr = p.add_run(); pr.text = f" ({dom})"
+            pr.font.size = Pt(12)
+            pr.font.color.rgb = DEFAULT_COLORS.get('primary', RGBColor(0, 102, 204))
+            try:
+                pr.hyperlink.address = url
+            except Exception:
+                pass
 
 # ============================================================================
 # MAIN
@@ -1138,9 +1381,35 @@ def render_pptx(
             for selector, rules in css_parser.styles.items():
                 print(f"{selector}: {rules}")
 
+        # --- NEW: sources map
+        sources_map: Dict[int, Dict[str, str]] = {}
+        order: List[int] = []
+        if sources:
+            try:
+                sources_map, order = md_utils._normalize_sources(sources)
+            except Exception:
+                # very defensive fallback
+                try:
+                    raw = json.loads(sources)
+                    if isinstance(raw, dict):
+                        # { "1": {"title":..., "url":...}, ... }
+                        sources_map = {int(k): v for k, v in raw.items() if str(k).isdigit()}
+                        order = sorted(sources_map.keys())
+                    elif isinstance(raw, list):
+                        # [ {"id":1,"title":...,"url":...}, ... ]
+                        for rec in raw:
+                            sid = int(rec.get("id"))
+                            sources_map[sid] = {"title": rec.get("title",""), "url": rec.get("url","")}
+                        order = sorted(sources_map.keys())
+                except Exception:
+                    pass
+
+        # --- NEW: normalize <sup class='cite'> → [[S:...]]
+        normalized_html = _normalize_html_citations(content_html)
+
         # Parse HTML
         html_parser = StyledHTMLParser(css_parser)
-        html_parser.feed(content_html)
+        html_parser.feed(normalized_html)
 
         slides_data = html_parser.slides
         for sidx, s in enumerate(slides_data, 1):
@@ -1154,13 +1423,17 @@ def render_pptx(
                     l = len(cols[0].get('elements', [])) if len(cols) > 0 else 0
                     r = len(cols[1].get('elements', [])) if len(cols) > 1 else 0
                     print(f"Slide {sidx}: COLUMNS: {len(cols)} L:{l} R:{r}")
+                    print(f"Slide {sidx}: COLUMNS: {len(cols)} L:{l} R:{r}")
 
         print(f"=== PARSED {len(slides_data)} SLIDES ===")
 
         # Render ALL slides
         for slide_data in slides_data:
             print(f"Rendering slide: {slide_data.get('title')}")
-            render_slide(prs, slide_data, css_parser)
+            render_slide(prs, slide_data, css_parser, sources_map, resolve_citations)
+
+        if include_sources_slide and sources_map:
+            _add_sources_slide(prs, sources_map, order)
 
     prs.save(str(outfile))
     return filename

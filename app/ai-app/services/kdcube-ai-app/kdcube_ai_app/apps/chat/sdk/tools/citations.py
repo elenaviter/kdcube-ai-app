@@ -47,6 +47,12 @@ HTML_CITE_RE = re.compile(
     re.I | re.S
 )
 
+HTML_DATASIDS_RE = re.compile(
+    r'(?is)<sup[^>]*class="[^"]*\bcite\b[^"]*"[^>]*\sdata-sids\s*=\s*"([^"]+)"[^>]*>.*?</sup>'
+)
+HTML_BRACKET_S_RE = re.compile(r'\[S:\s*([0-9,\s\-–]+)\]', re.I)
+
+
 # Markdown inline cite presence (fast check)
 MD_CITE_RE = re.compile(r"\[\[\s*S\s*:\s*\d+(?:\s*,\s*\d+)*\s*\]\]", re.I)
 
@@ -262,15 +268,20 @@ def _looks_like_image(url: str) -> bool:
     clean = url.split("?", 1)[0].lower()
     return any(clean.endswith(ext) for ext in image_exts)
 
+# --- extend _expand_ids to support en dash (–) ranges safely ---
 def _expand_ids(ids_str: str) -> List[int]:
     out: List[int] = []
-    for part in (ids_str or "").split(","):
+    if not ids_str:
+        return out
+    for part in ids_str.split(","):
         p = part.strip()
         if not p:
             continue
-        if "-" in p:
+        # support hyphen-minus and en dash
+        if "-" in p or "–" in p:
+            p2 = p.replace("–", "-")
             try:
-                a, b = [int(x.strip()) for x in p.split("-", 1)]
+                a, b = [int(x.strip()) for x in p2.split("-", 1)]
                 lo, hi = (a, b) if a <= b else (b, a)
                 out.extend(range(lo, hi + 1))
             except Exception:
@@ -561,6 +572,44 @@ def extract_citation_sids_from_text(text: str) -> List[int]:
                 sids.add(int(part))
 
     return sorted(sids)
+
+def extract_citation_sids_from_html(html: str) -> List[int]:
+    """
+    Extract SIDs from <sup class="cite" ... data-sids="..."> and/or [S:...] text inside HTML.
+    Returns a sorted list of unique ints.
+    """
+    if not isinstance(html, str) or not html:
+        return []
+    sids: Set[int] = set()
+
+    # 1) Prefer authoritative data-sids
+    for m in HTML_DATASIDS_RE.finditer(html):
+        sids.update(_expand_ids(m.group(1)))
+
+    # 2) Fallback: [S:...] markers inside the HTML (including inside <sup>)
+    #    This also catches stray markdown-style markers left in HTML.
+    for m in HTML_BRACKET_S_RE.finditer(html):
+        sids.update(_expand_ids(m.group(1)))
+
+    # 3) And as a last fallback, reuse the markdown token extractor
+    #    in case there are raw [[S:...]] tokens in HTML text nodes.
+    if not sids:
+        sids.update(extract_citation_sids_from_text(html))
+
+    return sorted(sids)
+
+# --- convenience for any content (markdown/text/html) ---
+def extract_citation_sids_any(text: str) -> List[int]:
+    """
+    Heuristic extractor that handles either HTML <sup class="cite"...> or [[S:...]] tokens.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    # If it looks like HTML with <sup class="cite"...>, use the HTML path
+    if HTML_CITE_RE.search(text):
+        return extract_citation_sids_from_html(text)
+    # Otherwise, treat as markdown/text
+    return extract_citation_sids_from_text(text)
 
 # ---------------------------------------------------------------------------
 # Back-compat wrappers (aliases used by existing code)

@@ -1304,8 +1304,8 @@ async def generate_content_llm(
     if tgt in ("markdown", "text", "html"):
         # best-effort: extract from inline tokens or <sup class="cite"...>
         # For HTML we can opportunistically reuse the same MD pattern plus the HTML sup placeholder
-        from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_from_text as _extract_sids_from_text
-        artifact_used_sids = _extract_sids_from_text(content_clean)
+        from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any
+        artifact_used_sids = extract_citation_sids_any(content_clean)
 
     elif tgt in ("json", "yaml"):
         # collect from sidecar if present
