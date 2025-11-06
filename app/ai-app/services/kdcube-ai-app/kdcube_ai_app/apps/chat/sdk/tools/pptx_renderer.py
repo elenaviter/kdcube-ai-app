@@ -1215,6 +1215,9 @@ def _emit_text_with_links_and_citations(
     """
     Split plain text for [text](url) links and [[S:n,n2]] citation tokens,
     emit as multiple runs with appropriate hyperlink + accent color.
+
+    IMPORTANT: For citations we render concise anchors "[n]" (never the title),
+    to avoid inflating the line length compared to the original [[S:n]] token.
     """
     accent = DEFAULT_COLORS.get('primary', RGBColor(0, 102, 204))
 
@@ -1239,15 +1242,16 @@ def _emit_text_with_links_and_citations(
         m_link = _LINK_RE.search(remaining)
         m_cit  = _CIT_TOKEN_RE.search(remaining) if resolve_citations else None
 
-        matches = []
-        if m_link: matches.append(("link", m_link))
-        if m_cit:  matches.append(("cit",  m_cit))
+        # choose earliest match
+        candidates = []
+        if m_link: candidates.append(("link", m_link))
+        if m_cit:  candidates.append(("cit",  m_cit))
 
-        if not matches:
+        if not candidates:
             _emit_run(remaining)
             break
 
-        kind, m = min(matches, key=lambda x: x[1].start())
+        kind, m = min(candidates, key=lambda x: x[1].start())
 
         # pre-text
         if m.start() > 0:
@@ -1257,22 +1261,21 @@ def _emit_text_with_links_and_citations(
             label, url = m.group(1), m.group(2)
             _emit_run(label, col=accent, link=url)
         else:
-            # one or more ids
+            # [[S:1, 2, 3]] → clickable "[1] · [2] · [3]"
             raw_ids = m.group(1)
             ids = []
-            for p in raw_ids.split(','):
-                p = p.strip()
-                if p.isdigit():
-                    ids.append(int(p))
-            # emit each id as separate hyperlink label
+            for part in raw_ids.split(','):
+                part = part.strip()
+                if part.isdigit():
+                    ids.append(int(part))
             for idx, sid in enumerate(ids):
                 rec = sources_map.get(sid, {})
-                label = rec.get("title") or f"[{sid}]"
                 url = rec.get("url", "")
-                _emit_run(label, col=accent, link=(url or None))
+                _emit_run(f"[{sid}]", col=accent, link=(url or None))
                 if idx != len(ids) - 1:
-                    _emit_run(" · ")  # small separator
+                    _emit_run(" · ")  # small separator between multiple cites
 
+        # advance
         remaining = remaining[m.end():]
 
 def _emit_runs_with_sources(
@@ -1381,7 +1384,7 @@ def render_pptx(
             for selector, rules in css_parser.styles.items():
                 print(f"{selector}: {rules}")
 
-        # --- NEW: sources map
+        # --- sources map
         sources_map: Dict[int, Dict[str, str]] = {}
         order: List[int] = []
         if sources:
@@ -1392,11 +1395,9 @@ def render_pptx(
                 try:
                     raw = json.loads(sources)
                     if isinstance(raw, dict):
-                        # { "1": {"title":..., "url":...}, ... }
                         sources_map = {int(k): v for k, v in raw.items() if str(k).isdigit()}
                         order = sorted(sources_map.keys())
                     elif isinstance(raw, list):
-                        # [ {"id":1,"title":...,"url":...}, ... ]
                         for rec in raw:
                             sid = int(rec.get("id"))
                             sources_map[sid] = {"title": rec.get("title",""), "url": rec.get("url","")}
@@ -1404,7 +1405,7 @@ def render_pptx(
                 except Exception:
                     pass
 
-        # --- NEW: normalize <sup class='cite'> → [[S:...]]
+        # normalize <sup class='cite'> → [[S:...]]
         normalized_html = _normalize_html_citations(content_html)
 
         # Parse HTML
@@ -1414,15 +1415,12 @@ def render_pptx(
         slides_data = html_parser.slides
         for sidx, s in enumerate(slides_data, 1):
             for e in s.get('elements', []):
-
                 if not e:
                     continue
-
                 if e.get('type') == 'columns':
                     cols = e.get('columns', [])
                     l = len(cols[0].get('elements', [])) if len(cols) > 0 else 0
                     r = len(cols[1].get('elements', [])) if len(cols) > 1 else 0
-                    print(f"Slide {sidx}: COLUMNS: {len(cols)} L:{l} R:{r}")
                     print(f"Slide {sidx}: COLUMNS: {len(cols)} L:{l} R:{r}")
 
         print(f"=== PARSED {len(slides_data)} SLIDES ===")
@@ -1432,7 +1430,8 @@ def render_pptx(
             print(f"Rendering slide: {slide_data.get('title')}")
             render_slide(prs, slide_data, css_parser, sources_map, resolve_citations)
 
-        if include_sources_slide and sources_map:
+        # Always add Sources slide when we have sources (per spec)
+        if sources_map:
             _add_sources_slide(prs, sources_map, order)
 
     prs.save(str(outfile))

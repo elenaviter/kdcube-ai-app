@@ -656,8 +656,8 @@ def _create_clean_sources_section(by_id: Dict[int, Dict[str, Any]], order: List[
 # --- HTML helpers: turn [S:...] markers into links/superscripts -------------
 def _render_html_sup_links(ids: List[int], cmap: Dict[int, Dict[str, str]]) -> str:
     """
-    Render a <sup class="cite" data-sids="1,3">…</sup> block whose content is a series
-    of <a ...><span>[S:1]</span></a> links (target=_blank). If a url is missing, keep plain text.
+    Render a <sup class="cite" data-sids="1,3">…</sup> whose content is a series
+    of clickable [S:n] anchors (target=_blank). If URL missing, keep plain [S:n].
     """
     if not ids:
         return ""
@@ -679,28 +679,31 @@ def _render_html_sup_links(ids: List[int], cmap: Dict[int, Dict[str, str]]) -> s
 def replace_html_citations(
         html: str,
         citation_map: Dict[int, Dict[str, str]],
-        keep_unresolved: bool = True,
-        first_only: bool = False,
+        keep_unresolved: bool = False,
+        first_only: bool = True,
 ) -> str:
     """
-    Process HTML:
-      1) Replace [[S:...]] tokens with a single <sup class="cite">...</sup> containing links.
-      2) Replace existing <sup class="cite" data-sids="...">…</sup> placeholders with linked content.
+    HTML processor:
+      1) Replace [[S:...]] tokens with a concise <sup class="cite" data-sids="...">
+         whose content is clickable [S:n] anchors ONLY (no titles inline).
+      2) Replace existing <sup class="cite" data-sids="...">…</sup> with the same concise form.
+
+    Notes:
+    - Honors an optional leading space captured by CITE_TOKEN_RE to avoid visual overlap.
+    - Setting first_only=True keeps just the first SID from a group for on-slide brevity.
     """
-    if not isinstance(html, str) or not citation_map:
+    if not isinstance(html, str) or not html or not citation_map:
         return html or ""
 
     html = _strip_invisible(html)
-    # 1) Replace [[S:...]] tokens
+
+    # 1) Replace [[S:...]] tokens (CITE_TOKEN_RE: group(1)=optional leading space, group(2)=ids)
     def _sub_tokens(m: re.Match) -> str:
-        # NOTE: group(1) is optional leading space; group(2) is the IDs
-        # ids = _expand_ids(m.group(1))
         ids = _expand_ids(m.group(2))
         if first_only and ids:
             ids = ids[:1]
         rendered = _render_html_sup_links(ids, citation_map)
         if rendered:
-            # return rendered
             return (m.group(1) or "") + rendered
         return m.group(0) if keep_unresolved else ""
 
@@ -709,15 +712,14 @@ def replace_html_citations(
     # 2) Replace existing <sup class="cite" data-sids="...">…</sup> placeholders
     def _sub_html_sup(m: re.Match) -> str:
         tag = m.group(0)
-        # extract data-sids="..."
         m_ids = re.search(r'data-sids="([^"]+)"', tag, flags=re.I)
         if not m_ids:
-            return tag
+            return tag if keep_unresolved else ""
         ids = _expand_ids(m_ids.group(1))
         if first_only and ids:
             ids = ids[:1]
         rendered = _render_html_sup_links(ids, citation_map)
-        return rendered or tag
+        return rendered or (tag if keep_unresolved else "")
 
     out = HTML_CITE_RE.sub(_sub_html_sup, out)
     return out
