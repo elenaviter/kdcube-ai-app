@@ -1352,6 +1352,44 @@ class ConvIndex:
 
         return [dict(r) for r in rows]
 
+    async def delete_message(
+            self,
+            *,
+            id: Optional[int] = None,
+            message_id: Optional[str] = None,
+    ) -> int:
+        """
+        Delete a row from conv_messages. Also deletes edges referencing it.
+        Returns number of deleted conv_messages rows (0 or 1).
+        """
+        if not id and not message_id:
+            raise ValueError("delete_message requires either id or message_id")
+
+        async with self._pool.acquire() as con:
+            async with con.transaction():
+                # Resolve id when message_id is provided
+                if id is None:
+                    q_get = f"SELECT id FROM {self.schema}.conv_messages WHERE message_id = $1 LIMIT 1"
+                    row = await con.fetchrow(q_get, str(message_id))
+                    if not row:
+                        return 0
+                    id = int(row["id"])
+
+                # Delete edges first (defensive)
+                q_edges = f"""
+                    DELETE FROM {self.schema}.conv_artifact_edges
+                    WHERE from_id = $1 OR to_id = $1
+                """
+                await con.execute(q_edges, int(id))
+
+                # Delete the message row
+                q_del = f"DELETE FROM {self.schema}.conv_messages WHERE id = $1"
+                res = await con.execute(q_del, int(id))
+                try:
+                    return int(res.split()[-1])
+                except Exception:
+                    return 0
+
 """
         if tags_mode == "all":
             where.append(f"tags @> ${len(args)}::text[]")

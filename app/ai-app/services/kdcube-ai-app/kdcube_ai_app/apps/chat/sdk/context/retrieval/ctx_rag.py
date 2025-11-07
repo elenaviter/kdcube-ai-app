@@ -358,18 +358,7 @@ class ContextRAGClient:
                                    user_id: str,
                                    conversation_id: str,
                                    track_id: Optional[str]) -> bool:
-        """
-        Remove existing user reaction for a turn.
-
-        Used for:
-        1. Clearing reactions (when user wants to remove their feedback)
-        2. Replacing reactions (internal use when adding new reaction)
-
-        Returns:
-            True if a reaction was found and removed, False otherwise.
-        """
         try:
-            # Find existing user reactions
             existing = await self.search(
                 query=None,
                 kinds=("artifact:turn.log.reaction",),
@@ -377,38 +366,120 @@ class ContextRAGClient:
                 scope="conversation",
                 user_id=user_id,
                 conversation_id=conversation_id,
-                days=365,
-                top_k=10,  # Could be multiple reactions
+                days=3650,
+                top_k=100,
                 include_deps=False,
                 with_payload=True,
+                # Fast-tag filter to prefer user-origin rows; still verify via payload
+                any_tags=["origin:user"],
                 all_tags=[f"turn:{turn_id}"],
             )
-
             items = existing.get("items") or []
             removed_count = 0
-
             for item in items:
                 payload = (item.get("payload") or {}).get("payload") or {}
                 reaction_data = payload.get("reaction") or {}
                 origin = reaction_data.get("origin")
-
-                # Only remove user reactions
                 if origin == "user":
-                    # Delete from index
                     try:
                         await self.idx.delete_message(id=int(item["id"]))
                         removed_count += 1
                         logger.info(f"Removed user reaction id={item['id']} for turn {turn_id}")
                     except Exception as e:
                         logger.warning(f"Failed to delete reaction id={item['id']}: {e}")
-
             return removed_count > 0
-
         except Exception as e:
-            logger.error(f"Failed to remove user reaction for turn {turn_id}: {e}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to remove user reaction for turn {turn_id}: {e}", exc_info=True)
             return False
 
+    async def clear_user_feedback_in_turn_log(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user: str,
+            user_type: str,
+            conversation_id: str,
+            track_id: Optional[str],
+            turn_id: str,
+            bundle_id: str,
+    ) -> bool:
+        """
+        Remove all user-origin feedbacks (and matching timeline entries) from the
+        artifact:turn.log blob. Preserves ts/text/embedding in index.
+        Returns True if a turn log existed and was updated.
+        """
+        # Fetch latest turn log for the turn (with payload)
+        existing = await self.search(
+            query=None,
+            kinds=("artifact:turn.log",),
+            roles=("artifact",),
+            scope="conversation",
+            user_id=user,
+            conversation_id=conversation_id,
+            days=3650,
+            top_k=1,
+            include_deps=False,
+            with_payload=True,
+            all_tags=[f"turn:{turn_id}"],
+        )
+        items = existing.get("items") or []
+        if not items:
+            return False
+
+        turn_log_item = items[0]
+        payload = (turn_log_item.get("payload") or {}).get("payload") or {}
+        tl = payload.get("turn_log") or {}
+        changed = False
+
+        # Strip feedbacks with origin == "user"
+        fbs = list(tl.get("feedbacks") or [])
+        new_fbs = [fb for fb in fbs if (fb.get("origin") != "user")]
+        if len(new_fbs) != len(fbs):
+            tl["feedbacks"] = new_fbs
+            changed = True
+
+        # Strip timeline entries that were feedbacks authored by user
+        entries = list(tl.get("entries") or [])
+        new_entries = []
+        for e in entries:
+            data = e.get("data") or {}
+            if e.get("area") == "feedback" and data.get("origin") == "user":
+                changed = True
+                continue
+            new_entries.append(e)
+        if changed:
+            tl["entries"] = new_entries
+            payload["turn_log"] = tl
+            # Leave payload["text"] untouched (optional: you could also rewrite printable text)
+
+            original_ts = turn_log_item.get("ts")
+            original_embedding = turn_log_item.get("embedding")
+            original_tags = turn_log_item.get("tags") or []
+
+            # Write new blob
+            s3_uri, message_id, rn = await self.store.put_message(
+                tenant=tenant, project=project, user=user, fingerprint=None,
+                conversation_id=conversation_id, bundle_id=bundle_id,
+                role="artifact", text="", id="turn.log",
+                payload=payload,
+                meta={"kind": "turn.log", "turn_id": turn_id, "track_id": track_id},
+                embedding=original_embedding,
+                user_type=user_type, turn_id=turn_id, track_id=track_id,
+            )
+
+            # Update only s3_uri/tags; preserve ts
+            artifact_tag = "artifact:turn.log"
+            tags = list(dict.fromkeys((original_tags or []) + [artifact_tag, f"turn:{turn_id}"]))
+            await self.idx.update_message(
+                id=int(turn_log_item["id"]),
+                s3_uri=s3_uri,
+                tags=tags,
+                ts=original_ts,
+            )
+            return True
+
+        return False
     async def append_reaction_to_turn_log(self, *,
                                           turn_id: str, reaction: dict,
                                           tenant: str, project: str, user: str,

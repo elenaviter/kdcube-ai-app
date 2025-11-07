@@ -298,6 +298,19 @@ async def submit_turn_feedback(
                 conversation_id=conversation_id,
                 track_id=track_id
             )
+            # Also scrub mirrored entries from turn log
+            spec_resolved = resolve_bundle(None, override=None)
+            bundle_id = spec_resolved.id
+            _ = await router.state.conversation_browser.clear_user_feedback_in_turn_log(
+                tenant=tenant,
+                project=project,
+                user=session.user_id,
+                user_type=user_type.value,
+                conversation_id=conversation_id,
+                track_id=track_id,
+                turn_id=turn_id,
+                bundle_id=bundle_id,
+            )
 
             logger.info(
                 f"User feedback cleared: user={session.user_id}, "
