@@ -917,7 +917,7 @@ async def _stream_agent_two_sections_to_json(
         client_role=client_role,
         client_name=client_name,
         system_prompt_len=sys_message_len,
-        user_msg_len=len(user_msg),
+        user_msg_len=len(user_msg) if isinstance(user_msg, str) else "block",
         expected_format=getattr(schema_model, "__name__", str(schema_model)),
     )
 

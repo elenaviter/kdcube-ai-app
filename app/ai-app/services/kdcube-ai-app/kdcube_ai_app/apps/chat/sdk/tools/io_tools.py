@@ -464,35 +464,59 @@ class AgentIO:
         except Exception:
             params = {"_raw": params_json}
 
-        # execute
-        ret = fn(**params) if params else fn()
-        if inspect.isawaitable(ret):
-            ret = await ret
+        # Prepare ids/filenames
+        od   = _outdir()
+        idx  = _read_index(od)
+        tid  = (tool_id or f"{(getattr(fn, '__module__', 'tool').split('.')[-1])}.{getattr(fn, '__name__', 'call')}").strip()
+        i    = _next_index(idx, tid)
+        rel  = filename or f"{_sanitize_tool_id(tid)}-{i}.json"
 
-        # persist
-        od = _outdir()
-        idx = _read_index(od)
+        try:
+            # Execute tool
+            ret = fn(**params) if params else fn()
+            if inspect.isawaitable(ret):
+                ret = await ret
 
-        # derive tool id if not provided
-        tid = (tool_id or f"{(getattr(fn, '__module__', 'tool').split('.')[-1])}.{getattr(fn, '__name__', 'call')}").strip()
-        next_i = _next_index(idx, tid)
-        rel = filename or f"{_sanitize_tool_id(tid)}-{next_i}.json"
+            # Persist SUCCESS via save_tool_call (strict shape; no top-level extras)
+            await self.save_tool_call(
+                tool_id=tid,
+                description=str(call_reason or ""),
+                data=ret,  # raw
+                params=json.dumps(params, ensure_ascii=False, default=str),
+                index=i,
+                filename=rel,
+            )
 
-        # save the call JSON using the internal helper
-        await self.save_tool_call(
-            tool_id=tid,
-            description=str(call_reason or ""),
-            data=ret,                                  # pass RAW output
-            params=json.dumps(params, ensure_ascii=False, default=str),
-            index=next_i,
-            filename=rel,
-        )
+            # Update index and return raw result unchanged
+            idx.setdefault(tid, []).append(rel)
+            _write_index(od, idx)
+            return ret
 
-        # update index
-        idx.setdefault(tid, []).append(rel)
-        _write_index(od, idx)
-
-        return ret
+        except Exception as e:
+            # Build error envelope INSIDE ret; then persist via save_tool_call
+            err_env = {
+                "ok": False,
+                "error": {
+                    "code": type(e).__name__,
+                    "message": str(e),
+                    "where": tid,
+                    "managed": False,
+                }
+            }
+            try:
+                await self.save_tool_call(
+                    tool_id=tid,
+                    description=str(call_reason or ""),
+                    data=err_env,  # stored in ret
+                    params=json.dumps(params, ensure_ascii=False, default=str),
+                    index=i,
+                    filename=rel,
+                )
+                idx.setdefault(tid, []).append(rel)
+                _write_index(od, idx)
+            finally:
+                # Re-raise to keep external behavior identical
+                raise
 
     # INTERNAL helper (kept public on the instance, but not advertised to LLM)
     async def save_tool_call(

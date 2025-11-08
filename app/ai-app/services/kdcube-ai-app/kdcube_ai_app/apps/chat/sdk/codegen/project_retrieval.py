@@ -95,7 +95,10 @@ def _history_digest(history: list[dict], limit: int = 3) -> str:
 
 async def _build_program_history_from_turn_ids(self, *,
                                                turn_ids: List[str],
-                                               scope: str = "track", days: int = 365) -> List[Dict[str, Any]]:
+                                               user_id: str,
+                                               conversation_id: str,
+                                               scope: str = "track",
+                                               days: int = 365) -> List[Dict[str, Any]]:
     """
     For each turn_id, materialize: program presentation (if present), project_canvas / project_log
     from deliverables, and citations tied to the run. Returns the same shape as _build_program_history().
@@ -107,7 +110,12 @@ async def _build_program_history_from_turn_ids(self, *,
 
     for tid in turn_ids:
         mat = await self.context_rag_client.materialize_turn(
-            turn_id=tid, scope=scope, days=days, with_payload=True
+            user_id=user_id,
+            conversation_id=conversation_id,
+            turn_id=tid,
+            scope=scope,
+            days=days,
+            with_payload=True
         )
 
         # Unpack rich envelopes (payload + ts + tags)
@@ -187,7 +195,8 @@ async def _build_program_history_from_turn_ids(self, *,
             **({"round_reasoning": round_reason} if round_reason else {}),
             "assistant": assistant,
             "user": user,
-            "deliverables": d_items if d_items else []
+            "deliverables": d_items if d_items else [],
+            "turn_id": tid
         }
         out.append({exec_id: ret})
 
