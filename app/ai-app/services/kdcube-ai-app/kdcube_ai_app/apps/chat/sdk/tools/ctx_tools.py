@@ -145,6 +145,17 @@ def _reconcile_history_sources(
 
     return canonical, sid_maps
 
+def _compute_next_sid(rows) -> int:
+    sids = []
+    for r in rows or []:
+        try:
+            sid = int((r or {}).get("sid"))
+            if sid > 0:
+                sids.append(sid)
+        except (TypeError, ValueError):
+            pass
+    return (max(sids) + 1) if sids else 1  # empty → start at 1
+
 class ContextTools:
 
     """
@@ -155,69 +166,170 @@ class ContextTools:
     @kernel_function(
         name="merge_sources",
         description=(
-                    "• Input is a JSON array of collections: [[sources1], [sources2], ...].\n"
-                    "• Dedupes by URL; preserves richer title/text; assigns or preserves SIDs.\n"
-                    "• Use this BEFORE inserting new citations into any slot text; keep SIDs stable."
-                    "Pass all source collections in a single JSON array. REQUIRED when using multiple source tools."
+                "• Input is a JSON array of collections: [[sources1], [sources2], ...].\n"
+                "• Dedupes by URL; preserves richer title/text; assigns or preserves SIDs.\n"
+                "• Use this BEFORE inserting new citations into any slot text; keep SIDs stable."
+                "Pass all source collections in a single JSON array. REQUIRED when using multiple source tools."
         )
     )
     async def merge_sources(
             self,
             source_collections: Annotated[str, "JSON array containing multiple source collections: [[sources1], [sources2], [sources3], ...]"],
     ) -> Annotated[str, "JSON array of unified sources: [{sid:int, title:str, url:str, text:str}]"]:
-        """Merge multiple source collections, deduplicating by URL and preserving/assigning SIDs."""
-
+        """
+        Merge multiple source collections with LEFT→RIGHT precedence:
+          - First occurrence of a URL wins its SID (if valid) or gets a new SID.
+          - Later items with the SAME URL merge richer fields; their SID is ignored.
+          - Later items with a DIFFERENT URL but a SID that’s ALREADY USED get a NEW SID = max_sid + 1.
+          - Result has unique (url, sid) pairs; SIDs are dense and stable left→right.
+        """
         try:
             collections = json.loads(source_collections)
             if not isinstance(collections, list):
-                collections = [collections]  # Handle single collection case
-        except:
+                collections = [collections]
+        except Exception:
             return "[]"
 
-        all_sources = []
+        # Normalize and flatten in left→right order
+        all_sources: list[dict] = []
         for collection in collections:
             all_sources.extend(normalize_sources_any(collection))
 
         if not all_sources:
             return "[]"
 
-        # Deduplicate and assign SIDs
-        by_url = {}
-        max_sid = 0
+        by_url: dict[str, dict] = {}
+        used_sids: set[int] = set()
+        max_sid: int = 0
 
-        for source in all_sources:
-            url = normalize_url(source.get("url", ""))
+        def _merge_richer(dst: dict, src: dict) -> None:
+            # prefer longer title/text; carry optional attrs if missing on dst
+            if len(src.get("title", "")) > len(dst.get("title", "")):
+                dst["title"] = src.get("title", "")
+            if len(src.get("text", "")) > len(dst.get("text", "")):
+                dst["text"] = src.get("text", "")
+            for k in CITATION_OPTIONAL_ATTRS:
+                if not dst.get(k) and src.get(k):
+                    dst[k] = src[k]
+
+        for src in all_sources:
+            url = normalize_url(src.get("url", ""))
             if not url:
                 continue
 
+            # Already have this URL → merge & keep original SID
             if url in by_url:
-                # Keep first occurrence, update if new has more content
-                existing = by_url[url]
-                if len(source.get("title", "")) > len(existing.get("title", "")):
-                    existing["title"] = source.get("title", "")
-                if len(source.get("text", "")) > len(existing.get("text", "")):
-                    existing["text"] = source.get("text", "")
-                for k in CITATION_OPTIONAL_ATTRS:
-                    if not existing.get(k) and source.get(k):
-                        existing[k] = source[k]
+                _merge_richer(by_url[url], src)
+                # do NOT touch SID / used_sids / max_sid
                 continue
 
-            # Assign SID: use existing if valid, otherwise assign new
-            sid = source.get("sid")
-            if not isinstance(sid, int) or sid <= 0:
+            # New URL → determine SID
+            proposed_sid = src.get("sid")
+            try:
+                proposed_sid = int(proposed_sid) if proposed_sid is not None else None
+            except Exception:
+                proposed_sid = None
+
+            # If proposed is invalid OR collides with an already-used SID, assign a fresh one
+            if not proposed_sid or proposed_sid <= 0 or proposed_sid in used_sids:
                 max_sid += 1
                 sid = max_sid
             else:
-                max_sid = max(max_sid, sid)
+                sid = proposed_sid
+                if sid > max_sid:
+                    max_sid = sid
 
-            row = {"sid": sid, "title": source.get("title", ""), "url": url, "text": source.get("text") or source.get("body") or ""}
+            used_sids.add(sid)
+
+            row = {
+                "sid": sid,
+                "url": url,
+                "title": src.get("title", ""),
+                "text": src.get("text") or src.get("body") or src.get("content") or "",
+            }
             for k in CITATION_OPTIONAL_ATTRS:
-                if source.get(k):
-                    row[k] = source[k]
+                if src.get(k):
+                    row[k] = src[k]
+
             by_url[url] = row
 
+        # Stable output: sort by SID so left-most items (assigned earlier) appear first
         merged = sorted(by_url.values(), key=lambda x: x["sid"])
+        next_sid = _compute_next_sid(merged)
+        try:
+            from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import SOURCE_ID_CV
+            SOURCE_ID_CV.set({"next": next_sid})
+        except Exception:
+            # non-fatal: context var not available, etc.
+            pass
         return json.dumps(merged, ensure_ascii=False)
+
+    # @kernel_function(
+    #     name="merge_sources",
+    #     description=(
+    #                 "• Input is a JSON array of collections: [[sources1], [sources2], ...].\n"
+    #                 "• Dedupes by URL; preserves richer title/text; assigns or preserves SIDs.\n"
+    #                 "• Use this BEFORE inserting new citations into any slot text; keep SIDs stable."
+    #                 "Pass all source collections in a single JSON array. REQUIRED when using multiple source tools."
+    #     )
+    # )
+    # async def merge_sources(
+    #         self,
+    #         source_collections: Annotated[str, "JSON array containing multiple source collections: [[sources1], [sources2], [sources3], ...]"],
+    # ) -> Annotated[str, "JSON array of unified sources: [{sid:int, title:str, url:str, text:str}]"]:
+    #     """Merge multiple source collections, deduplicating by URL and preserving/assigning SIDs."""
+    #
+    #     try:
+    #         collections = json.loads(source_collections)
+    #         if not isinstance(collections, list):
+    #             collections = [collections]  # Handle single collection case
+    #     except:
+    #         return "[]"
+    #
+    #     all_sources = []
+    #     for collection in collections:
+    #         all_sources.extend(normalize_sources_any(collection))
+    #
+    #     if not all_sources:
+    #         return "[]"
+    #
+    #     # Deduplicate and assign SIDs
+    #     by_url = {}
+    #     max_sid = 0
+    #
+    #     for source in all_sources:
+    #         url = normalize_url(source.get("url", ""))
+    #         if not url:
+    #             continue
+    #
+    #         if url in by_url:
+    #             # Keep first occurrence, update if new has more content
+    #             existing = by_url[url]
+    #             if len(source.get("title", "")) > len(existing.get("title", "")):
+    #                 existing["title"] = source.get("title", "")
+    #             if len(source.get("text", "")) > len(existing.get("text", "")):
+    #                 existing["text"] = source.get("text", "")
+    #             for k in CITATION_OPTIONAL_ATTRS:
+    #                 if not existing.get(k) and source.get(k):
+    #                     existing[k] = source[k]
+    #             continue
+    #
+    #         # Assign SID: use existing if valid, otherwise assign new
+    #         sid = source.get("sid")
+    #         if not isinstance(sid, int) or sid <= 0:
+    #             max_sid += 1
+    #             sid = max_sid
+    #         else:
+    #             max_sid = max(max_sid, sid)
+    #
+    #         row = {"sid": sid, "title": source.get("title", ""), "url": url, "text": source.get("text") or source.get("body") or ""}
+    #         for k in CITATION_OPTIONAL_ATTRS:
+    #             if source.get(k):
+    #                 row[k] = source[k]
+    #         by_url[url] = row
+    #
+    #     merged = sorted(by_url.values(), key=lambda x: x["sid"])
+    #     return json.dumps(merged, ensure_ascii=False)
 
     async def reconcile_citations(
             self,
