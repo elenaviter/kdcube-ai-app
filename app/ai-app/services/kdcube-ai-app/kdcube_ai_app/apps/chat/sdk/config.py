@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # S3
     AWS_REGION: str = "us-east-1"
     AWS_S3_BUCKET: str = "your-conv-bucket"
+    AWS_PROFILE: str | None = None
+    AWS_SHARED_CREDENTIALS_FILE: str | None = None
+    AWS_CONFIG_FILE: str | None = None
 
     STORAGE_PATH: str | None = None
 
