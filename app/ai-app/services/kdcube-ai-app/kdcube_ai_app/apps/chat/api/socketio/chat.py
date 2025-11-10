@@ -115,6 +115,10 @@ class SocketIOChatHandler:
         async def _on_ping(sid, data):
             await self.sio.emit("pong", {"timestamp": datetime.utcnow().isoformat() + "Z"}, to=sid)
 
+        @self.sio.on("conv_status.get")
+        async def _on_conv_status_subscribe(sid, data):
+            return await self._handle_conv_status_subscribe(data, sid)
+
     # ---------- Relay (pub/sub -> socket) ----------
 
     async def _on_pubsub_message(self, message: dict):
@@ -609,6 +613,28 @@ class SocketIOChatHandler:
                 self._comm.emit_error(svc, conv, error=str(e), target_sid=sid)
             except Exception:
                 pass
+
+    # ---------- subscr ----------
+    async def _handle_conv_status_subscribe(self,
+                                            data,
+                                            sid):
+        conv_id = (data or {}).get("conversation_id")
+        socket_session = await self.sio.get_session(sid)
+        user_session = (socket_session or {}).get("user_session", {})
+        # lookup current row
+        row = await self.app.state.conversation_browser.conv_idx.get_conversation_state_row(
+            user_id=user_session.get("user_id"),
+            conversation_id=conv_id or user_session.get("session_id"),
+        )
+        # translate row → state + current_turn_id + updated_at
+        state = "idle" if not row else ("in_progress" if "conv.state:in_progress" in row["tags"] else "error" if "conv.state:error" in row["tags"] else "idle")
+        updated_at = (row["ts"].isoformat() + "Z") if row else datetime.utcnow().isoformat() + "Z"
+        current_turn_id = row.get("payload", {}).get("last_turn_id") if row else None
+
+        # just EMIT `conv_status` back to the requester sid
+        svc = ServiceCtx(request_id=str(uuid.uuid4()), user=user_session.get("user_id"))
+        conv = ConversationCtx(session_id=user_session.get("session_id"), conversation_id=conv_id or user_session.get("session_id"), turn_id=current_turn_id or f"turn_{uuid.uuid4().hex[:8]}")
+        self._comm.emit_conv_status(svc, conv, state=state, updated_at=updated_at, current_turn_id=current_turn_id, target_sid=sid, session_id=user_session.get("session_id"))
 
     # ---------- ASGI app ----------
 
