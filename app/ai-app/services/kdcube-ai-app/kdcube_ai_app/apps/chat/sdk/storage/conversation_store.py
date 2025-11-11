@@ -20,6 +20,13 @@ except ImportError:
 
 _JSON_META = {"ContentType": "application/json"}
 
+async def attachment_rn_and_rel_name(tenant, project, user_or_fp, conversation_id, turn_id, role, filename: str):
+    ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+    safe_name = os.path.basename(filename) or "file.bin"
+    rel_name = f"{ts}-{safe_name}"
+    rn = rn_attachment(tenant, project, user_or_fp, conversation_id, turn_id, role, rel_name)
+    return rn, rel_name
+
 class ConversationStore:
     """
     Root: ${KDCUBE_STORAGE_PATH}/cb
@@ -224,14 +231,15 @@ class ConversationStore:
         if not turn_id:
             raise ValueError("turn_id is required for attachments")
 
-        ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+        # ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
         who, user_or_fp = self._who_and_id(user, fingerprint)
         base = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
             "attachments", user_type, user_or_fp, conversation_id, turn_id
         )
-        safe_name = os.path.basename(filename) or "file.bin"
-        rel_name = f"{ts}-{safe_name}"
+        # safe_name = os.path.basename(filename) or "file.bin"
+        # rel_name = f"{ts}-{safe_name}"
+        rn, rel_name = attachment_rn_and_rel_name(tenant, project, user_or_fp, conversation_id, turn_id, role, filename)
         rel = self._join(base, rel_name)
 
         meta = {"ContentType": mime} if mime else None
@@ -239,7 +247,7 @@ class ConversationStore:
 
         # RN is the logical filename (without timestamp) OR the actual stored name?
         # To keep dereferencing simple, we use the stored name.
-        rn = rn_attachment(tenant, project, user_or_fp, conversation_id, turn_id, role, rel_name)
+        # rn = rn_attachment(tenant, project, user_or_fp, conversation_id, turn_id, role, rel_name)
         return self._uri_for_path(rel), rel, rn
 
     # ---------- execution snapshot (role-aware RNs in manifest) ----------

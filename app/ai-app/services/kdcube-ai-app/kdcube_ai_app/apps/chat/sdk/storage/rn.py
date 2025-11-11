@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-
+from dataclasses import dataclass
 # chat/sdk/storage/rn.py
 
 from urllib.parse import quote
@@ -44,3 +44,25 @@ def rn_citable(tenant: str, project: str,
                role: str, message_id: str) -> str:
     # ef:<tenant>:<project>:chatbot:citable:<user_id>:<conversation_id>:<turn_id>:<role>:<message_id>
     return f"ef:{tenant}:{project}:chatbot:citable:{_safe(user_id)}:{conversation_id}:{turn_id}:{role}:{message_id}"
+
+import re
+FILE_PATH_RE = re.compile(
+    r'^cb/tenants/(?P<tenant>[^/]+)/projects/(?P<project>[^/]+)/attachments/(?P<role>[^/]+)/'
+    r'(?P<user_id>admin-user-\d+)/'
+    r'(?P<conversation_id>[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})/'
+    r'(?P<turn_id>turn_[^/]+)/(?P<filename>[^/]+)$'
+)
+
+def parse_file_path(path: str) -> dict:
+    m = FILE_PATH_RE.match(path)
+    if not m:
+        raise ValueError("Path did not match expected format")
+    return m.groupdict()
+
+def build_file_path(d: dict) -> str:
+    return "cb/tenants/{tenant}/projects/{project}/attachments/{role}/admin-user-1/{conversation_id}/{turn_id}/{filename}".format(**d)
+
+def rn_file_from_file_path(file_rel_path: str):
+    places = parse_file_path(file_rel_path)
+    return rn_attachment(**places)
+

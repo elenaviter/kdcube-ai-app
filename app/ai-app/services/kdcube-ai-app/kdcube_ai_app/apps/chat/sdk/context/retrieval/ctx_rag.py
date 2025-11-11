@@ -9,6 +9,7 @@ import datetime, traceback, logging
 import pathlib, json
 from typing import Optional, Sequence, List, Dict, Any, Union, Callable
 
+from kdcube_ai_app.apps.chat.sdk.storage.rn import rn_file_from_file_path
 from kdcube_ai_app.apps.chat.sdk.util import _turn_id_from_tags_safe
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnLog
@@ -18,6 +19,17 @@ from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex
 
 logger = logging.getLogger(__name__)
 TURN_LOG_TAGS_BASE = ["kind:turn.log", "artifact:turn.log"]
+
+UI_ARTIFACT_TAGS = {
+    "artifact:codegen.program.citables",
+    "artifact:codegen.program.files",
+    "artifact:conv.thinking.stream",
+    "artifact:conv.canvas.stream",
+    "chat:user", "chat:assistant"
+}
+
+FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
+CONV_START_FPS_TAG = "conv.start"
 
 class ContextRAGClient:
     def __init__(self, *,
@@ -1370,9 +1382,6 @@ class ContextRAGClient:
         :return:
         """
 
-        FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
-        CONV_START_FPS_TAG = "conv.start"
-
         # 1) Find the conv.start fingerprint within this conversation (it is small and is stored as is in the index)
         data = await self.search(kinds=[FINGERPRINT_KIND],
                                  user_id=user_id,
@@ -1390,9 +1399,7 @@ class ContextRAGClient:
             conversation_title = conv_start.get("conversation_title") if conv_start else None
         except Exception as ex:
             conversation_title = None
-        ui_artifacts_tags = ["artifact:codegen.program.citables", "artifact:codegen.program.files",
-                             "chat:user", "chat:assistant",
-                             "chat:thinking"]
+        ui_artifacts_tags = UI_ARTIFACT_TAGS
 
         # 3) Get raw turn-tag occurrences (chronological, duplicates preserved)
         occurrences = await self.idx.get_conversation_turn_ids_from_tags(
@@ -1438,12 +1445,6 @@ class ContextRAGClient:
             "turns": turns
         }
 
-    UI_ARTIFACT_TAGS = {
-        "artifact:codegen.program.citables",
-        "artifact:codegen.program.files",
-        "chat:user", "chat:assistant", "chat:thinking",
-    }
-
     async def fetch_conversation_artifacts(
         self,
         *,
@@ -1466,7 +1467,7 @@ class ContextRAGClient:
         for r in occ:
             tid = r["turn_id"]
             tags = set(r.get("tags") or [])
-            tag_hits = self.UI_ARTIFACT_TAGS & tags
+            tag_hits = UI_ARTIFACT_TAGS & tags
             if not tag_hits:
                 continue
             tag_type = next(iter(tag_hits))
@@ -1482,9 +1483,21 @@ class ContextRAGClient:
             }
             if materialize and r.get("s3_uri"):
                 try:
-                    item["data"] = self.store.get_message(r["s3_uri"])
+                    data = self.store.get_message(r["s3_uri"]) or {}
+                    item["data"] = data
                     if "embedding" in item["data"]:
                         del item["data"]["embedding"]
+                    payload = item["data"].get("payload") or {}
+                    meta = item["data"].get("meta") or {}
+                    if not payload or not meta:
+                        continue
+                    kind = meta.get("kind")
+                    files = []
+                    if kind == "codegen.program.files":
+                        files = list((payload.get("files_by_slot") or {}).values())
+                        for f in files:
+                            f["rn"] = rn_file_from_file_path(f["path"])
+                    payload["files"] = files
                 except Exception:
                     item["data"] = None
             turns_map[tid]["artifacts"].append(item)

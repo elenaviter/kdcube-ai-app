@@ -68,7 +68,7 @@ def _parse_chatbot_rn(rn: str) -> Dict[str, Any]:
 def _is_owner_or_privileged(owner_id: str, session: UserSession) -> bool:
     if session.user_id and owner_id == session.user_id:
         return True
-    if (session.user_type or "").lower() == "anonymous" and owner_id and session.fingerprint and owner_id == session.fingerprint:
+    if (session.user_type.value or "").lower() == "anonymous" and owner_id and session.fingerprint and owner_id == session.fingerprint:
         return True
     if PRIVILEGED_ROLES & set(session.roles or []):
         return True
