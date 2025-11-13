@@ -948,7 +948,7 @@ class ContextRAGClient:
             return _dt.datetime.fromisoformat(s)
 
         def _encode_cursor(idx: int) -> str:
-            payload = json.dumps({"i": int(idx)}, separators=(",", ":")).encode("utf-8")
+            payload = json.dumps({"i": int(idx)}, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
             return base64.urlsafe_b64encode(payload).decode("ascii")
 
         def _decode_cursor(cur: Optional[str]) -> int:
@@ -1175,7 +1175,7 @@ class ContextRAGClient:
         artifact_tag = f"artifact:{kind}" if not kind.startswith("artifact:") else kind
         tags = [f"turn:{turn_id}", artifact_tag] + ([f"track:{track_id}"] if track_id else [])
         if not content_str:
-            content_str = json.dumps(content) if isinstance(content, dict) else str(content)
+            content_str = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else str(content)
         if extra_tags:
             tags.extend([t for t in extra_tags if isinstance(t, str) and t.strip()])
         s3_uri, message_id, rn = await self.store.put_message(
@@ -1576,6 +1576,7 @@ class ContextRAGClient:
             new_state=new_state, s3_uri=s3_uri, now_ts=now_iso,
             require_not_in_progress=require_not_in_progress,
             last_turn_id=last_turn_id,   # <— NEW
+            bundle_id=bundle_id,
         )
 
         return {

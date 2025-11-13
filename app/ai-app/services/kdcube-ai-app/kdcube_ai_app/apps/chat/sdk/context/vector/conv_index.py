@@ -121,6 +121,7 @@ class ConvIndex:
             new_state: str,             # 'idle' | 'in_progress' | 'error'
             s3_uri: str,
             now_ts: str,
+            bundle_id: str,
             require_not_in_progress: bool = False,
             last_turn_id: str | None = None,   # <— NEW (to tag the active turn)
     ) -> dict:
@@ -155,11 +156,11 @@ class ConvIndex:
                 tags = base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
                 q_ins = f"""
                   INSERT INTO {self.schema}.conv_messages
-                    (user_id, conversation_id, role, text, s3_uri, ts, ttl_days, user_type, tags)
-                  VALUES ($1,$2,'artifact','', $3, $4, 3650, 'system', $5)
+                    (user_id, conversation_id, role, text, s3_uri, bundle_id, ts, ttl_days, user_type, tags)
+                  VALUES ($1,$2,'artifact','', $3, $4, $5, 3650, 'system', $6)
                   RETURNING id, tags
                 """
-                rec = await con.fetchrow(q_ins, user_id, conversation_id, s3_uri, _coerce_ts(now_ts), tags)
+                rec = await con.fetchrow(q_ins, user_id, conversation_id, s3_uri, bundle_id, _coerce_ts(now_ts), tags)
                 st, cur_turn = _parse_tags(rec["tags"])
                 return {"ok": True, "row": {"id": rec["id"], "tags": rec["tags"]}, "state": st, "current_turn_id": cur_turn}
 
@@ -169,21 +170,22 @@ class ConvIndex:
               SET
                 s3_uri = $1,
                 ts     = $2,
+                bundle_id  = $3,
                 tags   = (
                     SELECT ARRAY(
                         SELECT DISTINCT t
                         FROM unnest(tags) AS t
                         WHERE t NOT LIKE 'conv.state:%' AND t NOT LIKE 'conv.turn:%'
                         UNION ALL
-                        SELECT unnest($3::text[])
+                        SELECT unnest($4::text[])
                     )
                 )
-              WHERE id = $4
+              WHERE id = $5
               {"AND NOT (tags && ARRAY['conv.state:in_progress']::text[])" if require_not_in_progress else ""}
               RETURNING id, tags
             """
             tags_add = base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
-            rec = await con.fetchrow(q_upd, s3_uri, _coerce_ts(now_ts), tags_add, int(row["id"]))
+            rec = await con.fetchrow(q_upd, s3_uri, _coerce_ts(now_ts), bundle_id, tags_add, int(row["id"]))
             if rec is None:
                 # CAS failed
                 # Fetch current row to report state/turn to caller
@@ -876,7 +878,7 @@ class ConvIndex:
                             continue
 
                         # Serialize the value to JSON string
-                        value_json = json.dumps(a.get("value")) if a.get("value") is not None else None
+                        value_json = json.dumps(a.get("value"), ensure_ascii=False) if a.get("value") is not None else None
 
                         assertion_data.append((
                             user_id,
@@ -909,7 +911,7 @@ class ConvIndex:
                             continue
 
                         # Serialize the value to JSON string
-                        value_json = json.dumps(e.get("value")) if e.get("value") is not None else None
+                        value_json = json.dumps(e.get("value"), ensure_ascii=False) if e.get("value") is not None else None
 
                         exception_data.append((
                             user_id,

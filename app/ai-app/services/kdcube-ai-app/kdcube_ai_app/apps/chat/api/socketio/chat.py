@@ -329,7 +329,8 @@ class SocketIOChatHandler:
         # message_data["conversation_id"] = "565fbaea-c54c-4e0e-a73a-0ddb3aed158f"
         # message_data["conversation_id"] = "cbd6155a-8714-4d49-8a77-c7a802bfe848"
         # message_data["conversation_id"] = "927b6edd-e664-4b2d-87ef-a041995b6e18"
-        # message_data["conversation_id"] = "b2c2405c-0a94-4cce-bfdc-d811403256b3"
+        # message_data["conversation_id"] = "f0fec000-8dd2-4d85-acda-b8781f210d04" # BROKEN
+        # message_data["conversation_id"] = "ae42599e-2c1e-4334-be43-667a957d61e2"
         logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
 
         try:
@@ -481,16 +482,16 @@ class SocketIOChatHandler:
             if not spec_resolved:
                 self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
                 return
-
+            routing = ChatTaskRouting(
+                session_id=session.session_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                socket_id=sid,
+                bundle_id=spec_resolved.id,
+            )
             payload = ChatTaskPayload(
                 meta=ChatTaskMeta(task_id=task_id, created_at=time.time(), instance_id=self.instance_id),
-                routing=ChatTaskRouting(
-                    session_id=session.session_id,
-                    conversation_id=conversation_id,
-                    turn_id=turn_id,
-                    socket_id=sid,
-                    bundle_id=spec_resolved.id,
-                ),
+                routing=routing,
                 actor=ChatTaskActor(
                     tenant_id=tenant_id,
                     project_id=project_id,
@@ -533,11 +534,10 @@ class SocketIOChatHandler:
                 active_turn = set_res.get("current_turn_id")
                 try:
                     self._comm.emit_conv_status(
-                        svc, conv,
+                        svc, conv, routing,
                         state="in_progress",
                         updated_at=set_res["updated_at"],
                         current_turn_id=active_turn,
-                        session_id=payload.routing.session_id,
                         target_sid=sid  # DM this requester tab only
                     )
                     self._comm.emit_error(
@@ -553,11 +553,10 @@ class SocketIOChatHandler:
             # We DID acquire the lock → proceed and announce with our turn_id
             try:
                 self._comm.emit_conv_status(
-                    svc, conv,
+                    svc, conv, routing,
                     state="in_progress",
                     updated_at=set_res["updated_at"],
                     current_turn_id=payload.routing.turn_id,
-                    session_id=payload.routing.session_id
                 )
             except Exception:
                 pass
@@ -588,10 +587,10 @@ class SocketIOChatHandler:
                 # let the requester tab know
                 self._comm.emit_conv_status(
                     svc, conv,
+                    routing=routing,
                     state="idle",
                     updated_at=res_reset["updated_at"],
                     current_turn_id=res_reset.get("current_turn_id"),
-                    session_id=payload.routing.session_id,
                     target_sid=sid,  # DM the requester tab; or omit target_sid to session-broadcast
                 )
                 self._comm.emit_error(
@@ -621,20 +620,39 @@ class SocketIOChatHandler:
         conv_id = (data or {}).get("conversation_id")
         socket_session = await self.sio.get_session(sid)
         user_session = (socket_session or {}).get("user_session", {})
+        conv_id = conv_id or user_session.get("session_id")
         # lookup current row
         row = await self.app.state.conversation_browser.conv_idx.get_conversation_state_row(
             user_id=user_session.get("user_id"),
-            conversation_id=conv_id or user_session.get("session_id"),
+            conversation_id=conv_id
         )
         # translate row → state + current_turn_id + updated_at
         state = "idle" if not row else ("in_progress" if "conv.state:in_progress" in row["tags"] else "error" if "conv.state:error" in row["tags"] else "idle")
         updated_at = (row["ts"].isoformat() + "Z") if row else datetime.utcnow().isoformat() + "Z"
         current_turn_id = row.get("payload", {}).get("last_turn_id") if row else None
 
+        agentic_bundle_id = data.get("bundle_id")
+        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+        spec_resolved = resolve_bundle(agentic_bundle_id, override=None)
+
         # just EMIT `conv_status` back to the requester sid
         svc = ServiceCtx(request_id=str(uuid.uuid4()), user=user_session.get("user_id"))
-        conv = ConversationCtx(session_id=user_session.get("session_id"), conversation_id=conv_id or user_session.get("session_id"), turn_id=current_turn_id or f"turn_{uuid.uuid4().hex[:8]}")
-        self._comm.emit_conv_status(svc, conv, state=state, updated_at=updated_at, current_turn_id=current_turn_id, target_sid=sid, session_id=user_session.get("session_id"))
+        conv = ConversationCtx(session_id=user_session.get("session_id"),
+                               conversation_id=conv_id,
+                               turn_id=current_turn_id or f"turn_{uuid.uuid4().hex[:8]}")
+        routing = ChatTaskRouting(
+            session_id=user_session.get("session_id"),
+            conversation_id=conv_id,
+            turn_id=current_turn_id,
+            socket_id=sid,
+            bundle_id=spec_resolved.id,
+        )
+        self._comm.emit_conv_status(svc, conv,
+                                    routing=routing,
+                                    state=state,
+                                    updated_at=updated_at,
+                                    current_turn_id=current_turn_id,
+                                    target_sid=sid)
 
     # ---------- ASGI app ----------
 

@@ -111,7 +111,7 @@ class ServiceCommunicator:
             f"Publishing event '{event}' to '{full_channel}' "
             f"(sid={target_sid}, session={session_id}): {data}"
         )
-        self.redis.publish(full_channel, json.dumps(message))
+        self.redis.publish(full_channel, json.dumps(message, ensure_ascii=False))
 
 
     # ---------- subscriber API (async) ----------

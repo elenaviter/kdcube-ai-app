@@ -10,7 +10,7 @@ from typing import Any, Optional, Callable, Awaitable, Dict, List, Tuple
 import os, logging, time
 
 from kdcube_ai_app.apps.chat.sdk.protocol import (
-    ChatEnvelope, ServiceCtx, ConversationCtx, _iso_now
+    ChatEnvelope, ServiceCtx, ConversationCtx, ChatTaskRouting, _iso_now
 )
 from kdcube_ai_app.apps.chat.sdk.util import ensure_event_markdown
 from kdcube_ai_app.infra.orchestration.app.communicator import ServiceCommunicator
@@ -121,12 +121,12 @@ class ChatRelayCommunicator:
             self,
             svc: ServiceCtx,
             conv: ConversationCtx,
+            routing: ChatTaskRouting,
             *,
             state: str,
             updated_at: str,
             current_turn_id: str | None = None,
             target_sid: str | None = None,
-            session_id: str | None = None,
     ):
         payload = {
             "type": "conv.status",
@@ -136,6 +136,7 @@ class ChatRelayCommunicator:
                 "tenant": getattr(svc, "tenant", None),
                 "project": getattr(svc, "project", None),
                 "user": getattr(svc, "user", None),
+                "bundle_id": routing.bundle_id
             },
             "conversation": {
                 "session_id": conv.session_id,
@@ -149,6 +150,8 @@ class ChatRelayCommunicator:
                 **({"current_turn_id": current_turn_id} if current_turn_id else {}),
             },
         }
+        session_id = routing.session_id
+
         self._comm.pub(
             event="conv_status",
             data=payload,
@@ -513,7 +516,8 @@ class ChatCommunicator:
             try:
                 ensure_event_markdown(env)  # fills env['event']['markdown'] if missing
             except Exception:
-                pass
+                import traceback
+                print(traceback.format_exc())
 
         socket_event = route or "chat_step"
         await self.emit(socket_event, env)

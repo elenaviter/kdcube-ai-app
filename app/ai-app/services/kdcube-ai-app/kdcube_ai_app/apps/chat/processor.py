@@ -161,7 +161,7 @@ class EnhancedChatRequestProcessor:
                 task_dict["_queue_key"] = queue_key
                 return task_dict
 
-            await self.middleware.redis.lpush(queue_key, json.dumps(task_dict))
+            await self.middleware.redis.lpush(queue_key, json.dumps(task_dict, ensure_ascii=False))
         return None
 
     # ---------------- Config loop ----------------
@@ -345,58 +345,6 @@ class EnhancedChatRequestProcessor:
         # storage_backend = create_storage_backend(os.environ.get("KDCUBE_STORAGE_PATH"), **{})
         storage_backend = create_storage_backend(_settings.STORAGE_PATH, **{})
 
-        # set_res = await self.conversation_ctx.set_conversation_state(
-        #     tenant=payload.actor.tenant_id,
-        #     project=payload.actor.project_id,
-        #     user_id=payload.user.user_id,
-        #     conversation_id=payload.routing.conversation_id,
-        #     new_state="in_progress",
-        #     by_instance=f"{self.middleware.instance_id}:{self.process_id}",
-        #     request_id=payload.routing.request_id,
-        #     last_turn_id=payload.routing.turn_id,
-        #     require_not_in_progress=True,
-        #     user_type=payload.user.user_type,
-        #     bundle_id=payload.routing.bundle_id,
-        # )
-        #
-        # if not set_res["ok"]:
-        #     # Did NOT acquire; someone else is active
-        #     active_turn = set_res.get("current_turn_id")
-        #     try:
-        #         self._relay.emit_conv_status(
-        #             svc, conv,
-        #             state="in_progress",
-        #             updated_at=set_res["updated_at"],
-        #             current_turn_id=active_turn,
-        #             session_id=payload.routing.session_id,
-        #             target_sid=socket_id  # DM this requester tab only
-        #         )
-        #         self._relay.emit_error(
-        #             svc, conv,
-        #             error="Conversation is busy (another tab/process is answering). Try again when it completes.",
-        #             session_id=payload.routing.session_id,
-        #             target_sid=socket_id
-        #         )
-        #     except Exception:
-        #         pass
-        #     # release lock and exit this task early
-        #     if lock_key:
-        #         await self.middleware.redis.delete(lock_key)
-        #     self._current_load = max(0, self._current_load - 1)
-        #     return
-        #
-        # # We DID acquire the lock → proceed and announce with our turn_id
-        # try:
-        #     self._relay.emit_conv_status(
-        #         svc, conv,
-        #         state="in_progress",
-        #         updated_at=set_res["updated_at"],
-        #         current_turn_id=payload.routing.turn_id,
-        #         session_id=payload.routing.session_id
-        #     )
-        # except Exception:
-        #     pass
-
         # 5) Announce start (async)
         msg = (
             (payload.request.message[:100] + "...")
@@ -464,10 +412,11 @@ class EnhancedChatRequestProcessor:
                         bundle_id=payload.routing.bundle_id,
                     )
                     self._relay.emit_conv_status(svc, conv,
+                                                 routing=payload.routing,
                                                  state=("idle" if success else "error"),
                                                  updated_at=res["updated_at"],
                                                  current_turn_id=res.get("current_turn_id"),
-                                                 session_id=session_id, target_sid=None)
+                                                 target_sid=None)
                 except Exception as ex:
                     logger.error(traceback.format_exc())
 

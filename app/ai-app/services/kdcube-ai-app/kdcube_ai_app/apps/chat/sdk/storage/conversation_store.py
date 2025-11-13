@@ -239,7 +239,7 @@ class ConversationStore:
         )
         # safe_name = os.path.basename(filename) or "file.bin"
         # rel_name = f"{ts}-{safe_name}"
-        rn, rel_name = attachment_rn_and_rel_name(tenant, project, user_or_fp, conversation_id, turn_id, role, filename)
+        rn, rel_name = await attachment_rn_and_rel_name(tenant, project, user_or_fp, conversation_id, turn_id, role, filename)
         rel = self._join(base, rel_name)
 
         meta = {"ContentType": mime} if mime else None
