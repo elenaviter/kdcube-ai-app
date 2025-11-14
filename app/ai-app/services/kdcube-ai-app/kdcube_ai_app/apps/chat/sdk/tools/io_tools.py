@@ -11,6 +11,7 @@ import semantic_kernel as sk
 from kdcube_ai_app.apps.chat.sdk.runtime.workdir_discovery import resolve_output_dir
 from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_from_text, dedupe_sources_by_url, \
     CITATION_OPTIONAL_ATTRS, normalize_sources_any
+from kdcube_ai_app.apps.chat.sdk.util import strip_lone_surrogates
 
 try:
     from semantic_kernel.functions import kernel_function
@@ -549,7 +550,13 @@ class AgentIO:
                     ret = s
 
         payload = {"description": description or "", "in": {"tool_id": tool_id, "params": p}, "ret": ret}
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except UnicodeEncodeError:
+            safe_json = strip_lone_surrogates(
+                json.dumps(payload, ensure_ascii=False, indent=2)
+            )
+            path.write_text(safe_json, encoding="utf-8")
         return rel
 
     # @kernel_function(
@@ -627,7 +634,13 @@ class AgentIO:
         if out_dyn:
             obj["_out_dyn_raw"] = out_dyn
 
-        path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+        except UnicodeEncodeError:
+            safe_json = strip_lone_surrogates(
+                json.dumps(obj, ensure_ascii=False, indent=2)
+            )
+            path.write_text(safe_json, encoding="utf-8")
         return rel
 
 
