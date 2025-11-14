@@ -149,7 +149,7 @@ class ChatTaskRouting(_ProtoBase):
     bundle_id: str
     session_id: str
     conversation_id: Optional[str] = None
-    turn_id: str
+    turn_id: Optional[str] = None
     socket_id: Optional[str] = None
 
 

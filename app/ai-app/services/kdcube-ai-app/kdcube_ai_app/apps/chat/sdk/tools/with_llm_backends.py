@@ -365,7 +365,7 @@ async def generate_content_llm(
         artifact_name: Annotated[str|None, "Name of the artifact being produced (for tracking)."] = "",
         input_context: Annotated[str, "Optional base text or data to use."] = "",
         target_format: Annotated[str, "html|markdown|json|yaml|text",
-                                 {"enum": ["html", "markdown", "json", "yaml", "text", "xml"]}] = "markdown",
+                                 {"enum": ["html", "markdown", "mermaid", "json", "yaml", "text", "xml"]}] = "markdown",
         schema_json: Annotated[str,
                                 "Optional JSON Schema. If provided (and target_format is json|yaml), "
                                 "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
@@ -412,7 +412,7 @@ async def generate_content_llm(
 
     # --------- normalize inputs ---------
     tgt = (target_format or "markdown").lower().strip()
-    if tgt not in ("html", "markdown", "json", "yaml", "text", "xml"):
+    if tgt not in ("html", "markdown", "mermaid", "json", "yaml", "text", "xml"):
         tgt = "markdown"
 
     # auto embedding policy
@@ -484,6 +484,23 @@ async def generate_content_llm(
         sys_lines += [
             "MARKDOWN RULES:",
             "- Use proper headings, lists, tables, and code blocks as needed.",
+        ]
+    elif tgt == "mermaid":
+        sys_lines += [
+            "MERMAID DIAGRAM RULES:",
+            "- Start with diagram type (flowchart TD / sequenceDiagram / etc.). NO code fences (```).",
+            "- Node IDs: simple alphanumerics only (A, B, step1). Never use reserved words (graph, end, class).",
+            "- Labels with special chars (:;,()[]{}|/#&*+-<>?!\\\"') MUST be in double quotes: A[\"Label: value\"]",
+            "- Arrows: --> (solid), -.-> (dotted), ==> (thick). NOT single dash.",
+            "- Line breaks: use <br/> inside quotes, not \\n",
+            "- Quote escaping: use #quot; or \\\" inside quoted labels.",
+            "- Close all subgraphs with 'end'.",
+            "- End immediately with completion marker after last diagram line.",
+            "",
+            "Example:",
+            "flowchart TD",
+            "    A[\"Start: Process (step 1)\"] --> B{\"Valid?\"}",
+            "    B -->|\"Yes\"| C[\"Success\"]",
         ]
     elif tgt == "html":
         sys_lines += ["""
@@ -993,6 +1010,13 @@ async def generate_content_llm(
                 alt = _extract_json_object(content_raw)
                 if alt:
                     content_clean = _strip_bom_zwsp(alt)
+    elif tgt == "mermaid":
+        # Mermaid should never be fenced, but if model disobeys, unwrap it
+        content_clean = _unwrap_fenced_blocks_concat(content_raw, lang="mermaid")
+        content_clean = _strip_bom_zwsp(content_clean)
+        # Remove any stray markdown if model added it
+        content_clean = re.sub(r'^```(?:mermaid)?\s*\n?', '', content_clean, flags=re.I)
+        content_clean = re.sub(r'\n?```\s*$', '', content_clean)
     else:
         # honor code_fences only for non-structured formats
         content_clean = _strip_code_fences(content_raw, allow=code_fences)

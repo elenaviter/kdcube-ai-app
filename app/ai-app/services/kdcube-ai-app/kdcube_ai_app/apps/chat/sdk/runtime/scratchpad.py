@@ -259,8 +259,8 @@ class TurnLog(BaseModel):
     def turn_summary(self, turn_summary: dict, **kw):
         """Log turn summary to structured entries and create summary line."""
         order = [
-            "user_inquiry", "objective", "complexity", "domain", "query_type",
-            "prefs", "assumptions", "done", "not_done", "risks", "notes", "assistant_answer"
+            "user_inquiry", "user_message_description", "objective", "complexity", "domain", "query_type",
+            "prefs", "assumptions", "done", "not_done", "risks", "notes", "assistant_answer", "answer_agent_output_description"
         ]
         turn_summary_entries = []
 
@@ -338,14 +338,21 @@ class TurnLog(BaseModel):
                     pass
 
             elif o == "user_inquiry":
-                answer = turn_summary[o]
-                turn_summary_entries.append(f"• user prompt summary: {answer} ")
+                artifact = turn_summary[o]
+                turn_summary_entries.append(f"• user prompt summary: {artifact} ")
 
             elif o == "assistant_answer":
-                answer = turn_summary[o]
+                artifact = turn_summary[o]
                 # self.answer(answer)
-                turn_summary_entries.append(f"• assistant answer summary: {answer} ")
+                turn_summary_entries.append(f"• assistant answer summary: {artifact} ")
 
+            elif o == "user_message_description":
+                artifact = turn_summary[o]
+                turn_summary_entries.append(f"• user message contents description: {artifact} ")
+
+            elif o == "answer_agent_output_description":
+                artifact = turn_summary[o]
+                turn_summary_entries.append(f"• final answer agent response contents description: {artifact} ")
         try:
             if isinstance(turn_summary, dict):
                 for o in order:
@@ -443,6 +450,8 @@ class CompressedTurn:
     # Assistant side
     time_assistant: Optional[str] = None
     assistant_answer_summary: Optional[str] = None
+    answer_agent_output_contents_description: Optional[str] = None
+    user_prompt_contents_description: Optional[str] = None
     solver_mode: Optional[str] = None
     solver_status: Optional[str] = None
     tools_used: Optional[str] = None
@@ -518,6 +527,8 @@ class CompressedTurn:
 
         # Assistant answer summary from turn_summary
         turn.assistant_answer_summary = turn_summary.get("assistant_answer", "")
+        turn.answer_agent_output_contents_description = turn_summary.get("answer_agent_output_description", "")
+        turn.user_prompt_contents_description = turn_summary.get("user_message_description", "")
 
         # Solver execution details from turn_log_entries
         solver_result_entry = next(
@@ -664,9 +675,18 @@ def turn_to_assistant_message(turn: CompressedTurn) -> str:
     if turn.time_assistant:
         parts.append(f"[{turn.time_assistant}]")
 
+    # 1.1 User prompt contents description
+    if turn.user_prompt_contents_description:
+        parts.append(f"User prompt contents description: {turn.user_prompt_contents_description}")
+
     # 2. Assistant answer summary
     if turn.assistant_answer_summary:
         parts.append(f"Assistant response summary: {turn.assistant_answer_summary}")
+
+    # 2.1. Final answer gen response contents summary
+    if turn.answer_agent_output_contents_description:
+        parts.append(f"Final answer generator own response contents description: {turn.answer_agent_output_contents_description}")
+
 
     # 3. Solver execution (if solver ran)
     if turn.solver_mode or turn.solver_status or turn.tools_used or turn.done or turn.not_done:
@@ -767,6 +787,7 @@ if __name__ == "__main__":
         "notes": "Solver executed web search across 12 targeted queries",
         "user_inquiry": "User disclosed tech stack (Redis, PostgreSQL, DynamoDB, S3, Docker on EC2) and requested search for recent issues affecting these components",
         "assistant_answer": "Consolidated markdown report covering: Critical CVEs (CVE-2025-49844 Redis RCE 10.0 CVSS, PostgreSQL CVE-2024-10979/10980, Docker CVE-2024-41110)",
+
         "prefs": {"assertions": [{"key": "needs_stack_security_intel", "value": True, "desired": True}], "exceptions": []},
         "complexity": {"level": "complex", "factors": ["multi_agent", "codegen", "tool_usage_3"]},
         "domain": "infrastructure, security",
