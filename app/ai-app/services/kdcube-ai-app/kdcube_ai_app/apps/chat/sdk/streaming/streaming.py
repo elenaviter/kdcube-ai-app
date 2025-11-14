@@ -159,7 +159,6 @@ def _add_2section_protocol(base: str, json_shape_hint: str) -> str:
         "❌ <<< BEGIN INTERNAL THINKING >>> ... ```json ... (missing BEGIN JSON marker)\n"
         "❌ Just ```json ... (missing both markers)\n"
     )
-
 def _get_2section_protocol(json_shape_hint: str) -> str:
     """
     Strict 2-part protocol:
@@ -167,15 +166,68 @@ def _get_2section_protocol(json_shape_hint: str) -> str:
       2) STRUCTURED JSON (buffered, validated)
     """
     return (
-        "\n\nCRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY:\n"
-        "• Produce TWO sections in this exact order. Use each START marker below exactly once.\n"
-        "• Do NOT write any closing tags/markers like <<< END... >>> or </…>.\n\n"
-        "1) <<< BEGIN INTERNAL THINKING >>>\n"
-        "   (brief progress notes in Markdown; avoid credentials & long stack traces)\n"
-        "2) <<< BEGIN STRUCTURED JSON >>>\n"
-        f"   ```json\n{json_shape_hint}\n```\n"
-        "Return exactly these two sections, in order, once."
+        "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "CRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        "YOU MUST PRODUCE EXACTLY TWO SECTIONS:\n\n"
+
+        "SECTION 1 — INTERNAL THINKING:\n"
+        "<<< BEGIN INTERNAL THINKING >>>\n"
+        "[Your brief analysis/reasoning here — plain text or Markdown]\n\n"
+
+        "SECTION 2 — STRUCTURED JSON (CRITICAL RULES BELOW):\n"
+        "<<< BEGIN STRUCTURED JSON >>>\n"
+        "```json\n"
+        f"{json_shape_hint}\n"
+        "```\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "CRITICAL RULES FOR SECTION 2:\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        "1. Section 2 MUST contain ONLY the JSON object inside ```json fences\n"
+        "2. DO NOT write any closing markers like <<< END STRUCTURED JSON >>>\n"
+        "3. DO NOT write >>> or any other closing symbols\n"
+        "4. DO NOT solve the user's problem in Section 2\n"
+        "5. DO NOT include explanations, examples, or additional content after the JSON\n"
+        "6. DO NOT add markdown, text, or anything else after the closing ```\n"
+        "7. Section 2 is METADATA ONLY — the actual solution comes later from other agents\n\n"
+
+        "❌ WRONG (adds content after JSON):\n"
+        "<<< BEGIN STRUCTURED JSON >>>\n"
+        "```json\n"
+        "{...}\n"
+        "```\n"
+        ">>>\n"
+        "Here's the solution: ...\n\n"
+
+        "✅ CORRECT (JSON only, nothing after):\n"
+        "<<< BEGIN STRUCTURED JSON >>>\n"
+        "```json\n"
+        "{...}\n"
+        "```\n\n"
+
+        "REMEMBER: Your job is to fill the structured contract as requested, not solve user problem.\n"
+        "Section 2 = PURE JSON, NOTHING ELSE.\n"
     )
+# def _get_2section_protocol(json_shape_hint: str) -> str:
+#     """
+#     Strict 2-part protocol:
+#       1) INTERNAL THINKING (streamed to user, with optional redaction)
+#       2) STRUCTURED JSON (buffered, validated)
+#     """
+#     return (
+#         "\n\nCRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY:\n"
+#         "• Produce TWO sections in this exact order. Use each START marker below exactly once.\n"
+#         "• Do NOT write any closing tags/markers like <<< END... >>> or </…>.\n\n"
+#         "1) <<< BEGIN INTERNAL THINKING >>>\n"
+#         "   (brief progress notes in Markdown; avoid credentials & long stack traces)\n"
+#         "2) <<< BEGIN STRUCTURED JSON >>>\n"
+#         f"   ```json\n{json_shape_hint}\n```\n"
+#         "Return exactly these two sections, in order, once."
+#         "Section 2 = PURE JSON, NOTHING ELSE.\n"
+#     )
 
 _REDACTIONS = [
     # API keys / tokens
@@ -790,6 +842,47 @@ class _TwoSectionParser:
                 break
         return i
 
+    @staticmethod
+    def _extract_json_block_only(raw: str) -> str:
+        """
+        SAFEGUARD: Extract ONLY the ```json...``` block from the JSON section.
+        Ignores any content before the fence or after the closing ```.
+
+        This protects against models that add extra content like:
+```json
+        {...}
+```
+        >>>
+        Here's the solution: ...
+        """
+        if not raw or not raw.strip():
+            return ""
+
+        # Find the ```json fence (case-insensitive)
+        json_fence_match = re.search(r'```\s*json\s*\n', raw, re.IGNORECASE)
+        if not json_fence_match:
+            # Maybe just ``` without json marker?
+            json_fence_match = re.search(r'```\s*\n', raw)
+            if not json_fence_match:
+                # No fence at all - return as-is and let downstream parser handle it
+                return raw
+
+        # Start of actual JSON content (after the opening fence)
+        start_pos = json_fence_match.end()
+
+        # Find the closing ``` (first occurrence after the opening fence)
+        remaining = raw[start_pos:]
+        close_fence_match = re.search(r'\n?\s*```', remaining)
+
+        if close_fence_match:
+            # Extract only content between fences
+            json_content = remaining[:close_fence_match.start()]
+        else:
+            # No closing fence - take everything after opening fence
+            json_content = remaining
+
+        return json_content.strip()
+
     async def feed(self, piece: str):
         if not piece:
             return
@@ -840,17 +933,6 @@ class _TwoSectionParser:
 
             break
 
-    # async def finalize(self):
-    #     if self.mode == "internal":
-    #         raw = self.buf[self.emit_from:]
-    #         cleaned = _redact_stream_text(raw)
-    #         if cleaned:
-    #             await self.on_internal(cleaned, completed=False)
-    #             self.internal += cleaned
-    #     elif self.mode == "json":
-    #         self.json += self.buf[self.emit_from:]
-    #     # caller sends completed=True
-
     async def finalize(self):
         if self.mode == "internal":
             raw = self.buf[self.emit_from:]
@@ -861,13 +943,17 @@ class _TwoSectionParser:
 
             # FALLBACK: If no JSON section found, try to extract from internal
             if not self.json.strip():
-                # Look for ```json fence in the internal buffer
-                json_match = re.search(r'```json\s*\n(.*?)```', self.buf, re.DOTALL)
-                if json_match:
-                    self.json = json_match.group(1)
+                # Look for ```json fence in the entire buffer
+                json_content = self._extract_json_block_only(self.buf)
+                if json_content:
+                    self.json = json_content
 
         elif self.mode == "json":
             self.json += self.buf[self.emit_from:]
+
+            # SAFEGUARD: Extract ONLY the JSON block, ignore any extra content
+            # This protects against models that add content after the ```
+            self.json = self._extract_json_block_only(self.json)
 
 async def _stream_agent_two_sections_to_json(
         svc: ModelServiceBase,
