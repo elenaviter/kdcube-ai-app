@@ -208,51 +208,23 @@ class ConversationStore:
         """
         Best-effort recursive delete of all files under a conversation-relative base.
 
-        Currently fully implemented for file:// storage; for other schemes it tries to
-        call backend-specific helpers if available.
-
-        Returns:
-            Approximate number of files deleted (0 if nothing or unsupported).
+        Delegates to storage backend's delete_tree_a / delete_tree, counting deleted blobs.
         """
         if not rel_base:
             return 0
 
-        # ----- file:// backend: delete directory tree on local FS -----
-        if self.scheme == "file":
-            import os, shutil
-
-            base_path = os.path.normpath(os.path.join(self._file_base, rel_base))
-            if not os.path.exists(base_path):
-                return 0
-
-            # Count files before deletion for stats
-            count = 0
-            for root, dirs, files in os.walk(base_path):
-                count += len(files)
-
-            shutil.rmtree(base_path, ignore_errors=True)
-            return count
-
-        # ----- non-file backends (e.g. s3) -----
-        # Here we try to delegate to the underlying backend if it supports
-        # delete_tree / delete_prefix. You can flesh this out as needed.
+        backend = self.backend
         try:
-            backend = self.backend
+            # Prefer native async implementation if present
+            if hasattr(backend, "delete_tree_a"):
+                return int(await backend.delete_tree_a(rel_base))
 
-            if hasattr(backend, "delete_tree"):
-                fn = getattr(backend, "delete_tree")
-                res = fn(rel_base) if not hasattr(fn, "__await__") else await fn(rel_base)
-                return int(res or 0) if isinstance(res, int) else 0
-
-            if hasattr(backend, "delete_prefix"):
-                fn = getattr(backend, "delete_prefix")
-                res = fn(rel_base) if not hasattr(fn, "__await__") else await fn(rel_base)
-                return int(res or 0) if isinstance(res, int) else 0
         except Exception:
             # Best-effort; don't break delete_conversation if storage cleanup fails
-            pass
+            return 0
 
         return 0
+
 
     async def delete_conversation(
             self,

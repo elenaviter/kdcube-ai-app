@@ -5,9 +5,11 @@
 """
 Knowledge Base storage backends for different storage systems.
 """
+import os
 import asyncio
 import logging
 import mimetypes
+import shutil
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from datetime import datetime, UTC
@@ -69,6 +71,14 @@ class IStorageBackend(ABC):
         """Get last modified time."""
         pass
 
+    @abstractmethod
+    def delete_tree(self, path: str) -> int:
+        """
+        Recursively delete everything under `path` and return the number of
+        deleted objects (files/blobs). `path` may be a file or a logical directory.
+        """
+        pass
+
     # ---------- Async convenience wrappers (default: run sync in a thread) ----------
     async def exists_a(self, path: str) -> bool:
         return await asyncio.to_thread(self.exists, path)
@@ -113,6 +123,13 @@ class IStorageBackend(ABC):
     async def list_with_prefix_a(self, path: str, prefix: str) -> List[str]:
         """Async version of list_with_prefix"""
         return await asyncio.to_thread(self.list_with_prefix, path, prefix)
+
+    async def delete_tree_a(self, path: str) -> int:
+        """
+        Async version of delete_tree. Backends can override with a native async
+        implementation; default falls back to running the sync one in a thread.
+        """
+        return await asyncio.to_thread(self.delete_tree, path)
 
 class LocalFileSystemBackend(IStorageBackend):
     """Local filesystem storage backend."""
@@ -188,6 +205,31 @@ class LocalFileSystemBackend(IStorageBackend):
                 matching_files.append(item.name)
 
         return matching_files
+
+    def delete_tree(self, path: str) -> int:
+        """
+        Recursively delete everything under `path` (file or directory)
+        and return the number of files deleted.
+
+        This is used by higher layers (e.g. ConversationStore._delete_tree)
+        when they need stats about how many blobs were removed.
+        """
+        resolved = self._resolve_path(path)
+        if not resolved.exists():
+            return 0
+
+        # Single file: just delete and return 1
+        if resolved.is_file():
+            resolved.unlink()
+            return 1
+
+        # Directory: count files first, then delete the whole tree
+        count = 0
+        for _root, _dirs, files in os.walk(resolved):
+            count += len(files)
+
+        shutil.rmtree(resolved, ignore_errors=True)
+        return count
 
 
 class S3StorageBackend(IStorageBackend):
@@ -702,6 +744,60 @@ class S3StorageBackend(IStorageBackend):
                 logger.error(f"Cannot list files with prefix {prefix} in {path}: {e}")
                 return []
 
+    def delete_tree(self, path: str) -> int:
+        """
+        Recursively delete all S3 objects whose key starts with the given path
+        (treated as a logical 'directory') and return the number of objects deleted.
+
+        We explicitly *count* the objects by listing before deleting.
+        """
+        # Treat `path` as a logical directory/prefix
+        prefix = self._get_s3_key(path).rstrip("/") + "/"
+
+        objects_to_delete: List[Dict[str, str]] = []
+        continuation_token = None
+        deleted_count = 0
+
+        try:
+            while True:
+                list_kwargs: Dict[str, Any] = {
+                    "Bucket": self.bucket_name,
+                    "Prefix": prefix,
+                }
+                if continuation_token:
+                    list_kwargs["ContinuationToken"] = continuation_token
+
+                response = self.s3_client.list_objects_v2(**list_kwargs)
+                contents = response.get("Contents", [])
+
+                for obj in contents:
+                    objects_to_delete.append({"Key": obj["Key"]})
+                    deleted_count += 1
+
+                if response.get("IsTruncated"):
+                    continuation_token = response.get("NextContinuationToken")
+                else:
+                    break
+
+            # Perform deletion in batches of 1000
+            if objects_to_delete:
+                batch_size = 1000
+                for i in range(0, len(objects_to_delete), batch_size):
+                    batch = {"Objects": objects_to_delete[i:i + batch_size]}
+                    self.s3_client.delete_objects(
+                        Bucket=self.bucket_name,
+                        Delete=batch,
+                    )
+
+            # We intentionally don't try to handle a possible single object
+            # exactly equal to `path` here, because for our layout we always
+            # use `path/…` keys (conversation, attachments, executions).
+            return deleted_count
+
+        except Exception as e:
+            logger.error(f"Cannot delete tree at {path} in S3: {e}")
+            return 0
+
 def create_storage_backend(storage_uri: str, **kwargs) -> IStorageBackend:
     """Factory function to create storage backends from URI."""
     parsed = urlparse(storage_uri)
@@ -875,4 +971,34 @@ class InMemoryStorageBackend(IStorageBackend):
                     if '/' not in filename and filename.startswith(prefix):
                         matching_files.append(filename)
             return matching_files
+
+    def delete_tree(self, path: str) -> int:
+        """
+        Delete a file or a whole subtree (prefix) from the in-memory storage
+        and return the number of objects deleted.
+
+        - Deletes the exact `path` key if present.
+        - Deletes all keys that start with `path + '/'`.
+        """
+        with self.__with_lock():
+            deleted_count = 0
+
+            # Collect all keys under the prefix first (so we can count BEFORE deleting)
+            prefix = path if path.endswith("/") else path + "/"
+            keys_to_delete = [k for k in self.__fs_objects.keys() if k.startswith(prefix)]
+
+            # Delete all children under path/
+            for k in keys_to_delete:
+                obj = self.__fs_objects.pop(k, None)
+                if obj is not None:
+                    self.__total_size -= obj.data_size
+                    deleted_count += 1
+
+            # Also delete the exact key `path` if it exists and wasn't already included
+            if path in self.__fs_objects:
+                obj = self.__fs_objects.pop(path)
+                self.__total_size -= obj.data_size
+                deleted_count += 1
+
+            return deleted_count
 
