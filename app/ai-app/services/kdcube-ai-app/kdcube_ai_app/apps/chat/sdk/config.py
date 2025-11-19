@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     AWS_SHARED_CREDENTIALS_FILE: str | None = None
     AWS_CONFIG_FILE: str | None = None
 
-    STORAGE_PATH: str | None = None
+    STORAGE_PATH: str | None = Field(default=None, alias="KDCUBE_STORAGE_PATH")
 
     TENANT: str = Field(default="home", alias="TENANT_ID")
     PROJECT: str = Field(default="default-project", alias="DEFAULT_PROJECT_NAME")
