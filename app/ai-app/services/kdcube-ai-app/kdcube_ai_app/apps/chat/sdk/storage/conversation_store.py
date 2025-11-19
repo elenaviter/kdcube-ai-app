@@ -266,6 +266,50 @@ class ConversationStore:
             "executions": executions_deleted,
         }
 
+    async def delete_turn(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_type: str,
+            user_or_fp: str,
+            conversation_id: str,
+            turn_id: str,
+    ) -> Dict[str, int]:
+        """
+        Delete all blobs for a given *turn* within a conversation:
+          - messages for that turn
+          - attachments for that turn
+          - executions for that turn
+
+        Layout:
+          cb/tenants/{tenant}/projects/{project}/conversation/{user_type}/{user_or_fp}/{conversation_id}/{turn_id}
+          cb/tenants/{tenant}/projects/{project}/attachments/{user_type}/{user_or_fp}/{conversation_id}/{turn_id}
+          cb/tenants/{tenant}/projects/{project}/executions/{user_type}/{user_or_fp}/{conversation_id}/{turn_id}
+        """
+        conv_base = self._join(
+            self.root_prefix, "tenants", tenant, "projects", project,
+            "conversation", user_type, user_or_fp, conversation_id, turn_id
+        )
+        att_base = self._join(
+            self.root_prefix, "tenants", tenant, "projects", project,
+            "attachments", user_type, user_or_fp, conversation_id, turn_id
+        )
+        exec_base = self._join(
+            self.root_prefix, "tenants", tenant, "projects", project,
+            "executions", user_type, user_or_fp, conversation_id, turn_id
+        )
+
+        messages_deleted = await self._delete_tree(conv_base)
+        attachments_deleted = await self._delete_tree(att_base)
+        executions_deleted = await self._delete_tree(exec_base)
+
+        return {
+            "messages": messages_deleted,
+            "attachments": attachments_deleted,
+            "executions": executions_deleted,
+        }
+
     # ---------- attachments (role-aware, turn in path) ----------
 
     async def put_attachment(

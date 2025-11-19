@@ -156,6 +156,60 @@ class ConvIndex:
             row = await con.fetchrow(q, *args)
         return int(row["n"] or 0)
 
+    async def delete_turn(
+            self,
+            *,
+            user_id: str,
+            conversation_id: str,
+            turn_id: str,
+            bundle_id: Optional[str] = None,
+    ) -> int:
+        """
+        Delete all conv_messages rows (and their edges) for a given user+conversation+turn.
+
+        IMPORTANT:
+          - Only touches the index (conv_messages + conv_artifact_edges).
+          - DOES NOT touch ConversationStore blobs.
+
+        Returns:
+            Number of conv_messages rows deleted.
+        """
+        if not user_id or not conversation_id or not turn_id:
+            return 0
+
+        args: List[Any] = [user_id, conversation_id, turn_id]
+        bundle_cond = ""
+        if bundle_id is not None:
+            args.append(bundle_id)
+            bundle_cond = f"AND bundle_id = ${len(args)}"
+
+        q = f"""
+            WITH target AS (
+              SELECT id
+              FROM {self.schema}.conv_messages
+              WHERE user_id = $1
+                AND conversation_id = $2
+                AND turn_id = $3
+                {bundle_cond}
+            ),
+            del_edges AS (
+              DELETE FROM {self.schema}.conv_artifact_edges
+              WHERE from_id IN (SELECT id FROM target)
+                 OR to_id   IN (SELECT id FROM target)
+            ),
+            deleted AS (
+              DELETE FROM {self.schema}.conv_messages
+              WHERE id IN (SELECT id FROM target)
+              RETURNING id
+            )
+            SELECT COUNT(*) AS n
+            FROM deleted
+        """
+        async with self._pool.acquire() as con:
+            row = await con.fetchrow(q, *args)
+
+        return int(row["n"] or 0)
+
     # conv_index.py (where your try_set_conversation_state_cas lives)
     async def try_set_conversation_state_cas(
             self,

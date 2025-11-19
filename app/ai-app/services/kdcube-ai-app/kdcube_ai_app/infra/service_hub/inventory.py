@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# infra/service_hub/inventory.py — minimal, clean, role-mapped, cached clients
+# infra/service_hub/inventory.py
+# minimal, clean, role-mapped, cached clients
 
 import asyncio
 import json
@@ -33,7 +34,7 @@ from kdcube_ai_app.infra.llm.llm_data_model import ModelRecord, AIProvider, AIPr
 from kdcube_ai_app.infra.llm.util import get_service_key_fn
 from kdcube_ai_app.infra.embedding.embedding import get_embedding
 from kdcube_ai_app.infra.plugin.bundle_registry import BundleSpec
-
+import kdcube_ai_app.infra.service_hub.errors as service_errors
 
 # =========================
 # ids/util
@@ -1685,6 +1686,7 @@ class ModelServiceBase:
                 "thoughts": thoughts_grouped,          # <- list[str], grouped
                 "tool_calls": tool_calls_list,         # <- list[dict] in arrival order
                 "citations": citations,                # <- list[dict]
+                "service_error": None,
             }
 
             if on_complete:
@@ -1702,6 +1704,13 @@ class ModelServiceBase:
             slog.log_error(e, "stream_loop_failed")
             slog.finish_operation(False, "stream_model_text_tracked_failed",
                                   provider=cfg.provider, model=cfg.model_name, role=role)
+            svc_error = service_errors.mk_llm_error(
+                exc=e,
+                stage="stream_loop",
+                cfg=cfg,
+                service_name="StreamTracker",
+                context={"role": role},
+            )
             return {
                 "text": f"Model call failed: {e}",
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
@@ -1710,6 +1719,7 @@ class ModelServiceBase:
                 "thoughts": [],
                 "tool_calls": [],
                 "citations": [],
+                "service_error": svc_error.model_dump()
             }
 # =========================
 # Custom endpoint client (unchanged API)

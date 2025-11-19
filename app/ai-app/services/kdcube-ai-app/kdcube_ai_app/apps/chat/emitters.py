@@ -3,6 +3,8 @@
 
 # chat/emitters.py
 from __future__ import annotations
+
+import traceback
 from datetime import datetime
 
 from dataclasses import dataclass, field
@@ -286,12 +288,12 @@ class ChatCommunicator:
         self._delta_cache: dict[Tuple[str, str, str, str, str, str], _DeltaAggregate] = {}
 
     # ---------- low-level ----------
-    async def emit(self, event: str, data: dict):
+    async def emit(self, event: str, data: dict, broadcast: bool = False):
         await self.emitter.emit(
             event=event,
             data=data,
             room=self.room,
-            target_sid=self.target_sid,
+            target_sid=None if broadcast else self.target_sid,
             session_id=self.conversation.get("session_id"),
         )
 
@@ -497,9 +499,11 @@ class ChatCommunicator:
         env["data"] = data or {}
         if markdown:
             env["event"]["markdown"] = markdown
-        await self.emit("chat_step", env)
+        await self.emit("chat_step", env, broadcast=True)
 
-    async def delta(self, *, text: str, index: int, marker: str = "answer", agent: str = "assistant", completed: bool = False, **kwargs):
+    async def delta(self, *, text: str, index: int,
+                    marker: str = "answer", agent: str = "assistant",
+                    completed: bool = False, **kwargs):
         env = self._base_env("chat.delta")
         env["event"].update({"agent": agent, "step": "stream", "status": "running", "title": "Assistant Delta"})
         env["delta"] = {"text": text, "marker": marker, "index": int(index), "completed": completed }
@@ -516,7 +520,7 @@ class ChatCommunicator:
         except Exception:
             pass
 
-        await self.emit("chat_delta", env)
+        await self.emit("chat_delta", env, broadcast=True)
 
     async def complete(self, *, data: dict):
         env = self._base_env("chat.complete")
@@ -524,10 +528,10 @@ class ChatCommunicator:
         env["data"] = data or {}
         await self.emit("chat_complete", env)
 
-    async def error(self, *, message: str, data: Optional[dict] = None):
+    async def error(self, *, message: str, data: Optional[dict] = None, agent: str | None = None, step: str = "chat.error", title: str = "Workflow Error"):
         env = self._base_env("chat.error")
-        env["event"].update({"step": "workflow", "status": "error", "title": "Workflow Error"})
-        env["data"] = {"error": message, **(data or {})}
+        env["event"].update({ "agent": agent, "step": step, "status": "error", "title": title })
+        env["data"] = { "error": message, **(data or {}) }
         await self.emit("chat_error", env)
 
     async def event(

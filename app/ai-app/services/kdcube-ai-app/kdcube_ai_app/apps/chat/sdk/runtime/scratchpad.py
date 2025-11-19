@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 import asyncio, copy
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Dict, Any, Iterable
 from pydantic import BaseModel, Field
@@ -72,6 +73,18 @@ class SharedScratchpad:
         async with self._lock:
             return copy.deepcopy(self._data)
 
+
+@dataclass
+class TurnPhase:
+    name: str                      # "gate", "router", "tools", "answer", ...
+    agent: Optional[str] = None    # "precheck_gate", "router", "answer_generator", ...
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+class TurnPhaseError(RuntimeError):
+    def __init__(self, message: str, *, code: str | None = None, data: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.data = data or {}
 
 class TurnScratchpad:
     def __init__(self, user, conversation_id, turn_id, text, attachments=None):
@@ -154,6 +167,19 @@ class TurnScratchpad:
         self.started_at = datetime.utcnow().isoformat() + "Z"
 
         self.agents_responses = dict()
+        self.current_phase: Optional[TurnPhase] = None
+
+    def set_phase(self, name: str, *, agent: str | None = None, **meta):
+        self.current_phase = TurnPhase(name=name, agent=agent, meta=meta)
+
+    @contextmanager
+    def phase(self, name: str, *, agent: str | None = None, **meta):
+        prev = self.current_phase
+        self.current_phase = TurnPhase(name=name, agent=agent, meta=meta)
+        try:
+            yield
+        finally:
+            self.current_phase = prev
 
     def propose_fact(
             self,

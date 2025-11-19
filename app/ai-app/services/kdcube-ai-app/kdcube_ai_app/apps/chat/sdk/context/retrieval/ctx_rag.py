@@ -1719,6 +1719,104 @@ class ContextRAGClient:
             "deleted_storage_executions": int(storage_counts.get("executions", 0) or 0),
         }
 
+    async def delete_turn(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            conversation_id: str,
+            turn_id: str,
+            user_type: str,
+            bundle_id: Optional[str] = None,
+            fingerprint: Optional[str] = None,
+            where: str = "index_only",   # "index_only" | "full"
+    ) -> Dict[str, int]:
+        """
+        Delete a single turn.
+
+        where:
+          - "index_only" (default): remove from ConvIndex only (conv_messages + edges),
+            keep ConversationStore blobs.
+          - "full": also delete blobs for this turn from ConversationStore.
+
+        Returns:
+          {
+            "deleted_messages": <int>,              # index rows
+            "deleted_storage_messages": <int>,      # store message blobs (if full)
+            "deleted_storage_attachments": <int>,   # store attachments (if full)
+            "deleted_storage_executions": <int>,    # store executions (if full)
+          }
+        """
+        if not user_id or not conversation_id or not turn_id:
+            logger.warning(
+                "delete_turn called with missing identifiers: "
+                "user_id=%r conversation_id=%r turn_id=%r bundle_id=%r",
+                user_id, conversation_id, turn_id, bundle_id,
+            )
+            return {
+                "deleted_messages": 0,
+                "deleted_storage_messages": 0,
+                "deleted_storage_attachments": 0,
+                "deleted_storage_executions": 0,
+            }
+
+        # 1) Always delete from index (this is what you want for rollback)
+        try:
+            deleted_rows = await self.idx.delete_turn(
+                user_id=user_id,
+                conversation_id=conversation_id,
+                turn_id=turn_id,
+                bundle_id=bundle_id,
+            )
+        except Exception as e:
+            logger.error(
+                "ConvIndex.delete_turn failed for user=%s conv=%s turn=%s bundle=%s: %s",
+                user_id, conversation_id, turn_id, bundle_id, e, exc_info=True
+            )
+            deleted_rows = 0
+
+        storage_counts = {"messages": 0, "attachments": 0, "executions": 0}
+
+        # 2) Optionally delete from storage as well
+        if where == "full":
+            try:
+                # user_or_fp is the stable id used in RNs; same logic as put_message/attachments
+                try:
+                    who, user_or_fp = self.store._who_and_id(user_id, fingerprint)  # type: ignore[attr-defined]
+                except Exception:
+                    # Fallback: use raw user_id
+                    user_or_fp = user_id
+
+                storage_counts = await self.store.delete_turn(
+                    tenant=tenant,
+                    project=project,
+                    user_type=user_type,
+                    user_or_fp=user_or_fp,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                )
+            except Exception as e:
+                logger.error(
+                    "ConversationStore.delete_turn failed for user=%s conv=%s turn=%s: %s",
+                    user_id, conversation_id, turn_id, e, exc_info=True
+                )
+
+        logger.info(
+            "delete_turn(where=%s) user=%s conv=%s turn=%s bundle=%s "
+            "→ idx_rows=%d, store=%s",
+            where, user_id, conversation_id, turn_id, bundle_id,
+            deleted_rows, storage_counts,
+        )
+
+        return {
+            "deleted_messages": int(deleted_rows or 0),
+            "deleted_storage_messages": int(storage_counts.get("messages", 0) or 0),
+            "deleted_storage_attachments": int(storage_counts.get("attachments", 0) or 0),
+            "deleted_storage_executions": int(storage_counts.get("executions", 0) or 0),
+        }
+
+
 def _ts_to_float(ts: str) -> float:
     """Convert ISO timestamp to float for recency scoring"""
     try:

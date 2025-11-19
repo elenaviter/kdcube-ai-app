@@ -11,6 +11,7 @@ from typing import Dict, Any, Optional, Tuple, List
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+from kdcube_ai_app.infra.service_hub.errors import ServiceError, ServiceKind
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger
 from kdcube_ai_app.apps.chat.sdk.util import _json_loads_loose, _defence
 
@@ -212,23 +213,6 @@ def _get_2section_protocol(json_shape_hint: str) -> str:
         "REMEMBER: Your job is to fill the structured contract as requested, not solve user problem.\n"
         "Section 2 = PURE JSON, NOTHING ELSE.\n"
     )
-# def _get_2section_protocol(json_shape_hint: str) -> str:
-#     """
-#     Strict 2-part protocol:
-#       1) INTERNAL THINKING (streamed to user, with optional redaction)
-#       2) STRUCTURED JSON (buffered, validated)
-#     """
-#     return (
-#         "\n\nCRITICAL OUTPUT PROTOCOL — FOLLOW EXACTLY:\n"
-#         "• Produce TWO sections in this exact order. Use each START marker below exactly once.\n"
-#         "• Do NOT write any closing tags/markers like <<< END... >>> or </…>.\n\n"
-#         "1) <<< BEGIN INTERNAL THINKING >>>\n"
-#         "   (brief progress notes in Markdown; avoid credentials & long stack traces)\n"
-#         "2) <<< BEGIN STRUCTURED JSON >>>\n"
-#         f"   ```json\n{json_shape_hint}\n```\n"
-#         "Return exactly these two sections, in order, once."
-#         "Section 2 = PURE JSON, NOTHING ELSE.\n"
-#     )
 
 _REDACTIONS = [
     # API keys / tokens
@@ -843,47 +827,6 @@ class _TwoSectionParser:
                 break
         return i
 
-#     @staticmethod
-#     def _extract_json_block_only(raw: str) -> str:
-#         """
-#         SAFEGUARD: Extract ONLY the ```json...``` block from the JSON section.
-#         Ignores any content before the fence or after the closing ```.
-#
-#         This protects against models that add extra content like:
-# ```json
-#         {...}
-# ```
-#         >>>
-#         Here's the solution: ...
-#         """
-#         if not raw or not raw.strip():
-#             return ""
-#
-#         # Find the ```json fence (case-insensitive)
-#         json_fence_match = re.search(r'```\s*json\s*\n', raw, re.IGNORECASE)
-#         if not json_fence_match:
-#             # Maybe just ``` without json marker?
-#             json_fence_match = re.search(r'```\s*\n', raw)
-#             if not json_fence_match:
-#                 # No fence at all - return as-is and let downstream parser handle it
-#                 return raw
-#
-#         # Start of actual JSON content (after the opening fence)
-#         start_pos = json_fence_match.end()
-#
-#         # Find the closing ``` (first occurrence after the opening fence)
-#         remaining = raw[start_pos:]
-#         close_fence_match = re.search(r'\n?\s*```', remaining)
-#
-#         if close_fence_match:
-#             # Extract only content between fences
-#             json_content = remaining[:close_fence_match.start()]
-#         else:
-#             # No closing fence - take everything after opening fence
-#             json_content = remaining
-#
-#         return json_content.strip()
-
     @staticmethod
     def _extract_json_block_only(raw: str) -> str:
         """
@@ -1105,7 +1048,7 @@ async def _stream_agent_two_sections_to_json(
     system_message = SystemMessage(content=sys_prompt) if isinstance(sys_prompt, str) else sys_prompt
     user_message = HumanMessage(content=user_msg) if isinstance(user_msg, str) else user_msg
     messages = [system_message, user_message]
-    await svc.stream_model_text_tracked(
+    stream_meta = await svc.stream_model_text_tracked(
         client,
         messages,
         on_delta=on_delta,
@@ -1115,6 +1058,11 @@ async def _stream_agent_two_sections_to_json(
         client_cfg=cfg,
         role=client_role,
     )
+    svc_error: dict | None = None
+    if isinstance(stream_meta, dict):
+        if stream_meta.get("service_error"):
+            # New structured shape
+            svc_error = stream_meta["service_error"]
 
     # ----- parse the JSON section -----
     raw_json = parser.json  # keep original for logs
@@ -1165,10 +1113,15 @@ async def _stream_agent_two_sections_to_json(
             "model": getattr(cfg, "model_name", None),
         },
     )
-
+    ok_flag = (svc_error is None) and (err is None)
     return {
         "agent_response": data,
-        "log": {"error": err, "raw_data": raw_json},
+        "log": {
+            "error": err,
+            "raw_data": raw_json,
+            "service_error": svc_error,
+            "ok": ok_flag
+        },
         "internal_thinking": parser.internal,  # already streamed
     }
 
@@ -1273,7 +1226,7 @@ async def _stream_agent_to_json(
                 "ttft_ms": timings.get("time_to_first_token_ms")
             })
 
-        await svc.stream_model_text_tracked(
+        stream_meta = await svc.stream_model_text_tracked(
             client,
             full_messages,
             on_delta=on_delta,
@@ -1283,6 +1236,12 @@ async def _stream_agent_to_json(
             client_cfg=cfg,
             role=client_role,
         )
+
+        svc_error: dict | None = None
+        if isinstance(stream_meta, dict) and stream_meta.get("service_error"):
+            svc_error = stream_meta["service_error"]
+
+        ok_flag = svc_error is None
 
         raw_text = "".join(raw_parts)
         timings["total_ms"] = (time.perf_counter() - t_start) * 1000
@@ -1306,6 +1265,8 @@ async def _stream_agent_to_json(
                 "error": None,
                 "raw_data": raw_text,
                 "timings": timings,
+                "service_error": svc_error,
+                "ok": ok_flag
             },
         }
 
@@ -1339,7 +1300,7 @@ async def _stream_agent_to_json(
             "ttft_ms": timings.get("time_to_first_token_ms")
         })
 
-    await svc.stream_model_text_tracked(
+    stream_meta = await svc.stream_model_text_tracked(
         client,
         full_messages,
         on_delta=on_delta,
@@ -1349,6 +1310,10 @@ async def _stream_agent_to_json(
         client_cfg=cfg,
         role=client_role,
     )
+    svc_error: dict | None = None
+    if isinstance(stream_meta, dict):
+        if stream_meta.get("service_error"):
+            svc_error = stream_meta["service_error"]
 
     # Parse the JSON section
     t_parse_start = time.perf_counter()
@@ -1416,13 +1381,15 @@ async def _stream_agent_to_json(
             "timings": timings,
         },
     )
-
+    ok_flag = (svc_error is None) and (err is None)
     return {
         "agent_response": data,
         "log": {
             "error": err,
             "raw_data": raw_json,
             "timings": timings,
+            "service_error": svc_error,
+            "ok": ok_flag,
         },
         "internal_thinking": parser.internal,
     }
