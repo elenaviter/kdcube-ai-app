@@ -26,6 +26,7 @@ UI_ARTIFACT_TAGS = {
     "artifact:conv.thinking.stream",
     "artifact:conv.canvas.stream",
     "artifact:turn.log.reaction",
+    "artifact:conv.user_shortcuts",
     "chat:user",
     "chat:assistant"
 }
