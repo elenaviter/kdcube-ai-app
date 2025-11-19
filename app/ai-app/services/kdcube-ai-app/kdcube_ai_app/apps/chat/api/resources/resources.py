@@ -327,3 +327,21 @@ async def download_cb_exec_file(
     if not _is_owner_or_privileged(owner_id, session):
         raise HTTPException(status_code=403, detail="Forbidden")
     return await preview_cb_exec_file(tenant, project, owner_id, conversation_id, turn_id, kind, path, True, session)
+
+@router.post("/link-preview")
+async def link_preview_endpoint(request: dict):
+    """Generate link preview using shared Chromium instance."""
+    url = request.get("url")
+    mode = request.get("mode", "standard")
+    if not url:
+        raise HTTPException(status_code=400, detail="URL required")
+
+    include_screenshot = request.get("include_screenshot", True)
+
+    # Use the tool's method which reuses the browser
+    result_json = await router.state.link_preview_instance.generate_preview(
+        mode=mode,
+        url=url,
+        include_screenshot=include_screenshot
+    )
+    return result_json

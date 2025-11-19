@@ -695,6 +695,7 @@ def grouped_by_component_and_seed() -> "callable":
         # Extract conversation context for filename
         user_id = event.user_id or event.context.get("user_id")
         conversation_id = event.context.get("conversation_id") or event.metadata.get("conversation_id")
+        system = event.context.get("system")
         turn_id = event.context.get("turn_id") or event.metadata.get("turn_id")
 
         # Build filename with timestamp at END for prefix filtering
@@ -705,8 +706,10 @@ def grouped_by_component_and_seed() -> "callable":
             agent_name_part = agent_name or "unknown"
             filename = f"cb|{user_part}|{conversation_id}|{turn_part}|{agent_name_part}|{ts}.json"
         else:
-            # Knowledge-based: kb|<ts>.json
-            filename = f"kb|{ts}.json"
+            if system:
+                filename = f"{system}|{ts}.json"
+            else:
+                filename = f"kb|{ts}.json"
 
         return f"{dir_path}/{filename}"
 

@@ -20,6 +20,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from dotenv import load_dotenv, find_dotenv
+
+from kdcube_ai_app.infra.rendering.link_preview import close_shared_link_preview
+from kdcube_ai_app.infra.rendering.shared_browser import close_shared_browser
+
 load_dotenv(find_dotenv())
 
 import kdcube_ai_app.apps.utils.logging_config as logging_config
@@ -37,7 +41,7 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
     get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant, _announce_startup,
-    get_pg_pool, get_conversation_system
+    get_pg_pool, get_conversation_system, shared_browser_instance, link_preview_instance
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -216,8 +220,15 @@ async def lifespan(app: FastAPI):
         await heartbeat_manager.start_heartbeat(interval=10)
 
         try:
+            # from kdcube_ai_app.infra.rendering.shared_browser import get_shared_browser
+            # app.state.shared_browser_instance = await get_shared_browser()
+            from kdcube_ai_app.infra.rendering.link_preview import get_shared_link_preview
+            app.state.link_preview_instance = await get_shared_link_preview()
+            # app.state.link_preview_instance = await link_preview_instance()
             await socketio_handler.start() # communicator subscribes internally
         except Exception as e:
+            app.state.shared_browser_instance = None
+            app.state.link_preview_instance = None
             logger.error(f"Failed to start chat relay listener: {e}")
 
         try:
@@ -256,6 +267,14 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, 'pg_pool'):
         await app.state.pg_pool.close()
+    # if hasattr(app.state, 'shared_browser_instance') and app.state.shared_browser_instance:
+    #     await app.state.shared_browser_instance.close()
+    # if hasattr(app.state,  'link_preview_instance') and app.state.link_preview_instance:
+    #     await app.state.link_preview_instance.close()
+    #     await app.state.link_preview_instance.close()
+
+    await close_shared_link_preview()
+    await close_shared_browser()
 
     logger.info("Chat service stopped")
 

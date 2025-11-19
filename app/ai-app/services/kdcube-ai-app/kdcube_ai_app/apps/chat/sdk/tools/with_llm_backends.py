@@ -844,11 +844,12 @@ async def generate_content_llm(
         if round_idx > 0:
             # 5) Continuation guidance + tail of produced content (non-cached)
             produced_so_far = "".join(buf_all)[-20000:]
-            cont_hint = continuation_hint or "Continue exactly from where you left off."
-            blocks.append({"text": cont_hint, "cache": False})
-            blocks.append({"text": "YOU ALREADY PRODUCED (partial, do not repeat):", "cache": False})
-            blocks.append({"text": produced_so_far, "cache": False})
-            blocks.append({"text": f"Resume and complete the {tgt.upper()} output. Append, do not restart.", "cache": False})
+            if produced_so_far:
+                cont_hint = continuation_hint or "Continue exactly from where you left off."
+                blocks.append({"text": cont_hint, "cache": False})
+                blocks.append({"text": "YOU ALREADY PRODUCED (partial, do not repeat):", "cache": False})
+                blocks.append({"text": produced_so_far, "cache": False})
+                blocks.append({"text": f"Resume and complete the {tgt.upper()} output. Append, do not restart.", "cache": False})
 
         return blocks
 

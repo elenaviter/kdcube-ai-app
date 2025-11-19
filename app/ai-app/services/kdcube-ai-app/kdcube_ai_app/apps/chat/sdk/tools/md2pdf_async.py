@@ -52,10 +52,33 @@ from pygments.formatters import HtmlFormatter
 from pygments.lexers import get_lexer_by_name, guess_lexer
 from pygments.util import ClassNotFound
 
+from kdcube_ai_app.infra.rendering.shared_browser import SharedBrowserService
 try:
     from playwright.async_api import async_playwright, TimeoutError as PWTimeout
 except Exception:
     async_playwright = None  # We'll error with a clear message later.
+
+async def get_shared_md2pdf() -> 'AsyncMarkdownPDF':
+    """
+    Get an AsyncMarkdownPDF instance that uses the shared browser.
+
+    More efficient than creating individual instances when doing
+    multiple PDF conversions.
+
+    Example:
+        converter = await get_shared_md2pdf()
+        await converter.convert_file("doc.md", "out.pdf")
+    """
+    from kdcube_ai_app.infra.rendering.shared_browser import get_shared_browser
+
+    shared_browser = await get_shared_browser()
+
+    converter = AsyncMarkdownPDF(
+        enable_mathjax=False,
+        shared_browser=shared_browser,
+    )
+    await converter.start()
+    return converter
 
 def _use_anchors_compat(md: MarkdownIt) -> None:
     """Apply anchors_plugin with args compatible across mdit-py-plugins versions - NO PARAGRAPH SYMBOLS."""
@@ -251,14 +274,20 @@ class PDFOptions:
 
 @dataclass
 class AsyncMarkdownPDF:
+    # Service-specific configuration
     enable_mathjax: bool = False
     extra_css: Iterable[str] | None = None
     pdf_options: PDFOptions = field(default_factory=PDFOptions)
-    headless: bool = True
-    auto_install_browser: bool = False  # set True to try installing chromium if missing
 
-    # Runtime state
-    _playwright = None
+    # Optional shared browser (if None, creates own)
+    shared_browser: Optional[SharedBrowserService] = None
+
+    # Standalone browser settings (only used if shared_browser is None)
+    headless: bool = True
+    auto_install_browser: bool = False
+
+    # Runtime state (only used if NOT using shared browser)
+    _own_browser_service: Optional[SharedBrowserService] = None
     _browser = None
 
     # ---------- lifecycle ----------
@@ -270,44 +299,25 @@ class AsyncMarkdownPDF:
         await self.close()
 
     async def start(self):
-        """Launch (or reuse) Playwright + Chromium once."""
-        if async_playwright is None:
-            raise RuntimeError("Playwright not installed. Run: pip install playwright && python -m playwright install chromium")
-        if self._playwright is None:
-            try:
-                self._playwright = await async_playwright().start()
-            except Exception as e:
-                raise RuntimeError(f"Failed to start Playwright: {e}") from e
-        if self._browser is None:
-            try:
-                self._browser = await self._playwright.chromium.launch(headless=self.headless)
-            except Exception as e:
-                if self.auto_install_browser:
-                    # Try to install chromium on the fly (best-effort)
-                    proc = await asyncio.create_subprocess_exec(
-                        sys.executable, "-m", "playwright", "install", "chromium",
-                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-                    )
-                    await proc.communicate()
-                    self._browser = await self._playwright.chromium.launch(headless=self.headless)
-                else:
-                    raise RuntimeError(
-                        "Chromium not available for Playwright. Run: python -m playwright install chromium"
-                    ) from e
+        """Ensure browser is available (either shared or own)."""
+        if self.shared_browser:
+            # Use shared browser - just ensure it's started
+            self._browser = await self.shared_browser.get_browser()
+        else:
+            # Create own browser service
+            if self._own_browser_service is None:
+                self._own_browser_service = SharedBrowserService(
+                    headless=self.headless,
+                    auto_install_browser=self.auto_install_browser,
+                )
+            self._browser = await self._own_browser_service.get_browser()
 
     async def close(self):
-        """Close the shared browser and Playwright driver."""
-        if self._browser is not None:
-            try:
-                await self._browser.close()
-            finally:
-                self._browser = None
-        if self._playwright is not None:
-            try:
-                await self._playwright.stop()
-            finally:
-                self._playwright = None
-
+        """Close only if we own the browser (not shared)."""
+        if self._own_browser_service is not None:
+            await self._own_browser_service.close()
+            self._own_browser_service = None
+        self._browser = None
     # ---------- helpers ----------
     @staticmethod
     def _read_css(paths: Iterable[str] | None) -> str:
