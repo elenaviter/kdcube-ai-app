@@ -366,14 +366,14 @@ async def generate_content_llm(
         artifact_name: Annotated[str|None, "Name of the artifact being produced (for tracking)."] = "",
         input_context: Annotated[str, "Optional base text or data to use."] = "",
         target_format: Annotated[str, "html|markdown|json|yaml|text",
-                                 {"enum": ["html", "markdown", "mermaid", "json", "yaml", "text", "xml"]}] = "markdown",
+        {"enum": ["html", "markdown", "mermaid", "json", "yaml", "text", "xml"]}] = "markdown",
         schema_json: Annotated[str,
-                                "Optional JSON Schema. If provided (and target_format is json|yaml), "
-                                "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
+        "Optional JSON Schema. If provided (and target_format is json|yaml), "
+        "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
         sources_json: Annotated[str, "JSON array of sources: {sid:int, title:str, url?:str, text:str}."] = "[]",
         cite_sources: Annotated[bool, "If true and sources provided, require citations (inline for Markdown/HTML; sidecar for JSON/YAML)."] = False,
         citation_embed: Annotated[str, "auto|inline|sidecar|none",
-                                  {"enum": ["auto", "inline", "sidecar", "none"]}] = "auto",
+        {"enum": ["auto", "inline", "sidecar", "none"]}] = "auto",
         citation_container_path: Annotated[str, "JSON Pointer for sidecar path (json/yaml)."] = "/_citations",
         allow_inline_citations_in_strings: Annotated[bool, "Permit [[S:n]] tokens inside JSON/YAML string fields."] = False,
         # end_marker: Annotated[str, "Completion marker appended by the model at the very end."] = "<<<GENERATION FINISHED>>>",
@@ -401,6 +401,7 @@ async def generate_content_llm(
 
     from langchain_core.messages import SystemMessage, HumanMessage
     from kdcube_ai_app.infra.accounting import _get_context
+
     context = _get_context()
     context_snapshot = context.to_dict()
     logger.warning(f"[Context snapshot]:\n{context_snapshot}")
@@ -472,14 +473,6 @@ async def generate_content_llm(
 
     target_format_sys_instruction = f"TARGET FORMAT: {tgt}"
 
-    # Shared STRUCTURED COMPLETION CONTRACT for tag-based formats
-    structured_contract = [
-        "STRUCTURED COMPLETION CONTRACT (for HTML/XML):",
-        "- Never cut inside a tag or attribute; always finish the current element.",
-        "- If you approach the token limit, STOP only after writing a complete closing tag.",
-        "- Emit a single, cohesive document; no headers/prefaces outside the document.",
-        "- Do not use triple-backtick fences; output raw markup only.",
-    ]
     sys_lines = []
     if tgt == "markdown":
         sys_lines += [
@@ -797,86 +790,50 @@ async def generate_content_llm(
         {"text": line_with_token_budget, "cache": False}
     ])
 
-    # --------- streaming + rounds ---------
+    # --------- streaming infra (shared between main & repair) ---------
     buf_all: List[str] = []
     finished = False
     reason = ""
     used_rounds = 0
 
-    # keep index across rounds so UI sees a single, growing stream
-    emitted_count = 0
+    emitted_count = 0  # global index for all emitted chunks in this call
 
     # Build citation map once (we’ll only use it if tgt == "markdown")
     citation_map = build_citation_map_from_sources(sources_json)
 
-    def _build_user_blocks_for_round(round_idx: int) -> List[dict]:
+    async def _stream_round(
+            messages,
+            role_name: str,
+            temperature: float,
+            max_toks: int,
+            author_for_chunks: str,
+            author_for_complete: str,
+            start_index: int,
+    ) -> tuple[str, int]:
         """
-        Compose the HumanMessage as Anthropic-friendly blocks.
-        The instruction is ALWAYS included, and is cacheable when cache_instruction=True.
-        Non-instruction blocks are not cached (they can vary per round).
+        Shared streaming helper used for both main generation and repair.
+        Returns (raw_text, emitted_chunks_count).
         """
-        blocks: List[dict] = []
+        client = _SERVICE.get_client(role_name)
+        cfg = _SERVICE.describe_client(client, role=role_name)
 
-        # 1) Instruction (ALWAYS include; cache if requested)
-        #    Your helper expects: {"text": "...", "cache": bool}
-        blocks.append({"text": f"INSTRUCTION:\n{instruction}", "cache": bool(cache_instruction)})
-
-        # 2) Stable metadata for the task (non-cached)
-        blocks.append({"text": f"TARGET FORMAT: {tgt}", "cache": False})
-
-        # 3) Input context (may be large; non-cached, truncated once here)
-        if input_context:
-            blocks.append({"text": f"INPUT CONTEXT:\n{input_context[:12000]}", "cache": False})
-
-        # 4) Sources (sid map + digest), non-cached
-        if rows:
-            if round_idx == 0:
-                # On the first round, include full sid map + digest
-                if sid_map:
-                    blocks.append({"text": f"SOURCE IDS:\n{sid_map}", "cache": False})
-                if digest:
-                    blocks.append({"text": f"SOURCES DIGEST:\n{digest}", "cache": False})
-            else:
-                # On retries, keep brief reminder to avoid bloat
-                blocks.append({"text": "Remember the SOURCE IDS and DIGEST from earlier in this turn.", "cache": False})
-                if require_citations:
-                    blocks.append({"text": "Remember the CITATION REQUIREMENTS.", "cache": False})
-
-        if round_idx > 0:
-            # 5) Continuation guidance + tail of produced content (non-cached)
-            produced_so_far = "".join(buf_all)[-20000:]
-            if produced_so_far:
-                cont_hint = continuation_hint or "Continue exactly from where you left off."
-                blocks.append({"text": cont_hint, "cache": False})
-                blocks.append({"text": "YOU ALREADY PRODUCED (partial, do not repeat):", "cache": False})
-                blocks.append({"text": produced_so_far, "cache": False})
-                blocks.append({"text": f"Resume and complete the {tgt.upper()} output. Append, do not restart.", "cache": False})
-
-        return blocks
-
-    # IMPORTANT: single round for big/structured formats (no continuation)
-    effective_max_rounds = 1 if tgt in ("json", "yaml", "html", "xml") else max_rounds
-    logger.warning(f"Effective max rounds={effective_max_rounds}; format={tgt}")
-    for round_idx in range(effective_max_rounds):
-        used_rounds = round_idx + 1
-
-        # ---- STREAM ONE ROUND ----
-        round_buf: List[str] = []
-        author = agent_name or "Content Generator LLM"
+        round_buf: List[str] = []   # RAW text from this round
         stream_buf = ""
         emit_from = 0
         EMIT_HOLDBACK = 32
+        emitted_local = 0
 
         async def _emit_visible(text: str):
-            nonlocal emitted_count
+            nonlocal emitted_local
             if not text:
                 return
-            text = _scrub_emit_once(text)
-            text = _rm_invis(text)
-            out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
+            clean = _scrub_emit_once(text)
+            clean = _rm_invis(clean)
+            out = replace_citation_tokens_streaming(clean, citation_map) if tgt == "markdown" else clean
             if get_comm():
-                await emit_delta(out, index=emitted_count, marker=channel_to_stream, agent=author, format=tgt or "markdown", artifact_name=artifact_name)
-                emitted_count += 1
+                idx = start_index + emitted_local
+                await emit_delta(out, index=idx, marker=channel_to_stream, agent=author_for_chunks, format=tgt or "markdown", artifact_name=artifact_name)
+                emitted_local += 1
 
         async def _flush_safe(force: bool = False):
             nonlocal emit_from
@@ -884,13 +841,11 @@ async def generate_content_llm(
                 return
 
             if force:
-                # Final flush - emit all remaining content without safety checks
                 raw_slice = stream_buf[emit_from:]
                 if raw_slice:
                     await _emit_visible(raw_slice)
                     emit_from = len(stream_buf)
             else:
-                # Normal streaming - use holdback and safety checks
                 safe_end = max(emit_from, len(stream_buf) - EMIT_HOLDBACK)
                 if safe_end <= emit_from:
                     return
@@ -913,45 +868,101 @@ async def generate_content_llm(
             await _flush_safe(force=False)
 
         async def on_complete(_):
-
-            nonlocal emitted_count
-            # if tgt == "markdown":
-            #    await _flush_safe(force=True)
+            nonlocal emitted_local
             await _flush_safe(force=True)
-            emitted_count += 1
-            await emit_delta("", completed=True, index=emitted_count, marker=channel_to_stream, agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
+            if get_comm():
+                idx = start_index + emitted_local
+                emitted_local += 1
+                await emit_delta("", completed=True, index=idx, marker=channel_to_stream, agent=author_for_complete, format=tgt or "markdown", artifact_name=artifact_name)
 
-        role = role or "tool.generator"
-        client = _SERVICE.get_client(role)
-        cfg = _SERVICE.describe_client(client, role=role)
+        async with with_accounting(
+                bundle_id,
+                track_id=track_id,
+                agent=role_name,
+                metadata={
+                    "track_id": track_id,
+                    "agent": role_name,
+                    "agent_name": agent_name
+                }
+        ):
+            await _SERVICE.stream_model_text_tracked(
+                client,
+                messages=messages,
+                on_delta=on_delta,
+                on_complete=on_complete,
+                temperature=temperature,
+                max_tokens=max_toks,
+                client_cfg=cfg,
+                role=role_name,
+            )
 
-        # ✅ Build cached HumanMessage blocks with the instruction ALWAYS present
+        return "".join(round_buf), emitted_local
+
+    def _build_user_blocks_for_round(round_idx: int) -> List[dict]:
+        """
+        Compose the HumanMessage as Anthropic-friendly blocks.
+        The instruction is ALWAYS included, and is cacheable when cache_instruction=True.
+        Non-instruction blocks are not cached (they can vary per round).
+        """
+        blocks: List[dict] = []
+
+        # 1) Instruction (ALWAYS include; cache if requested)
+        blocks.append({"text": f"INSTRUCTION:\n{instruction}", "cache": bool(cache_instruction)})
+
+        # 2) Stable metadata for the task (non-cached)
+        blocks.append({"text": f"TARGET FORMAT: {tgt}", "cache": False})
+
+        # 3) Input context (may be large; non-cached, truncated once here)
+        if input_context:
+            blocks.append({"text": f"INPUT CONTEXT:\n{input_context[:12000]}", "cache": False})
+
+        # 4) Sources (sid map + digest), non-cached
+        if rows:
+            if round_idx == 0:
+                if sid_map:
+                    blocks.append({"text": f"SOURCE IDS:\n{sid_map}", "cache": False})
+                if digest:
+                    blocks.append({"text": f"SOURCES DIGEST:\n{digest}", "cache": False})
+            else:
+                blocks.append({"text": "Remember the SOURCE IDS and DIGEST from earlier in this turn.", "cache": False})
+                if require_citations:
+                    blocks.append({"text": "Remember the CITATION REQUIREMENTS.", "cache": False})
+
+        if round_idx > 0:
+            produced_so_far = "".join(buf_all)[-20000:]
+            if produced_so_far:
+                cont_hint = continuation_hint or "Continue exactly from where you left off."
+                blocks.append({"text": cont_hint, "cache": False})
+                blocks.append({"text": "YOU ALREADY PRODUCED (partial, do not repeat):", "cache": False})
+                blocks.append({"text": produced_so_far, "cache": False})
+                blocks.append({"text": f"Resume and complete the {tgt.upper()} output. Append, do not restart.", "cache": False})
+
+        return blocks
+
+    # --------- main generation rounds (still supports multi-round for text/markdown/mermaid) ---------
+    effective_max_rounds = 1 if tgt in ("json", "yaml", "html", "xml") else max_rounds
+    logger.warning(f"Effective max rounds={effective_max_rounds}; format={tgt}")
+
+    role = role or "tool.generator"
+
+    for round_idx in range(effective_max_rounds):
+        used_rounds = round_idx + 1
+
         user_blocks = _build_user_blocks_for_round(round_idx)
         human_msg = create_cached_human_message(user_blocks, cache_last=False)
 
-        # System message can stay as-is (string). If you want to cache parts, you already use create_cached_system_message elsewhere.
-        # system_msg = SystemMessage(content=sys_prompt)
+        author_for_chunks = agent_name or "Content Generator LLM"
 
-        async with with_accounting(bundle_id,
-                                   track_id=track_id,
-                                   agent=role,
-                                   metadata={
-                                       "track_id": track_id,
-                                       "agent": role,
-                                       "agent_name": agent_name
-                                   }):
-            await _SERVICE.stream_model_text_tracked(
-                client,
-                messages=[system_msg, human_msg],
-                on_delta=on_delta,
-                on_complete=on_complete,
-                temperature=0.2,
-                max_tokens=max_tokens,
-                client_cfg=cfg,
-                role=role,
-            )
-
-        chunk = "".join(round_buf)
+        chunk, emitted_inc = await _stream_round(
+            messages=[system_msg, human_msg],
+            role_name=role,
+            temperature=0.2,
+            max_toks=max_tokens,
+            author_for_chunks=author_for_chunks,
+            author_for_complete=rep_author,
+            start_index=emitted_count,
+        )
+        emitted_count += emitted_inc
         buf_all.append(chunk)
 
         cumulative = "".join(buf_all)
@@ -972,12 +983,7 @@ async def generate_content_llm(
                 part = part.strip()
                 if not part:
                     continue
-                if "-" in part:
-                    a, b = [int(x.strip()) for x in part.split("-", 1)]
-                    lo, hi = (a, b) if a <= b else (b, a)
-                    usage_sids.extend(range(lo, hi + 1))
-                elif part.isdigit():
-                    usage_sids.append(int(part))
+            ...
         except Exception:
             pass
         # remove the usage tag from the content BEFORE we do any more cleaning
@@ -989,22 +995,14 @@ async def generate_content_llm(
     # If we never saw marker but have something, proceed to validate anyway
     reason = "finished_with_marker" if finished else "no_end_marker"
 
-    # Strip fences (optionally) and remove marker
-    # content_clean = _strip_code_fences(content_raw, allow=code_fences)
     # Remove the marker early
     content_raw = _remove_marker(content_raw, end_marker)
 
     # Unwrap/clean
     if tgt in ("json", "yaml", "xml", "html"):
-        # Always unwrap fenced blocks and strip BOM/ZWSP
-        # content_clean = _unwrap_fenced_block(content_raw, lang=tgt)
-
-        # Prefer concatenating *all* fenced blocks (multiple rounds), then strip BOM/ZWSP
         stitched = _unwrap_fenced_blocks_concat(content_raw, lang=tgt)
-        # content_clean = _strip_bom_zwsp(content_clean)
         content_clean = _strip_bom_zwsp(stitched)
 
-        # If JSON parse fails, last-resort grab the largest {...} slice from the full raw
         if tgt == "json":
             obj_probe, err_probe = _parse_json(content_clean)
             if obj_probe is None:
@@ -1012,22 +1010,17 @@ async def generate_content_llm(
                 if alt:
                     content_clean = _strip_bom_zwsp(alt)
     elif tgt == "mermaid":
-        # Mermaid should never be fenced, but if model disobeys, unwrap it
         content_clean = _unwrap_fenced_blocks_concat(content_raw, lang="mermaid")
         content_clean = _strip_bom_zwsp(content_clean)
-        # Remove any stray markdown if model added it
         content_clean = re.sub(r'^```(?:mermaid)?\s*\n?', '', content_clean, flags=re.I)
         content_clean = re.sub(r'\n?```\s*$', '', content_clean)
     else:
-        # honor code_fences only for non-structured formats
         content_clean = _strip_code_fences(content_raw, allow=code_fences)
         content_clean = _strip_bom_zwsp(content_clean)
 
-    # If model returned XML/XSL under HTML, accept and validate as XML
     if tgt == "html" and content_clean.lstrip().startswith(("<?xml", "<xsl:")):
         tgt = "xml"
 
-    # Safe-stop guard for taggy formats (avoid partial tail)
     if tgt in ("html", "xml"):
         content_clean = _trim_to_last_safe_tag_boundary(content_clean)
 
@@ -1046,7 +1039,6 @@ async def generate_content_llm(
         if schema_json and payload_obj is not None:
             schema_ok, schema_reason = _validate_json_schema(payload_obj, schema_json)
             if not schema_ok and citation_container_path:
-                # Retry validation with sidecar removed (schema might not model it)
                 pruned = _json_pointer_delete(payload_obj, citation_container_path)
                 if pruned is not payload_obj:
                     schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
@@ -1058,7 +1050,6 @@ async def generate_content_llm(
         if parse_err:
             fmt_ok = False
             fmt_reason = parse_err
-        # If we got a Python obj and a JSON schema is provided, try to validate by dumping to JSON
         if schema_json and payload_obj is not None:
             try:
                 as_json = json.loads(json.dumps(payload_obj, ensure_ascii=False))
@@ -1073,7 +1064,6 @@ async def generate_content_llm(
             except Exception as e:
                 schema_ok, schema_reason = False, f"yaml_to_json_coercion_failed: {e}"
 
-    # Citations validation
     citations_status = "n/a"
     citations_ok = True
     valid_sids = set(sids)
@@ -1083,20 +1073,17 @@ async def generate_content_llm(
             citations_ok = citations_present_inline(content_clean, tgt)
             citations_status = "present" if citations_ok else "missing"
         elif tgt == "html" and eff_embed == "inline":
-            # Accept inline OR footnotes-style
             citations_ok = citations_present_inline(content_clean, tgt)
             citations_status = "present" if citations_ok else "missing"
         elif tgt in ("json", "yaml") and eff_embed == "sidecar":
             if payload_obj is None:
-                # try parse one more time best-effort
                 payload_obj, _ = (_parse_json(content_clean) if tgt == "json"
                                   else _parse_yaml(content_clean))
             if payload_obj is not None:
-                ok, why = _validate_sidecar(payload_obj, citation_container_path, valid_sids)
-                citations_ok = ok
-                citations_status = "present" if ok else f"missing:{why}"
-                # optionally accept inline-in-strings as additional signal
-                if allow_inline_citations_in_strings and not ok:
+                ok_sc, why_sc = _validate_sidecar(payload_obj, citation_container_path, valid_sids)
+                citations_ok = ok_sc
+                citations_status = "present" if ok_sc else f"missing:{why_sc}"
+                if allow_inline_citations_in_strings and not ok_sc:
                     if _dfs_string_contains_inline_cite(payload_obj):
                         citations_ok = True
                         citations_status = "present_inline_only"
@@ -1104,7 +1091,6 @@ async def generate_content_llm(
                 citations_ok = False
                 citations_status = "missing:payload_not_parsed"
 
-    # Overall status
     validated_tag = (
         "none" if not fmt_ok and (not schema_ok if tgt in ("json", "yaml") else True)
         else "format" if fmt_ok and (tgt not in ("json", "yaml"))
@@ -1115,9 +1101,9 @@ async def generate_content_llm(
 
     ok = fmt_ok and (schema_ok if tgt in ("json", "yaml") else True) and (citations_ok if require_citations else True)
 
-    # If strict and not ok but rounds remain, attempt one focused repair pass
-    # (We already exhausted rounds for generation; one more compact attempt to repair.)
-    repair_msg  = ""
+    # --------- Repair phase (kept) but now:
+    # - uses shared streaming helper
+    # - is skipped entirely when there is nothing to repair (payload_for_repair == "")
     if strict and not ok and max_rounds > 0:
         repair_reasons = []
         if not fmt_ok:
@@ -1126,7 +1112,7 @@ async def generate_content_llm(
             repair_reasons.append(f"schema_invalid: {schema_reason}")
         if require_citations and not citations_ok:
             repair_reasons.append(f"citations_invalid: {citations_status}")
-            repair_msg = "; ".join(repair_reasons)
+        repair_msg = "; ".join(repair_reasons)
 
         repair_instruction = [
             f"REPAIR the existing {tgt.upper()} WITHOUT changing previously generated semantics.",
@@ -1141,9 +1127,10 @@ async def generate_content_llm(
             elif tgt == "html":
                 repair_instruction.append('Add <sup class="cite" data-sids="...">[S:...]</sup> after each claim.')
             elif tgt in ("json", "yaml"):
-                repair_instruction.append(f'Populate sidecar at {citation_container_path} with items {{ "path": "<ptr>", "sids": [..] }} (use only provided sids).')
+                repair_instruction.append(
+                    f'Populate sidecar at {citation_container_path} with items {{ "path": "<ptr>", "sids": [..] }} (use only provided sids).'
+                )
 
-        # run a compact repair call
         repair_sys = "You repair documents precisely. Return ONLY the fixed artifact; no comments; no preface."
         if require_citations:
             repair_sys += " Citations are mandatory as per the specified protocol."
@@ -1151,7 +1138,6 @@ async def generate_content_llm(
         payload_for_repair = content_clean[-24000:]  # last 24k for safety
         if payload_for_repair:
             if have_sources and digest:
-                # include sid map minimally
                 payload_for_repair = (
                     f"SOURCE IDS:\n{sid_map}\n\n"
                     f"SOURCES DIGEST (reference for citations):\n{digest}\n\n"
@@ -1159,188 +1145,123 @@ async def generate_content_llm(
                 )
             else:
                 payload_for_repair = f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
-
-        # TODO 1: please help skip all retry block here and so fill only what's needed to exit.
-        # TODO 2: please help reduce the code of this function if possible.
-        #  For example, we have almost identical handlers for repair phase and original phase. Let's try to merge them.
-        # if not payload_for_repair:
-        role = "tool.generator"
-        client = _SERVICE.get_client(role)
-
-        # --- Repair streaming with the SAME Markdown substitution behavior ---
-        repair_buf: List[str] = []   # RAW repair text
-        rep_stream_buf = ""
-        rep_emit_from = 0
-        REP_EMIT_HOLDBACK = 32
-        # rep_emitted_count = 0
-
-        async def _rep_emit_visible(text: str):
-            nonlocal emitted_count
-            if not text:
-                return
-            text = _scrub_emit_once(text)                     # ← scrub here
-            text = _rm_invis(text)
-            out = replace_citation_tokens_streaming(text, citation_map) if tgt == "markdown" else text
-            if get_comm():
-                await emit_delta(out, index=emitted_count, marker=channel_to_stream, agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
-                emitted_count += 1
-
-        async def _rep_flush_safe(force: bool = False):
-            nonlocal rep_emit_from
-            if rep_emit_from >= len(rep_stream_buf):
-                return
-
-            if force:
-                # Final flush - emit all remaining content
-                raw_slice = rep_stream_buf[rep_emit_from:]
-                if raw_slice:
-                    await _rep_emit_visible(raw_slice)
-                    rep_emit_from = len(rep_stream_buf)
-            else:
-                # Normal streaming - use holdback and safety checks
-                safe_end = max(rep_emit_from, len(rep_stream_buf) - REP_EMIT_HOLDBACK)
-                if safe_end <= rep_emit_from:
-                    return
-                raw_slice = rep_stream_buf[rep_emit_from:safe_end]
-
-                safe_chunk, _ = split_safe_citation_prefix(raw_slice)
-                safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
-                safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
-
-                if safe_chunk:
-                    await _rep_emit_visible(safe_chunk)
-                    rep_emit_from += len(safe_chunk)
-
-        async def on_delta_repair(piece: str):
-            nonlocal rep_stream_buf, emitted_count
-            if not piece:
-                return
-            repair_buf.append(piece)
-            rep_stream_buf += piece
-            # Use buffer-based flushing for ALL formats
-            await _rep_flush_safe(force=False)
-
-        async def on_complete_repair(_):
-            nonlocal emitted_count
-            # FINAL flush for ALL formats
-            await _rep_flush_safe(force=True)
-            emitted_count += 1
-            await emit_delta("", completed=True, index=emitted_count, marker=channel_to_stream, agent=rep_author, format=tgt or "markdown", artifact_name=artifact_name)
-
-        async with with_accounting(bundle_id,
-                                   track_id=track_id,
-                                   agent=role,
-                                   metadata={
-                                       "track_id": track_id,
-                                       "agent": role,
-                                       "agent_name": agent_name
-                                   }):
-            await _SERVICE.stream_model_text_tracked(
-                client,
-                [SystemMessage(content=repair_sys), HumanMessage(content="\n".join(repair_instruction) + "\n\n" + payload_for_repair)],
-                on_delta=on_delta_repair,
-                on_complete=on_complete_repair,
-                temperature=0.1,
-                max_tokens=min(max_tokens, 4000),
-                role=role,
-            )
-
-        repaired = "".join(repair_buf)
-        if tgt in ("json", "yaml"):
-            repaired = _unwrap_fenced_block(repaired, lang=tgt)
-            repaired = _strip_bom_zwsp(repaired)
         else:
-            repaired = _strip_code_fences(repaired, allow=code_fences).strip()
+            # TODO 1 behavior: if nothing to repair, skip the retry call entirely
+            # Keep previous validation status; just annotate reason.
+            if not reason:
+                reason = "repair_skipped_empty_payload"
+            else:
+                reason = f"{reason}; repair_skipped_empty_payload"
 
-        # Re-validate after repair
-        content_clean = repaired or content_clean
+        if payload_for_repair:
+            # run compact repair call via shared streaming helper
+            role_repair = role or "tool.generator"
 
-        # Accept XML if HTML-like check failed but content is XML
-        if tgt == "html" and content_clean.lstrip().startswith(("<?xml", "<xsl:")):
-            tgt = "xml"
+            repair_messages = [
+                SystemMessage(content=repair_sys),
+                HumanMessage(content="\n".join(repair_instruction) + "\n\n" + payload_for_repair),
+            ]
 
-        if tgt in ("html", "xml"):
-            content_clean = _trim_to_last_safe_tag_boundary(content_clean)
+            repaired_raw, emitted_inc_rep = await _stream_round(
+                messages=repair_messages,
+                role_name=role_repair,
+                temperature=0.1,
+                max_toks=min(max_tokens, 4000),
+                author_for_chunks=rep_author,
+                author_for_complete=rep_author,
+                start_index=emitted_count,
+            )
+            emitted_count += emitted_inc_rep
 
-        fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
+            repaired = repaired_raw
 
-        if tgt == "json":
-            payload_obj, parse_err = _parse_json(content_clean)
-            if parse_err:
-                fmt_ok = False
-                fmt_reason = parse_err
-            if schema_json and payload_obj is not None:
-                schema_ok, schema_reason = _validate_json_schema(payload_obj, schema_json)
-                if not schema_ok and citation_container_path:
-                    # Retry validation with sidecar removed (schema might not model it)
-                    pruned = _json_pointer_delete(payload_obj, citation_container_path)
-                    if pruned is not payload_obj:
-                        schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
-                        if schema_ok2:
-                            schema_ok = True
-                            schema_reason = "schema_ok_without_sidecar"
-        elif tgt == "yaml":
-            payload_obj, parse_err = _parse_yaml(content_clean)
-            if parse_err:
-                fmt_ok = False
-                fmt_reason = parse_err
-            if schema_json and payload_obj is not None:
-                try:
-                    as_json = json.loads(json.dumps(payload_obj, ensure_ascii=False))
-                    schema_ok, schema_reason = _validate_json_schema(as_json, schema_json)
+            if tgt in ("json", "yaml"):
+                repaired = _unwrap_fenced_block(repaired, lang=tgt)
+                repaired = _strip_bom_zwsp(repaired)
+            else:
+                repaired = _strip_code_fences(repaired, allow=code_fences).strip()
+
+            content_clean = repaired or content_clean
+
+            if tgt == "html" and content_clean.lstrip().startswith(("<?xml", "<xsl:")):
+                tgt = "xml"
+
+            if tgt in ("html", "xml"):
+                content_clean = _trim_to_last_safe_tag_boundary(content_clean)
+
+            fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
+
+            if tgt == "json":
+                payload_obj, parse_err = _parse_json(content_clean)
+                if parse_err:
+                    fmt_ok = False
+                    fmt_reason = parse_err
+                if schema_json and payload_obj is not None:
+                    schema_ok, schema_reason = _validate_json_schema(payload_obj, schema_json)
                     if not schema_ok and citation_container_path:
-                        pruned = _json_pointer_delete(as_json, citation_container_path)
-                        if pruned is not as_json:
+                        pruned = _json_pointer_delete(payload_obj, citation_container_path)
+                        if pruned is not payload_obj:
                             schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
                             if schema_ok2:
                                 schema_ok = True
                                 schema_reason = "schema_ok_without_sidecar"
-                except Exception as e:
-                    schema_ok, schema_reason = False, f"yaml_to_json_coercion_failed: {e}"
+            elif tgt == "yaml":
+                payload_obj, parse_err = _parse_yaml(content_clean)
+                if parse_err:
+                    fmt_ok = False
+                    fmt_reason = parse_err
+                if schema_json and payload_obj is not None:
+                    try:
+                        as_json = json.loads(json.dumps(payload_obj, ensure_ascii=False))
+                        schema_ok, schema_reason = _validate_json_schema(as_json, schema_json)
+                        if not schema_ok and citation_container_path:
+                            pruned = _json_pointer_delete(as_json, citation_container_path)
+                            if pruned is not as_json:
+                                schema_ok2, schema_reason2 = _validate_json_schema(pruned, schema_json)
+                                if schema_ok2:
+                                    schema_ok = True
+                                    schema_reason = "schema_ok_without_sidecar"
+                    except Exception as e:
+                        schema_ok, schema_reason = False, f"yaml_to_json_coercion_failed: {e}"
 
-        citations_ok = True
-        citations_status = "n/a"
-        if require_citations:
-            if tgt in ("markdown", "text", "html") and eff_embed == "inline":
-                citations_ok = citations_present_inline(content_clean, tgt)
-                citations_status = "present" if citations_ok else "missing"
-            elif tgt in ("json", "yaml") and eff_embed == "sidecar":
-                if payload_obj is None:
-                    payload_obj, _ = (_parse_json(content_clean) if tgt == "json" else _parse_yaml(content_clean))
-                if payload_obj is not None:
-                    ok2, why2 = _validate_sidecar(payload_obj, citation_container_path, valid_sids)
-                    citations_ok = ok2
-                    citations_status = "present" if ok2 else f"missing:{why2}"
-                    if allow_inline_citations_in_strings and not ok2:
-                        if _dfs_string_contains_inline_cite(payload_obj):
-                            citations_ok = True
-                            citations_status = "present_inline_only"
-                else:
-                    citations_ok = False
-                    citations_status = "missing:payload_not_parsed"
+            citations_ok = True
+            citations_status = "n/a"
+            if require_citations:
+                if tgt in ("markdown", "text", "html") and eff_embed == "inline":
+                    citations_ok = citations_present_inline(content_clean, tgt)
+                    citations_status = "present" if citations_ok else "missing"
+                elif tgt in ("json", "yaml") and eff_embed == "sidecar":
+                    if payload_obj is None:
+                        payload_obj, _ = (_parse_json(content_clean) if tgt == "json" else _parse_yaml(content_clean))
+                    if payload_obj is not None:
+                        ok_sc2, why_sc2 = _validate_sidecar(payload_obj, citation_container_path, valid_sids)
+                        citations_ok = ok_sc2
+                        citations_status = "present" if ok_sc2 else f"missing:{why_sc2}"
+                        if allow_inline_citations_in_strings and not ok_sc2:
+                            if _dfs_string_contains_inline_cite(payload_obj):
+                                citations_ok = True
+                                citations_status = "present_inline_only"
+                    else:
+                        citations_ok = False
+                        citations_status = "missing:payload_not_parsed"
 
-        validated_tag = (
-            "none" if not fmt_ok and (not schema_ok if tgt in ("json", "yaml") else True)
-            else "format" if fmt_ok and (tgt not in ("json", "yaml"))
-            else "schema" if (tgt in ("json", "yaml") and schema_ok and not fmt_ok)
-            else "both" if fmt_ok and (schema_ok or tgt not in ("json", "yaml"))
-            else "none"
-        )
-        ok = fmt_ok and (schema_ok if tgt in ("json", "yaml") else True) and (citations_ok if require_citations else True)
-        reason = repair_msg if not ok else (reason or "repaired_ok")
-        repair_reasons.append(reason)
+            validated_tag = (
+                "none" if not fmt_ok and (not schema_ok if tgt in ("json", "yaml") else True)
+                else "format" if fmt_ok and (tgt not in ("json", "yaml"))
+                else "schema" if (tgt in ("json", "yaml") and schema_ok and not fmt_ok)
+                else "both" if fmt_ok and (schema_ok or tgt not in ("json", "yaml"))
+                else "none"
+            )
+            ok = fmt_ok and (schema_ok if tgt in ("json", "yaml") else True) and (citations_ok if require_citations else True)
+            reason = repair_msg if not ok else (reason or "repaired_ok")
 
     # --- derive used_sids from the artifact itself ---
     artifact_used_sids: List[int] = []
 
     if tgt in ("markdown", "text", "html"):
-        # best-effort: extract from inline tokens or <sup class="cite"...>
-        # For HTML we can opportunistically reuse the same MD pattern plus the HTML sup placeholder
         from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any
         artifact_used_sids = extract_citation_sids_any(content_clean)
-
     elif tgt in ("json", "yaml"):
-        # collect from sidecar if present
         try:
             if payload_obj is None:
                 payload_obj, _ = (_parse_json(content_clean) if tgt == "json" else _parse_yaml(content_clean))
@@ -1357,9 +1278,8 @@ async def generate_content_llm(
         except Exception:
             pass
 
-    # Combine with telemetry (if present)
     combined_used_sids = sorted(set((artifact_used_sids or []) + (usage_sids or [])))
-    # Resolve used_sources by taking the ORIGINAL source objects (preserve all fields)
+
     sources_used: List[Dict[str, Any]] = []
     if combined_used_sids and sources_json:
         try:
@@ -1375,15 +1295,13 @@ async def generate_content_llm(
                 sid_val = int(s.get("sid"))
             except Exception:
                 continue
-            by_sid[sid_val] = s  # keep full dict as-is
+            by_sid[sid_val] = s
 
         for sid in combined_used_sids:
             src = by_sid.get(sid)
             if src is not None:
-                # shallow copy to avoid unexpected mutation
                 sources_used.append(dict(src))
 
-    # --------- finalize ---------
     logger.info(
         "generate_content_llm completed: agent=%s artifact=%s finished=%s ok=%s",
         agent_name, artifact_name, finished, ok,
@@ -1410,6 +1328,7 @@ async def generate_content_llm(
         "sources_used": sources_used,
     }
     return json.dumps(out, ensure_ascii=False)
+
 
 async def sources_reconciler(
         _SERVICE,
