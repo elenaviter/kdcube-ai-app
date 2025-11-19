@@ -884,8 +884,7 @@ def adapt_source_for_llm(
     if snippet and max_text_len > 0 and len(snippet) > max_text_len:
         snippet = snippet[:max_text_len]
 
-    if snippet:
-        out["text"] = snippet
+    out["text"] = snippet or ""
     if include_full_content and full:
         out["content"] = full
 

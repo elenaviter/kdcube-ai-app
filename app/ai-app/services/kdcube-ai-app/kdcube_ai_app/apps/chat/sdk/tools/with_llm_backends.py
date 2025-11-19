@@ -32,6 +32,7 @@ def _rm_invis(s: str) -> str:
     if not s:
         return s
     s = s.replace(_ZWSP, "").replace(_BOM, "")
+    s = "".join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
     return s
 
 def _strip_bom_zwsp(s: str) -> str:
@@ -1148,16 +1149,21 @@ async def generate_content_llm(
             repair_sys += " Citations are mandatory as per the specified protocol."
 
         payload_for_repair = content_clean[-24000:]  # last 24k for safety
-        if have_sources and digest:
-            # include sid map minimally
-            payload_for_repair = (
-                f"SOURCE IDS:\n{sid_map}\n\n"
-                f"SOURCES DIGEST (reference for citations):\n{digest}\n\n"
-                f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
-            )
-        else:
-            payload_for_repair = f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
+        if payload_for_repair:
+            if have_sources and digest:
+                # include sid map minimally
+                payload_for_repair = (
+                    f"SOURCE IDS:\n{sid_map}\n\n"
+                    f"SOURCES DIGEST (reference for citations):\n{digest}\n\n"
+                    f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
+                )
+            else:
+                payload_for_repair = f"DOCUMENT TO REPAIR:\n{payload_for_repair}"
 
+        # TODO 1: please help skip all retry block here and so fill only what's needed to exit.
+        # TODO 2: please help reduce the code of this function if possible.
+        #  For example, we have almost identical handlers for repair phase and original phase. Let's try to merge them.
+        # if not payload_for_repair:
         role = "tool.generator"
         client = _SERVICE.get_client(role)
 

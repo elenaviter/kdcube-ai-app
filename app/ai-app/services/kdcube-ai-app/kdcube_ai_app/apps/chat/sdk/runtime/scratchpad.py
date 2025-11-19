@@ -192,7 +192,7 @@ class TurnScratchpad:
 # TurnLog - Structured logging
 # ============================================================================
 
-LogArea = Literal["objective", "user", "attachments", "solver", "answer", "note", "summary"]
+LogArea = Literal["objective", "user", "attachments", "solver", "answer", "note", "summary", "feedback"]
 LogLevel = Literal["info", "warn", "error"]
 
 class TurnLogEntry(BaseModel):

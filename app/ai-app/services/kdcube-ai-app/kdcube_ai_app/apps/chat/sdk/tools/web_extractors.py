@@ -20,7 +20,6 @@ import asyncio
 import logging
 import json, os
 from datetime import datetime, timezone
-from email.utils import parsedate_to_datetime
 import re
 
 from kdcube_ai_app.tools.scrap_utils import (
@@ -29,6 +28,7 @@ from kdcube_ai_app.tools.scrap_utils import (
     html_fragment_to_markdown,
     extract_publication_dates_core,
 )
+import kdcube_ai_app.utils.text as text_utils
 
 logger = logging.getLogger(__name__)
 
@@ -385,6 +385,15 @@ class WebContentFetcher:
                 result["content_length"] = len(result["content"])
                 result["status"] = status
                 result.update(meta or {})
+
+                # Final safety: strip surrogates from all string fields
+                for k, v in list(result.items()):
+                    if isinstance(v, str):
+                        result[k] = text_utils.strip_surrogates(v)
+                for k, v in result.items():
+                    if isinstance(v, str) and text_utils.has_surrogates(v):
+                        logger.error("Surrogates survived in %s for %s", k, url)
+
                 logger.info(
                     f"Fetched {url}: {result['content_length']} chars, "
                     f"pub={result.get('published_time_iso')}, "
@@ -405,6 +414,10 @@ class WebContentFetcher:
                     result["content_length"] = len(result["content"])
                     result["status"] = "archive"
                     result.update(meta or {})
+
+                    for k, v in list(result.items()):
+                        if isinstance(v, str):
+                            result[k] = text_utils.strip_surrogates(v)
                     logger.info(
                         f"Archive fetch succeeded for {url}: {result['content_length']} chars, "
                         f"pub={result.get('published_time_iso')}"
@@ -493,8 +506,9 @@ class WebContentFetcher:
                 extractor = SiteSpecificExtractors.get_extractor(url)
                 if extractor:
                     try:
-                        extracted_text = extractor(html)
-                        if extracted_text:
+                        extracted_text = extractor(html) or ""
+                        extracted_text = text_utils.strip_surrogates(extracted_text)
+                        if extracted_text.strip():
                             meta = await self._infer_dates_from_html(
                                 html,
                                 url,
@@ -522,6 +536,7 @@ class WebContentFetcher:
                     markdown = ""
                 text = self._extract_text(html)
                 chosen = markdown if len(markdown) >= 200 else text
+                chosen = text_utils.strip_surrogates(chosen)
                 if len((chosen or "").strip()) < 100:
                     logger.warning(f"Extracted content too short ({len(chosen)}) for {url}")
                     return "", "insufficient_content", {}
@@ -620,8 +635,9 @@ class WebContentFetcher:
                     lines.append(line)
 
             result = '\n'.join(lines)
+            result = text_utils.strip_surrogates(result)
 
-            logger.debug(f"Extracted {len(result)} chars of text")
+            logger.debug(f"Extracted {len(result)} chars of text after surrogate stripping")
             return result
 
         except Exception as e:
@@ -631,6 +647,7 @@ class WebContentFetcher:
     @staticmethod
     def _truncate(content: str, max_length: int) -> str:
         """Truncate content intelligently."""
+        content = text_utils.strip_surrogates(content)
         if max_length <= 0 or len(content) <= max_length:
             return content
 
@@ -980,19 +997,22 @@ class SiteSpecificExtractors:
             readme = soup.find('article', class_='markdown-body')
             if readme:
                 logger.debug("Found GitHub README in article.markdown-body")
-                return readme.get_text(separator='\n', strip=True)
+                text = readme.get_text(separator='\n', strip=True)
+                return text_utils.strip_surrogates(text)
 
             # Try alternative selectors
             readme = soup.find('div', {'id': 'readme'})
             if readme:
                 logger.debug("Found GitHub README in div#readme")
-                return readme.get_text(separator='\n', strip=True)
+                text = readme.get_text(separator='\n', strip=True)
+                return text_utils.strip_surrogates(text)
 
             # Look for any markdown-body class
             markdown = soup.find(class_='markdown-body')
             if markdown:
                 logger.debug("Found GitHub markdown-body")
-                return markdown.get_text(separator='\n', strip=True)
+                text = markdown.get_text(separator='\n', strip=True)
+                return text_utils.strip_surrogates(text)
 
             logger.debug("No GitHub README found")
             return ""

@@ -11,6 +11,7 @@ import pathlib
 import tokenize
 from typing import Dict, Any, List, Tuple, Optional
 
+from kdcube_ai_app.apps.chat.sdk.util import strip_lone_surrogates
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
 def _run_in_executor_with_ctx(loop, fn, *args, **kwargs):
@@ -67,7 +68,14 @@ def _merge_timeout_result(path: pathlib.Path, *, objective: str, seconds: int):
         data["error"] = err
         if not data.get("objective"):
             data["objective"] = objective
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except UnicodeEncodeError:
+            safe_json = strip_lone_surrogates(
+                json.dumps(data, ensure_ascii=False, indent=2)
+            )
+            path.write_text(safe_json, encoding="utf-8")
+
         return
 
     # no prior file — write minimal
@@ -82,8 +90,13 @@ def _merge_timeout_result(path: pathlib.Path, *, objective: str, seconds: int):
             "managed": True
         }
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
+    try:
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except UnicodeEncodeError:
+        safe_json = strip_lone_surrogates(
+            json.dumps(payload, ensure_ascii=False, indent=2)
+        )
+        path.write_text(safe_json, encoding="utf-8")
 
 def _inject_header_after_future(src: str, header: str) -> str:
     lines = src.splitlines(True)
@@ -516,7 +529,7 @@ async def _write_checkpoint(reason: str = "checkpoint", managed: bool = True):
             "out_dyn": dict(_PROGRESS.get("out_dyn") or {}),
             "error": {"where": "runtime", "details": "", "error": reason, "description": reason, "managed": bool(managed)}
         }
-        await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
+        await agent_io_tools.save_ret(data=_json.dumps(payload, ensure_ascii=False), filename="result.json")
     except Exception:
         pass
 
@@ -540,7 +553,7 @@ async def done():
         _dump_delta_cache_file()
     finally:
         pass
-    return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
+    return await agent_io_tools.save_ret(data=_json.dumps(payload, ensure_ascii=False), filename="result.json")
 
 async def fail(description: str,
                where: str = "",
@@ -575,7 +588,7 @@ async def fail(description: str,
         _dump_delta_cache_file()
     finally:
         pass
-    return await agent_io_tools.save_ret(data=_json.dumps(payload), filename="result.json")
+    return await agent_io_tools.save_ret(data=_json.dumps(payload, ensure_ascii=False), filename="result.json")
 
 def _on_term(signum, frame):
     """Handle SIGTERM/SIGINT by checkpointing and exiting."""
@@ -862,13 +875,15 @@ class _InProcessRuntime:
         workdir.mkdir(parents=True, exist_ok=True)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        params_json = json.dumps(params, ensure_ascii=False)
+
         main_py = f"""
 import os, json, importlib, asyncio, sys
 from pathlib import Path
 from io_tools import tools as agent_io_tools
 
 TOOL_ID  = {tool_id!r}
-PARAMS   = json.loads({json.dumps(json.dumps(params, ensure_ascii=False))})
+PARAMS   = json.loads({params_json!r})
 REASON   = {call_reason!r} or f"ReAct: {{TOOL_ID}}"
 
 async def _main():
@@ -940,7 +955,7 @@ asyncio.run(_main())
 import json, asyncio
 from io_tools import tools as agent_io_tools
 
-DATA = json.loads({json.dumps(payload_s)})
+DATA = json.loads({payload_s!r})
 
 async def _main():
     await agent_io_tools.save_ret(data=json.dumps(DATA, ensure_ascii=False), filename='result.json')
@@ -956,3 +971,4 @@ asyncio.run(_main())
             timeout_s=timeout_s,
         )
         return res
+
