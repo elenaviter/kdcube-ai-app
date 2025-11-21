@@ -7,14 +7,20 @@
 Accounting aggregation job.
 
 This module reads *raw* accounting events from the `accounting` tree and
-writes pre-aggregated usage summaries into time-partitioned folders:
+writes pre-aggregated usage summaries into an `analytics` tree:
 
-    accounting/<tenant>/<project>/<YYYY>.yearly/aggregate.json
-    accounting/<tenant>/<project>/<YYYY>.<MM>.monthly/aggregate.json
-    accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>.daily/aggregate.json
-    accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>.<HH>.hourly/aggregate.json
+RAW EVENTS (unchanged):
+    accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>/
+    accounting/<tenant>/<project>/<YYYY>/<MM>/<DD>/
 
-Each aggregate file has the shape:
+AGGREGATES (new layout):
+    analytics/<tenant>/<project>/accounting/
+        daily/<YYYY>/<MM>/<DD>/total.json
+        hourly/<YYYY>/<MM>/<DD>/<HH>/total.json
+        monthly/<YYYY>/<MM>/total.json
+        yearly/<YYYY>/total.json
+
+Each *total.json* has the shape:
 
 {
   "tenant_id": "...",
@@ -27,23 +33,7 @@ Each aggregate file has the shape:
   "bucket_start": "2025-11-20T01:00:00Z",
   "bucket_end": "2025-11-20T02:00:00Z",
   "total": { ... full usage counters ... },
-  "rollup": [
-    {
-      "service": "llm",
-      "provider": "anthropic",
-      "model": "claude-sonnet-4-5-20250929",
-      "spent": {
-        "input": 1234,
-        "output": 5678,
-        "cache_creation": 0,
-        "cache_5m_write": 0,
-        "cache_1h_write": 0,
-        "cache_read": 0,
-        "tokens": 0
-      }
-    },
-    ...
-  ],
+  "rollup": [ { service, provider, model, spent }, ... ],
   "event_count": 42,
   "user_ids": ["admin-user-1", "..."],
   "aggregated_at": "2025-11-20T03:17:00Z"
@@ -78,21 +68,29 @@ logger = logging.getLogger("AccountingAggregator")
 
 class AccountingAggregator:
     """
-    Aggregates raw accounting events into pre-computed buckets:
+    Aggregates raw accounting events into pre-computed buckets.
 
-    - yearly:
-        accounting/<tenant>/<project>/<YYYY>.yearly/aggregate.json
-    - monthly:
-        accounting/<tenant>/<project>/<YYYY>.<MM>.monthly/aggregate.json
-    - daily:
-        accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>.daily/aggregate.json
-    - hourly:
-        accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>.<HH>.hourly/aggregate.json
+    RAW:
+        accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>/...
+
+    AGGREGATES:
+        analytics/<tenant>/<project>/accounting/
+            daily/<YYYY>/<MM>/<DD>/total.json
+            hourly/<YYYY>/<MM>/<DD>/<HH>/total.json
+            monthly/<YYYY>/<MM>/total.json
+            yearly/<YYYY>/total.json
     """
 
-    def __init__(self, storage_backend: IStorageBackend, *, base_path: str = "accounting"):
+    def __init__(
+        self,
+        storage_backend: IStorageBackend,
+        *,
+        raw_base: str = "accounting",
+        agg_base: str = "analytics",
+    ):
         self.fs = storage_backend
-        self.base = base_path.strip("/")
+        self.raw_base = raw_base.strip("/")
+        self.agg_base = agg_base.strip("/")
 
     # -------------------------------------------------------------------------
     # Internal helpers
@@ -106,26 +104,25 @@ class AccountingAggregator:
             return []
 
     async def _iter_raw_event_paths_for_day(
-            self,
-            tenant_id: str,
-            project_id: str,
-            d: date,
+        self,
+        tenant_id: str,
+        project_id: str,
+        d: date,
     ) -> List[str]:
         """
         Collect all JSON *raw* event file paths for a given calendar day
         under both:
 
-          <base>/<tenant>/<project>/<YYYY>.<MM>.<DD>/
+          <raw_base>/<tenant>/<project>/<YYYY>.<MM>.<DD>/
         and legacy:
-          <base>/<tenant>/<project>/<YYYY>/<MM>/<DD>/
+          <raw_base>/<tenant>/<project>/<YYYY>/<MM>/<DD>/
 
-        NOTE: we deliberately do *not* look under *.daily / *.hourly folders,
-        so we won't accidentally re-aggregate aggregates.
+        NOTE: we deliberately do *not* look under aggregate folders.
         """
         dot_label = f"{d.year:04d}.{d.month:02d}.{d.day:02d}"
         roots = [
-            f"{self.base}/{tenant_id}/{project_id}/{dot_label}",
-            f"{self.base}/{tenant_id}/{project_id}/{d.year:04d}/{d.month:02d}/{d.day:02d}",
+            f"{self.raw_base}/{tenant_id}/{project_id}/{dot_label}",
+            f"{self.raw_base}/{tenant_id}/{project_id}/{d.year:04d}/{d.month:02d}/{d.day:02d}",
         ]
 
         all_paths: List[str] = []
@@ -158,6 +155,8 @@ class AccountingAggregator:
                                 all_paths.append(f"{g_root}/{fname}")
 
         return all_paths
+
+    # ... bucket_meta helpers and _rollup_to_list stay unchanged ...
 
     @staticmethod
     def _bucket_meta_daily(day: date) -> Dict[str, Any]:
@@ -245,22 +244,24 @@ class AccountingAggregator:
     # -------------------------------------------------------------------------
 
     async def aggregate_daily_for_project(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            day: date,
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        day: date,
     ) -> Optional[Dict[str, Any]]:
         """
         Compute a daily aggregate for (tenant_id, project_id, day) and
         write it to:
 
-          accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>.daily/aggregate.json
+          analytics/<tenant>/<project>/accounting/
+              daily/<YYYY>/<MM>/<DD>/total.json
 
         Additionally, writes hourly aggregates for each hour that has
         at least one event:
 
-          accounting/<tenant>/<project>/<YYYY>.<MM>.<DD>.<HH>.hourly/aggregate.json
+          analytics/<tenant>/<project>/accounting/
+              hourly/<YYYY>/<MM>/<DD>/<HH>/total.json
 
         Returns the *daily* aggregate payload, or None if there were no events.
         """
@@ -387,10 +388,10 @@ class AccountingAggregator:
         }
 
         daily_folder = (
-            f"{self.base}/{tenant_id}/{project_id}/"
-            f"{day.year:04d}.{day.month:02d}.{day.day:02d}.daily"
+            f"{self.agg_base}/{tenant_id}/{project_id}/"
+            f"accounting/daily/{day.year:04d}/{day.month:02d}/{day.day:02d}"
         )
-        daily_path = f"{daily_folder}/aggregate.json"
+        daily_path = f"{daily_folder}/total.json"
         await self.fs.write_text_a(daily_path, json.dumps(daily_payload, ensure_ascii=False))
         logger.info(
             "[aggregate_daily_for_project] Aggregated %d events into %s",
@@ -419,10 +420,10 @@ class AccountingAggregator:
             }
 
             folder_hour = (
-                f"{self.base}/{tenant_id}/{project_id}/"
-                f"{day.year:04d}.{day.month:02d}.{day.day:02d}.{hour:02d}.hourly"
+                f"{self.agg_base}/{tenant_id}/{project_id}/"
+                f"accounting/hourly/{day.year:04d}/{day.month:02d}/{day.day:02d}/{hour:02d}"
             )
-            path_hour = f"{folder_hour}/aggregate.json"
+            path_hour = f"{folder_hour}/total.json"
             await self.fs.write_text_a(path_hour, json.dumps(payload_hour, ensure_ascii=False))
             logger.info(
                 "[aggregate_daily_for_project] Aggregated hour=%02d (%d events) into %s",
@@ -434,13 +435,13 @@ class AccountingAggregator:
         return daily_payload
 
     async def aggregate_daily_range_for_project(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            date_from: str,
-            date_to: str,
-            skip_existing: bool = True,
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        date_from: str,
+        date_to: str,
+        skip_existing: bool = True,
     ) -> None:
         """
         Aggregate a whole range of dates (inclusive) to daily + hourly aggregates.
@@ -456,9 +457,11 @@ class AccountingAggregator:
 
         cur = df
         while cur <= dt:
-            day_label = f"{cur.year:04d}.{cur.month:02d}.{cur.day:02d}.daily"
-            folder = f"{self.base}/{tenant_id}/{project_id}/{day_label}"
-            agg_path = f"{folder}/aggregate.json"
+            daily_folder = (
+                f"{self.agg_base}/{tenant_id}/{project_id}/"
+                f"accounting/daily/{cur.year:04d}/{cur.month:02d}/{cur.day:02d}"
+            )
+            agg_path = f"{daily_folder}/total.json"
 
             if skip_existing:
                 try:
@@ -485,19 +488,21 @@ class AccountingAggregator:
     # -------------------------------------------------------------------------
 
     async def aggregate_monthly_from_daily(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            year: int,
-            month: int,
-            require_full_coverage: bool = False,
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        year: int,
+        month: int,
+        require_full_coverage: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Aggregate all available daily buckets in a month into a single monthly bucket.
 
-        If require_full_coverage=True, returns None (and does not write anything)
-        when at least one day in the month is missing a daily aggregate.
+        Reads:
+          analytics/<tenant>/<project>/accounting/daily/<YYYY>/<MM>/<DD>/total.json
+        Writes:
+          analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/total.json
         """
         from calendar import monthrange
 
@@ -510,9 +515,11 @@ class AccountingAggregator:
         missing_days = 0
 
         for day in range(1, ndays + 1):
-            bname = f"{year:04d}.{month:02d}.{day:02d}.daily"
-            folder = f"{self.base}/{tenant_id}/{project_id}/{bname}"
-            path = f"{folder}/aggregate.json"
+            folder = (
+                f"{self.agg_base}/{tenant_id}/{project_id}/"
+                f"accounting/daily/{year:04d}/{month:02d}/{day:02d}"
+            )
+            path = f"{folder}/total.json"
 
             try:
                 if not await self.fs.exists_a(path):
@@ -592,8 +599,11 @@ class AccountingAggregator:
             "days_in_month": meta["days_in_month"],
         }
 
-        folder = f"{self.base}/{tenant_id}/{project_id}/{year:04d}.{month:02d}.monthly"
-        path = f"{folder}/aggregate.json"
+        folder = (
+            f"{self.agg_base}/{tenant_id}/{project_id}/"
+            f"accounting/monthly/{year:04d}/{month:02d}"
+        )
+        path = f"{folder}/total.json"
         await self.fs.write_text_a(path, json.dumps(payload, ensure_ascii=False))
 
         logger.info(
@@ -609,18 +619,20 @@ class AccountingAggregator:
     # -------------------------------------------------------------------------
 
     async def aggregate_yearly_from_monthly(
-            self,
-            *,
-            tenant_id: str,
-            project_id: str,
-            year: int,
-            require_full_coverage: bool = False,
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        year: int,
+        require_full_coverage: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Aggregate all available monthly buckets in a year into a yearly bucket.
 
-        If require_full_coverage=True, returns None (and does not write anything)
-        when at least one month in the year is missing a monthly aggregate.
+        Reads:
+          analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/total.json
+        Writes:
+          analytics/<tenant>/<project>/accounting/yearly/<YYYY>/total.json
         """
         total = _new_usage_acc()
         rollup_map: Dict[Tuple[str, str, str], Dict[str, int]] = {}
@@ -630,9 +642,11 @@ class AccountingAggregator:
         missing_months = 0
 
         for month in range(1, 13):
-            bname = f"{year:04d}.{month:02d}.monthly"
-            folder = f"{self.base}/{tenant_id}/{project_id}/{bname}"
-            path = f"{folder}/aggregate.json"
+            folder = (
+                f"{self.agg_base}/{tenant_id}/{project_id}/"
+                f"accounting/monthly/{year:04d}/{month:02d}"
+            )
+            path = f"{folder}/total.json"
 
             try:
                 if not await self.fs.exists_a(path):
@@ -709,8 +723,11 @@ class AccountingAggregator:
             "months_missing": missing_months,
         }
 
-        folder = f"{self.base}/{tenant_id}/{project_id}/{year:04d}.yearly"
-        path = f"{folder}/aggregate.json"
+        folder = (
+            f"{self.agg_base}/{tenant_id}/{project_id}/"
+            f"accounting/yearly/{year:04d}"
+        )
+        path = f"{folder}/total.json"
         await self.fs.write_text_a(path, json.dumps(payload, ensure_ascii=False))
 
         logger.info(
@@ -751,7 +768,7 @@ async def _run_cli() -> None:
         raise SystemExit("Set AGG_DATE_FROM and AGG_DATE_TO (YYYY-MM-DD) env vars")
 
     backend = create_storage_backend(storage_uri)
-    agg = AccountingAggregator(backend, base_path="accounting")
+    agg = AccountingAggregator(backend, raw_base="accounting")
 
     await agg.aggregate_daily_range_for_project(
         tenant_id=tenant,

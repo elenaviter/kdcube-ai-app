@@ -128,7 +128,12 @@ def _get_calculator(request: Request) -> RateCalculator:
     # kdcube_path = os.getenv("KDCUBE_STORAGE_PATH", "file:///tmp/kdcube_data")
     kdcube_path = _settings.STORAGE_PATH or "file:///tmp/kdcube_data"
     backend = create_storage_backend(kdcube_path)
-    calc = RateCalculator(backend, base_path="accounting")
+    # RAW under 'accounting', aggregates under 'analytics'
+    calc = RateCalculator(
+        backend,
+        base_path="accounting",
+        agg_base="analytics",
+    )
 
     # Cache on app state
     request.app.state.accounting_calculator = calc

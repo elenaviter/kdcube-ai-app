@@ -36,7 +36,9 @@ def _get_aggregator() -> AccountingAggregator:
     _settings = get_settings()
     kdcube_path = _settings.STORAGE_PATH or "file:///tmp/kdcube_data"
     backend = create_storage_backend(kdcube_path)
-    _aggregator = AccountingAggregator(backend, base_path="accounting")
+    _aggregator = AccountingAggregator(backend,
+                                       raw_base="accounting",
+                                       agg_base="analytics",)
     return _aggregator
 
 

@@ -361,9 +361,16 @@ class _DateRange:
 # Calculator (OPTIMIZED)
 # -----------------------------
 class AccountingCalculator:
-    def __init__(self, storage_backend: IStorageBackend, *, base_path: str = "accounting"):
+    def __init__(self,
+                 storage_backend: IStorageBackend, *,
+                 base_path: str = "accounting",
+                 agg_base: Optional[str] = None,
+    ):
         self.fs = storage_backend
+        # raw events
         self.base = base_path.strip("/")
+        # aggregates (default: same as base for backward-compat)
+        self.agg_base = (agg_base or self.base).strip("/")
 
     # ---------- Optimized path iteration ----------
 
@@ -781,11 +788,14 @@ class AccountingCalculator:
         if not days:
             return None
 
+        # Precompute per-day availability of daily aggregates
         agg_exists: Dict[date, bool] = {}
         for d in days:
-            bname = f"{d.year:04d}.{d.month:02d}.{d.day:02d}.daily"
-            folder = f"{self.base}/{tenant_id}/{project_id}/{bname}"
-            path = f"{folder}/aggregate.json"
+            daily_folder = (
+                f"{self.agg_base}/{tenant_id}/{project_id}/"
+                f"accounting/daily/{d.year:04d}/{d.month:02d}/{d.day:02d}"
+            )
+            path = f"{daily_folder}/total.json"
             try:
                 agg_exists[d] = await self.fs.exists_a(path)
             except Exception:
@@ -837,9 +847,11 @@ class AccountingCalculator:
                 # Use daily aggregates directly
                 d = seg_start
                 while d <= seg_end:
-                    bname = f"{d.year:04d}.{d.month:02d}.{d.day:02d}.daily"
-                    folder = f"{self.base}/{tenant_id}/{project_id}/{bname}"
-                    path = f"{folder}/aggregate.json"
+                    daily_folder = (
+                        f"{self.agg_base}/{tenant_id}/{project_id}/"
+                        f"accounting/daily/{d.year:04d}/{d.month:02d}/{d.day:02d}"
+                    )
+                    path = f"{daily_folder}/total.json"
 
                     try:
                         raw = await self.fs.read_text_a(path)
