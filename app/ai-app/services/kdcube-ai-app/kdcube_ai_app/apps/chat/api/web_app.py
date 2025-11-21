@@ -40,14 +40,15 @@ from kdcube_ai_app.infra.gateway.config import get_gateway_config
 # Import our simplified components
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency,
-    get_orchestrator, INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant, _announce_startup,
-    get_pg_pool, get_conversation_system, shared_browser_instance, link_preview_instance
+    # get_orchestrator,
+    INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, get_tenant, _announce_startup,
+    get_pg_pool, get_conversation_system
 )
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
 
 from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest
-from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
+# from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 from kdcube_ai_app.apps.chat.api.socketio.chat import create_socketio_chat_handler
 from kdcube_ai_app.apps.chat.api.sse.chat import create_sse_router, SSEHub
@@ -77,6 +78,9 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Chat service starting on port {CHAT_APP_PORT}")
 
+    # mark not shutting down yet
+    app.state.shutting_down = False
+
     # Initialize gateway adapter and store in app state
     app.state.gateway_adapter = get_fastapi_adapter()
     gateway_config = get_gateway_config()
@@ -91,7 +95,9 @@ async def lifespan(app: FastAPI):
     from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
         service_health_checker
 
-    app.state.chat_comm = ChatRelayCommunicator(redis_url=REDIS_URL, channel="chat.events")
+    app.state.chat_comm = ChatRelayCommunicator(redis_url=REDIS_URL,
+                                                channel="chat.events",
+                                                )
     app.state.pg_pool = await get_pg_pool()
 
     port = CHAT_APP_PORT
@@ -172,29 +178,29 @@ async def lifespan(app: FastAPI):
     # ================================
 
     # Create modular Socket.IO chat handler. Share communicator & queue manager.
-    try:
-        socketio_handler = create_socketio_chat_handler(
-            app=app,
-            gateway_adapter=app.state.gateway_adapter,
-            chat_queue_manager=app.state.chat_queue_manager,
-            allowed_origins=allowed_origins,
-            instance_id=INSTANCE_ID,
-            redis_url=REDIS_URL,
-            chat_comm=app.state.chat_comm,
-        )
-
-        # Mount Socket.IO app if available
-        socket_asgi_app = socketio_handler.get_asgi_app()
-        if socket_asgi_app:
-            app.mount("/socket.io", socket_asgi_app)
-            app.state.socketio_handler = socketio_handler
-            logger.info("Socket.IO chat handler mounted successfully")
-        else:
-            logger.warning("Socket.IO not available - chat handler disabled")
-
-    except Exception as e:
-        logger.error(f"Failed to setup Socket.IO chat handler: {e}")
-        app.state.socketio_handler = None
+    # try:
+    #     socketio_handler = create_socketio_chat_handler(
+    #         app=app,
+    #         gateway_adapter=app.state.gateway_adapter,
+    #         chat_queue_manager=app.state.chat_queue_manager,
+    #         allowed_origins=allowed_origins,
+    #         instance_id=INSTANCE_ID,
+    #         redis_url=REDIS_URL,
+    #         chat_comm=app.state.chat_comm,
+    #     )
+    #
+    #     # Mount Socket.IO app if available
+    #     socket_asgi_app = socketio_handler.get_asgi_app()
+    #     if socket_asgi_app:
+    #         app.mount("/socket.io", socket_asgi_app)
+    #         app.state.socketio_handler = socketio_handler
+    #         logger.info("Socket.IO chat handler mounted successfully")
+    #     else:
+    #         logger.warning("Socket.IO not available - chat handler disabled")
+    #
+    # except Exception as e:
+    #     logger.error(f"Failed to setup Socket.IO chat handler: {e}")
+    #     app.state.socketio_handler = None
 
     app.state.sse_hub = SSEHub(app.state.chat_comm)
 
@@ -220,7 +226,6 @@ async def lifespan(app: FastAPI):
         handler = agentic_app_func
 
         middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(port=port)
-        # processor = get_external_request_processor(middleware, handler, app)
         health_checker = service_health_checker(middleware)
 
         # Store in app state for monitoring endpoints
@@ -242,12 +247,10 @@ async def lifespan(app: FastAPI):
         await heartbeat_manager.start_heartbeat(interval=10)
 
         try:
-            # from kdcube_ai_app.infra.rendering.shared_browser import get_shared_browser
-            # app.state.shared_browser_instance = await get_shared_browser()
             from kdcube_ai_app.infra.rendering.link_preview import get_shared_link_preview
             app.state.link_preview_instance = await get_shared_link_preview()
-            # app.state.link_preview_instance = await link_preview_instance()
-            await socketio_handler.start() # communicator subscribes internally
+
+            # await socketio_handler.start() # communicator subscribes internally
         except Exception as e:
             app.state.shared_browser_instance = None
             app.state.link_preview_instance = None
@@ -273,6 +276,9 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Could not start legacy middleware: {e}")
 
     yield
+
+    # mark shutdown so SSE generators can exit
+    app.state.shutting_down = True
 
     # Shutdown
     if hasattr(app.state, "socketio_handler") and getattr(app.state.socketio_handler, "stop", None):
@@ -314,7 +320,7 @@ app.add_middleware(
 )
 
 # Create orchestrator instance
-orchestrator: IOrchestrator = get_orchestrator()
+# orchestrator: IOrchestrator = get_orchestrator()
 
 
 # ================================

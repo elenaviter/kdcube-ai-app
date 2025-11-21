@@ -75,8 +75,8 @@ def _ensure_chat_communicator(app) -> ChatRelayCommunicator:
         comm = ChatRelayCommunicator(
             redis_url=REDIS_URL,
             orchestrator_identity=os.environ.get(
-                "ORCHESTRATOR_IDENTITY",
-                f"kdcube_orchestrator_{os.environ.get('ORCHESTRATOR_TYPE', 'dramatiq')}",
+                "CB_RELAY_IDENTITY",
+                f"kdcube.relay.{os.environ.get('CB_ORCHESTRATOR_TYPE', 'dramatiq')}" or "kdcube.relay.chatbot",
             ),
         )
 

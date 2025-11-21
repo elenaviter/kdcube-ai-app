@@ -81,18 +81,16 @@ class ChatRelayCommunicator:
             redis_url=redis_url,
             orchestrator_identity=orchestrator_identity
                                   or os.environ.get(
-                "ORCHESTRATOR_IDENTITY",
-                f"kdcube_orchestrator_{os.environ.get('ORCHESTRATOR_TYPE', 'dramatiq')}",
-            ),
+                "CB_RELAY_IDENTITY") or "kdcube.relay.chatbot",
         )
         self._channel = channel
 
     # ---------- publish ----------
 
-    def _pub(self, env: ChatEnvelope, *, target_sid: Optional[str], session_id: Optional[str]):
+    async def _pub(self, env: ChatEnvelope, *, target_sid: Optional[str], session_id: Optional[str]):
         # Always publish TYPE-MAPPED event so the relay only emits
         event = _EVENT_MAP[env.type]
-        self._comm.pub(
+        await self._comm.pub(
             event=event,
             data=env.dump_model(),
             target_sid=target_sid,
@@ -100,26 +98,26 @@ class ChatRelayCommunicator:
             channel=self._channel,
         )
 
-    def emit_envelope(self, env: ChatEnvelope, *, target_sid: Optional[str] = None, session_id: Optional[str] = None):
+    async def emit_envelope(self, env: ChatEnvelope, *, target_sid: Optional[str] = None, session_id: Optional[str] = None):
         """Low-level: publish a prebuilt envelope."""
-        self._pub(env, target_sid=target_sid, session_id=session_id)
+        await self._pub(env, target_sid=target_sid, session_id=session_id)
 
-    def emit_start(self, service: ServiceCtx, conv: ConversationCtx, *, message: str, queue_stats: Dict[str, Any] | None = None, target_sid: Optional[str] = None, session_id: Optional[str] = None):
-        self._pub(ChatEnvelope.start(service, conv, message=message, queue_stats=queue_stats), target_sid=target_sid, session_id=session_id)
+    async def emit_start(self, service: ServiceCtx, conv: ConversationCtx, *, message: str, queue_stats: Dict[str, Any] | None = None, target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        await self._pub(ChatEnvelope.start(service, conv, message=message, queue_stats=queue_stats), target_sid=target_sid, session_id=session_id)
 
-    def emit_step(self, service: ServiceCtx, conv: ConversationCtx, *, step: str, status: str, title: Optional[str] = None, data: Any = None, agent: Optional[str] = None, target_sid: Optional[str] = None, session_id: Optional[str] = None):
-        self._pub(ChatEnvelope.step(service, conv, step=step, status=status, title=title, data=data, agent=agent), target_sid=target_sid, session_id=session_id)
+    async def emit_step(self, service: ServiceCtx, conv: ConversationCtx, *, step: str, status: str, title: Optional[str] = None, data: Any = None, agent: Optional[str] = None, target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        await self._pub(ChatEnvelope.step(service, conv, step=step, status=status, title=title, data=data, agent=agent), target_sid=target_sid, session_id=session_id)
 
-    def emit_delta(self, service: ServiceCtx, conv: ConversationCtx, *, text: str, index: int, marker: str = "answer", target_sid: Optional[str] = None, session_id: Optional[str] = None):
-        self._pub(ChatEnvelope.delta(service, conv, text=text, index=index, marker=marker), target_sid=target_sid, session_id=session_id)
+    async def emit_delta(self, service: ServiceCtx, conv: ConversationCtx, *, text: str, index: int, marker: str = "answer", target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        await self._pub(ChatEnvelope.delta(service, conv, text=text, index=index, marker=marker), target_sid=target_sid, session_id=session_id)
 
-    def emit_complete(self, service: ServiceCtx, conv: ConversationCtx, *, data: Any = None, target_sid: Optional[str] = None, session_id: Optional[str] = None):
-        self._pub(ChatEnvelope.complete(service, conv, data=data), target_sid=target_sid, session_id=session_id)
+    async def emit_complete(self, service: ServiceCtx, conv: ConversationCtx, *, data: Any = None, target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        await self._pub(ChatEnvelope.complete(service, conv, data=data), target_sid=target_sid, session_id=session_id)
 
-    def emit_error(self, service: ServiceCtx, conv: ConversationCtx, *, error: str, title: Optional[str] = "Workflow Error", step: str = "workflow", target_sid: Optional[str] = None, session_id: Optional[str] = None):
-        self._pub(ChatEnvelope.error(service, conv, error=error, title=title, step=step), target_sid=target_sid, session_id=session_id)
+    async def emit_error(self, service: ServiceCtx, conv: ConversationCtx, *, error: str, title: Optional[str] = "Workflow Error", step: str = "workflow", target_sid: Optional[str] = None, session_id: Optional[str] = None):
+        await self._pub(ChatEnvelope.error(service, conv, error=error, title=title, step=step), target_sid=target_sid, session_id=session_id)
 
-    def emit_conv_status(
+    async def emit_conv_status(
             self,
             svc: ServiceCtx,
             conv: ConversationCtx,
@@ -154,7 +152,7 @@ class ChatRelayCommunicator:
         }
         session_id = routing.session_id
 
-        self._comm.pub(
+        await self._comm.pub(
             event="conv_status",
             data=payload,
             target_sid=target_sid,
@@ -202,7 +200,7 @@ class ChatRelayCommunicator:
         }
         session_id = session_id
 
-        self._comm.pub(
+        await self._comm.pub(
             event="conv_status",
             data=payload,
             target_sid=target_sid,
@@ -235,11 +233,11 @@ class ChatRelayCommunicator:
         def session_id(self) -> Optional[str]:
             return self._room
 
-        def emit_start(self, message: str, queue_stats: Dict[str, Any] | None = None): self._p.emit_start(self._svc, self._conv, message=message, queue_stats=queue_stats, target_sid=self._sid, session_id=self._room)
-        def emit_step(self, step: str, status: str, *, title: Optional[str] = None, data: Any = None, agent: Optional[str] = None): self._p.emit_step(self._svc, self._conv, step=step, status=status, title=title, data=data, agent=agent, target_sid=self._sid, session_id=self._room)
-        def emit_delta(self, text: str, index: int, *, marker: str = "answer"): self._p.emit_delta(self._svc, self._conv, text=text, index=index, marker=marker, target_sid=self._sid, session_id=self._room)
-        def emit_complete(self, data: Any | None = None): self._p.emit_complete(self._svc, self._conv, data=data or {}, target_sid=self._sid, session_id=self._room)
-        def emit_error(self, error: str, *, title: Optional[str] = "Workflow Error", step: str = "workflow"): self._p.emit_error(self._svc, self._conv, error=error, title=title, step=step, target_sid=self._sid, session_id=self._room)
+        async def emit_start(self, message: str, queue_stats: Dict[str, Any] | None = None): await self._p.emit_start(self._svc, self._conv, message=message, queue_stats=queue_stats, target_sid=self._sid, session_id=self._room)
+        async def emit_step(self, step: str, status: str, *, title: Optional[str] = None, data: Any = None, agent: Optional[str] = None): await self._p.emit_step(self._svc, self._conv, step=step, status=status, title=title, data=data, agent=agent, target_sid=self._sid, session_id=self._room)
+        async def emit_delta(self, text: str, index: int, *, marker: str = "answer"): await self._p.emit_delta(self._svc, self._conv, text=text, index=index, marker=marker, target_sid=self._sid, session_id=self._room)
+        async def emit_complete(self, data: Any | None = None): await self._p.emit_complete(self._svc, self._conv, data=data or {}, target_sid=self._sid, session_id=self._room)
+        async def emit_error(self, error: str, *, title: Optional[str] = "Workflow Error", step: str = "workflow"): await self._p.emit_error(self._svc, self._conv, error=error, title=title, step=step, target_sid=self._sid, session_id=self._room)
 
         def make_emitters(self) -> tuple[Callable[[str, str, Dict[str, Any] | None], Awaitable[None]], Callable[[str, int, Dict[str, Any] | None], Awaitable[None]]]:
             """
@@ -247,11 +245,11 @@ class ChatRelayCommunicator:
             """
             async def step_emitter(step: str, status: str, payload: Dict[str, Any] | None = None):
                 p = payload or {}
-                self.emit_step(step, status, title=p.get("title"), data=p.get("data") if "data" in p else p, agent=p.get("agent"))
+                await self.emit_step(step, status, title=p.get("title"), data=p.get("data") if "data" in p else p, agent=p.get("agent"))
 
             async def delta_emitter(text: str, idx: int, meta: Dict[str, Any] | None = None):
                 marker = (meta or {}).get("marker", "answer")
-                self.emit_delta(text, idx, marker=marker)
+                await self.emit_delta(text, idx, marker=marker)
 
             return step_emitter, delta_emitter
 
@@ -631,7 +629,7 @@ class _RelayEmitterAdapter:
                    target_sid: Optional[str] = None, session_id: Optional[str] = None):
         try:
             # Route to the relay’s pub/sub channel. 'session_id' takes priority, else fall back to room.
-            self._relay._comm.pub(  # underlying transport publisher
+            await self._relay._comm.pub(  # underlying transport publisher
                 event=event,
                 data=data,
                 target_sid=target_sid,

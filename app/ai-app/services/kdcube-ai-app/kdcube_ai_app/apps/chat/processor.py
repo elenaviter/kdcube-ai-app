@@ -411,12 +411,12 @@ class EnhancedChatRequestProcessor:
                         user_type=payload.user.user_type,
                         bundle_id=payload.routing.bundle_id,
                     )
-                    self._relay.emit_conv_status(svc, conv,
-                                                 routing=payload.routing,
-                                                 state=("idle" if success else "error"),
-                                                 updated_at=res["updated_at"],
-                                                 current_turn_id=res.get("current_turn_id"),
-                                                 target_sid=None)
+                    await self._relay.emit_conv_status(svc, conv,
+                                                     routing=payload.routing,
+                                                     state=("idle" if success else "error"),
+                                                     updated_at=res["updated_at"],
+                                                     current_turn_id=res.get("current_turn_id"),
+                                                     target_sid=None)
                 except Exception as ex:
                     logger.error(traceback.format_exc())
 

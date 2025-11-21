@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Callable
+from typing import Optional, Dict, Any, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -72,26 +72,64 @@ class SSEHub:
         self._relay_started = False
 
     async def start(self):
+        # Just mark that the hub is ready. We'll start the Redis listener
+        # lazily on the first real subscription.
         if self._relay_started:
+            logger.info("[SSEHub] start() called but already started")
             return
-        await self.chat_comm.subscribe(self._on_relay)
+
+        logger.info(
+            "[SSEHub] start() – hub initialized; listener will start on first session subscription"
+        )
         self._relay_started = True
-        logger.info("[SSEHub] subscribed to relay channel")
 
     async def stop(self):
         if not self._relay_started:
             return
+
+
+        # Unblock all generators by pushing a sentinel into their queues
+        async with self._lock:
+            for clients in self._by_session.values():
+                for c in clients:
+                    try:
+                        c.queue.put_nowait(": shutdown\n\n")
+                    except Exception:
+                        pass
+
         await self.chat_comm.unsubscribe()
         self._relay_started = False
-        logger.info("[SSEHub] unsubscribed from relay channel")
+        logger.info("[SSEHub] unsubscribed from relay channel(s)")
 
     async def register(self, client: Client):
         async with self._lock:
             lst = self._by_session.setdefault(client.session_id, [])
+            was_empty = not lst
             lst.append(client)
-            logger.info("[SSEHub] register session=%s total=%d", client.session_id, len(lst))
+
+        if was_empty:
+            # First client for this session on this worker → subscribe to its channel
+            session_ch = f"chat.events.{client.session_id}"
+            await self.chat_comm._comm.subscribe_add(session_ch)
+            logger.info(
+                "[SSEHub] subscribe for session=%s channel=%s",
+                client.session_id,
+                session_ch,
+            )
+
+            # Ensure Redis listener is running.
+            # Safe to call many times; start_listener() returns immediately if already running.
+            await self.chat_comm._comm.start_listener(self._on_relay)
+
+        logger.info(
+            "[SSEHub] register session=%s total=%d",
+            client.session_id,
+            len(self._by_session[client.session_id]),
+        )
 
     async def unregister(self, client: Client):
+
+        remove_channel = None
         async with self._lock:
             lst = self._by_session.get(client.session_id, [])
             new = [c for c in lst if c is not client]
@@ -100,7 +138,12 @@ class SSEHub:
                 logger.info("[SSEHub] unregister session=%s total=%d", client.session_id, len(new))
             else:
                 self._by_session.pop(client.session_id, None)
+                remove_channel = f"chat.events.{client.session_id}"
                 logger.info("[SSEHub] unregister session=%s total=0 -> removed", client.session_id)
+
+        if remove_channel:
+            await self.chat_comm._comm.unsubscribe_some(remove_channel)
+            logger.info("[SSEHub] unsubscribed from channel=%s", remove_channel)
 
     # Relay callback invoked by ChatRelayCommunicator
     async def _on_relay(self, message: dict):
@@ -114,12 +157,18 @@ class SSEHub:
             room = message.get("session_id")
 
             if not event or not room:
-                return  # we only fan-out messages scoped to a session room
+                return  # we only fan-out messages scoped to a session room. ignore malformed / global messages
 
-            frame = _sse_frame(event, data, event_id=str(uuid.uuid4()))
-            # snapshot recipients under lock
+            # First check if we even have listeners for this session
             async with self._lock:
                 recipients = list(self._by_session.get(room, []))
+
+            if not recipients:
+                # Nothing to do on this worker
+                return
+
+            # Only now build the SSE frame
+            frame = _sse_frame(event, data, event_id=str(uuid.uuid4()))
 
             if target_sid:
                 # DM: only client with matching stream_id
@@ -210,7 +259,7 @@ def create_sse_router(
                     conv = ConversationCtx(session_id=session.session_id,
                                            conversation_id=session.session_id,
                                            turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                    chat_comm.emit_error(svc, conv,
+                    await chat_comm.emit_error(svc, conv,
                         error="Token user mismatch",
                         target_sid=stream_id,
                         session_id=session.session_id)
@@ -224,7 +273,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv,
+            await chat_comm.emit_error(svc, conv,
                 error="Invalid token",
                 target_sid=stream_id,
                 session_id=session.session_id)
@@ -244,7 +293,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv,
+            await chat_comm.emit_error(svc, conv,
                 error=f"Rate limit exceeded: {e.message}",
                 target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=429, detail={"error": "Rate limit exceeded", "retry_after": e.retry_after})
@@ -253,7 +302,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv,
+            await chat_comm.emit_error(svc, conv,
                 error=f"System under pressure: {e.message}",
                 target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=503, detail={"error": "System under pressure", "retry_after": e.retry_after})
@@ -262,7 +311,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv,
+            await chat_comm.emit_error(svc, conv,
                 error=f"Service temporarily unavailable: {e.message}",
                 target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=503, detail={"error": "Service temporarily unavailable", "retry_after": e.retry_after})
@@ -290,21 +339,37 @@ def create_sse_router(
 
             try:
                 while True:
-                    # If client disconnected, exit cleanly
-                    # if await request.is_disconnected():
-                    #     break
+                    # 1) if server is shutting down, exit
+                    if getattr(app.state, "shutting_down", False):
+                        logger.info("[sse_stream] Server shutting down; closing SSE for session=%s", session.session_id)
+                        break
+
+                    # 2) if client disconnected, exit
+                    try:
+                        if await request.is_disconnected():
+                            logger.info("[sse_stream] Client disconnected; closing SSE for session=%s", session.session_id)
+                            break
+                    except RuntimeError:
+                        # request might be finalized already in some edge cases
+                        break
 
                     try:
                         # Wait up to KEEPALIVE_SECONDS for the next frame
                         frame = await asyncio.wait_for(q.get(), timeout=KEEPALIVE_SECONDS)
                         yield frame
                     except asyncio.TimeoutError:
+                        # On timeout, if shutting down, don't send keepalive, just break
+                        if getattr(app.state, "shutting_down", False):
+                            logger.info("[sse_stream] Timeout during shutdown; closing SSE for session=%s", session.session_id)
+                            break
                         # No frames in this window → send keepalive
                         yield ": keepalive\n\n"
-                        # continue
-                    except asyncio.CancelledError:
-                        # client truly gone
-                        raise
+
+            except asyncio.CancelledError:
+                # Uvicorn/gunicorn is cancelling us as part of shutdown
+                logger.info("[sse_stream] Cancelled; closing SSE for session=%s", session.session_id)
+                # Re-raise so Uvicorn/Starlette know this request is done
+                raise
             finally:
                 await app.state.sse_hub.unregister(client)
                 logger.info("[sse_stream] Cleaned up: session=%s", session.session_id)
@@ -407,7 +472,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv, error=f"Rate limit exceeded: {e.message}",
+            await chat_comm.emit_error(svc, conv, error=f"Rate limit exceeded: {e.message}",
                                  target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=429, detail={"error": "Rate limit exceeded", "retry_after": e.retry_after})
         except BackpressureError as e:
@@ -415,7 +480,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv, error=f"System under pressure: {e.message}",
+            await chat_comm.emit_error(svc, conv, error=f"System under pressure: {e.message}",
                                  target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=503, detail={"error": "System under pressure", "retry_after": e.retry_after})
         except CircuitBreakerError as e:
@@ -423,7 +488,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv, error=f"Service temporarily unavailable: {e.message}",
+            await chat_comm.emit_error(svc, conv, error=f"Service temporarily unavailable: {e.message}",
                                  target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=503, detail={"error": "Service temporarily unavailable", "retry_after": e.retry_after})
 
@@ -483,7 +548,7 @@ def create_sse_router(
             conv = ConversationCtx(session_id=session.session_id,
                                    conversation_id=message_data.get("conversation_id") or session.session_id,
                                    turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-            chat_comm.emit_error(svc, conv, error='Missing "message"',
+            await chat_comm.emit_error(svc, conv, error='Missing "message"',
                                  target_sid=stream_id, session_id=session.session_id)
             raise HTTPException(status_code=400, detail='Missing "message"')
 
@@ -517,7 +582,7 @@ def create_sse_router(
         conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
 
         if not spec_resolved:
-            chat_comm.emit_error(svc, conv, error=f"Unknown bundle_id '{provided_bundle_id}'", target_sid=stream_id, session_id=session.session_id)
+            await chat_comm.emit_error(svc, conv, error=f"Unknown bundle_id '{provided_bundle_id}'", target_sid=stream_id, session_id=session.session_id)
             return
 
         payload = ChatTaskPayload(
@@ -597,7 +662,7 @@ def create_sse_router(
             retry_after = 30 if session.user_type == UserType.ANONYMOUS else (45 if session.user_type == UserType.REGISTERED else 60)
             svc = ServiceCtx(request_id=request_id, user=session.user_id, project=project_id, tenant=tenant_id)
             conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
-            chat_comm.emit_error(
+            await chat_comm.emit_error(
                 svc, conv,
                 error=f"System under pressure - request rejected ({reason})",
                 target_sid=stream_id,
@@ -607,7 +672,7 @@ def create_sse_router(
                                 detail={"error": "System under pressure", "reason": reason, "retry_after": retry_after},
                                 headers={"Retry-After": str(retry_after)})
 
-        chat_comm.emit_start(
+        await chat_comm.emit_start(
             svc, conv,
             message=(text[:100] + "..." if len(text) > 100 else text),
             queue_stats=stats,
@@ -658,7 +723,7 @@ def create_sse_router(
         )
         svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
         conv = ConversationCtx(session_id=session.session_id, conversation_id=conv_id, turn_id=current_turn_id or f"turn_{uuid.uuid4().hex[:8]}")
-        app.state.chat_comm.emit_conv_status(
+        await app.state.chat_comm.emit_conv_status(
             svc, conv, routing,
             state=state, updated_at=updated_at, current_turn_id=current_turn_id,
             target_sid=stream_id  # DM this requester; omit to broadcast to all session tabs

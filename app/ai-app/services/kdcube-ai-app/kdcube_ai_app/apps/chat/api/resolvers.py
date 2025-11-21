@@ -82,19 +82,19 @@ def workdir(tenant: str, project: str):
     return w
 
 # Orchestrator setup (your existing logic)
-ORCHESTRATOR_TYPE = os.environ.get("ORCHESTRATOR_TYPE", "dramatiq")
-DEFAULT_ORCHESTRATOR_IDENTITY = f"kdcube_orchestrator_{ORCHESTRATOR_TYPE}"
-ORCHESTRATOR_IDENTITY = os.environ.get("ORCHESTRATOR_IDENTITY", DEFAULT_ORCHESTRATOR_IDENTITY)
+# ORCHESTRATOR_TYPE = os.environ.get("CB_ORCHESTRATOR_TYPE", "dramatiq")
+# DEFAULT_ORCHESTRATOR_IDENTITY = f"kdcube_orchestrator_{ORCHESTRATOR_TYPE}"
+# ORCHESTRATOR_IDENTITY = os.environ.get("ORCHESTRATOR_IDENTITY", DEFAULT_ORCHESTRATOR_IDENTITY)
+#
+# orchestrator: IOrchestrator = OrchestratorFactory.create_orchestrator(
+#     orchestrator_type=ORCHESTRATOR_TYPE,
+#     redis_url=REDIS_URL,
+#     orchestrator_identity=ORCHESTRATOR_IDENTITY
+# )
 
-orchestrator: IOrchestrator = OrchestratorFactory.create_orchestrator(
-    orchestrator_type=ORCHESTRATOR_TYPE,
-    redis_url=REDIS_URL,
-    orchestrator_identity=ORCHESTRATOR_IDENTITY
-)
-
-def get_orchestrator() -> IOrchestrator:
-    """Singleton orchestrator instance."""
-    return orchestrator
+# def get_orchestrator() -> IOrchestrator:
+#     """Singleton orchestrator instance."""
+#     return orchestrator
 
 # Database setup (your existing logic)
 ENABLE_DATABASE = os.environ.get("ENABLE_DATABASE", "true").lower() == "true"

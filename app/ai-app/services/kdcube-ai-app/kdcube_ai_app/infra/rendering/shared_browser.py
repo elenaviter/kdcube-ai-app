@@ -8,6 +8,10 @@ from typing import Optional
 import asyncio
 import sys
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 try:
     from playwright.async_api import async_playwright, Browser
 except ImportError:
@@ -140,11 +144,24 @@ class SharedBrowserService:
         if self._browser is not None:
             try:
                 await self._browser.close()
+            except Exception as e:
+                # Typical when driver is already gone at process shutdown
+                logger.warning(
+                    "SharedBrowserService: error closing browser (ignored during shutdown): %s",
+                    e,
+                )
             finally:
                 self._browser = None
+
         if self._playwright is not None:
             try:
                 await self._playwright.stop()
+            except Exception as e:
+                logger.warning(
+                    "SharedBrowserService: error stopping Playwright (ignored during shutdown): %s",
+                    e,
+                )
             finally:
                 self._playwright = None
+
         self._ref_count = 0

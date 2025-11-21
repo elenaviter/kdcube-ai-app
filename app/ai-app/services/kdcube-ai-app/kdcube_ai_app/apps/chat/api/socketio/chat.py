@@ -361,25 +361,25 @@ class SocketIOChatHandler:
             except RateLimitError as e:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                self._comm.emit_error(svc, conv, error=f"Rate limit exceeded: {e.message}", target_sid=sid, session_id=session.session_id)
+                await self._comm.emit_error(svc, conv, error=f"Rate limit exceeded: {e.message}", target_sid=sid, session_id=session.session_id)
                 return
 
             except BackpressureError as e:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                self._comm.emit_error(svc, conv, error=f"System under pressure: {e.message}", target_sid=sid, session_id=session.session_id)
+                await self._comm.emit_error(svc, conv, error=f"System under pressure: {e.message}", target_sid=sid, session_id=session.session_id)
                 return
 
             except CircuitBreakerError as e:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                self._comm.emit_error(svc, conv, error=f"Service temporarily unavailable: {e.message}", target_sid=sid, session_id=session.session_id)
+                await self._comm.emit_error(svc, conv, error=f"Service temporarily unavailable: {e.message}", target_sid=sid, session_id=session.session_id)
                 return
 
             except Exception as e:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
                 conv = ConversationCtx(session_id=session.session_id, conversation_id=message_data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                self._comm.emit_error(svc, conv, error="System check failed", target_sid=sid, session_id=session.session_id)
+                await self._comm.emit_error(svc, conv, error="System check failed", target_sid=sid, session_id=session.session_id)
                 logger.error("gateway check failed: %s", e)
                 return
 
@@ -440,7 +440,7 @@ class SocketIOChatHandler:
                     conversation_id=message_data.get("conversation_id") or user_session_data.get("session_id", "unknown"),
                     turn_id=f"turn_{uuid.uuid4().hex[:8]}",
                 )
-                self._comm.emit_error(svc, conv, error='Missing "message"', target_sid=sid, session_id=conv.session_id)
+                await self._comm.emit_error(svc, conv, error='Missing "message"', target_sid=sid, session_id=conv.session_id)
                 return
 
 
@@ -480,7 +480,7 @@ class SocketIOChatHandler:
             conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
 
             if not spec_resolved:
-                self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
+                await self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
                 return
             routing = ChatTaskRouting(
                 session_id=session.session_id,
@@ -539,14 +539,14 @@ class SocketIOChatHandler:
                 # Did NOT acquire; someone else is active
                 active_turn = set_res.get("current_turn_id")
                 try:
-                    self._comm.emit_conv_status(
+                    await self._comm.emit_conv_status(
                         svc, conv, routing,
                         state="in_progress",
                         updated_at=set_res["updated_at"],
                         current_turn_id=active_turn,
                         target_sid=sid  # DM this requester tab only
                     )
-                    self._comm.emit_error(
+                    await self._comm.emit_error(
                         svc, conv,
                         error="Conversation is busy (another tab/process is answering).",
                         target_sid=sid,
@@ -560,13 +560,13 @@ class SocketIOChatHandler:
             try:
                 if not conv_exists:
                     logger.info(f"New conversation created: {payload.routing.conversation_id} for user {payload.user.user_id}")
-                    self._comm.emit_conv_status(
+                    await self._comm.emit_conv_status(
                         svc, conv, routing,
                         state="created",
                         updated_at=set_res["updated_at"],
                         current_turn_id=payload.routing.turn_id,
                     )
-                self._comm.emit_conv_status(
+                await self._comm.emit_conv_status(
                     svc, conv, routing,
                     state="in_progress",
                     updated_at=set_res["updated_at"],
@@ -599,7 +599,7 @@ class SocketIOChatHandler:
                     bundle_id=payload.routing.bundle_id,
                 )
                 # let the requester tab know
-                self._comm.emit_conv_status(
+                await self._comm.emit_conv_status(
                     svc, conv,
                     routing=routing,
                     state="idle",
@@ -607,7 +607,7 @@ class SocketIOChatHandler:
                     current_turn_id=res_reset.get("current_turn_id"),
                     target_sid=sid,  # DM the requester tab; or omit target_sid to session-broadcast
                 )
-                self._comm.emit_error(
+                await self._comm.emit_error(
                     svc, conv,
                     error=f"System under pressure - request rejected ({reason})",
                     target_sid=sid,
@@ -616,14 +616,14 @@ class SocketIOChatHandler:
                 return
 
             # ack to client via communicator (same envelope as processor emits)
-            self._comm.emit_start(svc, conv, message=(message[:100] + "..." if len(message) > 100 else message), queue_stats=stats, target_sid=sid, session_id=session.session_id)
+            await self._comm.emit_start(svc, conv, message=(message[:100] + "..." if len(message) > 100 else message), queue_stats=stats, target_sid=sid, session_id=session.session_id)
 
         except Exception as e:
             logger.exception("chat_message error: %s", e)
             try:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()))
                 conv = ConversationCtx(session_id="unknown", conversation_id="unknown", turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                self._comm.emit_error(svc, conv, error=str(e), target_sid=sid)
+                await self._comm.emit_error(svc, conv, error=str(e), target_sid=sid)
             except Exception:
                 pass
 
@@ -661,7 +661,7 @@ class SocketIOChatHandler:
             socket_id=sid,
             bundle_id=spec_resolved.id,
         )
-        self._comm.emit_conv_status(svc, conv,
+        await self._comm.emit_conv_status(svc, conv,
                                     routing=routing,
                                     state=state,
                                     updated_at=updated_at,

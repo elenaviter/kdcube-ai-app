@@ -71,7 +71,7 @@ async def process_kb_resource(  kdcube_path: str,
                 kb_workdir = f"{kdcube_path}/kb/tenants/{tenant}/projects/{project}/knowledge_base"
                 kb = KnowledgeBase(tenant, project, kb_workdir, embedding_model=embedding_model, processing_mode=processing_mode)
 
-                def emit_progress(event_name: str, progress: float, message_text: str):
+                async def emit_progress(event_name: str, progress: float, message_text: str):
                     """Helper to emit progress events"""
                     payload = {
                         "resource_id": resource_id,
@@ -81,29 +81,29 @@ async def process_kb_resource(  kdcube_path: str,
                         "worker_pid": worker_pid,
                         "elapsed_time": time.time() - task_start
                     }
-                    sc.pub(event_name, target_sid, payload)
+                    await sc.pub(event_name, target_sid, payload)
 
                 # Processing stages with detailed progress reporting
-                emit_progress("processing_started", 0.0, f"Starting KB processing on worker {worker_pid}")
+                await emit_progress("processing_started", 0.0, f"Starting KB processing on worker {worker_pid}")
 
                 # Stage 1: Extraction
                 stage_start = time.time()
-                emit_progress("processing_extraction", 0.1, "Extracting content from document")
+                await emit_progress("processing_extraction", 0.1, "Extracting content from document")
 
                 await kb.extract_only(resource_id, version)
 
                 stage_duration = time.time() - stage_start
-                emit_progress("processing_extraction_complete", 0.25, f"Extraction complete ({stage_duration:.2f}s)")
+                await emit_progress("processing_extraction_complete", 0.25, f"Extraction complete ({stage_duration:.2f}s)")
                 logger.info(f"  ✓ Extraction done ({stage_duration:.1f}s)")
 
                 # Stage 2: Segmentation
                 stage_start = time.time()
-                emit_progress("processing_segmentation", 0.25, "Creating content segments")
+                await emit_progress("processing_segmentation", 0.25, "Creating content segments")
 
                 await kb.process_resource(resource_id, version, stages=["segmentation"])
 
                 stage_duration = time.time() - stage_start
-                emit_progress("processing_segmentation_complete", 0.5, f"Segmentation complete ({stage_duration:.2f}s)")
+                await emit_progress("processing_segmentation_complete", 0.5, f"Segmentation complete ({stage_duration:.2f}s)")
                 logger.info(f"  ✓ Segmentation done ({stage_duration:.1f}s)")
 
                 # Calculate progress steps based on optional stages
@@ -125,7 +125,7 @@ async def process_kb_resource(  kdcube_path: str,
                 if metadata_stage_config:
                     try:
                         stage_start = time.time()
-                        emit_progress("processing_metadata", current_progress, "Analyzing metadata")
+                        await emit_progress("processing_metadata", current_progress, "Analyzing metadata")
 
                         await kb.process_resource(resource_id,
                                                   version,
@@ -135,7 +135,7 @@ async def process_kb_resource(  kdcube_path: str,
 
                         stage_duration = time.time() - stage_start
                         current_progress += progress_step
-                        emit_progress("processing_metadata_complete", current_progress, f"Metadata analysis complete ({stage_duration:.2f}s)")
+                        await emit_progress("processing_metadata_complete", current_progress, f"Metadata analysis complete ({stage_duration:.2f}s)")
                         logger.info(f"  ✓ Metadata done ({stage_duration:.1f}s)")
 
                     except Exception as e:
@@ -145,7 +145,7 @@ async def process_kb_resource(  kdcube_path: str,
                 logger.info("Processing embeddings...")
                 try:
                     stage_start = time.time()
-                    emit_progress("processing_embedding", current_progress, "Calculating embeddings")
+                    await emit_progress("processing_embedding", current_progress, "Calculating embeddings")
 
                     await kb.process_resource(resource_id, version,
                                               stages=["embedding"],
@@ -154,7 +154,7 @@ async def process_kb_resource(  kdcube_path: str,
 
                     stage_duration = time.time() - stage_start
                     current_progress += progress_step
-                    emit_progress("processing_embedding_complete", current_progress, f"Embedding calculation complete ({stage_duration:.2f}s)")
+                    await emit_progress("processing_embedding_complete", current_progress, f"Embedding calculation complete ({stage_duration:.2f}s)")
                     logger.info(f"  ✓ Embeddings done ({stage_duration:.1f}s)")
 
                 except Exception as e:
@@ -164,7 +164,7 @@ async def process_kb_resource(  kdcube_path: str,
                 if search_indexing_stage_config:
                     try:
                         stage_start = time.time()
-                        emit_progress("processing_search_indexing", current_progress, "Indexing segments for search")
+                        await emit_progress("processing_search_indexing", current_progress, "Indexing segments for search")
 
                         await kb.process_resource(resource_id, version,
                                                   stages=["search_indexing"],
@@ -173,13 +173,13 @@ async def process_kb_resource(  kdcube_path: str,
 
                         stage_duration = time.time() - stage_start
                         current_progress += progress_step
-                        emit_progress("processing_search_indexing_complete", current_progress, f"Search indexing complete ({stage_duration:.2f}s)")
+                        await emit_progress("processing_search_indexing_complete", current_progress, f"Search indexing complete ({stage_duration:.2f}s)")
                         logger.info(f"  ✓ Search indexing done ({stage_duration:.1f}s)")
 
                     except Exception as e:
                         logger.warning(f"Search indexing stage failure: {e}")
                         # Don't fail the entire job if search indexing fails
-                        emit_progress("processing_search_indexing_failed", current_progress, f"Search indexing failed: {str(e)}")
+                        await emit_progress("processing_search_indexing_failed", current_progress, f"Search indexing failed: {str(e)}")
 
                 # Final completion
                 total_duration = time.time() - task_start
@@ -195,7 +195,7 @@ async def process_kb_resource(  kdcube_path: str,
                 stages_summary = ", ".join(completed_stages)
                 completion_message = f"KB processing completed ({stages_summary}) in {total_duration:.2f}s"
 
-                emit_progress("processing_completed", 1.0, completion_message)
+                await emit_progress("processing_completed", 1.0, completion_message)
 
                 logger.info(f"[WORKER-{worker_pid}] KB processing succeeded for resource '{resource_id}' in {total_duration:.2f}s")
                 logger.info(f"  Completed stages: {stages_summary}")
@@ -226,7 +226,7 @@ async def process_kb_resource(  kdcube_path: str,
                     "worker_pid": worker_pid,
                     "duration": total_duration
                 }
-                sc.pub("processing_failed", target_sid, error_payload)
+                await sc.pub("processing_failed", target_sid, error_payload)
 
                 # Re-raise for orchestator(dramatiq) to handle retries
                 raise

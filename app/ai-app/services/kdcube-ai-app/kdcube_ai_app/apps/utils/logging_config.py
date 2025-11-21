@@ -46,6 +46,11 @@ def configure_logging():
         "asyncio": os.getenv("ASYNCIO_LEVEL", "WARNING"),
         "watchfiles": os.getenv("WATCHFILES_LEVEL", "WARNING"),
         "aiohttp.access": os.getenv("AIOHTTP_ACCESS_LEVEL", "WARNING"),
+
+        # 🧊 quiet AWS creds noise
+        "aiobotocore.credentials": os.getenv("AIOBOTOCORE_CREDENTIALS_LEVEL", "WARNING"),
+        # (optional, sometimes botocore itself also logs similarly)
+        "botocore.credentials": os.getenv("BOTOCORE_CREDENTIALS_LEVEL", "WARNING"),
     }
 
     for name, lvl_name in desired_levels.items():

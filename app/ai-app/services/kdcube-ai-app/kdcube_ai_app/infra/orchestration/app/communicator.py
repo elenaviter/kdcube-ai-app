@@ -14,6 +14,8 @@ import redis.asyncio as aioredis
 
 from dotenv import load_dotenv, find_dotenv
 
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
+
 # Load environment
 load_dotenv(find_dotenv())
 
@@ -22,14 +24,10 @@ logger = logging.getLogger("ServiceCommunicator")
 
 
 # Configuration
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
-REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0")
-
-ORCHESTRATOR_TYPE = os.environ.get("ORCHESTRATOR_TYPE", "dramatiq")
-DEFAULT_ORCHESTRATOR_IDENTITY = f"kdcube_orchestrator_{ORCHESTRATOR_TYPE}"
-ORCHESTRATOR_IDENTITY = os.environ.get("ORCHESTRATOR_IDENTITY", DEFAULT_ORCHESTRATOR_IDENTITY)
+# REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+# REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+# REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
+# REDIS_URL = os.environ.get("REDIS_URL", f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0")
 
 # Queue prefix to match web server expectations
 KDCUBE_ORCHESTRATOR_QUEUES_PREFIX = "kdcube_orch_"
@@ -55,10 +53,21 @@ class ServiceCommunicator:
 
     def __init__(
             self,
-            redis_url: str = REDIS_URL,
-            orchestrator_identity: str = ORCHESTRATOR_IDENTITY,
+            redis_url: str = None,
+            orchestrator_identity: str = None,
     ):
+        settings = get_settings()
+        if not redis_url:
+            redis_url = settings.REDIS_URL
+
         self.redis_url = redis_url
+        if not orchestrator_identity:
+            ORCHESTRATOR_TYPE = os.environ.get("CB_ORCHESTRATOR_TYPE", "chatbot")
+            DEFAULT_ORCHESTRATOR_IDENTITY = f"kdcube.relay.{ORCHESTRATOR_TYPE}"
+            ORCHESTRATOR_IDENTITY = os.environ.get("CB_RELAY_IDENTITY", DEFAULT_ORCHESTRATOR_IDENTITY)
+
+            orchestrator_identity = ORCHESTRATOR_IDENTITY
+
         self.orchestrator_identity = orchestrator_identity
 
         # sync client for publishing
@@ -80,7 +89,7 @@ class ServiceCommunicator:
 
     # ---------- publisher API (sync) ----------
 
-    def pub(
+    async def _pub_async(
             self,
             event: str,
             target_sid: str | None,
@@ -88,17 +97,6 @@ class ServiceCommunicator:
             channel: str = "kb.process_resource_out",
             session_id: str | None = None,
     ):
-        """
-        Publish an event to the given channel (sync).
-
-        Args:
-            event: event name to relay (e.g., "chat_step", "chat_complete")
-            target_sid: specific Socket.IO SID to target (preferred for avoiding duplicates)
-            data: payload dict
-            channel: logical channel (auto-prefixed by orchestrator identity)
-            session_id: optional logical room (e.g., a user's session id). Use this
-                        ONLY when you don't know the exact target_sid.
-        """
         message = {
             "target_sid": target_sid,
             "session_id": session_id,
@@ -106,13 +104,45 @@ class ServiceCommunicator:
             "data": data,
             "timestamp": time.time(),
         }
-        full_channel = self._fmt_channel(channel)
-        logger.debug(
-            f"Publishing event '{event}' to '{full_channel}' "
-            f"(sid={target_sid}, session={session_id}): {data}"
-        )
-        self.redis.publish(full_channel, json.dumps(message, ensure_ascii=False))
 
+        # Shard chat events by session
+        logical_channel = channel
+        if session_id and channel == "chat.events":
+            logical_channel = f"{channel}.{session_id}"
+
+        full_channel = self._fmt_channel(logical_channel)
+
+        await self._ensure_async()
+
+        payload = json.dumps(message, ensure_ascii=False)
+
+        logger.debug(
+            "Publishing event '%s' to '%s' (sid=%s, session=%s): %s",
+            event,
+            full_channel,
+            target_sid,
+            session_id,
+            data,
+        )
+
+        try:
+            await self._aioredis.publish(full_channel, payload)
+        except Exception as e:
+            logger.error(
+                "[ServiceCommunicator] async publish failed to %s: %s",
+                full_channel,
+                e,
+            )
+
+    async def pub(
+            self,
+            event: str,
+            target_sid: str | None,
+            data: dict,
+            channel: str = "kb.process_resource_out",
+            session_id: str | None = None,
+    ):
+        await self._pub_async(event, target_sid, data, channel=channel, session_id=session_id)
 
     # ---------- subscriber API (async) ----------
 
@@ -142,6 +172,53 @@ class ServiceCommunicator:
             await self._pubsub.subscribe(*formatted)
             logger.info(f"Subscribed to: {formatted}")
 
+    async def subscribe_add(self, channels: Union[str, Iterable[str]], *, pattern: bool = False):
+        await self._ensure_async()
+        if self._pubsub is None:
+            self._pubsub = self._aioredis.pubsub()
+
+        if isinstance(channels, str):
+            channels = [channels]
+
+        formatted = [self._fmt_channel(ch) for ch in channels]
+
+        # Only subscribe to new ones
+        new_channels = [ch for ch in formatted if ch not in self._subscribed_channels]
+        if not new_channels:
+            return
+
+        self._subscribed_channels.extend(new_channels)
+
+        if pattern:
+            await self._pubsub.psubscribe(*new_channels)
+            logger.info(f"Pattern-subscribed to: {new_channels}")
+        else:
+            await self._pubsub.subscribe(*new_channels)
+            logger.info(f"Subscribed to: {new_channels}")
+
+    async def unsubscribe_some(self, channels: Union[str, Iterable[str]]):
+        if not self._pubsub:
+            return
+
+        if isinstance(channels, str):
+            channels = [channels]
+
+        formatted = [self._fmt_channel(ch) for ch in channels]
+        to_remove = [ch for ch in formatted if ch in self._subscribed_channels]
+        if not to_remove:
+            return
+
+        # Remove from our tracking list
+        self._subscribed_channels = [
+            ch for ch in self._subscribed_channels if ch not in to_remove
+        ]
+
+        # Unsubscribe (works for both sub/psub)
+        with contextlib.suppress(Exception):
+            await self._pubsub.unsubscribe(*to_remove)
+        with contextlib.suppress(Exception):
+            await self._pubsub.punsubscribe(*to_remove)
+
     async def listen(self) -> AsyncIterator[dict]:
         """
         Async iterator yielding decoded payload dicts for 'message'/'pmessage' only.
@@ -150,6 +227,10 @@ class ServiceCommunicator:
         if not self._pubsub:
             raise RuntimeError("Call subscribe() before listen().")
 
+        logger.info(
+            "[ServiceCommunicator] listen() started on %r (id=%s), subscribed=%s",
+            self, id(self), self._subscribed_channels
+        )
         async for msg in self._pubsub.listen():
             mtype = msg.get("type")
             if mtype not in ("message", "pmessage"):
@@ -169,6 +250,7 @@ class ServiceCommunicator:
                 continue
             yield payload
 
+
     async def start_listener(self, on_message: Callable[[dict], "asyncio.Future | None | Any"]):
         """
         Start a background task that invokes on_message(payload) for every message.
@@ -179,7 +261,16 @@ class ServiceCommunicator:
         if not self._pubsub:
             raise RuntimeError("Call subscribe() before start_listener().")
 
+        logger.info(
+            "[ServiceCommunicator] start_listener on %r (id=%s) pubsub=%r",
+            self, id(self), self._pubsub
+        )
+
         async def _loop():
+            logger.info(
+                "[ServiceCommunicator] listener _loop starting on %r (id=%s)",
+                self, id(self)
+            )
             try:
                 async for payload in self.listen():
                     try:
@@ -189,15 +280,23 @@ class ServiceCommunicator:
                     except Exception as cb_err:
                         logger.error(f"[ServiceCommunicator] on_message error: {cb_err}")
             except asyncio.CancelledError:
+                logger.info("[ServiceCommunicator] listener cancelled")
                 raise
             except Exception as e:
                 logger.error(f"[ServiceCommunicator] listener error: {e}")
 
         if self._listen_task and not self._listen_task.done():
+            logger.info(
+                "[ServiceCommunicator] start_listener called but task already running (id=%s)",
+                id(self._listen_task),
+            )
             return  # already running
 
         self._listen_task = asyncio.create_task(_loop(), name="service-communicator-listener")
-        logger.info(f"Started listener task on channels: {self._subscribed_channels}")
+        logger.info(
+            "[ServiceCommunicator] Started listener task %r on channels: %s",
+            self._listen_task, self._subscribed_channels
+        )
 
     async def stop_listener(self):
         """Cancel listener task and close pubsub + connection."""
@@ -232,7 +331,7 @@ class ServiceCommunicator:
 
     def get_queue_stats(self):
         """Get queue statistics - matches what the orchestrator interface expects"""
-        redis_client = redis.Redis.from_url(REDIS_URL)
+        redis_client = redis.Redis.from_url(self.redis_url)
         stats = {}
 
         queues = [
@@ -255,7 +354,7 @@ class ServiceCommunicator:
         from dramatiq.results.backends import RedisBackend
 
         try:
-            result_backend = RedisBackend(url=REDIS_URL)
+            result_backend = RedisBackend(url=self.redis_url)
             return result_backend.get_result(message_id, block=False)
         except Exception as e:
             logger.error(f"Failed to get task result for {message_id}: {e}")
