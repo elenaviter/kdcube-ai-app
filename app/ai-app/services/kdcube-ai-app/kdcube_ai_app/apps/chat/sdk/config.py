@@ -42,6 +42,9 @@ class Settings(BaseSettings):
     AWS_SHARED_CREDENTIALS_FILE: str | None = None
     AWS_CONFIG_FILE: str | None = None
 
+    # Redis
+    REDIS_URL: str = Field(default="redis://localhost:6379/0")
+
     STORAGE_PATH: str | None = Field(default=None, alias="KDCUBE_STORAGE_PATH")
 
     TENANT: str = Field(default="home", alias="TENANT_ID")

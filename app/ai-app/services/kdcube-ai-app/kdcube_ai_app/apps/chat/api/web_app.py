@@ -50,6 +50,7 @@ from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator
 
 from kdcube_ai_app.apps.chat.api.socketio.chat import create_socketio_chat_handler
+from kdcube_ai_app.apps.chat.api.sse.chat import create_sse_router, SSEHub
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ allowed_origins = [
     "http://localhost:4000",
     "http://localhost:5173",
     "http://localhost:8050",
+    "http://localhost:5175",
 ]
 app_domain = os.environ.get("APP_DOMAIN")
 if app_domain:
@@ -194,6 +196,26 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to setup Socket.IO chat handler: {e}")
         app.state.socketio_handler = None
 
+    app.state.sse_hub = SSEHub(app.state.chat_comm)
+
+    # Mount SSE routes (same relay and queue manager as Socket.IO)
+    try:
+        await app.state.sse_hub.start()
+        sse_router = create_sse_router(
+            app=app,
+            gateway_adapter=app.state.gateway_adapter,
+            chat_queue_manager=app.state.chat_queue_manager,
+            instance_id=INSTANCE_ID,
+            redis_url=REDIS_URL,
+            chat_comm=app.state.chat_comm,
+        )
+        app.include_router(sse_router, prefix="/sse", tags=["SSE"])
+        logger.info("SSE routes mounted at /sse")
+        app.state.sse_enabled = True
+    except Exception as e:
+        logger.error(f"Failed to mount SSE routes: {e}")
+        app.state.sse_enabled = False
+
     try:
         handler = agentic_app_func
 
@@ -258,6 +280,7 @@ async def lifespan(app: FastAPI):
             await app.state.socketio_handler.stop()
         except Exception:
             pass
+    await app.state.sse_hub.stop()
     if hasattr(app.state, 'heartbeat_manager'):
         await app.state.heartbeat_manager.stop_heartbeat()
     if hasattr(app.state, 'processor'):
@@ -267,11 +290,6 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, 'pg_pool'):
         await app.state.pg_pool.close()
-    # if hasattr(app.state, 'shared_browser_instance') and app.state.shared_browser_instance:
-    #     await app.state.shared_browser_instance.close()
-    # if hasattr(app.state,  'link_preview_instance') and app.state.link_preview_instance:
-    #     await app.state.link_preview_instance.close()
-    #     await app.state.link_preview_instance.close()
 
     await close_shared_link_preview()
     await close_shared_browser()
@@ -605,14 +623,14 @@ async def get_available_embedders(session: UserSession = Depends(get_user_sessio
 async def health_check():
     """Basic health check"""
     socketio_status = "enabled" if hasattr(app.state, 'socketio_handler') and app.state.socketio_handler else "disabled"
-
+    sse_status = "enabled" if  hasattr(app.state, 'sse_enabled') and app.state.sse_enabled else "disabled"
     return {
         "status": "healthy",
         "timestamp": time.time(),
         "instance_id": INSTANCE_ID,
         "port": CHAT_APP_PORT,
         "socketio_status": socketio_status,
-        "modular_architecture": True
+        "sse_status": sse_status,
     }
 
 @app.get("/debug/session")
@@ -697,4 +715,5 @@ if __name__ == "__main__":
         port=CHAT_APP_PORT,
         log_config=None,   # ← don't let Uvicorn install its own handlers
         log_level=None,
+        timeout_keep_alive=45
     )
