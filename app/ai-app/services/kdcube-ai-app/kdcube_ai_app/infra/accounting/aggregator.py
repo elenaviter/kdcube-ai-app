@@ -287,6 +287,22 @@ class AccountingAggregator:
         hourly_user_ids: Dict[int, Set[str]] = {}
         hourly_counts: Dict[int, int] = {}
 
+        # Daily accumulator
+        total_daily = _new_usage_acc()
+        rollup_daily: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+        user_ids_daily: Set[str] = set()
+        event_count_daily = 0
+
+        # Per-user daily
+        user_totals: Dict[str, Dict[str, Any]] = {}
+        user_rollups: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        user_event_counts: Dict[str, int] = {}
+
+        # Per-agent daily
+        agent_totals: Dict[str, Dict[str, Any]] = {}
+        agent_rollups: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        agent_event_counts: Dict[str, int] = {}
+
         for p in paths:
             try:
                 raw = await self.fs.read_text_a(p)
@@ -321,7 +337,43 @@ class AccountingAggregator:
 
             uid = ev.get("user_id") or (ev.get("context") or {}).get("user_id")
             if uid:
-                user_ids_daily.add(str(uid))
+                uid = str(uid)
+                user_ids_daily.add(uid)
+
+                # ---- per-user totals / rollups ----
+                if uid not in user_totals:
+                    user_totals[uid] = _new_usage_acc()
+                    user_rollups[uid] = {}
+                    user_event_counts[uid] = 0
+
+                _accumulate(user_totals[uid], usage)
+                user_event_counts[uid] += 1
+
+                if service:
+                    key = (service, provider, model)
+                    u_spent = user_rollups[uid].get(key)
+                    if not u_spent:
+                        u_spent = _spent_seed(service)
+                        user_rollups[uid][key] = u_spent
+                    _accumulate_compact(u_spent, usage, service)
+
+            # ---- per-agent totals / rollups ----
+            agent_name = self._extract_agent_name(ev)
+            if agent_name not in agent_totals:
+                agent_totals[agent_name] = _new_usage_acc()
+                agent_rollups[agent_name] = {}
+                agent_event_counts[agent_name] = 0
+
+            _accumulate(agent_totals[agent_name], usage)
+            agent_event_counts[agent_name] += 1
+
+            if service:
+                key = (service, provider, model)
+                a_spent = agent_rollups[agent_name].get(key)
+                if not a_spent:
+                    a_spent = _spent_seed(service)
+                    agent_rollups[agent_name][key] = a_spent
+                _accumulate_compact(a_spent, usage, service)
 
             # ------------ hourly ------------
             ts_raw = ev.get("timestamp") or ""
@@ -398,6 +450,75 @@ class AccountingAggregator:
             event_count_daily,
             daily_path,
         )
+        # --------- write PER-USER daily aggregates ---------
+        users_items = []
+        for uid in sorted(user_totals.keys()):
+            users_items.append(
+                {
+                    "user_id": uid,
+                    "event_count": int(user_event_counts.get(uid, 0)),
+                    "total": user_totals[uid],
+                    "rollup": self._rollup_to_list(user_rollups.get(uid, {})),
+                }
+            )
+
+        users_payload: Dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "level": daily_meta["level"],
+            "dimension": "user",
+            "year": daily_meta["year"],
+            "month": daily_meta["month"],
+            "day": daily_meta["day"],
+            "hour": None,
+            "bucket_start": daily_meta["bucket_start"],
+            "bucket_end": daily_meta["bucket_end"],
+            "users": users_items,
+            "aggregated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+        users_path = f"{daily_folder}/users.json"
+        await self.fs.write_text_a(users_path, json.dumps(users_payload, ensure_ascii=False))
+        logger.info(
+            "[aggregate_daily_for_project] Wrote per-user aggregates (%d users) into %s",
+            len(users_items),
+            users_path,
+        )
+
+        # --------- write PER-AGENT daily aggregates ---------
+        agents_items = []
+        for agent_name in sorted(agent_totals.keys()):
+            agents_items.append(
+                {
+                    "agent_name": agent_name,
+                    "event_count": int(agent_event_counts.get(agent_name, 0)),
+                    "total": agent_totals[agent_name],
+                    "rollup": self._rollup_to_list(agent_rollups.get(agent_name, {})),
+                }
+            )
+
+        agents_payload: Dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "project_id": project_id,
+            "level": daily_meta["level"],
+            "dimension": "agent",
+            "year": daily_meta["year"],
+            "month": daily_meta["month"],
+            "day": daily_meta["day"],
+            "hour": None,
+            "bucket_start": daily_meta["bucket_start"],
+            "bucket_end": daily_meta["bucket_end"],
+            "agents": agents_items,
+            "aggregated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+        agents_path = f"{daily_folder}/agents.json"
+        await self.fs.write_text_a(agents_path, json.dumps(agents_payload, ensure_ascii=False))
+        logger.info(
+            "[aggregate_daily_for_project] Wrote per-agent aggregates (%d agents) into %s",
+            len(agents_items),
+            agents_path,
+        )
 
         # --------- write HOURLY aggregates ---------
         for hour, total_hour in sorted(hourly_totals.items()):
@@ -461,20 +582,26 @@ class AccountingAggregator:
                 f"{self.agg_base}/{tenant_id}/{project_id}/"
                 f"accounting/daily/{cur.year:04d}/{cur.month:02d}/{cur.day:02d}"
             )
-            agg_path = f"{daily_folder}/total.json"
+            total_path = f"{daily_folder}/total.json"
+            users_path = f"{daily_folder}/users.json"
+            agents_path = f"{daily_folder}/agents.json"
 
             if skip_existing:
                 try:
-                    if await self.fs.exists_a(agg_path):
-                        logger.info(
-                            "[aggregate_daily_range_for_project] Skipping %s (already exists)",
-                            agg_path,
-                        )
-                        cur += timedelta(days=1)
-                        continue
+                    total_exists = await self.fs.exists_a(total_path)
+                    users_exists = await self.fs.exists_a(users_path)
+                    agents_exists = await self.fs.exists_a(agents_path)
                 except Exception:
-                    # If exists() fails, we'll just try to re-write
-                    pass
+                    # If exists() fails for some path, treat as missing so we recompute
+                    total_exists = users_exists = agents_exists = False
+
+                if total_exists and users_exists and agents_exists:
+                    logger.info(
+                        "[aggregate_daily_range_for_project] Skipping %s (all daily aggregates present)",
+                        daily_folder,
+                    )
+                    cur += timedelta(days=1)
+                    continue
 
             await self.aggregate_daily_for_project(
                 tenant_id=tenant_id,
@@ -487,22 +614,31 @@ class AccountingAggregator:
     # Monthly from daily
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # Monthly from daily
+    # -------------------------------------------------------------------------
+
     async def aggregate_monthly_from_daily(
-        self,
-        *,
-        tenant_id: str,
-        project_id: str,
-        year: int,
-        month: int,
-        require_full_coverage: bool = False,
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            year: int,
+            month: int,
+            require_full_coverage: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Aggregate all available daily buckets in a month into a single monthly bucket.
 
         Reads:
           analytics/<tenant>/<project>/accounting/daily/<YYYY>/<MM>/<DD>/total.json
+          analytics/<tenant>/<project>/accounting/daily/<YYYY>/<MM>/<DD>/users.json
+          analytics/<tenant>/<project>/accounting/daily/<YYYY>/<MM>/<DD>/agents.json
+
         Writes:
           analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/total.json
+          analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/users.json
+          analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/agents.json
         """
         from calendar import monthrange
 
@@ -513,6 +649,16 @@ class AccountingAggregator:
         event_count = 0
         used_days = 0
         missing_days = 0
+
+        # per-user monthly
+        per_user_totals: Dict[str, Dict[str, Any]] = {}
+        per_user_rollups: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        per_user_events: Dict[str, int] = {}
+
+        # per-agent monthly
+        per_agent_totals: Dict[str, Dict[str, Any]] = {}
+        per_agent_rollups: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        per_agent_events: Dict[str, int] = {}
 
         for day in range(1, ndays + 1):
             folder = (
@@ -555,6 +701,88 @@ class AccountingAggregator:
             for uid in payload.get("user_ids", []):
                 if uid is not None:
                     user_ids.add(str(uid))
+
+            # --------- per-user monthly from daily/users.json ---------
+            users_path = f"{folder}/users.json"
+            try:
+                if await self.fs.exists_a(users_path):
+                    raw_users = await self.fs.read_text_a(users_path)
+                    users_payload = json.loads(raw_users)
+
+                    for item in users_payload.get("users", []):
+                        uid = item.get("user_id")
+                        if not uid:
+                            continue
+                        uid = str(uid)
+
+                        if uid not in per_user_totals:
+                            per_user_totals[uid] = _new_usage_acc()
+                            per_user_rollups[uid] = {}
+                            per_user_events[uid] = 0
+
+                        tot = item.get("total") or {}
+                        _accumulate(per_user_totals[uid], tot)
+                        per_user_events[uid] += int(item.get("event_count") or 0)
+
+                        for r in item.get("rollup", []):
+                            svc = r.get("service")
+                            prov = r.get("provider") or ""
+                            mdl = r.get("model") or ""
+                            spent = r.get("spent") or {}
+                            key = (svc, prov, mdl)
+
+                            existing = per_user_rollups[uid].get(key)
+                            if not existing:
+                                existing = _spent_seed(svc or "")
+                                per_user_rollups[uid][key] = existing
+
+                            for k, v in spent.items():
+                                existing[k] = int(existing.get(k, 0)) + int(v or 0)
+            except Exception:
+                logger.debug(
+                    "[aggregate_monthly_from_daily] Failed to read %s", users_path, exc_info=True
+                )
+
+            # --------- per-agent monthly from daily/agents.json ---------
+            agents_path = f"{folder}/agents.json"
+            try:
+                if await self.fs.exists_a(agents_path):
+                    raw_agents = await self.fs.read_text_a(agents_path)
+                    agents_payload = json.loads(raw_agents)
+
+                    for item in agents_payload.get("agents", []):
+                        agent_name = item.get("agent_name")
+                        if not agent_name:
+                            continue
+                        agent_name = str(agent_name)
+
+                        if agent_name not in per_agent_totals:
+                            per_agent_totals[agent_name] = _new_usage_acc()
+                            per_agent_rollups[agent_name] = {}
+                            per_agent_events[agent_name] = 0
+
+                        tot = item.get("total") or {}
+                        _accumulate(per_agent_totals[agent_name], tot)
+                        per_agent_events[agent_name] += int(item.get("event_count") or 0)
+
+                        for r in item.get("rollup", []):
+                            svc = r.get("service")
+                            prov = r.get("provider") or ""
+                            mdl = r.get("model") or ""
+                            spent = r.get("spent") or {}
+                            key = (svc, prov, mdl)
+
+                            existing = per_agent_rollups[agent_name].get(key)
+                            if not existing:
+                                existing = _spent_seed(svc or "")
+                                per_agent_rollups[agent_name][key] = existing
+
+                            for k, v in spent.items():
+                                existing[k] = int(existing.get(k, 0)) + int(v or 0)
+            except Exception:
+                logger.debug(
+                    "[aggregate_monthly_from_daily] Failed to read %s", agents_path, exc_info=True
+                )
 
         if used_days == 0:
             logger.info(
@@ -612,27 +840,115 @@ class AccountingAggregator:
             missing_days,
             path,
         )
+
+        # --------- write per-user monthly aggregates ---------
+        if per_user_totals:
+            users_items = []
+            for uid in sorted(per_user_totals.keys()):
+                users_items.append(
+                    {
+                        "user_id": uid,
+                        "event_count": int(per_user_events.get(uid, 0)),
+                        "total": per_user_totals[uid],
+                        "rollup": self._rollup_to_list(per_user_rollups.get(uid, {})),
+                    }
+                )
+
+            users_payload: Dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "level": meta["level"],
+                "dimension": "user",
+                "year": meta["year"],
+                "month": meta["month"],
+                "day": None,
+                "hour": None,
+                "bucket_start": meta["bucket_start"],
+                "bucket_end": meta["bucket_end"],
+                "days_covered": used_days,
+                "days_missing": missing_days,
+                "days_in_month": meta["days_in_month"],
+                "users": users_items,
+                "aggregated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+            users_path_out = f"{folder}/users.json"
+            await self.fs.write_text_a(users_path_out, json.dumps(users_payload, ensure_ascii=False))
+            logger.info(
+                "[aggregate_monthly_from_daily] Wrote per-user monthly aggregates (%d users) into %s",
+                len(users_items),
+                users_path_out,
+            )
+
+        # --------- write per-agent monthly aggregates ---------
+        if per_agent_totals:
+            agents_items = []
+            for agent_name in sorted(per_agent_totals.keys()):
+                agents_items.append(
+                    {
+                        "agent_name": agent_name,
+                        "event_count": int(per_agent_events.get(agent_name, 0)),
+                        "total": per_agent_totals[agent_name],
+                        "rollup": self._rollup_to_list(per_agent_rollups.get(agent_name, {})),
+                    }
+                )
+
+            agents_payload: Dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "level": meta["level"],
+                "dimension": "agent",
+                "year": meta["year"],
+                "month": meta["month"],
+                "day": None,
+                "hour": None,
+                "bucket_start": meta["bucket_start"],
+                "bucket_end": meta["bucket_end"],
+                "days_covered": used_days,
+                "days_missing": missing_days,
+                "days_in_month": meta["days_in_month"],
+                "agents": agents_items,
+                "aggregated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+            agents_path_out = f"{folder}/agents.json"
+            await self.fs.write_text_a(agents_path_out, json.dumps(agents_payload, ensure_ascii=False))
+            logger.info(
+                "[aggregate_monthly_from_daily] Wrote per-agent monthly aggregates (%d agents) into %s",
+                len(agents_items),
+                agents_path_out,
+            )
+
         return payload
 
     # -------------------------------------------------------------------------
     # Yearly from monthly
     # -------------------------------------------------------------------------
 
+    # -------------------------------------------------------------------------
+    # Yearly from monthly
+    # -------------------------------------------------------------------------
+
     async def aggregate_yearly_from_monthly(
-        self,
-        *,
-        tenant_id: str,
-        project_id: str,
-        year: int,
-        require_full_coverage: bool = False,
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            year: int,
+            require_full_coverage: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Aggregate all available monthly buckets in a year into a yearly bucket.
 
         Reads:
           analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/total.json
+          analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/users.json
+          analytics/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/agents.json
+
         Writes:
           analytics/<tenant>/<project>/accounting/yearly/<YYYY>/total.json
+          analytics/<tenant>/<project>/accounting/yearly/<YYYY>/users.json
+          analytics/<tenant>/<project>/accounting/yearly/<YYYY>/agents.json
         """
         total = _new_usage_acc()
         rollup_map: Dict[Tuple[str, str, str], Dict[str, int]] = {}
@@ -640,6 +956,16 @@ class AccountingAggregator:
         event_count = 0
         used_months = 0
         missing_months = 0
+
+        # per-user yearly
+        per_user_totals: Dict[str, Dict[str, Any]] = {}
+        per_user_rollups: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        per_user_events: Dict[str, int] = {}
+
+        # per-agent yearly
+        per_agent_totals: Dict[str, Dict[str, Any]] = {}
+        per_agent_rollups: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        per_agent_events: Dict[str, int] = {}
 
         for month in range(1, 13):
             folder = (
@@ -682,6 +1008,88 @@ class AccountingAggregator:
             for uid in payload.get("user_ids", []):
                 if uid is not None:
                     user_ids.add(str(uid))
+
+            # --------- per-user yearly from monthly/users.json ---------
+            users_path = f"{folder}/users.json"
+            try:
+                if await self.fs.exists_a(users_path):
+                    raw_users = await self.fs.read_text_a(users_path)
+                    users_payload = json.loads(raw_users)
+
+                    for item in users_payload.get("users", []):
+                        uid = item.get("user_id")
+                        if not uid:
+                            continue
+                        uid = str(uid)
+
+                        if uid not in per_user_totals:
+                            per_user_totals[uid] = _new_usage_acc()
+                            per_user_rollups[uid] = {}
+                            per_user_events[uid] = 0
+
+                        tot = item.get("total") or {}
+                        _accumulate(per_user_totals[uid], tot)
+                        per_user_events[uid] += int(item.get("event_count") or 0)
+
+                        for r in item.get("rollup", []):
+                            svc = r.get("service")
+                            prov = r.get("provider") or ""
+                            mdl = r.get("model") or ""
+                            spent = r.get("spent") or {}
+                            key = (svc, prov, mdl)
+
+                            existing = per_user_rollups[uid].get(key)
+                            if not existing:
+                                existing = _spent_seed(svc or "")
+                                per_user_rollups[uid][key] = existing
+
+                            for k, v in spent.items():
+                                existing[k] = int(existing.get(k, 0)) + int(v or 0)
+            except Exception:
+                logger.debug(
+                    "[aggregate_yearly_from_monthly] Failed to read %s", users_path, exc_info=True
+                )
+
+            # --------- per-agent yearly from monthly/agents.json ---------
+            agents_path = f"{folder}/agents.json"
+            try:
+                if await self.fs.exists_a(agents_path):
+                    raw_agents = await self.fs.read_text_a(agents_path)
+                    agents_payload = json.loads(raw_agents)
+
+                    for item in agents_payload.get("agents", []):
+                        agent_name = item.get("agent_name")
+                        if not agent_name:
+                            continue
+                        agent_name = str(agent_name)
+
+                        if agent_name not in per_agent_totals:
+                            per_agent_totals[agent_name] = _new_usage_acc()
+                            per_agent_rollups[agent_name] = {}
+                            per_agent_events[agent_name] = 0
+
+                        tot = item.get("total") or {}
+                        _accumulate(per_agent_totals[agent_name], tot)
+                        per_agent_events[agent_name] += int(item.get("event_count") or 0)
+
+                        for r in item.get("rollup", []):
+                            svc = r.get("service")
+                            prov = r.get("provider") or ""
+                            mdl = r.get("model") or ""
+                            spent = r.get("spent") or {}
+                            key = (svc, prov, mdl)
+
+                            existing = per_agent_rollups[agent_name].get(key)
+                            if not existing:
+                                existing = _spent_seed(svc or "")
+                                per_agent_rollups[agent_name][key] = existing
+
+                            for k, v in spent.items():
+                                existing[k] = int(existing.get(k, 0)) + int(v or 0)
+            except Exception:
+                logger.debug(
+                    "[aggregate_yearly_from_monthly] Failed to read %s", agents_path, exc_info=True
+                )
 
         if used_months == 0:
             logger.info(
@@ -736,7 +1144,98 @@ class AccountingAggregator:
             missing_months,
             path,
         )
+
+        # --------- write per-user yearly aggregates ---------
+        if per_user_totals:
+            users_items = []
+            for uid in sorted(per_user_totals.keys()):
+                users_items.append(
+                    {
+                        "user_id": uid,
+                        "event_count": int(per_user_events.get(uid, 0)),
+                        "total": per_user_totals[uid],
+                        "rollup": self._rollup_to_list(per_user_rollups.get(uid, {})),
+                    }
+                )
+
+            users_payload: Dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "level": meta["level"],
+                "dimension": "user",
+                "year": meta["year"],
+                "month": None,
+                "day": None,
+                "hour": None,
+                "bucket_start": meta["bucket_start"],
+                "bucket_end": meta["bucket_end"],
+                "months_covered": used_months,
+                "months_missing": missing_months,
+                "users": users_items,
+                "aggregated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+            users_path_out = f"{folder}/users.json"
+            await self.fs.write_text_a(users_path_out, json.dumps(users_payload, ensure_ascii=False))
+            logger.info(
+                "[aggregate_yearly_from_monthly] Wrote per-user yearly aggregates (%d users) into %s",
+                len(users_items),
+                users_path_out,
+            )
+
+        # --------- write per-agent yearly aggregates ---------
+        if per_agent_totals:
+            agents_items = []
+            for agent_name in sorted(per_agent_totals.keys()):
+                agents_items.append(
+                    {
+                        "agent_name": agent_name,
+                        "event_count": int(per_agent_events.get(agent_name, 0)),
+                        "total": per_agent_totals[agent_name],
+                        "rollup": self._rollup_to_list(per_agent_rollups.get(agent_name, {})),
+                    }
+                )
+
+            agents_payload: Dict[str, Any] = {
+                "tenant_id": tenant_id,
+                "project_id": project_id,
+                "level": meta["level"],
+                "dimension": "agent",
+                "year": meta["year"],
+                "month": None,
+                "day": None,
+                "hour": None,
+                "bucket_start": meta["bucket_start"],
+                "bucket_end": meta["bucket_end"],
+                "months_covered": used_months,
+                "months_missing": missing_months,
+                "agents": agents_items,
+                "aggregated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+
+            agents_path_out = f"{folder}/agents.json"
+            await self.fs.write_text_a(agents_path_out, json.dumps(agents_payload, ensure_ascii=False))
+            logger.info(
+                "[aggregate_yearly_from_monthly] Wrote per-agent yearly aggregates (%d agents) into %s",
+                len(agents_items),
+                agents_path_out,
+            )
+
         return payload
+
+
+    @staticmethod
+    def _extract_agent_name(ev: Dict[str, Any]) -> str:
+        """Best-effort agent name extraction, aligned with calculator logic."""
+        ctx = ev.get("context") or {}
+        metadata = ev.get("metadata") or {}
+        agent = (
+                metadata.get("agent")
+                or ctx.get("agent")
+                or ev.get("agent")
+                or ev.get("agent_name")
+        )
+        return str(agent) if agent is not None else "unknown"
 
 
 # -------------------------------------------------------------------------

@@ -908,9 +908,11 @@ class AccountingCalculator:
                 seg_rollup = await self.usage_rollup_compact(seg_query)
                 _merge_rollup_items(seg_rollup)
 
-        # Build final rollup list
+        # Build final rollup list (optionally filter by service_types)
         rollup_list: List[Dict[str, Any]] = []
         for (service, provider, model), spent in sorted(rollup_map.items()):
+            if service_types and service not in service_types:
+                continue
             rollup_list.append(
                 {
                     "service": service,
@@ -921,13 +923,15 @@ class AccountingCalculator:
             )
 
         return {
+            # NOTE: 'total' and 'event_count' are still computed across all service types,
+            # because aggregates don't carry per-service totals. Only 'rollup' is filtered.
             "total": total,
             "rollup": rollup_list,
             "user_count": len(user_ids),
             "event_count": event_count,
         }
 
-    # ---------- NEW: User-level queries ----------
+    # ---------- User-level queries ----------
 
     async def usage_by_user(
             self,
@@ -941,17 +945,34 @@ class AccountingCalculator:
             hard_file_limit: Optional[int] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Query (1): Spendings per user in given timeframe.
+        Spendings per user in given timeframe.
 
-        Returns:
-          {
-            "user-123": {"total": {...}, "rollup": [...]},
-            "user-456": {"total": {...}, "rollup": [...]},
-            ...
-          }
-
-        OPTIMIZED: Groups results by user without pre-filtering (must scan all users).
+        When possible, uses daily per-user aggregates; otherwise falls back
+        to raw scan.
         """
+        # use_aggregates = (
+        #     app_bundle_id is None
+        #     and (not service_types or len(service_types) == 0)
+        #     and hard_file_limit is None
+        # )
+        use_aggregates = True
+
+        if use_aggregates:
+            try:
+                agg_res = await self._usage_by_user_with_aggregates(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+            except Exception:
+                logger.exception("[usage_by_user] aggregate path failed")
+                agg_res = None
+
+            if agg_res is not None:
+                return agg_res
+
+        # ----- fallback: existing raw-scan implementation -----
         query = AccountingQuery(
             tenant_id=tenant_id,
             project_id=project_id,
@@ -972,7 +993,7 @@ class AccountingCalculator:
             if user_id:
                 by_user[user_id] = {"total": usage}
 
-        # Add compact rollup per user
+        # Add compact rollup per user (raw)
         for user_id in list(by_user.keys()):
             user_query = AccountingQuery(
                 tenant_id=tenant_id,
@@ -1018,13 +1039,14 @@ class AccountingCalculator:
             * raw-file scan for "gap" days.
         - Otherwise falls back to pure raw scan.
         """
-        # Fast path: use aggregates when query is truly global
-        use_aggregates = (
-            app_bundle_id is None
-            and (not service_types or len(service_types) == 0)
-            and hard_file_limit is None
-        )
-
+        # Fast path: use aggregates when query is global-ish.
+        # NOTE: service_types is now allowed; we will filter the final rollup
+        # in memory based on service_types, while totals remain global.
+        # use_aggregates = (
+        #         app_bundle_id is None
+        #         and hard_file_limit is None
+        # )
+        use_aggregates = True
         if use_aggregates:
             try:
                 agg_res = await self._usage_all_users_with_aggregates(
@@ -1119,7 +1141,7 @@ class AccountingCalculator:
             "event_count": result.get("event_count", 0),
         }
 
-    # ---------- NEW: Agent-level queries ----------
+    # ---------- Agent-level queries ----------
 
     async def usage_by_agent(
             self,
@@ -1136,17 +1158,41 @@ class AccountingCalculator:
             hard_file_limit: Optional[int] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Query: Spendings per agent in given timeframe/scope.
+        Spendings per agent in given timeframe/scope.
 
-        Returns:
-          {
-            "answer_generator": {"total": {...}, "rollup": [...]},
-            "solver.codegen": {"total": {...}, "rollup": [...]},
-            ...
-          }
-
-        HIGHLY OPTIMIZED: Uses prefix filtering when user_id/conversation_id/turn_id provided.
+        When called for a *global* scope (no user/conv/turn/app_bundle filters
+        and no service_types / hard_file_limit), uses precomputed per-agent
+        daily aggregates. Otherwise falls back to raw scan.
         """
+        global_scope = (
+            user_id is None
+            and conversation_id is None
+            and turn_id is None
+        )
+        # use_aggregates = (
+        #     global_scope
+        #     and app_bundle_id is None
+        #     and (not service_types or len(service_types) == 0)
+        #     and hard_file_limit is None
+        # )
+        use_aggregates = True
+
+        if use_aggregates:
+            try:
+                agg_res = await self._usage_by_agent_with_aggregates(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    date_from=date_from,
+                    date_to=date_to,
+                )
+            except Exception:
+                logger.exception("[usage_by_agent] aggregate path failed")
+                agg_res = None
+
+            if agg_res is not None:
+                return agg_res
+
+        # ----- fallback: existing raw-scan implementation -----
         query = AccountingQuery(
             tenant_id=tenant_id,
             project_id=project_id,
@@ -1232,6 +1278,340 @@ class AccountingCalculator:
             "rollup": rollup,
             "event_count": result.get("event_count", 0),
         }
+
+    async def _usage_by_user_with_aggregates(
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            date_from: str,
+            date_to: str,
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        """
+        Aggregate-aware implementation of usage_by_user.
+
+        Uses the *largest* available buckets that are fully covered
+        by the requested range:
+
+          yearly:  accounting/<tenant>/<project>/accounting/yearly/<YYYY>/users.json
+          monthly: accounting/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/users.json
+          daily:   accounting/<tenant>/<project>/accounting/daily/<YYYY>/<MM>/<DD>/users.json
+
+        Rules:
+        - If an entire calendar year lies inside [date_from, date_to] and
+          yearly/users.json exists → use it.
+        - Else, for each month fully inside the range, if monthly/users.json
+          exists → use it.
+        - Remaining partial months are resolved via daily/users.json.
+        - If no aggregate files at any level are found, returns None so the
+          caller can fall back to raw scan.
+        """
+        try:
+            df = _parse_iso_date(date_from)
+            dt = _parse_iso_date(date_to)
+        except Exception:
+            return None
+
+        if df > dt:
+            return None
+
+        from calendar import monthrange
+
+        per_user_totals: Dict[str, Dict[str, Any]] = {}
+        per_user_rollup: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        per_user_events: Dict[str, int] = {}
+
+        any_data = False
+
+        def _merge_user_item(item: Dict[str, Any]) -> None:
+            nonlocal any_data
+            uid = item.get("user_id")
+            if not uid:
+                return
+            uid = str(uid)
+            any_data = True
+
+            if uid not in per_user_totals:
+                per_user_totals[uid] = _new_usage_acc()
+                per_user_rollup[uid] = {}
+                per_user_events[uid] = 0
+
+            tot = item.get("total") or {}
+            _accumulate(per_user_totals[uid], tot)
+            per_user_events[uid] += int(item.get("event_count") or 0)
+
+            for r in item.get("rollup", []):
+                svc = r.get("service")
+                prov = r.get("provider") or ""
+                mdl = r.get("model") or ""
+                spent = r.get("spent") or {}
+                key = (svc, prov, mdl)
+
+                existing = per_user_rollup[uid].get(key)
+                if not existing:
+                    existing = _spent_seed(svc or "")
+                    per_user_rollup[uid][key] = existing
+
+                for k, v in spent.items():
+                    existing[k] = int(existing.get(k, 0)) + int(v or 0)
+
+        year = df.year
+        while year <= dt.year:
+            year_start = date(year, 1, 1)
+            year_end = date(year, 12, 31)
+
+            # ---- try yearly bucket if full year is inside range ----
+            if df <= year_start and dt >= year_end:
+                y_folder = (
+                    f"{self.agg_base}/{tenant_id}/{project_id}/"
+                    f"accounting/yearly/{year:04d}"
+                )
+                y_path = f"{y_folder}/users.json"
+                try:
+                    if await self.fs.exists_a(y_path):
+                        raw = await self.fs.read_text_a(y_path)
+                        payload = json.loads(raw)
+                        for item in payload.get("users", []):
+                            _merge_user_item(item)
+                        year += 1
+                        continue  # whole year covered, no need to descend to months
+                except Exception:
+                    # fall back to months/days for this year
+                    pass
+
+            # ---- per-month handling inside this year ----
+            month_start_idx = 1 if year > df.year else df.month
+            month_end_idx = 12 if year < dt.year else dt.month
+
+            for month in range(month_start_idx, month_end_idx + 1):
+                m_start = date(year, month, 1)
+                _, last_day = monthrange(year, month)
+                m_end = date(year, month, last_day)
+
+                # full month inside range -> try monthly/users.json
+                if df <= m_start and dt >= m_end:
+                    m_folder = (
+                        f"{self.agg_base}/{tenant_id}/{project_id}/"
+                        f"accounting/monthly/{year:04d}/{month:02d}"
+                    )
+                    m_path = f"{m_folder}/users.json"
+                    try:
+                        if await self.fs.exists_a(m_path):
+                            raw = await self.fs.read_text_a(m_path)
+                            payload = json.loads(raw)
+                            for item in payload.get("users", []):
+                                _merge_user_item(item)
+                            continue  # month fully covered, skip to next month
+                    except Exception:
+                        # fall through to daily
+                        pass
+
+                # partial month or missing monthly/users.json: fall back to daily
+                d0 = max(df, m_start)
+                d1 = min(dt, m_end)
+                cur = d0
+                while cur <= d1:
+                    d_folder = (
+                        f"{self.agg_base}/{tenant_id}/{project_id}/"
+                        f"accounting/daily/{cur.year:04d}/{cur.month:02d}/{cur.day:02d}"
+                    )
+                    d_path = f"{d_folder}/users.json"
+                    try:
+                        if await self.fs.exists_a(d_path):
+                            raw = await self.fs.read_text_a(d_path)
+                            payload = json.loads(raw)
+                            for item in payload.get("users", []):
+                                _merge_user_item(item)
+                    except Exception:
+                        # if a day is missing, we just skip it
+                        pass
+                    cur += timedelta(days=1)
+
+            year += 1
+
+        if not any_data:
+            # Let caller fall back to raw scan
+            return None
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for uid in per_user_totals.keys():
+            breakdown = []
+            for (service, provider, model), spent in sorted(per_user_rollup[uid].items()):
+                breakdown.append(
+                    {
+                        "service": service,
+                        "provider": provider or None,
+                        "model": model or None,
+                        "spent": {k: int(v) for k, v in spent.items()},
+                    }
+                )
+            result[uid] = {
+                "total": per_user_totals[uid],
+                "rollup": breakdown,
+                "event_count": per_user_events.get(uid, 0),
+            }
+
+        return result
+
+    async def _usage_by_agent_with_aggregates(
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            date_from: str,
+            date_to: str,
+    ) -> Optional[Dict[str, Dict[str, Any]]]:
+        """
+        Aggregate-aware implementation of usage_by_agent.
+
+        Uses the largest available buckets:
+
+          yearly:  accounting/<tenant>/<project>/accounting/yearly/<YYYY>/agents.json
+          monthly: accounting/<tenant>/<project>/accounting/monthly/<YYYY>/<MM>/agents.json
+          daily:   accounting/<tenant>/<project>/accounting/daily/<YYYY>/<MM>/<DD>/agents.json
+        """
+        try:
+            df = _parse_iso_date(date_from)
+            dt = _parse_iso_date(date_to)
+        except Exception:
+            return None
+
+        if df > dt:
+            return None
+
+        from calendar import monthrange
+
+        per_agent_totals: Dict[str, Dict[str, Any]] = {}
+        per_agent_rollup: Dict[str, Dict[Tuple[str, str, str], Dict[str, int]]] = {}
+        per_agent_events: Dict[str, int] = {}
+
+        any_data = False
+
+        def _merge_agent_item(item: Dict[str, Any]) -> None:
+            nonlocal any_data
+            agent_name = item.get("agent_name")
+            if not agent_name:
+                return
+            agent = str(agent_name)
+            any_data = True
+
+            if agent not in per_agent_totals:
+                per_agent_totals[agent] = _new_usage_acc()
+                per_agent_rollup[agent] = {}
+                per_agent_events[agent] = 0
+
+            tot = item.get("total") or {}
+            _accumulate(per_agent_totals[agent], tot)
+            per_agent_events[agent] += int(item.get("event_count") or 0)
+
+            for r in item.get("rollup", []):
+                svc = r.get("service")
+                prov = r.get("provider") or ""
+                mdl = r.get("model") or ""
+                spent = r.get("spent") or {}
+                key = (svc, prov, mdl)
+
+                existing = per_agent_rollup[agent].get(key)
+                if not existing:
+                    existing = _spent_seed(svc or "")
+                    per_agent_rollup[agent][key] = existing
+
+                for k, v in spent.items():
+                    existing[k] = int(existing.get(k, 0)) + int(v or 0)
+
+        year = df.year
+        while year <= dt.year:
+            year_start = date(year, 1, 1)
+            year_end = date(year, 12, 31)
+
+            # ---- try yearly bucket ----
+            if df <= year_start and dt >= year_end:
+                y_folder = (
+                    f"{self.agg_base}/{tenant_id}/{project_id}/"
+                    f"accounting/yearly/{year:04d}"
+                )
+                y_path = f"{y_folder}/agents.json"
+                try:
+                    if await self.fs.exists_a(y_path):
+                        raw = await self.fs.read_text_a(y_path)
+                        payload = json.loads(raw)
+                        for item in payload.get("agents", []):
+                            _merge_agent_item(item)
+                        year += 1
+                        continue
+                except Exception:
+                    pass
+
+            # ---- per-month inside this year ----
+            month_start_idx = 1 if year > df.year else df.month
+            month_end_idx = 12 if year < dt.year else dt.month
+
+            for month in range(month_start_idx, month_end_idx + 1):
+                m_start = date(year, month, 1)
+                _, last_day = monthrange(year, month)
+                m_end = date(year, month, last_day)
+
+                # full month inside range -> try monthly
+                if df <= m_start and dt >= m_end:
+                    m_folder = (
+                        f"{self.agg_base}/{tenant_id}/{project_id}/"
+                        f"accounting/monthly/{year:04d}/{month:02d}"
+                    )
+                    m_path = f"{m_folder}/agents.json"
+                    try:
+                        if await self.fs.exists_a(m_path):
+                            raw = await self.fs.read_text_a(m_path)
+                            payload = json.loads(raw)
+                            for item in payload.get("agents", []):
+                                _merge_agent_item(item)
+                            continue
+                    except Exception:
+                        pass
+
+                # otherwise fall back to daily
+                d0 = max(df, m_start)
+                d1 = min(dt, m_end)
+                cur = d0
+                while cur <= d1:
+                    d_folder = (
+                        f"{self.agg_base}/{tenant_id}/{project_id}/"
+                        f"accounting/daily/{cur.year:04d}/{cur.month:02d}/{cur.day:02d}"
+                    )
+                    d_path = f"{d_folder}/agents.json"
+                    try:
+                        if await self.fs.exists_a(d_path):
+                            raw = await self.fs.read_text_a(d_path)
+                            payload = json.loads(raw)
+                            for item in payload.get("agents", []):
+                                _merge_agent_item(item)
+                    except Exception:
+                        pass
+                    cur += timedelta(days=1)
+
+            year += 1
+
+        if not any_data:
+            return None
+
+        result: Dict[str, Dict[str, Any]] = {}
+        for agent_name in per_agent_totals.keys():
+            breakdown = []
+            for (service, provider, model), spent in sorted(per_agent_rollup[agent_name].items()):
+                breakdown.append(
+                    {
+                        "service": service,
+                        "provider": provider or None,
+                        "model": model or None,
+                        "spent": {k: int(v) for k, v in spent.items()},
+                    }
+                )
+            result[agent_name] = {
+                "total": per_agent_totals[agent_name],
+                "rollup": breakdown,
+                "event_count": per_agent_events.get(agent_name, 0),
+            }
+
+        return result
 
 
 # -----------------------------
