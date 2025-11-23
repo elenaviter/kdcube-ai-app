@@ -38,6 +38,7 @@ REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
 REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
 REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
 REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0"
+os.environ["REDIS_URL"] = REDIS_URL
 
 TENANT_ID = os.environ.get("TENANT_ID", "home")
 INSTANCE_ID = os.environ.get("INSTANCE_ID", "home-instance-1")
