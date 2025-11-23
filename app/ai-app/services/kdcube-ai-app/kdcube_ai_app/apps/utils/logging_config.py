@@ -4,6 +4,9 @@
 # logging_config.py
 import logging
 import os
+from logging.handlers import RotatingFileHandler
+from datetime import datetime
+from pathlib import Path
 
 
 def _to_level(name: str, default: int) -> int:
@@ -12,17 +15,72 @@ def _to_level(name: str, default: int) -> int:
     except Exception:
         return default
 
+
 def configure_logging():
-    # --- Root config ---
+    # --- Global settings from env ---
     log_level_name = os.getenv("LOG_LEVEL", "INFO").upper()
-    log_format = os.getenv("LOG_FORMAT",
-                           "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    log_format = os.getenv(
+        "LOG_FORMAT",
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
     level = _to_level(log_level_name, logging.INFO)
 
-    # Make root the single source of truth
-    logging.basicConfig(level=level, format=log_format, force=True)
+    # ---- Console handler ----
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(logging.Formatter(log_format))
 
-    # Optional: route warnings.warn(...) into logging
+    # ---- File handler with rotation ----
+    log_dir = Path(os.getenv("LOG_DIR", "logs"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    file_prefix = os.getenv("LOG_FILE_PREFIX", "kdcube")
+    base_log_path = log_dir / f"{file_prefix}.log"
+
+    max_mb = int(os.getenv("LOG_MAX_MB", "20"))          # 20 MB default
+    backup_count = int(os.getenv("LOG_BACKUP_COUNT", "10"))
+
+    file_handler = RotatingFileHandler(
+        base_log_path,
+        maxBytes=max_mb * 1024 * 1024,
+        backupCount=backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(level)
+    file_handler.setFormatter(logging.Formatter(log_format))
+
+    # Rename rotated files to include timestamp instead of ".1", ".2", ...
+    def _namer(default_name: str) -> str:
+        """
+        default_name is like '/path/to/chat.log.1'
+        We want '/path/to/chat-YYYYMMDD-HHMMSS.log'
+        """
+        p = Path(default_name)
+
+        # Strip the trailing numeric suffix (.1, .2, ...) first
+        # p.name == 'chat.log.1'
+        root, _idx = p.name.rsplit(".", 1)        # 'chat.log', '1'
+        root_base, root_ext = os.path.splitext(root)  # 'chat', '.log'
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        new_name = f"{root_base}-{ts}{root_ext}"
+        return str(p.with_name(new_name))
+
+    file_handler.namer = _namer  # let RotatingFileHandler call this on rollover
+
+    # ---- Root logger as single source of truth ----
+    root = logging.getLogger()
+    root.setLevel(level)
+
+    # Clear any existing handlers (important when reloading / in tests)
+    for h in list(root.handlers):
+        root.removeHandler(h)
+
+    # Install our handlers
+    root.addHandler(console_handler)
+    root.addHandler(file_handler)
+
+    # Route warnings.warn(...) into logging
     logging.captureWarnings(True)
 
     # --- Normalize noisy / framework loggers ---

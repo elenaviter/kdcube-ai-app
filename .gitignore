@@ -190,3 +190,4 @@ app/ai-app/services/scripts/
 app/venvs
 app/ops
 app/ai-app/services/klein/
+logs/
