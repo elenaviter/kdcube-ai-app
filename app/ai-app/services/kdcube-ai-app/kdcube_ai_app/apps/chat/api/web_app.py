@@ -21,13 +21,13 @@ from pydantic import BaseModel
 
 from dotenv import load_dotenv, find_dotenv
 
-from kdcube_ai_app.infra.rendering.link_preview import close_shared_link_preview
-from kdcube_ai_app.infra.rendering.shared_browser import close_shared_browser
-
 load_dotenv(find_dotenv())
 
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
+
+from kdcube_ai_app.infra.rendering.link_preview import close_shared_link_preview
+from kdcube_ai_app.infra.rendering.shared_browser import close_shared_browser
 
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator
 from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
@@ -178,29 +178,29 @@ async def lifespan(app: FastAPI):
     # ================================
 
     # Create modular Socket.IO chat handler. Share communicator & queue manager.
-    # try:
-    #     socketio_handler = create_socketio_chat_handler(
-    #         app=app,
-    #         gateway_adapter=app.state.gateway_adapter,
-    #         chat_queue_manager=app.state.chat_queue_manager,
-    #         allowed_origins=allowed_origins,
-    #         instance_id=INSTANCE_ID,
-    #         redis_url=REDIS_URL,
-    #         chat_comm=app.state.chat_comm,
-    #     )
-    #
-    #     # Mount Socket.IO app if available
-    #     socket_asgi_app = socketio_handler.get_asgi_app()
-    #     if socket_asgi_app:
-    #         app.mount("/socket.io", socket_asgi_app)
-    #         app.state.socketio_handler = socketio_handler
-    #         logger.info("Socket.IO chat handler mounted successfully")
-    #     else:
-    #         logger.warning("Socket.IO not available - chat handler disabled")
-    #
-    # except Exception as e:
-    #     logger.error(f"Failed to setup Socket.IO chat handler: {e}")
-    #     app.state.socketio_handler = None
+    try:
+        socketio_handler = create_socketio_chat_handler(
+            app=app,
+            gateway_adapter=app.state.gateway_adapter,
+            chat_queue_manager=app.state.chat_queue_manager,
+            allowed_origins=allowed_origins,
+            instance_id=INSTANCE_ID,
+            redis_url=REDIS_URL,
+            chat_comm=app.state.chat_comm,
+        )
+
+        # Mount Socket.IO app if available
+        socket_asgi_app = socketio_handler.get_asgi_app()
+        if socket_asgi_app:
+            app.mount("/socket.io", socket_asgi_app)
+            app.state.socketio_handler = socketio_handler
+            logger.info("Socket.IO chat handler mounted successfully")
+        else:
+            logger.warning("Socket.IO not available - chat handler disabled")
+
+    except Exception as e:
+        logger.error(f"Failed to setup Socket.IO chat handler: {e}")
+        app.state.socketio_handler = None
 
     app.state.sse_hub = SSEHub(app.state.chat_comm)
 
@@ -250,7 +250,7 @@ async def lifespan(app: FastAPI):
             from kdcube_ai_app.infra.rendering.link_preview import get_shared_link_preview
             app.state.link_preview_instance = await get_shared_link_preview()
 
-            # await socketio_handler.start() # communicator subscribes internally
+            await socketio_handler.start() # communicator subscribes internally
         except Exception as e:
             app.state.shared_browser_instance = None
             app.state.link_preview_instance = None
@@ -414,12 +414,6 @@ async def root():
         "available_models": list(MODEL_CONFIGS.keys()),
         "socketio_enabled": socketio_enabled,
         "endpoints": {
-            "/landing/health": "Health check",
-            "/landing/chat": "Legacy sync chat endpoint",
-            "/landing/models": "Get available models",
-            "/landing/test-embeddings": "Test custom embedding endpoint",
-            "/landing/workflow-info": "Get workflow information",
-            "/socket.io": "Socket.IO endpoint for real-time chat" if socketio_enabled else "Socket.IO disabled"
         }
     }
 
@@ -721,5 +715,6 @@ if __name__ == "__main__":
         port=CHAT_APP_PORT,
         log_config=None,   # ← don't let Uvicorn install its own handlers
         log_level=None,
-        timeout_keep_alive=45
+        timeout_keep_alive=60*60, # TODO : DO NOT FORGET TO REMOVE THIS
+        # timeout_keep_alive=45
     )

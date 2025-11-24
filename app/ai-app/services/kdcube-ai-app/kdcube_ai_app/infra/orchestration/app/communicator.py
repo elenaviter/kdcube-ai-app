@@ -7,7 +7,7 @@ import json
 import logging
 import os
 import contextlib
-from typing import Callable, Iterable, Optional, Union, AsyncIterator, List
+from typing import Callable, Iterable, Optional, Union, AsyncIterator, List, Any
 
 import redis
 import redis.asyncio as aioredis
@@ -79,6 +79,9 @@ class ServiceCommunicator:
         self._listen_task: Optional["asyncio.Task"] = None
         self._subscribed_channels: List[str] = []
 
+        # Support multiple consumer callbacks
+        self._listeners: List[Callable[[dict], Any]] = []
+
     # ---------- channel helpers ----------
 
     def _fmt_channel(self, channel: str) -> str:
@@ -86,6 +89,17 @@ class ServiceCommunicator:
         if channel.startswith(self.orchestrator_identity + "."):
             return channel
         return f"{self.orchestrator_identity}.{channel}"
+
+    def add_listener(self, callback: Callable[[dict], Any]):
+        """Register a callback to receive each pubsub payload."""
+        if callback and callback not in self._listeners:
+            self._listeners.append(callback)
+
+    def remove_listener(self, callback: Callable[[dict], Any]):
+        """Unregister a callback."""
+        if not callback:
+            return
+        self._listeners = [cb for cb in self._listeners if cb is not callback]
 
     # ---------- publisher API (sync) ----------
 
@@ -258,6 +272,9 @@ class ServiceCommunicator:
         """
         import asyncio
 
+        if on_message is not None:
+            self.add_listener(on_message)
+
         if not self._pubsub:
             raise RuntimeError("Call subscribe() before start_listener().")
 
@@ -273,12 +290,15 @@ class ServiceCommunicator:
             )
             try:
                 async for payload in self.listen():
-                    try:
-                        res = on_message(payload)
-                        if asyncio.iscoroutine(res):
-                            await res
-                    except Exception as cb_err:
-                        logger.error(f"[ServiceCommunicator] on_message error: {cb_err}")
+                    # fan-out payload to all listeners
+                    listeners_snapshot = list(self._listeners)
+                    for cb in listeners_snapshot:
+                        try:
+                            res = cb(payload)
+                            if asyncio.iscoroutine(res):
+                                await res
+                        except Exception as cb_err:
+                            logger.error(f"[ServiceCommunicator] on_message error: {cb_err}")
             except asyncio.CancelledError:
                 logger.info("[ServiceCommunicator] listener cancelled")
                 raise

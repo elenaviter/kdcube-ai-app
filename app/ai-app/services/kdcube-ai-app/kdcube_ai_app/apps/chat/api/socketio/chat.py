@@ -65,14 +65,13 @@ class SocketIOChatHandler:
         self._comm = chat_comm
         self._listener_started = False
 
-        from pathlib import Path
-
-        # self.upload_dir = Path(os.environ.get("CHAT_UPLOAD_DIR", "./var/chat_uploads"))
-        # self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.max_upload_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
 
         self.sio = self._create_socketio_server()
         self._setup_event_handlers()
+
+        self._session_refcounts: Dict[str, int] = {}
+        self._sid_to_session_id: Dict[str, str] = {}
 
     # ---------- Socket.IO core ----------
 
@@ -141,17 +140,63 @@ class SocketIOChatHandler:
             logger.error("[chat relay] emit failed: %s", e)
 
     async def start(self):
+        """
+        Initialize WS relay. We no longer subscribe to a global channel here.
+        Subscriptions are done lazily per-session in _ensure_session_subscription.
+        """
         if self._listener_started or not self.sio:
             return
-        await self._comm.subscribe(self._on_pubsub_message)
+
+        # Nothing to subscribe yet; just mark initialized.
         self._listener_started = True
-        logger.info("Socket.IO chat handler subscribed to relay channel.")
+        logger.info("Socket.IO chat handler initialized (dynamic session subscriptions enabled).")
 
     async def stop(self):
-        if not self._listener_started:
-            return
-        await self._comm.unsubscribe()
+        """
+        WS shutdown hook. We don't stop the shared Redis listener here, because
+        SSE may still be using it. Global stop is handled by SSEHub.stop() / app shutdown.
+        """
         self._listener_started = False
+        logger.info("Socket.IO chat handler stopped")
+
+    # ---------- Subscription ----------------------------
+    async def _ensure_session_subscription(self, session_id: str):
+        """
+        Ensure we are subscribed to this session's chat events channel in Redis.
+        Called on WS connect.
+        """
+        if not session_id:
+            return
+
+        count = self._session_refcounts.get(session_id, 0)
+        if count == 0:
+            session_ch = f"chat.events.{session_id}"
+            # Subscribe this process to the per-session channel
+            await self._comm._comm.subscribe_add(session_ch)
+            # Ensure the shared listener is running and our WS callback is registered
+            await self._comm._comm.start_listener(self._on_pubsub_message)
+            logger.info("[WS] Subscribed to channel %s for session %s", session_ch, session_id)
+
+        self._session_refcounts[session_id] = count + 1
+
+    async def _release_session_subscription(self, session_id: str | None):
+        """
+        Decrement session refcount and unsubscribe from Redis if this was the last WS subscriber.
+        Called on WS disconnect.
+        """
+        if not session_id:
+            return
+
+        count = self._session_refcounts.get(session_id, 0)
+        if count <= 1:
+            # Last WS for this session on this worker
+            self._session_refcounts.pop(session_id, None)
+            chan = f"chat.events.{session_id}"
+            await self._comm._comm.unsubscribe_some(chan)
+            logger.info("[WS] Unsubscribed from channel %s for session %s", chan, session_id)
+        else:
+            self._session_refcounts[session_id] = count - 1
+
 
     # ---------- CONNECT with GATING (restored) ----------
 
@@ -267,6 +312,10 @@ class SocketIOChatHandler:
             await self.sio.save_session(sid, socket_meta)
             await self.sio.enter_room(sid, session.session_id)
 
+            # track sid → session_id and ensure Redis subscription
+            self._sid_to_session_id[sid] = session.session_id
+            await self._ensure_session_subscription(session.session_id)
+
             await self.sio.emit("session_info", {
                 "session_id": session.session_id,
                 "user_type": session.user_type.value,
@@ -286,6 +335,10 @@ class SocketIOChatHandler:
 
     async def _handle_disconnect(self, sid):
         logger.info("Chat client disconnected: %s", sid)
+        session_id = self._sid_to_session_id.pop(sid, None)
+        if session_id:
+            await self._release_session_subscription(session_id)
+
 
     # ---------- CHAT MESSAGE with GATING (restored) ----------
 
