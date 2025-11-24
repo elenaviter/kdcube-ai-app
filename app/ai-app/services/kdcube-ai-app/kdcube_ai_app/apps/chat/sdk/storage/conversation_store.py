@@ -13,6 +13,8 @@ from kdcube_ai_app.apps.chat.sdk.storage.rn import (
     rn_message, rn_attachment, rn_execution_file
 )
 
+MAX_CONCURRENT_ARTIFACT_FETCHES = 16
+
 try:
     from kdcube_ai_app.storage.storage import create_storage_backend
 except ImportError:

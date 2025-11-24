@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import datetime, traceback, logging
-import pathlib, json
+import pathlib, json, asyncio
 from typing import Optional, Sequence, List, Dict, Any, Union, Callable
 
 from kdcube_ai_app.apps.chat.sdk.storage.rn import rn_file_from_file_path
@@ -14,7 +14,7 @@ from kdcube_ai_app.apps.chat.sdk.util import _turn_id_from_tags_safe
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnLog
 
-from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
+from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore, MAX_CONCURRENT_ARTIFACT_FETCHES
 from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,96 @@ class ContextRAGClient:
         track = track_id or ctx.get("track_id")
         bundle = bundle_id or ctx.get("bundle_id") or ctx.get("app_bundle_id")
         return user, conv, track, bundle
+
+    async def _materialize_payloads_for_items(
+            self,
+            items: List[Dict[str, Any]],
+            *,
+            s3_field: str = "s3_uri",
+            out_field: str = "payload",
+            max_concurrent: int = MAX_CONCURRENT_ARTIFACT_FETCHES,
+    ) -> None:
+        """
+        Concurrently load message JSONs for items, storing the result under `out_field`.
+
+        - Does NOT drop items on failure: if get_message() fails, item is left as-is.
+        - Strips 'embedding' from the loaded record to save memory.
+        - Uses a per-process semaphore to avoid unbounded fan-out.
+        """
+        if not items:
+            return
+
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def _one(item: Dict[str, Any]) -> None:
+            s3_uri = item.get(s3_field)
+            if not s3_uri:
+                return
+
+            async with sem:
+                try:
+                    data = await self.store.get_message(s3_uri)
+                except Exception:
+                    # Keep item, just skip payload
+                    return
+
+            if isinstance(data, dict) and "embedding" in data:
+                # Avoid mutating shared dicts accidentally
+                data = dict(data)
+                data.pop("embedding", None)
+
+            item[out_field] = data
+
+        await asyncio.gather(*(_one(it) for it in items if it.get(s3_field)))
+
+    async def _materialize_artifact(
+            self,
+            item: Dict[str, Any],
+            sem: asyncio.Semaphore,
+    ) -> bool:
+        """
+        Enrich an artifact item with its message data.
+
+        Returns:
+          True  -> keep this artifact
+          False -> drop this artifact (payload/meta missing)
+
+        On read error we keep the artifact but set data=None
+        (matches previous behavior where we did `item["data"] = None` in except).
+        """
+        s3_uri = item.get("s3_uri")
+        if not s3_uri:
+            return True
+
+        async with sem:
+            try:
+                data = await self.store.get_message(s3_uri) or {}
+            except Exception:
+                # Best-effort: keep artifact but signal missing body
+                item["data"] = None
+                return True
+
+        # Strip embedding if present
+        if "embedding" in data:
+            data.pop("embedding", None)
+
+        payload = data.get("payload") or {}
+        meta = data.get("meta") or {}
+
+        # In the old code, this caused a `continue` => artifact was not appended
+        if not payload or not meta:
+            return False
+
+        kind = meta.get("kind")
+        if kind == "codegen.program.files":
+            files = list((payload.get("files_by_slot") or {}).values())
+            for f in files:
+                f["rn"] = rn_file_from_file_path(f["path"])
+            payload["files"] = files
+
+        item["data"] = data
+        return True
+
 
     # ---------- public API ----------
 
@@ -150,12 +240,15 @@ class ContextRAGClient:
             }
             if include_deps and "deps" in r:
                 item["deps"] = r["deps"]
-            if with_payload and r.get("s3_uri"):
-                try:
-                    item["payload"] = await self.store.get_message(r["s3_uri"])
-                except Exception:
-                    pass
             items.append(item)
+
+        if with_payload:
+            await self._materialize_payloads_for_items(
+                items,
+                s3_field="s3_uri",
+                out_field="payload",
+            )
+
         return {"items": items}
 
     async def runtime_ctx(self,
@@ -227,12 +320,15 @@ class ContextRAGClient:
                 "bundle_id": r.get("bundle_id"),
                 "s3_uri": r.get("s3_uri"),
             }
-            if with_payload and r.get("s3_uri"):
-                try:
-                    item["payload"] = await self.store.get_message(r["s3_uri"])
-                except Exception:
-                    pass
             items.append(item)
+
+        if with_payload:
+            await self._materialize_payloads_for_items(
+                items,
+                s3_field="s3_uri",
+                out_field="payload",
+            )
+
         return {"items": items}
 
     async def pull_text_artifact(self, *, artifact_uri: str) -> dict:
@@ -296,66 +392,94 @@ class ContextRAGClient:
           - codegen.program.presentation (project canvas / draft)
           - codegen.program.out.deliverables
         """
-        # 1) user
-        u = await self.recent(
-            scope=scope, days=days, limit=1, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("user",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        )
-        # 2) assistant
-        a = await self.recent(
-            scope=scope, days=days, limit=1, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("assistant",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        )
-        # 3) presentation (draft the user saw)
-        prez = await self.recent(
-            kinds=("artifact:codegen.program.presentation",),  # meta.kind
-            scope=scope, days=days, limit=1, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        )
-        # 4) deliverables (file list user could download)
-        dels = await self.recent(
-            kinds=("artifact:codegen.program.out.deliverables",),
-            scope=scope, days=days, limit=1, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        )
-        # 5) errors
-        solver_failure = await self.recent(
-            kinds=("artifact:solver:failure",),
-            scope=scope, days=days, limit=1, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        )
-        # 6) citables
-        citables = await self.recent(
-            kinds=("artifact:codegen.program.citables",),
-            scope=scope, days=days, limit=3, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
-        )
 
-        # 7) turn log
-        turn_log = await self.recent(
-            kinds=("artifact:turn.log",),
-            scope=scope, days=days, limit=3, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
+        common_kwargs = dict(
+            scope=scope,
+            days=days,
+            ctx=ctx,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            track_id=track_id,
+            with_payload=with_payload,
         )
+        turn_tag = [f"turn:{turn_id}"]
 
-        # 8) files of the certain mime types (e.g., textual)
-        files = await self.recent(
-            kinds=("artifact:codegen.program.files",),
-            scope=scope, days=days, limit=3, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id, track_id=track_id,
-            roles=("artifact",), all_tags=[f"turn:{turn_id}"], with_payload=with_payload
+        (
+            u,
+            a,
+            prez,
+            dels,
+            solver_failure,
+            citables,
+            turn_log,
+            files,
+        ) = await asyncio.gather(
+            # 1) user
+            self.recent(
+                roles=("user",),
+                all_tags=turn_tag,
+                limit=1,
+                **common_kwargs,
+            ),
+            # 2) assistant
+            self.recent(
+                roles=("assistant",),
+                all_tags=turn_tag,
+                limit=1,
+                **common_kwargs,
+            ),
+            # 3) presentation
+            self.recent(
+                kinds=("artifact:codegen.program.presentation",),
+                roles=("artifact",),
+                all_tags=turn_tag,
+                limit=1,
+                **common_kwargs,
+            ),
+            # 4) deliverables
+            self.recent(
+                kinds=("artifact:codegen.program.out.deliverables",),
+                roles=("artifact",),
+                all_tags=turn_tag,
+                limit=1,
+                **common_kwargs,
+            ),
+            # 5) errors
+            self.recent(
+                kinds=("artifact:solver:failure",),
+                roles=("artifact",),
+                all_tags=turn_tag,
+                limit=1,
+                **common_kwargs,
+            ),
+            # 6) citables
+            self.recent(
+                kinds=("artifact:codegen.program.citables",),
+                roles=("artifact",),
+                all_tags=turn_tag,
+                limit=3,
+                **common_kwargs,
+            ),
+            # 7) turn log
+            self.recent(
+                kinds=("artifact:turn.log",),
+                roles=("artifact",),
+                all_tags=turn_tag,
+                limit=3,
+                **common_kwargs,
+            ),
+            # 8) files
+            self.recent(
+                kinds=("artifact:codegen.program.files",),
+                roles=("artifact",),
+                all_tags=turn_tag,
+                limit=3,
+                **common_kwargs,
+            ),
         )
 
         def first(results: dict) -> Optional[dict]:
-            arr = next(iter(results.get("items") or []), None)
-            return arr
+            return next(iter(results.get("items") or []), None)
 
         return {
             "user": first(u),
@@ -825,62 +949,72 @@ class ContextRAGClient:
             return {"user_id": user_id, "conversation_id": conversation_id, "turns": []}
 
         # 2) Build per-turn package
-        out_turns: List[Dict[str, Any]] = []
-        for tid in turn_ids:
-            # Materialize via existing helpers for consistency
-            mat = await self.materialize_turn(
-                turn_id=tid,
-                scope="conversation",
-                days=days,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                with_payload=True
-            )
+        if not turn_ids:
+            return {"user_id": user_id, "conversation_id": conversation_id, "turns": []}
 
-            turn_log_item = mat.get("turn_log") or {}
-            turn_log_payload = ((turn_log_item.get("payload") or {}).get("payload")) if turn_log_item else None
+        # 2) Build per-turn package concurrently, with bounded concurrency
+        sem = asyncio.Semaphore(MAX_CONCURRENT_ARTIFACT_FETCHES)
 
-            # Extract feedbacks array from the turn log payload (preferred source of truth)
-            feedbacks = []
-            if isinstance(turn_log_payload, dict):
-                tl = turn_log_payload.get("turn_log") or {}
-                fb = tl.get("feedbacks") or []
-                if isinstance(fb, list):
-                    feedbacks = fb
+        async def _build_turn(tid: str) -> Dict[str, Any]:
+            async with sem:
+                # Materialize via existing helpers for consistency
+                mat = await self.materialize_turn(
+                    turn_id=tid,
+                    scope="conversation",
+                    days=days,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    with_payload=True,
+                )
 
-            # Optional: also return raw reaction artifacts (already persisted separately)
-            reactions = await self.recent(
-                kinds=("artifact:turn.log.reaction",),
-                scope="conversation",
-                days=days,
-                limit=50,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                roles=("artifact",),
-                all_tags=[f"turn:{tid}"],
-                with_payload=True,
-                bundle_id=bundle_id,
-            )
+                turn_log_item = mat.get("turn_log") or {}
+                turn_log_payload = (
+                    (turn_log_item.get("payload") or {}).get("payload")
+                    if turn_log_item else None
+                )
 
-            # For assistant/user messages, prefer materialized bundle
-            # (these items already have payload materialized by materialize_turn)
-            assistant = mat.get("assistant")
-            user_msg = mat.get("user")
+                # Extract feedbacks array from the turn log payload (preferred source of truth)
+                feedbacks = []
+                if isinstance(turn_log_payload, dict):
+                    tl = turn_log_payload.get("turn_log") or {}
+                    fb = tl.get("feedbacks") or []
+                    if isinstance(fb, list):
+                        feedbacks = fb
 
-            # Fallback: if for some reason materialize_turn didn't find them, try once directly
-            if not assistant:
-                assistant = await _first_recent(roles=("assistant",), all_tags=[f"turn:{tid}"])
-            if not user_msg:
-                user_msg = await _first_recent(roles=("user",), all_tags=[f"turn:{tid}"])
+                # Optional: also return raw reaction artifacts (already persisted separately)
+                reactions = await self.recent(
+                    kinds=("artifact:turn.log.reaction",),
+                    scope="conversation",
+                    days=days,
+                    limit=50,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    roles=("artifact",),
+                    all_tags=[f"turn:{tid}"],
+                    with_payload=True,
+                    bundle_id=bundle_id,
+                )
 
-            out_turns.append({
-                "turn_id": tid,
-                "turn_log": turn_log_payload,                 # full object as requested
-                "assistant": assistant,                       # full item incl. payload
-                "user": user_msg,                             # full item incl. payload
-                "feedbacks": feedbacks,                       # extracted from turn log payload
-                "reactions": reactions.get("items") or [],    # optional convenience
-            })
+                # For assistant/user messages, prefer materialized bundle
+                assistant = mat.get("assistant")
+                user_msg = mat.get("user")
+
+                # Fallback: if for some reason materialize_turn didn't find them, try once directly
+                if not assistant:
+                    assistant = await _first_recent(roles=("assistant",), all_tags=[f"turn:{tid}"])
+                if not user_msg:
+                    user_msg = await _first_recent(roles=("user",), all_tags=[f"turn:{tid}"])
+
+                return {
+                    "turn_id": tid,
+                    "turn_log": turn_log_payload,                 # full object as requested
+                    "assistant": assistant,                       # full item incl. payload
+                    "user": user_msg,                             # full item incl. payload
+                    "feedbacks": feedbacks,                       # extracted from turn log payload
+                    "reactions": reactions.get("items") or [],    # optional convenience
+                }
+
+        out_turns = await asyncio.gather(*(_build_turn(tid) for tid in turn_ids))
 
         return {"user_id": user_id, "conversation_id": conversation_id, "turns": out_turns}
 
@@ -1528,50 +1662,72 @@ class ContextRAGClient:
             bundle_id=bundle_id,
             turn_ids=turn_ids or None,
         )
+
         turns_map: Dict[str, Dict[str, Any]] = {}
         order: List[str] = []
+        to_materialize: List[Dict[str, Any]] = []
+
         for r in occ:
             tid = r["turn_id"]
             tags = set(r.get("tags") or [])
             tag_hits = UI_ARTIFACT_TAGS & tags
             if not tag_hits:
                 continue
+
             tag_type = next(iter(tag_hits))
+
             if tid not in turns_map:
                 turns_map[tid] = {"turn_id": tid, "artifacts": []}
                 order.append(tid)
+
             # only user-origin reactions are considered "feedback"
             if "artifact:turn.log.reaction" in tag_hits and "origin:user" not in tags:
-                    continue
-            item = {
+                continue
+
+            item: Dict[str, Any] = {
                 "message_id": r.get("mid"),
                 "type": tag_type,
                 "ts": r.get("ts"),
                 "s3_uri": r.get("s3_uri"),
                 "bundle_id": r.get("bundle_id"),
             }
-            if materialize and r.get("s3_uri"):
-                try:
-                    data = await self.store.get_message(r["s3_uri"]) or {}
-                    item["data"] = data
-                    if "embedding" in item["data"]:
-                        del item["data"]["embedding"]
-                    payload = item["data"].get("payload") or {}
-                    meta = item["data"].get("meta") or {}
-                    if not payload or not meta:
-                        continue
-                    kind = meta.get("kind")
-                    files = []
-                    if kind == "codegen.program.files":
-                        files = list((payload.get("files_by_slot") or {}).values())
-                        for f in files:
-                            f["rn"] = rn_file_from_file_path(f["path"])
-                    payload["files"] = files
-                except Exception:
-                    item["data"] = None
+
             turns_map[tid]["artifacts"].append(item)
 
-        return {"user_id": user_id, "conversation_id": conversation_id, "turns": [turns_map[tid] for tid in order]}
+            if materialize and item.get("s3_uri"):
+                # Keep a reference so we can materialize later
+                to_materialize.append(item)
+
+        # 2) Materialize artifacts concurrently (bounded)
+        if materialize and to_materialize:
+            sem = asyncio.Semaphore(MAX_CONCURRENT_ARTIFACT_FETCHES)
+
+            tasks = [self._materialize_artifact(item, sem) for item in to_materialize]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Determine which items to drop (payload/meta missing)
+            drop_ids = set()
+            for item, result in zip(to_materialize, results):
+                if isinstance(result, Exception):
+                    # Extremely defensive: keep artifact but mark as not loaded
+                    item["data"] = None
+                    continue
+                if result is False:
+                    drop_ids.add(id(item))
+
+            if drop_ids:
+                # Remove dropped artifacts while preserving order
+                for turn in turns_map.values():
+                    turn["artifacts"] = [
+                        a for a in turn["artifacts"] if id(a) not in drop_ids
+                    ]
+
+        return {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "turns": [turns_map[tid] for tid in order],
+        }
+
 
 
     async def get_conversation_state(self, *, user_id: str, conversation_id: str) -> dict:
@@ -1945,24 +2101,22 @@ async def search_context(
     best_tid = hits[0]["turn_id"] if hits else None
 
     # Materialize payloads for top_k results only
-    final_hits = []
     if with_payload and hits:
-        for hit in hits[:top_k]:  # Only top_k hits
-            s3_uri = hit.get("s3_uri")
-            if s3_uri:
-                try:
-                    payload = await ctx_client.store.get_message(s3_uri)
-                    # Remove embedding to save memory
-                    if isinstance(payload, dict) and "embedding" in payload:
-                        payload = {**payload}
-                        del payload["embedding"]
-                    hit["payload"] = payload
-                    final_hits.append(hit)
-                except Exception as e:
-                    if logger:
-                        logger.log(f"Failed to materialize {s3_uri}: {e}", "WARN")
-                    hit["payload"] = None
-
+        top_hits = hits[:top_k]
+        try:
+            await ctx_client._materialize_payloads_for_items(
+                top_hits,
+                s3_field="s3_uri",
+                out_field="payload",
+                max_concurrent=MAX_CONCURRENT_ARTIFACT_FETCHES,
+            )
+        except Exception as e:
+            if logger:
+                logger.log(f"Failed to materialize payloads for search_context: {e}", "WARN")
+        final_hits = top_hits
+    else:
+        final_hits = hits[:top_k] if top_k else hits
 
     return best_tid, final_hits
+
 
