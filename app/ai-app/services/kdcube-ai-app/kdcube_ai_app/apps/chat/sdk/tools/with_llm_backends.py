@@ -280,14 +280,23 @@ HTML_SOURCES_RE = re.compile(
 USAGE_TAG_RE = re.compile(r"\[\[\s*USAGE\s*:\s*([0-9,\s\-]+)\s*\]\]", re.I)
 
 # hold back partial tails like "[[", "[[U", "[[USAGE:", or a half-closed tag
+# USAGE_SUFFIX_PATS = [
+#     re.compile(r"\[\[$"),                              # "[[" at end
+#     re.compile(r"\[\[\s*U\s*$", re.I),
+#     re.compile(r"\[\[\s*US\s*$", re.I),
+#     re.compile(r"\[\[\s*USA\s*$", re.I),
+#     re.compile(r"\[\[\s*USAG\s*$", re.I),
+#     re.compile(r"\[\[\s*USAGE\s*:\s*[0-9,\s\-]*$", re.I),
+#     re.compile(r"\[\[\s*USAGE\s*:\s*[0-9,\s\-]*\]$", re.I),  # missing final ']'
+# ]
 USAGE_SUFFIX_PATS = [
-    re.compile(r"\[\[$"),                              # "[[" at end
-    re.compile(r"\[\[\s*U\s*$", re.I),
-    re.compile(r"\[\[\s*US\s*$", re.I),
-    re.compile(r"\[\[\s*USA\s*$", re.I),
-    re.compile(r"\[\[\s*USAG\s*$", re.I),
-    re.compile(r"\[\[\s*USAGE\s*:\s*[0-9,\s\-]*$", re.I),
-    re.compile(r"\[\[\s*USAGE\s*:\s*[0-9,\s\-]*\]$", re.I),  # missing final ']'
+    re.compile(r"(?:\u200b|\s)?\[\[$"),                              # "[[" at end
+    re.compile(r"(?:\u200b|\s)?\[\[\s*U\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*US\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USA\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USAG\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USAGE\s*:\s*[0-9,\s\-]*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USAGE\s*:\s*[0-9,\s\-]*\]$", re.I),
 ]
 
 def _split_safe_usage_prefix(chunk: str) -> tuple[str, int]:
@@ -446,11 +455,23 @@ async def generate_content_llm(
     def _scrub_emit_once(s: str) -> str:
         if not s:
             return s
+        # Normalize invisibles first so regexes see a clean pattern
+        s = _rm_invis(s)
+
         # strip the exact completion marker
         s = _remove_end_marker_everywhere(s, end_marker)
         # strip any complete hidden usage tag occurrences
         s = USAGE_TAG_RE.sub("", s)
         return s
+
+    # def _scrub_emit_once(s: str) -> str:
+    #     if not s:
+    #         return s
+    #     # strip the exact completion marker
+    #     s = _remove_end_marker_everywhere(s, end_marker)
+    #     # strip any complete hidden usage tag occurrences
+    #     s = USAGE_TAG_RE.sub("", s)
+    #     return s
 
     # Local safe-stop guard for taggy formats
     def _trim_to_last_safe_tag_boundary(s: str) -> str:
@@ -828,7 +849,7 @@ async def generate_content_llm(
             if not text:
                 return
             clean = _scrub_emit_once(text)
-            clean = _rm_invis(clean)
+            # clean = _rm_invis(clean)
             out = replace_citation_tokens_streaming(clean, citation_map) if tgt == "markdown" else clean
             if get_comm():
                 idx = start_index + emitted_local
@@ -972,6 +993,8 @@ async def generate_content_llm(
 
     # -------- post-processing / validation --------
     content_raw = "".join(buf_all)
+    # Normalize invisible chars so marker / usage regexes are robust
+    content_raw = _rm_invis(content_raw)
 
     # --- usage tag extraction (from the RAW buffer that still has the tag) ---
     usage_sids: List[int] = []
@@ -1025,6 +1048,10 @@ async def generate_content_llm(
         content_clean = _trim_to_last_safe_tag_boundary(content_clean)
 
     # --------- Validation phase ---------
+    # Ensure no telemetry tags ever make it to the final artifact
+    content_clean = _rm_invis(content_clean)
+    content_clean = USAGE_TAG_RE.sub("", content_clean)
+
     fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
 
     schema_ok = True
@@ -1189,6 +1216,9 @@ async def generate_content_llm(
             if tgt in ("html", "xml"):
                 content_clean = _trim_to_last_safe_tag_boundary(content_clean)
 
+            # Ensure no telemetry tags ever make it to the final artifact
+            content_clean = _rm_invis(content_clean)
+            content_clean = USAGE_TAG_RE.sub("", content_clean)
             fmt_ok, fmt_reason = _format_ok(content_clean, tgt)
 
             if tgt == "json":
