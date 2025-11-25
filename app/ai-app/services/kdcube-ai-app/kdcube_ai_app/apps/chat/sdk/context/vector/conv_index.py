@@ -765,6 +765,7 @@ class ConvIndex:
             limit: int = 30,
             days: int = 30,
             bundle_id: Optional[str] = None,
+            turn_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         args: List[Any] = [user_id, list(roles), str(days)]
         where = [
@@ -782,6 +783,9 @@ class ConvIndex:
         elif conversation_id:
             args.append(conversation_id)
             where.append(f"conversation_id = ${len(args)}")
+        if turn_id is not None:
+            args.append(turn_id)
+            where.append(f"turn_id = ${len(args)}")
         if bundle_id:
             args.append(bundle_id); where.append(f"bundle_id = ${len(args)}")
         if any_tags:

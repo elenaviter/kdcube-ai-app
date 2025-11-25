@@ -772,25 +772,6 @@ def turn_to_pair(turn: CompressedTurn) -> Dict[str, str]:
         "assistant": turn_to_assistant_message(turn)
     }
 
-def compressed_turn_from_tlog(tlog: Dict[str, Any]) -> Dict[str, Any]:
-    sv = tlog.get("solver", {})
-    meta = sv.get("meta", {})
-    brief = sv.get("brief", {})
-    inputs = (brief.get("inputs") or {})
-    return {
-        "turn_id": tlog.get("turn_id"),
-        "ok": sv.get("ok"),
-        "mode": (sv.get("plan") or {}).get("mode"),
-        "objective": inputs.get("objective", ""),
-        "topics": inputs.get("topics", []),
-        "deliverables": sv.get("deliverables", {}),
-        "citations": sv.get("citations", {}),
-        "program_presentation": sv.get("program_presentation", ""),
-        "failure": sv.get("failure"),
-        "failure_presentation": sv.get("failure_presentation"),
-        "meta": meta,
-    }
-
 if __name__ == "__main__":
 
     # Example usage

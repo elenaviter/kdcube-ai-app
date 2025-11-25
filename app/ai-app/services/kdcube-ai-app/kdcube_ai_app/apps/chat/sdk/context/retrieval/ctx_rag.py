@@ -378,119 +378,180 @@ class ContextRAGClient:
             self,
             *,
             turn_id: str,
-            scope: str = "track",
+            scope: str = "track",         # kept for API compatibility, not used directly now
             days: int = 365,
             ctx: Optional[dict] = None,
             user_id: Optional[str] = None,
             conversation_id: Optional[str] = None,
             track_id: Optional[str] = None,
-            with_payload: bool = True
+            with_payload: bool = True,
     ) -> dict:
         """
         Returns the user msg, assistant reply, and user-visible artifacts for the turn.
-        Visible artifacts include:
-          - codegen.program.presentation (project canvas / draft)
-          - codegen.program.out.deliverables
+
+        Uses ConvIndex.search_context with an explicit turn_id filter, which leverages
+        the (user_id, conversation_id, turn_id) index instead of doing multiple
+        tag-based recent() calls.
         """
 
-        common_kwargs = dict(
-            scope=scope,
-            days=days,
-            ctx=ctx,
+        # Resolve scope/user/conv/bundle from ctx if needed
+        ctx_loaded = self._load_ctx(ctx)
+        user, conv, track, bundle = self._scope_from_ctx(
+            ctx_loaded,
             user_id=user_id,
             conversation_id=conversation_id,
             track_id=track_id,
-            with_payload=with_payload,
-        )
-        turn_tag = [f"turn:{turn_id}"]
-
-        (
-            u,
-            a,
-            prez,
-            dels,
-            solver_failure,
-            citables,
-            turn_log,
-            files,
-        ) = await asyncio.gather(
-            # 1) user
-            self.recent(
-                roles=("user",),
-                all_tags=turn_tag,
-                limit=1,
-                **common_kwargs,
-            ),
-            # 2) assistant
-            self.recent(
-                roles=("assistant",),
-                all_tags=turn_tag,
-                limit=1,
-                **common_kwargs,
-            ),
-            # 3) presentation
-            self.recent(
-                kinds=("artifact:codegen.program.presentation",),
-                roles=("artifact",),
-                all_tags=turn_tag,
-                limit=1,
-                **common_kwargs,
-            ),
-            # 4) deliverables
-            self.recent(
-                kinds=("artifact:codegen.program.out.deliverables",),
-                roles=("artifact",),
-                all_tags=turn_tag,
-                limit=1,
-                **common_kwargs,
-            ),
-            # 5) errors
-            self.recent(
-                kinds=("artifact:solver:failure",),
-                roles=("artifact",),
-                all_tags=turn_tag,
-                limit=1,
-                **common_kwargs,
-            ),
-            # 6) citables
-            self.recent(
-                kinds=("artifact:codegen.program.citables",),
-                roles=("artifact",),
-                all_tags=turn_tag,
-                limit=3,
-                **common_kwargs,
-            ),
-            # 7) turn log
-            self.recent(
-                kinds=("artifact:turn.log",),
-                roles=("artifact",),
-                all_tags=turn_tag,
-                limit=3,
-                **common_kwargs,
-            ),
-            # 8) files
-            self.recent(
-                kinds=("artifact:codegen.program.files",),
-                roles=("artifact",),
-                all_tags=turn_tag,
-                limit=3,
-                **common_kwargs,
-            ),
         )
 
-        def first(results: dict) -> Optional[dict]:
-            return next(iter(results.get("items") or []), None)
+        # If we don't know user or conversation, we can't hit the index safely
+        if not user or not conv:
+            return {
+                "user": None,
+                "assistant": None,
+                "presentation": None,
+                "deliverables": None,
+                "citables": None,
+                "solver_failure": None,
+                "turn_log": None,
+                "files": None,
+            }
+
+        # 1) Fetch all messages for this turn
+        rows = await self.idx.fetch_recent(
+            user_id=user,
+            conversation_id=conv,
+            track_id=track,
+            turn_id=turn_id,                         # <--- uses our index directly
+            roles=("user", "assistant", "artifact"),
+            limit=64,
+            days=days,
+            bundle_id=bundle,
+        )
+
+        if not rows:
+            return {
+                "user": None,
+                "assistant": None,
+                "presentation": None,
+                "deliverables": None,
+                "citables": None,
+                "solver_failure": None,
+                "turn_log": None,
+                "files": None,
+            }
+
+        def _make_item(r: Dict[str, Any]) -> Dict[str, Any]:
+            ts = r.get("ts")
+            return {
+                "id": r["id"],
+                "message_id": r.get("message_id"),
+                "role": r["role"],
+                "text": r.get("text") or "",
+                "ts": ts.isoformat() if hasattr(ts, "isoformat") else ts,
+                "tags": list(r.get("tags") or []),
+                "track_id": r.get("track_id"),
+                "turn_id": r.get("turn_id"),
+                "bundle_id": r.get("bundle_id"),
+                "s3_uri": r.get("s3_uri"),
+            }
+
+        user_item: Optional[Dict[str, Any]] = None
+        assistant_item: Optional[Dict[str, Any]] = None
+        presentation_item: Optional[Dict[str, Any]] = None
+        deliverables_item: Optional[Dict[str, Any]] = None
+        solver_failure_item: Optional[Dict[str, Any]] = None
+        citables_item: Optional[Dict[str, Any]] = None
+        turn_log_item: Optional[Dict[str, Any]] = None
+        files_item: Optional[Dict[str, Any]] = None
+
+        # rows are ordered newest-first by ts; first hit per slot wins (same semantics
+        # as the old recent(..., limit=1) + first()).
+        for r in rows:
+            item = _make_item(r)
+            role = r["role"]
+            tags = set(r.get("tags") or [])
+
+            if role == "user":
+                if user_item is None:
+                    user_item = item
+                continue
+
+            if role == "assistant":
+                if assistant_item is None:
+                    assistant_item = item
+                continue
+
+            # role == 'artifact'
+            if "artifact:codegen.program.presentation" in tags:
+                if presentation_item is None:
+                    presentation_item = item
+                continue
+
+            if "artifact:codegen.program.out.deliverables" in tags:
+                if deliverables_item is None:
+                    deliverables_item = item
+                continue
+
+            if "artifact:solver:failure" in tags:
+                if solver_failure_item is None:
+                    solver_failure_item = item
+                continue
+
+            if "artifact:codegen.program.citables" in tags:
+                if citables_item is None:
+                    citables_item = item
+                continue
+
+            if "artifact:turn.log" in tags:
+                if turn_log_item is None:
+                    turn_log_item = item
+                continue
+
+            if "artifact:codegen.program.files" in tags:
+                if files_item is None:
+                    files_item = item
+                continue
+
+        # 2) Optionally materialize payloads (ConversationStore blobs) for the items we found
+        if with_payload:
+            items_to_materialize = [
+                it
+                for it in [
+                    user_item,
+                    assistant_item,
+                    presentation_item,
+                    deliverables_item,
+                    solver_failure_item,
+                    citables_item,
+                    turn_log_item,
+                    files_item,
+                ]
+                if it is not None and it.get("s3_uri")
+            ]
+            await self._materialize_payloads_for_items(
+                items_to_materialize,
+                s3_field="s3_uri",
+                out_field="payload",
+            )
+
+            # Turn-log normalization: reconstruct deliverables[*].value.sources_used
+            # from solver_result.execution.canonical_sources + sources_used_sids.
+            _enrich_sources_used_to_deliverables(
+                turn_log_item,
+                turn_id=turn_id,
+            )
 
         return {
-            "user": first(u),
-            "assistant": first(a),
-            "presentation": first(prez),
-            "deliverables": first(dels),
-            "citables": first(citables),
-            "solver_failure": first(solver_failure),
-            "turn_log": first(turn_log),
-            "files": first(files),
+            "user": user_item,
+            "assistant": assistant_item,
+            "presentation": presentation_item,
+            "deliverables": deliverables_item,
+            "citables": citables_item,
+            "solver_failure": solver_failure_item,
+            "turn_log": turn_log_item,
+            "files": files_item,
         }
+
 
     async def remove_user_reaction(self, *,
                                    turn_id: str,
@@ -498,20 +559,17 @@ class ContextRAGClient:
                                    conversation_id: str,
                                    track_id: Optional[str]) -> bool:
         try:
-            existing = await self.search(
-                query=None,
+            existing = await self.recent(
                 kinds=("artifact:turn.log.reaction",),
-                roles=("artifact",),
                 scope="conversation",
+                days=3650,
+                limit=100,
                 user_id=user_id,
                 conversation_id=conversation_id,
-                days=3650,
-                top_k=100,
-                include_deps=False,
-                with_payload=True,
-                # Fast-tag filter to prefer user-origin rows; still verify via payload
+                roles=("artifact",),
                 any_tags=["origin:user"],
                 all_tags=[f"turn:{turn_id}"],
+                with_payload=True,
             )
             items = existing.get("items") or []
             removed_count = 0
@@ -1520,14 +1578,14 @@ class ContextRAGClient:
         """
 
         # 1) Find the conv.start fingerprint within this conversation (it is small and is stored as is in the index)
-        data = await self.search(kinds=[FINGERPRINT_KIND],
-                                 user_id=user_id,
-                                 scope="conversation",
-                                 top_k=1,
-                                 conversation_id=conversation_id,
-                                 all_tags=[CONV_START_FPS_TAG],
-                                 bundle_id=bundle_id,
-                                 )
+        data = await self.recent(
+            kinds=[FINGERPRINT_KIND],
+            scope="conversation",
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=1,
+            all_tags=[CONV_START_FPS_TAG],
+        )
         conv_start = next(iter(data.get("items") or []), None) if data else None
         try:
             conv_start_text = conv_start.get("text")
@@ -2119,4 +2177,122 @@ async def search_context(
 
     return best_tid, final_hits
 
+def _enrich_sources_used_to_deliverables(
+        turn_log_item: Optional[Dict[str, Any]],
+        *,
+        turn_id: Optional[str] = None,
+) -> None:
+    """
+    New-format normalization for turn log:
 
+    We now store:
+      solver_result.execution.canonical_sources: [ { sid, ... }, ... ]
+      solver_result.execution.deliverables[slot].value.sources_used_sids: [sid, sid, ...]
+
+    To keep turn logs small, we dropped `sources_used` before persisting.
+
+    This helper runs on READ:
+
+      - If deliverable.value already has `sources_used`, we leave it as-is
+        (old logs / backward-compat).
+      - If it has only `sources_used_sids`, we look up those sids in
+        execution.canonical_sources and reconstruct `sources_used`
+        as a list of full canonical source dicts.
+
+    It mutates turn_log_item["payload"]["payload"] in-place and is best-effort
+    (never raises).
+    """
+    if not isinstance(turn_log_item, dict):
+        return
+
+    try:
+        store_doc = turn_log_item.get("payload") or {}
+        # This is the stored payload from ConversationStore.put_message(...)
+        root_payload = store_doc.get("payload") or {}
+        if not isinstance(root_payload, dict):
+            return
+
+        solver_result = root_payload.get("solver_result")
+        if not isinstance(solver_result, dict):
+            return
+
+        execution = solver_result.get("execution") or {}
+        if not isinstance(execution, dict):
+            return
+
+        canonical_sources = execution.get("canonical_sources") or []
+        if not isinstance(canonical_sources, list) or not canonical_sources:
+            # nothing to hydrate from
+            return
+
+        # Build sid → canonical source map
+        by_sid: Dict[str, Dict[str, Any]] = {}
+        for src in canonical_sources:
+            if not isinstance(src, dict):
+                continue
+
+            sid = (
+                    src.get("sid")
+                    or src.get("id")
+                    or src.get("source_id")
+            )
+            if sid is None:
+                continue
+            by_sid[str(sid)] = src
+
+        if not by_sid:
+            return
+
+        deliverables = execution.get("deliverables") or {}
+        # deliverables can be dict (slot→spec) or list; handle both
+        if isinstance(deliverables, dict):
+            specs_iter = deliverables.values()
+        elif isinstance(deliverables, list):
+            specs_iter = deliverables
+        else:
+            return
+
+        for spec in specs_iter:
+            if not isinstance(spec, dict):
+                continue
+
+            # In our layout the artifact is usually under "value"
+            art = spec.get("value")
+            if not isinstance(art, dict):
+                # Some setups might put citation info directly on spec
+                art = spec
+
+            if not isinstance(art, dict):
+                continue
+
+            # Old logs already had full sources_used → leave alone
+            if "sources_used" in art and isinstance(art["sources_used"], list):
+                continue
+
+            sids = art.get("sources_used_sids")
+            if not isinstance(sids, list) or not sids:
+                continue
+
+            resolved: list[dict] = []
+            seen: set[str] = set()
+
+            for sid in sids:
+                key = str(sid)
+                if key in seen:
+                    continue
+                src_obj = by_sid.get(key)
+                if not src_obj:
+                    continue
+                seen.add(key)
+                resolved.append(src_obj)
+
+            if resolved:
+                # add reconstructed `sources_used` but keep sources_used_sids
+                art["sources_used"] = resolved
+
+    except Exception:
+        logger.warning(
+            "Failed to hydrate sources_used from execution.canonical_sources for turn_id=%s",
+            turn_id,
+            exc_info=True,
+        )
