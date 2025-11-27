@@ -236,7 +236,7 @@ def ensure_event_markdown(evt: Dict[str, Any]) -> Dict[str, Any]:
                 lines.append(f"- {k}: `{_truncate(str(v), 200)}`")
 
         lines.append("```json")
-        lines.append(json.dumps(data, ensure_ascii=False, indent=2))
+        lines.append(json.dumps(_to_jsonable(data), ensure_ascii=False, indent=2))
         lines.append("```")
 
     elif isinstance(data, list):

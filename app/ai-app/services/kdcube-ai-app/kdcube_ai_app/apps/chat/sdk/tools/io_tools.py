@@ -18,6 +18,12 @@ try:
 except Exception:
     from semantic_kernel.utils.function_decorator import kernel_function
 
+# We’ll use this only in limited executor mode
+try:
+    from kdcube_ai_app.apps.chat.sdk.runtime.isolated.secure_client import ToolStub
+except Exception:  # non-supervised environments, tests, etc.
+    ToolStub = None
+
 _CITABLE_TOOL_IDS = {
     "generic_tools.web_search",
     "generic_tools.browsing",
@@ -27,6 +33,20 @@ _CITABLE_TOOL_IDS = {
 # ---------- basics ----------
 
 _INDEX_FILE = "tool_calls_index.json"
+
+def _is_limited_executor() -> bool:
+    """
+    Return True when running in the 'limited' child that must NOT call tools directly,
+    but route all tool executions through the privileged supervisor.
+
+    Convention:
+      - AGENT_IO_CONTEXT=limited → limited child
+      - anything else / unset → normal (local / supervisor / old behavior)
+
+    This keeps non-docker and legacy paths working unchanged.
+    """
+    ctx = (os.environ.get("AGENT_IO_CONTEXT") or "").strip().lower()
+    return ctx == "limited"
 
 def _outdir() -> pathlib.Path:
     return resolve_output_dir()
@@ -465,15 +485,105 @@ class AgentIO:
         except Exception:
             params = {"_raw": params_json}
 
-        # Prepare ids/filenames
+        # ---- Compute tool_id (tid) exactly once ----------------------------
+        if tool_id:
+            tid = tool_id.strip()
+        else:
+            if fn is None:
+                raise ValueError("tool_call: tool_id is required when fn is None")
+            mod = (getattr(fn, "__module__", "tool") or "tool").split(".")[-1]
+            name = getattr(fn, "__name__", "call") or "call"
+            tid = f"{mod}.{name}".strip()
+
+        # ---- Index + filename (same logic as before) -----------------------
         od   = _outdir()
         idx  = _read_index(od)
-        tid  = (tool_id or f"{(getattr(fn, '__module__', 'tool').split('.')[-1])}.{getattr(fn, '__name__', 'call')}").strip()
         i    = _next_index(idx, tid)
         rel  = filename or f"{_sanitize_tool_id(tid)}-{i}.json"
 
+        # ---- MODE 1: limited executor → delegate to supervisor via socket --
+        if _is_limited_executor() and ToolStub is not None:
+            socket_path = os.environ.get("SUPERVISOR_SOCKET_PATH", "/tmp/supervisor.sock")
+            stub = ToolStub(socket_path=socket_path)
+
+            try:
+                stub_res = stub.call_tool(tool_id=tid, params=params, reason=str(call_reason or ""))
+
+                if not isinstance(stub_res, dict):
+                    raise RuntimeError(f"Bad supervisor response type: {type(stub_res)!r}")
+
+                if stub_res.get("ok"):
+                    ret = stub_res.get("result")
+
+                    # Persist SUCCESS via save_tool_call
+                    await self.save_tool_call(
+                        tool_id=tid,
+                        description=str(call_reason or ""),
+                        data=ret,
+                        params=json.dumps(params, ensure_ascii=False, default=str),
+                        index=i,
+                        filename=rel,
+                    )
+                    idx.setdefault(tid, []).append(rel)
+                    _write_index(od, idx)
+                    return ret
+
+                # Supervisor reported a logical error (but the call *did* happen)
+                msg = stub_res.get("error") or "Supervisor returned an error"
+                err_env = {
+                    "ok": False,
+                    "error": {
+                        "code": "supervisor_error",
+                        "message": str(msg),
+                        "where": tid,
+                        "managed": True,
+                    }
+                }
+                await self.save_tool_call(
+                    tool_id=tid,
+                    description=str(call_reason or ""),
+                    data=err_env,
+                    params=json.dumps(params, ensure_ascii=False, default=str),
+                    index=i,
+                    filename=rel,
+                )
+                idx.setdefault(tid, []).append(rel)
+                _write_index(od, idx)
+                # Preserve old semantics: surface failure as exception
+                raise RuntimeError(str(msg))
+
+            except Exception as e:
+                # Transport / protocol / other failure in the limited child
+                err_env = {
+                    "ok": False,
+                    "error": {
+                        "code": type(e).__name__,
+                        "message": str(e),
+                        "where": tid,
+                        "managed": False,
+                    }
+                }
+                try:
+                    await self.save_tool_call(
+                        tool_id=tid,
+                        description=str(call_reason or ""),
+                        data=err_env,
+                        params=json.dumps(params, ensure_ascii=False, default=str),
+                        index=i,
+                        filename=rel,
+                    )
+                    idx.setdefault(tid, []).append(rel)
+                    _write_index(od, idx)
+                finally:
+                    # Preserve external behavior: re-raise
+                    raise
+
+        # ---- MODE 2: normal / supervisor → execute tool locally (old path) -
         try:
-            # Execute tool
+            # Execute tool *locally* (supervisor / legacy behavior)
+            if fn is None:
+                raise ValueError("tool_call: fn cannot be None in local/supervisor mode")
+
             ret = fn(**params) if params else fn()
             if inspect.isawaitable(ret):
                 ret = await ret
@@ -494,7 +604,7 @@ class AgentIO:
             return ret
 
         except Exception as e:
-            # Build error envelope INSIDE ret; then persist via save_tool_call
+            # Managed error envelope INSIDE ret; then persist via save_tool_call
             err_env = {
                 "ok": False,
                 "error": {

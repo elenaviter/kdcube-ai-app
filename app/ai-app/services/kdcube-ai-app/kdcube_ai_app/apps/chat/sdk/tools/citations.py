@@ -564,19 +564,64 @@ def extract_sids(sources_json: Optional[str]) -> List[int]:
 # Streaming-safe helpers
 # ---------------------------------------------------------------------------
 
+# def split_safe_citation_prefix(chunk: str) -> Tuple[str, int]:
+#     """
+#     Given a partial chunk, return (safe_prefix, dangling_len).
+#     If the end of chunk looks like a truncated [[S:...]] token, we clip it off
+#     and report how many chars were withheld (dangling).
+#     """
+#     if not chunk:
+#         return "", 0
+#     for pat in CITATION_SUFFIX_PATS:
+#         m = pat.search(chunk)
+#         if m and m.end() == len(chunk):
+#             return chunk[:m.start()], len(chunk) - m.start()
+#     return chunk, 0
+
 def split_safe_citation_prefix(chunk: str) -> Tuple[str, int]:
     """
-    Given a partial chunk, return (safe_prefix, dangling_len).
-    If the end of chunk looks like a truncated [[S:...]] token, we clip it off
-    and report how many chars were withheld (dangling).
+    Streaming helper: given a chunk, returns (safe_prefix, dangling_len).
+
+    - We look for the *last* '[[S:' (case-insensitive) in the chunk.
+    - If there is no '[[S:' → whole chunk is safe.
+    - If there *is* a '[[S:' but no closing ']]' after it yet →
+      treat from that '[[S:' to the end as dangling (to be
+      prefixed to the next chunk).
+    - Otherwise (we do have ']]' after it) → whole chunk is safe
+      (the token is complete and can be safely passed to the
+      replacer in this round).
     """
-    if not chunk:
+    if not chunk or not isinstance(chunk, str):
         return "", 0
-    for pat in CITATION_SUFFIX_PATS:
-        m = pat.search(chunk)
-        if m and m.end() == len(chunk):
-            return chunk[:m.start()], len(chunk) - m.start()
-    return chunk, 0
+
+    # Use a cleaned copy only for searching; we keep original for slicing.
+    clean = _strip_invisible(chunk)
+    clean_lower = clean.lower()
+    marker = "[[s:"
+
+    # Last potential citation opener
+    last = clean_lower.rfind(marker)
+    if last == -1:
+        # No '[[S:' at all → everything is safe
+        return chunk, 0
+
+    # From that last '[[S:' to the end, check if there is a closing ']]'
+    tail = clean[last:]
+    if "]]" in tail:
+        # At least one complete [[S:...]] in the tail → safe to emit all.
+        return chunk, 0
+
+    # We have a trailing '[[S:' with no ']]' yet → treat it as dangling.
+    # Find the same location in the original chunk (case-insensitive).
+    chunk_lower = chunk.lower()
+    last_orig = chunk_lower.rfind(marker)
+    if last_orig == -1:
+        # Shouldn't happen, but be safe: emit all.
+        return chunk, 0
+
+    safe_prefix = chunk[:last_orig]
+    dangling_len = len(chunk) - last_orig
+    return safe_prefix, dangling_len
 
 # ---------------------------------------------------------------------------
 # Replacement / rendering (batch & streaming)

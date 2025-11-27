@@ -490,6 +490,13 @@ async def generate_content_llm(
         "GENERAL OUTPUT RULES:",
         "- Keep the output self-contained.",
         "- Avoid placeholders like 'TBD' unless explicitly requested.",
+    "",
+    "NUMERIC & FACTUAL PRECISION RULES:",
+    "- When answering with facts, numbers, prices, dates, thresholds, metrics or other quantitative values, copy them EXACTLY as they appear in the input context or sources when possible.",
+    "- Do NOT invent new numeric values (e.g. sums, averages, percentage changes, growth rates, exchange-rate based values) that do not explicitly appear in a source.",
+    "- Do NOT perform unit or currency conversions or any other arithmetic transformation (e.g. hours→minutes, EUR→USD, monthly→yearly, GB→MB) unless the user EXPLICITLY says that an approximate conversion is acceptable.",
+    "- If the user asks for a different unit or currency than what is available, answer in the original unit/currency and clearly name it, and/or explicitly state that you are not converting it.",
+    "- If you cannot find a requested numeric fact in any source or context, say so instead of guessing.",
     ])
 
     target_format_sys_instruction = f"TARGET FORMAT: {tgt}"
@@ -672,9 +679,42 @@ async def generate_content_llm(
         "- You may ONLY cite sources whose SID is listed below.",
         "- NEVER invent or reference any SID not listed.",
         "- If a claim cannot be supported by the provided sources, either omit the claim or present it without a citation.",
+        "- When several fragments within a source mention numbers, prefer the fragment that directly answers the user’s request (for example the latest 'Price', 'Current', or 'As of <date>' section) rather than generic or historical examples.",
+        "- If a numeric value is shown in a table and a different one appears in free text, prefer whichever is explicitly marked as current or more recent.",
         allowed_sids_line,
     ]
     # Citation rules
+    if sources_json:
+        sys_lines += [
+            "",
+            "SOURCE & CONTEXT USAGE POLICY:",
+            "- Always base factual and numeric claims on the most relevant parts of the provided input_context and sources.",
+            "- Within long texts, prefer sections that clearly match the user’s question (e.g. headings or surrounding text mentioning the same entity, product, feature, timeframe, or metric).",
+            "- Ignore clearly irrelevant or off-topic fragments, even if they appear earlier in the text.",
+            "",
+            "WHEN MULTIPLE SOURCES OR NUMBERS CONFLICT:",
+            "- If multiple sources give different numeric values (e.g. price, limit, count, metric):",
+            "  - Prefer values that are more recent when date metadata is available (e.g. modified_time_iso over published_time_iso).",
+            "  - Prefer values from sources with higher authority / objective_relevance when such metadata is present.",
+            "  - Prefer values that are explicitly marked as current (e.g. 'current price', 'as of <date>', 'latest plan'), rather than older historical examples.",
+            "- If you still cannot confidently choose a single value, mention that there is disagreement and show the key alternatives instead of silently picking one.",
+            "",
+            "CURRENCY, UNITS & NUMERIC TRANSFORMATIONS:",
+            "- Do NOT silently convert currencies or units (e.g. EUR→USD, km→miles, hours→minutes).",
+            "- If the question asks for a currency/unit that does NOT appear in the sources, answer using the units actually present and clearly label them (e.g. 'The sources only specify prices in EUR: 49.90 EUR').",
+            "- Do NOT apply exchange rates or similar numeric transformations unless the user explicitly permits approximate conversions; even then, prefer to explain the limitation instead of computing new numbers.",
+            "- Do NOT normalize or scale numbers (e.g. monthly→yearly total, per-user→per-100-users) unless that exact transformation is explicitly given in a source.",
+            "",
+            "EXPIRATION & STALENESS (WHEN METADATA EXISTS):",
+            "- If a source has an 'expiration' timestamp and it is in the past, treat its numeric values as stale. Use them only if there is no fresher alternative and say that they may be outdated.",
+            "- When both published_time_iso and modified_time_iso are available, treat modified_time_iso as the best indicator of freshness.",
+            "",
+            "METADATA-AWARE PRIORITISATION:",
+            "- When source metadata such as provider, published_time_iso, modified_time_iso, expiration, objective_relevance, query_relevance, authority is available (in the source description, context, or content):",
+            "  - Prefer higher authority and objective_relevance scores when sources disagree.",
+            "  - Prefer more recent modified_time_iso / published_time_iso for time-sensitive facts like prices or availability.",
+            "  - Treat obviously low-authority or generic boilerplate sources as secondary, even if they are recent.",
+        ]
     if require_citations:
         if tgt in ("markdown", "text") and eff_embed == "inline":
             sys_lines += [

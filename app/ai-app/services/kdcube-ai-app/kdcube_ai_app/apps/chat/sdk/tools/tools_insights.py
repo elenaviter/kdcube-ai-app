@@ -17,6 +17,13 @@ BUILTIN_TOOLS = {
     "generic_tools.write_file",
 }
 
+INFRA_TOOL_IDS = {
+    "io_tools.save_ret",
+    "io_tools.tool_call",
+    "ctx_tools.fetch_turn_artifacts",
+    "ctx_tools.merge_sources",
+}
+
 EXEC_TOOLS = {
     "exec_tools.execute_code_python"
 }
