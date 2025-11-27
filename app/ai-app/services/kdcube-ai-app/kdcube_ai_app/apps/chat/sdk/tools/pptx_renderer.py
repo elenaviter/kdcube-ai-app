@@ -704,6 +704,466 @@ def estimate_content_height(elements: List[Dict], base_font_size: Pt) -> float:
     return total_in
 
 
+# def render_slide(
+#         prs: Presentation,
+#         slide_data: Dict[str, Any],
+#         css_parser,
+#         sources_map: Dict[int, Dict[str, str]],
+#         resolve_citations: bool
+# ):
+#     slide = prs.slides.add_slide(prs.slide_layouts[6])
+#
+#     title_text = slide_data.get('title', '')
+#     title_style: StyleInfo = slide_data.get('title_style') or StyleInfo()
+#     subtitle_text = slide_data.get('subtitle', '')
+#     subtitle_style: StyleInfo = slide_data.get('subtitle_style') or StyleInfo()
+#     elements = slide_data.get('elements', [])
+#
+#     page_w_in = SLIDE_WIDTH.inches - 2 * MARGIN.inches  # float inches
+#
+#     estimated_height = estimate_content_height(elements, Pt(18))
+#     scale_factor = 1.0
+#     if estimated_height > MAX_CONTENT_HEIGHT.inches:
+#         scale_factor = max(0.7, MAX_CONTENT_HEIGHT.inches / estimated_height)
+#
+#     y = MARGIN
+#
+#     # TITLE
+#     title_h = Inches(0.8 * scale_factor)
+#     title_box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, title_h)
+#     tf = title_box.text_frame
+#     tf.word_wrap = True
+#     p = tf.paragraphs[0]
+#     r = p.add_run(); r.text = title_text
+#     r.font.size = title_style.font_size or Pt(36 * scale_factor)
+#     r.font.bold = True
+#     if title_style.color:
+#         r.font.color.rgb = title_style.color
+#     y += title_h
+#
+#     # underline from CSS
+#     if title_style.border_color and title_style.border_width:
+#         line = slide.shapes.add_shape(
+#             MSO_SHAPE.RECTANGLE,
+#             MARGIN, y,
+#             SLIDE_WIDTH - MARGIN * 2, title_style.border_width
+#         )
+#         line.fill.solid()
+#         line.fill.fore_color.rgb = title_style.border_color
+#         line.line.fill.background()
+#         y += Inches(0.12 * scale_factor)
+#
+#     # SUBTITLE
+#     if subtitle_text:
+#         sub_h = Inches(0.45 * scale_factor)
+#         subtitle_box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, sub_h)
+#         tf = subtitle_box.text_frame
+#         p = tf.paragraphs[0]
+#         # Use sources-aware emitter for any links/citations in subtitle
+#         _emit_text_with_links_and_citations(
+#             p,
+#             text=subtitle_text,
+#             default_size_pt=(subtitle_style.font_size.pt if subtitle_style.font_size else 18 * scale_factor),
+#             bold=False,
+#             italic=bool(subtitle_style.italic),
+#             color=(subtitle_style.color or DEFAULT_COLORS.get('subtitle')),
+#             sources_map=sources_map,
+#             resolve_citations=resolve_citations
+#         )
+#         y += sub_h + Inches(0.12 * scale_factor)
+#
+#     # CONTENT
+#     base_font_pt = 18 * scale_factor
+#
+#     for elem in elements:
+#         if not elem:
+#             continue
+#         elem_type = elem.get('type')
+#         style: StyleInfo = elem.get('style') or StyleInfo()
+#         runs = elem.get('runs', [])
+#
+#         if elem_type in ('h2', 'h3'):
+#             fs = (style.font_size.pt if style.font_size else (28 if elem_type == 'h2' else 22)) * scale_factor
+#             box_h = _estimate_runs_height_in_inches(runs, fs, page_w_in, (style.line_height or 1.2))
+#             box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, box_h)
+#             tf = box.text_frame; tf.word_wrap = True
+#             p = tf.paragraphs[0]
+#             # Force bold for headings, but still resolve links/citations inside
+#             for run_data in runs or [{'text': ''}]:
+#                 _emit_text_with_links_and_citations(
+#                     p,
+#                     text=run_data.get('text', ''),
+#                     default_size_pt=fs,
+#                     bold=True,
+#                     italic=bool(run_data.get('italic', False)),
+#                     color=(run_data.get('color') or style.color or DEFAULT_COLORS.get('text')),
+#                     sources_map=sources_map,
+#                     resolve_citations=resolve_citations
+#                 )
+#             y += box_h + Inches(0.08 * scale_factor)
+#
+#         elif elem_type == 'list':
+#             # keep separate measurement width vs drawing width
+#             w_len = SLIDE_WIDTH - MARGIN * 2 - Inches(0.25)     # Length/EMU for drawing
+#             w_in  = page_w_in - 0.25                            # float inches for measurement
+#             for item in elem.get('items', []):
+#                 runs_i = item.get('runs', [])
+#                 fs = base_font_pt
+#                 lh = 1.3
+#                 h = _estimate_runs_height_in_inches(runs_i, fs, w_in, lh)
+#                 box = slide.shapes.add_textbox(MARGIN + Inches(0.25), y, w_len, h)
+#                 tf = box.text_frame; tf.word_wrap = True
+#                 p = tf.paragraphs[0]; p.level = 0
+#                 _emit_runs_with_sources(
+#                     p,
+#                     runs_i,
+#                     default_size_pt=fs,
+#                     fallback_color=DEFAULT_COLORS.get('text'),
+#                     sources_map=sources_map,
+#                     resolve_citations=resolve_citations
+#                 )
+#                 y += h + Inches(0.06 * scale_factor)
+#             y += Inches(0.06 * scale_factor)
+#
+#         elif elem_type == 'callout':
+#             # Skip ghost callouts with no visible text
+#             if not _runs_have_text(runs):
+#                 continue
+#             fs = (style.font_size.pt if style.font_size else 16) * scale_factor
+#             pad_l = style.padding_left or Inches(0.2)
+#             pad_r = style.padding_right or Inches(0.1)
+#             pad_t = style.padding_top or Inches(0.1)
+#             pad_b = style.padding_bottom or Inches(0.1)
+#
+#             content_w_in = page_w_in - pad_l.inches - pad_r.inches
+#             content_w_len = SLIDE_WIDTH - MARGIN * 2 - pad_l - pad_r  # for drawing
+#
+#             content_h = _estimate_runs_height_in_inches(runs, fs, content_w_in, (style.line_height or 1.3))
+#             box_h_in = max(content_h.inches + pad_t.inches + pad_b.inches, 0.6)
+#             box_h = Inches(box_h_in)
+#
+#             if style.background:
+#                 bg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, MARGIN, y, SLIDE_WIDTH - MARGIN * 2, box_h)
+#                 bg.fill.solid(); bg.fill.fore_color.rgb = style.background
+#                 bg.line.fill.background()
+#
+#             if style.border_left_color and style.border_left_width:
+#                 border = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, MARGIN, y, style.border_left_width, box_h)
+#                 border.fill.solid(); border.fill.fore_color.rgb = style.border_left_color
+#                 border.line.fill.background()
+#
+#             text_box = slide.shapes.add_textbox(MARGIN + pad_l, y + pad_t, content_w_len, box_h - pad_t - pad_b)
+#             tf = text_box.text_frame; tf.word_wrap = True
+#             p = tf.paragraphs[0]
+#             _emit_runs_with_sources(
+#                 p,
+#                 runs,
+#                 default_size_pt=fs,
+#                 fallback_color=(style.color or DEFAULT_COLORS.get('text')),
+#                 sources_map=sources_map,
+#                 resolve_citations=resolve_citations
+#             )
+#             y += box_h + Inches(0.12 * scale_factor)
+#
+#         elif elem_type == 'columns':
+#             gap_in = elem.get('gap_in', 0.0)
+#             gap_len = Inches(gap_in)
+#             col_w_in = (page_w_in - gap_in) / 2.0
+#             col_w_len = Inches(col_w_in)
+#             left_x = MARGIN
+#             right_x = MARGIN + col_w_len + gap_len
+#             cols = elem.get('columns', [])
+#
+#             def compute_col_dims(col):
+#                 cs: StyleInfo = (col.get('style') if col else None) or StyleInfo()
+#                 pad_l = cs.padding_left or Inches(0.0)
+#                 pad_r = cs.padding_right or Inches(0.0)
+#                 pad_t = cs.padding_top or Inches(0.0)
+#                 pad_b = cs.padding_bottom or Inches(0.0)
+#                 inner_w_in = max(0.1, col_w_in - pad_l.inches - pad_r.inches)
+#                 content_h_in = _estimate_elements_height(col.get('elements', []), 18 * scale_factor, inner_w_in) if col else 0.0
+#                 total_h_in = content_h_in + pad_t.inches + pad_b.inches
+#                 return cs, pad_l, pad_r, pad_t, pad_b, inner_w_in, Inches(inner_w_in), Inches(total_h_in)
+#
+#             # precompute both columns
+#             colL = cols[0] if len(cols) > 0 else {'style':StyleInfo(), 'elements':[]}
+#             colR = cols[1] if len(cols) > 1 else {'style':StyleInfo(), 'elements':[]}
+#             csL, padL_l, padL_r, padL_t, padL_b, innerL_in, innerL_len, colH_len_L = compute_col_dims(colL)
+#             csR, padR_l, padR_r, padR_t, padR_b, innerR_in, innerR_len, colH_len_R = compute_col_dims(colR)
+#
+#             # draw backgrounds first (only if there is some content height)
+#             min_draw_in = 0.05
+#             if csL.background and colH_len_L.inches > min_draw_in:
+#                 bgL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, col_w_len, colH_len_L)
+#                 bgL.fill.solid(); bgL.fill.fore_color.rgb = csL.background
+#                 bgL.line.fill.background()
+#             if csR.background and colH_len_R.inches > min_draw_in:
+#                 bgR = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, right_x, y, col_w_len, colH_len_R)
+#                 bgR.fill.solid(); bgR.fill.fore_color.rgb = csR.background
+#                 bgR.line.fill.background()
+#
+#             # optional left borders
+#             if csL.border_left_color and csL.border_left_width:
+#                 bL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, csL.border_left_width, colH_len_L)
+#                 bL.fill.solid(); bL.fill.fore_color.rgb = csL.border_left_color; bL.line.fill.background()
+#             if csR.border_left_color and csR.border_left_width:
+#                 bR = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, right_x, y, csR.border_left_width, colH_len_R)
+#                 bR.fill.solid(); bR.fill.fore_color.rgb = csR.border_left_color; bR.line.fill.background()
+#
+#             def render_into(x_left_len, y_top_len, avail_w_len, avail_w_in, elements_in_col):
+#                 y_col = y_top_len
+#                 base_pt = 18 * scale_factor
+#                 for b in elements_in_col:
+#                     bt = b.get('type'); bs: StyleInfo = b.get('style') or StyleInfo()
+#                     if bt in ('h2','h3'):
+#                         fs = (bs.font_size.pt if bs.font_size else (28 if bt=='h2' else 22)) * scale_factor
+#                         h = _estimate_runs_height_in_inches(b.get('runs', []), fs, avail_w_in, (bs.line_height or 1.2))
+#                         box = slide.shapes.add_textbox(x_left_len, y_col, avail_w_len, h)
+#                         tf = box.text_frame; tf.word_wrap = True
+#                         p = tf.paragraphs[0]
+#                         # Force bold for headings inside columns
+#                         for rd in b.get('runs', []) or [{'text': ''}]:
+#                             _emit_text_with_links_and_citations(
+#                                 p,
+#                                 text=rd.get('text', ''),
+#                                 default_size_pt=fs,
+#                                 bold=True,
+#                                 italic=bool(rd.get('italic', False)),
+#                                 color=(rd.get('color') or bs.color or DEFAULT_COLORS.get('text')),
+#                                 sources_map=sources_map,
+#                                 resolve_citations=resolve_citations
+#                             )
+#                         y_col += h + Inches(0.06 * scale_factor)
+#
+#                     elif bt == 'paragraph':
+#                         fs = (bs.font_size.pt if bs.font_size else 18) * scale_factor
+#                         h = _estimate_runs_height_in_inches(b.get('runs', []), fs, avail_w_in, (bs.line_height or 1.3))
+#                         box = slide.shapes.add_textbox(x_left_len, y_col, avail_w_len, h)
+#                         tf = box.text_frame; tf.word_wrap = True
+#                         p = tf.paragraphs[0]
+#                         _emit_runs_with_sources(
+#                             p,
+#                             b.get('runs', []),
+#                             default_size_pt=fs,
+#                             fallback_color=(bs.color or DEFAULT_COLORS.get('text')),
+#                             sources_map=sources_map,
+#                             resolve_citations=resolve_citations
+#                         )
+#                         y_col += h + Inches(0.04 * scale_factor)
+#
+#                     elif bt == 'list':
+#                         fs = base_pt
+#                         w_len = avail_w_len - Inches(0.25)
+#                         w_in  = max(0.1, avail_w_in - 0.25)
+#                         for it in b.get('items', []):
+#                             h = _estimate_runs_height_in_inches(it.get('runs', []), fs, w_in, 1.3)
+#                             box = slide.shapes.add_textbox(x_left_len + Inches(0.25), y_col, w_len, h)
+#                             tf = box.text_frame; tf.word_wrap = True
+#                             p = tf.paragraphs[0]; p.level = 0
+#                             _emit_runs_with_sources(
+#                                 p,
+#                                 it.get('runs', []),
+#                                 default_size_pt=fs,
+#                                 fallback_color=DEFAULT_COLORS.get('text'),
+#                                 sources_map=sources_map,
+#                                 resolve_citations=resolve_citations
+#                             )
+#                             y_col += h + Inches(0.04 * scale_factor)
+#                         y_col += Inches(0.02 * scale_factor)
+#
+#                     elif bt == 'callout':
+#                         fs = (bs.font_size.pt if bs.font_size else 16) * scale_factor
+#                         pad_l = bs.padding_left or Inches(0.2)
+#                         pad_r = bs.padding_right or Inches(0.1)
+#                         pad_t = bs.padding_top or Inches(0.1)
+#                         pad_b = bs.padding_bottom or Inches(0.1)
+#                         inner_w_in  = max(0.1, avail_w_in - pad_l.inches - pad_r.inches)
+#                         inner_w_len = avail_w_len - pad_l - pad_r
+#                         content_h = _estimate_runs_height_in_inches(b.get('runs', []), fs, inner_w_in, (bs.line_height or 1.3))
+#                         box_h = Inches(max(content_h.inches + pad_t.inches + pad_b.inches, 0.6))
+#
+#                         if bs.background:
+#                             bg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x_left_len, y_col, avail_w_len, box_h)
+#                             bg.fill.solid(); bg.fill.fore_color.rgb = bs.background; bg.line.fill.background()
+#                         if bs.border_left_color and bs.border_left_width:
+#                             border = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x_left_len, y_col, bs.border_left_width, box_h)
+#                             border.fill.solid(); border.fill.fore_color.rgb = bs.border_left_color; border.line.fill.background()
+#
+#                         tb = slide.shapes.add_textbox(x_left_len + pad_l, y_col + pad_t, inner_w_len, box_h - pad_t - pad_b)
+#                         tf = tb.text_frame; tf.word_wrap = True
+#                         p = tf.paragraphs[0]
+#                         _emit_runs_with_sources(
+#                             p,
+#                             b.get('runs', []),
+#                             default_size_pt=fs,
+#                             fallback_color=(bs.color or DEFAULT_COLORS.get('text')),
+#                             sources_map=sources_map,
+#                             resolve_citations=resolve_citations
+#                         )
+#                         y_col += box_h + Inches(0.08 * scale_factor)
+#
+#                     elif bt == 'table':
+#                         header = b.get('header', [])
+#                         rows = b.get('rows', [])
+#
+#                         # promote first row to header if needed
+#                         if not header and rows:
+#                             header, rows = rows[0], rows[1:]
+#
+#                         if not header:
+#                             continue
+#
+#                         ncols = len(header)
+#
+#                         # heights tuned a bit smaller for columns
+#                         row_h = Inches(0.30 * scale_factor)
+#                         header_h = Inches(0.35 * scale_factor)
+#
+#                         # colors from CSS
+#                         th_rules = css_parser.styles.get('th', {})
+#                         stripe_rules = css_parser.styles.get('tr:nth-child(even)', {})
+#                         parse_color = CSSParser()._parse_color
+#                         header_bg = parse_color(th_rules.get('background-color')) if th_rules else None
+#                         header_fg = parse_color(th_rules.get('color')) if th_rules else None
+#                         stripe_bg = parse_color(stripe_rules.get('background-color')) if stripe_rules else None
+#
+#                         tbl = slide.shapes.add_table(1 + len(rows), ncols,
+#                                                      x_left_len, y_col,
+#                                                      avail_w_len, header_h + row_h*max(1, len(rows))).table
+#
+#                         # header
+#                         for c, cell in enumerate(header):
+#                             tc = tbl.cell(0, c)
+#                             tf = tc.text_frame; tf.clear()
+#                             p = tf.paragraphs[0]
+#                             _emit_runs_with_sources(
+#                                 p,
+#                                 cell.get('runs', []),
+#                                 default_size_pt=14 * scale_factor,
+#                                 fallback_color=(header_fg or DEFAULT_COLORS.get('text')),
+#                                 sources_map=sources_map,
+#                                 resolve_citations=resolve_citations
+#                             )
+#                             for rr in p.runs: rr.font.bold = True
+#                             if header_bg:
+#                                 tc.fill.solid(); tc.fill.fore_color.rgb = header_bg
+#
+#                         # body
+#                         for r, row in enumerate(rows, start=1):
+#                             for c, cell in enumerate(row):
+#                                 tc = tbl.cell(r, c)
+#                                 tf = tc.text_frame; tf.clear()
+#                                 p = tf.paragraphs[0]
+#                                 _emit_runs_with_sources(
+#                                     p,
+#                                     cell.get('runs', []),
+#                                     default_size_pt=14 * scale_factor,
+#                                     fallback_color=DEFAULT_COLORS.get('text'),
+#                                     sources_map=sources_map,
+#                                     resolve_citations=resolve_citations
+#                                 )
+#                             if stripe_bg and (r % 2 == 0):
+#                                 for c in range(ncols):
+#                                     tc = tbl.cell(r, c); tc.fill.solid(); tc.fill.fore_color.rgb = stripe_bg
+#
+#                         y_col += header_h + row_h*max(1, len(rows)) + Inches(0.06 * scale_factor)
+#
+#                 return y_col
+#
+#             # content frames top-lefts (apply column paddings)
+#             yL_start = y + padL_t
+#             yR_start = y + padR_t
+#             xL_inset = left_x + padL_l
+#             xR_inset = right_x + padR_l
+#             wL_inner = col_w_len - padL_l - padL_r
+#             wR_inner = col_w_len - padR_l - padR_r
+#
+#             y_left_end  = render_into(xL_inset, yL_start, wL_inner, innerL_in, colL.get('elements', []))
+#             y_right_end = render_into(xR_inset, yR_start, wR_inner, innerR_in, colR.get('elements', []))
+#
+#             # advance y by the taller of the two columns
+#             y += Inches(max(colH_len_L.inches, colH_len_R.inches)) + Inches(0.04 * scale_factor)
+#
+#         elif elem_type == 'table':
+#             header = elem.get('header', [])
+#             rows = elem.get('rows', [])
+#
+#             # promote first row to header if no <thead> was present
+#             if not header and rows:
+#                 header, rows = rows[0], rows[1:]
+#
+#             if header:
+#                 ncols = len(header)
+#
+#                 # width + heights
+#                 tbl_w_len = SLIDE_WIDTH - MARGIN*2
+#                 row_h = Inches(0.35 * scale_factor)
+#                 header_h = Inches(0.4 * scale_factor)
+#
+#                 # read CSS colors directly from the parser
+#                 th_rules = css_parser.styles.get('th', {})
+#                 stripe_rules = css_parser.styles.get('tr:nth-child(even)', {})
+#                 parse_color = CSSParser()._parse_color
+#                 header_bg = parse_color(th_rules.get('background-color')) if th_rules else None
+#                 header_fg = parse_color(th_rules.get('color')) if th_rules else None
+#                 stripe_bg = parse_color(stripe_rules.get('background-color')) if stripe_rules else None
+#
+#                 tbl = slide.shapes.add_table(1 + len(rows), ncols, MARGIN, y,
+#                                              tbl_w_len, header_h + row_h*max(1, len(rows))).table
+#
+#                 # header cells
+#                 for c, cell in enumerate(header):
+#                     tc = tbl.cell(0, c)
+#                     tf = tc.text_frame; tf.clear()
+#                     p = tf.paragraphs[0]
+#                     _emit_runs_with_sources(
+#                         p,
+#                         cell.get('runs', []),
+#                         default_size_pt=14 * scale_factor,
+#                         fallback_color=(header_fg or DEFAULT_COLORS.get('text')),
+#                         sources_map=sources_map,
+#                         resolve_citations=resolve_citations
+#                     )
+#                     for rr in p.runs: rr.font.bold = True
+#                     if header_bg:
+#                         tc.fill.solid(); tc.fill.fore_color.rgb = header_bg
+#
+#                 # body rows
+#                 for r, row in enumerate(rows, start=1):
+#                     for c, cell in enumerate(row):
+#                         tc = tbl.cell(r, c)
+#                         tf = tc.text_frame; tf.clear()
+#                         p = tf.paragraphs[0]
+#                         _emit_runs_with_sources(
+#                             p,
+#                             cell.get('runs', []),
+#                             default_size_pt=14 * scale_factor,
+#                             fallback_color=DEFAULT_COLORS.get('text'),
+#                             sources_map=sources_map,
+#                             resolve_citations=resolve_citations
+#                         )
+#                     if stripe_bg and (r % 2 == 0):
+#                         for c in range(ncols):
+#                             tc = tbl.cell(r, c); tc.fill.solid(); tc.fill.fore_color.rgb = stripe_bg
+#
+#                 y += header_h + row_h*max(1, len(rows)) + Inches(0.12 * scale_factor)
+#
+#         elif elem_type == 'paragraph':
+#             # (Top-level paragraph — previously missing; safe to handle)
+#             fs = (style.font_size.pt if style.font_size else 18) * scale_factor
+#             h = _estimate_runs_height_in_inches(runs, fs, page_w_in, (style.line_height or 1.3))
+#             box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - 2*MARGIN, h)
+#             tf = box.text_frame; tf.word_wrap = True
+#             p = tf.paragraphs[0]
+#             _emit_runs_with_sources(
+#                 p,
+#                 runs,
+#                 default_size_pt=fs,
+#                 fallback_color=(style.color or DEFAULT_COLORS.get('text')),
+#                 sources_map=sources_map,
+#                 resolve_citations=resolve_citations
+#             )
+#             y += h + Inches(0.08 * scale_factor)
 def render_slide(
         prs: Presentation,
         slide_data: Dict[str, Any],
@@ -719,8 +1179,9 @@ def render_slide(
     subtitle_style: StyleInfo = slide_data.get('subtitle_style') or StyleInfo()
     elements = slide_data.get('elements', [])
 
-    page_w_in = SLIDE_WIDTH.inches - 2 * MARGIN.inches  # float inches
+    page_w_in = SLIDE_WIDTH.inches - 2 * MARGIN.inches
 
+    # Scale based on content (body only), same as before
     estimated_height = estimate_content_height(elements, Pt(18))
     scale_factor = 1.0
     if estimated_height > MAX_CONTENT_HEIGHT.inches:
@@ -728,42 +1189,63 @@ def render_slide(
 
     y = MARGIN
 
-    # TITLE
-    title_h = Inches(0.8 * scale_factor)
+    # === TITLE (measure, then draw) ==========================================
+    title_fs_pt = (title_style.font_size.pt if title_style.font_size else 36 * scale_factor)
+    title_runs_for_measure = [{'text': title_text or ''}]
+    title_h = _estimate_runs_height_in_inches(
+        title_runs_for_measure,
+        title_fs_pt,
+        page_w_in,
+        (title_style.line_height or 1.15),
+    )
+    # keep a sensible minimum but let large titles expand
+    if title_h.inches < 0.6 * scale_factor:
+        title_h = Inches(0.6 * scale_factor)
+
     title_box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, title_h)
     tf = title_box.text_frame
     tf.word_wrap = True
     p = tf.paragraphs[0]
     r = p.add_run(); r.text = title_text
-    r.font.size = title_style.font_size or Pt(36 * scale_factor)
+    r.font.size = Pt(title_fs_pt)
     r.font.bold = True
     if title_style.color:
         r.font.color.rgb = title_style.color
     y += title_h
 
-    # underline from CSS
+    # Underline from CSS — place it **after** measured title; then add a gap
     if title_style.border_color and title_style.border_width:
-        line = slide.shapes.add_shape(
+        line_h = title_style.border_width
+        slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
             MARGIN, y,
-            SLIDE_WIDTH - MARGIN * 2, title_style.border_width
-        )
-        line.fill.solid()
-        line.fill.fore_color.rgb = title_style.border_color
-        line.line.fill.background()
-        y += Inches(0.12 * scale_factor)
+            SLIDE_WIDTH - MARGIN * 2, line_h
+        ).line.fill.background()  # line has no stroke; the fill is enough
+        # color fill
+        underline = slide.shapes[-1]
+        underline.fill.solid()
+        underline.fill.fore_color.rgb = title_style.border_color
+        y += Inches(0.15 * scale_factor)  # a touch more air than before
 
-    # SUBTITLE
+    # === SUBTITLE (measure, then draw) =======================================
     if subtitle_text:
-        sub_h = Inches(0.45 * scale_factor)
+        sub_fs_pt = (subtitle_style.font_size.pt if subtitle_style.font_size else 18 * scale_factor)
+        sub_h = _estimate_runs_height_in_inches(
+            [{'text': subtitle_text}],
+            sub_fs_pt,
+            page_w_in,
+            (subtitle_style.line_height or 1.2),
+        )
+        if sub_h.inches < 0.35 * scale_factor:
+            sub_h = Inches(0.35 * scale_factor)
+
         subtitle_box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, sub_h)
         tf = subtitle_box.text_frame
         p = tf.paragraphs[0]
-        # Use sources-aware emitter for any links/citations in subtitle
         _emit_text_with_links_and_citations(
             p,
             text=subtitle_text,
-            default_size_pt=(subtitle_style.font_size.pt if subtitle_style.font_size else 18 * scale_factor),
+            default_size_pt=sub_fs_pt,
             bold=False,
             italic=bool(subtitle_style.italic),
             color=(subtitle_style.color or DEFAULT_COLORS.get('subtitle')),
@@ -772,7 +1254,7 @@ def render_slide(
         )
         y += sub_h + Inches(0.12 * scale_factor)
 
-    # CONTENT
+    # === BODY ================================================================
     base_font_pt = 18 * scale_factor
 
     for elem in elements:
@@ -788,7 +1270,6 @@ def render_slide(
             box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - MARGIN * 2, box_h)
             tf = box.text_frame; tf.word_wrap = True
             p = tf.paragraphs[0]
-            # Force bold for headings, but still resolve links/citations inside
             for run_data in runs or [{'text': ''}]:
                 _emit_text_with_links_and_citations(
                     p,
@@ -803,9 +1284,8 @@ def render_slide(
             y += box_h + Inches(0.08 * scale_factor)
 
         elif elem_type == 'list':
-            # keep separate measurement width vs drawing width
-            w_len = SLIDE_WIDTH - MARGIN * 2 - Inches(0.25)     # Length/EMU for drawing
-            w_in  = page_w_in - 0.25                            # float inches for measurement
+            w_len = SLIDE_WIDTH - MARGIN * 2 - Inches(0.25)
+            w_in  = page_w_in - 0.25
             for item in elem.get('items', []):
                 runs_i = item.get('runs', [])
                 fs = base_font_pt
@@ -826,7 +1306,6 @@ def render_slide(
             y += Inches(0.06 * scale_factor)
 
         elif elem_type == 'callout':
-            # Skip ghost callouts with no visible text
             if not _runs_have_text(runs):
                 continue
             fs = (style.font_size.pt if style.font_size else 16) * scale_factor
@@ -836,7 +1315,7 @@ def render_slide(
             pad_b = style.padding_bottom or Inches(0.1)
 
             content_w_in = page_w_in - pad_l.inches - pad_r.inches
-            content_w_len = SLIDE_WIDTH - MARGIN * 2 - pad_l - pad_r  # for drawing
+            content_w_len = SLIDE_WIDTH - MARGIN * 2 - pad_l - pad_r
 
             content_h = _estimate_runs_height_in_inches(runs, fs, content_w_in, (style.line_height or 1.3))
             box_h_in = max(content_h.inches + pad_t.inches + pad_b.inches, 0.6)
@@ -885,24 +1364,19 @@ def render_slide(
                 total_h_in = content_h_in + pad_t.inches + pad_b.inches
                 return cs, pad_l, pad_r, pad_t, pad_b, inner_w_in, Inches(inner_w_in), Inches(total_h_in)
 
-            # precompute both columns
             colL = cols[0] if len(cols) > 0 else {'style':StyleInfo(), 'elements':[]}
             colR = cols[1] if len(cols) > 1 else {'style':StyleInfo(), 'elements':[]}
             csL, padL_l, padL_r, padL_t, padL_b, innerL_in, innerL_len, colH_len_L = compute_col_dims(colL)
             csR, padR_l, padR_r, padR_t, padR_b, innerR_in, innerR_len, colH_len_R = compute_col_dims(colR)
 
-            # draw backgrounds first (only if there is some content height)
             min_draw_in = 0.05
             if csL.background and colH_len_L.inches > min_draw_in:
                 bgL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, col_w_len, colH_len_L)
-                bgL.fill.solid(); bgL.fill.fore_color.rgb = csL.background
-                bgL.line.fill.background()
+                bgL.fill.solid(); bgL.fill.fore_color.rgb = csL.background; bgL.line.fill.background()
             if csR.background and colH_len_R.inches > min_draw_in:
                 bgR = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, right_x, y, col_w_len, colH_len_R)
-                bgR.fill.solid(); bgR.fill.fore_color.rgb = csR.background
-                bgR.line.fill.background()
+                bgR.fill.solid(); bgR.fill.fore_color.rgb = csR.background; bgR.line.fill.background()
 
-            # optional left borders
             if csL.border_left_color and csL.border_left_width:
                 bL = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left_x, y, csL.border_left_width, colH_len_L)
                 bL.fill.solid(); bL.fill.fore_color.rgb = csL.border_left_color; bL.line.fill.background()
@@ -921,7 +1395,6 @@ def render_slide(
                         box = slide.shapes.add_textbox(x_left_len, y_col, avail_w_len, h)
                         tf = box.text_frame; tf.word_wrap = True
                         p = tf.paragraphs[0]
-                        # Force bold for headings inside columns
                         for rd in b.get('runs', []) or [{'text': ''}]:
                             _emit_text_with_links_and_citations(
                                 p,
@@ -1006,20 +1479,16 @@ def render_slide(
                         header = b.get('header', [])
                         rows = b.get('rows', [])
 
-                        # promote first row to header if needed
                         if not header and rows:
                             header, rows = rows[0], rows[1:]
-
                         if not header:
                             continue
-
                         ncols = len(header)
 
-                        # heights tuned a bit smaller for columns
+                        # target sizes (initial); actual shape height may differ
                         row_h = Inches(0.30 * scale_factor)
                         header_h = Inches(0.35 * scale_factor)
 
-                        # colors from CSS
                         th_rules = css_parser.styles.get('th', {})
                         stripe_rules = css_parser.styles.get('tr:nth-child(even)', {})
                         parse_color = CSSParser()._parse_color
@@ -1027,9 +1496,12 @@ def render_slide(
                         header_fg = parse_color(th_rules.get('color')) if th_rules else None
                         stripe_bg = parse_color(stripe_rules.get('background-color')) if stripe_rules else None
 
-                        tbl = slide.shapes.add_table(1 + len(rows), ncols,
-                                                     x_left_len, y_col,
-                                                     avail_w_len, header_h + row_h*max(1, len(rows))).table
+                        table_shape = slide.shapes.add_table(
+                            1 + len(rows), ncols,
+                            x_left_len, y_col,
+                            avail_w_len, header_h + row_h * max(1, len(rows))
+                        )
+                        tbl = table_shape.table
 
                         # header
                         for c, cell in enumerate(header):
@@ -1066,11 +1538,11 @@ def render_slide(
                                 for c in range(ncols):
                                     tc = tbl.cell(r, c); tc.fill.solid(); tc.fill.fore_color.rgb = stripe_bg
 
-                        y_col += header_h + row_h*max(1, len(rows)) + Inches(0.06 * scale_factor)
+                        # advance by the **actual** drawn height
+                        y_col += table_shape.height + Inches(0.06 * scale_factor)
 
                 return y_col
 
-            # content frames top-lefts (apply column paddings)
             yL_start = y + padL_t
             yR_start = y + padR_t
             xL_inset = left_x + padL_l
@@ -1080,27 +1552,21 @@ def render_slide(
 
             y_left_end  = render_into(xL_inset, yL_start, wL_inner, innerL_in, colL.get('elements', []))
             y_right_end = render_into(xR_inset, yR_start, wR_inner, innerR_in, colR.get('elements', []))
-
-            # advance y by the taller of the two columns
             y += Inches(max(colH_len_L.inches, colH_len_R.inches)) + Inches(0.04 * scale_factor)
 
         elif elem_type == 'table':
             header = elem.get('header', [])
             rows = elem.get('rows', [])
 
-            # promote first row to header if no <thead> was present
             if not header and rows:
                 header, rows = rows[0], rows[1:]
-
             if header:
                 ncols = len(header)
 
-                # width + heights
                 tbl_w_len = SLIDE_WIDTH - MARGIN*2
                 row_h = Inches(0.35 * scale_factor)
                 header_h = Inches(0.4 * scale_factor)
 
-                # read CSS colors directly from the parser
                 th_rules = css_parser.styles.get('th', {})
                 stripe_rules = css_parser.styles.get('tr:nth-child(even)', {})
                 parse_color = CSSParser()._parse_color
@@ -1108,8 +1574,11 @@ def render_slide(
                 header_fg = parse_color(th_rules.get('color')) if th_rules else None
                 stripe_bg = parse_color(stripe_rules.get('background-color')) if stripe_rules else None
 
-                tbl = slide.shapes.add_table(1 + len(rows), ncols, MARGIN, y,
-                                             tbl_w_len, header_h + row_h*max(1, len(rows))).table
+                table_shape = slide.shapes.add_table(
+                    1 + len(rows), ncols, MARGIN, y,
+                    tbl_w_len, header_h + row_h * max(1, len(rows))
+                )
+                tbl = table_shape.table
 
                 # header cells
                 for c, cell in enumerate(header):
@@ -1146,10 +1615,10 @@ def render_slide(
                         for c in range(ncols):
                             tc = tbl.cell(r, c); tc.fill.solid(); tc.fill.fore_color.rgb = stripe_bg
 
-                y += header_h + row_h*max(1, len(rows)) + Inches(0.12 * scale_factor)
+                # advance by the **actual** table height so the next H2 never overlaps
+                y += table_shape.height + Inches(0.12 * scale_factor)
 
         elif elem_type == 'paragraph':
-            # (Top-level paragraph — previously missing; safe to handle)
             fs = (style.font_size.pt if style.font_size else 18) * scale_factor
             h = _estimate_runs_height_in_inches(runs, fs, page_w_in, (style.line_height or 1.3))
             box = slide.shapes.add_textbox(MARGIN, y, SLIDE_WIDTH - 2*MARGIN, h)
