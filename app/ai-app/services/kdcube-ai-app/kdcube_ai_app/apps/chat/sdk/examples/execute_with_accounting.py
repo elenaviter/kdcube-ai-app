@@ -15,6 +15,8 @@ sonnet_4 = "claude-sonnet-4-20250514"
 sonnet_45 = "claude-sonnet-4-5-20250929"
 haiku_3 = "claude-3-5-haiku-20241022" # "claude-3-haiku-20240307"
 haiku_4 = "claude-haiku-4-5-20251001"
+gemini_25_flash = "gemini-2.5-flash" # "haiku"
+gemini_25_pro = "gemini-2.5-pro" # "sonnet"
 
 TENANT_ID = None
 PROJECT_ID = None
@@ -41,8 +43,9 @@ def configure_env():
     req = ConfigRequest(
         openai_api_key=settings.OPENAI_API_KEY,
         claude_api_key=settings.ANTHROPIC_API_KEY,
+        google_api_key=settings.GOOGLE_API_KEY,
         selected_model=DEFAULT_MODEL,
-        role_models={ ROLE_FRIENDLY_ASSISTANT: {"provider": "anthropic", "model": haiku_4}},
+        role_models={ ROLE_FRIENDLY_ASSISTANT: {"provider": "google", "model": gemini_25_pro}},
     )
 
     ms = ModelServiceBase(create_workflow_config(req))
@@ -55,6 +58,9 @@ async def streaming(ms: ModelServiceBase,
     client = ms.get_client(agent_name)
 
     async def on_delta(d):
+        print(d)
+
+    async def on_thinking(d):
         print(d)
 
     if not on_delta_fn:
@@ -71,9 +77,11 @@ async def streaming(ms: ModelServiceBase,
             client,
             msgs,
             on_delta=on_delta_fn,
+            on_thinking=on_thinking,
             role=agent_name,
-            temperature=0.3,
+            temperature=1.0,
             max_tokens=500,
+            max_thinking_tokens=128,
             debug=True
         )
     print()
@@ -132,7 +140,8 @@ if __name__ == "__main__":
         "system": SYSTEM,
     }
 
-    msgs = [SystemMessage(content="You are concise."), HumanMessage(content="Say hi!")]
+    # msgs = [SystemMessage(content="You are concise."), HumanMessage(content="Say hi!")]
+    msgs = [SystemMessage(content="You are informatika teacher"), HumanMessage(content="In need to learn java on example project. I like gaming. Give me 5 bullets of my first actions in next 5 days.")]
     fn = lambda: streaming(ms=ms,
                            agent_name=ROLE_FRIENDLY_ASSISTANT,
                            msgs=msgs)

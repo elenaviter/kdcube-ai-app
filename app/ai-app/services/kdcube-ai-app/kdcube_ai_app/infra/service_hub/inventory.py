@@ -275,29 +275,56 @@ def _extract_system_prompt_text(system_prompt: Union[str, SystemMessage]) -> str
     # Fallback for any other type
     return str(system_prompt)
 
-def _normalize_message_for_openai(msg: BaseMessage) -> BaseMessage:
-    """
-    Convert Anthropic-style block messages to regular messages for OpenAI.
-    Concatenates all text blocks into the content field.
-    """
-    if not isinstance(msg, SystemMessage):
-        return msg
+from langchain_core.messages import SystemMessage, HumanMessage, BaseMessage, AIMessage
+from typing import List, Union
 
-    # Check for message_blocks (Anthropic-specific structure)
-    blocks = (msg.additional_kwargs or {}).get("message_blocks")
+def _flatten_message(msg: BaseMessage) -> BaseMessage:
+    """
+    Convert Anthropic-style block messages to regular text messages.
+
+    - If msg.additional_kwargs["message_blocks"] (or msg.content is a list of blocks)
+      exists, we concatenate all text blocks into a single string.
+    - We drop cache_control and other Anthropic-specific metadata.
+    - Works for SystemMessage, HumanMessage, AIMessage.
+    """
+    addkw = getattr(msg, "additional_kwargs", {}) or {}
+    blocks = addkw.get("message_blocks")
+
+    # Also handle messages whose .content is already a list of blocks
+    if not blocks and isinstance(getattr(msg, "content", None), list):
+        blocks = msg.content
+
     if not blocks:
-        # Already a normal message, return as-is
+        # Nothing special → return as-is
         return msg
 
-    # Concatenate all text blocks
-    full_text = "\n\n".join(
-        block.get("text", "")
-        for block in blocks
-        if block.get("type") == "text"
-    )
+    text_parts: List[str] = []
+    for b in blocks:
+        if isinstance(b, dict):
+            if b.get("type") == "text":
+                t = b.get("text") or b.get("content") or ""
+                if t:
+                    text_parts.append(str(t))
+        else:
+            # raw strings (or anything else) → stringify
+            text_parts.append(str(b))
 
-    # Return a new SystemMessage with full text (cache hints removed)
-    return SystemMessage(content=full_text)
+    full_text = "\n\n".join(text_parts)
+
+    # Recreate the same type, but with plain text content, dropping additional_kwargs
+    if isinstance(msg, SystemMessage):
+        return SystemMessage(content=full_text)
+    if isinstance(msg, HumanMessage):
+        return HumanMessage(content=full_text)
+    if isinstance(msg, AIMessage):
+        return AIMessage(content=full_text)
+
+    # Fallback: best-effort, keep type if constructor supports content=
+    try:
+        return type(msg)(content=full_text)
+    except Exception:
+        return msg
+
 
 # =========================
 # Logging
@@ -450,6 +477,7 @@ class ConfigRequest(BaseModel):
     # Keys
     openai_api_key: Optional[str] = None
     claude_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
 
     # Global defaults
     selected_model: str = None   # used for default role mapping if role_models not provided
@@ -463,6 +491,10 @@ class ConfigRequest(BaseModel):
     # Feature toggles
     has_classifier: Optional[bool] = None         # override; else derive from MODEL_CONFIGS
     format_fix_enabled: bool = True               # enable JSON fixer on structured calls
+
+    # Gemini caching (optional, safe defaults)
+    gemini_cache_enabled: Optional[bool] = None
+    gemini_cache_ttl_seconds: Optional[int] = None
 
     # Role mapping (bundle “template” can fill this)
     # {"classifier":{"provider":"openai","model":"o3-mini"}, ...}
@@ -493,12 +525,18 @@ class Config:
     def __init__(self,
                  openai_api_key: Optional[str] = None,
                  claude_api_key: Optional[str] = None,
+                 google_api_key: Optional[str] = None,
                  embedding_model: Optional[str] = None,
                  default_llm_model: Optional[str] = None,
                  role_models: Optional[Dict[str, Dict[str, str]]] = None):
         # keys
         self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
         self.claude_api_key = claude_api_key or os.getenv("ANTHROPIC_API_KEY", "")
+        self.google_api_key = google_api_key or os.getenv("GEMINI_API_KEY", "")
+
+        # Gemini cache options (env or defaults)
+        self.gemini_cache_enabled: bool = bool(int(os.getenv("GEMINI_CACHE_ENABLED", "0")))
+        self.gemini_cache_ttl_seconds: int = int(os.getenv("GEMINI_CACHE_TTL_SECONDS", "3600"))
 
         # embeddings (declarative)
         self.selected_embedder = "openai-text-embedding-3-small"
@@ -638,6 +676,14 @@ def create_workflow_config(config_request: ConfigRequest) -> Config:
         cfg.openai_api_key = config_request.openai_api_key
     if config_request.claude_api_key:
         cfg.claude_api_key = config_request.claude_api_key
+    if config_request.google_api_key:                    # <<< NEW (google)
+        cfg.google_api_key = config_request.google_api_key
+
+    # Gemini cache
+    if config_request.gemini_cache_enabled is not None:
+        cfg.gemini_cache_enabled = bool(config_request.gemini_cache_enabled)
+    if config_request.gemini_cache_ttl_seconds is not None:
+        cfg.gemini_cache_ttl_seconds = int(config_request.gemini_cache_ttl_seconds)
 
     cfg.format_fix_enabled = bool(config_request.format_fix_enabled)
 
@@ -716,13 +762,25 @@ class ModelRouter:
         self._anthropic_async = anthropic.AsyncAnthropic(api_key=self.config.claude_api_key)
         return self._anthropic_async
 
+    def _mk_gemini(self, model: str, temperature: float) -> "GeminiModelClient":
+        if not self.config.google_api_key:
+            raise ValueError("Gemini provider requires GEMINI_API_KEY or google_api_key in ConfigRequest")
+
+        from kdcube_ai_app.infra.service_hub.gemini import GeminiModelClient
+        return GeminiModelClient(
+            api_key=self.config.google_api_key,
+            model_name=model,
+            temperature=temperature,
+            cache_enabled=self.config.gemini_cache_enabled,
+            cache_ttl_seconds=self.config.gemini_cache_ttl_seconds,
+        )
+
     def get_client(self, role: str, temperature: float) -> Optional[Any]:
         # ensure mapping exists even for new roles
         spec = self.config.ensure_role(role)
         if not spec:
             return None
 
-        client = self._mk_openai(spec["model"], temperature)
         provider, model = spec["provider"], spec["model"]
         key = (provider, model, role, round(temperature, 3))
 
@@ -732,7 +790,9 @@ class ModelRouter:
         if provider == "openai":
             client = self._mk_openai(model, temperature)
         elif provider == "anthropic":
-            client = self._mk_anthropic()  # model applied at call
+            client = self._mk_anthropic()
+        elif provider in ("google", "gemini"):           # <--- NEW
+            client = self._mk_gemini(model, temperature)
         elif provider == "custom":
             if not self.config.custom_model_endpoint:
                 raise ValueError("Custom provider requires CUSTOM_MODEL_ENDPOINT")
@@ -945,11 +1005,14 @@ class ModelServiceBase:
         if role:
             return self.router.describe(role)
 
+        from kdcube_ai_app.infra.service_hub.gemini import GeminiModelClient
         # Fallback best-effort (used by accounting hooks)
         if isinstance(client, CustomModelClient):
             return ClientConfigHint(provider="custom", model_name=client.model_name)
         if isinstance(client, ChatOpenAI):
             return ClientConfigHint(provider="openai", model_name=getattr(client, "model", "unknown"))
+        if isinstance(client, GeminiModelClient):
+            return ClientConfigHint(provider="google", model_name=getattr(client, "model", "unknown"))
         if hasattr(client, "messages"):  # Anthropic SDK
             # derive a role-less hint (less precise)
             return ClientConfigHint(provider="anthropic", model_name="(role-mapped at call)")
@@ -1214,6 +1277,7 @@ class ModelServiceBase:
             *,
             temperature: float = 0.3,
             max_tokens: int = 1200,
+            max_thinking_tokens: int = 128,
             client_cfg: ClientConfigHint | None = None,
             role: Optional[str] = None,
             tools: Optional[list] = None,
@@ -1343,7 +1407,7 @@ class ModelServiceBase:
         if isinstance(client, ChatOpenAI):
 
             # ✅ Convert block-based messages to regular messages
-            normalized_messages = [_normalize_message_for_openai(message) for message in messages]
+            normalized_messages = [_flatten_message(message) for message in messages]
 
             model_limitations = model_caps(model_name)
             tools_support = model_limitations.get("tools", False)
@@ -1476,6 +1540,41 @@ class ModelServiceBase:
             yield {"event": "final", "usage": usage, "model_name": model_name, "index": index}
             return
 
+        from kdcube_ai_app.infra.service_hub.gemini import GeminiModelClient
+        # Gemini streaming
+        if isinstance(client, GeminiModelClient):
+            async for ev in client.astream(
+                    messages=messages,
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    thinking_budget=max_thinking_tokens,
+                    include_thoughts=True,   # <-- ask Gemini for thought summaries
+            ):
+                etype = ev.get("event")
+
+                if etype in ("text.delta", "thinking.delta"):
+                    index += 1
+                    # pass-through, but add index and default stage/group_index
+                    out = {
+                        **ev,
+                        "index": index,
+                    }
+                    # keep shape similar to OpenAI branch
+                    out.setdefault("stage", 0)
+                    if etype == "thinking.delta":
+                        out.setdefault("group_index", 0)
+                    yield out
+
+                elif etype == "final":
+                    index += 1
+                    yield {
+                        "event": "final",
+                        "usage": ev.get("usage") or {},
+                        "model_name": ev.get("model_name") or model_name,
+                        "index": index,
+                    }
+            return
+
         # Custom endpoint streaming
         if isinstance(client, CustomModelClient):
             async for ev in client.astream(messages, temperature=temperature, max_new_tokens=max_tokens):
@@ -1506,6 +1605,7 @@ class ModelServiceBase:
             on_event: Optional[Callable[[dict], Awaitable[None]]] = None,
             temperature: float = 0.3,
             max_tokens: int = 1200,
+            max_thinking_tokens: int = 128, # after Gemini 2.5 Pro min boundary
             client_cfg: ClientConfigHint | None = None,
             role: Optional[str] = None,
             on_complete: Optional[Callable[[dict], Awaitable[None]]] = None,
@@ -1563,14 +1663,15 @@ class ModelServiceBase:
 
         try:
             async for ev in self.stream_model_text(
-                client,
-                messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                client_cfg=cfg,
-                role=role,
-                tools=tools,
-                tool_choice=tool_choice,
+                    client,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    max_thinking_tokens=max_thinking_tokens,
+                    client_cfg=cfg,
+                    role=role,
+                    tools=tools,
+                    tool_choice=tool_choice,
             ):
                 if on_event and "all_event" in ev:
                     await on_event(ev["all_event"].model_dump())

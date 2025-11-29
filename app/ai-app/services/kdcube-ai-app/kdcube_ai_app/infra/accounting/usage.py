@@ -17,6 +17,7 @@ class ClientConfigHint:
 class ServiceUsage:
     input_tokens: int = 0
     output_tokens: int = 0
+    thinking_tokens: int = 0
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation: Optional[Dict[str, Any]] = None
@@ -36,6 +37,7 @@ class ServiceUsage:
         data = {
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "thinking_tokens": self.thinking_tokens,
             "cache_creation_tokens": self.cache_creation_tokens,
             "cache_read_tokens": self.cache_read_tokens,
             "cache_creation": self.cache_creation,
@@ -64,6 +66,7 @@ class ServiceUsage:
         return cls(
             input_tokens=d.get("input_tokens", 0),
             output_tokens=d.get("output_tokens", 0),
+            thinking_tokens=d.get("thinking_tokens", 0),
             cache_creation_tokens=d.get("cache_creation_tokens", 0),
             cache_read_tokens=d.get("cache_read_tokens", 0),
             cache_creation=d.get("cache_creation"),
@@ -89,17 +92,32 @@ def _norm_usage_dict(u: Dict[str, Any]) -> Dict[str, int]:
     cache_read_input_tokens = u.get("cache_read_input_tokens") or 0
     cache_creation = u.get("cache_creation")
 
+    thinking = u.get("thinking_tokens") or 0
+    visible_out = u.get("visible_output_tokens") or 0
+
     total  = u.get("total_tokens") or (int(prompt) + int(compl))
     try:
         prompt, compl, total = int(prompt), int(compl), int(total)
+        thinking = int(thinking)
+        visible_out = int(visible_out)
     except Exception:
         prompt, compl, total = int(prompt or 0), int(compl or 0), int(total or (prompt + compl))
-    return {"prompt_tokens": prompt,
-            "completion_tokens": compl,
-            "total_tokens": total,
-            "cache_creation_input_tokens": cache_creation_input_tokens,
-            "cache_read_input_tokens": cache_read_input_tokens,
-            **{"cache_creation": cache_creation if cache_creation else {}}}
+        thinking = int(thinking or 0)
+        visible_out = int(visible_out or 0)
+    out = {
+        "prompt_tokens": prompt,
+        "completion_tokens": compl,
+        "total_tokens": total,
+        "cache_creation_input_tokens": cache_creation_input_tokens,
+        "cache_read_input_tokens": cache_read_input_tokens,
+        "input_tokens": int(u.get("input_tokens") or prompt),
+        "output_tokens": int(u.get("output_tokens") or compl),
+        "thinking_tokens": thinking,
+        **{"cache_creation": cache_creation if cache_creation else {}}
+    }
+    if visible_out:
+        out["visible_output_tokens"] = visible_out
+    return out
 
 def _approx_tokens_by_chars(text: str) -> Dict[str, int]:
     toks = max(1, len(text or "") // 4)
@@ -113,6 +131,7 @@ def _structured_usage_extractor(result, *_a, **_kw) -> ServiceUsage:
         return ServiceUsage(
             input_tokens=u["prompt_tokens"],
             output_tokens=u["completion_tokens"],
+            thinking_tokens=u.get("thinking_tokens", 0),
             total_tokens=u["total_tokens"],
             requests=1,
         )

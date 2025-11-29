@@ -164,6 +164,7 @@ def _spent_seed(service_type: str) -> Dict[str, int]:
         return {
             "input": 0,
             "output": 0,
+            "thinking": 0,
             "cache_creation": 0,
             "cache_read": 0,
             "cache_5m_write": 0,
@@ -179,6 +180,7 @@ def _accumulate_compact(spent: Dict[str, int], ev_usage: Dict[str, Any], service
     if service_type == "llm":
         spent["input"] = int(spent.get("input", 0)) + int(ev_usage.get("input_tokens") or 0)
         spent["output"] = int(spent.get("output", 0)) + int(ev_usage.get("output_tokens") or 0)
+        spent["thinking"] = int(spent.get("thinking", 0)) + int(ev_usage.get("thinking_tokens") or 0)
         spent["cache_read"] = int(spent.get("cache_read", 0)) + int(ev_usage.get("cache_read_tokens") or 0)
 
         cache_creation = ev_usage.get("cache_creation")
@@ -202,6 +204,7 @@ def _accumulate_compact(spent: Dict[str, int], ev_usage: Dict[str, Any], service
 _USAGE_KEYS = [
     "input_tokens",
     "output_tokens",
+    "thinking_tokens",
     "cache_creation_tokens",
     "cache_read_tokens",
     "cache_creation",
@@ -305,12 +308,17 @@ def _tokens_for_event(ev: Dict[str, Any]) -> int:
     u = ev.get("usage") or {}
     tot = u.get("total_tokens")
     if tot is None:
-        tot = (u.get("input_tokens") or 0) + (u.get("output_tokens") or 0)
+        tot = (
+                (u.get("input_tokens") or 0)
+                + (u.get("output_tokens") or 0)
+                + (u.get("thinking_tokens") or 0)
+        )
     tot += int(u.get("embedding_tokens") or 0)
     try:
         return int(tot)
     except Exception:
         return 0
+
 
 
 # -----------------------------
@@ -2308,6 +2316,48 @@ def price_table():
                 "cache_write_tokens_1M": 0.00,
                 "cache_read_tokens_1M": 0.55,
             },
+            {
+                "model": "gemini-2.5-pro",
+                "provider": "google",
+                # prompts <= 200k tokens
+                "input_tokens_1M": 1.25,          # normal input price
+                "output_tokens_1M": 10.00,        # includes thinking tokens when enabled
+                "thinking_output_tokens_1M": 10.00,  # same bucket; explicit for clarity
+                "cache_write_tokens_1M": 0.0,
+                "cache_read_tokens_1M": 0.0,
+            },
+            {
+                "model": "gemini-2.5-pro-long",
+                "provider": "google",
+                # prompts > 200k tokens
+                "input_tokens_1M": 2.50,
+                "output_tokens_1M": 15.00,        # includes thinking tokens when enabled
+                "thinking_output_tokens_1M": 15.00,
+                "cache_write_tokens_1M": 0.0,
+                "cache_read_tokens_1M": 0.0,
+            },
+            {
+                "model": "gemini-2.5-flash",
+                "provider": "google",
+                "input_tokens_1M": 0.15,
+                # non-thinking output price
+                "output_tokens_1M": 0.60,
+                # effective output price when thinking is enabled
+                "thinking_output_tokens_1M": 3.50,
+                "cache_write_tokens_1M": 0.0,
+                "cache_read_tokens_1M": 0.0,
+            },
+            {
+                "model": "gemini-2.5-flash-lite",
+                "provider": "google",
+                "input_tokens_1M": 0.10,
+                "output_tokens_1M": 0.40,
+                # Google docs and community posts do not list a separate higher rate
+                # for thinking mode on Flash Lite as of late 2025, so mirror output.
+                "thinking_output_tokens_1M": 0.40,
+                "cache_write_tokens_1M": 0.0,
+                "cache_read_tokens_1M": 0.0,
+            },
         ],
         "embedding": [
             {
@@ -2329,7 +2379,7 @@ def _calculate_agent_costs(
         llm_pricelist: List[Dict[str, Any]],
         emb_pricelist: List[Dict[str, Any]],
 ) -> Dict[str, Dict[str, Any]]:
-    """Calculate costs per agent."""
+    """Calculate costs per agent, including thinking tokens where priced."""
 
     def _find_llm_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
         for p in llm_pricelist:
@@ -2351,6 +2401,7 @@ def _calculate_agent_costs(
         token_summary = {
             "input": 0,
             "output": 0,
+            "thinking": 0,
             "cache_5m_write": 0,
             "cache_1h_write": 0,
             "cache_read": 0,
@@ -2368,10 +2419,26 @@ def _calculate_agent_costs(
             if service == "llm":
                 pr = _find_llm_price(provider, model)
                 if pr:
-                    input_cost = (float(spent.get("input", 0)) / 1_000_000.0) * float(pr.get("input_tokens_1M", 0.0))
-                    output_cost = (float(spent.get("output", 0)) / 1_000_000.0) * float(pr.get("output_tokens_1M", 0.0))
-                    cache_read_cost = (float(spent.get("cache_read", 0)) / 1_000_000.0) * float(
-                        pr.get("cache_read_tokens_1M", 0.0)
+                    input_tokens = float(spent.get("input", 0))
+                    output_tokens = float(spent.get("output", 0))
+                    thinking_tokens = float(spent.get("thinking", 0))
+
+                    input_price = float(pr.get("input_tokens_1M", 0.0))
+                    base_out_price = float(pr.get("output_tokens_1M", 0.0))
+                    thinking_price = float(pr.get("thinking_output_tokens_1M", base_out_price))
+
+                    # Treat 'output' as total output; bill non-thinking at base, thinking at thinking_price
+                    non_thinking_out = max(output_tokens - thinking_tokens, 0.0)
+
+                    output_cost = (non_thinking_out / 1_000_000.0) * base_out_price
+                    thinking_cost = (thinking_tokens / 1_000_000.0) * thinking_price
+                    input_cost = (input_tokens / 1_000_000.0) * input_price
+
+                    # --- cache pricing ---
+                    cache_read_cost = (
+                            float(spent.get("cache_read", 0))
+                            / 1_000_000.0
+                            * float(pr.get("cache_read_tokens_1M", 0.0))
                     )
 
                     cache_write_cost = 0.0
@@ -2382,38 +2449,57 @@ def _calculate_agent_costs(
                         cache_1h_tokens = float(spent.get("cache_1h_write", 0))
 
                         if cache_5m_tokens > 0:
-                            price_5m = float(cache_pricing.get("5m", {}).get("write_tokens_1M", 0.0))
+                            price_5m = float(
+                                cache_pricing.get("5m", {}).get("write_tokens_1M", 0.0)
+                            )
                             cache_write_cost += (cache_5m_tokens / 1_000_000.0) * price_5m
 
                         if cache_1h_tokens > 0:
-                            price_1h = float(cache_pricing.get("1h", {}).get("write_tokens_1M", 0.0))
+                            price_1h = float(
+                                cache_pricing.get("1h", {}).get("write_tokens_1M", 0.0)
+                            )
                             cache_write_cost += (cache_1h_tokens / 1_000_000.0) * price_1h
                     else:
                         cache_write_tokens = float(spent.get("cache_creation", 0))
                         cache_write_price = float(pr.get("cache_write_tokens_1M", 0.0))
                         cache_write_cost = (cache_write_tokens / 1_000_000.0) * cache_write_price
 
-                    cost_usd = input_cost + output_cost + cache_write_cost + cache_read_cost
+                    cost_usd = (
+                            input_cost
+                            + output_cost
+                            + thinking_cost
+                            + cache_write_cost
+                            + cache_read_cost
+                    )
 
-                    token_summary["input"] += spent.get("input", 0)
-                    token_summary["output"] += spent.get("output", 0)
-                    token_summary["cache_5m_write"] += spent.get("cache_5m_write", 0)
-                    token_summary["cache_1h_write"] += spent.get("cache_1h_write", 0)
-                    token_summary["cache_read"] += spent.get("cache_read", 0)
+                    # Token summary for reporting
+                    token_summary["input"] += int(spent.get("input", 0) or 0)
+                    token_summary["output"] += int(spent.get("output", 0) or 0)
+                    token_summary["thinking"] += int(spent.get("thinking", 0) or 0)
+                    token_summary["cache_5m_write"] += int(spent.get("cache_5m_write", 0) or 0)
+                    token_summary["cache_1h_write"] += int(spent.get("cache_1h_write", 0) or 0)
+                    token_summary["cache_read"] += int(spent.get("cache_read", 0) or 0)
 
             elif service == "embedding":
                 pr = _find_emb_price(provider, model)
                 if pr:
-                    cost_usd = (float(spent.get("tokens", 0)) / 1_000_000.0) * float(pr.get("tokens_1M", 0.0))
-                    token_summary["embedding"] += spent.get("tokens", 0)
+                    emb_tokens = float(spent.get("tokens", 0))
+                    cost_usd = (
+                            emb_tokens
+                            / 1_000_000.0
+                            * float(pr.get("tokens_1M", 0.0))
+                    )
+                    token_summary["embedding"] += int(spent.get("tokens", 0) or 0)
 
             total_cost += cost_usd
-            breakdown.append({
-                "service": service,
-                "provider": provider,
-                "model": model,
-                "cost_usd": cost_usd,
-            })
+            breakdown.append(
+                {
+                    "service": service,
+                    "provider": provider,
+                    "model": model,
+                    "cost_usd": cost_usd,
+                }
+            )
 
         agent_costs[agent] = {
             "total_cost_usd": total_cost,
@@ -2422,7 +2508,6 @@ def _calculate_agent_costs(
         }
 
     return agent_costs
-
 
 # ----
 # Examples
@@ -2567,14 +2652,59 @@ async def example_grouped_calc(tenant, project, bundle_id):
 
         cost_usd = 0.0
         if service == "llm":
-            # price: input_tokens_1M and output_tokens_1M
             pr = _find_llm_price(provider, model)
             if pr:
+                input_tokens = float(spent.get("input", 0))
+                output_tokens = float(spent.get("output", 0))
+                thinking_tokens = float(spent.get("thinking", 0))
+
+                input_price = float(pr.get("input_tokens_1M", 0.0))
+                base_out_price = float(pr.get("output_tokens_1M", 0.0))
+                thinking_price = float(pr.get("thinking_output_tokens_1M", base_out_price))
+
+                # Treat 'output' as total output; bill non-thinking at base, thinking at thinking_price
+                non_thinking_out = max(output_tokens - thinking_tokens, 0.0)
+
+                output_cost = (non_thinking_out / 1_000_000.0) * base_out_price
+                thinking_cost = (thinking_tokens / 1_000_000.0) * thinking_price
+                input_cost = (input_tokens / 1_000_000.0) * input_price
+
+                # --- cache pricing ---
+                cache_read_cost = (
+                        float(spent.get("cache_read", 0))
+                        / 1_000_000.0
+                        * float(pr.get("cache_read_tokens_1M", 0.0))
+                )
+
+                cache_write_cost = 0.0
+                cache_pricing = pr.get("cache_pricing")
+
+                if cache_pricing and isinstance(cache_pricing, dict):
+                    cache_5m_tokens = float(spent.get("cache_5m_write", 0))
+                    cache_1h_tokens = float(spent.get("cache_1h_write", 0))
+
+                    if cache_5m_tokens > 0:
+                        price_5m = float(
+                            cache_pricing.get("5m", {}).get("write_tokens_1M", 0.0)
+                        )
+                        cache_write_cost += (cache_5m_tokens / 1_000_000.0) * price_5m
+
+                    if cache_1h_tokens > 0:
+                        price_1h = float(
+                            cache_pricing.get("1h", {}).get("write_tokens_1M", 0.0)
+                        )
+                        cache_write_cost += (cache_1h_tokens / 1_000_000.0) * price_1h
+                else:
+                    cache_write_tokens = float(spent.get("cache_creation", 0))
+                    cache_write_price = float(pr.get("cache_write_tokens_1M", 0.0))
+                    cache_write_cost = (cache_write_tokens / 1_000_000.0) * cache_write_price
+
                 cost_usd = (
-                        (float(spent.get("input", 0)) / 1_000_000.0)
-                        * float(pr.get("input_tokens_1M", 0.0))
-                        + (float(spent.get("output", 0)) / 1_000_000.0)
-                        * float(pr.get("output_tokens_1M", 0.0))
+                        input_cost
+                        + output_cost
+                        + thinking_cost
+                        + cache_write_cost
+                        + cache_read_cost
                 )
         elif service == "embedding":
             pr = _find_emb_price(provider, model)

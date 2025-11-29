@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL_EMBEDDING: str = "text-embedding-3-small"
 
     ANTHROPIC_API_KEY: str | None = None
+    GOOGLE_API_KEY: str | None = Field(default=None, alias="GEMINI_API_KEY")
 
     # Postgres
     PGHOST: str = Field(default="localhost", alias="POSTGRES_HOST")
