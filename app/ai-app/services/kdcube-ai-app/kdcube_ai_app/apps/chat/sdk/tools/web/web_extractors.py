@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# chat/sdk/tools/web_extractors.py
+# chat/sdk/tools/web/web_extractors.py
 """
 Web content extraction with adaptive header selection and smart fallbacks.
 
@@ -28,6 +28,8 @@ import re
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
+
+from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import truncate_text
 
 # Trafilatura for main content extraction
 try:
@@ -1379,20 +1381,7 @@ class WebContentFetcher:
     @staticmethod
     def _truncate(content: str, max_length: int) -> str:
         """Truncate content intelligently at sentence boundaries."""
-        content = text_utils.strip_surrogates(content)
-
-        if max_length <= 0 or len(content) <= max_length:
-            return content
-
-        truncated = content[:max_length]
-
-        # Find last sentence boundary
-        for char in ['.', '\n', '!', '?']:
-            pos = truncated.rfind(char)
-            if pos > max_length * 0.8:
-                return truncated[:pos + 1] + "\n\n[... truncated ...]"
-
-        return truncated + "\n\n[... truncated ...]"
+        return truncate_text(content, max_length)
 
 
 # ============================================================================

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# chat/sdk/tools/content_filters.py
+# chat/sdk/tools/web/content_filters.py
 
 # Core filtering policy - understanding-based
 
@@ -368,6 +368,142 @@ Key changes:
 5. Clearer definition of what counts as useful content
 """
 
+def FILTER_AND_SEGMENT_GUIDE_high_recall_short(now_iso: str) -> str:
+    return f"""
+GENERAL PURPOSE FILTER + SEGMENT (STRICT JSON • HIGH-RECALL • EXCLUSIVE 'e' • SEMANTIC DEDUP)
+
+INPUTS
+- objective: what we’re trying to achieve (may be empty)
+- queries: search queries used to find sources
+- sources: list of {{sid, content, published_time_iso?, modified_time_iso?}}
+
+GOAL
+1) FILTER: keep only sources that truly contain useful, substantive information for the objective; remove near-duplicates by content.
+2) SEGMENT: for each kept source, return **1–2 spans** that cover the page’s main informative content (“fruit”) while excluding site chrome/boilerplate (“envelope”).
+3) DEDUP: content-only, performed **after** spans are proposed.
+
+========================================================================
+STRICT OUTPUT FORMAT (NO FREE TEXT)
+
+- Return **ONLY** a single JSON object: {{ "<sid>": [{{"s":"...", "e":"..."}}, ...], ... }}
+- **No** explanations, **no** prose, **no** code fences, **no** markdown.
+- If nothing kept, return **{{}}** (empty object).
+
+The JSON **must** be directly parseable (UTF-8, double quotes, no trailing commas).
+
+========================================================================
+FILTER (objective-aware, semantic, no URL heuristics)
+- Relevance: keep pages that directly help the objective (or, if objective is empty, match the queries) **and** contain substantive content.
+- Substance: coherent informational blocks (paragraphs, lists, tables, code/config, Q&A, specs, instructions).
+- Drop: pure navigation/link hubs, promo-only, cookie/legal pages, error pages.
+- Freshness: tie-breaker only when content is otherwise indistinguishable.
+- Safeguard: if at least one page has substance + relevance, keep at least one.
+TODAY: {now_iso}
+
+========================================================================
+SEGMENT (high recall; 1–2 spans; exclusive 'e')
+
+INTENT
+- Capture **80–95%** of the page’s substantive content in spans.
+- Prefer **one large span** covering the main body. Use a **second span** only if a large non-informative block splits two big relevant clusters.
+
+INCLUDE (FRUIT)
+- Expository/reference content: headings+paragraphs, lists, tables, code/config, figures with captions, Q&A.
+
+EXCLUDE (ENVELOPE)
+- Site-wide nav/breadcrumbs, hero/marketing banners, tiles/carousels, CTAs, social bars, cookie/legal banners, footers, logo walls, repetitive link grids.
+
+NO MID-BLOCK CUTS
+- A span must not cut through the middle of:
+  • a paragraph • a list item • a table row • a code/config block • a Q&A item.
+- Treat each block as **atomic**: if any part is useful, include the whole block.
+
+ANTI-TINY RULE
+- Each span should enclose **≥ 1,000 characters or ≥ 3 full blocks** (unless the page itself is short).
+
+SPAN COUNT & ORDER
+- Default **1 span**. Use **2** only for clearly separated large clusters.
+- Spans must be **non-overlapping** and in **document order**.
+
+========================================================================
+ANCHORS (exclusive 'e', verbatim, unique, deterministic)
+
+BASICS
+- Each span is defined by 's' (start) and 'e' (end).
+- Anchors must be:
+  • **VERBATIM** substrings from the page text (not URLs/filenames/alt text)
+  • **Compact & distinctive** (~3–12 words; extend as needed)
+  • **UNIQUE** on the page (see uniqueness rules)
+  • **ORDERED**: 's' must appear before 'e'
+  • **NON-ENVELOPE**: do not anchor in nav/footer/legal/cookie/social/promo blocks
+
+EXCLUSIVE 'e' (critical)
+- The span covers **from the first character of 's' up to but NOT including the first character of 'e'**.
+- Therefore, **'e' must come from the first phrase in the first block that is NOT included** (e.g., the next section heading, a footer/utility heading, “Was this helpful?”, etc.).
+- Do **not** take 'e' from inside the last included block—doing so would cut mid-block.
+
+CHOOSING 's'
+- Pick a short phrase from the **first useful block** (heading or intro sentence) after top-of-page envelope.
+- If the phrase is not unique, extend word-by-word until it becomes unique.
+
+CHOOSING 'e'
+- Pick a short phrase from the **first boundary block immediately after the last useful block you intend to include** (e.g., next major heading or clear footer/utility delimiter).
+- Because 'e' is **exclusive**, this guarantees the last useful block remains fully enclosed.
+- If the phrase is not unique, extend word-by-word until unique.
+
+UNIQUENESS & DISAMBIGUATION (must satisfy, in order)
+1) Try to choose a phrase that occurs **exactly once** on the page.
+2) If it occurs multiple times, **extend it** with following words (or prepend preceding words) until **unique**.
+3) If it still occurs multiple times (e.g., common footer text), then:
+   • For 's': use the **first** occurrence in the document (or the first after the previous span’s 'e').
+   • For 'e': use the **first occurrence strictly after 's'** that lies in the **first non-included block** after the last included block.
+   This yields a deterministic, nearest-boundary selection.
+
+BIAS TOWARD INCLUSION
+- If unsure where the useful region ends, place 'e' **later** (exclusive) so that all useful blocks are inside.
+- Small amounts of envelope may slip in to preserve continuity—acceptable.
+
+========================================================================
+SEMANTIC DEDUP (content-only; after spans are proposed)
+
+SCOPE
+- Dedup uses **only the text enclosed by each SID’s proposed span(s)**, after normalization. URLs/titles are ignored.
+
+NORMALIZE span text for overlap:
+- Lowercase, collapse whitespace; strip obvious boilerplate tokens that slipped in.
+- Keep numbers/units and technical tokens.
+
+OVERLAP SIGNALS (near-duplicate if any strong signal holds)
+- Character overlap ratio O ≥ 0.90 (on min length), or
+- 5-gram Jaccard ≥ 0.85, or
+- Structural overlap ≥ 0.90 (same headings/table rows/FAQ questions by text match).
+
+UNIQUE CONTRIBUTION
+- For A vs B, compute unique_A = (chars in A not in B)/union_chars.
+- Treat as **substantial** if unique_X ≥ 0.15 **or** A introduces new informative structures (new headings/rows/FAQ items/notes).
+
+KEEP/DROP
+- Near-duplicates with **no substantial unique contribution** → **keep one**, drop the other(s).
+- If both add substantial unique content → **keep both**.
+- If only one adds substantial unique content → **keep that one**.
+- Tie-breaker when dropping: keep the candidate whose spans cover **more of the union** of useful content; if still tied, keep the cleaner one (less envelope).
+
+CLUSTERING
+- Form duplicate clusters; from each cluster, keep the minimal subset that covers all unique contributions; drop the rest.
+
+POST-HOC COLLISION GUARD
+- If two kept SIDs have **identical anchors** or **≥95% identical span text**, re-apply KEEP/DROP and remove redundancies.
+
+========================================================================
+VALIDATION (all must pass)
+- Output contains only kept SIDs.
+- Each kept SID has **1–2 spans**; spans enclose whole structures (no mid-block cuts).
+- **'e' is exclusive**; anchors are verbatim, compact, unique, ordered, and non-envelope.
+- Spans capture the **majority** of the page’s substantive content (80–95% target).
+- **Output is raw JSON only** (no prose, no fences). If nothing kept: **{{}}**.
+"""
+
+
 def FILTER_AND_SEGMENT_GUIDE_with_high_recall(now_iso: str) -> str:
 
     SPANS_EMPHASIS = """
@@ -644,6 +780,222 @@ OUTPUT PROTOCOL
 - If all dropped: {{}}  
 
 No extra keys and never return free text explanations in main output. Empty object {{}} if no results.
+"""
+
+def FILTER_AND_SEGMENT_GUIDE_with_high_recall(now_iso: str) -> str:
+
+    SPANS_EMPHASIS = """
+BOUNDARY & RECALL RULES (NO CUTTING IN THE MIDDLE)
+
+- The text between 's' and 'e' MUST NOT cut through the middle of a logical block: DO NOT cut through
+  • a paragraph;
+  • a list item;
+  • a table row;
+  • a code/config block;
+  • a Q&A pair / FAQ item.
+
+- Treat each block as atomic:
+  • If any part of a block is useful, the entire block MUST be inside the span.
+  • Never place 's' or 'e' inside a block. They should conceptually sit on boundaries between blocks (even though you anchor them on a short phrase).
+
+HIGH-RECALL BIAS
+
+- When deciding where to stop a span:
+  • If you are unsure whether the boundary block is still useful, TREAT IT AS USEFUL.
+  • Extend the end boundary forward until you are clearly past the last informative block.
+  • It is BETTER to include some neutral or slightly redundant text than to risk cutting off useful content.
+
+- When the page has a long continuous useful section:
+  • Prefer ONE large span that covers the whole section.
+  • Only introduce a second span if there is a large non-informative chunk (e.g., promo/partner logo wall/unrelated widget) splitting two useful clusters.
+
+- Think in terms of "sections":
+  • Identify the first heading/paragraph where truly useful content starts.
+  • Identify the last heading/paragraph where truly useful content ends.
+  • Your span(s) should cover that entire region, not just isolated sentences.
+
+ANCHOR PLACEMENT AND BOUNDARIES TOGETHER
+
+- 's' should come from the FIRST clearly useful block:
+  • Choose a short phrase (3–8 words) from the first heading or first sentence of the main useful region, but conceptually the span begins at that block.
+
+- 'e' should come from the LAST clearly useful block:
+  • Choose a short phrase (3–8 words) from the last sentence of the last useful block (or immediately after it), so that everything before it stays inside the span.
+
+- If the useful section extends further than you expected:
+  • Move 'e' later so that all useful blocks are inside.
+  • Do NOT leave useful tail content outside the span.
+"""
+
+    return f"""
+GENERAL PURPOSE FILTER + SEGMENT (HIGH RECALL WITHIN PAGES; SEMANTIC DEDUP)
+
+INPUTS
+- objective: what we're trying to achieve (may be empty – used as GUIDE for FILTER only)
+- queries: search queries used to find sources
+- sources: list of {{sid, content, published_time_iso?, modified_time_iso?}}
+
+GOAL
+1) FILTER: keep ONLY sources that directly help achieve the objective and have substantive content. Drop near-duplicates by content.
+2) SEGMENT (objective-agnostic): for each kept source, return 1–2 spans that capture ALL substantively useful content on that page ("fruit"), excluding only site chrome/boilerplate ("envelope"). Be generous.
+3) SEMANTIC DEDUP (content-only): if two sources cover substantially the same content, keep only one unless each adds unique useful information.
+
+----------------------------------------------------------------
+FILTER (STRICT: objective-focused + substance + semantic dedup)
+
+PRIMARY — OBJECTIVE MATCH (STRICT):
+- Keep pages that directly address the objective or queries.
+- Keep pages with information that directly helps achieve the objective.
+- Drop pages that are only tangentially related, even if substantive.
+- If objective is empty/generic, keep pages that match the queries.
+
+SECONDARY — SUBSTANCE:
+- Among objective-matching pages, prefer those with substantive content:
+  • Coherent paragraphs, detailed explanations
+  • Lists/tables/specs
+  • Code examples/configs
+  • Q&A/FAQ
+  • Instructions/tutorials.
+- Drop navigation-only pages, pure link hubs, promo-only pages, error pages.
+
+TERTIARY — FRESHNESS (tie-breaker only):
+- Use published_time_iso/modified_time_iso when two pages are otherwise equivalent.
+- Prefer the more recent when quality is equal.
+
+SAFEGUARD:
+- If at least one page has substance AND matches the objective, keep at least one SID.
+- If no pages match the objective well, keep nothing (return empty {{}}).
+
+TODAY: {now_iso}
+
+----------------------------------------------------------------
+SEGMENT (objective-agnostic; high recall; 1–2 spans; exclusive 'e')
+
+CRITICAL: FILTER vs SEGMENT SEPARATION
+- FILTER (strict): "Does this PAGE help with the objective?" → Keep or drop entire page.
+- SEGMENT (generous & objective-agnostic): "What CONTENT on this kept page is useful?" → Keep all substantive content; skip only boilerplate.
+
+INTENT
+- Capture 80–95% of all substantive content on the page in spans.
+- Prefer ONE large span covering the main content body.
+- Use a second span only if a large non-informative block splits content into separated clusters.
+
+WHAT TO INCLUDE (FRUIT)
+- Explanatory paragraphs; technical details/parameters/specs; examples (code/config); structured data (tables/lists); Q&A/FAQ; instructions/tutorials; definitions/glossaries; reference material; comparisons/tradeoffs; prerequisites/dependencies; caveats/limitations/notes.
+- Bias toward inclusion: if unsure whether content is useful, INCLUDE IT.
+
+WHAT TO EXCLUDE (ENVELOPE)
+- Site-wide navigation, breadcrumbs, hero/marketing taglines, CTAs, carousels/product tiles/promos, social/share bars, cookie/legal banners, footers/company link grids, partner/logo walls, repetitive link hubs without explanations.
+
+COVERAGE REQUIREMENTS
+- Combined span(s) should capture ≥ 80% of substantive content on the page.
+- Anti-tiny rule: each span encloses ≥ 1,000 characters or ≥ 3 full blocks (paragraphs/list-items/table-rows/code/FAQ) unless the page is genuinely short.
+- Keep whole structures intact (no mid-table/list/code cuts).
+- When in doubt about boundaries → extend the span (favor inclusion).
+
+SPAN COUNT & ORDER
+- Default 1 span. Use 2 only for clearly separated clusters.
+- Spans must be non-overlapping and in document order.
+
+{SPANS_EMPHASIS}
+
+----------------------------------------------------------------
+ANCHORS (EXACT VERBATIM; EXCLUSIVE END; MULTI-OCCURRENCE POLICY)
+
+FUNDAMENTAL RULE
+- Anchor text MUST be EXACT CHARACTER-FOR-CHARACTER COPY from the source content:
+  • Preserve punctuation, symbols, capitalization, and spacing.
+  • Do NOT paraphrase, normalize, or drop characters.
+  • Think Ctrl+C / Ctrl+V.
+
+CONSTRAINTS FOR BOTH 's' AND 'e'
+- Verbatim exact copy; compact & distinctive (aim 3–8 words; extend if needed for uniqueness).
+- Unique on the page (if not unique, extend word-by-word until unique).
+- Ordered: 's' must appear before 'e'.
+- Non-ENVELOPE: do not select from global nav/footer/legal/cookie/social/promotional blocks.
+- From real text content (not URLs, not image filenames/alt text).
+
+CHOOSING 's' (START)
+- Locate the first heading/sentence that begins the first useful cluster (skip envelope above).
+- Copy exactly 3–8 consecutive words from there; extend to ensure uniqueness.
+
+CHOOSING 'e' (END) — **EXCLUSIVE**
+- The span is **[s_pos, e_pos)** — it ENDS BEFORE the first character of 'e'.
+- Choose 'e' from the **last useful block** (typically its last sentence). 'e' text itself is **not included** in the span.
+- Do NOT use the first words of the next heading/section as 'e'.
+- If the last useful block’s sentence contains phrases that appear elsewhere:
+  • Start with a 3–8 word phrase near the end of that sentence.
+  • If multiple occurrences exist, **uniquify-in-place**: extend the phrase by adding adjacent words from the same sentence until it becomes unique for that position.
+  • If still ambiguous, pick a different short phrase from the same last useful sentence and repeat.
+- Never place 'e' on a heading that introduces still-useful content; include that content and move 'e' after it.
+
+VERIFICATION CHECKLIST (for each anchor)
+1) Exact match (including punctuation/case) exists in the page.  
+2) Anchor keeps whole blocks intact (no mid-block cuts).  
+3) Unique on the page (extend if needed).  
+4) 3–8 words preferred (can be longer only to secure uniqueness).  
+5) Not taken from envelope sections.
+
+ROBUSTNESS
+- Small amounts of envelope may remain if necessary to keep the body intact.
+- Decorative separators between useful sections should remain inside the span.
+
+----------------------------------------------------------------
+SEMANTIC DEDUP (content-only; after proposing spans)
+
+GOAL
+- Keep the minimum number of SIDs whose span-enclosed content together covers the useful material.
+- Dedup is based solely on the text enclosed by the proposed spans (normalized). Ignore URLs/titles.
+
+NORMALIZATION (for overlap checks)
+- For each SID, concatenate text inside its span(s).
+- Lowercase; collapse whitespace; strip obvious boilerplate tokens (generic nav/cta stubs). Keep numbers/units and meaningful tokens.
+
+OVERLAP METRICS
+- Compute:
+  • Character overlap ratio O = overlap_chars / min(chars_A, chars_B)
+  • 5-gram Jaccard over tokens
+  • Structural overlap: same headings/table rows/FAQ questions by text match
+- Define near-duplicate if ANY holds:
+  • O ≥ 0.90  OR  5-gram Jaccard ≥ 0.85  OR  structural overlap ≥ 0.90.
+
+UNIQUE CONTRIBUTION
+- For each source, compute unique_X = (chars unique to X) / union_chars.
+- Treat as **substantial** if unique_X ≥ 0.15 OR it introduces **new informative structures** (new headings/sections, table rows/parameters, Q&A items, constraints/notes) not present in the other.
+
+KEEP/DROP RULES
+- If A and B are near-duplicates and neither has substantial unique contribution:
+  → Keep ONE; drop the other (no spans for dropped SID).
+- If both have substantial unique contribution:
+  → Keep BOTH.
+- If only one adds substantial unique contribution:
+  → Keep THAT one; drop the other.
+
+TIE-BREAKERS WHEN KEEPING ONE (content-only)
+- Prefer the candidate whose spans cover more of the union of useful content (longer coverage + more distinct structures).
+- If still tied within ~2%, prefer the one with fewer envelope tokens inside.
+- If still tied, prefer the smaller SID as a deterministic fallback.
+
+CLUSTERING
+- Apply pairwise to form duplicate clusters; keep the minimal subset that covers all unique contributions; drop the rest.
+
+POST-HOC COLLISION GUARD
+- If two kept SIDs end up with identical ('s','e') anchors OR ≥ 95% identical span text, re-apply KEEP/DROP and remove redundancies (use tie-breakers above).
+
+----------------------------------------------------------------
+VALIDATION
+- Only kept SIDs appear in output.
+- Each kept SID has 1–2 spans meeting coverage and anti-tiny rules; whole structures enclosed.
+- 's' and 'e' are exact verbatim, unique, ordered, non-ENVELOPE.
+- 'e' is **exclusive** (span ends before 'e').
+- Combined spans capture ≥ 80% of substantive content on that page.
+
+----------------------------------------------------------------
+OUTPUT PROTOCOL
+- Output **ONLY** a single JSON object. No prose, no code fences, no keys other than SIDs.
+- If sources kept:  {{ "<sid>": [ {{ "s": "...", "e": "..." }}, ... ], ... }}
+- If all dropped:  {{}}
+- Do not add explanations, markdown fences, or any extra text before/after the JSON.
 """
 
 FILTER_AND_SEGMENT_GUIDE = lambda iso: FILTER_AND_SEGMENT_GUIDE_with_high_recall(iso)

@@ -1,3 +1,7 @@
+aioboto3
+aiobotocore
+boto3
+
 anthropic==0.46.0
 beautifulsoup4==4.13.4        # import: bs4
 faiss-cpu==1.11.0.post1       # import: faiss (CPU build)

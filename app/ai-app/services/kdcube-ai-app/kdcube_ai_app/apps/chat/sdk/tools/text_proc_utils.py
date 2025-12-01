@@ -2,6 +2,7 @@ import re, yaml, jsonschema, json
 from typing import Tuple, Any, Set, Optional
 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import MD_CITE_RE
+import kdcube_ai_app.utils.text as text_utils
 
 _ZWSP = "\u200b"
 _BOM  = "\ufeff"
@@ -273,3 +274,20 @@ def _json_pointer_delete(root: Any, ptr: str) -> Any:
             p2.pop(parts[-1].replace("~1", "/").replace("~0", "~"), None)
             return new_root
     return root
+
+def truncate_text(content: str, max_length: int) -> str:
+    """Truncate content intelligently at sentence boundaries."""
+    content = text_utils.strip_surrogates(content)
+
+    if max_length <= 0 or len(content) <= max_length:
+        return content
+
+    truncated = content[:max_length]
+
+    # Find last sentence boundary
+    for char in ['.', '\n', '!', '?']:
+        pos = truncated.rfind(char)
+        if pos > max_length * 0.8:
+            return truncated[:pos + 1] + "\n\n[... truncated ...]"
+
+    return truncated + "\n\n[... truncated ...]"

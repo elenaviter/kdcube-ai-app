@@ -3,7 +3,6 @@
 
 # chat/sdk/tools/tools_insights.py
 
-# TODO full list of built-ins
 BUILTIN_TOOLS = {
     "llm_tools.generate_content_llm",
     "generic_tools.web_search",
