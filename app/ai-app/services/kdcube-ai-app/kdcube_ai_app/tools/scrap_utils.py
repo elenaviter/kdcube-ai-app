@@ -3,6 +3,7 @@
 
 # tools/scrap_utils.py
 import json, re
+import logging
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
@@ -10,10 +11,12 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 
 import base64, os, mimetypes, requests
 from urllib.parse import urljoin, urlparse
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 
 from kdcube_ai_app.apps.utils.sql_dt_utils import _parse_utc_instant
 from kdcube_ai_app.tools.extraction_types import ImageSpec
+
+logger = logging.getLogger(__name__)
 
 try:
     from markdownify import markdownify as _md_convert
@@ -603,87 +606,377 @@ def to_full_html_document(*, fragment_html: str, title: str,
         body.append(el.extract())
     return str(doc)
 
+# def make_clean_content_html(
+#         *,
+#         post_url: str,
+#         raw_html: str,
+#         title: str,
+#         author: Optional[str] = None,
+#         date_display: Optional[str] = None,   # iso date or nice date
+#         canonical: Optional[str] = None,
+#         categories: Optional[List[str]] = None,
+#         tags: Optional[List[str]] = None,
+# ) -> str:
+#     """
+#     Return a cleaned HTML article fragment with a canonical <h1> at the top.
+#     This guarantees the title survives into Markdown as an H1 for segmentation.
+#
+#     FIXED: Intelligently finds content container instead of using soup.body,
+#     which handles modern grid/flex layouts better.
+#     """
+#     soup = BeautifulSoup(raw_html or "", "lxml")
+#
+#     # 1) Strip obvious noise FIRST (before content detection)
+#     # This helps content detection work better
+#     for bad in soup.select("script, style, noscript, form, iframe[data-aa]"):
+#         bad.decompose()
+#
+#     # Remove common noise elements
+#     for bad in soup.select(".share, .social, .related-posts"):
+#         bad.decompose()
+#
+#     # 2) Find the actual content container intelligently
+#     # Try multiple strategies in order of confidence
+#     content_container = None
+#
+#     # Strategy 1: Look for semantic article/main tags
+#     content_container = soup.find('article') or soup.find('main')
+#
+#     # Strategy 2: Look for content-like class/id names
+#     if not content_container or len(content_container.get_text(strip=True)) < 200:
+#         content_candidates = soup.find_all(
+#             ['div', 'section'],
+#             class_=lambda x: x and any(
+#                 keyword in str(x).lower()
+#                 for keyword in ['content', 'article', 'post', 'entry', 'body', 'main', 'text', 'story', 'pricing', 'documentation']
+#             ),
+#         )
+#         # Pick the one with most text content
+#         if content_candidates:
+#             content_container = max(content_candidates, key=lambda x: len(x.get_text(strip=True)))
+#
+#     # Strategy 3: Look for id-based content markers
+#     if not content_container or len(content_container.get_text(strip=True)) < 200:
+#         for id_pattern in ['content', 'main', 'article', 'post', 'entry']:
+#             el = soup.find(id=lambda x: x and id_pattern in x.lower())
+#             if el and len(el.get_text(strip=True)) >= 200:
+#                 content_container = el
+#                 break
+#
+#     # Strategy 4: Remove structural noise (nav, header, footer, sidebars)
+#     # then use body
+#     if not content_container:
+#         # Remove structural elements that aren't content
+#         for structural in soup.select('nav, header[role="banner"], footer, aside, .sidebar, [role="navigation"], [role="complementary"]'):
+#             structural.decompose()
+#         content_container = soup.body or soup
+#
+#     # 3) Resolve links/images to absolute URLs; keep alt text, drop heavy attrs
+#     for a in content_container.select("a[href]"):
+#         href = a.get("href")
+#         if href:
+#             a["href"] = urljoin(post_url, href)
+#     for img in content_container.select("img[src]"):
+#         src = img.get("src")
+#         if src:
+#             img["src"] = urljoin(post_url, src)
+#         # remove noisy attrs that don't help retrieval
+#         for attr in ("srcset", "sizes", "loading", "decoding"):
+#             if img.has_attr(attr):
+#                 del img[attr]
+#
+#     # 4) Build a canonical article with <h1> + optional byline
+#     art = soup.new_tag("article", **{"class": "clean-post"})
+#     art["data-source-url"] = post_url
+#     if canonical:
+#         art["data-canonical"] = canonical
+#
+#     header = soup.new_tag("header")
+#     h1 = soup.new_tag("h1")
+#     h1.string = (title or "").strip()
+#     header.append(h1)
+#
+#     byline_parts = []
+#     if author: byline_parts.append(author.strip())
+#     if date_display: byline_parts.append(date_display.strip())
+#     if byline_parts:
+#         byline = soup.new_tag("p", **{"class": "byline"})
+#         byline.string = " | ".join(byline_parts)
+#         header.append(byline)
+#
+#     # Optional: keep categories/tags in a light-touch way (helps later heuristics)
+#     if categories:
+#         nav = soup.new_tag("nav", **{"aria-label": "categories"})
+#         ul = soup.new_tag("ul", **{"class": "categories"})
+#         for c in categories:
+#             li = soup.new_tag("li"); li.string = c
+#             ul.append(li)
+#         nav.append(ul)
+#         header.append(nav)
+#
+#     art.append(header)
+#
+#     # 5) Append cleaned content into <section>
+#     body = soup.new_tag("section", **{"class": "post-body"})
+#
+#     # Move all content from the found container
+#     for child in list(content_container.children):
+#         # Skip empty whitespace-only strings
+#         if isinstance(child, NavigableString) and not child.strip():
+#             continue
+#         # Skip script/style that might have survived
+#         if isinstance(child, Tag) and child.name in ['script', 'style', 'noscript']:
+#             continue
+#         body.append(child.extract())
+#
+#     art.append(body)
+#
+#     return str(art)
+
+def _score_container(element: Tag, url: str = "") -> float:
+    """Score a potential content container. Higher = better."""
+    if not element:
+        return 0.0
+
+    score = 0.0
+    text = element.get_text(strip=True)
+    text_length = len(text)
+
+    # Base score: text length (diminishing returns)
+    score += min(text_length / 10.0, 200.0)
+
+    # Semantic tags
+    if element.name in ['article', 'main']:
+        score += 100.0
+    elif element.name in ['section', 'div']:
+        score += 10.0
+
+    # Content-related classes/IDs
+    element_classes = ' '.join(element.get('class', [])).lower()
+    element_id = (element.get('id') or '').lower()
+    combined = element_classes + ' ' + element_id
+
+    content_keywords = [
+        'content', 'article', 'post', 'entry', 'main', 'body', 'text',
+        'story', 'documentation', 'docs', 'pricing', 'features'
+    ]
+    for keyword in content_keywords:
+        if keyword in combined:
+            score += 50.0
+            break
+
+    # Negative signals
+    noise_keywords = ['nav', 'menu', 'footer', 'header', 'ad', 'comment']
+    for keyword in noise_keywords:
+        if keyword in combined:
+            score -= 50.0
+            break
+
+    # Structural content markers
+    has_headings = len(element.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])) > 0
+    has_paragraphs = len(element.find_all('p')) > 0
+
+    if has_headings:
+        score += 30.0
+    if has_paragraphs:
+        score += 20.0
+
+    # Text density
+    html_length = len(str(element))
+    if html_length > 0:
+        density = text_length / html_length
+        score += min(density * 100.0, 50.0)
+
+    # Penalty for too small
+    if text_length < 200:
+        score *= 0.5
+
+    # Penalty for being INSIDE nav/header/footer (but not for BEING one)
+    if element.name not in ['aside', 'nav', 'header', 'footer']:
+        parent = element.parent
+        while parent:
+            if parent.name in ['nav', 'header', 'footer']:
+                score *= 0.3  # Severe penalty
+                break
+            parent = parent.parent
+
+    return score
+
+
 def make_clean_content_html(
         *,
         post_url: str,
         raw_html: str,
         title: str,
         author: Optional[str] = None,
-        date_display: Optional[str] = None,   # iso date or nice date
+        date_display: Optional[str] = None,
         canonical: Optional[str] = None,
         categories: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
 ) -> str:
     """
-    Return a cleaned HTML article fragment with a canonical <h1> at the top.
-    This guarantees the title survives into Markdown as an H1 for segmentation.
+    PRODUCTION-READY version with two-phase cleaning:
+    1. Find best content container (scoring, don't remove structural elements yet)
+    2. Remove noise FROM the chosen container
+
+    This handles:
+    - Sites with content in <aside>: aside scores high, gets picked
+    - Sites with noise in <nav>: nav scores low, doesn't get picked, removed from content
     """
-    soup = BeautifulSoup(raw_html or "", "lxml")
+    try:
+        soup = BeautifulSoup(raw_html or "", "lxml")
 
-    # Choose a container that actually has the content
-    container: Tag = soup.body or soup  # raw_html may be a fragment (no <body>)
+        # PHASE 1: Remove ONLY truly useless noise (not structural elements)
+        # Don't remove nav/header/footer/aside yet - they might contain content!
+        noise_selectors = [
+            "script", "style", "noscript", "form",
+            "iframe[data-aa]", "iframe[src*='ads']",
+            ".advertisement", ".ad-container", "[class*='ad-']",
+            ".cookie-banner", ".popup", ".modal"
+        ]
+        for bad in soup.select(", ".join(noise_selectors)):
+            bad.decompose()
 
-    # 1) Strip obvious noise that breaks MD/segmentation
-    for bad in container.select("script, style, noscript, form, iframe[data-aa], .share, .social, .related-posts"):
-        bad.decompose()
+        # PHASE 2: Find content container using SCORING
+        content_container = None
+        best_score = 0.0
+        extraction_method = "unknown"
 
-    # 2) Resolve links/images to absolute URLs; keep alt text, drop heavy attrs
-    for a in container.select("a[href]"):
-        href = a.get("href")
-        if href:
-            a["href"] = urljoin(post_url, href)
-    for img in container.select("img[src]"):
-        src = img.get("src")
-        if src:
-            img["src"] = urljoin(post_url, src)
-        # remove noisy attrs that don't help retrieval
-        for attr in ("srcset", "sizes", "loading", "decoding"):
-            if img.has_attr(attr):
-                del img[attr]
+        # Try all potential containers (including aside, nav if they have content!)
+        all_candidates = []
 
-    # 3) Build a canonical article with <h1> + optional byline
-    art = soup.new_tag("article", **{"class": "clean-post"})
-    art["data-source-url"] = post_url
-    if canonical:
-        art["data-canonical"] = canonical
+        # Strategy 1: Semantic tags (prefer these)
+        all_candidates.extend(soup.find_all(['article', 'main']))
 
-    header = soup.new_tag("header")
-    h1 = soup.new_tag("h1")
-    h1.string = (title or "").strip()
-    header.append(h1)
+        # Strategy 2: Content-related classes
+        all_candidates.extend(soup.find_all(
+            ['div', 'section', 'aside'],  # Include aside!
+            class_=lambda x: x and any(
+                kw in str(x).lower()
+                for kw in ['content', 'article', 'post', 'main', 'documentation', 'docs', 'pricing']
+            )
+        ))
 
-    byline_parts = []
-    if author: byline_parts.append(author.strip())
-    if date_display: byline_parts.append(date_display.strip())
-    if byline_parts:
-        byline = soup.new_tag("p", **{"class": "byline"})
-        byline.string = " | ".join(byline_parts)
-        header.append(byline)
+        # Strategy 3: All divs/sections/asides (limit to top 20)
+        more_candidates = soup.find_all(['div', 'section', 'aside'])
+        more_candidates = sorted(more_candidates, key=lambda x: len(x.get_text(strip=True)), reverse=True)[:20]
+        all_candidates.extend(more_candidates)
 
-    # Optional: keep categories/tags in a light-touch way (helps later heuristics)
-    if categories:
-        nav = soup.new_tag("nav", **{"aria-label": "categories"})
-        ul = soup.new_tag("ul", **{"class": "categories"})
-        for c in categories:
-            li = soup.new_tag("li"); li.string = c
-            ul.append(li)
-        nav.append(ul)
-        header.append(nav)
+        # Remove duplicates
+        seen = set()
+        unique_candidates = []
+        for c in all_candidates:
+            if id(c) not in seen:
+                seen.add(id(c))
+                unique_candidates.append(c)
 
-    art.append(header)
+        # Score all candidates
+        for candidate in unique_candidates:
+            score = _score_container(candidate, post_url)
+            if score > best_score:
+                best_score = score
+                content_container = candidate
+                extraction_method = f"{candidate.name}_scored"
 
-    # 4) Append cleaned content into <section>
-    body = soup.new_tag("section", **{"class": "post-body"})
-    content_parent = container if container.name != "[document]" else soup
-    # Move all top-level children (preserves headings/substructure)
-    for child in list(content_parent.contents):
-        # Skip empty whitespace-only strings
-        if isinstance(child, NavigableString) and not child.strip():
-            continue
-        body.append(child.extract())
-    art.append(body)
+        # Fallback: Remove structural noise, then use body
+        if not content_container or best_score < 20:
+            for structural in soup.select('nav, header[role="banner"], footer, .sidebar'):
+                structural.decompose()
+            content_container = soup.body or soup
+            extraction_method = "body_fallback"
+            best_score = _score_container(content_container, post_url) if content_container else 0
 
-    return str(art)
+        logger.info(f"Content extraction: method={extraction_method}, score={best_score:.1f}, "
+                    f"tag={content_container.name if content_container else 'none'}")
+
+        # PHASE 3: Remove noise FROM the chosen container
+        # Now that we've picked the content, remove structural noise that's INSIDE it
+        if content_container:
+            # Remove noise elements that are children of the content container
+            noise_children = content_container.select(
+                "nav, header[role='banner'], footer, "
+                ".share, .social, .related-posts, .comments, "
+                ".advertisement, [class*='ad-']"
+            )
+            for noise in noise_children:
+                # Don't remove if this IS the content container itself
+                if noise != content_container:
+                    noise.decompose()
+
+        # PHASE 4: Resolve links/images
+        if content_container:
+            for a in content_container.select("a[href]"):
+                href = a.get("href")
+                if href:
+                    try:
+                        a["href"] = urljoin(post_url, href)
+                    except Exception:
+                        pass
+
+            for img in content_container.select("img[src]"):
+                src = img.get("src")
+                if src:
+                    try:
+                        img["src"] = urljoin(post_url, src)
+                    except Exception:
+                        pass
+                for attr in ("srcset", "sizes", "loading", "decoding"):
+                    if img.has_attr(attr):
+                        del img[attr]
+
+        # PHASE 5: Build canonical article
+        art = soup.new_tag("article", **{"class": "clean-post"})
+        art["data-source-url"] = post_url
+        art["data-extraction-method"] = extraction_method
+        art["data-extraction-score"] = f"{best_score:.1f}"
+        if canonical:
+            art["data-canonical"] = canonical
+
+        header = soup.new_tag("header")
+        h1 = soup.new_tag("h1")
+        h1.string = (title or "").strip()
+        header.append(h1)
+
+        if author or date_display:
+            byline = soup.new_tag("p", **{"class": "byline"})
+            parts = []
+            if author:
+                parts.append(author.strip())
+            if date_display:
+                parts.append(date_display.strip())
+            byline.string = " | ".join(parts)
+            header.append(byline)
+
+        if categories:
+            nav = soup.new_tag("nav", **{"aria-label": "categories"})
+            ul = soup.new_tag("ul", **{"class": "categories"})
+            for c in categories:
+                li = soup.new_tag("li")
+                li.string = c
+                ul.append(li)
+            nav.append(ul)
+            header.append(nav)
+
+        art.append(header)
+
+        # PHASE 6: Extract content
+        body = soup.new_tag("section", **{"class": "post-body"})
+
+        if content_container:
+            for child in list(content_container.children):
+                if isinstance(child, NavigableString) and not child.strip():
+                    continue
+                if isinstance(child, Tag) and child.name in ['script', 'style', 'noscript']:
+                    continue
+                body.append(child.extract())
+
+        art.append(body)
+
+        return str(art)
+
+    except Exception as e:
+        logger.error(f"Error in make_clean_content_html: {e}", exc_info=True)
+        return f'<article class="clean-post" data-source-url="{post_url}"><header><h1>{title or ""}</h1></header><section class="post-body"></section></article>'
 
 def html_fragment_to_markdown_old(fragment_html: str) -> str:
     """

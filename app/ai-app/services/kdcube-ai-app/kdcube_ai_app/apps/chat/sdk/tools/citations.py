@@ -42,14 +42,47 @@ from typing import Dict, List, Tuple, Optional, Iterable, Any, Set
 CITE_TOKEN_RE = re.compile(r"(\s?)\[\[\s*S\s*:\s*([0-9,\s\-]+)\s*\]\]", re.I)
 CITATION_LIKE_RE = re.compile(r"\[\[.*?\]\]")
 # Telemetry / usage tag (for [[USAGE:...]]), so we can ignore it in debuggers
-USAGE_TAG_RE = re.compile(r"\[\[\s*USAGE\s*:[^\]]*\]\]", re.I)
+USAGE_TAG_RE = re.compile(r"\[\[\s*USAGE\s*:\s*([0-9]+(?:\s*,\s*[0-9]+)*)\s*\]\]", re.I)
+
+USAGE_SUFFIX_PATS = [
+    re.compile(r"(?:\u200b|\s)?\[\[$"),                              # "[[" at end
+    re.compile(r"(?:\u200b|\s)?\[\[\s*U\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*US\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USA\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USAG\s*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USAGE\s*:\s*[0-9,\s\-]*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*USAGE\s*:\s*[0-9,\s\-]*\]$", re.I),
+]
+
+def _split_safe_usage_prefix(chunk: str) -> tuple[str, int]:
+    if not chunk:
+        return "", 0
+    for pat in USAGE_SUFFIX_PATS:
+        m = pat.search(chunk)
+        if m and m.end() == len(chunk):
+            return chunk[:m.start()], len(chunk) - m.start()
+    return chunk, 0
 
 # HTML inline cite (your protocol)
+
+# TODO!!
+# HTML_CITE_RE = re.compile(
+#     r'<sup[^>]*class="cite"[^>]*data-sids="[^"]+"[^>]*>.*?</sup>',
+#     re.I | re.S
+# )
 HTML_CITE_RE = re.compile(
-    r'<sup[^>]*class="cite"[^>]*data-sids="[^"]+"[^>]*>.*?</sup>',
+    r'(?is)<sup[^>]*class=["\'][^"\']*\bcite\b[^"\']*["\'][^>]*>\s*\[S:\s*\d+(?:\s*[,–-]\s*\d+)*\]\s*</sup>'
+)
+# Footnotes block that lists [S:n] style references inside a .footnotes container
+HTML_FOOTNOTES_RE = re.compile(
+    r'<(?:div|section)[^>]*class="[^"]*\bfootnotes\b[^"]*"[^>]*>.*?\[S:\s*\d+.*?</(?:div|section)>',
     re.I | re.S
 )
-
+# Also allow a generic "Sources" section containing [S:n]
+HTML_SOURCES_RE = re.compile(
+    r'<h[1-6][^>]*>\s*Sources\s*</h[1-6]>.*?\[S:\s*\d+',
+    re.I | re.S
+)
 HTML_DATASIDS_RE = re.compile(
     r'(?is)<sup[^>]*class="[^"]*\bcite\b[^"]*"[^>]*\sdata-sids\s*=\s*"([^"]+)"[^>]*>.*?</sup>'
 )
@@ -716,12 +749,17 @@ def citations_present_inline(content: str, fmt: str) -> bool:
     """
     Minimal presence test for inline citations in a rendered document.
     - markdown/text: looks for [[S:n...]] tokens
-    - html: looks for <sup class="cite" data-sids="...">…</sup>
+    - html: EITHER <sup class="cite" data-sids="...">…</sup>
+            OR a footnotes/sources section containing [S:n] markers.
     """
     if fmt in ("markdown", "text"):
         return bool(MD_CITE_RE.search(content))
     if fmt == "html":
-        return bool(HTML_CITE_RE.search(content))
+        return (
+                bool(HTML_CITE_RE.search(content)) or
+                bool(HTML_FOOTNOTES_RE.search(content)) or
+                bool(HTML_SOURCES_RE.search(content))
+        )
     return False
 
 # ---------------------------------------------------------------------------
@@ -1040,12 +1078,6 @@ def adapt_source_for_llm(
         sid = 0
     out["sid"] = sid
 
-    # url + title
-    url = (base.get("url") or "").strip()
-    title = (base.get("title") or url or f"Source {sid}").strip()
-    out["url"] = url
-    out["title"] = title
-
     # snippet vs full content
     snippet_raw: Optional[str] = base.get("text") or src.get("text")
     full_raw: Optional[str] = base.get("content") or src.get("content")
@@ -1062,6 +1094,12 @@ def adapt_source_for_llm(
     out["text"] = snippet or ""
     if include_full_content and full:
         out["content"] = full
+
+    # url + title
+    url = (base.get("url") or "").strip()
+    title = (base.get("title") or url or out["text"][:50] or f"Source {sid}").strip()
+    out["url"] = url
+    out["title"] = title
 
     # carry standard metadata
     for k in CITATION_OPTIONAL_ATTRS:

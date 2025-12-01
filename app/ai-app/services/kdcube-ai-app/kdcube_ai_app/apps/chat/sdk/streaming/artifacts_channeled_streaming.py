@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
+# chat/sdk/streaming/artifacts_channeled_streaming.py
+
 from typing import Optional, Dict, Any, List, Set, Callable, Awaitable
 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import split_safe_citation_prefix, replace_citation_tokens_streaming
@@ -7,32 +12,34 @@ from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis
 class CompositeJsonArtifactStreamer:
     """
     Incremental scanner for a single top-level JSON object that contains
-    multiple string-valued artifact fields.
+    multiple string-valued artifact fields (used with target_format=managed_json_artifact).
 
-    It:
-      - tracks JSON structure at depth 1,
-      - decodes string keys and values (handles escapes and \uXXXX),
-      - when it enters the value string for a "stream key", it streams decoded
-        characters to canvas as markdown with citation replacement.
+    - Tracks JSON structure at depth 1.
+    - Decodes string keys and values (handles escapes and \\uXXXX).
+    - When it enters the value string for a "stream key", it streams decoded
+      characters to canvas as the nested artifact with its own format.
     """
 
     def __init__(
             self,
-            base_name: str,
-            composite_cfg: dict,
+            artifacts_cfg: dict,
             citation_map: Dict[int, Dict[str, Any]],
             channel: str,
             agent: str,
+            emit_delta: Callable[..., Awaitable[None]],
             on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
-            emit_delta: Callable[..., Awaitable[None]] = None
     ):
-        self.base = base_name
-        self.stream_keys: Set[str] = set(composite_cfg.keys())
-        self.composite_cfg = composite_cfg
+        """
+        artifacts_cfg: mapping of top-level JSON key -> artifact format
+                       (markdown|text|html|json|yaml|mermaid).
+        """
+        self.artifacts_cfg = artifacts_cfg or {}
+        self.stream_keys: Set[str] = set(self.artifacts_cfg.keys())
         self.citation_map = citation_map or {}
         self.channel = channel
         self.agent = agent
         self.on_delta_fn = on_delta_fn
+        self.emit_delta = emit_delta
 
         # JSON scan state
         self.depth = 0
@@ -60,6 +67,18 @@ class CompositeJsonArtifactStreamer:
             self.artifact_state[key] = st
         return st
 
+    def _artifact_format(self, key: str) -> str:
+        fmt = (self.artifacts_cfg.get(key) or "markdown").lower()
+        # hard guard: we assume validation upstream, but be defensive
+        if fmt not in ("markdown", "text", "html", "json", "yaml", "mermaid"):
+            fmt = "markdown"
+        return fmt
+
+    def _should_replace_citations_for_format(self, fmt: str) -> bool:
+        # We only rewrite [[S:n]] inline for text-ish formats.
+        # For HTML we expect the model to emit <sup class="cite" ...>; for JSON/YAML we rely on sidecar.
+        return fmt in ("markdown", "text", "html")
+
     async def _emit_chunk(self, key: str, text: str):
         """Append text to artifact's pending buffer and emit safe prefix."""
         if not text:
@@ -73,7 +92,12 @@ class CompositeJsonArtifactStreamer:
             return
 
         safe = _rm_invis(safe)
-        out = replace_citation_tokens_streaming(safe, self.citation_map) if self.citation_map else safe
+
+        fmt = self._artifact_format(key)
+        if self.citation_map and self._should_replace_citations_for_format(fmt):
+            out = replace_citation_tokens_streaming(safe, self.citation_map)
+        else:
+            out = safe
 
         idx = st["index"]
         await self.emit_delta(
@@ -81,8 +105,8 @@ class CompositeJsonArtifactStreamer:
             index=idx,
             marker=self.channel,
             agent=self.agent,
-            format="markdown",  # nested artifacts are markdown/text
-            artifact_name=f"{self.base}.{key}",
+            format=fmt,
+            artifact_name=key,
         )
         st["index"] += 1
         st["pending"] = st["pending"][len(safe):]
@@ -96,18 +120,23 @@ class CompositeJsonArtifactStreamer:
         if not st:
             return
 
+        fmt = self._artifact_format(key)
+
         pending = st["pending"]
         if pending:
             pending = _rm_invis(pending)
-            out = replace_citation_tokens_streaming(pending, self.citation_map) if self.citation_map else pending
-            idx = st["index"]
+            if self.citation_map and self._should_replace_citations_for_format(fmt):
+                out = replace_citation_tokens_streaming(pending, self.citation_map)
+            else:
+                out = pending
 
+            idx = st["index"]
             await self.emit_delta(
                 out,
                 index=idx,
                 marker=self.channel,
                 agent=self.agent,
-                format=self.composite_cfg.get("key") or "markdown",
+                format=fmt,
                 artifact_name=key,
             )
             st["index"] += 1
@@ -121,14 +150,16 @@ class CompositeJsonArtifactStreamer:
             index=st["index"],
             marker=self.channel,
             agent=self.agent,
-            format="markdown",
-            artifact_name=f"{self.base}.{key}",
+            format=fmt,
+            artifact_name=key,
             completed=True,
         )
         st["index"] += 1
 
         if self.on_delta_fn:
             await self.on_delta_fn("")
+
+    # ---------- main streaming API ----------
 
     async def feed(self, chunk: str):
         """

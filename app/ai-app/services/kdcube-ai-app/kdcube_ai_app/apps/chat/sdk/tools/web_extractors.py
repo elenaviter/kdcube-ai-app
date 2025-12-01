@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# chat/sdk/tools/web_extractors.py
 """
 Web content extraction with adaptive header selection and smart fallbacks.
 
@@ -942,51 +943,13 @@ class ContentExtractor:
         - Reaction counts (community sentiment)
         """
         try:
-            soup = BeautifulSoup(html, 'lxml')
-
-            # STAGE 1: Remove structural boilerplate (navigation, not content)
-            for element in soup.select('nav, header, footer, aside, [role="navigation"], [role="banner"], [role="complementary"]'):
-                element.decompose()
-
-            # STAGE 2: Remove interactive UI elements (buttons, not text)
-            # Cookie banners, popups, modals, overlays
-            for element in soup.select('[class*="cookie"], [class*="banner"], [class*="popup"], [class*="modal"], [class*="overlay"], [id*="cookie"]'):
-                element.decompose()
-
-            # Social sharing BUTTONS (not the content)
-            for element in soup.select('[class*="share-button"], [class*="social-button"], [data-track*="share"]'):
-                element.decompose()
-
-            # Ads and sponsored content
-            for element in soup.select('[class*="ad-"], [class*="advertisement"], [id*="ad-"], [class*="sponsored"]'):
-                element.decompose()
-
-            # Action BUTTONS (reply, like, edit buttons - not the text counts)
-            for element in soup.select('button, [role="button"]'):
-                element.decompose()
-
-            # Navigation breadcrumbs (redundant navigation)
-            for element in soup.select('[class*="breadcrumb"], [aria-label*="readcrumb"]'):
-                element.decompose()
-
-            # Related posts, recommendations, sidebars (off-topic)
-            for element in soup.select('[class*="related"], [class*="recommend"], [class*="sidebar"], [class*="suggested"]'):
-                element.decompose()
-
-            # User signatures (forum footers)
-            for element in soup.select('[class*="signature"], [class*="user-sig"]'):
-                element.decompose()
-
-            # Post action menus, edit history dropdowns
-            for element in soup.select('[class*="post-menu"], [class*="edit-history"]'):
-                element.decompose()
-
             title = html_title(html)
 
-            # Clean HTML and convert to markdown
+            # Pass ORIGINAL HTML to make_clean_content_html
+            # Let the scoring system find content properly!
             clean_fragment = make_clean_content_html(
                 post_url=url,
-                raw_html=str(soup),
+                raw_html=html,  # ← CRITICAL: Pass original HTML, not pre-cleaned!
                 title=title or "",
             )
             markdown = html_fragment_to_markdown(clean_fragment)
@@ -1049,7 +1012,7 @@ class ContentExtractor:
                     logger.debug(f"Custom extraction: {len(markdown)} chars (cleaned, metadata preserved)")
                     return markdown
 
-            # Fallback to simpler text extraction if markdown is too short
+            # Fallback to simpler text extraction if markdown conversion failed
             soup = BeautifulSoup(html, 'lxml')
             for element in soup(['script', 'style', 'iframe', 'noscript']):
                 element.decompose()

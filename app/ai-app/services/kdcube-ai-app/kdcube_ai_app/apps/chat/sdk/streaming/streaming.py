@@ -11,9 +11,8 @@ from typing import Dict, Any, Optional, Tuple, List
 
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-from kdcube_ai_app.infra.service_hub.errors import ServiceError, ServiceKind
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger
-from kdcube_ai_app.apps.chat.sdk.util import _json_loads_loose, _defence
+from kdcube_ai_app.apps.chat.sdk.util import _json_loads_loose
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +20,13 @@ logger = logging.getLogger(__name__)
 BEGIN_INT_RE  = re.compile(r"(?:<){2,6}\s*BEGIN\s+INTERNAL\s+THINKING\s*(?:>){2,6}", re.I)
 BEGIN_USER_RE = re.compile(r"(?:<){2,6}\s*BEGIN\s+USER[-–—]?\s*FACING\s+THINKING\s*(?:>){2,6}", re.I)
 BEGIN_JSON_RE = re.compile(r"(?:<){2,6}\s*BEGIN\s+STRUCTURED\s+JSON\s*(?:>){2,6}", re.I)
+# tolerant marker for the 2-section "thinking channel"
+BEGIN_THINKING_RE = re.compile(r"(?:<){2,6}\s*BEGIN\s+THINKING\s*(?:>){2,6}", re.I)
 
 END_INT_RE    = re.compile(r"(?:<){2,6}\s*END\s+INTERNAL\s+THINKING\s*(?:>){2,6}", re.I)
 END_USER_RE   = re.compile(r"(?:<){2,6}\s*END\s+USER[-–—]?\s*FACING\s+THINKING\s*(?:>){2,6}", re.I)
 END_JSON_RE   = re.compile(r"(?:<){2,6}\s*END\s+STRUCTURED\s+JSON\s*(?:>){2,6}", re.I)
+END_THINKING_RE   = re.compile(r"(?:<){2,6}\s*END\s+THINKING\s*(?:>){2,6}", re.I)
 
 # =============================================================================
 # Paranoid markers (ONLY these are supported)
@@ -33,14 +35,17 @@ END_JSON_RE   = re.compile(r"(?:<){2,6}\s*END\s+STRUCTURED\s+JSON\s*(?:>){2,6}",
 PARA_INT_OPEN  = r"<<<\s*BEGIN\s+INTERNAL\s+THINKING\s*>>>"
 PARA_USER_OPEN = r"<<<\s*BEGIN\s+USER[-\u2013\u2014]?\s*FACING\s+THINKING\s*>>>"
 PARA_JSON_OPEN = r"<<<\s*BEGIN\s+STRUCTURED\s+JSON\s*>>>"
+PARA_THINKING_OPEN = r"<<<\s*BEGIN\s+THINKING\s*>>>"
 
 PARA_INT_CLOSE  = r"<<<\s*END\s+INTERNAL\s+THINKING\s*>>>"
 PARA_USER_CLOSE = r"<<<\s*END\s+USER[-\u2013\u2014]?\s*FACING\s+THINKING\s*>>>"
 PARA_JSON_CLOSE = r"<<<\s*END\s+STRUCTURED\s+JSON\s*>>>"
+PARA_THINKING_CLOSE = r"<<<\s*END\s+THINKING\s*>>>"
 
 INT_RE  = re.compile(PARA_INT_OPEN, re.I)
 USER_RE = re.compile(PARA_USER_OPEN, re.I)
 JSON_RE = re.compile(PARA_JSON_OPEN, re.I)
+THINKING_RE = re.compile(PARA_THINKING_OPEN, re.I)
 
 # We never *require* closers, but if a model emits them, strip from user-facing output.
 # USER_CLOSER_STRIPPERS = [
@@ -52,9 +57,9 @@ JSON_RE = re.compile(PARA_JSON_OPEN, re.I)
 # ]
 
 USER_CLOSER_STRIPPERS = [
-    END_USER_RE, END_INT_RE, END_JSON_RE,
-    USER_RE, INT_RE, JSON_RE,                   # strict <<< ... >>>
-    BEGIN_USER_RE, BEGIN_INT_RE, BEGIN_JSON_RE, # tolerant << ... <<<<
+    END_USER_RE, END_INT_RE, END_JSON_RE, END_THINKING_RE,
+    USER_RE, INT_RE, JSON_RE, THINKING_RE,                 # strict <<< ... >>>
+    BEGIN_USER_RE, BEGIN_INT_RE, BEGIN_JSON_RE, BEGIN_THINKING_RE,  # tolerant << ... <<<<
 ]
 
 # Rolling safety window so we never cut a marker across chunk boundaries
@@ -62,11 +67,16 @@ MAX_MARKER_LEN = max(
     len("<<< BEGIN INTERNAL THINKING >>>"),
     len("<<< BEGIN USER-FACING THINKING >>>"),
     len("<<< BEGIN STRUCTURED JSON >>>"),
+    len("<<< BEGIN THINKING >>>"),
     len("<<< END INTERNAL THINKING >>>"),
     len("<<< END USER-FACING THINKING >>>"),
     len("<<< END STRUCTURED JSON >>>"),
+    len("<<< END THINKING >>>"),
 )
-HOLDBACK = MAX_MARKER_LEN + 8
+
+# Hold back generously so that no marker (even with some extra whitespace)
+# can be split across the emitted/buffered boundary.
+HOLDBACK = max(MAX_MARKER_LEN + 32, 256)
 
 def _md_unquote(s: str) -> str:
     # Strip leading markdown blockquote prefixes (`>`, `>>`) safely
@@ -776,11 +786,12 @@ async def _stream_simple_structured_json(
         },
     }
 
-INT2_RE  = BEGIN_INT_RE
+INT2_RE = BEGIN_INT_RE
+THINKING2_RE = BEGIN_THINKING_RE
 JSON2_RE = BEGIN_JSON_RE
 # INT2_RE  = re.compile(PARA_INT2_OPEN, re.I)
 # JSON2_RE = re.compile(PARA_JSON2_OPEN, re.I)
-HOLDBACK_2 = 96 # max(len("<<< BEGIN INTERNAL THINKING >>>"), len("<<< BEGIN STRUCTURED JSON >>>")) + 8
+HOLDBACK_2 = 256 # max(len("<<< BEGIN INTERNAL THINKING >>>"), len("<<< BEGIN STRUCTURED JSON >>>")) + 8
 
 class _TwoSectionParser:
     """
@@ -935,12 +946,31 @@ class _TwoSectionParser:
 
         while True:
             if self.mode == "pre":
-                m = (_search(INT2_RE) or _search(JSON2_RE))
-                if not m:
+                # Look for ANY begin marker that can start a section:
+                #  - INT2_RE      → legacy "<<< BEGIN INTERNAL THINKING >>>"
+                #  - THINKING2_RE → new "<<< BEGIN THINKING >>>" (user-facing thinking channel)
+                #  - JSON2_RE     → models that skip thinking and start directly with JSON
+                m_int_internal = _search(INT2_RE)
+                m_int_thinking = _search(THINKING2_RE)
+                m_json         = _search(JSON2_RE)
+
+                candidates = [
+                    (m_int_internal, "internal"),
+                    (m_int_thinking, "internal"),
+                    (m_json,         "json"),
+                ]
+                present = [(m, kind) for (m, kind) in candidates if m]
+
+                if not present:
+                    # no markers yet; wait for more chunks
                     break
+
+                # pick the earliest match among all present markers
+                m, kind = min(present, key=lambda t: t[0].start())
+
                 end = self._skip_after_marker(self.buf, m.end())
                 self.emit_from = end
-                self.mode = "internal" if m.re is INT2_RE else "json"
+                self.mode = kind  # "internal" (both markers) or "json"
                 continue
 
             if self.mode == "internal":
@@ -950,6 +980,7 @@ class _TwoSectionParser:
                     if safe_end > self.emit_from:
                         raw = self.buf[self.emit_from:safe_end]
                         cleaned = _redact_stream_text(raw)
+                        cleaned = _strip_service_markers_from_user(cleaned)  # scrub <<< ... >>> markers
                         if cleaned:
                             await self.on_internal(cleaned, completed=False)
                             self.internal += cleaned
@@ -977,6 +1008,7 @@ class _TwoSectionParser:
         if self.mode == "internal":
             raw = self.buf[self.emit_from:]
             cleaned = _redact_stream_text(raw)
+            cleaned = _strip_service_markers_from_user(cleaned)
             if cleaned:
                 await self.on_internal(cleaned, completed=False)
                 self.internal += cleaned
