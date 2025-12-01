@@ -270,6 +270,7 @@ class PDFOptions:
     footer_html: Optional[str] = None
     prefer_css_page_size: bool = False  # Use @page size if provided
     scale: float = 1.0
+    landscape: bool = False
 
 
 @dataclass
@@ -349,9 +350,23 @@ class AsyncMarkdownPDF:
             enable_mathjax=self.enable_mathjax,
         )
 
-    async def _render_pdf(self, html_content: str, output_pdf: Path, title: str, base_dir: Optional[Path], render_delay_ms: int = 0):
-        """Render HTML to PDF via Chromium. Uses a temporary file:// URL for robust asset loading."""
+    async def _render_pdf(
+            self,
+            html_content: str,
+            output_pdf: Path,
+            title: str,
+            base_dir: Optional[Path],
+            render_delay_ms: int = 0
+    ):
+        """Render HTML to PDF via Chromium. JavaScript executes (Chart.js, Tailwind, etc).
+        Limitations:
+        A single very tall element (e.g., a 2000px fixed-height div/canvas) can’t be split across pages—Chromium can only break at block boundaries.
+        If page CSS uses very specific !important rules, it can override our print rules.
+        Heavy use of position:fixed intended for web headers/footers is neutralized (by design) to avoid overlays in print; if a page truly needs fixed elements, you’d have to opt-in for that case.
+        Some SPAs keep long-polling/open sockets, so networkidle may not fire; you already have render_delay_ms as a manual guard.
+        """
         await self.start()  # ensure browser exists
+
         header_tpl = self.pdf_options.header_html or _DEFAULT_HEADER
         footer_tpl = self.pdf_options.footer_html or _DEFAULT_FOOTER
 
@@ -361,30 +376,190 @@ class AsyncMarkdownPDF:
         )
         footer_html = Template(footer_tpl).render()
 
-        # Write HTML to a temporary file so relative file:// images work reliably
+        # Write HTML to a temp file so relative assets and fonts resolve reliably
         tmp_dir = Path(tempfile.mkdtemp(prefix="md2pdf_"))
         try:
             html_path = tmp_dir / "index.html"
             html_path.write_text(html_content, encoding="utf-8")
 
-            context = await self._browser.new_context()
+            # High-DPI context for crisp canvas/bitmaps
+            context = await self._browser.new_context(device_scale_factor=3)
             page = await context.new_page()
 
-            await page.goto(html_path.as_uri(), wait_until="load")
-            # Optional extra wait for client-side chart libs (Chart.js, etc.)
+            # 1) Before any page JS runs: spoof DPR and kill animations to avoid mid-print shifts
+            await page.add_init_script("""
+                Object.defineProperty(window, 'devicePixelRatio', { get: () => 3 });
+            """)
+            await page.add_init_script("""
+                (() => {
+                  const s = document.createElement('style');
+                  s.textContent = `*{animation:none!important;transition:none!important}`;
+                  document.head.appendChild(s);
+                })();
+            """)
+
+            # 2) Load the page and let external assets settle
+            await page.goto(html_path.as_uri(), wait_until="domcontentloaded")
+            await page.wait_for_load_state("networkidle")  # Tailwind / Chart.js / fonts from CDN
+
+            # 3) Fonts first (prevents later reflow that causes overlaps)
+            try:
+                await page.wait_for_function(
+                    "document.fonts && document.fonts.status === 'loaded'",
+                    timeout=7000
+                )
+            except Exception:
+                pass
+            orient = "landscape" if self.pdf_options.landscape else "portrait"
+            page_size = self.pdf_options.format or "A4"
+
+            # 4) Add **generic** print CSS (not tailored to any particular HTML)
+            PRINT_SAFE_CSS = f"""
+            @page {{ size: {page_size} {orient}; margin: 16mm 16mm 20mm 16mm; }}
+            
+            * {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; }}
+            
+            @media print {{
+              /* Tables: repeat headers/footers; avoid splitting rows/cells */
+              thead {{ display: table-header-group; }}
+              tfoot {{ display: table-footer-group; }}
+              tr, th, td {{ break-inside: avoid; page-break-inside: avoid; }}
+            
+              /* Only elements that break poorly should be protected */
+              figure, pre, table, blockquote, img, svg, canvas {{
+                break-inside: avoid;
+                page-break-inside: avoid;
+              }}
+            
+              /* NEW: protect common wrappers that contain media (when :has is supported) */
+              div:has(> img),     div:has(> svg),     div:has(> canvas),
+              section:has(> img), section:has(> svg), section:has(> canvas),
+              article:has(> img), article:has(> svg), article:has(> canvas),
+              figure:has(img),    figure:has(svg),    figure:has(canvas),
+              .card:has(img), .panel:has(img), .box:has(img), .content:has(img) {{
+                break-inside: avoid;
+                page-break-inside: avoid;
+              }}
+            
+              /* Keep headings with the next block to avoid orphan titles */
+              h1, h2, h3, h4 {{ break-after: avoid-page; page-break-after: avoid; }}
+              h1 + *, h2 + *, h3 + *, h4 + * {{ break-before: avoid-page; page-break-before: auto; }}
+            
+              /* Make paragraphs/lists less likely to orphan/widow lines */
+              p, li {{ orphans: 2; widows: 2; }}
+            
+              /* Sticky/fixed often overlays in print output */
+              .sticky, *[style*="position:sticky"] {{ position: static !important; top: auto !important; }}
+              *[style*="position:fixed"] {{ position: static !important; top: auto !important; bottom: auto !important; }}
+            
+              /* Transforms can create odd stacking across page breaks */
+              [style*="transform"] {{ transform: none !important; }}
+            
+              /* Safe media defaults for print */
+              video, audio {{ display: none !important; }}
+            
+              /* Commonly needed spacing and sizing for canvases */
+              canvas {{ margin-bottom: 18px; }}
+              img, svg, canvas {{
+                max-width: 100% !important;
+                height: auto !important;
+                object-fit: contain;             /* NEW: keep full media visible if constrained */
+              }}
+            
+              /* NEW: cap media height so it doesn't exceed a page */
+              img, svg, canvas {{ max-height: 90vh; }}
+            
+              /* Viewport wrappers often cause clipping on A4 landscape */
+              html, body {{ width:auto !important; height:auto !important; max-width:100% !important; overflow:visible !important; }}
+              [style*="100vw"], [class*="w-screen"] {{ width:100% !important; }}
+              [style*="100vh"], [class*="h-screen"] {{ height:auto !important; min-height:auto !important; }}
+            
+              /* NEW: frameworks frequently set overflow hidden; let contents print */
+              *[style*="overflow:hidden"], .overflow-hidden {{ overflow: visible !important; }}
+            
+              /* Optional helper the author can use when needed */
+              .no-break {{ break-inside: avoid; page-break-inside: avoid; }}
+            }}
+            """
+
+            await page.add_style_tag(content=PRINT_SAFE_CSS)
+
+            # 5) Switch to print media (so @media print rules apply) and give layout a moment
+            await page.emulate_media(media="print")
             if render_delay_ms and render_delay_ms > 0:
                 await page.wait_for_timeout(min(render_delay_ms, 10000))
+            await page.wait_for_timeout(200)
 
+            # === 6) ✅ RESIZE HINT (your question) ===
+            try:
+                await page.evaluate("""
+                  (() => {
+                    window.dispatchEvent(new Event('resize'));  // many canvas libs listen
+                  })();
+                """)
+                # Chart.js specific: force a resize/update if present (generic, harmless if not)
+                await page.evaluate("""
+                  (() => {
+                    if (window.Chart && Chart.instances) {
+                      for (const c of Object.values(Chart.instances)) {
+                        try { c.resize(); c.update('resize'); } catch {}
+                      }
+                    }
+                  })();
+                """)
+                await page.wait_for_timeout(300)
+            except Exception:
+                pass
+
+            # 7) Generic Chart/canvas relief: if a canvas container is tight, give it a bit more height.
+            #    This helps Chart.js when legends at the bottom visually collide with captions.
+            try:
+                await page.evaluate("""
+                (() => {
+                  const EXTRA = 36; // px reserved for legends / labels at the bottom
+    
+                  const bump = (el) => {
+                    const parent = el.parentElement || el;
+                    const h = parent.clientHeight || el.clientHeight || 0;
+                    if (h && h < 380) parent.style.height = (h + EXTRA) + 'px';
+                  };
+    
+                  document.querySelectorAll('canvas').forEach(bump);
+    
+                  // If Chart.js is present, ask charts to resize after the bump.
+                  try {
+                    const reg = (window.Chart && (Chart.instances || (Chart.registry && (Chart.registry._charts || Chart.registry.items)))) || {};
+                    const list = Array.isArray(reg) ? reg : Object.values(reg);
+                    for (const entry of list) {
+                      const inst = entry?.chart || entry;
+                      if (inst && typeof inst.resize === 'function') inst.resize();
+                    }
+                  } catch (e) {}
+                })();
+                """)
+                await page.wait_for_timeout(150)
+            except Exception:
+                pass
+
+            # 8) MathJax (only if you enabled it on the converter)
             if self.enable_mathjax:
                 try:
                     await page.wait_for_function("window.__MD2PDF_MATHJAX_READY__ === true", timeout=10000)
                     await page.wait_for_function("window.__MD2PDF_MATHJAX_TYPESet__ === true", timeout=10000)
                 except PWTimeout:
-                    # Continue; math may show as raw TeX if offline
+                    # continue; math may show as raw TeX if offline
                     pass
 
+            needs_shrink = await page.evaluate(
+                "document.scrollingElement.scrollWidth > document.scrollingElement.clientWidth"
+            )
+            if self.pdf_options.landscape and needs_shrink and (self.pdf_options.scale or 1.0) >= 1.0:
+                self.pdf_options.scale = 0.98
+
+            # 9) Print to PDF
             pdf_bytes = await page.pdf(
                 format=self.pdf_options.format,
+                landscape=self.pdf_options.landscape,
                 print_background=self.pdf_options.print_background,
                 display_header_footer=self.pdf_options.display_header_footer,
                 header_template=header_html,
@@ -395,19 +570,20 @@ class AsyncMarkdownPDF:
                     "bottom": self.pdf_options.margin_bottom,
                     "left": self.pdf_options.margin_left,
                 },
-                prefer_css_page_size=self.pdf_options.prefer_css_page_size,
+                prefer_css_page_size=True,  # honor the @page we injected above
                 scale=self.pdf_options.scale,
             )
             output_pdf.write_bytes(pdf_bytes)
             await context.close()
         finally:
-            # Best-effort cleanup (ignore errors)
+            # Best-effort cleanup
             try:
                 for p in tmp_dir.glob("*"):
                     p.unlink(missing_ok=True)
                 tmp_dir.rmdir()
             except Exception:
                 pass
+
     async def convert_html_string(
             self,
             html: str,
