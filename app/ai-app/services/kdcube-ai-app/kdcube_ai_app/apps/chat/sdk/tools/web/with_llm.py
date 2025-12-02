@@ -320,7 +320,8 @@ TODAY: {now_iso}
         llm_resp_s = await generate_content_llm(
             _SERVICE=_SERVICE,
             agent_name="Content Filter",
-            instruction=_FILTER_INSTRUCTION,
+            instruction="Filter sources as requested.",
+            sys_instruction=_FILTER_INSTRUCTION,
             input_context=json.dumps(input_ctx, ensure_ascii=False),
             on_thinking_fn=on_thinking_fn,
             target_format="json",
@@ -386,14 +387,28 @@ async def sources_filter_and_segment(
         on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         thinking_budget: Optional[int] = None,
+        end_boundary: Annotated[str, 'Span end boundary mode: "exclusive" (default) or "inclusive"'] = "exclusive",
 ) -> Annotated[Dict[int, List[Dict[str, str]]], 'Mapping: sid -> [{"s": "...", "e": "..."}] (1–2 spans)']:
     """
     Combined filter + segmenter (returns {sid: [{"s":..., "e":...}], ...}).
+
+    Parameters
+    ----------
+    end_boundary : {"exclusive","inclusive"}, default "exclusive"
+        Controls how the 'e' anchor is interpreted when validating span size:
+        - "exclusive": span is [s_pos, e_pos) — ends BEFORE the first char of 'e'
+        - "inclusive": span is [s_pos, e_pos + len(e)) — includes the 'e' anchor text
     """
     assert _SERVICE, "FilterSegmenter not bound to service"
+    import json
+    from datetime import datetime, timezone
+    import logging
+    logger = logging.getLogger(__name__)
+
     import kdcube_ai_app.apps.chat.sdk.tools.web.content_filters as content_filters
 
     now_iso = datetime.now(timezone.utc).isoformat()
+    # If you have the new high-recall guide, point to it; otherwise keep the current one.
     _INSTRUCTION = content_filters.FILTER_AND_SEGMENT_GUIDE(now_iso)
 
     prepared_sources: List[Dict[str, Any]] = []
@@ -421,6 +436,10 @@ async def sources_filter_and_segment(
         "queries": queries or []
     }
 
+    user_message = f"""
+TASK CLARIFICATION:
+You will see an "objective" and "queries" below in INPUT CONTEXT section. This is what the USER searched for.
+"""
     logger.info(
         f"sources_filter_and_segment: processing {len(prepared_sources)} sources "
         f"for objective: '{(objective or '')[:120]}'"
@@ -430,7 +449,8 @@ async def sources_filter_and_segment(
         llm_resp_s = await generate_content_llm(
             _SERVICE=_SERVICE,
             agent_name="Content Filter + Segmenter",
-            instruction=_INSTRUCTION,
+            instruction=user_message,
+            sys_instruction=_INSTRUCTION,
             input_context=json.dumps(input_ctx, ensure_ascii=False),
             target_format="json",
             schema_json="",                 # ← no schema
@@ -445,7 +465,7 @@ async def sources_filter_and_segment(
             cache_instruction=True,
             artifact_name=None,
             channel_to_stream="debug",
-            temperature=0.1,
+            temperature=0.7,
             on_thinking_fn=on_thinking_fn,
             on_delta_fn=on_delta_fn,
             infra_call=True,
@@ -477,6 +497,8 @@ async def sources_filter_and_segment(
         sid_to_content = {s["sid"]: s["content"] for s in prepared_sources}
         out: Dict[int, List[Dict[str, str]]] = {}
 
+        exclusive = (end_boundary.lower() == "exclusive")
+
         for k, arr in raw.items():
             try:
                 sid = int(k)
@@ -491,6 +513,9 @@ async def sources_filter_and_segment(
             if not source_content:
                 continue
 
+            content_lower = source_content.lower()
+            content_len = len(source_content)
+
             spans: List[Dict[str, str]] = []
             for it in (arr or []):
                 if not isinstance(it, dict):
@@ -499,68 +524,60 @@ async def sources_filter_and_segment(
                 s = (it.get("s") or "").strip()
                 e = (it.get("e") or "").strip()
 
-                # Validate anchor lengths - allow short but distinctive anchors
-                if not (3 <= len(s) <= 150 and 3 <= len(e) <= 150):
-                    logger.debug(
-                        f"sources_filter_and_segment: SID {sid} span rejected - "
-                        f"anchor length out of bounds (s={len(s)}, e={len(e)})"
-                    )
+                # --- Anchor length checks (allow e == "") ---
+                if not (3 <= len(s) <= 150):
+                    logger.debug(f"SID {sid} span rejected - start anchor length out of bounds (len={len(s)})")
+                    continue
+                if e != "" and not (3 <= len(e) <= 150):
+                    logger.debug(f"SID {sid} span rejected - end anchor length out of bounds (len={len(e)})")
+                    continue
+                if e != "" and s.lower() == e.lower():
+                    logger.debug(f"SID {sid} span rejected - identical start/end anchors")
                     continue
 
-                # Reject if start and end are identical
-                if s.lower().strip() == e.lower().strip():
-                    logger.debug(
-                        f"sources_filter_and_segment: SID {sid} span rejected - "
-                        f"identical start/end anchors: '{s}'"
-                    )
-                    continue
-
-                # # Reject page titles (contain " | ")
-                # if " | " in s or " | " in e:
-                #     logger.debug(
-                #         f"sources_filter_and_segment: SID {sid} span rejected - "
-                #         f"contains page title pattern ' | '"
-                #     )
-                #     continue
-
-                # Check if anchors exist in content
+                # --- Locate 's' and 'e' (case-insensitive search) ---
                 s_lower = s.lower()
-                e_lower = e.lower()
-                content_lower = source_content.lower()
-
                 s_idx = content_lower.find(s_lower)
                 if s_idx == -1:
-                    logger.debug(
-                        f"sources_filter_and_segment: SID {sid} span rejected - "
-                        f"start anchor not found: '{s[:50]}'"
-                    )
+                    logger.debug(f"SID {sid} span rejected - start anchor not found: '{s[:50]}'")
                     continue
 
-                e_idx = content_lower.find(e_lower, s_idx + len(s))
-                if e_idx == -1:
-                    logger.debug(
-                        f"sources_filter_and_segment: SID {sid} span rejected - "
-                        f"end anchor not found or appears before start: '{e[:50]}'"
-                    )
+                # Verify verbatim exactness for 's' (case-sensitive)
+                if source_content[s_idx:s_idx+len(s)] != s:
+                    logger.debug(f"SID {sid} span rejected - start anchor case/punct mismatch")
                     continue
 
-                # Check span size - should capture substantial content
-                span_size = e_idx - s_idx
-                if span_size < 200:  # relaxed from 100
-                    logger.debug(
-                        f"sources_filter_and_segment: SID {sid} span rejected - "
-                        f"span too small ({span_size} chars)"
-                    )
+                if e == "":
+                    e_idx = content_len  # end of page
+                else:
+                    e_lower = e.lower()
+                    e_idx = content_lower.find(e_lower, s_idx + len(s))
+                    if e_idx == -1:
+                        logger.debug(f"SID {sid} span rejected - end anchor not found after start: '{e[:50]}'")
+                        continue
+                    # Verify verbatim exactness for 'e' (case-sensitive)
+                    if source_content[e_idx:e_idx+len(e)] != e:
+                        logger.debug(f"SID {sid} span rejected - end anchor case/punct mismatch")
+                        continue
+
+                # --- Compute end position based on mode ---
+                if e == "":
+                    end_pos = e_idx
+                else:
+                    end_pos = e_idx if exclusive else e_idx + len(e)
+
+                if end_pos <= s_idx:
+                    logger.debug(f"SID {sid} span rejected - end before/at start (s_idx={s_idx}, end_pos={end_pos})")
                     continue
 
-                # Check if span is ONLY at the very top and tiny (likely just page title/nav)
-                # But allow larger spans that start near top (could be legitimate content after nav)
-                content_len = len(source_content)
-                if s_idx < 50 and span_size < 300:  # very top AND very small = likely nav
-                    logger.debug(
-                        f"sources_filter_and_segment: SID {sid} span rejected - "
-                        f"appears to be page title/nav (starts at {s_idx}, size {span_size})"
-                    )
+                span_size = end_pos - s_idx
+                if span_size < 200:  # needs to be substantial
+                    logger.debug(f"SID {sid} span rejected - span too small ({span_size} chars)")
+                    continue
+
+                # Guard against tiny title/nav slice at very top
+                if s_idx < 50 and span_size < 300:
+                    logger.debug(f"SID {sid} span rejected - likely title/nav (starts at {s_idx}, size {span_size})")
                     continue
 
                 spans.append({"s": s, "e": e})
@@ -588,7 +605,9 @@ async def filter_search_results_by_content(
         search_results: list,
         do_segment: bool = False,
         on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         thinking_budget: int = 0,
+        end_boundary: str = "exclusive",
 ):
     """
     Filter and optionally segment search results based on content quality.
@@ -599,6 +618,10 @@ async def filter_search_results_by_content(
         queries: List of search queries
         search_results: List of search result dicts with 'sid', 'content', etc.
         do_segment: If True, also segment content using spans
+        on_thinking_fn: Optional callback for thinking output
+        on_delta_fn: Optional callback for delta output
+        thinking_budget: Token budget for thinking
+        end_boundary: "exclusive" (default) or "inclusive" - how 'e' anchor is interpreted
 
     Returns:
         Filtered (and possibly segmented) search results
@@ -636,7 +659,6 @@ async def filter_search_results_by_content(
             "modified_time_iso": mod_iso,
         })
 
-
     try:
         if do_segment:
             # ===== Combined path: filter + segment =====
@@ -646,7 +668,9 @@ async def filter_search_results_by_content(
                 queries=queries,
                 sources_with_content=sources_for_filter,
                 on_thinking_fn=on_thinking_fn,
-                thinking_budget=thinking_budget
+                on_delta_fn=on_delta_fn,              # ← ADD THIS
+                thinking_budget=thinking_budget,
+                end_boundary=end_boundary,            # ← ADD THIS
             ) or {}
 
             # Normalize keys to ints
@@ -673,25 +697,48 @@ async def filter_search_results_by_content(
                 sid = row["sid"]
                 spans = spans_map.get(sid) or []
                 if spans:
-                    original_content = row.get("content", "") or ""
-                    pruned = content_filters.trim_with_spans(original_content, spans)
+                    original = row.get("content", "") or ""
+                    pruned = content_filters.trim_with_spans(
+                        original,
+                        spans,
+                        ctx_before=600,
+                        ctx_after=600,
+                        min_gap=400,
+                        max_joined=30000,
+                        end_boundary=end_boundary,
+                    )
 
-                    if pruned and pruned != original_content:
-                        row["content_original_length"] = len(original_content)
-                        row["content"] = pruned
-                        row["content_length"] = len(pruned)
+                    if pruned:
                         row["seg_spans"] = spans
-                        applied += 1
+                        row["seg_end_boundary"] = end_boundary
+                        row["content_original_length"] = len(original)
+                        row["content_pruned_length"] = len(pruned)
 
-                        logger.debug(
-                            f"  SID {sid}: trimmed from {len(original_content)} to {len(pruned)} chars"
-                        )
+                        # Consider it applied if we actually shortened meaningfully
+                        # OR if coverage is intentionally full.
+                        coverage_ratio = len(pruned) / max(1, len(original))
+                        FULL_THRESH = 0.98  # treat >=98% as full coverage
+
+                        if coverage_ratio < FULL_THRESH:
+                            row["content"] = pruned
+                            row["content_length"] = len(pruned)
+                            applied += 1
+                            logger.debug("filter_fetch_results: SID %s trimmed (%.1f%% of original).",
+                                         sid, 100.0 * coverage_ratio)
+                        else:
+                            # Full-coverage is OK; leave content unchanged but mark success.
+                            row["content_length"] = len(original)
+                            row["seg_full_coverage"] = True
+                            applied += 1
+                            logger.info("filter_fetch_results: SID %s spans cover entire body (%.1f%%); leaving content intact.",
+                                        sid, 100.0 * coverage_ratio)
                     else:
                         failed_to_apply += 1
                         logger.warning(
-                            f"  SID {sid}: spans did not extract content, keeping original "
-                            f"(spans: {spans})"
+                            "filter_fetch_results: SID %s spans did not match; keeping original (spans=%r)",
+                            sid, spans,
                         )
+
 
             dropped = len(search_results) - len(filtered_rows)
             logger.info(
@@ -734,13 +781,17 @@ async def filter_search_results_by_content(
 async def filter_fetch_results(_SERVICE,
                                objective: str,
                                results: Dict[str, Dict[str, Any]],
+                               *,
+                               end_boundary: str = "exclusive",  # "exclusive" (default) or "inclusive"
+                               on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
+                               thinking_budget: Optional[int] = 0,
                                ) -> List[Dict[str, Any]]:
 
     sources_for_seg: List[Dict[str, Any]] = []
     try:
         import kdcube_ai_app.apps.chat.sdk.tools.web.content_filters as content_filters
 
-        obj = objective.strip()
+        obj = (objective or "").strip()
 
         # Build pseudo-sources for the segmenter from successful/archive pages.
         sources_for_seg: List[Dict[str, Any]] = []
@@ -779,9 +830,10 @@ async def filter_fetch_results(_SERVICE,
                 objective=obj,
                 queries=[obj],
                 sources_with_content=sources_for_seg,
-                on_thinking_fn=None,
+                on_thinking_fn=on_thinking_fn,
+                thinking_budget=thinking_budget,
                 on_delta_fn=None,
-                thinking_budget=None,
+                end_boundary=end_boundary,   # <-- propagate boundary policy to the validator
             ) or {}
 
             # Normalize keys to ints and ensure value is always a list (possibly empty).
@@ -806,35 +858,57 @@ async def filter_fetch_results(_SERVICE,
 
                 spans = spans_map.get(sid) or []
                 if not spans:
-                    # Segmenter either didn't choose this SID or rejected all spans:
-                    # keep full content to preserve recall.
+                    # No spans returned (keep full content to preserve recall).
                     continue
 
                 original = entry.get("content") or ""
                 if not original:
                     continue
 
-                pruned = content_filters.trim_with_spans(original, spans)
+                # Trimmer supports e == "" and boundary modes.
+                pruned = content_filters.trim_with_spans(
+                    original,
+                    spans,
+                    ctx_before=600,
+                    ctx_after=600,
+                    min_gap=400,
+                    max_joined=30000,
+                    end_boundary=end_boundary,
+                )
 
-                if pruned and pruned != original:
-                    entry["content_original_length"] = len(original)
-                    entry["content"] = pruned
-                    entry["content_length"] = len(pruned)
+                if pruned:
                     entry["seg_spans"] = spans
-                    applied += 1
+                    entry["seg_end_boundary"] = end_boundary
+                    entry["content_original_length"] = len(original)
+                    entry["content_pruned_length"] = len(pruned)
+
+                    # Consider it applied if we actually shortened meaningfully
+                    # OR if coverage is intentionally full.
+                    coverage_ratio = len(pruned) / max(1, len(original))
+                    FULL_THRESH = 0.98  # treat >=98% as full coverage
+
+                    if coverage_ratio < FULL_THRESH:
+                        entry["content"] = pruned
+                        entry["content_length"] = len(pruned)
+                        applied += 1
+                        logger.debug("filter_fetch_results: SID %s trimmed (%.1f%% of original).",
+                                     sid, 100.0 * coverage_ratio)
+                    else:
+                        # Full-coverage is OK; leave content unchanged but mark success.
+                        entry["content_length"] = len(original)
+                        entry["seg_full_coverage"] = True
+                        applied += 1
+                        logger.info("filter_fetch_results: SID %s spans cover entire body (%.1f%%); leaving content intact.",
+                                    sid, 100.0 * coverage_ratio)
                 else:
-                    # Spans didn't produce a better slice → keep original.
                     failed_to_apply += 1
                     logger.warning(
-                        "fetch_url_contents: SID %s spans did not extract content, "
-                        "keeping original (spans=%r)",
-                        sid,
-                        spans,
+                        "filter_fetch_results: SID %s spans did not match; keeping original (spans=%r)",
+                        sid, spans,
                     )
 
             logger.info(
-                "fetch_url_contents: segmentation complete for objective='%s': "
-                "applied=%d, failed_to_apply=%d, total_segmentable=%d",
+                "filter_fetch_results: segmentation complete for objective='%s': applied=%d, failed_to_apply=%d, total_segmentable=%d",
                 obj[:80],
                 applied,
                 failed_to_apply,
@@ -843,5 +917,5 @@ async def filter_fetch_results(_SERVICE,
 
     except Exception:
         # Defensive: segmentation is best-effort and must never break fetch semantics.
-        logger.exception("fetch_url_contents: objective-based segmentation failed; returning unsegmented content")
+        logger.exception("filter_fetch_results: objective-based segmentation failed; returning unsegmented content")
     return sources_for_seg
