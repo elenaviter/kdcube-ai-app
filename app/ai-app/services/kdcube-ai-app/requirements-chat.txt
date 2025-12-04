@@ -76,3 +76,7 @@ aiofiles
 
 croniter
 python-multipart
+
+# Geospatial libraries
+geopy
+folium

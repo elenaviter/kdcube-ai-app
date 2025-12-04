@@ -6,7 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates \
     fonts-noto fonts-noto-cjk fonts-noto-color-emoji \
     libmagic1 file \
-    bubblewrap \
     && rm -rf /var/lib/apt/lists/* && apt-get clean
 
 # Isolated venv
@@ -19,15 +18,22 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     python -m playwright install --with-deps chromium
 
-# --- App code ---
-# copy your repo into the image so `kdcube_ai_app` is importable
-WORKDIR /workspace
-COPY . /opt/app
-ENV PYTHONPATH="/opt/app:${PYTHONPATH}"
+# Create unprivileged user for executor (but entrypoint runs as root)
+RUN groupadd --gid 1001 executor && \
+    useradd --uid 1001 --gid 1001 --no-create-home executor
 
-# optional: default timeout for in-container exec (can be overridden by env)
-ENV PY_CODE_EXEC_TIMEOUT=600
+# --- Environment variables ---
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/app \
+    PATH="/opt/venv/bin:$PATH" \
+    PY_CODE_EXEC_TIMEOUT=600
+
+# --- App code ---
+# Copy app to /opt/app so kdcube_ai_app is at /opt/app/kdcube_ai_app
+COPY services/kdcube-ai-app/ /opt/app/
+
+WORKDIR /workspace
 
 # --- Entrypoint ---
-# this module uses WORKDIR/OUTPUT_DIR/RUNTIME_GLOBALS_JSON provided by run_py_in_docker
-ENTRYPOINT ["python", "-m", "kdcube_ai_app.apps.chat.sdk.runtime.isolated.py_code_exec_entry"]
+ENTRYPOINT ["python", "/opt/app/kdcube_ai_app/apps/chat/sdk/runtime/isolated/py_code_exec_entry.py"]
