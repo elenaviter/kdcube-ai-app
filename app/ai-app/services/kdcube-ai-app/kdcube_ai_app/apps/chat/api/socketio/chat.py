@@ -14,27 +14,32 @@ import uuid
 import time
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List
 import hashlib
 import re
 
 import socketio
 
-from kdcube_ai_app.apps.chat.api.resolvers import get_tenant
 from kdcube_ai_app.auth.sessions import UserSession, UserType, RequestContext
-from kdcube_ai_app.infra.accounting.envelope import build_envelope_from_session
 from kdcube_ai_app.infra.gateway.rate_limiter import RateLimitError
 from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
 
 from kdcube_ai_app.apps.chat.sdk.protocol import (
-    ChatTaskPayload, ChatTaskMeta, ChatTaskRouting, ChatTaskActor, ChatTaskUser,
-    ChatTaskRequest, ChatTaskConfig, ChatTaskAccounting,
     ServiceCtx, ConversationCtx,
 )
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
-from kdcube_ai_app.infra.gateway.safe_preflight import PreflightConfig, preflight_async
-from kdcube_ai_app.tools.file_text_extractor import DocumentTextExtractor
+
+from kdcube_ai_app.apps.chat.api.ingress.chat_core import (
+    IngressConfig,
+    RawAttachment,
+    run_gateway_checks,
+    map_gateway_error,
+    extract_attachments_text,
+    merge_attachments_into_message,
+    process_chat_message,
+    get_conversation_status, build_ws_connect_request_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -243,60 +248,20 @@ class SocketIOChatHandler:
             return False
 
         # gateway protections (rate-limit + backpressure) — tracked on this endpoint
-        try:
-            client_ip = environ.get("REMOTE_ADDR", environ.get("HTTP_X_FORWARDED_FOR", "unknown"))
-            user_agent = environ.get("HTTP_USER_AGENT", "")
-            auth_header = f"Bearer {(auth or {}).get('bearer_token')}" if (auth or {}).get("bearer_token") else None
-
-            context = RequestContext(client_ip=client_ip, user_agent=user_agent, authorization_header=auth_header)
-            endpoint = "/socket.io/connect"
-
-            await self.gateway_adapter.gateway.rate_limiter.check_and_record(session, context, endpoint)
-            await self.gateway_adapter.gateway.backpressure_manager.check_capacity(
-                session.user_type, session, context, endpoint
-            )
-            logger.info("WS connect gateway checks passed: sid=%s session=%s type=%s",
-                        sid, session.session_id, session.user_type.value)
-
-        except RateLimitError as e:
-            logger.warning("WS connect rate-limited: %s", e.message)
+        context = build_ws_connect_request_context(environ, auth)
+        gw_res = await run_gateway_checks(
+            gateway_adapter=self.gateway_adapter,
+            session=session,
+            context=context,
+            endpoint="/socket.io/connect",
+        )
+        if gw_res.kind != "ok":
+            mapped = map_gateway_error(gw_res)
             try:
                 await self.sio.emit("chat_error", {
-                    "error": f"Rate limit exceeded: {e.message}",
-                    "retry_after": e.retry_after,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
-                }, to=sid)
-            finally:
-                return False
-
-        except BackpressureError as e:
-            logger.warning("WS connect backpressure: %s", e.message)
-            try:
-                await self.sio.emit("chat_error", {
-                    "error": f"System under pressure: {e.message}",
-                    "retry_after": e.retry_after,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
-                }, to=sid)
-            finally:
-                return False
-
-        except CircuitBreakerError as e:
-            logger.warning("WS connect circuit breaker '%s'", e.circuit_name)
-            try:
-                await self.sio.emit("chat_error", {
-                    "error": f"Service temporarily unavailable: {e.message}",
-                    "retry_after": e.retry_after,
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
-                }, to=sid)
-            finally:
-                return False
-
-        except Exception as e:
-            logger.error("WS connect gateway failure: %s", e)
-            try:
-                await self.sio.emit("chat_error", {
-                    "error": "System check failed",
-                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                    "error": mapped["message"],
+                    "retry_after": mapped.get("retry_after"),
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
                 }, to=sid)
             finally:
                 return False
@@ -375,22 +340,19 @@ class SocketIOChatHandler:
             return {"ok": False, "error": "No data provided"}
 
         data = args[0]
+        message_data = data.get("message", {}) or {}
 
-        # Defer heavy work (attachment extraction) until AFTER gateway checks.
-        # ------- collect only cheap info up-front -------
-        message_data = data.get("message", {})
-        # message_data["conversation_id"] = "565fbaea-c54c-4e0e-a73a-0ddb3aed158f"
-        # message_data["conversation_id"] = "cbd6155a-8714-4d49-8a77-c7a802bfe848"
-        # message_data["conversation_id"] = "927b6edd-e664-4b2d-87ef-a041995b6e18"
-        # message_data["conversation_id"] = "f0fec000-8dd2-4d85-acda-b8781f210d04" # BROKEN
-        # message_data["conversation_id"] = "ae42599e-2c1e-4334-be43-667a957d61e2"
-        logger.info("chat_message sid=%s '%s'...", sid, (message_data or {}).get("message", "")[:100])
+        logger.info(
+            "chat_message sid=%s '%s'...",
+            sid,
+            (message_data or {}).get("message", "")[:100],
+        )
 
         try:
             socket_session = await self.sio.get_session(sid)
             user_session_data = (socket_session or {}).get("user_session", {})
 
-            # rebuild lightweight UserSession
+            # Rebuild lightweight UserSession
             session = UserSession(
                 session_id=user_session_data.get("session_id", "unknown"),
                 user_type=UserType(user_session_data.get("user_type", "anonymous")),
@@ -401,325 +363,154 @@ class SocketIOChatHandler:
                 permissions=user_session_data.get("permissions", []),
             )
 
-            # gateway protections for /socket.io/chat (tracked)
-            context = RequestContext(client_ip="socket.io", user_agent="socket.io-client", authorization_header=None)
-            try:
-                endpoint = "/socket.io/chat"
-                await self.gateway_adapter.gateway.rate_limiter.check_and_record(session, context, endpoint)
-                await self.gateway_adapter.gateway.backpressure_manager.check_capacity(
-                    session.user_type, session, context, endpoint
+            # ---------- gateway checks (shared) ----------
+            context = RequestContext(
+                client_ip="socket.io",
+                user_agent="socket.io-client",
+                authorization_header=None,
+            )
+            gw_res = await run_gateway_checks(
+                gateway_adapter=self.gateway_adapter,
+                session=session,
+                context=context,
+                endpoint="/socket.io/chat",
+            )
+            if gw_res.kind != "ok":
+                mapped = map_gateway_error(gw_res)
+                svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
+                conv = ConversationCtx(
+                    session_id=session.session_id,
+                    conversation_id=message_data.get("conversation_id") or session.session_id,
+                    turn_id=f"turn_{uuid.uuid4().hex[:8]}",
                 )
-                logger.info("gateway ok sid=%s session=%s", sid, session.session_id)
-
-            except RateLimitError as e:
-                svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
-                conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                await self._comm.emit_error(svc, conv, error=f"Rate limit exceeded: {e.message}", target_sid=sid, session_id=session.session_id)
+                await self._comm.emit_error(
+                    svc,
+                    conv,
+                    error=mapped["message"],
+                    target_sid=sid,
+                    session_id=session.session_id,
+                )
+                # No explicit WS ack – just error event
                 return
 
-            except BackpressureError as e:
-                svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
-                conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                await self._comm.emit_error(svc, conv, error=f"System under pressure: {e.message}", target_sid=sid, session_id=session.session_id)
-                return
+            # ---------- attachments (Socket.IO → RawAttachment) ----------
+            max_mb = getattr(self, "max_upload_mb", 20)
+            attachments_meta = data.get("attachment_meta") or []
+            raw_attachments: List[RawAttachment] = []
 
-            except CircuitBreakerError as e:
-                svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
-                conv = ConversationCtx(session_id=session.session_id, conversation_id=data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                await self._comm.emit_error(svc, conv, error=f"Service temporarily unavailable: {e.message}", target_sid=sid, session_id=session.session_id)
-                return
-
-            except Exception as e:
-                svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
-                conv = ConversationCtx(session_id=session.session_id, conversation_id=message_data.get("conversation_id") or session.session_id, turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                await self._comm.emit_error(svc, conv, error="System check failed", target_sid=sid, session_id=session.session_id)
-                logger.error("gateway check failed: %s", e)
-                return
-
-            enable_av = os.getenv("APP_AV_SCAN", "1") == "1"   # default ON
-            av_timeout = float(os.getenv("APP_AV_TIMEOUT_S", "3.0"))
-
-            cfg = PreflightConfig(av_scan=enable_av, av_timeout_s=av_timeout)
-            # ------- ONLY NOW: parse attachments & extract text -------
-            max_bytes = int(getattr(self, "max_upload_mb", 20)) * 1024 * 1024
-            attachments_meta = data.get("attachment_meta", [])
-            attachments = []
             for idx, f in enumerate(attachments_meta):
-                mime = f.get("mime", "application/pdf")
-                name = f.get("filename")
+                mime = f.get("mime", "application/octet-stream")
+                name = f.get("filename") or f.get("name") or "file"
                 raw = args[1 + idx] if len(args) > 1 + idx else None
                 if raw and isinstance(raw, (bytes, bytearray, memoryview)):
                     raw_bytes = bytes(raw)
-                    # quick size guard (cheap)
-                    if len(raw_bytes) > max_bytes:
-                        logger.warning("attachment '%s' rejected: %d > max %d", name, len(raw_bytes), max_bytes)
-                        continue
-                    pf = await preflight_async(raw_bytes, name, mime, cfg)
-                    if not pf.allowed:
-                        logger.warning(f"attachment '{name}' rejected. reasons={pf.reasons}, {pf.meta}.")
-                        continue
-                    else:
-                        logger.info(f"attachment '{name}' accepted.")
-                    attachments.append({"raw": raw_bytes, "name": name, "mime": mime})
+                    raw_attachments.append(
+                        RawAttachment(
+                            content=raw_bytes,
+                            name=name,
+                            mime=mime,
+                            meta={},  # you can pass f itself here if you want to merge custom meta
+                        )
+                    )
 
-            extractor = DocumentTextExtractor()
-            attachments_text = []
-            for a in attachments:
-                try:
-                    text, info = extractor.extract(a["raw"], a.get("name") or "file", a.get("mime"))
-                    attachments_text.append({
-                        "name": a.get("name"),
-                        "mime": info.mime,
-                        "ext": info.ext,
-                        "size": len(a["raw"]),
-                        "meta": info.meta,
-                        "warnings": info.warnings,
-                        "text": text,
-                    })
-                except Exception as ex:
-                    logger.error("extract failed for '%s': %s", a.get("name"), ex)
-
-            # ------- build message (same as before) -------
-            message = (message_data or {}).get("text") or (message_data or {}).get("message") or ""
-
-            if attachments_text:
-                message += "\nATTACHMENTS:\n"
-                for idx, a in enumerate(attachments_text):
-                    message += f"{idx + 1}. Name: {a['name']}; Mime: {a['mime']}\n{a['text']}\n...\n"
-            if not message:
-                svc = ServiceCtx(request_id=str(uuid.uuid4()))
-                conv = ConversationCtx(
-                    session_id=user_session_data.get("session_id", "unknown"),
-                    conversation_id=message_data.get("conversation_id") or user_session_data.get("session_id", "unknown"),
-                    turn_id=f"turn_{uuid.uuid4().hex[:8]}",
+            attachments_text: List[Dict[str, Any]] = []
+            if raw_attachments:
+                attachments_text = await extract_attachments_text(
+                    raw_attachments,
+                    max_mb=max_mb,
                 )
-                await self._comm.emit_error(svc, conv, error='Missing "message"', target_sid=sid, session_id=conv.session_id)
-                return
 
+            # ---------- build final message text ----------
+            base_message = (
+                    (message_data or {}).get("text")
+                    or (message_data or {}).get("message")
+                    or ""
+            )
+            text = merge_attachments_into_message(base_message, attachments_text)
 
-            tenant_id = message_data.get("tenant_id") or get_tenant()
-            project_id = message_data.get("project")
-
-            # bundle resolution,accounting envelope, payload assembly, enqueue, and ack...
-            request_id = str(uuid.uuid4())
-
-            agentic_bundle_id = message_data.get("bundle_id")
-            from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
-            spec_resolved = resolve_bundle(agentic_bundle_id, override=None)
-            agentic_bundle_id = spec_resolved.id if spec_resolved else None
-
-            acct_env = build_envelope_from_session(
-                session=session,
-                tenant_id=tenant_id,
-                project_id=project_id,
-                request_id=request_id,
+            # ---------- delegate to core business logic ----------
+            ingress_cfg = IngressConfig(
+                transport="socket",
+                entrypoint="/socket.io/chat",
                 component="chat.socket",
-                app_bundle_id=agentic_bundle_id,
+                instance_id=self.instance_id,
+                stream_id=sid,
                 metadata={"socket_id": sid, "entrypoint": "/socket.io/chat"},
-            ).to_dict()
-
-            # assemble task payload (protocol model)
-            task_id = str(uuid.uuid4())
-            turn_id = message_data.get("turn_id") or f"turn_{uuid.uuid4().hex[:8]}"
-            conversation_id = message_data.get("conversation_id") or session.session_id
-
-            ext_config = message_data.get("config") or {}
-            if "tenant" not in ext_config:
-                ext_config["tenant"] = tenant_id
-            if "project" not in ext_config and project_id:
-                ext_config["project"] = project_id
-
-            svc = ServiceCtx(request_id=request_id, user=session.user_id, project=project_id, tenant=tenant_id)
-            conv = ConversationCtx(session_id=session.session_id, conversation_id=conversation_id, turn_id=turn_id)
-
-            if not spec_resolved:
-                await self._comm.emit_error(svc, conv, error=f"Unknown bundle_id '{agentic_bundle_id}'", target_sid=sid, session_id=session.session_id)
-                return
-            routing = ChatTaskRouting(
-                session_id=session.session_id,
-                conversation_id=conversation_id,
-                turn_id=turn_id,
-                socket_id=sid,
-                bundle_id=spec_resolved.id,
-            )
-            payload = ChatTaskPayload(
-                meta=ChatTaskMeta(task_id=task_id, created_at=time.time(), instance_id=self.instance_id),
-                routing=routing,
-                actor=ChatTaskActor(
-                    tenant_id=tenant_id,
-                    project_id=project_id,
-                ),
-                user=ChatTaskUser(
-                    user_type=session.user_type.value,
-                    user_id=session.user_id,
-                    username=session.username,
-                    fingerprint=session.fingerprint,
-                    roles=session.roles,
-                    permissions=session.permissions,
-                ),
-                request=ChatTaskRequest(
-                    message=message,
-                    chat_history=message_data.get("chat_history") or [],
-                    operation=message_data.get("operation") or message_data.get("command"),
-                    invocation=message_data.get("invocation"),
-                    payload=message_data.get("payload") or {},       # ← generic Any pass-through
-                ),
-                config=ChatTaskConfig(values=ext_config),
-                accounting=ChatTaskAccounting(envelope=acct_env),
             )
 
-            conv_exists = await self.app.state.conversation_browser.conversation_exists(
-                user_id=payload.user.user_id,
-                conversation_id=conversation_id,
-                bundle_id=payload.routing.bundle_id,
+            result = await process_chat_message(
+                app=self.app,
+                chat_queue_manager=self.chat_queue_manager,
+                chat_comm=self._comm,
+                session=session,
+                request_context=context,
+                message_data=message_data,
+                message_text=text,
+                ingress=ingress_cfg,
             )
 
-            set_res = await self.app.state.conversation_browser.set_conversation_state(
-                tenant=payload.actor.tenant_id,
-                project=payload.actor.project_id,
-                user_id=payload.user.user_id,
-                conversation_id=payload.routing.conversation_id,
-                new_state="in_progress",
-                by_instance=self.instance_id,
-                request_id=request_id,
-                last_turn_id=payload.routing.turn_id,
-                require_not_in_progress=True,
-                user_type=payload.user.user_type,
-                bundle_id=payload.routing.bundle_id,
-            )
-
-            if not set_res["ok"]:
-                # Did NOT acquire; someone else is active
-                active_turn = set_res.get("current_turn_id")
-                try:
-                    await self._comm.emit_conv_status(
-                        svc, conv, routing,
-                        state="in_progress",
-                        updated_at=set_res["updated_at"],
-                        current_turn_id=active_turn,
-                        target_sid=sid  # DM this requester tab only
-                    )
-                    await self._comm.emit_error(
-                        svc, conv,
-                        error="Conversation is busy (another tab/process is answering).",
-                        target_sid=sid,
-                        session_id=payload.routing.session_id,
-                    )
-                except Exception:
-                    pass
-                return
-
-            # We DID acquire the lock → proceed and announce with our turn_id
-            try:
-                if not conv_exists:
-                    logger.info(f"New conversation created: {payload.routing.conversation_id} for user {payload.user.user_id}")
-                    await self._comm.emit_conv_status(
-                        svc, conv, routing,
-                        state="created",
-                        updated_at=set_res["updated_at"],
-                        current_turn_id=payload.routing.turn_id,
-                    )
-                await self._comm.emit_conv_status(
-                    svc, conv, routing,
-                    state="in_progress",
-                    updated_at=set_res["updated_at"],
-                    current_turn_id=payload.routing.turn_id,
-                )
-            except Exception:
-                pass
-
-            # atomic enqueue with backpressure accounting
-            success, reason, stats = await self.chat_queue_manager.enqueue_chat_task_atomic(
-                session.user_type,
-                payload.model_dump(),   # ← serialize protocol model
-                session,
-                context,
-                "/socket.io/chat",
-            )
-            if not success:
-                # rollback state, since nothing will process this turn
-                res_reset = await self.app.state.conversation_browser.set_conversation_state(
-                    tenant=payload.actor.tenant_id,
-                    project=payload.actor.project_id,
-                    user_id=payload.user.user_id,
-                    conversation_id=payload.routing.conversation_id,
-                    new_state="idle",
-                    by_instance=self.instance_id,
-                    request_id=request_id,
-                    last_turn_id=payload.routing.turn_id,
-                    require_not_in_progress=False,
-                    user_type=payload.user.user_type,
-                    bundle_id=payload.routing.bundle_id,
-                )
-                # let the requester tab know
-                await self._comm.emit_conv_status(
-                    svc, conv,
-                    routing=routing,
-                    state="idle",
-                    updated_at=res_reset["updated_at"],
-                    current_turn_id=res_reset.get("current_turn_id"),
-                    target_sid=sid,  # DM the requester tab; or omit target_sid to session-broadcast
-                )
-                await self._comm.emit_error(
-                    svc, conv,
-                    error=f"System under pressure - request rejected ({reason})",
-                    target_sid=sid,
-                    session_id=payload.routing.session_id,
+            if not result.ok:
+                # process_chat_message already emitted proper conv_status + error
+                # For WS we don't need to raise; just return.
+                logger.warning(
+                    "chat_message rejected sid=%s error_type=%s error=%s",
+                    sid,
+                    result.error_type,
+                    result.error,
                 )
                 return
 
-            # ack to client via communicator (same envelope as processor emits)
-            await self._comm.emit_start(svc, conv, message=(message[:100] + "..." if len(message) > 100 else message), queue_stats=stats, target_sid=sid, session_id=session.session_id)
+            # On success, everything (conv_status + start) is already emitted.
+            # You *could* emit a lightweight ack event here if desired.
+            return
 
         except Exception as e:
             logger.exception("chat_message error: %s", e)
             try:
                 svc = ServiceCtx(request_id=str(uuid.uuid4()))
-                conv = ConversationCtx(session_id="unknown", conversation_id="unknown", turn_id=f"turn_{uuid.uuid4().hex[:8]}")
-                await self._comm.emit_error(svc, conv, error=str(e), target_sid=sid)
+                conv = ConversationCtx(
+                    session_id="unknown",
+                    conversation_id="unknown",
+                    turn_id=f"turn_{uuid.uuid4().hex[:8]}",
+                )
+                await self._comm.emit_error(
+                    svc,
+                    conv,
+                    error=str(e),
+                    target_sid=sid,
+                )
             except Exception:
                 pass
 
     # ---------- subscr ----------
-    async def _handle_conv_status_subscribe(self,
-                                            data,
-                                            sid):
-        conv_id = (data or {}).get("conversation_id")
+    async def _handle_conv_status_subscribe(self, data, sid):
         socket_session = await self.sio.get_session(sid)
         user_session = (socket_session or {}).get("user_session", {})
-        conv_id = conv_id or user_session.get("session_id")
-        # lookup current row
-        row = await self.app.state.conversation_browser.idx.get_conversation_state_row(
+
+        session = UserSession(
+            session_id=user_session.get("session_id", "unknown"),
+            user_type=UserType(user_session.get("user_type", "anonymous")),
+            fingerprint=user_session.get("fingerprint", "unknown"),
             user_id=user_session.get("user_id"),
-            conversation_id=conv_id
+            username=user_session.get("username"),
+            roles=user_session.get("roles", []),
+            permissions=user_session.get("permissions", []),
         )
-        # translate row → state + current_turn_id + updated_at
-        state = "idle" if not row else ("in_progress" if "conv.state:in_progress" in row["tags"] else "error" if "conv.state:error" in row["tags"] else "idle")
-        updated_at = (row["ts"].isoformat() + "Z") if row else datetime.utcnow().isoformat() + "Z"
-        current_turn_id = row.get("payload", {}).get("last_turn_id") if row else None
 
-        agentic_bundle_id = data.get("bundle_id")
-        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
-        spec_resolved = resolve_bundle(agentic_bundle_id, override=None)
+        conv_id = (data or {}).get("conversation_id") or session.session_id
+        bundle_id = (data or {}).get("bundle_id")
 
-        # just EMIT `conv_status` back to the requester sid
-        svc = ServiceCtx(request_id=str(uuid.uuid4()), user=user_session.get("user_id"))
-        conv = ConversationCtx(session_id=user_session.get("session_id"),
-                               conversation_id=conv_id,
-                               turn_id=current_turn_id or f"turn_{uuid.uuid4().hex[:8]}")
-        routing = ChatTaskRouting(
-            session_id=user_session.get("session_id"),
+        status = await get_conversation_status(
+            app=self.app,
+            chat_comm=self._comm,
+            session=session,
+            bundle_id=bundle_id,
             conversation_id=conv_id,
-            turn_id=current_turn_id,
-            socket_id=sid,
-            bundle_id=spec_resolved.id,
+            stream_id=sid,
         )
-        await self._comm.emit_conv_status(svc, conv,
-                                    routing=routing,
-                                    state=state,
-                                    updated_at=updated_at,
-                                    current_turn_id=current_turn_id,
-                                    target_sid=sid)
+        # We don't send a separate WS ACK; conv_status event itself is enough.
+        return status
+
 
     # ---------- ASGI app ----------
 
