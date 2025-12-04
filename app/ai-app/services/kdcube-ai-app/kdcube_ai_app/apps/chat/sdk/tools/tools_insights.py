@@ -57,6 +57,10 @@ WRITE_TOOLS = {
     "generic_tools.write_file",
 }
 
+CODEGEN_TOOLS = {
+    "codegen_tools.codegen_python"
+}
+
 # Which tools produce *raw source lists* that must be merged into the pool and re-SID'd
 SEARCH_TOOL_IDS = {
     "generic_tools.web_search",
@@ -72,8 +76,8 @@ GENERATIVE_TOOL_IDS = {
 def is_write_tool(tool_id: str) -> bool:
     return tool_id in WRITE_TOOLS
 
-def is_code_exec_tool(tool_id: str) -> bool:
-    return tool_id in WRITE_TOOLS
+def is_codegen_tool(tool_id: str) -> bool:
+    return tool_id in CODEGEN_TOOLS
 
 def does_tool_accept_sources(tool_id: str) -> bool:
     return tool_id in CITATION_AWARE_TOOL_IDS
@@ -101,9 +105,9 @@ def should_isolate_tool_execution(tool_id: str) -> bool:
     return should_isolate_in_docker(tool_id) or is_write_tool(tool_id)
 
 def should_isolate_in_docker(tool_id: str) -> bool:
-    # return tool_id == "generic_tools.write_file" or is_code_exec_tool(tool_id)
-    # return is_code_exec_tool(tool_id)
-    return tool_id in ("generic_tools.write_file", "llm_tools.generate_content_llm") or is_code_exec_tool(tool_id)
+    # return tool_id == "generic_tools.write_file" or is_codegen_tool(tool_id)
+    return is_codegen_tool(tool_id)
+    # return tool_id in ("generic_tools.write_file", "llm_tools.generate_content_llm") or is_codegen_tool(tool_id)
 
 def tool_isolation(tool_id: str) -> Literal["none", "docker", "local_network", "local"]:
     if should_isolate_in_docker(tool_id):
