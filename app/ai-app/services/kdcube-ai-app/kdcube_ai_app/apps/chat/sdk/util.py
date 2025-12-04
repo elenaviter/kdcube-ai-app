@@ -327,6 +327,10 @@ def _today_str() -> str:
     # UTC; if you have user’s tz, inject it in prompts separately
     return datetime.now(timezone.utc).date().isoformat()
 
+def _now_str() -> str:
+    # UTC; full timestamp with microseconds
+    return datetime.now(timezone.utc).isoformat()
+
 def _shorten(s: str, n: int) -> str:
     s = (s or "").strip()
     return s if len(s) <= n else (s[:n-1] + "…")
