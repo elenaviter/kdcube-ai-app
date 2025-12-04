@@ -44,9 +44,9 @@ def build_packages_installed_block() -> str:
         "- Data: pandas, numpy, openpyxl, xlsxwriter\n"
         "- Files: python-docx, python-pptx, pymupdf, pypdf, reportlab, Pillow\n"
         "- Web: requests, aiohttp, httpx, playwright, beautifulsoup4, lxml\n"
-        "- Viz: matplotlib, seaborn, plotly, networkx, graphviz, diagrams\n"
+        "- Viz: matplotlib, seaborn, plotly, networkx, graphviz, diagrams, folium\n"
         "- Text: markdown-it-py, pygments, jinja2, python-dateutil\n"
-        "- Utils: pydantic, orjson, python-dotenv, PyJWT\n"
+        "- Utils: pydantic, orjson, python-dotenv, PyJWT, geopy\n"
     )
 
 def _merge_timeout_result(path: pathlib.Path, *, objective: str, seconds: int):
