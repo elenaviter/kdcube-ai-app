@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import json
 
+from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, create_cached_system_message
 from kdcube_ai_app.apps.chat.sdk.streaming.streaming import \
     _stream_agent_two_sections_to_json as _stream_agent_sections_to_json
@@ -503,17 +504,35 @@ async def filter_and_segment_stream(
     )
     role = role or "tool.sources.filter.by.content.and.segment"
     # Use the 2-fold streaming utility with NO schema_model (parse as raw dict)
-    out = await _stream_agent_sections_to_json(
-        svc,
-        client_name=role,
-        client_role=role,
-        sys_prompt=system_msg,
-        user_msg=user_msg,
-        schema_model=None,  # Parse as raw dict, no Pydantic validation
-        on_progress_delta=on_thinking_fn,
-        ctx="filter.segmenter",
-        max_tokens=max_tokens
-    )
+    from kdcube_ai_app.infra.accounting import _get_context
+
+    context = _get_context()
+    context_snapshot = context.to_dict()
+
+    track_id = context_snapshot.get("track_id")
+    bundle_id = context_snapshot.get("app_bundle_id")
+
+    async with with_accounting(
+            bundle_id,
+            track_id=track_id,
+            agent=role,
+            metadata={
+                "track_id": track_id,
+                "agent": role,
+                "agent_name": "Filter Segmenter LLM"
+            }
+    ):
+        out = await _stream_agent_sections_to_json(
+            svc,
+            client_name=role,
+            client_role=role,
+            sys_prompt=system_msg,
+            user_msg=user_msg,
+            schema_model=None,  # Parse as raw dict, no Pydantic validation
+            on_progress_delta=on_thinking_fn,
+            ctx="filter.segmenter",
+            max_tokens=max_tokens
+        )
 
     if not out:
         return {"agent_response": {}}

@@ -1,12 +1,9 @@
 import json
-import re, yaml, jsonschema
 from datetime import datetime, timezone
 
-import time
 from typing import Annotated, Optional, List, Dict, Any, Tuple, Set, Callable, Awaitable
 import logging
 
-from kdcube_ai_app.apps.chat.sdk.tools.web.filter_segmenter import filter_and_segment_stream
 from kdcube_ai_app.apps.chat.sdk.tools.with_llm_backends import generate_content_llm
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 
@@ -392,6 +389,7 @@ async def sources_filter_and_segment(
         objective: Annotated[str, "Objective (what we are trying to achieve)."],
         queries: Annotated[List[str], "Array of queries [q1, q2, ...]"],
         sources_with_content: Annotated[List[Dict[str, Any]], 'Array of {"sid": int, "content": str, "published_time_iso"?: str, "modified_time_iso"?: str}'],
+        mode: str = "balanced",
         on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         thinking_budget: Optional[int] = None,
@@ -417,7 +415,9 @@ async def sources_filter_and_segment(
     from kdcube_ai_app.apps.chat.sdk.tools.web.filter_segmenter import filter_and_segment_stream
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    mode = "balanced"  # or "precision" or "recall" - can be parameterized later
+    mode = (mode or "balanced").lower()
+    if mode not in ("balanced", "recall", "precision"):
+        mode = "balanced"
 
     # ============================================================
     # PREPARE SOURCES
@@ -512,8 +512,13 @@ async def sources_filter_and_segment(
             else:
                 # ===== NON-ANTHROPIC: Use traditional generate_content_llm =====
                 logger.info(f"sources_filter_and_segment: using traditional backend for {provider}")
-
-                _INSTRUCTION = content_filters.FILTER_AND_SEGMENT_GUIDE(now_iso)
+                # Select instruction based on mode (ADD THIS)
+                if mode == "precision":
+                    _INSTRUCTION = content_filters.FILTER_AND_SEGMENT_HIGH_PRECISION(now_iso)
+                elif mode == "recall":
+                    _INSTRUCTION = content_filters.FILTER_AND_SEGMENT_HIGH_RECALL(now_iso)
+                else:  # balanced
+                    _INSTRUCTION = content_filters.FILTER_AND_SEGMENT_BALANCED(now_iso)
                 user_message = """
 TASK CLARIFICATION:
 You will see an "objective" and "queries" below in INPUT CONTEXT section. This is what the USER searched for.
@@ -688,6 +693,7 @@ async def filter_search_results_by_content(
         queries: list,
         search_results: list,
         do_segment: bool = False,
+        mode: str = "balanced",
         on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         thinking_budget: int = 0,
@@ -751,10 +757,11 @@ async def filter_search_results_by_content(
                 objective=objective,
                 queries=queries,
                 sources_with_content=sources_for_filter,
+                mode=mode,
                 on_thinking_fn=on_thinking_fn,
-                on_delta_fn=on_delta_fn,              # ← ADD THIS
+                on_delta_fn=on_delta_fn,
                 thinking_budget=thinking_budget,
-                end_boundary=end_boundary,            # ← ADD THIS
+                end_boundary=end_boundary,
             ) or {}
 
             # Normalize keys to ints
@@ -866,6 +873,7 @@ async def filter_fetch_results(_SERVICE,
                                objective: str,
                                results: Dict[str, Dict[str, Any]],
                                *,
+                               mode: str = "balanced",
                                end_boundary: str = "exclusive",  # "exclusive" (default) or "inclusive"
                                on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
                                thinking_budget: Optional[int] = 0,
@@ -914,6 +922,7 @@ async def filter_fetch_results(_SERVICE,
                 objective=obj,
                 queries=[obj],
                 sources_with_content=sources_for_seg,
+                mode=mode,
                 on_thinking_fn=on_thinking_fn,
                 thinking_budget=thinking_budget,
                 on_delta_fn=None,

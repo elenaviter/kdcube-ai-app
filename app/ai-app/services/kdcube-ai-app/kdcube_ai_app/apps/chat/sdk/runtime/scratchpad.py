@@ -218,7 +218,7 @@ class TurnScratchpad:
 # TurnLog - Structured logging
 # ============================================================================
 
-LogArea = Literal["objective", "user", "attachments", "solver", "answer", "note", "summary", "feedback"]
+LogArea = Literal["objective", "user", "attachments", "solver", "react", "answer", "note", "summary", "feedback"]
 LogLevel = Literal["info", "warn", "error"]
 
 class TurnLogEntry(BaseModel):
@@ -255,6 +255,7 @@ class TurnLog(BaseModel):
     def user(self, msg: str, **kw): self.add("user", msg, **kw)
     def attachments(self, msg: str, **kw): self.add("attachments", msg, **kw)
     def solver(self, msg: str, **kw): self.add("solver", msg, **kw)
+    def react(self, msg: str, **kw): self.add("react", msg, **kw)
     def answer(self, msg: str, **kw): self.add("answer", msg, **kw)
     def note(self, msg: str, **kw): self.add("note", msg, **kw)
 

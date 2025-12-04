@@ -12,6 +12,7 @@ import semantic_kernel as sk
 from kdcube_ai_app.apps.chat.sdk.runtime.workdir_discovery import resolve_output_dir
 from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_from_text, dedupe_sources_by_url, \
     CITATION_OPTIONAL_ATTRS, normalize_sources_any
+from kdcube_ai_app.apps.chat.sdk.tools.tools_insights import CITABLE_TOOL_IDS
 from kdcube_ai_app.apps.chat.sdk.util import strip_lone_surrogates
 
 try:
@@ -24,12 +25,6 @@ try:
     from kdcube_ai_app.apps.chat.sdk.runtime.isolated.secure_client import ToolStub
 except Exception:  # non-supervised environments, tests, etc.
     ToolStub = None
-
-_CITABLE_TOOL_IDS = {
-    "generic_tools.web_search",
-    "generic_tools.browsing",
-    "ctx_tools.merge_sources",
-}
 
 # ---------- basics ----------
 
@@ -421,7 +416,7 @@ def _infer_format_for_tool_output(tool_id: str, out: Any) -> Optional[str]:
 def _is_citable_tool(tool_id: str) -> bool:
     tid = (tool_id or "").lower()
     # allow kb_search variants too
-    return tid in _CITABLE_TOOL_IDS or tid.endswith(".kb_search")
+    return tid in CITABLE_TOOL_IDS or tid.endswith(".kb_search")
 
 def _promote_tool_calls(raw_files: Dict[str, List[str]], outdir: pathlib.Path) -> List[Dict[str, Any]]:
     """

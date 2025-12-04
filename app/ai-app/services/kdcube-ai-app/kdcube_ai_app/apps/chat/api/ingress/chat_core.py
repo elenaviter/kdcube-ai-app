@@ -606,7 +606,7 @@ async def get_conversation_status(
         payload_row = row.get("payload") or {}
         current_turn_id = payload_row.get("last_turn_id")
 
-    spec_resolved = resolve_bundle(bundle_id, override=None) if bundle_id else None
+    spec_resolved = resolve_bundle(bundle_id, override=None)
 
     routing = ChatTaskRouting(
         session_id=session.session_id,

@@ -73,6 +73,11 @@ GENERATIVE_TOOL_IDS = {
     "llm_tools.generate_content_llm",
 }
 
+CITABLE_TOOL_IDS = {
+    "generic_tools.web_search",
+    "ctx_tools.merge_sources",
+}
+
 def is_write_tool(tool_id: str) -> bool:
     return tool_id in WRITE_TOOLS
 
