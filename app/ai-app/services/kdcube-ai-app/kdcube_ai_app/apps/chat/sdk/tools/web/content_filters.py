@@ -211,7 +211,7 @@ Your Phase 1 produces a list of kept SIDs. Phase 2 processes only those kept SID
 **Output you will produce:**
 - JSON: {{"<sid>": [{{"s": "...", "e": "..."}}], ...}}
 
-TODAY: {now_iso}
+TIMESTAMP NOW: {now_iso}
 
 ═══════════════════════════════════════════════════════════════
 THINKING OUTPUT REQUIREMENT (SHOWN TO USERS)
@@ -492,7 +492,7 @@ Look at INPUT CONTEXT "objective" field to understand the search domain.
 - Duplicate other kept pages (≥90% content overlap)
 - Have no real content
 
-TODAY: {now_iso}
+TIMESTAMP NOW: {now_iso}
 
 ═══════════════════════════════════════════════════════════════
 STEP 2: EXTRACT CONTENT BODIES
@@ -634,7 +634,7 @@ Your Phase 1 produces a list of kept SIDs. Phase 2 processes only those kept SID
 **Output you will produce:**
 - JSON: {{"<sid>": [{{"s": "...", "e": "..."}}], ...}}
 
-TODAY: {now_iso}
+TIMESTAMP NOW: {now_iso}
 
 ═══════════════════════════════════════════════════════════════
 THINKING OUTPUT REQUIREMENT (SHOWN TO USERS)
@@ -908,7 +908,7 @@ Your Phase 1 produces a list of kept SIDs. Phase 2 processes only those kept SID
 **Output you will produce:**
 - JSON: {{"<sid>": [{{"s": "...", "e": "..."}}], ...}}
 
-TODAY: {now_iso}
+TIMESTAMP NOW: {now_iso}
 
 ═══════════════════════════════════════════════════════════════
 THINKING OUTPUT REQUIREMENT

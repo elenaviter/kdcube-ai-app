@@ -477,7 +477,7 @@ async def sources_filter_and_segment(
                     mode=mode,
                     on_thinking_fn=on_thinking_fn,
                     thinking_budget=thinking_budget or 180,
-                    max_tokens=700,
+                    max_tokens=1000,
                     role=role
                 )
 

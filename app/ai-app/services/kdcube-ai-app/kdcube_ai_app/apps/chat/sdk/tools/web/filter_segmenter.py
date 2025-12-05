@@ -28,16 +28,27 @@ def _get_2section_protocol_filter_segmenter(json_shape_hint: str) -> str:
         "• NEVER write any END markers like <<< END ... >>>.\n"
         "• The SECOND section must be a fenced JSON block and contain ONLY JSON.\n\n"
 
+        "⚠️ CRITICAL: THINKING BUDGET & JSON PRIORITY ⚠️\n"
+        "• THINKING is strictly LIMITED and must be BRIEF (≤150 tokens).\n"
+        "• JSON output is MANDATORY — if you run low on tokens, CUT THINKING SHORT and complete JSON.\n"
+        "• Expected output: 6-10 sources max in JSON.\n"
+        "• In THINKING: mention ONLY major decisions (e.g., 'kept 7/15 pages', 'extracted 50% avg').\n"
+        "• DO NOT analyze each source individually in thinking.\n"
+        "• DO NOT list every SID in thinking. And even do not mention SID, this is internal thing. Only what might be useful for user!\n"
+        "• Keep it to 3-5 SHORT sentences total across both phases.\n"
+        "• If uncertain whether to include detail → SKIP IT and prioritize JSON completion.\n\n"
+
         "CHANNEL 1 — THINKING CHANNEL (user-facing status):\n"
         "Marker:\n"
         "<<< BEGIN INTERNAL THINKING >>>\n"
         "Immediately after this marker, write your Phase 1 and Phase 2 analysis.\n"
         "- Use the exact headers: 'Phase 1 - Filtering:' and 'Phase 2 - [Mode Name]:'\n"
-        "- Keep it concise (2-4 sentences per phase)\n"
-        "- Plain language only (no JSON, no technical details)\n"
-        "- Explain which pages you're keeping/dropping and what content you're extracting\n"
-        "- Do NOT mention 'sid', JSON structure, or internal identifiers\n"
-        "- Do NOT emit any other BEGIN/END markers inside this channel\n\n"
+        "- TOTAL: 3-5 short sentences covering BOTH phases (not per phase)\n"
+        "- Mention aggregates only: 'kept X/Y pages', 'avg coverage Z%'\n"
+        "- Plain language only (no JSON, no technical details, no SID lists)\n"
+        "- Do NOT analyze each source separately\n"
+        "- Do NOT emit any other BEGIN/END markers inside this channel\n"
+        "- If approaching token limit → write '…' and move to JSON immediately\n\n"
 
         "CHANNEL 2 — STRUCTURED JSON CHANNEL (spans dict):\n"
         "Marker:\n"
@@ -449,7 +460,7 @@ async def filter_and_segment_stream(
         core_instruction = content_filters.FILTER_AND_SEGMENT_BALANCED(now_iso)
 
     # Add thinking budget note
-    thinking_note = f"\n\nTHINKING BUDGET: Your thinking output is limited to {thinking_budget} tokens. Keep both Phase 1 and Phase 2 analysis brief.\n"
+    thinking_note = f"\n\nTHINKING BUDGET: Your thinking output is limited to {thinking_budget} tokens. Keep both Phase 1 and Phase 2 analysis VERY brief.\n"
 
     # JSON shape hint for the protocol
     schema = (
