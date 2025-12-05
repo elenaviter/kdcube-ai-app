@@ -43,8 +43,8 @@ CONV_STATE_KIND = "artifact:conversation.state"
 def _state_tag(state: str) -> str:
     return f"conv.state:{state}"
 
-def _base_state_tags(conversation_id: str) -> list[str]:
-    return [CONV_STATE_KIND, "conv.state", f"conv:{conversation_id}"]
+def _base_state_tags() -> list[str]:
+    return [CONV_STATE_KIND]
 
 class ConvIndex:
     def __init__(self,
@@ -104,12 +104,12 @@ class ConvIndex:
           FROM {self.schema}.conv_messages
           WHERE user_id=$1 AND conversation_id=$2
             AND role='artifact'
-            AND tags @> ARRAY[$3,$4]::text[]   -- artifact:conversation.state + conv.state
+            AND tags @> ARRAY[$3]::text[]   -- artifact:conversation.state
           ORDER BY ts DESC
           LIMIT 1
         """
         async with self._pool.acquire() as con:
-            row = await con.fetchrow(q, user_id, conversation_id, CONV_STATE_KIND, "conv.state")
+            row = await con.fetchrow(q, user_id, conversation_id, CONV_STATE_KIND)
         return dict(row) if row else None
 
     async def delete_conversation(
@@ -232,7 +232,7 @@ class ConvIndex:
           "current_turn_id": str | None,
         }
         """
-        base_tags = _base_state_tags(conversation_id)
+        base_tags = _base_state_tags()
         new_state_tag = _state_tag(new_state)
         turn_tag = f"conv.turn:{last_turn_id}" if last_turn_id else None
 
@@ -251,7 +251,9 @@ class ConvIndex:
         async with self._pool.acquire() as con:
             if row is None:
                 # INSERT
-                tags = base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
+                tags = list(dict.fromkeys(
+                    base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
+                ))
                 q_ins = f"""
                   INSERT INTO {self.schema}.conv_messages
                     (user_id, conversation_id, role, text, s3_uri, bundle_id, ts, ttl_days, user_type, tags)
@@ -269,20 +271,25 @@ class ConvIndex:
                 s3_uri = $1,
                 ts     = $2,
                 bundle_id  = $3,
-                tags   = (
-                    SELECT ARRAY(
-                        SELECT DISTINCT t
-                        FROM unnest(tags) AS t
-                        WHERE t NOT LIKE 'conv.state:%' AND t NOT LIKE 'conv.turn:%'
-                        UNION ALL
-                        SELECT unnest($4::text[])
-                    )
+                tags = (
+                  SELECT ARRAY(
+                    SELECT DISTINCT t
+                    FROM (
+                      SELECT t
+                      FROM unnest(tags) AS t
+                      WHERE t NOT LIKE 'conv.state:%'
+                        AND t NOT LIKE 'conv.turn:%'
+                      UNION ALL
+                      SELECT unnest($4::text[])
+                    ) s(t)
+                  )
                 )
               WHERE id = $5
               {"AND NOT (tags && ARRAY['conv.state:in_progress']::text[])" if require_not_in_progress else ""}
               RETURNING id, tags
             """
-            tags_add = base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
+            # tags_add = base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
+            tags_add = list(dict.fromkeys( base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])))
             rec = await con.fetchrow(q_upd, s3_uri, _coerce_ts(now_ts), bundle_id, tags_add, int(row["id"]))
             if rec is None:
                 # CAS failed
