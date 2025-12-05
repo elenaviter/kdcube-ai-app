@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# auth/sessions
 import hashlib
 import json
 import time
@@ -57,6 +58,12 @@ class UserSession:
                 self.user_type = UserType[token]      # by NAME
             except KeyError:
                 self.user_type = UserType(token.lower())
+        if isinstance(self.request_context, dict):
+            try:
+                self.request_context = RequestContext(**self.request_context)
+            except Exception:
+                self.request_context = None
+
         if self.roles is None:
             self.roles = []
         if self.permissions is None:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# fastapi_gateway_adapter.py
+# middleware/gateway.py
 """
 FastAPI adapter for the simplified gateway
 """

@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Literal
-from fastapi import Request  # only if you put this in a place where FastAPI is available
+from fastapi import Request, HTTPException  # only if you put this in a place where FastAPI is available
 
 from kdcube_ai_app.auth.sessions import UserSession, UserType, RequestContext
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
@@ -26,9 +26,15 @@ from kdcube_ai_app.infra.gateway.rate_limiter import RateLimitError
 from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
 from kdcube_ai_app.infra.gateway.safe_preflight import PreflightConfig, preflight_async
+from kdcube_ai_app.infra.namespaces import CONFIG
 from kdcube_ai_app.tools.file_text_extractor import DocumentTextExtractor
 from kdcube_ai_app.apps.chat.api.resolvers import get_tenant
 from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+
+from kdcube_ai_app.apps.chat.api.resolvers import get_auth_manager
+from kdcube_ai_app.auth.AuthManager import AuthenticationError, PRIVILEGED_ROLES
+from kdcube_ai_app.auth.sessions import UserType, UserSession
+from kdcube_ai_app.apps.chat.sdk.protocol import ServiceCtx, ConversationCtx
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +44,6 @@ def _iso() -> str:
 
 
 TransportKind = Literal["sse", "socket"]
-
 
 # -----------------------------
 # Gateway checks (shared)
@@ -642,26 +647,75 @@ async def get_conversation_status(
         "current_turn_id": current_turn_id,
     }
 
+def _extract_bearer_from_auth_header(auth_header: Optional[str]) -> Optional[str]:
+    if not auth_header:
+        return None
+    parts = auth_header.split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        token = parts[1].strip()
+        return token or None
+    return None
+
 def build_sse_request_context(
         request: Request,
+        session: UserSession,
         bearer_token: Optional[str] = None,
+        id_token: Optional[str] = None,
         *,
         client_ip_fallback: str = "sse",
 ) -> RequestContext:
-    # if you trust request.client:
+    """
+    Build RequestContext for SSE endpoints.
+
+    Rule:
+      - Use session.request_context if present.
+      - If auth/id_token missing there, fill from explicit args.
+      - If still missing, fall back to request headers.
+    """
+
+    base = getattr(session, "request_context", None)
+
+    # client ip
     client_ip = client_ip_fallback
     try:
-        if request.client and request.client.host:
+        if isinstance(base, RequestContext) and base.client_ip:
+            client_ip = base.client_ip
+        elif request.client and request.client.host:
             client_ip = request.client.host
     except Exception:
         pass
 
+    # user agent
+    user_agent = ""
+    if isinstance(base, RequestContext) and base.user_agent:
+        user_agent = base.user_agent
+    else:
+        user_agent = request.headers.get("user-agent", "")
+
+    # authorization header
+    auth_header = None
+    if isinstance(base, RequestContext) and base.authorization_header:
+        auth_header = base.authorization_header
+    elif bearer_token:
+        auth_header = f"Bearer {bearer_token}"
+    else:
+        auth_header = request.headers.get("authorization")
+
+    # id token
+    resolved_id_token = None
+    if isinstance(base, RequestContext) and base.id_token:
+        resolved_id_token = base.id_token
+    elif id_token:
+        resolved_id_token = id_token
+    else:
+        resolved_id_token = request.headers.get(CONFIG.ID_TOKEN_HEADER_NAME)
+
     return RequestContext(
         client_ip=client_ip,
-        user_agent=request.headers.get("user-agent", ""),
-        authorization_header=f"Bearer {bearer_token}" if bearer_token else None,
+        user_agent=user_agent,
+        authorization_header=auth_header,
+        id_token=resolved_id_token,
     )
-
 
 def build_ws_connect_request_context(
         environ: dict,
@@ -687,3 +741,69 @@ def build_ws_chat_request_context() -> RequestContext:
         user_agent="socket.io-client",
         authorization_header=None,
     )
+
+async def upgrade_session_from_tokens(
+        *,
+        session: UserSession,
+        ctx,
+        bearer_token: Optional[str],
+        id_token: Optional[str],
+        gateway_adapter,
+        chat_comm: ChatRelayCommunicator,
+        stream_id: Optional[str],
+        endpoint: str,
+) -> UserSession:
+    # No tokens → nothing to do
+    if not bearer_token and not id_token:
+        return session
+
+    # Already non-anonymous with a real user → keep as-is
+    if session.user_type != UserType.ANONYMOUS and session.user_id:
+        return session
+
+    auth_manager = get_auth_manager()
+
+    try:
+        user = await auth_manager.authenticate_with_both(
+            access_token=bearer_token or "",
+            id_token=id_token,
+        )
+    except AuthenticationError as e:
+        svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id or session.fingerprint)
+        conv = ConversationCtx(
+            session_id=session.session_id,
+            conversation_id=session.session_id,
+            turn_id=f"turn_{uuid.uuid4().hex[:8]}",
+        )
+        await chat_comm.emit_error(
+            svc,
+            conv,
+            error=f"Authentication failed: {e.message}",
+            target_sid=stream_id,
+            session_id=session.session_id,
+        )
+        raise HTTPException(status_code=401, detail="Invalid token") from e
+
+    roles = user.roles or []
+    if any(r in PRIVILEGED_ROLES for r in roles):
+        user_type = UserType.PRIVILEGED
+    else:
+        user_type = UserType.REGISTERED
+
+    user_data = {
+        "user_id": user.id,
+        "username": user.username,
+        "roles": roles,
+        "permissions": user.permissions or [],
+        "email": user.email,
+    }
+
+    new_session = await gateway_adapter.gateway.session_manager.get_or_create_session(
+        ctx,
+        user_type=user_type,
+        user_data=user_data,
+    )
+
+    # Persist context on the session if you like
+    new_session.request_context = ctx
+    return new_session

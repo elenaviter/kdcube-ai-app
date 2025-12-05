@@ -17,10 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
 from fastapi.responses import StreamingResponse
 
 from kdcube_ai_app.apps.chat.api.resolvers import get_user_session_dependency
-from kdcube_ai_app.auth.sessions import UserSession, RequestContext
-from kdcube_ai_app.infra.gateway.rate_limiter import RateLimitError
-from kdcube_ai_app.infra.gateway.backpressure import BackpressureError
-from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError
+from kdcube_ai_app.auth.sessions import UserSession, UserType
 
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
 from kdcube_ai_app.apps.chat.sdk.protocol import (
@@ -28,14 +25,13 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
 )
 from kdcube_ai_app.apps.chat.api.ingress.chat_core import (
     IngressConfig,
-    IngressResult,
     RawAttachment,
     run_gateway_checks,
     map_gateway_error,
     extract_attachments_text,
     merge_attachments_into_message,
     process_chat_message,
-    get_conversation_status, build_sse_request_context,
+    get_conversation_status, build_sse_request_context, upgrade_session_from_tokens,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +50,33 @@ def _sse_frame(event: str, data: Dict[str, Any], *, event_id: Optional[str] = No
     lines.append("")
     return "\n".join(lines) + "\n"
 
+async def _reject_anonymous(
+        *,
+        endpoint: str,
+        session: UserSession,
+        chat_comm,
+        stream_id: Optional[str],
+):
+    if session.user_type != UserType.ANONYMOUS:
+        return
+
+    svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id or session.fingerprint)
+    conv = ConversationCtx(
+        session_id=session.session_id,
+        conversation_id=session.session_id,
+        turn_id=f"turn_{uuid.uuid4().hex[:8]}",
+    )
+    err_detail = f"Anonymous sessions are not allowed for {endpoint}"
+
+    # keep error payload consistent with your other emit_error usage
+    await chat_comm.emit_error(
+        svc,
+        conv,
+        error=err_detail,
+        target_sid=stream_id,
+        session_id=session.session_id,
+    )
+    raise HTTPException(status_code=401, detail=err_detail)
 
 # -----------------------------
 # In-process SSE Hub (fan-out)
@@ -254,45 +277,25 @@ def create_sse_router(
                 logger.error("SSE load session failed for id=%s: %s", user_session_id, e)
                 raise HTTPException(status_code=401, detail="Invalid session")
 
-        # Optional bearer validation (same semantics as WS)
-        svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id)
-        conv = ConversationCtx(
-            session_id=session.session_id,
-            conversation_id=session.session_id,
-            turn_id=f"turn_{uuid.uuid4().hex[:8]}",
-        )
-        try:
-            if bearer_token and session.user_type.value != "anonymous":
-                user = await gateway_adapter.gateway.auth_manager.authenticate_with_both(
-                    bearer_token, id_token
-                )
-                claimed_user_id = getattr(user, "sub", None) or getattr(user, "username", None)
-                if session.user_id and claimed_user_id and session.user_id != claimed_user_id:
-                    # Emit error into the stream (DM) and reject
-                    await chat_comm.emit_error(
-                        svc,
-                        conv,
-                        error="Token user mismatch",
-                        target_sid=stream_id,
-                        session_id=session.session_id,
-                    )
-                    raise HTTPException(status_code=401, detail="Token user mismatch")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error("SSE bearer validation failed: %s", e)
-            # Emit error before rejecting
-            await chat_comm.emit_error(
-                svc,
-                conv,
-                error="Invalid token",
-                target_sid=stream_id,
-                session_id=session.session_id,
-            )
-            raise HTTPException(status_code=401, detail="Invalid token")
-
         # Gateway protections for opening a stream
-        ctx = build_sse_request_context(request, bearer_token=bearer_token)
+        ctx = build_sse_request_context(request, bearer_token=bearer_token, id_token=id_token, session=session)
+        session = await upgrade_session_from_tokens(
+            session=session,
+            ctx=ctx,
+            bearer_token=bearer_token,
+            id_token=id_token,
+            gateway_adapter=gateway_adapter,
+            chat_comm=chat_comm,
+            stream_id=stream_id,
+            endpoint="/sse/stream",
+        )
+        if os.environ.get("CHAT_SSE_REJECT_ANONYMOUS", "1") == "1":
+            await _reject_anonymous(
+                endpoint="/sse/stream",
+                session=session,
+                stream_id=stream_id,
+                chat_comm=chat_comm,
+            )
         gw_res = await run_gateway_checks(
             gateway_adapter=gateway_adapter,
             session=session,
@@ -399,7 +402,15 @@ def create_sse_router(
             attachment_meta: Optional[str] = Form(None),
             files: List[UploadFile] = File(default=[]),
     ):
-        ctx = build_sse_request_context(request, bearer_token=None)
+
+        ctx = build_sse_request_context(request, session=session)
+        if os.environ.get("CHAT_SSE_REJECT_ANONYMOUS", "1") == "1":
+            await _reject_anonymous(
+                endpoint="/sse/chat",
+                session=session,
+                stream_id=stream_id,
+                chat_comm=chat_comm,
+            )
         gw_res = await run_gateway_checks(
             gateway_adapter=gateway_adapter,
             session=session,
