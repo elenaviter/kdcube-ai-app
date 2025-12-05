@@ -872,7 +872,6 @@ async def filter_search_results_by_content(
 async def filter_fetch_results(_SERVICE,
                                objective: str,
                                results: Dict[str, Dict[str, Any]],
-                               *,
                                mode: str = "balanced",
                                end_boundary: str = "exclusive",  # "exclusive" (default) or "inclusive"
                                on_thinking_fn: Optional[Callable[[str], Awaitable[None]]] = None,
