@@ -4,7 +4,7 @@
 # chat/emitters.py
 from __future__ import annotations
 
-import traceback
+import asyncio
 from datetime import datetime
 
 from dataclasses import dataclass, field
@@ -88,6 +88,7 @@ class ChatRelayCommunicator:
         self._callbacks: Set[Callable[[dict], Awaitable[None]]] = set()
         self._session_refcounts: Dict[str, int] = {}
         self._listener_started = False
+        self._sub_lock = asyncio.Lock()
 
     # ---------- publish ----------
     def _session_channel(self, session_id: str) -> str:
@@ -206,43 +207,30 @@ class ChatRelayCommunicator:
             except Exception:
                 logger.exception("Relay callback failed")
 
-    async def acquire_session_channel(
-            self,
-            session_id: str,
-            *,
-            callback: Callable[[dict], Awaitable[None]] | None = None,
-    ):
-        """
-        Refcounted subscribe to per-session Redis channel.
-        Also registers callback into the shared dispatcher.
-        """
+    async def acquire_session_channel(self, session_id: str, *, callback=None):
         if not session_id:
             return
+        async with self._sub_lock:
+            if callback:
+                self.add_listener(callback)
 
-        if callback:
-            self.add_listener(callback)
+            count = self._session_refcounts.get(session_id, 0)
+            if count == 0:
+                await self._comm.subscribe_add(self._session_channel(session_id))
 
-        count = self._session_refcounts.get(session_id, 0)
-        if count == 0:
-            await self._comm.subscribe_add(self._session_channel(session_id))
-
-        self._session_refcounts[session_id] = count + 1
-
-        await self._ensure_listener()
+            self._session_refcounts[session_id] = count + 1
+            await self._ensure_listener()
 
     async def release_session_channel(self, session_id: str):
-        """
-        Refcounted unsubscribe from per-session Redis channel.
-        """
         if not session_id:
             return
-
-        count = self._session_refcounts.get(session_id, 0)
-        if count <= 1:
-            self._session_refcounts.pop(session_id, None)
-            await self._comm.unsubscribe_some(self._session_channel(session_id))
-        else:
-            self._session_refcounts[session_id] = count - 1
+        async with self._sub_lock:
+            count = self._session_refcounts.get(session_id, 0)
+            if count <= 1:
+                self._session_refcounts.pop(session_id, None)
+                await self._comm.unsubscribe_some(self._session_channel(session_id))
+            else:
+                self._session_refcounts[session_id] = count - 1
 
     async def subscribe(self, callback):
         """
