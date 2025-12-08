@@ -13,7 +13,8 @@ from kdcube_ai_app.apps.chat.sdk.streaming.artifacts_channeled_streaming import 
 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import split_safe_citation_prefix, replace_citation_tokens_streaming, \
     extract_sids, build_citation_map_from_sources, citations_present_inline, adapt_source_for_llm, \
-    find_unmapped_citation_sids, USAGE_TAG_RE, _split_safe_usage_prefix, _expand_ids
+    find_unmapped_citation_sids, USAGE_TAG_RE, _split_safe_usage_prefix, _expand_ids, \
+    strip_only_suspicious_citation_like_tokens, split_safe_stream_prefix
 from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove_end_marker_everywhere, \
     _split_safe_marker_prefix, _remove_marker, _unwrap_fenced_blocks_concat, _strip_bom_zwsp, _parse_json, \
     _extract_json_object, _strip_code_fences, _format_ok, _validate_json_schema, _parse_yaml, _validate_sidecar, \
@@ -703,7 +704,8 @@ async def generate_content_llm(
                 suspicious = debug_only_suspicious_tokens(out)
                 if suspicious:
                     logger.warning("Unreplaced citation-like tokens in emitted chunk: %s", suspicious)
-
+                if re.search(r"\[\[\s*S\s*$", _rm_invis(out), re.I):
+                    logger.warning("About to emit a dangling citation prefix: %r", out[-80:])
                 await emit_delta(out, index=idx, marker=channel_to_stream,
                                  agent=author_for_chunks, format=tgt or "markdown",
                                  artifact_name=artifact_name)
@@ -719,37 +721,84 @@ async def generate_content_llm(
                 emitted_local += 1
 
 
-        async def _flush_pending(force: bool = False):
-            """
-            Emit only a safe prefix of `pending`:
+        # async def _flush_pending(force: bool = False):
+        #     """
+        #     Emit only a safe prefix of `pending`:
+        #
+        #     - In non-force mode: withhold any trailing partial [[S:...]],
+        #       [[USAGE:...]] or end marker.
+        #     - In force mode: emit everything (scrubber will strip full markers).
+        #     """
+        #     nonlocal pending
+        #     if not pending:
+        #         return
+        #
+        #     if force:
+        #         # Final flush: everything goes through the scrubber + replacer
+        #         await _emit_visible(pending)
+        #         pending = ""
+        #         return
+        #
+        #     # Non-force: trim to safe prefix
+        #     MIN_TAIL = 6  # small guard against boundary splits like '[[S' + ':1]]'
+        #     scan = pending
+        #     tail = ""
+        #
+        #     if len(pending) > MIN_TAIL:
+        #         scan = pending[:-MIN_TAIL]
+        #         tail = pending[-MIN_TAIL:]
+        #
+        #     safe_chunk, _ = split_safe_citation_prefix(scan)
+        #     safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
+        #     safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
+        #
+        #     if not safe_chunk:
+        #         return
+        #
+        #     await _emit_visible(safe_chunk)
+        #
+        #     # Remove emitted part only from the scanned prefix; reattach the tail
+        #     scan_remainder = scan[len(safe_chunk):]
+        #     pending = scan_remainder + tail
+        #
+        #     # # Non-force: trim to safe prefix
+        #     # safe_chunk, _ = split_safe_citation_prefix(pending)
+        #     # safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
+        #     # safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
+        #     #
+        #     # if not safe_chunk:
+        #     #     # Nothing safe to emit yet (we might be in the middle of a token)
+        #     #     return
+        #     #
+        #     # await _emit_visible(safe_chunk)
+        #     # # Drop exactly what we emitted from the front of pending
+        #     # pending = pending[len(safe_chunk):]
 
-            - In non-force mode: withhold any trailing partial [[S:...]],
-              [[USAGE:...]] or end marker.
-            - In force mode: emit everything (scrubber will strip full markers).
-            """
+        async def _flush_pending(force: bool = False):
             nonlocal pending
             if not pending:
                 return
 
             if force:
-                # Final flush: everything goes through the scrubber + replacer
-                await _emit_visible(pending)
+                # await _emit_visible(pending)
+                # still protect against unfinished [[S... or [[USAGE...
+                safe_chunk, _ = split_safe_stream_prefix(pending)
+                safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
+
+                if safe_chunk:
+                    await _emit_visible(safe_chunk)
+                # Drop any dangling tail silently
                 pending = ""
                 return
 
-            # Non-force: trim to safe prefix
-            safe_chunk, _ = split_safe_citation_prefix(pending)
-            safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
+            safe_chunk, _ = split_safe_stream_prefix(pending)
             safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
 
             if not safe_chunk:
-                # Nothing safe to emit yet (we might be in the middle of a token)
                 return
 
             await _emit_visible(safe_chunk)
-            # Drop exactly what we emitted from the front of pending
             pending = pending[len(safe_chunk):]
-
 
         async def on_delta(piece: str):
             nonlocal pending
@@ -1311,7 +1360,7 @@ async def generate_content_llm(
         # Reuse the same core pattern but drop matches instead of rendering.
         return CITE_TOKEN_RE.sub(lambda m: m.group(1) or "", text)
 
-    content_clean = _strip_raw_cite_tokens(content_clean)
+    content_clean = strip_only_suspicious_citation_like_tokens(content_clean)
     out = {
         "ok": bool(ok),
         "content": content_clean,

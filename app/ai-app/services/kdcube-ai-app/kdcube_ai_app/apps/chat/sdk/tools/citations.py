@@ -47,21 +47,8 @@ CITE_TOKEN_RE = re.compile(r"(\s?)" + CITE_CORE, re.I)
 
 CITATION_LIKE_RE = re.compile(r"\[\[.*?\]\]")
 # Telemetry / usage tag (for [[USAGE:...]]), so we can ignore it in debuggers
-# OLD
-USAGE_TAG_RE = re.compile(r"\[\[\s*USAGE\s*:\s*([0-9]+(?:\s*,\s*[0-9]+)*)\s*\]\]", re.I)
-# NEW
-USAGE_TAG_RE = re.compile(
-    r"\[\[\s*USAGE\s*:\s*([0-9]+(?:\s*[-–]\s*[0-9]+|\s*,\s*[0-9]+)*)\s*\]\]",
-    re.I
-)
-# SUPER NEW
 # reuse same body as citations, or define a separate one if you prefer
 USAGE_IDS_BODY = r"[0-9,\s\-–]+"
-
-USAGE_TAG_RE = re.compile(
-    r"\[\[\s*USAGE\s*:\s*(" + USAGE_IDS_BODY + r")\s*\]\]",
-    re.I
-)
 
 # ANTI_FRAGILE
 # - We allow ANY characters except ']' inside the body.
@@ -86,17 +73,30 @@ USAGE_SUFFIX_PATS = [
     re.compile(r"(?:\u200b|\s)?\[\[\s*USAGE\s*:\s*[^\]]*\]$", re.I),
 ]
 
+# Keep the old name to avoid changing imports
 def _split_safe_usage_prefix(chunk: str) -> tuple[str, int]:
+    return split_safe_usage_prefix(chunk)
+
+def _split_safe_tag_prefix(chunk: str, tag_start_re: re.Pattern) -> tuple[str, int]:
     if not chunk:
         return "", 0
+    probe = _normalize_citation_chars(_mask_invisible_len_preserving(chunk))
+    scan_to = len(probe)
 
-    clean = _normalize_citation_chars(_strip_invisible(chunk))
+    while True:
+        i = probe.rfind("[[", 0, scan_to)
+        if i == -1:
+            return chunk, 0
 
-    for pat in USAGE_SUFFIX_PATS:
-        m = pat.search(clean)
-        if m and m.end() == len(clean):
-            return chunk[:m.start()], len(chunk) - m.start()
-    return chunk, 0
+        tail = probe[i:]
+        if not tag_start_re.match(tail):
+            scan_to = i
+            continue
+
+        if "]]" not in tail:
+            return chunk[:i], len(chunk) - i
+
+        return chunk, 0
 
 # HTML inline cite (your protocol)
 
@@ -147,15 +147,31 @@ MD_CITE_RE    = re.compile(CITE_CORE, re.I)
 # ]
 
 # NEW
+# CITATION_SUFFIX_PATS = [
+#     # "[[" at end (optionally leading ZWSP/space)
+#     re.compile(r"(?:\u200b|\s)?\[\[$"),
+#     # "[[S:" or "[[ S:" etc. truncated right after the colon
+#     re.compile(r"(?:\u200b|\s)?\[\[\s*S:$", re.I),
+#     # "[[S:1, 2-3" (no closing ]] yet)
+#     re.compile(r"(?:\u200b|\s)?\[\[\s*S:\s*[0-9,\s\-–]*$", re.I),
+#     # "[[S:1, 2-3]" (missing final ']')
+#     re.compile(r"(?:\u200b|\s)?\[\[\s*S:\s*[0-9,\s\-–]*\]$", re.I),
+# ]
 CITATION_SUFFIX_PATS = [
-    # "[[" at end (optionally leading ZWSP/space)
+    # "[[" at end
     re.compile(r"(?:\u200b|\s)?\[\[$"),
-    # "[[S:" or "[[ S:" etc. truncated right after the colon
-    re.compile(r"(?:\u200b|\s)?\[\[\s*S:$", re.I),
+
+    # "[[S" or "[[ S" at end
+    re.compile(r"(?:\u200b|\s)?\[\[\s*S\s*$", re.I),
+
+    # "[[S:" with optional spaces around colon at end
+    re.compile(r"(?:\u200b|\s)?\[\[\s*S\s*:\s*$", re.I),
+
     # "[[S:1, 2-3" (no closing ]] yet)
-    re.compile(r"(?:\u200b|\s)?\[\[\s*S:\s*[0-9,\s\-–]*$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*S\s*:\s*[0-9,\s\-–]*$", re.I),
+
     # "[[S:1, 2-3]" (missing final ']')
-    re.compile(r"(?:\u200b|\s)?\[\[\s*S:\s*[0-9,\s\-–]*\]$", re.I),
+    re.compile(r"(?:\u200b|\s)?\[\[\s*S\s*:\s*[0-9,\s\-–]*\]$", re.I),
 ]
 
 # Characters that often appear in model output but should be treated as ASCII
@@ -168,6 +184,40 @@ _CITATION_CHAR_MAP = str.maketrans({
     "–": "-",      # en dash
     "—": "-",      # em dash
 })
+
+def split_safe_citation_prefix(chunk: str) -> tuple[str, int]:
+    """
+    Back-compat safe splitter for citation tokens.
+
+    Guarantees:
+    - Does NOT emit partial citation-like tails such as:
+      "[[", "[[S", "[[S:", "[[S:1, 2-"
+    - Uses length-preserving probe so indices are safe.
+    - Preserves the older API contract for external callers.
+    """
+    if not chunk:
+        return "", 0
+
+    # 1) Suffix-guard (len-preserving)
+    safe, d = _split_by_suffix_pats(chunk, CITATION_SUFFIX_PATS)
+    if d:
+        return safe, d
+
+    # 2) Fallback: tag-start scanner for long partial tails
+    return _split_safe_tag_prefix(chunk, _CITE_START_RE)
+
+def split_safe_usage_prefix(chunk: str) -> tuple[str, int]:
+    """
+    Back-compat safe splitter for usage telemetry tokens.
+    """
+    if not chunk:
+        return "", 0
+
+    safe, d = _split_by_suffix_pats(chunk, USAGE_SUFFIX_PATS)
+    if d:
+        return safe, d
+
+    return _split_safe_tag_prefix(chunk, _USAGE_START_RE)
 
 def _normalize_citation_chars(text: str) -> str:
     """
@@ -671,24 +721,48 @@ def extract_sids(sources_json: Optional[str]) -> List[int]:
 # ---------------------------------------------------------------------------
 # Streaming-safe helpers
 # ---------------------------------------------------------------------------
-# NEW
-def split_safe_citation_prefix(chunk: str) -> Tuple[str, int]:
-    """
-    Given a partial chunk, return (safe_prefix, dangling_len).
-    If the end of chunk looks like a truncated [[S:...]] token, clip it off.
-    """
+
+def _mask_invisible_len_preserving(s: str) -> str:
+    # replace invisibles with spaces so indices remain aligned
+    return _INVIS_RE.sub(" ", s or "")
+
+def _split_by_suffix_pats(chunk: str, suffix_pats: list[re.Pattern]) -> tuple[str, int]:
     if not chunk:
         return "", 0
 
-    # Normalize ONLY for detection; indices remain valid
-    clean = _normalize_citation_chars(_strip_invisible(chunk))
+    # length-preserving normalization
+    probe = _normalize_citation_chars(_mask_invisible_len_preserving(chunk))
 
-    for pat in CITATION_SUFFIX_PATS:
-        m = pat.search(clean)
-        if m and m.end() == len(clean):
-            # m.start()/end() indices are valid on original chunk
-            return chunk[:m.start()], len(chunk) - m.start()
+    for pat in suffix_pats:
+        m = pat.search(probe)
+        if m:
+            i = m.start()
+            return chunk[:i], len(chunk) - i
+
     return chunk, 0
+
+def split_safe_stream_prefix(chunk: str) -> tuple[str, int]:
+    if not chunk:
+        return "", 0
+
+    safe, d = split_safe_citation_prefix(chunk)
+    if d:
+        return safe, d
+
+    return split_safe_usage_prefix(chunk)
+
+
+# def split_safe_stream_prefix(chunk: str) -> tuple[str, int]:
+#     if not chunk:
+#         return "", 0
+#
+#     safe1, d1 = split_safe_citation_prefix(chunk)
+#     if d1:
+#         return safe1, d1
+#
+#     safe2, d2 = split_safe_usage_prefix(chunk)
+#     return safe2, d2
+
 
 # ---------------------------------------------------------------------------
 # Replacement / rendering (batch & streaming)
@@ -847,33 +921,20 @@ def extract_citation_sids_from_text(text: str) -> List[int]:
     Extract all SID references from text like [[S:1]], [[S:2,3]], [[S:4-6]].
     Returns sorted list of unique SIDs.
     """
-    if not text or not isinstance(text, str):
+    if not isinstance(text, str) or not text:
         return []
 
-    # OLD
-    pattern = r'\[\[S:([0-9,\-\s]+)\]\]'
-    # NEW
-    pattern = r'\[\[\s*S\s*:\s*([0-9,\-\s–]+)\s*\]\]'
-    matches = re.findall(pattern, text)
-    sids: Set[int] = set()
+    # Normalize to handle full-width brackets/colons and dash variants,
+    # and remove invisibles that can sneak into tokens.
+    probe = _normalize_citation_chars(_strip_invisible(text))
 
-    for match in matches:
-        # Handle comma-separated: "1,2,3"
-        for part in match.split(','):
-            part = part.strip()
-            if not part:
-                continue
-            # Handle ranges: "4-6"
-            if '-' in part:
-                try:
-                    start, end = part.split('-', 1)
-                    sids.update(range(int(start), int(end) + 1))
-                except ValueError:
-                    pass
-            elif part.isdigit():
-                sids.add(int(part))
+    sids: Set[int] = set()
+    for m in MD_CITE_RE.finditer(probe):
+        # MD_CITE_RE is CITE_CORE; group(1) is the body inside [[S: ... ]]
+        sids.update(_expand_ids(m.group(1)))
 
     return sorted(sids)
+
 
 def extract_citation_sids_from_html(html: str) -> List[int]:
     """
@@ -936,6 +997,13 @@ INVISIBLES = {
     "\u2060",  # WORD JOINER
 }
 
+# Keep this regex local or module-level
+_CITE_START_RE = re.compile(r"\[\[\s*S\b", re.I)
+_USAGE_START_RE = re.compile(r"\[\[\s*USAGE\b", re.I)
+# Optional: length-preserving invisible "mask"
+# This avoids index mismatch if you worry about ZWSP/BOM-like chars.
+_INVIS_RE = re.compile(r"[\u200b\ufeff\u200c\u200d\u2060]")
+
 def _strip_invisible(text: str) -> str:
     if not isinstance(text, str):
         return text
@@ -943,12 +1011,29 @@ def _strip_invisible(text: str) -> str:
         text = text.replace(ch, "")
     return text
 
-# Legacy MD-only batch replacer (first-only + embed images)
+def strip_only_suspicious_citation_like_tokens(text: str) -> str:
+    if not isinstance(text, str) or not text:
+        return text or ""
+
+    def _sub(m: re.Match) -> str:
+        token = m.group(0)
+        clean = _strip_invisible(_normalize_citation_chars(token))
+
+        # keep usage
+        if USAGE_TAG_RE.fullmatch(clean):
+            return token
+
+        # keep valid [[S:...]]
+        if CITE_TOKEN_RE.fullmatch(clean):
+            return token
+
+        # drop anything else that looks like [[...]]
+        return ""
+
+    return CITATION_LIKE_RE.sub(_sub, text)
+
+# Legacy MD-only batch replacer (+ embed images)
 def _replace_citation_tokens(md: str, by_id: Dict[int, Dict[str, str]], embed_images: bool = True) -> str:
-    """
-    Legacy behavior: keep only first sid, render links (or images if embed_images),
-    and drop unresolved tokens. Preserved for compatibility with older callers.
-    """
     # OLD
     # opts = CitationRenderOptions(
     #     mode="links",
