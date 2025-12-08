@@ -157,6 +157,7 @@ class ChatRelayCommunicator:
             *,
             state: str,
             updated_at: str,
+            completion: str | None = None,
             current_turn_id: str | None = None,
             target_sid: str | None = None,
     ):
@@ -180,6 +181,8 @@ class ChatRelayCommunicator:
                 "state": state,
                 "updated_at": updated_at,
                 **({"current_turn_id": current_turn_id} if current_turn_id else {}),
+                **({"completion": completion} if completion else {}),
+                "origin_stream_id": routing.socket_id
             },
         }
         session_id = routing.session_id
@@ -207,11 +210,21 @@ class ChatRelayCommunicator:
             pass
 
     async def _ensure_listener(self):
+        alive_fn = getattr(self._comm, "listener_alive", None)
+
+        if self._listener_started and alive_fn and not alive_fn():
+            logger.warning(
+                "[ChatRelayCommunicator] listener flag TRUE but task DEAD; resetting. "
+                "relay_id=%s comm_id=%s",
+                id(self), id(self._comm)
+            )
+            self._listener_started = False
+
         if self._listener_started:
             return
+
         await self._comm.start_listener(self._dispatch)
         self._listener_started = True
-
 
     async def _dispatch(self, message: dict):
         # Fan-out to every registered transport callback
@@ -227,10 +240,16 @@ class ChatRelayCommunicator:
         async with self._sub_lock:
             if callback:
                 self.add_listener(callback)
-
+            ch = self._session_channel(session_id, tenant=tenant, project=project)
+            logger.info(
+                "[ChatRelayCommunicator] acquire session=%s count_before=%s channel=%s "
+                "tenant=%s project=%s relay_id=%s comm_id=%s listener_started=%s",
+                session_id, self._session_refcounts.get(session_id, 0), ch,
+                tenant, project, id(self), id(self._comm), self._listener_started
+            )
             count = self._session_refcounts.get(session_id, 0)
             if count == 0:
-                await self._comm.subscribe_add(self._session_channel(session_id, tenant=tenant, project=project))
+                await self._comm.subscribe_add(ch)
 
             self._session_refcounts[session_id] = count + 1
             await self._ensure_listener()
@@ -240,6 +259,13 @@ class ChatRelayCommunicator:
             return
         async with self._sub_lock:
             count = self._session_refcounts.get(session_id, 0)
+            ch = self._session_channel(session_id, tenant=tenant, project=project)
+            logger.info(
+                "[ChatRelayCommunicator] release session=%s count_before=%s channel=%s "
+                "tenant=%s project=%s relay_id=%s comm_id=%s",
+                session_id, self._session_refcounts.get(session_id, 0), ch,
+                tenant, project, id(self), id(self._comm)
+            )
             if count <= 1:
                 self._session_refcounts.pop(session_id, None)
                 await self._comm.unsubscribe_some(self._session_channel(session_id, tenant=tenant, project=project))
@@ -643,6 +669,7 @@ class ChatCommunicator:
             route: str | None = None,    # optional override for socket event name
             status: str = "update",      # e.g. "started" | "completed" | "update"
             auto_markdown: bool = True, # try to fill in event.markdown if missing
+            broadcast: bool = False,
     ):
         """
         Generic typed chat event with full wrapping (service/conversation).
@@ -669,7 +696,7 @@ class ChatCommunicator:
                 print(traceback.format_exc())
 
         socket_event = route or "chat_step"
-        await self.emit(socket_event, env)
+        await self.emit(event=socket_event, data=env, broadcast=broadcast)
 
     def _export_comm_spec_for_runtime(self) -> dict:
         """

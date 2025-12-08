@@ -144,12 +144,11 @@ class SSEHub:
             tenant=client.tenant,
             project=client.project,
         )
-
         logger.info(
-            "[SSEHub] register session=%s stream_id=%s total=%d",
-            client.session_id,
-            client.stream_id,
-            len(self._by_session[client.session_id]),
+            "[SSEHub] register session=%s stream_id=%s tenant=%s project=%s total_now=%s hub_id=%s relay_id=%s",
+            client.session_id, client.stream_id, client.tenant, client.project,
+            len(self._by_session.get(client.session_id, [])),
+            id(self), id(self.chat_comm)
         )
 
     async def unregister(self, client: Client):
@@ -165,7 +164,12 @@ class SSEHub:
                                                      project=client.project,
                                                      )
 
-        logger.info("[SSEHub] unregister session=%s stream_id=%s", client.session_id, client.stream_id)
+        logger.info(
+            "[SSEHub] register session=%s stream_id=%s tenant=%s project=%s total_now=%s hub_id=%s relay_id=%s",
+            client.session_id, client.stream_id, client.tenant, client.project,
+            len(self._by_session.get(client.session_id, [])),
+            id(self), id(self.chat_comm)
+        )
 
 
     # Relay callback invoked by ChatRelayCommunicator
@@ -183,7 +187,7 @@ class SSEHub:
                 logger.warning(f"[SSEHub._on_relay] unrouted message {message}")
                 return  # we only fan-out messages scoped to a session room. ignore malformed / global messages
 
-            # logger.debug("[SSEHub._on_relay] received message for session session=%s stream_id=%s", room, target_sid)
+            logger.debug("[SSEHub._on_relay] received message for session session=%s stream_id=%s", room, target_sid)
 
             # First check if we even have listeners for this session
             async with self._lock:
@@ -201,7 +205,7 @@ class SSEHub:
                 # DM: only client with matching stream_id
                 for c in recipients:
                     if c.stream_id and c.stream_id == target_sid:
-                        # logger.debug("[SSEHub._on_relay] DIRECT SEND the message for session session=%s stream_id=%s to recipient session=%s stream_id=%s", room, target_sid, c.session_id, c.stream_id)
+                        logger.debug("[SSEHub._on_relay] DIRECT SEND the message for session session=%s stream_id=%s to recipient session=%s stream_id=%s", room, target_sid, c.session_id, c.stream_id)
                         self._enqueue(c, frame)
                     else:
                         # logger.debug("[SSEHub._on_relay] SKIP DIRECT SEND the message for session session=%s stream_id=%s to recipient session=%s stream_id=%s", room, target_sid, c.session_id, c.stream_id)
@@ -209,7 +213,7 @@ class SSEHub:
             else:
                 # Broadcast to all clients in the same session
                 for c in recipients:
-                    # logger.debug("[SSEHub._on_relay] BROADCAST the message for session session=%s stream_id=%s to recipient session=%s stream_id=%s", room, target_sid, c.session_id, c.stream_id)
+                    logger.debug("[SSEHub._on_relay] BROADCAST the message for session session=%s stream_id=%s to recipient session=%s stream_id=%s", room, target_sid, c.session_id, c.stream_id)
                     self._enqueue(c, frame)
 
         except Exception as e:

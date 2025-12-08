@@ -56,7 +56,7 @@ class ServiceCtx(_ProtoBase):
 class ConversationCtx(_ProtoBase):
     session_id: str
     conversation_id: str
-    turn_id: str
+    turn_id: str|None = None
 
 
 class EventCtx(_ProtoBase):

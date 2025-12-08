@@ -418,6 +418,7 @@ class EnhancedChatRequestProcessor:
                                                      state=("idle" if success else "error"),
                                                      updated_at=res["updated_at"],
                                                      current_turn_id=res.get("current_turn_id"),
+                                                     completion="success" if success else "error",
                                                      target_sid=None)
                 except Exception as ex:
                     logger.error(traceback.format_exc())

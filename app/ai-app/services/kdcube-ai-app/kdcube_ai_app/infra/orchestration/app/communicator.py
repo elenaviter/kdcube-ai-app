@@ -77,11 +77,27 @@ class ServiceCommunicator:
         self._aioredis: Optional[aioredis.Redis] = None
         self._pubsub: Optional[aioredis.client.PubSub] = None
         self._listen_task: Optional["asyncio.Task"] = None
+        self._last_message_ts = 0.0
+
         self._subscribed_channels: List[str] = []
 
         # Support multiple consumer callbacks
         self._listeners: List[Callable[[dict], Any]] = []
 
+    # ---------- resiliency helpers ----------
+    def listener_alive(self) -> bool:
+        return self._listen_task is not None and not self._listen_task.done()
+
+    def debug_state(self) -> dict:
+        t = self._listen_task
+        return {
+            "self_id": id(self),
+            "pubsub_id": id(self._pubsub) if self._pubsub else None,
+            "task_id": id(t) if t else None,
+            "listener_alive": self.listener_alive(),
+            "subscribed_channels": list(self._subscribed_channels),
+            "last_message_ts": self._last_message_ts,
+        }
     # ---------- channel helpers ----------
 
     def _fmt_channel(self, channel: str) -> str:
@@ -199,6 +215,10 @@ class ServiceCommunicator:
         # Only subscribe to new ones
         new_channels = [ch for ch in formatted if ch not in self._subscribed_channels]
         if not new_channels:
+            logger.info(
+                "[ServiceCommunicator] subscribe_add noop self_id=%s pubsub_id=%s",
+                id(self), id(self._pubsub) if self._pubsub else None
+            )
             return
 
         self._subscribed_channels.extend(new_channels)
@@ -210,6 +230,12 @@ class ServiceCommunicator:
             await self._pubsub.subscribe(*new_channels)
             logger.info(f"Subscribed to: {new_channels}")
 
+        logger.info(
+            "[ServiceCommunicator] subscribe_add self_id=%s pubsub_id=%s new=%s now=%s",
+            id(self), id(self._pubsub), new_channels, self._subscribed_channels
+        )
+
+
     async def unsubscribe_some(self, channels: Union[str, Iterable[str]]):
         if not self._pubsub:
             return
@@ -220,6 +246,10 @@ class ServiceCommunicator:
         formatted = [self._fmt_channel(ch) for ch in channels]
         to_remove = [ch for ch in formatted if ch in self._subscribed_channels]
         if not to_remove:
+            logger.info(
+                "[ServiceCommunicator] unsubscribe_some noop self_id=%s pubsub_id=%s",
+                id(self), id(self._pubsub) if self._pubsub else None
+            )
             return
 
         # Remove from our tracking list
@@ -232,6 +262,12 @@ class ServiceCommunicator:
             await self._pubsub.unsubscribe(*to_remove)
         with contextlib.suppress(Exception):
             await self._pubsub.punsubscribe(*to_remove)
+
+        logger.info(
+            "[ServiceCommunicator] unsubscribe_some self_id=%s pubsub_id=%s removed=%s remaining=%s",
+            id(self), id(self._pubsub), to_remove, self._subscribed_channels
+        )
+
 
     async def listen(self) -> AsyncIterator[dict]:
         """
@@ -278,19 +314,15 @@ class ServiceCommunicator:
         if not self._pubsub:
             raise RuntimeError("Call subscribe() before start_listener().")
 
-        logger.info(
-            "[ServiceCommunicator] start_listener on %r (id=%s) pubsub=%r",
-            self, id(self), self._pubsub
-        )
-
         async def _loop():
             logger.info(
-                "[ServiceCommunicator] listener _loop starting on %r (id=%s)",
-                self, id(self)
+                "[ServiceCommunicator] listener _loop starting self_id=%s pubsub_id=%s",
+                id(self), id(self._pubsub)
             )
             try:
                 async for payload in self.listen():
                     # fan-out payload to all listeners
+                    self._last_message_ts = time.time()
                     listeners_snapshot = list(self._listeners)
                     for cb in listeners_snapshot:
                         try:
@@ -298,12 +330,18 @@ class ServiceCommunicator:
                             if asyncio.iscoroutine(res):
                                 await res
                         except Exception as cb_err:
-                            logger.error(f"[ServiceCommunicator] on_message error: {cb_err}")
+                            logger.error("[ServiceCommunicator] on_message error: %s", cb_err)
+
+                logger.error(
+                    "[ServiceCommunicator] listen() ended WITHOUT exception "
+                    "self_id=%s pubsub_id=%s subscribed=%s",
+                    id(self), id(self._pubsub), self._subscribed_channels
+                )
             except asyncio.CancelledError:
-                logger.info("[ServiceCommunicator] listener cancelled")
+                logger.info("[ServiceCommunicator] listener cancelled self_id=%s", id(self))
                 raise
             except Exception as e:
-                logger.error(f"[ServiceCommunicator] listener error: {e}")
+                logger.error("[ServiceCommunicator] listener error self_id=%s err=%s", id(self), e)
 
         if self._listen_task and not self._listen_task.done():
             logger.info(

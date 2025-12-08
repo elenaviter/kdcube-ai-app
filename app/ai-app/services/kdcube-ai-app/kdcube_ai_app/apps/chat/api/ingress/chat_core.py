@@ -511,6 +511,7 @@ async def process_chat_message(
                 state="idle",
                 updated_at=res_reset.get("updated_at", _iso()),
                 current_turn_id=res_reset.get("current_turn_id"),
+                completion="rollback",
             )
             await chat_comm.emit_error(
                 svc,
@@ -614,7 +615,7 @@ async def get_conversation_status(
         conv = ConversationCtx(
             session_id=session.session_id,
             conversation_id=conv_id,
-            turn_id=current_turn_id or f"turn_{uuid.uuid4().hex[:8]}",
+            turn_id=current_turn_id,
         )
 
         try:
