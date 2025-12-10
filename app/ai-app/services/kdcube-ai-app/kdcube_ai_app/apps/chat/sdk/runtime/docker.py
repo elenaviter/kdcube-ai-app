@@ -9,6 +9,8 @@ import os
 import pathlib
 from typing import Dict, Any, Optional
 
+from kdcube_ai_app.apps.chat.sdk.runtime.isolated.detect_aws_env import detect_aws_environment, \
+    check_and_apply_cloud_environment
 from kdcube_ai_app.apps.chat.sdk.runtime.isolated.environment import filter_host_environment
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
@@ -116,7 +118,7 @@ async def run_py_in_docker(
     - `workdir` & `outdir` are host paths that you already prepared
       (main.py, etc.). They will be bind-mounted into the container.
     - `runtime_globals` is exactly the dict you currently pass as `globals`
-      to _InProcessRuntime.run_main_py_subprocess:
+      to _InProcessRuntime.execute_py_code:
         { "CONTRACT": ..., "COMM_SPEC": ..., "PORTABLE_SPEC_JSON": ...,
           "TOOL_ALIAS_MAP": ..., "TOOL_MODULE_FILES": ..., "SANDBOX_FS": ..., ... }
     - `tool_module_names` is the list of tool module names
@@ -133,6 +135,9 @@ async def run_py_in_docker(
     # Add any extra_env passed in
     if extra_env:
         base_env.update(extra_env)
+
+    # Auto-detect cloud environment and get credentials if needed
+    check_and_apply_cloud_environment(base_env, log)
 
     workdir = workdir.resolve()
     outdir = outdir.resolve()
