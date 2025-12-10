@@ -19,6 +19,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove
     _split_safe_marker_prefix, _remove_marker, _unwrap_fenced_blocks_concat, _strip_bom_zwsp, _parse_json, \
     _extract_json_object, _strip_code_fences, _format_ok, _validate_json_schema, _parse_yaml, _validate_sidecar, \
     _dfs_string_contains_inline_cite, _unwrap_fenced_block, _json_pointer_get, _json_pointer_delete, truncate_text
+from kdcube_ai_app.apps.chat.sdk.util import _today_str, _now_up_to_minutes
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import create_cached_human_message, create_cached_system_message
 
@@ -90,6 +91,20 @@ async def generate_content_llm(
     rep_author = agent_name or "Content Generator LLM"
     track_id = context_snapshot.get("track_id")
     bundle_id = context_snapshot.get("app_bundle_id")
+    timezone = context_snapshot.get("timezone")
+
+    today = _today_str()
+    now = _now_up_to_minutes()
+
+    TIMEZONE = timezone or "Europe/Berlin"
+    time_evidence = (
+        "AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)\n"
+        f"Current UTC date: {today}\n"
+        # "User timezone: Europe/Berlin\n"
+        "All relative dates (today/yesterday/last year/next month) MUST be "
+        "interpreted against this context. Freshness must be estimated based on this context.\n"
+    )
+    time_evidence_reminder = f"Very important: The user's timezone is {TIMEZONE}. Current UTC timestamp: {now}. Current UTC date: {today}. Any dates before this are in the past, and any dates after this are in the future. When dealing with modern entities/companies/people, and the user asks for the 'latest', 'most recent', 'today's', etc. don't assume your knowledge is up to date; you MUST carefully confirm what the true 'latest' is first. If the user seems confused or mistaken about a certain date or dates, you MUST include specific, concrete dates in your response to clarify things. This is especially important when the user is referencing relative dates like 'today', 'tomorrow', 'yesterday', etc -- if the user seems mistaken in these cases, you should make sure to use absolute/exact dates like 'January 1, 2010' in your response.\n"
 
     artifact_name = artifact_name or agent_name
 
@@ -234,7 +249,7 @@ async def generate_content_llm(
         "- If the user asks for a different unit or currency than what is available, answer in the original unit/currency and clearly name it, and/or explicitly state that you are not converting it.",
         "- If you cannot find a requested numeric fact in any source or context, say so instead of guessing.",
         ])
-
+    basic_sys_instruction += "\n" + time_evidence
     target_format_sys_instruction = f"TARGET FORMAT: {tgt}"
 
     sys_lines = []
@@ -605,12 +620,12 @@ async def generate_content_llm(
 
     system_msg_blocks = [
         {"text": basic_sys_instruction, "cache": True},
-        {"text": target_format_sys_instruction, "cache": False},
-        {"text": sys_prompt, "cache": True},
-        {"text": line_with_token_budget, "cache": False},
+        # {"text": target_format_sys_instruction, "cache": True},
+        {"text": target_format_sys_instruction + "\n" + sys_prompt, "cache": True},
     ]
     if sys_instruction:
         system_msg_blocks.append({"text": sys_instruction, "cache": True})
+    system_msg_blocks.append({"text": line_with_token_budget + "\n" + time_evidence_reminder, "cache": False})
     system_msg = create_cached_system_message(system_msg_blocks)
 
     # --------- streaming infra (shared between main & repair) ---------
@@ -720,67 +735,12 @@ async def generate_content_llm(
                     )
                 emitted_local += 1
 
-
-        # async def _flush_pending(force: bool = False):
-        #     """
-        #     Emit only a safe prefix of `pending`:
-        #
-        #     - In non-force mode: withhold any trailing partial [[S:...]],
-        #       [[USAGE:...]] or end marker.
-        #     - In force mode: emit everything (scrubber will strip full markers).
-        #     """
-        #     nonlocal pending
-        #     if not pending:
-        #         return
-        #
-        #     if force:
-        #         # Final flush: everything goes through the scrubber + replacer
-        #         await _emit_visible(pending)
-        #         pending = ""
-        #         return
-        #
-        #     # Non-force: trim to safe prefix
-        #     MIN_TAIL = 6  # small guard against boundary splits like '[[S' + ':1]]'
-        #     scan = pending
-        #     tail = ""
-        #
-        #     if len(pending) > MIN_TAIL:
-        #         scan = pending[:-MIN_TAIL]
-        #         tail = pending[-MIN_TAIL:]
-        #
-        #     safe_chunk, _ = split_safe_citation_prefix(scan)
-        #     safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
-        #     safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
-        #
-        #     if not safe_chunk:
-        #         return
-        #
-        #     await _emit_visible(safe_chunk)
-        #
-        #     # Remove emitted part only from the scanned prefix; reattach the tail
-        #     scan_remainder = scan[len(safe_chunk):]
-        #     pending = scan_remainder + tail
-        #
-        #     # # Non-force: trim to safe prefix
-        #     # safe_chunk, _ = split_safe_citation_prefix(pending)
-        #     # safe_chunk, _ = _split_safe_usage_prefix(safe_chunk)
-        #     # safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)
-        #     #
-        #     # if not safe_chunk:
-        #     #     # Nothing safe to emit yet (we might be in the middle of a token)
-        #     #     return
-        #     #
-        #     # await _emit_visible(safe_chunk)
-        #     # # Drop exactly what we emitted from the front of pending
-        #     # pending = pending[len(safe_chunk):]
-
         async def _flush_pending(force: bool = False):
             nonlocal pending
             if not pending:
                 return
 
             if force:
-                # await _emit_visible(pending)
                 # still protect against unfinished [[S... or [[USAGE...
                 safe_chunk, _ = split_safe_stream_prefix(pending)
                 safe_chunk, _ = _split_safe_marker_prefix(safe_chunk, end_marker)

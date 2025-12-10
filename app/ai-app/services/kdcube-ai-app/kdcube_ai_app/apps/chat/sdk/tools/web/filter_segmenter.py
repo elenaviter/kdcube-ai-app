@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import json
 
+from kdcube_ai_app.apps.chat.sdk.codegen.team import _today_str
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, create_cached_system_message
 from kdcube_ai_app.apps.chat.sdk.streaming.streaming import \
@@ -121,12 +122,33 @@ async def filter_and_segment_stream(
     )
 
     two_section_proto = _get_2section_protocol_filter_segmenter(schema)
+    from kdcube_ai_app.infra.accounting import _get_context
+
+    context = _get_context()
+    context_snapshot = context.to_dict()
+
+    timezone = context_snapshot.get("timezone")
+
+    today = _today_str()
+    from kdcube_ai_app.apps.chat.sdk.util import _now_up_to_minutes
+    now = _now_up_to_minutes()
+
+    TIMEZONE = timezone or "Europe/Berlin"
+    time_evidence = (
+        "AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)\n"
+        f"Current UTC date: {today}\n"
+        # "User timezone: Europe/Berlin\n"
+        "All relative dates (today/yesterday/last year/next month) MUST be "
+        "interpreted against this context. Freshness must be estimated based on this context.\n"
+    )
+    time_evidence_reminder = f"Very important: The user's timezone is {TIMEZONE}. Current UTC timestamp: {now}. Current UTC date: {today}. Any dates before this are in the past, and any dates after this are in the future. When dealing with modern entities/companies/people, and the user asks for the 'latest', 'most recent', 'today's', etc. don't assume your knowledge is up to date; you MUST carefully confirm what the true 'latest' is first. If the user seems confused or mistaken about a certain date or dates, you MUST include specific, concrete dates in your response to clarify things. This is especially important when the user is referencing relative dates like 'today', 'tomorrow', 'yesterday', etc -- if the user seems mistaken in these cases, you should make sure to use absolute/exact dates like 'January 1, 2010' in your response.\n"
 
     # Combine: core instruction + thinking budget + 2-fold protocol
     system_msg = create_cached_system_message([
-        {"text": core_instruction, "cache": True},
+        {"text": time_evidence + "\n" + core_instruction, "cache": True},
+        {"text": two_section_proto, "cache": True},
+        {"text": time_evidence_reminder, "cache": False},
         {"text": thinking_note, "cache": False},
-        {"text": two_section_proto, "cache": True}
     ])
 
     # Prepare input context
