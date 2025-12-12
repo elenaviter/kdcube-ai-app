@@ -35,7 +35,7 @@ class PostgreSqlDbMgr:
         # Build -c GUCs applied at session start
         opts = [
             "-c TimeZone=UTC",
-            "-c datestyle=ISO, YMD",
+            "-c datestyle=ISO,YMD",
             "-c intervalstyle=iso_8601",
             f"-c application_name={self.appname}",
             f"-c statement_timeout={self.statement_timeout_ms}",

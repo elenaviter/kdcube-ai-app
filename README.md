@@ -127,7 +127,7 @@ docker compose build postgres-setup && docker compose run --rm postgres-setup
 3. (Optional) Local KB storage:
 
 ```bash
-mkdir kb-storage -p && chmod 777 kb-storage
+mkdir kdcube-storage -p && chmod 777 kdcube-storage
 ```
 
 4. Start everything:

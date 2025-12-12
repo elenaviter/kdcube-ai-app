@@ -22,6 +22,91 @@ CONTAINER_BUNDLES_ROOT = "/bundles"
 def _path(p: pathlib.Path | str) -> str:
     return str(p if isinstance(p, pathlib.Path) else pathlib.Path(p))
 
+def _is_running_in_docker() -> bool:
+    """
+    Detect if we're running inside a Docker container.
+    """
+    # Method 1: Check for .dockerenv file
+    if os.path.exists("/.dockerenv"):
+        return True
+
+    # Method 2: Check cgroup for docker
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            return "docker" in f.read()
+    except Exception:
+        pass
+
+    # Method 3: Check environment variable
+    if os.environ.get("DOCKER_CONTAINER") == "true":
+        return True
+
+    return False
+
+
+def _translate_container_path_to_host(container_path: pathlib.Path) -> pathlib.Path:
+    """
+    Translate container paths to host paths for Docker-in-Docker.
+
+    When running inside a container, paths we see (like /tmp/codegen_xxx or /kdcube-storage/temp/abc)
+    need to be translated to host paths for sibling containers to access them.
+
+    Architecture:
+    -------------
+    Host filesystem:
+      ├── kdcube-storage/              # Knowledge base data (persistent)
+      ├── bundles/                 # Agentic bundles (persistent)
+      └── exec-workspace/          # Temporary code execution (ephemeral, can be cleaned)
+          └── codegen_xxx/         # Auto-created, auto-cleaned
+              ├── pkg/
+              └── out/
+
+    Inside chat-chat container:
+      /kdcube-storage/        → Host: {HOST_KB_STORAGE_PATH}
+      /bundles/           → Host: {HOST_BUNDLES_PATH}
+      /exec-workspace/    → Host: {HOST_EXEC_WORKSPACE_PATH}
+      /tmp/codegen_xxx/   → Redirected to /exec-workspace/codegen_xxx/
+
+    py-code-exec sibling container mounts:
+      Host: {HOST_EXEC_WORKSPACE_PATH}/codegen_xxx/pkg → Container: /workspace/work
+      Host: {HOST_EXEC_WORKSPACE_PATH}/codegen_xxx/out → Container: /workspace/out
+    """
+    container_path = container_path.resolve()
+    path_str = str(container_path)
+
+    running_in_docker = _is_running_in_docker()
+
+    # /kdcube-storage → host path from env
+    if path_str.startswith("/kdcube-storage"):
+        host_kb_storage = os.environ.get("HOST_KB_STORAGE_PATH", "/kdcube-storage")
+        rel = os.path.relpath(path_str, "/kdcube-storage")
+        return pathlib.Path(host_kb_storage) / rel
+
+    # /bundles → host path from env
+    if path_str.startswith("/bundles"):
+        host_bundles = os.environ.get("HOST_BUNDLES_PATH", "/bundles")
+        rel = os.path.relpath(path_str, "/bundles")
+        return pathlib.Path(host_bundles) / rel
+
+    # /exec-workspace → host path from env (NEW)
+    # This handles paths that were created directly in /exec-workspace
+    if path_str.startswith("/exec-workspace") and running_in_docker:
+        host_exec_workspace = os.environ.get("HOST_EXEC_WORKSPACE_PATH", "/exec-workspace")
+        rel = os.path.relpath(path_str, "/exec-workspace")
+        return pathlib.Path(host_exec_workspace) / rel
+
+    # /tmp → Redirect to /exec-workspace (Docker-in-Docker)
+    # This handles paths that were mistakenly created in /tmp
+    if path_str.startswith("/tmp") and running_in_docker:
+        host_exec_workspace = os.environ.get("HOST_EXEC_WORKSPACE_PATH", "/exec-workspace")
+        rel = os.path.relpath(path_str, "/tmp")
+        shared_path = pathlib.Path("/exec-workspace") / rel
+        shared_path.mkdir(parents=True, exist_ok=True)
+        return pathlib.Path(host_exec_workspace) / rel
+
+    # If no translation needed, return as-is
+    return container_path
+
 
 def _build_docker_argv(
         *,
@@ -36,9 +121,9 @@ def _build_docker_argv(
 ) -> list[str]:
     """
     Build a `docker run` invocation that:
-      - mounts host_workdir to /workspace
-      - mounts host_outdir to /output
-      - sets WORKDIR=/workspace, OUTPUT_DIR=/output
+      - mounts host_workdir to /workspace/work
+      - mounts host_outdir to /workspace/out
+      - sets WORKDIR=/workspace/work, OUTPUT_DIR=/workspace/out
       - passes through extra_env as -e KEY=VAL
       - uses `image` as the container image
     """
@@ -47,7 +132,7 @@ def _build_docker_argv(
     argv += ["--cap-add=SYS_ADMIN"]
     argv += ["--network", network_mode]
 
-    # Optional extra args (e.g. --network, --cpus) if you ever need them
+    # Optional extra args (e.g. --cpus, --memory) if you ever need them
     if extra_args:
         argv.extend(extra_args)
 
@@ -190,20 +275,31 @@ async def run_py_in_docker(
     base_env["RUNTIME_TOOL_MODULES"] = json.dumps(tool_module_names, ensure_ascii=False)
     base_env["WORKDIR"]               = "/workspace/work"
     base_env["OUTPUT_DIR"]            = "/workspace/out"
-    base_env["LOG_DIR"] = "/workspace/out/logs"
+    base_env["LOG_DIR"]               = "/workspace/out/logs"
 
     img = image or _DEFAULT_IMAGE
     to = timeout_s or _DEFAULT_TIMEOUT_S
 
-    # We no longer recompute bundle_id here; we just use bundle_dir
+    # Translate paths for Docker-in-Docker
+    host_workdir = _translate_container_path_to_host(workdir)
+    host_outdir = _translate_container_path_to_host(outdir)
+
+    if bundle_root is not None:
+        bundle_root = _translate_container_path_to_host(bundle_root)
+
+    if _is_running_in_docker():
+        log.log(f"[docker.exec] Running in Docker-in-Docker mode", level="INFO")
+    log.log(f"[docker.exec] Container paths: workdir={workdir}, outdir={outdir}")
+    log.log(f"[docker.exec] Host paths: workdir={host_workdir}, outdir={host_outdir}")
+
     argv = _build_docker_argv(
         image=img,
-        host_workdir=workdir,
-        host_outdir=outdir,
+        host_workdir=host_workdir,
+        host_outdir=host_outdir,
         extra_env=base_env,
         extra_args=extra_docker_args or [],
         bundle_root=bundle_root,
-        bundle_id=bundle_dir,   # <-- this is the first segment of module name
+        bundle_id=bundle_dir,
         network_mode=network_mode or "host",
     )
 

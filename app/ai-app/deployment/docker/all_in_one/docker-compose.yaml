@@ -1,108 +1,80 @@
 services:
   postgres-db:
-    container_name: chat-postgres
+    container_name: kdcube-postgres
     image: pgvector/pgvector:pg16
     env_file:
       - path: ./.env.backend
         required: false
-      - path: ./.env.postgres
-        required: false
     restart: unless-stopped
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql/data
     networks:
-      - chat-internal
+      - kdcube-internal
     ports:
       - "127.0.0.1:5432:5444"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   postgres-setup:
-    image: chat-postgres-setup:latest
-    container_name: chat-postgres-setup
+    image: kdcube-postgres-setup:latest
+    container_name: kdcube-postgres-setup
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one/Dockerfile_PostgresSetup
-    profiles:
-      - initial-setup
     env_file:
       - path: ./.env.backend
-        required: false
-      - path: ./.env.postgres.setup
         required: false
     environment:
       - POSTGRES_HOST=postgres-db
     depends_on:
-      - postgres-db
+      postgres-db:
+        condition: service_healthy
     networks:
-      - chat-internal
+      - kdcube-internal
+    restart: "no"
 
   redis:
-    container_name: chat-redis
+    container_name: kdcube-redis
     image: redis:latest
     env_file:
       - path: ./.env.backend
         required: false
-      - path: ./.env.redis
-        required: false
     command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
     restart: unless-stopped
     volumes:
-      - redis-data:/data
+      - ./data/redis:/data
     networks:
-      - chat-internal
+      - kdcube-internal
     ports:
-      - "5445:6379"
-
-  kb:
-    image: chat-kb:latest
-    container_name: chat-kb
-    build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_KB
-    profiles:
-      - backend
-    env_file:
-      - path: ./.env.backend
-        required: false
-      - path: ./.env.kb
-        required: false
-    environment:
-      - REDIS_URL="redis://redis:6379/0"
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=postgres-db
-    volumes:
-      - ./kb-storage:/kb-storage
-    depends_on:
-      - postgres-db
-      - redis
-    networks:
-      - chat-internal
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   neo4j:
     image: neo4j:5
-    container_name: chat-neo4j
-    profiles:
-      - backend
-      - chatbot
+    container_name: kdcube-neo4j
     env_file:
       - path: ./.env.backend
         required: false
-    # Keep the plugin + procedure config here; credentials & memory come from .env.backend
     environment:
-      # Correct v5 keys (server.memory.*)
-      NEO4J_AUTH: "${N4J_USER}/${N4J_PASSWORD}"
+      NEO4J_AUTH: "${N4J_USER:-neo4j}/${N4J_PASSWORD:-neo4jpassword}"
       NEO4J_server_memory_pagecache_size: ${N4J_PAGECACHE:-1G}
       NEO4J_server_memory_heap_initial__size: ${N4J_HEAP_INITIAL:-512m}
       NEO4J_server_memory_heap_max__size: ${N4J_HEAP_MAX:-1G}
-
-      # APOC plugin
       NEO4J_PLUGINS: '["apoc"]'
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_dbms_security_procedures_allowlist: "apoc.*"
     volumes:
-      - neo4j-data:/data
-      - neo4j-logs:/logs
-      - neo4j-plugins:/plugins
-      - neo4j-import:/var/lib/neo4j/import
+      - ./data/neo4j/data:/data
+      - ./data/neo4j/logs:/logs
+      - ./data/neo4j/plugins:/plugins
+      - ./data/neo4j/import:/var/lib/neo4j/import
     healthcheck:
       # Uses container env (note the $$ for compose escaping)
       test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u $$N4J_USER -p $$N4J_PASSWORD 'RETURN 1' || exit 1"]
@@ -110,154 +82,189 @@ services:
       timeout: 10s
       retries: 20
     networks:
-      - chat-internal
-    # Expose if you want to use Neo4j Browser locally; otherwise you can omit ports
+      - kdcube-internal
+    # Expose if you want to use Neo4j Browser locallly
     ports:
-      - "127.0.0.1:7476:7474"   # HTTP (Neo4j Browser)
-      - "127.0.0.1:7688:7687"   # Bolt
-
-  dramatiq:
-    image: chat-dramatiq:latest
-    container_name: chat-dramatiq
-    build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Dramatiq
-    profiles:
-      - backend
-    env_file:
-      - path: ./.env.backend
-        required: false
-      - path: ./.env.dramatiq
-        required: false
-    environment:
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=postgres-db
-    volumes:
-      - ./kb-storage:/kb-storage
-    depends_on:
-      - postgres-db
-      - redis
-      - kb
-    networks:
-      - chat-internal
-
-  chat-back:
-    image: chat-chat:latest
-    container_name: chat-chat
-    build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
-    profiles:
-      - chatbot
-      - backend
-    env_file:
-      - path: ./.env.backend
-        required: false
-      - path: ./.env.kb
-        required: false
-    environment:
-      - REDIS_URL="redis://redis:6379/0"
-      - REDIS_HOST=redis
-      - POSTGRES_HOST=postgres-db
-      - APP_NEO4J_URI=bolt://neo4j:7687
-      - CHAT_PUBLIC_URL=http://localhost:5173/chatbot/api/chat
-      - PYTHONUNBUFFERED=1
-      - CLAMAV_HOST=clamav
-      - CLAMAV_PORT=3310
-    tty: true
-    volumes:
-      - ./kb-storage:/kb-storage
-      - type: bind
-        source: ${SITE_AGENTIC_BUNDLES_ROOT?}  # host root with all bundles
-        target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
-    depends_on:
-      - postgres-db
-      - redis
-      - neo4j
-    networks:
-      - chat-internal
-
-  chat:
-    image: chat-web-ui:latest
-    build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_UI
-      args:
-        - NGINX_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
-    env_file:
-      - path: ./.env.ui
-        required: false
-    container_name: chat-web-ui
-    restart: unless-stopped
-    depends_on:
-      - chat-back
-    profiles:
-      - frontend
-      - chatbot
-    environment:
-      - NODE_ENV=production
-    networks:
-      - chat-internal
-    ports:
-      - "127.0.0.1:5173:80"
-
-  web-proxy:
-    image: chat-web-proxy:latest
-    build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Proxy
-      args:
-        - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
-    env_file:
-      - path: ./.env.proxy
-        required: false
-    container_name: chat-web-proxy
-    ports:
-      - "5173:80"
-      - "80:80"
-      - "443:443"
-    restart: unless-stopped
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - ./nginx/webroot:/var/www/letsencrypt
-    profiles:
-      - frontend
-    networks:
-      - chat-external
-      - chat-internal
+      - "127.0.0.1:7474:7474" # HTTP (Neo4j Browser)
+      - "127.0.0.1:7687:7687" # Bolt
 
   clamav:
     image: clamav/clamav:stable
-    container_name: chat-clamav
+    container_name: kdcube-clamav
+    platform: linux/amd64
     restart: unless-stopped
     networks:
-      - chat-internal
+      - kdcube-internal
     environment:
       - CLAMD_START=1
-      - FRESHCLAM_CHECKS=24        # update DB hourly-ish (24/day)
+      - FRESHCLAM_CHECKS=24
     healthcheck:
       test: ["CMD-SHELL", "clamdscan --version || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 10
     volumes:
-      - clamav-db:/var/lib/clamav   # persist signature DB
+      - ./data/clamav:/var/lib/clamav
     ports:
-      # expose only internally; no host mapping needed
-      - "3310:3310"
+      - "127.0.0.1:3310:3310"
 
+#  kb:
+#    image: kdcube-kb:latest
+#    container_name: kdcube-kb
+#    build:
+#      context: ../../..
+#      dockerfile: deployment/docker/all_in_one/Dockerfile_KB
+#    profiles:
+#      - optional  # Not started by default
+#    env_file:
+#      - path: ./.env.backend
+#        required: false
+#    environment:
+#      - REDIS_HOST=redis
+#      - POSTGRES_HOST=postgres-db
+#      - LOG_FILE_PREFIX=kb
+#    volumes:
+#      - ./data/kdcube-storage:/kdcube-storage
+#      - ./data/exec-workspace:/exec-workspace
+#      - ./logs/kb:/logs
+#    depends_on:
+#      postgres-setup:
+#        condition: service_completed_successfully
+#      redis:
+#        condition: service_healthy
+#    networks:
+#      - kdcube-internal
+#
+#  dramatiq:
+#    image: kdcube-dramatiq:latest
+#    container_name: kdcube-dramatiq
+#    build:
+#      context: ../../..
+#      dockerfile: deployment/docker/all_in_one/Dockerfile_Dramatiq
+#    profiles:
+#      - optional  # Not started by default
+#    env_file:
+#      - path: ./.env.backend
+#        required: false
+#    environment:
+#      - REDIS_HOST=redis
+#      - POSTGRES_HOST=postgres-db
+#      - LOG_FILE_PREFIX=dramatiq
+#    volumes:
+#      - ./data/kdcube-storage:/kdcube-storage
+#      - ./logs/dramatiq:/logs
+#    depends_on:
+#      postgres-setup:
+#        condition: service_completed_successfully
+#      redis:
+#        condition: service_healthy
+#      kb:
+#        condition: service_started
+#    networks:
+#      - kdcube-internal
+
+  chat:
+    image: kdcube-chat:latest
+    container_name: kdcube-chat
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
+    env_file:
+      - path: ./.env.backend
+        required: false
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres-db
+      - APP_NEO4J_URI=bolt://neo4j:7687
+      - CLAMAV_HOST=clamav
+      - CLAMAV_PORT=3310
+      - LOG_FILE_PREFIX=chat
+      - HOST_KB_STORAGE_PATH=${HOST_KB_STORAGE_PATH}
+      - HOST_BUNDLES_PATH=${HOST_BUNDLES_PATH}
+      - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/kdcube-storage:/kdcube-storage
+      - ./data/exec-workspace:/exec-workspace
+      - ./logs/chat:/logs
+      - type: bind
+        source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
+        target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
+      - type: bind
+        source: ${HOME}/.aws
+        target: /home/appuser/.aws
+        read_only: true
+    depends_on:
+      postgres-setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    networks:
+      - kdcube-internal
+    ports:
+      - "127.0.0.1:8000:8010"
+
+  web-ui:
+    image: kdcube-web-ui:latest
+    container_name: kdcube-web-ui
+    build:
+      context: ${UI_BUILD_CONTEXT}
+      dockerfile: ${UI_DOCKERFILE_PATH}
+      args:
+        - UI_SOURCE_PATH=${UI_SOURCE_PATH}
+        - UI_ENV_BUILD_RELATIVE=${UI_ENV_BUILD_RELATIVE}
+        - NGINX_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
+    env_file:
+      - path: ${UI_ENV_FILE_PATH}
+        required: false
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+    depends_on:
+      chat:
+        condition: service_started
+    networks:
+      - kdcube-internal
+
+  web-proxy:
+    image: kdcube-web-proxy:latest
+    container_name: kdcube-web-proxy
+    build:
+      context: ${PROXY_BUILD_CONTEXT}
+      dockerfile: ${PROXY_DOCKERFILE_PATH}
+      args:
+        - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
+    restart: unless-stopped
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - ./nginx/webroot:/var/www/letsencrypt
+    depends_on:
+      chat:
+        condition: service_started
+      web-ui:
+        condition: service_started
+    networks:
+      - kdcube-external
+      - kdcube-internal
+    ports:
+      - "80:80"
+      - "443:443"
 
 networks:
-  chat-external:
+  kdcube-external:
     driver: bridge
-  chat-internal:
+  kdcube-internal:
     driver: bridge
 
-volumes:
-  redis-data:
-  postgres-data:
-  neo4j-data:
-  neo4j-logs:
-  neo4j-plugins:
-  neo4j-import:
-  clamav-db:
+#volumes:
+#  redis-data:
+#  postgres-data:
+#  neo4j-data:
+#  neo4j-logs:
+#  neo4j-plugins:
+#  neo4j-import:
+#  clamav-db:

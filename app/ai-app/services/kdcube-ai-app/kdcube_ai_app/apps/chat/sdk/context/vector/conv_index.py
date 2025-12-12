@@ -60,6 +60,7 @@ class ConvIndex:
             schema_name = f"kdcube_{schema_name}"
 
         self.schema: str = schema_name
+        self.shared_pool = pool is not None
 
     async def init(self):
         if not self._pool:
@@ -73,7 +74,7 @@ class ConvIndex:
             )
 
     async def close(self):
-        if self._pool:
+        if self._pool and not self.shared_pool:
             await self._pool.close()
 
     async def ensure_schema(self):

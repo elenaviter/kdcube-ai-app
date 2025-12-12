@@ -126,7 +126,12 @@ async def generate_content_llm(
 
     if is_managed_json and artifact_name:
         try:
-            cfg_obj = json.loads(artifact_name)
+            # support both dict *and* JSON string
+            if isinstance(artifact_name, dict):
+                cfg_obj = artifact_name
+            else:
+                cfg_obj = json.loads(artifact_name)
+
             if isinstance(cfg_obj, dict):
                 tmp: Dict[str, str] = {}
                 for k, v in cfg_obj.items():
@@ -160,6 +165,11 @@ async def generate_content_llm(
     # For non-managed / failed parsing, keep old behaviour: artifact_name stays a simple label
     if not composite_cfg:
         artifact_name = artifact_name or agent_name
+    else:
+        # Ensure artifact_name is a sane label for the *envelope* artifact.
+        if not isinstance(artifact_name, str):
+            artifact_name = agent_name or "managed_json_artifact"
+
 
     if max_tokens < 5500:
         if tgt in ("html", "xml"):

@@ -23,5 +23,6 @@
 **/coverage.xml
 **/*.log
 kb-storage
+kdcube-storage
 data/
 tmp/

@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import json
 
-from kdcube_ai_app.apps.chat.sdk.codegen.team import _today_str
+from kdcube_ai_app.apps.chat.sdk.util import _today_str
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, create_cached_system_message
 from kdcube_ai_app.apps.chat.sdk.streaming.streaming import \

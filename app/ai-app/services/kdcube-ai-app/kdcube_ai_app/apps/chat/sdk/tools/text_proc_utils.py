@@ -1,3 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
+# chat/sdk/tools/text_proc_utils.py
+
 import re, yaml, jsonschema, json
 from typing import Tuple, Any, Set, Optional
 

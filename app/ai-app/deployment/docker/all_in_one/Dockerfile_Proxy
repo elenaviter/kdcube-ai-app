@@ -1,11 +1,15 @@
 FROM nginx:alpine
 
-ARG NGINX_CONFIG_FILE_PATH="deployment/docker/all_in_one/nginx_proxy.conf"
-# Copy custom nginx configuration (optional)
-COPY $NGINX_CONFIG_FILE_PATH /etc/nginx/nginx.conf
+# Build argument for nginx config path (relative to build context)
+ARG NGINX_CONFIG_FILE_PATH
 
-# Expose port 80
+# Copy nginx configuration from customer repo
+COPY ${NGINX_CONFIG_FILE_PATH} /etc/nginx/nginx.conf
+
+# Create webroot for Let's Encrypt
+# RUN mkdir -p /var/www/letsencrypt
+
+# EXPOSE 80 443
 EXPOSE 80
 
-# Start nginx
 CMD ["nginx", "-g", "daemon off;"]
