@@ -68,8 +68,8 @@ deployment/docker/all_in_one/
 └── nginx/
     └── webroot/                     # For Let's Encrypt challenges
 
-[Customer Repo Structure - Example]
-/path/to/customer-repo/
+[Customers Repo Structure - Example]
+/path/to/customer-solutions/
 ├── <customer-id>/ui/                    # ← UI source code
 │   ├── package.json
 │   ├── src/
@@ -118,19 +118,19 @@ AGENTIC_BUNDLES_ROOT=/bundles                          # Mount path in container
 # WEB UI BUILD CONFIGURATION
 # -----------------------------------------------------------------------------
 UI_BUILD_CONTEXT=/path/to/customer-repo               # Customer repo root
-UI_DOCKERFILE_PATH=ops/cicd/customer-c/local/Dockerfile_UI
-UI_ENV_FILE_PATH=/path/to/customer-repo/ops/cicd/customer-c/local/.env.ui.build
+UI_DOCKERFILE_PATH=ops/cicd/customer-c/prod/Dockerfile_UI
+UI_ENV_FILE_PATH=/path/to/customer-solutions/ops/cicd/customer-c/prod/.env.ui.build
 # Build arguments (relative to UI_BUILD_CONTEXT)
 UI_SOURCE_PATH=<customer-id>/ui                            # UI source location
-UI_ENV_BUILD_RELATIVE=ops/cicd/customer-c/local/.env.ui.build
-NGINX_UI_CONFIG_FILE_PATH=ops/cicd/customer-c/local/nginx_ui.conf
+UI_ENV_BUILD_RELATIVE=ops/cicd/customer-c/prod/.env.ui.build
+NGINX_UI_CONFIG_FILE_PATH=ops/cicd/customer-c/prod/nginx_ui.conf
 
 # -----------------------------------------------------------------------------
 # PROXY BUILD CONFIGURATION
 # -----------------------------------------------------------------------------
 PROXY_BUILD_CONTEXT=/path/to/common-parent             # Common parent of both repos
 PROXY_DOCKERFILE_PATH=platform-repo/deployment/docker/all_in_one/Dockerfile_Proxy
-NGINX_PROXY_CONFIG_FILE_PATH=customer-repo/ops/cicd/customer-c/local/nginx_proxy.conf
+NGINX_PROXY_CONFIG_FILE_PATH=customer-solutions/ops/cicd/customer-c/prod/nginx_proxy.conf
 
 # -----------------------------------------------------------------------------
 # NEO4J CONFIGURATION
@@ -188,6 +188,23 @@ docker build -t py-code-exec:latest -f Dockerfile_Exec ../../..
 ```bash
 docker compose build postgres-setup
 docker compose run --rm postgres-setup
+```
+
+## File Locations Summary
+
+**Production server:**
+```
+/home/ubuntu/dev/src/kdcube-ai-app/app/ai-app/deployment/docker/all_in_one/
+├── docker-compose.yml    ← From local
+├── .env                  ← From local (production version)
+├── .env.backend          ← From local (production version)
+└── Dockerfile_Proxy      ← Already in repo
+
+/home/ubuntu/dev/src/customer-solutions/ops/customer-c/dockercompose/prod
+├── Dockerfile_UI         ← Already in repo
+├── .env.ui.build         ← From local
+├── nginx_ui.conf         ← From local
+└── nginx_proxy.conf      ← From local
 ```
 
 ## Running Services
@@ -295,7 +312,7 @@ docker compose down -v
 ```bash
    PROXY_BUILD_CONTEXT=/path/to/common-parent
    PROXY_DOCKERFILE_PATH=platform-repo/deployment/docker/all_in_one/Dockerfile_Proxy
-   NGINX_PROXY_CONFIG_FILE_PATH=customer-repo/ops/deployment/nginx_proxy.conf
+   NGINX_PROXY_CONFIG_FILE_PATH=customer-solutions/ops/deployment/nginx_proxy.conf
 ```
 
 ### Adding Custom Agentic Apps (Bundles)
@@ -479,3 +496,131 @@ For production deployment:
 ```
 4. Configure SSL certificates in nginx_proxy.conf
 5. Set up Let's Encrypt volume mounts
+
+## Migration between volume-based and data folder-centric mounting
+
+### Find all volumes
+List all volumes
+```shell
+docker volume ls
+```
+
+Find your volumes (likely named like: all_in_one_postgres-data, all_in_one_redis-data, etc.)
+```shell
+docker volume ls | grep -E 'postgres|redis|neo4j|clamav'
+```
+
+### Create target directories
+```shell
+cd /home/ubuntu/dev/src/kdcube-ai-app/app/ai-app/deployment/docker/all_in_one
+```
+
+Create target directories
+```shell
+mkdir -p data/{postgres,redis,clamav,neo4j/{data,logs,plugins,import}}
+chmod -R 0777 data
+```
+
+### Copy Data from Volumes to Bind Mounts
+#### Method: Using temporary container to copy data
+```shell
+#!/bin/bash
+# Migration script with automatic permission fixing
+
+cd /home/ubuntu/dev/src/kdcube-ai-app/app/ai-app/deployment/docker/all_in_one
+
+# Stop services first
+docker compose down
+
+# --- Postgres ---
+echo "Migrating Postgres data..."
+docker run --rm \
+  -v all_in_one_postgres-data:/source \
+  -v $(pwd)/data/postgres:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# --- Redis ---
+echo "Migrating Redis data..."
+docker run --rm \
+  -v all_in_one_redis-data:/source \
+  -v $(pwd)/data/redis:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# --- Neo4j Data ---
+echo "Migrating Neo4j data..."
+docker run --rm \
+  -v all_in_one_neo4j-data:/source \
+  -v $(pwd)/data/neo4j/data:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# --- Neo4j Logs ---
+echo "Migrating Neo4j logs..."
+docker run --rm \
+  -v all_in_one_neo4j-logs:/source \
+  -v $(pwd)/data/neo4j/logs:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# --- Neo4j Plugins ---
+echo "Migrating Neo4j plugins..."
+docker run --rm \
+  -v all_in_one_neo4j-plugins:/source \
+  -v $(pwd)/data/neo4j/plugins:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# --- Neo4j Import ---
+echo "Migrating Neo4j import..."
+docker run --rm \
+  -v all_in_one_neo4j-import:/source \
+  -v $(pwd)/data/neo4j/import:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# --- ClamAV ---
+echo "Migrating ClamAV data..."
+docker run --rm \
+  -v all_in_one_clamav-db:/source \
+  -v $(pwd)/data/clamav:/target \
+  alpine sh -c "cp -av /source/. /target/ && chmod -R 777 /target"
+
+# Fix ownership from host
+echo "Fixing ownership..."
+sudo chown -R ubuntu:ubuntu data/
+sudo chmod -R 0777 data/
+
+echo "Migration complete!"
+echo "Verify data integrity before removing old volumes."
+```
+
+#### Verify Migration
+```shell
+# Check that data was copied
+ls -la data/postgres/
+ls -la data/redis/
+ls -la data/neo4j/data/
+ls -la data/clamav/
+
+# Start services with new bind mounts
+docker compose up -d
+
+# Check logs
+docker compose logs -f postgres-db
+docker compose logs -f redis
+docker compose logs -f neo4j
+
+# Test database connection
+docker compose exec postgres-db psql -U kdcube -d kdcube_ai -c '\dt'
+```
+
+#### Cleanup Old Volumes (ONLY AFTER VERIFYING)
+```shell
+# List volumes again
+docker volume ls
+
+# Remove old volumes (BE CAREFUL - THIS IS PERMANENT)
+docker volume rm all_in_one_postgres-data
+docker volume rm all_in_one_redis-data
+docker volume rm all_in_one_neo4j-data
+docker volume rm all_in_one_neo4j-logs
+docker volume rm all_in_one_neo4j-plugins
+docker volume rm all_in_one_neo4j-import
+docker volume rm all_in_one_clamav-db
+```
