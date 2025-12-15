@@ -442,3 +442,6 @@ def truncate_text_by_tokens(text, max_tokens=MAX_TOKENS):
 def strip_lone_surrogates(s: str) -> str:
     # Replace any code points in the surrogate range with U+FFFD
     return ''.join('\uFFFD' if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in s)
+
+def _iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"

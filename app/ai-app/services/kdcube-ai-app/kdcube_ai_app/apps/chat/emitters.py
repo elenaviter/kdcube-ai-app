@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from typing import Any, Optional, Callable, Awaitable, Dict, List, Tuple, Set, Iterable
 import os, logging, time
 
-from numpy._core._multiarray_umath import broadcast
-
 from kdcube_ai_app.apps.chat.sdk.comm.event_filter import IEventFilter, EventFilterInput
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.protocol import (

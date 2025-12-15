@@ -5,7 +5,6 @@
 
 import json, re, time
 import datetime as _dt
-import traceback
 from typing import Dict, Any, Optional, List, Literal, Tuple, Protocol, Type
 
 from kdcube_ai_app.apps.chat.sdk.context.memory.turn_fingerprint import TurnFingerprintV1, render_fingerprint_one_liner
@@ -16,14 +15,347 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.strategy_and_budget impo
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.context.retrieval as ctx_retrieval_module
-from kdcube_ai_app.apps.chat.sdk.util import _truncate, _turn_id_from_tags_safe
+from kdcube_ai_app.apps.chat.sdk.util import _truncate, _turn_id_from_tags_safe, _to_jsonable
 
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.presentation import (
-    SolverPresenter,
-    SolverPresenterConfig,
-    _format_deliverables_flat_with_icons,
-    SERVICE_LOG_SLOT,
-)
+
+def build_solver_playbook(*,
+                          context: ReactContext,
+                          output_contract: Dict[str, Any],
+                          max_prior_turns: int = 5,
+                          max_sources_per_turn: int = 20,
+                          turn_view_class: Type[BaseTurnView] = BaseTurnView, )-> str:
+    """
+    Unified, LLM-friendly Operational Playbook used by the Decision node.
+
+    ORDER (strict oldest → newest):
+      1) Prior turns (historical), strictly oldest → newest
+      2) Current turn (live):
+         • User Request (what we knew at session start) — comes from scratchpad via `current_user_markdown`
+         • Events timeline (appended as the session progresses; short timestamps)
+         • Current snapshot (contract/slots/tool results)
+    """
+    import traceback
+    from urllib.parse import urlparse
+
+    def _size(s: Optional[str]) -> int:
+        return len(s or "")
+
+    def _short_with_count(text: str, limit: int) -> str:
+        if not text:
+            return ""
+        text = str(text)
+        if len(text) <= limit:
+            return text
+        remaining = len(text) - limit
+        return f"{text[:limit]}... (...{remaining} more chars)"
+
+    lines: list[str] = []
+    lines.append("#The Program History PLAYBOOK / Operational Digest (Current turn). **Strictly ordered from oldest → newest** for prior turns.")
+    lines.append("")
+    # lines.append("Previews are truncated. Use ctx_tools.fetch_turn_artifacts([turn_ids]) for full content.")
+    lines.append("Within turn, User message, assistant final answer can be truncated. Solver artifacts (slots) content is not shown. If available, only their content summary is shown. Use ctx_tools.fetch_turn_artifacts([turn_ids]) to explore full content.")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    # ---------- Prior Turns (oldest first) ----------
+    lines.append("## Prior Turns (oldest first)")
+
+    if not context.history_turns:
+        lines.append("(none)")
+    else:
+        # Sort history_turns oldest → newest
+        history_sorted = sorted(
+            context.history_turns[:max_prior_turns],
+            key=lambda turn_rec: (next(iter(turn_rec.values())) if turn_rec else {}).get("ts", "")
+        )
+
+        for idx, turn_rec in enumerate(history_sorted, 1):
+            # Extract inner metadata dict from {execution_id: meta}
+            try:
+                execution_id, meta = next(iter(turn_rec.items()))
+            except Exception:
+                continue
+
+            turn_id = meta.get("turn_id") or execution_id
+            ts_full = (meta.get("ts") or "").strip()
+            ts_disp = ts_full[:16].replace("T", " ") if len(ts_full) >= 16 else (ts_full[:10] or "(no date)")
+
+            # Build TurnView from meta payload
+            try:
+                tv = turn_view_class.from_turn_log_dict(meta)
+            except Exception as ex:
+                print(f"Failed to build TurnView for turn {turn_id}: {ex}")
+                print(traceback.format_exc())
+                continue
+
+            # Header
+            lines.append(f"### Turn {turn_id} — {ts_disp} [HISTORICAL]")
+            lines.append(f"Fetch with: ctx_tools.fetch_turn_artifacts([\"{turn_id}\"])")
+            lines.append("")
+
+            # Complete turn presentation from TurnView (delegates to SolverPresenter)
+            # This includes:
+            # - [TURN OUTCOME] status
+            # - User prompt (from base summary)
+            # - Solver details (project_log, deliverables)
+            # - Assistant response (if direct answer)
+            turn_presentation = tv.to_solver_presentation(
+                user_prompt_limit=600,
+                user_prompt_or_inventorization_summary="inv",
+                program_log_limit=5000,
+                include_base_summary=True,  # ← Includes user prompt!
+                include_program_log=True,
+                include_deliverable_meta=True,
+                include_assistant_response=True,
+            )
+
+            if turn_presentation.strip():
+                lines.append(turn_presentation.strip())
+                lines.append("")
+
+            # Sources (NOT part of solver, formatted separately)
+            sources = ((meta.get("web_links_citations") or {}).get("items") or [])
+            if sources:
+                src_lines = []
+                for i, src in enumerate(sources[:max_sources_per_turn], 1):
+                    if not isinstance(src, dict):
+                        continue
+                    title = (src.get("title") or "").strip()
+                    url = (src.get("url") or "").strip()
+                    domain = ""
+                    if url:
+                        try:
+                            domain = urlparse(url).netloc or ""
+                        except Exception:
+                            domain = url[:30]
+
+                    if title and domain:
+                        src_lines.append(f"  {i}. {_short_with_count(title, 80)} ({domain})")
+                    elif title:
+                        src_lines.append(f"  {i}. {_short_with_count(title, 80)}")
+                    elif url:
+                        src_lines.append(f"  {i}. {_short_with_count(url, 100)}")
+
+                if src_lines:
+                    lines.append("")
+                    lines.append(f"[Turn Sources:** ({len(sources)} total)]")
+                    lines.extend(src_lines)
+                    lines.append("")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    # ---------- Current Turn (live) ----------
+    lines.append("## Current Turn (live — oldest → newest events) [CURRENT TURN]")
+    try:
+        tv = turn_view_class.from_turn_log_dict(context.scratchpad.turn_view)
+    except Exception as ex:
+        print(f"Failed to build TurnView for current_turn: {ex}")
+        print(traceback.format_exc())
+    current_turn_presentation = tv.to_solver_presentation(is_current_turn=True,
+                                                          user_prompt_limit=1000,
+                                                          program_log_limit=0,
+                                                          include_base_summary=True,  # ← Includes user prompt!
+                                                          include_program_log=False,
+                                                          include_deliverable_meta=False,
+                                                          include_assistant_response=False,)
+    lines.append(current_turn_presentation)
+    # 1) What we knew at start: user request for this turn (from scratchpad via param)
+    # cur_user_msg = (current_user_markdown or "").strip()
+    # lines.append("**User Request (markdown):**")
+    # lines.append(_short_with_count(cur_user_msg, 600) if cur_user_msg else "(not recorded)")
+    # lines.append("")
+
+    # 2) Events timeline (short timestamps)
+    lines.append("[EVENTS (oldest → newest)]")
+    if not context.events:
+        lines.append("(no events yet)")
+    else:
+        for e in context.events:
+            ts = time.strftime("%H:%M:%S", time.localtime(e.get("ts", 0)))
+            kind = e.get("kind")
+
+            if kind == "decision":
+                nxt = e.get("next_step")
+                strat = e.get("strategy")
+                focus = e.get("focus_slot")
+                tc = e.get("tool_call") or {}
+                tool_id = tc.get("tool_id")
+                art = tc.get("tool_res_artifact") or {}
+                art_name = art.get("name") if isinstance(art, dict) else art
+                reason = (e.get("reasoning") or "").replace("\n", " ")
+                if len(reason) > 140:
+                    reason = reason[:137] + "..."
+                pieces = [
+                    f"next={nxt}",
+                    f"strategy={strat}" if strat else None,
+                    f"focus={focus}" if focus else None,
+                    f"tool={tool_id}->{art_name}" if tool_id or art_name else None,
+                    f"reason={reason}" if reason else None,
+                ]
+                pieces = [p for p in pieces if p]
+                lines.append(f"- {ts} — decision: " + " — ".join(pieces))
+                continue
+
+            if kind == "tool_started":
+                sig = e.get("signature")
+                art = e.get("artifact_name")
+                if sig:
+                    lines.append(f"- {ts} — tool_started: {sig} → {art}")
+                else:
+                    payload = {k: v for k, v in e.items() if k != "ts"}
+                    lines.append(f"- {ts} — tool_started: {json.dumps(payload, ensure_ascii=False)[:400]}")
+                continue
+
+            if kind == "tool_finished":
+                summ = (e.get("summary") or "")
+                lines.append(f"- {ts} — tool_finished: {e.get('tool_id')} → {e.get('status')} "
+                             f"[{e.get('artifact_name','?')}] — {summ[:220]}")
+                continue
+
+            payload = {k: v for k, v in e.items() if k != "ts"}
+            lines.append(f"- {ts} — {kind}: {json.dumps(payload, ensure_ascii=False)[:400]}")
+
+    lines.append("")
+
+    # 3) Live snapshot (current contract/slots/tool results)
+    declared = sorted(list((output_contract or {}).keys()))
+    filled = sorted(list((context.current_slots or {}).keys()))
+    pending = [s for s in declared if s not in filled]
+
+    lines.append("[CONTRACT SLOTS (to fill)]")
+    lines.append(json.dumps(_to_jsonable(output_contract or {}), ensure_ascii=False, indent=2),)
+
+    lines.append("[CURRENT SNAPSHOT]")
+    lines.append("")
+    lines.append("# Contract Status")
+    lines.append(f"- Declared slots: {len(declared)}")
+    lines.append(f"- Filled slots  : {len(filled)}  ({', '.join(filled) if filled else '-'})")
+    lines.append(f"- Pending slots : {len(pending)}  ({', '.join(pending) if pending else '-'})")
+    lines.append("")
+
+    if context.current_slots:
+        from kdcube_ai_app.apps.chat.sdk.runtime.solution.presentation import format_live_slots
+
+        slots_md = format_live_slots(
+            slots=context.current_slots,
+            contract=output_contract,
+            grouping="flat",  # or "status" if you want grouping
+            slot_attrs={"description", "gaps"},
+        )
+
+        lines.append("# Current Slots")
+        lines.append("")
+        lines.append(slots_md)
+        lines.append("")
+
+    if context.current_tool_results:
+        items = sorted(
+            ((k, v) for k, v in context.current_tool_results.items() if isinstance(v, dict)),
+            key=lambda kv: float(kv[1].get("timestamp") or 0.0),
+        )
+
+        def _search_context_from_inputs(art: Dict[str, Any]) -> tuple[str, str]:
+            inputs = art.get("inputs") or {}
+            if not isinstance(inputs, dict):
+                return "", ""
+
+            raw_q = inputs.get("queries")
+            q_list: list[str] = []
+            if isinstance(raw_q, list):
+                q_list = [str(q) for q in raw_q if isinstance(q, (str, int, float))]
+            elif isinstance(raw_q, str):
+                try:
+                    parsed = json.loads(raw_q)
+                    if isinstance(parsed, list):
+                        q_list = [str(q) for q in parsed if isinstance(q, (str, int, float))]
+                    else:
+                        q_list = [raw_q]
+                except Exception:
+                    q_list = [raw_q]
+
+            queries_preview = ""
+            if q_list:
+                q2 = q_list[:2]
+                queries_preview = "; ".join([f"\"{q.strip()}\"" for q in q2 if str(q).strip()])
+                if len(q_list) > 2:
+                    queries_preview += f"; …+{len(q_list) - 2} more"
+
+            obj = inputs.get("objective")
+            objective_preview = ""
+            if isinstance(obj, str) and obj.strip():
+                objective_preview = obj.strip()
+                if len(objective_preview) > 160:
+                    objective_preview = objective_preview[:157] + "…"
+
+            return queries_preview, objective_preview
+
+        lines.append("#### Current Turn Tool Results — all artifacts (oldest→newest)")
+        if not items:
+            lines.append("(none)")
+            lines.append("")
+        else:
+            for idx, (art_id, art) in enumerate(items, 1):
+                tid = art.get("tool_id", "?")
+                error = art.get("error")
+                status = "FAILED" if error else "success"
+                summ = (art.get("summary") or "").replace("\n", " ")
+
+                if error:
+                    lines.append(
+                        f"- {idx:02d}. {art_id} ← {tid}: {status} - "
+                        f"{error.get('code')}: {error.get('message', '')[:150]}"
+                    )
+                else:
+                    lines.append(
+                        f"- {idx:02d}. {art_id} ← {tid}: {status} — {summ}"
+                    )
+
+                if tools_insights.is_search_tool(tid):
+                    q_prev, obj_prev = _search_context_from_inputs(art)
+                    if q_prev or obj_prev:
+                        lines.append("    search_context:")
+                        if q_prev:
+                            lines.append(f"      queries  : {q_prev}")
+                        if obj_prev:
+                            lines.append(f"      objective: \"{obj_prev}\"")
+
+        lines.append("")
+
+        latest_art_id: str | None = items[-1][0] if items else None
+        latest_art: Dict[str, Any] | None = items[-1][1] if items else None
+
+        if latest_art and not latest_art.get("error"):
+            call_meta = (context.tool_call_index or {}).get(latest_art_id, {})
+            latest_sig = call_meta.get("signature")
+
+            if latest_sig:
+                lines.append("##### Latest Tool Call — Invocation")
+                lines.append(latest_sig)
+                lines.append("")
+
+            summ = (latest_art.get("summary") or "").strip()
+            if summ:
+                lines.append("##### Latest Tool Result — Summary")
+                lines.append(summ)
+                lines.append("")
+
+    # ---------- Budget snapshot ----------
+    try:
+        if hasattr(context, "budget_state") and context.budget_state is not None:
+            lines.append("")
+            lines.append("## Budget Snapshot")
+            lines.append("")
+            lines.append(format_budget_for_llm(context.budget_state))
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+
+
 # ----------------- moved from react.context.py
 def build_react_playbook(
         *,
@@ -31,7 +363,6 @@ def build_react_playbook(
         output_contract: Dict[str, Any],
         max_prior_turns: int = 5,
         max_sources_per_turn: int = 20,
-        current_user_markdown: Optional[str] = None,
         turn_view_class: Type[BaseTurnView] = BaseTurnView,
 ) -> str:
     """
@@ -62,7 +393,8 @@ def build_react_playbook(
     lines: list[str] = []
     lines.append("# Program History / Operational View")
     lines.append("")
-    lines.append("Previews are truncated. Use ctx_tools.fetch_turn_artifacts([turn_ids]) for full content.")
+    # lines.append("Previews are truncated. Use ctx_tools.fetch_turn_artifacts([turn_ids]) for full content.")
+    lines.append("User message, assistant final answer can be truncated. Solver artifacts (slots) content is not shown, instead content summary is shown (if available). If available, only content summary is shown. Use ctx_tools.fetch_turn_artifacts([turn_ids]) to explore full content.")
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -111,7 +443,7 @@ def build_react_playbook(
             # - Assistant response (if direct answer)
             turn_presentation = tv.to_solver_presentation(
                 user_prompt_limit=600,
-                program_log_limit=400,
+                program_log_limit=5000,
                 include_base_summary=True,  # ← Includes user prompt!
                 include_program_log=True,
                 include_deliverable_meta=True,
@@ -122,10 +454,8 @@ def build_react_playbook(
                 lines.append(turn_presentation.strip())
                 lines.append("")
 
-            # ✅ Sources (NOT part of solver, formatted separately)
-            prior_turn_data = context.prior_turns.get(turn_id, {})
-            sources = (prior_turn_data.get("sources") or [])[:max_sources_per_turn]
-
+            # Sources (NOT part of solver, formatted separately)
+            sources = ((meta.get("web_links_citations") or {}).get("items") or [])
             if sources:
                 src_lines = []
                 for i, src in enumerate(sources, 1):
@@ -156,12 +486,24 @@ def build_react_playbook(
 
     # ---------- Current Turn (live) ----------
     lines.append("## Current Turn (live — oldest → newest)")
-
+    try:
+        tv = turn_view_class.from_turn_log_dict(context.scratchpad.turn_view)
+    except Exception as ex:
+        print(f"Failed to build TurnView for current_turn: {ex}")
+        print(traceback.format_exc())
+    current_turn_presentation = tv.to_solver_presentation(is_current_turn=True,
+                                                          user_prompt_limit=1000,
+                                                          program_log_limit=0,
+                                                          include_base_summary=True,  # ← Includes user prompt!
+                                                          include_program_log=False,
+                                                          include_deliverable_meta=False,
+                                                          include_assistant_response=False,)
+    lines.append(current_turn_presentation)
     # 1) What we knew at start: user request for this turn (from scratchpad via param)
-    cur_user_msg = (current_user_markdown or "").strip()
-    lines.append("**User Request (markdown):**")
-    lines.append(_short_with_count(cur_user_msg, 600) if cur_user_msg else "(not recorded)")
-    lines.append("")
+    # cur_user_msg = (current_user_markdown or "").strip()
+    # lines.append("**User Request (markdown):**")
+    # lines.append(_short_with_count(cur_user_msg, 600) if cur_user_msg else "(not recorded)")
+    # lines.append("")
 
     # 2) Events timeline (short timestamps)
     lines.append("### Events (oldest → newest)")
@@ -1489,391 +1831,3 @@ async def materialize_prior_pairs(
     pairs.sort(key=lambda p: (p.get("user") or {}).get("ts") or (p.get("assistant") or {}).get("ts") or "")
     citations_merged = ctx_retrieval_module._dedup_citations(citations_merged)
     return pairs, citations_merged
-
-# ----------------- moved from custom solution chat/sdk/runtime/turn_view.py
-# CANDIDATE HOW WE MIGHT WANT TO PRESENT PAST TURNS FOR CODEGEN
-def build_program_playbook_codegen_new(history: List[Dict[str, Any]], *,
-                                       turn_view_class: Type[BaseTurnView] = BaseTurnView,
-                                       max_turns: int = 5) -> str:
-    """
-    Build a compact, scannable playbook showing what artifacts exist across recent turns.
-
-    Now implemented on top of TurnView + to_compressed_search_view:
-
-      - history[i] is expected to be a "turn dict" that Type[TurnView].from_turn_dict(...) understands:
-        {
-          "turn_id": "...",
-          "payload": {
-            "user_id": "...",
-            "conversation_id": "...",
-            "ts": "...",
-            "payload": {
-              "turn_log": {...},
-              "user": {"prompt": "..."},
-              "assistant": {"completion": "..."},
-              "gate": {...},
-              "solver_result": {...},
-              "turn_summary": {...}
-            }
-          }
-        }
-
-      - For each turn we:
-        - Construct a TurnView
-        - Compute a simple status (success / failed / answered_by_assistant / no_activity)
-        - Render TurnView.to_compressed_search_view(...) as the body
-
-    The global format:
-
-      # Program History Playbook
-
-      ## Turn <turn_id> — <timestamp> [CURRENT|HISTORICAL]
-      TURN_ID: <turn_id>
-      Status: <status>
-      Fetch with: ctx_tools.fetch_turn_artifacts(["<turn_id>"])
-
-      <output of to_compressed_search_view(...)>
-
-    """
-
-    if not history:
-        return "(no program history)"
-
-    def _compute_status(tv: BaseTurnView) -> str:
-        """Rough status, similar to the old implementation but based on SolveResult."""
-        solver = tv.solver
-        assistant_text = (tv.assistant_raw or "").strip()
-
-        # No solver at all → either assistant answered or truly no activity
-        if not solver:
-            if assistant_text:
-                return "answered_by_assistant"
-            return "no_activity"
-
-        # We have a solver_result
-        deliverables = {}
-        try:
-            if hasattr(solver, "deliverables_map"):
-                deliverables = solver.deliverables_map() or {}
-            elif isinstance(getattr(solver, "execution", None), dict):
-                # deliverables = (solver.execution.get("deliverables") or {})
-                deliverables = solver.execution.deliverables or {}
-        except Exception:
-            deliverables = {}
-
-        # Ignore internal project_log / canvas
-        non_aux = {
-            name: spec
-            for name, spec in (deliverables or {}).items()
-            if name not in {"project_log", "project_canvas"}
-        }
-
-        has_deliverables = bool(non_aux)
-
-        # Failure signal (SolveResult.failure if present)
-        failure_obj = getattr(solver, "failure", None)
-        has_failure = bool(failure_obj)
-
-        if has_deliverables:
-            return "success"
-        if has_failure:
-            return "failed: solver_error"
-
-        # Fallback when solver existed but produced no visible deliverables/failure
-        if assistant_text:
-            return "answered_by_assistant"
-        return "no_activity"
-
-    sections: List[str] = []
-
-    import traceback
-    for idx, tv in enumerate(history[:max_turns]):
-        is_current = (idx == 0)
-        turn_label = "CURRENT TURN" if is_current else "HISTORICAL"
-
-        try:
-            rec = next(iter(tv.values()), None)
-            tv = turn_view_class.from_turn_log_dict(rec)
-        except Exception as ex:
-            print(f"Failed to build TurnView for turn idx {idx}: {ex}")
-            print(traceback.format_exc())
-            continue
-
-        turn_id = tv.turn_id or "(missing_turn_id)"
-
-        # Timestamp: try to normalize to "YYYY-MM-DD HH:MM"
-        ts_full = (tv.timestamp or "").strip()
-        if ts_full:
-            ts = ts_full[:16].replace("T", " ")
-        else:
-            ts = "(no date)"
-
-        status = _compute_status(tv)
-
-        # Compressed per-turn view from TurnView
-        compressed_view = tv.to_solver_presentation(
-            user_prompt_limit=400,
-            # attachment_text_limit=300,
-            program_log_limit=200,
-        )
-
-        header_lines = [
-            f"## Turn {turn_id} — {ts} [{turn_label}]",
-            f"TURN_ID: {turn_id}",
-            f"Status: {status}",
-            f"Fetch with: ctx_tools.fetch_turn_artifacts([\"{turn_id}\"])",
-            "",
-        ]
-
-        sections.append("\n".join(header_lines + [compressed_view, ""]))
-
-    header = [
-        "# Program History Playbook",
-        "",
-        f"Showing {len(sections)} turn(s), newest first.",
-        "Previews are truncated. Use fetch_turn_artifacts([turn_ids]) for full content.",
-        "",
-        "---",
-        "",
-    ]
-
-    return "\n".join(header + sections)
-# HOW WE REPRESENTED PAST TURNS FOR CODEGEN
-def build_program_playbook_codegen(history: list[dict], *, max_turns: int = 5) -> str:
-    """
-    Build a compact, scannable playbook showing what artifacts exist across recent turns.
-
-    Purpose: Help LLM understand:
-    - What artifacts exist in history
-    - Which turn_ids to fetch for specific content
-    - How large artifacts are (to decide on fetch strategy)
-
-    Format:
-      Turn <turn_id> — <timestamp> [CURRENT] / [HISTORICAL]
-      User Request: <preview>
-      Program Log: <preview with size indicator>
-      Deliverables:
-        • slot_name (type: format/mime) - Size: N chars
-          Description: ...
-          Preview: [first 100 chars...] (...N more chars)
-          ⚠ Use fetch_turn_artifacts(["turn_id"]) to retrieve full content
-      Sources: (numbered list with titles and abbreviated links)
-    Ordering per turn:
-      1) User Request
-      2) Program Log
-      3) Deliverables (if solver ran & succeeded) OR Solver Failure (if failed)
-      4) Assistant Response (full unless solver succeeded, in which case truncated)
-
-    Other guarantees:
-      - TURN_ID and a copy-pasteable fetch hint
-      - Status: success | failed: solver_error | answered_by_assistant | no_activity
-      - No "No deliverables" noise when solver didn't run
-    """
-
-    if not history:
-        return "(no program history)"
-
-    def _size(s: str | None) -> int:
-        return len(s or "")
-
-    sections: list[str] = []
-
-    for idx, rec in enumerate(history[:max_turns]):
-        try:
-            exec_id, meta = next(iter(rec.items()))
-        except Exception:
-            continue
-
-        is_current = (idx == 0)
-        turn_label = "CURRENT TURN" if is_current else "HISTORICAL"
-
-        # Timestamp → "YYYY-MM-DD HH:MM"
-        ts_full = (meta.get("ts") or "").strip()
-        ts = ts_full[:16].replace("T", " ") if len(ts_full) >= 16 else (ts_full[:10] or "(no date)")
-
-        # Core materials
-        user_text = ((meta.get("user") or {}).get("prompt") or "").strip()
-        assistant_text = (meta.get("assistant") or "").strip()
-        solver_failure_md = (meta.get("solver_failure") or "").strip()
-        def turn_id_fn():
-            if turn_label == "CURRENT TURN":
-                return "current_turn"
-            else:
-                return meta.get("turn_id") or "(missing_turn_id)"
-        turn_id = turn_id_fn()
-
-        # Program log
-        pl = meta.get("project_log") or {}
-        pl_text = (pl.get("text") or pl.get("value") or "").strip()
-        pl_size = _size(pl_text)
-
-        # Deliverables & sources
-        deliverables = meta.get("deliverables") or []
-        sources = ((meta.get("web_links_citations") or {}).get("items")) or []
-
-        # Did solver run?
-        solver_ran = bool(deliverables or solver_failure_md or pl_text)
-
-        # Status
-        if deliverables:
-            status = "success"
-        elif solver_failure_md:
-            status = "failed: solver_error"
-        elif assistant_text and not solver_ran:
-            status = "answered_by_assistant"
-        else:
-            status = "no_activity"
-
-        # ----- Header -----
-        header_lines = [
-            f"## Turn {turn_id} — {ts} [{turn_label}]",
-            f"TURN_ID: {turn_id}",
-            f"Status: {status}",
-            f"Fetch with: ctx_tools.fetch_turn_artifacts([\"{turn_id}\"])",
-            "",
-        ]
-
-        body_lines: list[str] = []
-
-        # 1) User Request
-        body_lines += [
-            "**User Request (markdown):**",
-            _short_with_count(user_text, 600) if user_text else "(no user message)",
-            "",
-        ]
-
-        # 2) Program Log
-        if pl_text:
-            body_lines += [
-                f"**Program Log:** ({pl_size:,} chars)",
-                #_short_with_count(pl_text, 400),
-                _short_with_count(pl_text, 6000),
-                "",
-            ]
-        # 3) Deliverables or Failure — only if solver ran
-        if solver_ran:
-            if deliverables:
-                body_lines.append("**Deliverables:**")
-                for d in deliverables:
-                    slot_name = d.get("slot") or "(unnamed)"
-                    if slot_name in {"project_log", "project_canvas"}:
-                        continue
-                    artifact = d.get("value") or {}
-                    slot_type = artifact.get("type") or "inline"
-                    desc = d.get("description") or "(no description)"
-                    is_draft = bool(artifact.get("draft"))
-                    gap = artifact.get("gaps")
-                    has_gap = bool(gap)
-
-                    # Prefer file/text surrogate if present; else inline value
-                    text = artifact.get("text") or artifact.get("value") or ""
-                    if isinstance(text, dict):
-                        text = str(text)
-                    text_size = _size(text)
-                    text_preview = _short_with_count(text, 150) if text else "[empty]"
-
-                    # Draft marker in slot name
-                    draft_marker = " [DRAFT]" if is_draft else ""
-
-                    if slot_type == "file":
-                        mime = artifact.get("mime") or "unknown"
-                        filename = artifact.get("filename") or artifact.get("path") or "(no filename)"
-                        body_lines += [
-                            f"  • {slot_name}{draft_marker} (file: {mime})",
-                            f"    Filename: {filename}",
-                            f"    Size: {text_size:,} chars",
-                            f"    Description: {desc}",
-                        ]
-                        # Draft status explanation
-                        if is_draft:
-                            body_lines.append("    Status: Incomplete — file rendering failed but text available")
-                        if has_gap:
-                            body_lines.append(f"    Gaps: {gap}")
-
-                    else:
-                        fmt = artifact.get("format") or "text"
-                        body_lines += [
-                            f"  • {slot_name}{draft_marker} (inline: {fmt})",
-                            f"    Size: {text_size:,} chars",
-                            f"    Description: {desc}",
-                        ]
-                        # Draft status explanation
-                        if is_draft:
-                            body_lines.append("    Status: Incomplete — partial content available")
-                        if has_gap:
-                            body_lines.append(f"    Gaps: {gap}")
-                    if text:
-                        body_lines.append(f"    Preview: {text_preview}")
-                    if text_size > 300:
-                        body_lines.append(f"    ⚠ Full content via fetch_turn_artifacts([\"{turn_id}\"])")
-                body_lines.append("")
-            elif solver_failure_md:
-                body_lines += [
-                    "**Solver Failure:**",
-                    _short_with_count(solver_failure_md, 800),
-                    "",
-                ]
-        else:
-            # Explicit signal when no solver ran
-            if status == "answered_by_assistant":
-                body_lines += [
-                    "**No Deliverables** (assistant answered directly; solver did not run)",
-                    "",
-                ]
-            elif status == "no_activity":
-                body_lines += [
-                    "**No Deliverables** (no solver activity on this turn)",
-                    "",
-                ]
-        # else: solver_ran but no deliverables or failure text — extremely rare; omit noise
-
-        # 4) Assistant Response
-        if assistant_text:
-            body_lines.append("**Assistant Response (shown to user, markdown):**")
-            if status == "success":
-                # Only truncate when solver succeeded
-                body_lines.append(_short_with_count(assistant_text, 600))
-            else:
-                # Failed / answered_by_assistant / no_activity → show full
-                body_lines.append(assistant_text)
-            body_lines.append("")
-
-        # Sources (compact, end of block)
-        if sources:
-            from urllib.parse import urlparse
-            src_lines = []
-            for i, src in enumerate(sources[:20], 1):
-                if not isinstance(src, dict):
-                    continue
-                title = (src.get("title") or "").strip()
-                url = (src.get("url") or "").strip()
-                domain = ""
-                if url:
-                    try:
-                        domain = urlparse(url).netloc or ""
-                    except Exception:
-                        domain = url[:30]
-                if title and domain:
-                    src_lines.append(f"  {i}. {_short_with_count(title, 80)} ({domain})")
-                elif title:
-                    src_lines.append(f"  {i}. {_short_with_count(title, 80)}")
-                elif url:
-                    src_lines.append(f"  {i}. {_short_with_count(url, 100)}")
-            if src_lines:
-                body_lines.append(f"**Sources:** ({len(sources)} total)")
-                body_lines += src_lines
-                body_lines.append("")
-
-        sections.append("\n".join(header_lines + body_lines))
-
-    header = [
-        "# Program History Playbook",
-        "",
-        f"Showing {len(sections)} turn(s), newest first.",
-        "Previews are truncated. Use fetch_turn_artifacts([turn_ids]) for full content.",
-        "",
-        "---",
-        "",
-    ]
-
-    return "\n".join(header + sections)

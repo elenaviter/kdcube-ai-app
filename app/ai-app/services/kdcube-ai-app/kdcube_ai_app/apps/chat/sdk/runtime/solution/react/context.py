@@ -11,6 +11,7 @@ import pathlib
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Tuple
 
+from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad
 from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     normalize_sources_any, dedupe_sources_by_url, adapt_source_for_llm
 )
@@ -207,6 +208,8 @@ class ReactContext:
     user_text: Optional[str] = None
     started_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     budget_state: BudgetState = field(default_factory=BudgetState)
+
+    scratchpad: TurnScratchpad = None
 
     # ---------- Persistence ----------
     def bind_storage(self, outdir: pathlib.Path) -> "ReactContext":

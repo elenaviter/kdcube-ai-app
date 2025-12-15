@@ -333,8 +333,8 @@ class ContextTools:
                 "    'ts': '2025-10-02',\n"
                 "    'status': 'success' | 'failed: solver_error' | 'answered_by_assistant' | 'no_activity'\n"
                 "    'program_log': {text: str, format: str},\n"
-                "    'user_msg':str,           # user message on the turn. Always in markdown. \n"
-                "    'assistant_msg':str,      # assistant message on the turn. Always in markdown. \n"
+                "    'user':str,           # user message on the turn. Always in markdown. \n"
+                "    'assistant':str,      # assistant message on the turn. Always in markdown. \n"
                 "    'solver_failure':str | null,  # non-empty if the solver experienced failure on this turn. \n"
                 "    'deliverables': {\n"
                 "      '<slot_name>': {\n"
@@ -355,9 +355,9 @@ class ContextTools:
                 "1. Call this function with specific turn_ids. 'current_turn' turn id is for current turn.\n"
                 "3. Access solver artifacts (deliverables) via result[turn_id]['deliverables'][slot_name]['text']\n"
                 "4. For structured content (code/JSON/etc), parse the 'text' field\n"
-                "5. For editing bases when solver failed for the relevant turn (or didn’t run): result[tid]['assistant_msg'] is authoritative (what the user saw).\n"                
-                "6. If the user's message needed, get it via result[turn_id]['user_msg'].\n"
-                "7. If assistant message needed, get it via result[turn_id]['assistant_msg'].\n"
+                "5. For editing bases when solver failed for the relevant turn (or didn’t run): result[tid]['assistant'] is authoritative (what the user saw).\n"                
+                "6. If the user's message needed, get it via result[turn_id]['user'].\n"
+                "7. If assistant message needed, get it via result[turn_id]['assistant'].\n"
                 "8. With file deliverables, treat all text fields as authoritative text representations; do not re-crawl files directly unless you need binary content (rare).\n"
                 
                 "\n"
@@ -402,7 +402,7 @@ class ContextTools:
                 continue
 
         # Build result
-        from kdcube_ai_app.apps.chat.sdk.runtime.solution.context_browser import reconcile_citations_for_context
+        from kdcube_ai_app.apps.chat.sdk.runtime.solution.context.browser import reconcile_citations_for_context
 
         mini_history = []
         for tid in ids[:10]:
@@ -495,12 +495,12 @@ class ContextTools:
             result[tid] = {
                 "ts": ts,
                 "status": status,
-                "turn_log": (meta.get("turn_log") or "")[:1000],
+                "turn_log": turn_log,
                 "solver_failure": solver_failure,
                 "program_log": {"text": pl_text, "format": pl_fmt} if pl_text else None,
                 "deliverables": deliverables_dict,
-                "user_msg": user_msg or "",
-                "assistant_msg": assistant or ""
+                "user": user_msg or "",
+                "assistant": assistant or ""
                 # "sources": turn_sources
             }
 

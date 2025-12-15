@@ -25,6 +25,6 @@ if __name__ == "__main__":
     # os.environ["POSTGRES_PORT"] = "5435"
     project = os.environ.get("DEFAULT_PROJECT_NAME", None)
     tenant = os.environ.get("DEFAULT_TENANT", None)
-    step_provision(tenant, project, "knowledge_base")
     step_provision(tenant, project, "chatbot")
-    # step_deprovision(tenant, project, "chatbot")
+    step_provision(tenant, project, "knowledge_base")
+    # step_deprovision(tenant, project, "knowledge_base")

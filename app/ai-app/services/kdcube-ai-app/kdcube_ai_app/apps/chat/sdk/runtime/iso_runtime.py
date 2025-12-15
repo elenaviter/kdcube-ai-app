@@ -1360,6 +1360,11 @@ async def run_py_code(
         "HOME",
         # custom socket path, so executor can reach supervisor:
         "SUPERVISOR_SOCKET_PATH",
+        # Logging configuration (ADDED)
+        "LOG_DIR",
+        "LOG_LEVEL",
+        "LOG_MAX_MB",
+        "LOG_BACKUP_COUNT",
     }
     for k in SAFE_KEYS:
         v = base_env.get(k)
@@ -1393,6 +1398,7 @@ async def run_py_code(
     child_env["OUTPUT_DIR"] = str(output_dir)
     child_env["WORKDIR"] = str(workdir)
     child_env["AGENT_IO_CONTEXT"] = "limited"
+    child_env["LOG_FILE_PREFIX"] = "executor"
     # RUNTIME_TOOL_MODULES:
     # - Start from env (if any), then augment with dynamic alias modules from TOOL_ALIAS_MAP
     tool_module_names: list[str] = []

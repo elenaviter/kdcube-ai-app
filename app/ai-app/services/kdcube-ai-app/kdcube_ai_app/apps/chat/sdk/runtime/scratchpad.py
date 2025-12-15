@@ -222,6 +222,10 @@ class TurnScratchpad:
     def set_phase(self, name: str, *, agent: str | None = None, **meta):
         self.current_phase = TurnPhase(name=name, agent=agent, meta=meta)
 
+    @property
+    def turn_view(self):
+        return None
+
     @contextmanager
     def phase(self, name: str, *, agent: str | None = None, **meta):
         prev = self.current_phase
@@ -278,6 +282,7 @@ class TurnScratchpad:
             tl["solver_result"] = build_full_solver_payload(self.solver_result)
         if self.turn_summary:
             tl["turn_summary"] = _to_jsonable(self.turn_summary)
+        tl["turn_log"] = self.tlog.to_payload()
         return tl
 
 T = TypeVar('T', bound='BaseTurnView')
@@ -317,7 +322,11 @@ class BaseTurnView(ABC):
     def to_solver_presentation(
             self,
             *,
+            is_current_turn: bool = False,
             user_prompt_limit: Optional[int] = 10_000,
+            assistant_answer_limit: Optional[int] = 10_000,
+            user_prompt_or_inventorization_summary: str = "inv", # inv|user
+            assistant_completion_or_inventorization_summary: str = "inv", # inv|assistant
             program_log_limit: Optional[int] = None,
             include_base_summary: bool = True,
             include_program_log: bool = True,

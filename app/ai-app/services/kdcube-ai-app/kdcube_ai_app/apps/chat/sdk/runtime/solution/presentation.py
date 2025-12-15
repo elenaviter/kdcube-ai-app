@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from typing import Literal, Optional, Dict, Any, Set, List, Union, Tuple
 from pydantic import BaseModel, Field
 
+from kdcube_ai_app.apps.chat.sdk.util import _to_jsonable
+
 SERVICE_LOG_SLOT = "project_log"   # a.k.a. "turn_log" inside Solver module (normalized to project_log)
 
 
@@ -580,6 +582,7 @@ def _format_deliverables_flat_with_icons(
 
         # Extract metadata
         c_spec = (contract or {}).get(slot) or {}
+        c_spec = _to_jsonable(c_spec)
         desc = (
                 (spec.get("description") if isinstance(spec, dict) else None)
                 or c_spec.get("description")

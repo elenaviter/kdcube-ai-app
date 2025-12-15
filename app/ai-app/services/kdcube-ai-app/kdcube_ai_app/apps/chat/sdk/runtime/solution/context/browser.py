@@ -10,7 +10,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type
 
-from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import BaseTurnView
+from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import BaseTurnView, TurnScratchpad
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.context.retrieval import reconcile_citations_for_context
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.context.presentation as ctx_representation_module
@@ -27,8 +27,6 @@ class ContextBundle:
     program_history_reconciled: List[Dict[str, Any]]
     canonical_sources: List[Dict[str, Any]]
     last_mat_working_canvas: str
-    program_playbook: Dict[str, Any]
-    program_playbook_2: Dict[str, Any]
 
 
 class ContextBrowser:
@@ -56,7 +54,6 @@ class ContextBrowser:
             scope: str = "track",
             days: int = 365,
             max_sources: int = 60,
-            playbook_turns: int = 5,
     ) -> ContextBundle:
         """
         Fetch history → reconcile citations → compute playbook + last working canvas.
@@ -97,43 +94,18 @@ class ContextBrowser:
         except Exception as e:
             self.log.log(f"[context_browser] reconcile error: {e}", level="ERROR")
 
-        # --- 4) playbook
-        try:
-            # how we did this for codegen
-            program_playbook = ctx_representation_module.build_program_playbook_codegen(
-                program_history_reconciled, max_turns=playbook_turns
-            )
-            # If something is malformed, just skip that record
-            # how we started to do this with new approach based on reconstructed turn log of past turn
-            program_playbook_2 = ctx_representation_module.build_program_playbook_codegen_new(program_history_reconciled,
-                                                                                              max_turns=playbook_turns,
-                                                                                              turn_view_class=self.turn_view_class)
-
-            # TODO: how we did it for react
-
-            # how we would do this for answer generator if this would be the same turn where execution happened
-
-
-
-        except Exception as e:
-            self.log.log(f"[context_browser] playbook error: {e}", level="ERROR")
-            program_playbook = {}
-            program_playbook_2 = {}
-
         return ContextBundle(
             program_history=program_history,
             program_history_reconciled=program_history_reconciled,
             canonical_sources=canonical_sources,
             last_mat_working_canvas=last_mat_working_canvas,
-            program_playbook=program_playbook,
-            program_playbook_2=program_playbook_2,
         )
 
     def make_react_context(
             self,
             *,
             bundle: ContextBundle,
-            scratchpad,
+            scratchpad: TurnScratchpad,
             user_id: Optional[str],
             conversation_id: Optional[str],
             turn_id: Optional[str],
@@ -146,7 +118,8 @@ class ContextBrowser:
           - SOURCE_ID_CV initialization
           - turn meta (ids, user text, start ts)
         """
-        ctx = ReactContext(history_turns=copy.deepcopy(bundle.program_history_reconciled))
+        ctx = ReactContext(history_turns=copy.deepcopy(bundle.program_history_reconciled),
+                           scratchpad=scratchpad)
 
         # Build from reconciled history
         for rec_turn in (bundle.program_history_reconciled or []):

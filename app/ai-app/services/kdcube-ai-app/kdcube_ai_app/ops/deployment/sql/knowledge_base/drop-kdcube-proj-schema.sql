@@ -1,5 +1,9 @@
 -- =========================================
--- drop-knowledge-base.sql (robust)
+-- drop-knowledge-base.sql
+-- =========================================
+-- Removes all schema-specific objects while preserving:
+--   - PostgreSQL extensions (shared across database)
+--   - The schema itself (commented out for safety)
 -- =========================================
 
 -- 0) Drop ALL views in schema (handles dependencies automatically)

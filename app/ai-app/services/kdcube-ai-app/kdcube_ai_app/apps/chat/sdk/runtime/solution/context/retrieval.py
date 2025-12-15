@@ -329,8 +329,8 @@ async def build_program_history_from_turn_ids(self, *,
         cite_items =  list((citables or {}).get("items") or [])
         round_reason = (dels or {}).get("round_reasoning") or ""
 
-        # Prefer assistant ts, else user ts
-        ts_val = assistant_env.get("ts") or user_env.get("ts") or ""
+        # Prefer user ts, else assistant ts
+        ts_val = user_env.get("ts") or assistant_env.get("ts")  or ""
 
         # codegen_run_id priority: deliverables.payload -> tags -> presentation markdown
         # REMOVE AMBIGUOUS SIGNAL "run id vs turn id"

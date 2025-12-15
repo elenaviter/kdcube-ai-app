@@ -17,7 +17,7 @@ from dotenv import load_dotenv, find_dotenv
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 # Load environment
-load_dotenv(find_dotenv())
+# load_dotenv(find_dotenv())
 
 # Logging
 logger = logging.getLogger("ServiceCommunicator")

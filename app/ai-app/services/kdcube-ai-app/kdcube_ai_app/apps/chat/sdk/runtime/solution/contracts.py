@@ -72,6 +72,7 @@ class SolutionPlan:
     reasoning: str
     clarification_questions: Optional[List[str]] = None
     instructions_for_downstream: Optional[str] = None
+    instructions_for_downstream_compact: Optional[str] = None
     error: Optional[str] = None
     failure_presentation: Optional[dict] = None
     tool_router_notes: Optional[str] = None
