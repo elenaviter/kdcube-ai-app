@@ -340,6 +340,8 @@ class ContextTools:
                 "      '<slot_name>': {\n"
                 "        'type': 'file' | 'inline',\n"
                 "        'text': str,              # ALWAYS present; authoritative text representation\n"
+                "        'summary'?: str,          # Optional inventorization (structural and semantic) summary of the slot contents\n"
+                "        'gaps'?: str,             # Optional gaps (structural and semantic) in the artifact contents\n"
                 "        'description': str,\n"
                 "        'format': str,            # for inline\n"
                 "        'mime': str,              # for file\n"
@@ -377,12 +379,18 @@ class ContextTools:
         "JSON object mapping turn_id → {ts, program_log, deliverables}",
     ]:
         try:
-            ids = json.loads(turn_ids)
+            # Handle both list and JSON string
+            if isinstance(turn_ids, list):
+                ids = turn_ids
+            else:
+                ids = json.loads(turn_ids)
+
+            # Ensure it's a list
             if not isinstance(ids, list):
                 ids = [ids]
-        except:
-            log.error(f"Failed to parse turn_ids: {turn_ids}")
-            return json.dumps({"error": "Invalid turn_ids format; expected JSON array"})
+        except Exception as e:
+            log.error(f"Failed to parse turn_ids: {turn_ids}, error: {e}")
+            return json.dumps({"error": "Invalid turn_ids format; expected JSON array or list"})
 
         ctx = _read_context()
         hist: List[Dict[str, Any]] = ctx.get("program_history") or []
@@ -469,6 +477,12 @@ class ContextTools:
                     slot_data["filename"] = artifact.get("filename") or ""
                 else:
                     slot_data["format"] = artifact.get("format") or "text"
+                summary = artifact.get("summary")
+                gaps = artifact.get("gaps")
+                if summary:
+                    slot_data["summary"] = summary
+                if gaps:
+                    slot_data["gaps"] = gaps
 
                 # ===== Materialize sources_used =====
                 # Extract SIDs used in this slot's text

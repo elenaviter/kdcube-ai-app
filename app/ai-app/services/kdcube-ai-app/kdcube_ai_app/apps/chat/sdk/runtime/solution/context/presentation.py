@@ -167,7 +167,38 @@ def build_solver_playbook(*,
     # lines.append(_short_with_count(cur_user_msg, 600) if cur_user_msg else "(not recorded)")
     # lines.append("")
 
-    # 2) Events timeline (short timestamps)
+    lines.append("[CONTRACT SLOTS (to fill)]")
+    lines.append(json.dumps(_to_jsonable(output_contract or {}), ensure_ascii=False, indent=2),)
+
+    # 2) Live snapshot (current contract/slots/tool results)
+    declared = sorted(list((output_contract or {}).keys()))
+    filled = sorted(list((context.current_slots or {}).keys()))
+    pending = [s for s in declared if s not in filled]
+
+    lines.append("[CURRENT SNAPSHOT]")
+    lines.append("")
+    lines.append("# Contract Status")
+    lines.append(f"- Declared slots: {len(declared)}")
+    lines.append(f"- Filled slots  : {len(filled)}  ({', '.join(filled) if filled else '-'})")
+    lines.append(f"- Pending slots : {len(pending)}  ({', '.join(pending) if pending else '-'})")
+    lines.append("")
+
+    if context.current_slots:
+        from kdcube_ai_app.apps.chat.sdk.runtime.solution.presentation import format_live_slots
+
+        slots_md = format_live_slots(
+            slots=context.current_slots,
+            contract=output_contract,
+            grouping="flat",  # or "status" if you want grouping
+            slot_attrs={"description", "gaps"},
+        )
+
+        lines.append("# Current Slots")
+        lines.append("")
+        lines.append(slots_md)
+        lines.append("")
+
+    # 3) Events timeline (short timestamps)
     lines.append("[EVENTS (oldest → newest)]")
     if not context.events:
         lines.append("(no events yet)")
@@ -218,37 +249,6 @@ def build_solver_playbook(*,
             lines.append(f"- {ts} — {kind}: {json.dumps(payload, ensure_ascii=False)[:400]}")
 
     lines.append("")
-
-    # 3) Live snapshot (current contract/slots/tool results)
-    declared = sorted(list((output_contract or {}).keys()))
-    filled = sorted(list((context.current_slots or {}).keys()))
-    pending = [s for s in declared if s not in filled]
-
-    lines.append("[CONTRACT SLOTS (to fill)]")
-    lines.append(json.dumps(_to_jsonable(output_contract or {}), ensure_ascii=False, indent=2),)
-
-    lines.append("[CURRENT SNAPSHOT]")
-    lines.append("")
-    lines.append("# Contract Status")
-    lines.append(f"- Declared slots: {len(declared)}")
-    lines.append(f"- Filled slots  : {len(filled)}  ({', '.join(filled) if filled else '-'})")
-    lines.append(f"- Pending slots : {len(pending)}  ({', '.join(pending) if pending else '-'})")
-    lines.append("")
-
-    if context.current_slots:
-        from kdcube_ai_app.apps.chat.sdk.runtime.solution.presentation import format_live_slots
-
-        slots_md = format_live_slots(
-            slots=context.current_slots,
-            contract=output_contract,
-            grouping="flat",  # or "status" if you want grouping
-            slot_attrs={"description", "gaps"},
-        )
-
-        lines.append("# Current Slots")
-        lines.append("")
-        lines.append(slots_md)
-        lines.append("")
 
     if context.current_tool_results:
         items = sorted(
@@ -690,38 +690,38 @@ def build_react_playbook(
 
 # ----------------- moved from sdk.runtime.solution.project_retrieval.py
 
-def _compose_last_materialized_canvas_block(history: list[dict]) -> str:
-    """
-    Return a compact, self-sufficient block that solvability can read.
-    Prefers materialized canvas; falls back to raw canvas, then program presentation.
-    """
-    if not history:
-        return "(no prior project work)"
-
-    try:
-        run_id, meta = next(iter(history[0].items()))
-    except Exception:
-        return "(no prior project work)"
-
-    # 1) Prefer materialized canvas
-    mat = (meta.get("project_log_materialized") or {})
-    txt = (mat.get("text") or "").strip()
-    if txt:
-        return f"# Project Log (materialized)\n\n{txt}"
-
-    # 2) Fallback to non-materialized canvas
-    raw = (meta.get("project_log") or {})
-    txt = (raw.get("text") or raw.get("value") or "").strip()
-    if txt:
-        return f"# Project Log\n\n{txt}"
-
-    # 3) Fallback to last program presentation
-    prez = (meta.get("program_presentation") or "").strip()
-    if prez:
-        return f"# Program Presentation (fallback)\n\n{prez}"
-
-    # 4) Nothing available
-    return "(no prior project work)"
+# def _compose_last_materialized_canvas_block(history: list[dict]) -> str:
+#     """
+#     Return a compact, self-sufficient block that coordinator can read.
+#     Prefers materialized canvas; falls back to raw canvas, then program presentation.
+#     """
+#     if not history:
+#         return "(no prior project work)"
+#
+#     try:
+#         run_id, meta = next(iter(history[0].items()))
+#     except Exception:
+#         return "(no prior project work)"
+#
+#     # 1) Prefer materialized canvas
+#     mat = (meta.get("project_log_materialized") or {})
+#     txt = (mat.get("text") or "").strip()
+#     if txt:
+#         return f"# Project Log (materialized)\n\n{txt}"
+#
+#     # 2) Fallback to non-materialized canvas
+#     raw = (meta.get("project_log") or {})
+#     txt = (raw.get("text") or raw.get("value") or "").strip()
+#     if txt:
+#         return f"# Project Log\n\n{txt}"
+#
+#     # 3) Fallback to last program presentation
+#     prez = (meta.get("program_presentation") or "").strip()
+#     if prez:
+#         return f"# Program Presentation (fallback)\n\n{prez}"
+#
+#     # 4) Nothing available
+#     return "(no prior project work)"
 
 
 def _short_with_count(text: str, limit: int) -> str:
@@ -1421,7 +1421,9 @@ async def retrospective_context_view(
                 tlog=turn_log_data,
                 payload=item,  # Pass the FULL item (with double-wrapped structure)
                 user_text=user_data.get("prompt"),
+                user_inv=user_data.get("inv"),
                 assistant_text=asst_data.get("completion"),
+                assistant_inv=asst_data.get("inv"),
             )
 
             # Generate compressed view with one-liner and without turn info header
@@ -1430,6 +1432,7 @@ async def retrospective_context_view(
                 user_prompt_limit=600,
                 include_turn_summary=True,
                 include_context_used=True,
+                deliverables_detalization="summary"
             )
 
             # Add timestamp header

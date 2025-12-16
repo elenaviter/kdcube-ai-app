@@ -98,8 +98,10 @@ class TurnScratchpad:
 
         self.timings = []
 
+        if text is None:
+            text = ""
         # User section
-        self.user_text = text
+        self.user_text = text.strip()
         self.uvec = None
         self.user_attachments = attachments
 
@@ -282,6 +284,12 @@ class TurnScratchpad:
             tl["solver_result"] = build_full_solver_payload(self.solver_result)
         if self.turn_summary:
             tl["turn_summary"] = _to_jsonable(self.turn_summary)
+        tl["assistant"] = {
+            "completion": self.answer
+        }
+        tl["user"] = {
+            "prompt": (self.user_text or "").strip()
+        }
         tl["turn_log"] = self.tlog.to_payload()
         return tl
 
@@ -311,6 +319,7 @@ class BaseTurnView(ABC):
             include_turn_summary: bool = True,
             include_context_used: bool = True,
             include_turn_info: bool = True,
+            deliverables_detalization: str = "summary" # digest | summary
     ) -> str:
         ...
 

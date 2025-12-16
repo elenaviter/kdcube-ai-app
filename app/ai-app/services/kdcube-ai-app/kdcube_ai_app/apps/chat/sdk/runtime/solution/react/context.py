@@ -392,11 +392,17 @@ class ReactContext:
             artifact_type: Optional[str] = None,
             error: Optional[Dict[str, Any]] = None,
             content_inventorization: Optional[Any] = None,
+            content_lineage: List[str] | None = None,
     ) -> Dict[str, Any]:
         """
         Store a current-turn tool result as an artifact object.
         For write_* tools, normalize .value to a *file artifact* dict:
           {"type":"file","path":<str>,"text":<surrogate>,"mime":<mime>[,"filename":<str>,"sources_used":[...]]}
+
+        Store a current-turn tool result as an artifact object.
+
+        content_lineage: Precomputed list of paths to non-write_* artifacts
+                         used as inputs (computed by bind_params_with_sources).
         """
         value_norm = value
 
@@ -456,6 +462,11 @@ class ReactContext:
             },
             "artifact_type": artifact_type,
         }
+
+        # Add lineage if present (just store it, no computation here)
+        if content_lineage:
+            artifact["content_lineage"] = content_lineage
+
         # Add error if present
         if error:
             artifact["error"] = error
@@ -807,6 +818,23 @@ class ReactContext:
             if gaps:
                 art["gaps"] = gaps
 
+            # Trace lineage for summary
+            if not art.get("summary") and isinstance(src_obj, dict):
+                # Use lineage-traced summary instead of renderer's summary
+                traced_summary = self.resolve_content_summary(art_path)
+                if traced_summary:
+                    art["summary"] = traced_summary
+                elif src_obj.get("summary"):
+                    # Fallback to direct summary if tracing fails
+                    art["summary"] = src_obj.get("summary")
+
+            # summary = src_obj.get("summary")
+            # if summary:
+            #     art["summary"] = summary
+            # inv = src_obj.get("content_inventorization")
+            # if inv is not None:
+            #     art["content_inventorization"] = inv
+
             self.current_slots[slot_name] = art
             _log("mapping_applied_file", {
                 "slot": slot_name,
@@ -1044,7 +1072,7 @@ class ReactContext:
             base_params: Dict[str, Any],
             fetch_directives: List[Dict[str, Any]],
             tool_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+    ) -> tuple[Dict[str, Any], List[str]]:  # ← NEW: returns (params, content_lineage)
         """
         Apply fetch directives (leaf-only) to tool params.
 
@@ -1063,6 +1091,10 @@ class ReactContext:
               * All rows are flattened into one list, normalized & deduped via
                 _reconcile_sources_lists (materializing into pool + SIDs).
               * The final param is stored as a single JSON string.
+
+        Returns:
+            (bound_params, content_lineage): content_lineage is list of paths to
+            non-write_* artifacts used as inputs
         """
         params: Dict[str, Any] = dict(base_params or {})
 
@@ -1075,6 +1107,9 @@ class ReactContext:
         # - sources_buckets → raw contributions for "sources"/"sources_json"
         normal_buckets: Dict[str, List[str]] = {}
         sources_buckets: Dict[str, List[Any]] = {}
+
+        # NEW: Track content lineage
+        content_lineage: List[str] = []
 
         for fd in (fetch_directives or []):
             p = (fd or {}).get("path")
@@ -1092,6 +1127,44 @@ class ReactContext:
             val, parent = self.resolve_path(p, mode=mode)
             if val is None:
                 continue
+
+            # NEW: Extract content lineage (single pass with binding)
+            # Only track artifact paths (not messages)
+            if p.startswith("current_turn.tool_results."):
+                # Extract artifact_id from path like "current_turn.tool_results.gen_1.value.content"
+                parts = p.split(".")
+                if len(parts) >= 3:
+                    artifact_path = ".".join(parts[:3])  # current_turn.tool_results.gen_1
+                    if isinstance(parent, dict):
+                        source_tool = parent.get("tool_id")
+                        # Only track content producers (not write_* tools)
+                        if source_tool and not tools_insights.is_write_tool(source_tool):
+                            if artifact_path not in content_lineage:
+                                content_lineage.append(artifact_path)
+
+            elif p.startswith("current_turn.slots."):
+                # Current turn slot
+                parts = p.split(".")
+                if len(parts) >= 3:
+                    slot_path = ".".join(parts[:3])  # current_turn.slots.report_md
+                    slot_obj = self.resolve_object(slot_path)
+                    if isinstance(slot_obj, dict):
+                        slot_tool = slot_obj.get("tool_id")
+                        if slot_tool and not tools_insights.is_write_tool(slot_tool):
+                            if slot_path not in content_lineage:
+                                content_lineage.append(slot_path)
+
+            elif ".slots." in p:
+                # Historical slot like "turn_123.slots.report_md.text"
+                parts = p.split(".")
+                if len(parts) >= 3:
+                    slot_path = ".".join(parts[:3])  # turn_123.slots.report_md
+                    slot_obj = self.resolve_object(slot_path)
+                    if isinstance(slot_obj, dict):
+                        slot_tool = slot_obj.get("tool_id")
+                        if slot_tool and not tools_insights.is_write_tool(slot_tool):
+                            if slot_path not in content_lineage:
+                                content_lineage.append(slot_path)
 
             # Avoid piping fetch_uri_content artifacts into generative builtin tool's input_context param,
             # but still keep this fetch directive so _collect_sources_from_fetch()
@@ -1115,8 +1188,8 @@ class ReactContext:
 
             # Special handling only for tools that actually accept sources params
             if name in {"sources", "sources_json"} and (
-                (name == "sources_json" and wants_sources_json)
-                or (name == "sources" and wants_sources_param)
+                    (name == "sources_json" and wants_sources_json)
+                    or (name == "sources" and wants_sources_param)
             ):
                 # For sources params we keep raw values (list/dict/str) and
                 # will parse/normalize them later.
@@ -1206,7 +1279,7 @@ class ReactContext:
         if bound_keys:
             self.add_event(kind="param_binding", data={"params_bound": bound_keys})
 
-        return params
+        return params, content_lineage  # ← NEW: return tuple
 
     # ---------- Sources utilities ----------
     def _reconcile_sources_lists(self, lists: list[list[dict] | None]) -> list[dict]:
@@ -1313,15 +1386,21 @@ class ReactContext:
             base_params: dict[str, Any],
             fetch_directives: list[dict],
             tool_id: Optional[str] = None,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], list[str]]:
         """
         1) Do the regular text binding (concatenate leaves into params).
         2) For citations-aware tools or when sources/sources_json is explicitly present:
            - Gather sources from fetched artifacts' owners
            - Merge with any caller-provided sources
            - Insert as correct param ('sources_json' for LLM generator, 'sources' for write tools), stringified
+        3) Extract content lineage via bind_params (paths to non-write_* artifacts used as inputs)
+
+        Returns:
+            (bound_params, content_lineage)
+
         """
-        params = self.bind_params(base_params=base_params,
+        # Get params AND lineage from bind_params (single pass)
+        params, content_lineage = self.bind_params(base_params=base_params,
                                   fetch_directives=fetch_directives,
                                   tool_id=tool_id)
 
@@ -1338,7 +1417,7 @@ class ReactContext:
         ) or ("sources" in (base_params or {})) or ("sources_json" in (base_params or {}))
 
         if not (is_citation_aware or explicitly_requests_sources):
-            return params
+            return params, content_lineage
 
         # gather sources from referenced artifacts (inputs)
         from_fetch = self._collect_sources_from_fetch(fetch_directives)
@@ -1375,8 +1454,52 @@ class ReactContext:
                 "from_params": len(normalize_sources_any(provided_list)),
             })
 
-        return params
+        return params, content_lineage
 
+    def resolve_content_summary(self, artifact_path: str, *, visited: Optional[set] = None) -> Optional[str]:
+        """
+        Trace lineage to find the semantic content summary.
+
+        For write_* artifacts: follow content_lineage to the source content.
+        For content-producing artifacts: return own summary.
+
+        Args:
+            artifact_path: Path like "current_turn.tool_results.pdf_render_1"
+            visited: Cycle detection (internal use)
+
+        Returns:
+            Summary string from the deepest content-producing artifact, or None.
+        """
+        if visited is None:
+            visited = set()
+
+        # Cycle detection
+        if artifact_path in visited:
+            return None
+        visited.add(artifact_path)
+
+        # Resolve artifact
+        artifact = self.resolve_object(artifact_path)
+        if not isinstance(artifact, dict):
+            return None
+
+        tool_id = artifact.get("tool_id")
+
+        # If it's a write_* tool, trace lineage to find content source
+        if tool_id and tools_insights.is_write_tool(tool_id):
+            lineage = artifact.get("content_lineage") or []
+            if lineage:
+                # Take the first (primary) content source
+                # For most renderers, there's one main content input
+                primary_source = lineage[0]
+
+                # Recursively resolve (handles chained transforms)
+                traced_summary = self.resolve_content_summary(primary_source, visited=visited)
+                if traced_summary:
+                    return traced_summary
+
+        # For non-write_* tools or no lineage, use own summary
+        return artifact.get("summary")
 # ---------- Helpers ----------
 
 def _dig(root: Dict[str, Any], path: str) -> Optional[Tuple[Any, Dict[str, Any]]]:
