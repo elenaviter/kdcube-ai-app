@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy, logging
+import pathlib
 import traceback
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type
@@ -26,7 +27,6 @@ class ContextBundle:
     program_history: List[Dict[str, Any]]
     program_history_reconciled: List[Dict[str, Any]]
     canonical_sources: List[Dict[str, Any]]
-    last_mat_working_canvas: str
 
 
 class ContextBrowser:
@@ -76,11 +76,11 @@ class ContextBrowser:
             except Exception as e:
                 self.log.log(f"[context_browser] history error: {e}", level="ERROR")
 
-        # --- 2) canvas block (based on original history, not the reconciled copy)
-        try:
-            last_mat_working_canvas = ctx_representation_module._compose_last_materialized_canvas_block(program_history)
-        except Exception:
-            last_mat_working_canvas = "(no prior project work)"
+        # # --- 2) canvas block (based on original history, not the reconciled copy)
+        # try:
+        #     last_mat_working_canvas = ctx_representation_module._compose_last_materialized_canvas_block(program_history)
+        # except Exception:
+        #     last_mat_working_canvas = "(no prior project work)"
 
         # --- 3) reconcile (updates tokens + web_links_citations)
         program_history_reconciled = copy.deepcopy(program_history)
@@ -98,7 +98,7 @@ class ContextBrowser:
             program_history=program_history,
             program_history_reconciled=program_history_reconciled,
             canonical_sources=canonical_sources,
-            last_mat_working_canvas=last_mat_working_canvas,
+            # last_mat_working_canvas=last_mat_working_canvas,
         )
 
     def make_react_context(
@@ -184,4 +184,43 @@ class ContextBrowser:
         ctx.bundle_id = bundle_id
 
         return ctx
+
+    async def rehost_previous_files(self,
+                                    bundle: ContextBundle,
+                                    workdir: pathlib.Path,
+                                    ctx: str):
+        """
+        Rehost prior files referenced in history to workdir, organized by turn.
+        """
+        import kdcube_ai_app.apps.chat.sdk.runtime.solution.solution_workspace as solution_workspace
+
+        try:
+            for turn in (bundle.program_history or []):
+                turn_program = next(iter(turn.values()), {})
+                if turn_program:
+                    # Extract turn_id for directory naming
+                    turn_id = turn_program.get("turn_id", "unknown_turn")
+
+                    deliverables = turn_program.get("deliverables") or []
+                    file_delivs = [
+                        d for d in deliverables
+                        if (d.get("value") or {}).get("type") == "file"
+                    ]
+                    if file_delivs:
+                        await solution_workspace.rehost_previous_files(
+                            file_delivs,
+                            workdir,
+                            turn_id=turn_id  # ← Pass turn_id
+                        )
+                        self.log.log(
+                            f"[{ctx}] Rehosted {len(file_delivs)} files from turn {turn_id} "
+                            f"to {turn_id}/ subdirectory"
+                        )
+        except Exception as e:
+            self.log.log(
+                f"[{ctx}] Warning: Failed to rehost previous files: {e}",
+                level="WARNING"
+            )
+
+
 
