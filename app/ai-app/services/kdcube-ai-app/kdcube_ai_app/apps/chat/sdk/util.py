@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import is_dataclass, asdict
+from enum import Enum
 
 # chat/sdk/util.py
 import time, orjson, hashlib, re, json, unicodedata
@@ -445,3 +446,32 @@ def strip_lone_surrogates(s: str) -> str:
 
 def _iso() -> str:
     return datetime.utcnow().isoformat() + "Z"
+
+def _enum_to_str(v) -> Optional[str]:
+    if v is None:
+        return None
+    if isinstance(v, Enum):
+        return str(v.value)
+    return str(v)
+
+def _is_json_primitive(v):
+    return v is None or isinstance(v, (bool, int, float, str))
+
+def _sanitize_no_unserializable_data(v):
+    if isinstance(v, Enum):
+        return v.value
+    if _is_json_primitive(v):
+        return v
+    if isinstance(v, list):
+        return [_sanitize_no_unserializable_data(x) for x in v if _sanitize_no_unserializable_data(x) is not None]
+    if isinstance(v, dict):
+        out = {}
+        for k, val in v.items():
+            if not _is_json_primitive(k):
+                continue
+            sv = _sanitize_no_unserializable_data(val)
+            if sv is not None:
+                out[str(k)] = sv
+        return out
+    # Reject everything else (classes, clients, pools, datetimes, etc.)
+    return None

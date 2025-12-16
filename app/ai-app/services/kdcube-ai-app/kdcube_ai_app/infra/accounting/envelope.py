@@ -5,6 +5,8 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, asdict, field
 from typing import Optional, Dict, Any, List
+
+from kdcube_ai_app.apps.chat.sdk.util import _enum_to_str
 from kdcube_ai_app.auth.sessions import UserSession
 from kdcube_ai_app.infra.accounting import AccountingSystem, _new_context_with, _context_var, _storage_var, SystemResource
 from contextlib import contextmanager
@@ -14,6 +16,7 @@ class AccountingEnvelope:
     # core context
     user_id: Optional[str]
     session_id: Optional[str]
+    user_type: Optional[str]
     tenant_id: Optional[str]
     project_id: Optional[str]
     request_id: Optional[str]
@@ -24,7 +27,8 @@ class AccountingEnvelope:
     # optional enrichment you might want to carry
     metadata: Dict[str, Any] = field(default_factory=dict)
     seed_system_resources: List[SystemResource] = field(default_factory=list)
-    user_session: UserSession = field(default=None)
+    # runtime-only (NEVER serialize)
+    user_session: Optional[UserSession] = field(default=None)
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
@@ -54,6 +58,7 @@ class AccountingEnvelope:
         return AccountingEnvelope(
             user_id=d.get("user_id"),
             session_id=d.get("session_id"),
+            user_type=d.get("user_type"),
             tenant_id=d.get("tenant_id"),
             project_id=d.get("project_id"),
             request_id=d.get("request_id"),
@@ -62,6 +67,7 @@ class AccountingEnvelope:
             seed_system_resources=seeds,
             app_bundle_id=d.get("app_bundle_id"),
             timezone=d.get("timezone"),
+            user_session=None,
         )
 
 def build_envelope_from_session(session, *, tenant_id,
@@ -70,6 +76,7 @@ def build_envelope_from_session(session, *, tenant_id,
     return AccountingEnvelope(
         user_id=getattr(session, "user_id", None),
         session_id=getattr(session, "session_id", None),
+        user_type=_enum_to_str(getattr(session, "user_type", None)),
         tenant_id=tenant_id,
         project_id=project_id,
         request_id=request_id,
@@ -78,6 +85,7 @@ def build_envelope_from_session(session, *, tenant_id,
         seed_system_resources=seeds or [],
         app_bundle_id=app_bundle_id,
         timezone=getattr(session, "timezone", None),
+        # user_session=session
     )
 
 @asynccontextmanager
@@ -93,6 +101,7 @@ async def bind_accounting(envelope: AccountingEnvelope, storage_backend, *, enab
     ctx = _new_context_with(
         user_id=envelope.user_id,
         session_id=envelope.session_id,
+        user_type=envelope.user_type,
         tenant_id=envelope.tenant_id,
         project_id=envelope.project_id,
         request_id=envelope.request_id,
@@ -125,6 +134,7 @@ def bind_accounting_sync(envelope: AccountingEnvelope, storage_backend, *, enabl
     AccountingSystem.set_context(
         user_id=envelope.user_id,
         session_id=envelope.session_id,
+        user_type=envelope.user_type,
         tenant_id=envelope.tenant_id,
         project_id=envelope.project_id,
         request_id=envelope.request_id,

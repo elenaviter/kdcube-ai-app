@@ -143,128 +143,85 @@ def _structured_usage_extractor(result, *_a, **_kw) -> ServiceUsage:
     except Exception:
         return ServiceUsage(requests=1)
 
-def _parse_queries_arg(queries: Any) -> List[str]:
-    # mirrors your normalization logic, but lightweight
-    if isinstance(queries, (list, tuple)):
-        return [str(q).strip() for q in queries if str(q).strip()]
+# ----------------------------- Web Search Extractors (for backend.search_many()) -----------------------------
 
-    s = str(queries or "").strip()
-    if not s:
-        return []
-    if s.startswith("["):
-        try:
-            arr = json.loads(s)
-            return [str(x).strip() for x in arr if str(x).strip()]
-        except Exception:
-            return [s]
-    return [s]
-
-def _ws_get_queries_arg(args, kwargs):
-    # 1) explicit kw wins
-    if "queries" in kwargs:
-        return kwargs.get("queries")
-
-    # 2) positional heuristics:
-    # function: (_SERVICE, queries, ...)
-    # method:   (self, _SERVICE, queries, ...)
-    if len(args) >= 3:
-        return args[2]
-    if len(args) >= 2:
-        return args[1]
-    return None
+def ws_provider_extractor(result, *args, **kwargs) -> str:
+    """
+    Extract provider from backend.search_many() call.
+    Args:
+        result: List[List[Dict]] - search results
+        args[0]: self (backend instance)
+    """
+    if args:
+        backend = args[0]
+        return getattr(backend, "provider", None) or getattr(backend, "name", "unknown")
+    return "unknown"
 
 
-def ws_usage_extractor(
-        result,
-        *args,
-        **kwargs
-) -> ServiceUsage:
-    queries = _ws_get_queries_arg(args, kwargs)
-    q_list = _parse_queries_arg(queries)
+def ws_model_extractor(*args, **kwargs) -> str:
+    """
+    Extract model/service name from backend.search_many().
+    Same as provider for search backends.
+    """
+    if args:
+        backend = args[0]
+        return getattr(backend, "provider", None) or getattr(backend, "name", "unknown")
+    return "unknown"
 
-    search_results = 0
-    try:
-        data = json.loads(result) if isinstance(result, str) else result
-        if isinstance(data, list):
-            search_results = len(data)
-    except Exception:
-        search_results = 0
+
+def ws_usage_extractor(result, *args, **kwargs) -> ServiceUsage:
+    """
+    Extract usage from backend.search_many() with success tracking.
+
+    Backend tracks successful queries (non-429, non-error) in self._last_successful_queries.
+    Only those queries count toward usage/billing.
+
+    Args:
+        result: List[List[Dict]] - search results per query
+        args[0]: self (backend instance)
+    """
+    backend = args[0] if args else None
+
+    # Backend tracks which queries actually succeeded (not rate-limited)
+    successful_queries = getattr(backend, '_last_successful_queries', [])
+
+    # Count total results returned across all queries
+    total_results = 0
+    if isinstance(result, list):
+        for query_results in result:
+            if isinstance(query_results, list):
+                total_results += len(query_results)
 
     return ServiceUsage(
-        search_queries=len(q_list),
-        search_results=search_results,
+        search_queries=len(successful_queries),  # Only successful queries count!
+        search_results=total_results,
         requests=1
     )
 
 
-def ws_meta_extractor(
-        *args,
-        **kwargs
-) -> Dict[str, Any]:
-    queries = _ws_get_queries_arg(args, kwargs)
-    q_list = _parse_queries_arg(queries)
+def ws_meta_extractor(*args, **kwargs) -> Dict[str, Any]:
+    """
+    Extract metadata from backend.search_many() call.
 
-    objective = kwargs.get("objective")
-    refinement = kwargs.get("refinement", "balanced")
-    n = kwargs.get("n", 8)
-
+    Shows attempted vs successful for transparency in accounting.
+    """
+    backend = args[0] if args else None
+    queries = args[1] if len(args) > 1 else kwargs.get("queries", [])
+    per_query_max = kwargs.get("per_query_max")
     freshness = kwargs.get("freshness")
     country = kwargs.get("country")
     safesearch = kwargs.get("safesearch", "moderate")
-    reconciling = kwargs.get("reconciling", True)
-    fetch_content = kwargs.get("fetch_content", True)
+
+    # Get successful queries from backend's tracking
+    successful_queries = getattr(backend, '_last_successful_queries', [])
+    queries_list = list(queries) if queries else []
 
     return {
-        "objective": objective,
-        "refinement": refinement,
-        "n": int(n) if n is not None else 0,
+        "queries_attempted": len(queries_list),
+        "queries_successful": len(successful_queries),
+        "query_variants": successful_queries,  # Only successful ones
+        "per_query_max": int(per_query_max) if per_query_max else 0,
         "freshness": freshness,
         "country": country,
         "safesearch": safesearch,
-        "reconciling": bool(reconciling),
-        "fetch_content": bool(fetch_content),
-        "query_variants": q_list,
     }
-
-
-def ws_provider_extractor(result, *args, **kwargs) -> str:
-    # explicit override if you ever pass it
-    prov = kwargs.get("provider") or kwargs.get("search_provider")
-    if prov:
-        return str(prov)
-
-    # Extract from search results
-    try:
-        data = json.loads(result) if isinstance(result, str) else result
-        if isinstance(data, list) and data:
-            # prefer first non-empty provider
-            for item in data:
-                if isinstance(item, dict):
-                    p = item.get("provider")
-                    if p:
-                        return str(p)
-    except Exception:
-        pass
-
-    return "unknown"
-
-def ws_model_extractor(*args, **kwargs) -> str:
-    # allow an explicit override
-    m = kwargs.get("model_or_service") or kwargs.get("search_backend_name")
-    if m:
-        return str(m)
-
-    if args:
-        first = args[0]
-        backend = getattr(first, "search_backend", None)
-        if backend:
-            return str(getattr(backend, "name", None)
-                       or getattr(backend, "provider", None)
-                       or "web-search")
-
-        # fallback if first arg is backend-like
-        return str(getattr(first, "name", None)
-                   or getattr(first, "provider", None)
-                   or "web-search")
-
-    return "web-search"

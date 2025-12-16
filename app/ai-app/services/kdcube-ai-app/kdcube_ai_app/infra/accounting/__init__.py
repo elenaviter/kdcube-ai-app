@@ -30,8 +30,9 @@ from typing import Set
 
 # keys we want at the event root (others can remain nested under "context" if you prefer)
 CONTEXT_EXPORT_KEYS: Set[str] = {
-    "user_id", "session_id", "project_id", "tenant_id",
-    "request_id", "component", "app_bundle_id", "timezone"
+    "user_id", "session_id", "user_type",
+    "project_id", "tenant_id", "request_id",
+    "component", "app_bundle_id", "timezone"
 }
 
 def register_context_keys(*keys: str) -> None:
@@ -823,6 +824,7 @@ def grouped_by_component_and_seed() -> "callable":
         project = (event.project_id or event.context.get("project_id") or "unknown")
         service_type = event.service_type.value if hasattr(event.service_type, "value") else str(event.service_type)
         agent_name = event.context.get("agent") or event.context.get("provider")
+        provider = event.provider
 
         # Determine group folder (unchanged)
         if event.seed_system_resources:
@@ -848,8 +850,8 @@ def grouped_by_component_and_seed() -> "callable":
             # Conversation-based: cb|<user>|<conv>|<turn>|<ts>.json
             user_part = user_id or "unknown"
             turn_part = turn_id or "unknown"
-            agent_name_part = agent_name or "unknown"
-            filename = f"cb|{user_part}|{conversation_id}|{turn_part}|{agent_name_part}|{ts}.json"
+            author_service_part = agent_name or provider or "unknown"
+            filename = f"cb|{user_part}|{conversation_id}|{turn_part}|{author_service_part}|{ts}.json"
         else:
             if system:
                 filename = f"{system}|{ts}.json"

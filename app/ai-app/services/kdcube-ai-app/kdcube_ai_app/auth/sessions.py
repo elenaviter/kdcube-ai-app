@@ -331,13 +331,12 @@ class UserType(Enum):
     PRIVILEGED = "privileged"
     PAYED = "payed"
 
-
 @dataclass
 class UserSession:
     """Simple user session data"""
     session_id: str
     user_type: UserType
-    fingerprint: str
+    fingerprint: Optional[str] = None
     user_id: Optional[str] = None
     username: Optional[str] = None
     roles: List[str] = None
