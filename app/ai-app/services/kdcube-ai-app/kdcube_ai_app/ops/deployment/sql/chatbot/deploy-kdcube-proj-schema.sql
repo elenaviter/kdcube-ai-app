@@ -1,5 +1,5 @@
 -- =========================================
--- deploy-conversation-history.sql
+-- deploy-chatbot.sql
 -- =========================================
 
 CREATE EXTENSION IF NOT EXISTS vector;

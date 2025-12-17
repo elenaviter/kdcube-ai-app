@@ -1,6 +1,6 @@
 -- =========================================
--- drop-conversation-history.sql
--- Companion to deploy-conversation-history.sql
+-- drop-chatbot.sql
+-- Companion to deploy-chatbot.sql
 -- =========================================
 
 -- ---------- Views ----------

@@ -559,6 +559,10 @@ mount_conversations_router(app)
 from kdcube_ai_app.apps.chat.api.opex import mount_opex_router
 mount_opex_router(app)
 
+# Mount Control Plane router
+from kdcube_ai_app.apps.chat.api.control_plane import mount_control_plane_router
+mount_control_plane_router(app)
+
 # ================================
 # RUN APPLICATION
 # ================================

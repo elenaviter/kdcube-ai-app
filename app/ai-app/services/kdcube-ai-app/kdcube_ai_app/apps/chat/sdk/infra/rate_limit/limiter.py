@@ -16,6 +16,12 @@ from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.policy import QuotaPolicy
 
 # --------- helpers (keys / time) ---------
 def _k(ns: str, bundle: str, subject: str, *parts: str) -> str:
+    """
+    Build Redis key for user rate limiting.
+
+    Format: {namespace}:{bundle}:{subject}:{parts}
+    Example: kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
+    """
     return ":".join([ns, bundle, subject, *parts])
 
 def _ymd(dt: datetime) -> str:  return dt.strftime("%Y%m%d")
@@ -108,6 +114,66 @@ return 1
 """
 
 
+# --------- Replenishment Helpers ---------
+def _merge_policy_with_replenishment(
+    base_policy: QuotaPolicy,
+    replenishment: Optional['QuotaReplenishment']
+) -> QuotaPolicy:
+    """
+    Merge base policy with user's replenishment to create effective policy.
+
+    Replenishment values are ADDITIVE - they increase the base limits.
+
+    Args:
+        base_policy: Base quota policy from user type
+        replenishment: Additional quotas from purchases/grants
+
+    Returns:
+        Merged QuotaPolicy with increased limits
+    """
+    if not replenishment or not replenishment.is_valid():
+        return base_policy
+
+    # Helper to add limits (None = unlimited, so None + X = None)
+    def add_limit(base: Optional[int], additional: Optional[int]) -> Optional[int]:
+        if base is None:  # Unlimited
+            return None
+        if additional is None:  # No additional quota
+            return base
+        return base + additional
+
+    return QuotaPolicy(
+        max_concurrent=add_limit(
+            base_policy.max_concurrent,
+            replenishment.additional_max_concurrent
+        ),
+        requests_per_day=add_limit(
+            base_policy.requests_per_day,
+            replenishment.additional_requests_per_day
+        ),
+        requests_per_month=add_limit(
+            base_policy.requests_per_month,
+            replenishment.additional_requests_per_month
+        ),
+        total_requests=add_limit(
+            base_policy.total_requests,
+            replenishment.additional_total_requests
+        ),
+        tokens_per_hour=add_limit(
+            base_policy.tokens_per_hour,
+            replenishment.additional_tokens_per_hour
+        ),
+        tokens_per_day=add_limit(
+            base_policy.tokens_per_day,
+            replenishment.additional_tokens_per_day
+        ),
+        tokens_per_month=add_limit(
+            base_policy.tokens_per_month,
+            replenishment.additional_tokens_per_month
+        ),
+    )
+
+
 # --------- API ---------
 @dataclass
 class AdmitResult:
@@ -116,28 +182,62 @@ class AdmitResult:
     lock_id: Optional[str]
     # snapshot after admission (remaining or current readings)
     snapshot: Dict[str, int]     # {req_day, req_month, req_total, tok_hour, tok_day, tok_month, in_flight}
+    # replenishment info (for transparency)
+    used_replenishment: bool = False
+    effective_policy: Optional[Dict[str, Any]] = None  # Merged policy used for admission
 
 
 class RateLimiter:
     """
-    Redis-backed, atomic admission & accounting:
+    Redis-backed, atomic admission & accounting for user-level rate limiting.
+
+    Supports quota replenishment - additional credits purchased or granted to users
+    above their base policy limits.
+
+    Tracks:
       - Concurrency via ZSET (+ per-holder expiry)
       - Request quotas: daily / monthly / total
       - Token budgets: hour / day / month (post-paid; checked at admit based on *previous* commits)
-    Keys:
-      rl:{bundle}:{subject}:locks
-      rl:{bundle}:{subject}:reqs:day:{YYYYMMDD}
-      rl:{bundle}:{subject}:reqs:month:{YYYYMM}
-      rl:{bundle}:{subject}:reqs:total
-      rl:{bundle}:{subject}:toks:hour:{YYYYMMDDHH}
-      rl:{bundle}:{subject}:toks:day:{YYYYMMDD}
-      rl:{bundle}:{subject}:toks:month:{YYYYMM}
-      rl:{bundle}:{subject}:last_turn_tokens
-      rl:{bundle}:{subject}:last_turn_at
+
+    Redis Keys (bundle-scoped with namespace prefix):
+      kdcube:rl:{bundle}:{subject}:locks
+      kdcube:rl:{bundle}:{subject}:reqs:day:{YYYYMMDD}
+      kdcube:rl:{bundle}:{subject}:reqs:month:{YYYYMM}
+      kdcube:rl:{bundle}:{subject}:reqs:total
+      kdcube:rl:{bundle}:{subject}:toks:hour:{YYYYMMDDHH}
+      kdcube:rl:{bundle}:{subject}:toks:day:{YYYYMMDD}
+      kdcube:rl:{bundle}:{subject}:toks:month:{YYYYMM}
+      kdcube:rl:{bundle}:{subject}:last_turn_tokens
+      kdcube:rl:{bundle}:{subject}:last_turn_at
+
+    Where:
+      - bundle = Bundle ID (e.g., "kdcube.codegen.orchestrator")
+      - subject = {tenant}:{project}:{user_id} or {tenant}:{project}:{user_id}:{session_id}
+
+    Example:
+      kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
+      kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:reqs:day:20250515
+      kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:toks:hour:2025051514
     """
-    def __init__(self, redis: Redis, *, namespace: str = "rl"):
+
+    def __init__(
+        self,
+        redis: Redis,
+        *,
+        namespace: str = "kdcube:rl",
+        replenishment_service: Optional['QuotaReplenishmentService'] = None,
+    ):
+        """
+        Initialize RateLimiter.
+
+        Args:
+            redis: Redis client
+            namespace: Namespace prefix (default: "kdcube:rl")
+            replenishment_service: Service for querying quota replenishments
+        """
         self.r = redis
         self.ns = namespace
+        self.replenishment_service = replenishment_service
 
     async def admit(
         self,
@@ -152,11 +252,53 @@ class RateLimiter:
         """
         Check request & token quotas (based on *already committed* usage),
         then (if allowed) acquire a concurrency slot.
+
+        If replenishment_service is configured, fetches and applies additional
+        quotas purchased or granted to the user.
+
+        Args:
+            bundle_id: Bundle identifier
+            subject_id: Subject (format: {tenant}:{project}:{user_id})
+            policy: Base QuotaPolicy with limits
+            lock_id: Unique lock identifier (usually turn_id)
+            lock_ttl_sec: Lock TTL in seconds (default: 120)
+            now: Current time (for testing)
+
+        Returns:
+            AdmitResult with allowed status, snapshot, and replenishment info
         """
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
         ymd, ym, ymdh = _ymd(now), _ym(now), _ymdh(now)
 
-        # ---- keys
+        # Parse subject_id to get tenant, project, user_id
+        subject_parts = subject_id.split(":")
+        tenant = subject_parts[0] if len(subject_parts) > 0 else None
+        project = subject_parts[1] if len(subject_parts) > 1 else None
+        user_id = subject_parts[2] if len(subject_parts) > 2 else None
+
+        # Fetch replenishment and merge with base policy
+        replenishment = None
+        used_replenishment = False
+        effective_policy = policy
+
+        if self.replenishment_service and tenant and project and user_id:
+            try:
+                replenishment = await self.replenishment_service.get_replenishment(
+                    tenant=tenant,
+                    project=project,
+                    user_id=user_id,
+                    bundle_id=bundle_id,
+                )
+
+                if replenishment:
+                    effective_policy = _merge_policy_with_replenishment(policy, replenishment)
+                    used_replenishment = True
+            except Exception as e:
+                # Log but don't fail admission on replenishment errors
+                import logging
+                logging.warning(f"Failed to fetch replenishment for {subject_id}: {e}")
+
+        # ---- Build keys using namespace prefix
         k_locks = _k(self.ns, bundle_id, subject_id, "locks")
 
         k_req_d = _k(self.ns, bundle_id, subject_id, "reqs:day", ymd)
@@ -172,14 +314,14 @@ class RateLimiter:
         req_d = int(vals[0] or 0); req_m = int(vals[1] or 0); req_t = int(vals[2] or 0)
         tok_h = int(vals[3] or 0); tok_d = int(vals[4] or 0); tok_m = int(vals[5] or 0)
 
-        # ---- policy checks (post-paid tokens)
+        # ---- policy checks using EFFECTIVE policy (base + replenishment)
         violations = []
-        if policy.requests_per_day   is not None and req_d >= policy.requests_per_day:   violations.append("requests_per_day")
-        if policy.requests_per_month is not None and req_m >= policy.requests_per_month: violations.append("requests_per_month")
-        if policy.total_requests     is not None and req_t >= policy.total_requests:     violations.append("total_requests")
-        if policy.tokens_per_hour    is not None and tok_h >= policy.tokens_per_hour:    violations.append("tokens_per_hour")
-        if policy.tokens_per_day     is not None and tok_d >= policy.tokens_per_day:     violations.append("tokens_per_day")
-        if policy.tokens_per_month   is not None and tok_m >= policy.tokens_per_month:   violations.append("tokens_per_month")
+        if effective_policy.requests_per_day   is not None and req_d >= effective_policy.requests_per_day:   violations.append("requests_per_day")
+        if effective_policy.requests_per_month is not None and req_m >= effective_policy.requests_per_month: violations.append("requests_per_month")
+        if effective_policy.total_requests     is not None and req_t >= effective_policy.total_requests:     violations.append("total_requests")
+        if effective_policy.tokens_per_hour    is not None and tok_h >= effective_policy.tokens_per_hour:    violations.append("tokens_per_hour")
+        if effective_policy.tokens_per_day     is not None and tok_d >= effective_policy.tokens_per_day:     violations.append("tokens_per_day")
+        if effective_policy.tokens_per_month   is not None and tok_m >= effective_policy.tokens_per_month:   violations.append("tokens_per_month")
 
         if violations:
             return AdmitResult(
@@ -191,19 +333,21 @@ class RateLimiter:
                     "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                     "in_flight": 0,
                 },
+                used_replenishment=used_replenishment,
+                effective_policy=asdict(effective_policy) if used_replenishment else None,
             )
 
         # ---- concurrency lock (if configured)
         in_flight = 0
-        if policy.max_concurrent and policy.max_concurrent > 0:
+        if effective_policy.max_concurrent and effective_policy.max_concurrent > 0:
             res = await self.r.eval(
                 _LUA_TRY_LOCK,
                 1,
                 *_strs(k_locks),
                 *_strs(
-                    int(now.timestamp()),          # now (secs)
-                    lock_id,                              # member id
-                    int(policy.max_concurrent),           # max
+                    int(now.timestamp()),                      # now (secs)
+                    lock_id,                                   # member id
+                    int(effective_policy.max_concurrent),      # max (using effective policy!)
                     int(now.timestamp()) + int(lock_ttl_sec),  # expire (secs)
                 )
             )
@@ -220,6 +364,8 @@ class RateLimiter:
                         "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                         "in_flight": in_flight,
                     },
+                    used_replenishment=used_replenishment,
+                    effective_policy=asdict(effective_policy) if used_replenishment else None,
                 )
 
         return AdmitResult(
@@ -231,6 +377,8 @@ class RateLimiter:
                 "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                 "in_flight": in_flight,
             },
+            used_replenishment=used_replenishment,
+            effective_policy=asdict(effective_policy) if used_replenishment else None,
         )
 
     async def commit(
@@ -248,6 +396,13 @@ class RateLimiter:
           - +tokens (hour/day/month)
           - last_turn_tokens / last_turn_at
           - release concurrency (if lock_id provided)
+
+        Args:
+            bundle_id: Bundle identifier
+            subject_id: Subject (format: {tenant}:{project}:{user_id})
+            tokens: Number of tokens to commit
+            lock_id: Lock identifier to release
+            now: Current time (for testing)
         """
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
         ymd, ym, ymdh = _ymd(now), _ym(now), _ymdh(now)
@@ -273,23 +428,56 @@ class RateLimiter:
                 k_last_t, k_last_a, k_locks,
             ),
             *_strs(
-                1,                   # +1 request
-                int(tokens or 0),           # +tokens
-                _eod(now),                  # day EXPIREAT
-                _eom(now),                  # month EXPIREAT
-                _eoh(now),                  # hour EXPIREAT
-                int(now.timestamp()),       # last_at
-                lock_id or "",              # release this member
+                1,                      # +1 request
+                int(tokens or 0),       # +tokens
+                _eod(now),              # day EXPIREAT
+                _eom(now),              # month EXPIREAT
+                _eoh(now),              # hour EXPIREAT
+                int(now.timestamp()),   # last_at
+                lock_id or "",          # release this member
             ),
         )
 
     async def release(self, *, bundle_id: str, subject_id: str, lock_id: str) -> int:
-        """Force-release a concurrency slot (use in error/abort paths)."""
+        """
+        Force-release a concurrency slot (use in error/abort paths).
+
+        Args:
+            bundle_id: Bundle identifier
+            subject_id: Subject (format: {tenant}:{project}:{user_id})
+            lock_id: Lock identifier to release
+
+        Returns:
+            Number of locks removed (0 or 1)
+        """
         k_locks = _k(self.ns, bundle_id, subject_id, "locks")
         return int(await self.r.zrem(k_locks, lock_id))
 
+
 def subject_id_of(tenant: str, project: str, user_id: str, session_id: Optional[str] = None) -> str:
+    """
+    Build subject ID from tenant, project, and user.
+
+    Format: {tenant}:{project}:{user_id} or {tenant}:{project}:{user_id}:{session_id}
+
+    Args:
+        tenant: Tenant ID
+        project: Project ID
+        user_id: User ID
+        session_id: Optional session ID for session-level limiting
+
+    Returns:
+        Subject ID string
+
+    Examples:
+        >>> subject_id_of("tenant-a", "project-x", "user123")
+        "tenant-a:project-x:user123"
+
+        >>> subject_id_of("tenant-a", "project-x", "user123", "session456")
+        "tenant-a:project-x:user123:session456"
+    """
     return f"{tenant}:{project}:{user_id}" if not session_id else f"{tenant}:{project}:{user_id}:{session_id}"
+
 
 @dataclass(frozen=True)
 class QuotaInsight:
@@ -304,6 +492,8 @@ class QuotaInsight:
     messages_remaining: Optional[int]
     retry_after_sec: Optional[int]
     retry_scope: Optional[str]   # "hour" | "day" | "month" | None
+    used_replenishment: bool = False  # Whether additional quotas were applied
+
 
 def _remaining_from_policy(policy: QuotaPolicy, snapshot: Dict[str, int]) -> Dict[str, Optional[int]]:
     """
@@ -329,14 +519,14 @@ def _remaining_from_policy(policy: QuotaPolicy, snapshot: Dict[str, int]) -> Dic
 
 def _messages_remaining_from_remaining(remaining: Dict[str, Optional[int]]) -> Optional[int]:
     """
-    Single “messages remaining” number.
+    Single "messages remaining" number.
 
     We take the minimum across all *request* quotas that are configured:
       - daily
       - monthly
       - total_requests (if used)
 
-    That’s the tightest bound on "how many more requests can I safely send?".
+    That's the tightest bound on "how many more requests can I safely send?".
     """
     candidates = [
         remaining.get("requests_per_day"),
@@ -390,12 +580,13 @@ def compute_quota_insight(
         policy: QuotaPolicy,
         snapshot: Dict[str, int],
         reason: Optional[str],
+        used_replenishment: bool = False,
         now: Optional[datetime] = None,
 ) -> QuotaInsight:
     """
     Single entrypoint: QuotaPolicy + snapshot + reason -> QuotaInsight.
     """
-    limits = asdict(policy)   # includes max_concurrent; that’s fine infra-wise
+    limits = asdict(policy)   # includes max_concurrent; that's fine infra-wise
     remaining = _remaining_from_policy(policy, snapshot)
     violations: List[str] = (reason or "").split("|") if reason else []
 
@@ -409,6 +600,7 @@ def compute_quota_insight(
         messages_remaining=messages_remaining,
         retry_after_sec=retry_after_sec,
         retry_scope=retry_scope,
+        used_replenishment=used_replenishment,
     )
 
 """

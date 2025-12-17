@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
+# infra/namespaces.py
 import os
 
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -49,6 +50,47 @@ class REDIS:
         # Global circuit breaker stats
         GLOBAL_STATS = "kdcube:circuit_breaker:global_stats"
         EVENTS_LOG = "kdcube:circuit_breaker:events"
+
+    class RATE_LIMIT:
+        """
+        Bundle-level user rate limiting (tokens/requests per user).
+
+        Keys are NOT prefixed with tenant:project since bundles may be
+        cross-tenant (or we may add tenant/project prefixing later).
+
+        Format: kdcube:rl:{bundle}:{subject}:*
+        where subject = {tenant}:{project}:{user_id} or {tenant}:{project}:{user_id}:{session_id}
+        """
+        PREFIX = "kdcube:rl"
+
+        # Key patterns (bundle and subject will be interpolated)
+        LOCKS = "{prefix}:{bundle}:{subject}:locks"
+        REQUESTS_DAY = "{prefix}:{bundle}:{subject}:reqs:day:{ymd}"
+        REQUESTS_MONTH = "{prefix}:{bundle}:{subject}:reqs:month:{ym}"
+        REQUESTS_TOTAL = "{prefix}:{bundle}:{subject}:reqs:total"
+        TOKENS_HOUR = "{prefix}:{bundle}:{subject}:toks:hour:{ymdh}"
+        TOKENS_DAY = "{prefix}:{bundle}:{subject}:toks:day:{ymd}"
+        TOKENS_MONTH = "{prefix}:{bundle}:{subject}:toks:month:{ym}"
+        LAST_TURN_TOKENS = "{prefix}:{bundle}:{subject}:last_turn_tokens"
+        LAST_TURN_AT = "{prefix}:{bundle}:{subject}:last_turn_at"
+
+
+    class BUDGET:
+        """
+        Application-level budget tracking (USD spending per provider).
+
+        Keys ARE prefixed with tenant:project since budgets are per-tenant/project.
+
+        Format: {tenant}:{project}:kdcube:budget:{bundle}:{provider}:*
+        """
+        PREFIX = "kdcube:budget"
+
+        # Key patterns (will be prefixed with tenant:project via ns_key)
+        SPEND_HOUR = "{prefix}:{bundle}:{provider}:spend:hour:{ymdh}"
+        SPEND_DAY = "{prefix}:{bundle}:{provider}:spend:day:{ymd}"
+        SPEND_MONTH = "{prefix}:{bundle}:{provider}:spend:month:{ym}"
+        LAST_SPEND_USD = "{prefix}:{bundle}:{provider}:last_spend_usd"
+        LAST_SPEND_AT = "{prefix}:{bundle}:{provider}:last_spend_at"
 
     class SYSTEM:
         CAPACITY = "kdcube:system:capacity"

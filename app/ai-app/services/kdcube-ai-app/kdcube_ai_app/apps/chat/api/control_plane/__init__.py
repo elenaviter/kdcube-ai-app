@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2025 Elena Viter
+
+"""
+Modular Control Plane api management system using FastAPI routers.
+File: api/control_plane/__init__.py
+"""
+from typing import Callable
+
+from fastapi import FastAPI
+
+from .control_plane import router as control_plane_router
+
+
+def mount_control_plane_router(app: FastAPI):
+    """
+    Mount all monitoring routers to the FastAPI app.
+
+    Args:
+        app: Your existing FastAPI application
+        auth_manager: AuthManager instance
+    """
+
+    # Mount content rebuild router
+    control_plane_router.state = app.state
+    app.include_router(
+        control_plane_router,
+        prefix="/api/admin/control-plane",
+        tags=["CP admin"],
+    )
+    return app
+
+
+# Export for convenience
+__all__ = ["mount_control_plane_router"]

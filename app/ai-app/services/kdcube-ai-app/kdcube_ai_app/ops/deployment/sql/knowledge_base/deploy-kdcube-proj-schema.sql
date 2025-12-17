@@ -1,5 +1,5 @@
 -- =========================================
--- deploy-knowledge-base.sql (CLEAN IF NOT EXISTS VERSION)
+-- deploy-knowledge-base.sql
 -- =========================================
 
 CREATE EXTENSION IF NOT EXISTS vector;

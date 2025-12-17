@@ -11,12 +11,20 @@ from kdcube_ai_app.infra.relational.psql.psql_base import PostgreSqlDbMgr
 
 SYSTEM_COMPONENT = "kdcube-system-schema"
 PROJECT_COMPONENT = "kdcube-proj-schema"
+CONTROL_PLANE_COMPONENT = "kdcube-control-plane"
 
 PROJECT_DEFAULT_SCHEMA = "kdcube_default"
 SYSTEM_SCHEMA = "kdcubesystem"
+CONTROL_PLANE_SCHEMA = "kdcube_control_plane"  # NEW: Fixed schema name
 
-SUPPORTED_COMPONENTS = ["experts-and-registries", "rbac", "knowledge_base",
-                        "event-log", SYSTEM_COMPONENT]
+SUPPORTED_COMPONENTS = [
+    "experts-and-registries",
+    "rbac",
+    "knowledge_base",
+    "event-log",
+    SYSTEM_COMPONENT,
+    CONTROL_PLANE_COMPONENT,
+]
 
 sql_location = os.path.dirname(__file__)
 
@@ -42,25 +50,73 @@ def safe_schema_name(name: str) -> str:
     # 5) Ensure it starts with a letter or underscore
     if not re.match(r'^[a-z_]', sanitized):
         sanitized = '_' + sanitized
-    # 6) Truncate to PostgreSQL’s max identifier length (63 chars)
+    # 6) Truncate to PostgreSQL's max identifier length (63 chars)
     max_len = 63
     if len(sanitized) > max_len:
         sanitized = sanitized[:max_len]
     # 7) Fallback if empty
     return sanitized or '_schema'
 
-def run(op, component, tenant = None, project = None, app=None):
+
+def run(op, component, tenant=None, project=None, app=None):
+    """
+    Execute SQL deployment/deletion for a given component.
+
+    Args:
+        op: "deploy" or "delete"
+        component: Component name (e.g., "control-plane", "kdcube-proj-schema")
+        tenant: Tenant name (not used for control-plane)
+        project: Project name (not used for control-plane)
+        app: App name (optional subdirectory)
+    """
     mgr = PostgreSqlDbMgr()
+
     if not component:
         error = "Please specify a component."
         print(error)
         raise Exception(error)
 
+    # Handle control plane (global, no tenant/project)
+    if component == CONTROL_PLANE_COMPONENT:
+        substitutions = {"SCHEMA": CONTROL_PLANE_SCHEMA}
+
+        if op == "deploy":
+            schema_file = os.path.join(sql_location, app, f"deploy-{component}.sql")
+            try:
+                mgr.execute_sql_file(schema_file, substitutions=substitutions)
+                print(f"Control plane schema deployed successfully to '{CONTROL_PLANE_SCHEMA}'.")
+            except Exception as e:
+                error = f"Error deploying control plane schema: {e}"
+                print(error)
+                raise e
+
+        elif op == "delete":
+            delete_file = os.path.join(sql_location, app, f"drop-{component}.sql")
+            try:
+                mgr.execute_sql_file(delete_file, substitutions=substitutions)
+                print(f"Control plane schema components removed successfully.")
+            except Exception as e:
+                error = f"Error deleting control plane schema: {e}"
+                print(error)
+                raise e
+        else:
+            print("Please specify --deploy or --delete.")
+
+        return
+
+    # Handle tenant/project-specific components (existing logic)
     schema_name = safe_schema_name(project or "default-project")
     if tenant:
-        substitutions = { "SCHEMA": f"kdcube_{tenant}_{schema_name}", "SYSTEM_SCHEMA": SYSTEM_SCHEMA }
+        substitutions = {
+            "SCHEMA": f"kdcube_{tenant}_{schema_name}",
+            "SYSTEM_SCHEMA": SYSTEM_SCHEMA
+        }
     else:
-        substitutions = { "SCHEMA": f"kdcube_{schema_name}", "SYSTEM_SCHEMA": SYSTEM_SCHEMA }
+        substitutions = {
+            "SCHEMA": f"kdcube_{schema_name}",
+            "SYSTEM_SCHEMA": SYSTEM_SCHEMA
+        }
+
     if op == "deploy":
         if app:
             schema_file = os.path.join(sql_location, app, f"deploy-{component}.sql")
@@ -68,7 +124,7 @@ def run(op, component, tenant = None, project = None, app=None):
             schema_file = os.path.join(sql_location, f"deploy-{component}.sql")
         try:
             mgr.execute_sql_file(schema_file, substitutions=substitutions)
-            print("Schema deployed successfully.")
+            print(f"Schema deployed successfully: {substitutions['SCHEMA']}")
         except Exception as e:
             error = f"Error deploying schema: {e}"
             print(error)
@@ -81,13 +137,14 @@ def run(op, component, tenant = None, project = None, app=None):
             delete_file = os.path.join(sql_location, f"drop-{component}.sql")
         try:
             mgr.execute_sql_file(delete_file, substitutions=substitutions)
-            print("Schema deleted successfully.")
+            print(f"Schema deleted successfully: {substitutions['SCHEMA']}")
         except Exception as e:
             error = f"Error deleting schema: {e}"
             print(error)
             raise e
     else:
         print("Please specify --deploy or --delete.")
+
 
 def main(args, parser):
     """
@@ -101,6 +158,7 @@ def main(args, parser):
         print("Please specify --deploy or --delete.")
         parser and parser.print_help()
         return False
+
     component = args.component
 
     if not component:
@@ -108,6 +166,12 @@ def main(args, parser):
         parser and parser.print_help()
         sys.exit(1)
 
+    # Control plane doesn't need tenant/project
+    if component == CONTROL_PLANE_COMPONENT:
+        run(op, component)
+        return True
+
+    # Other components need tenant/project
     project = args.project
     if not project and component != SYSTEM_COMPONENT:
         print("Please specify a project name.")
@@ -124,10 +188,6 @@ def main(args, parser):
     run(op, component, tenant, project, app)
 
 if __name__ == "__main__":
-    # def load_env():
-    #     _ = load_dotenv(find_dotenv(".env.prod"))
-    # load_env()
-
     from dotenv import load_dotenv, find_dotenv
     load_dotenv(find_dotenv())
 
@@ -145,8 +205,8 @@ if __name__ == "__main__":
     # deploy = True
     # delete = False
 
-    component = "experts-and-registries"
-    component = PROJECT_COMPONENT
+    component = CONTROL_PLANE_COMPONENT  # Test control plane deployment
+    # component = PROJECT_COMPONENT
     tenant = "home"
 
     # component = SYSTEM_COMPONENT
