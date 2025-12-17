@@ -708,7 +708,7 @@ async def web_search(
         return []
 
     rows = dedup_round_robin_ranked(per_query_results=per_query_results,
-                                    n=n,)
+                                    n=999,)
     # --- Reconcile ---
     if not reconciling:
         # No snippet-based LLM reconciliation.

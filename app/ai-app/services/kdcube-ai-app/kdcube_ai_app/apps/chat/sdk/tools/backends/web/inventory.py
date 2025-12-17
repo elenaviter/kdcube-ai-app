@@ -67,11 +67,31 @@ def compose_search_results_html(
             cls = "score-med"
         return f'<span class="score {cls}" title="{esc(label)}">{esc(label)} {pct}%</span>'
 
+    def provider_badge(provider: str | None) -> str:
+        """Create a small provider badge (e.g., 'brave', 'duckduckgo')."""
+        if not provider:
+            return ""
+
+        # Map provider names to friendly display + colors
+        provider_map = {
+            "brave": {"label": "Brave", "color": "#f5c85b"},
+            "duckduckgo": {"label": "DDG", "color": "##fb542b"},
+            "exa": {"label": "Exa", "color": "#6366f1"},
+            "serper": {"label": "Serper", "color": "#5bd5f5"},
+        }
+
+        p_lower = str(provider).lower()
+        info = provider_map.get(p_lower, {"label": provider.upper()[:6], "color": "#64748b"})
+
+        return f'<span class="provider-badge" style="background-color: {info["color"]}" title="Source: {esc(provider)}">{esc(info["label"])}</span>'
+
     def row_html(r: dict, *, tick=False, show_scores=False) -> str:
         sid = r.get("sid")
         title = r.get("title") or r.get("url") or f"Result {sid}"
         url = r.get("url") or ""
         body = (r.get("body") or r.get("text") or "").strip()
+        provider = r.get("vendor") or r.get("provider")
+
         # badges
         b = []
         if tick:
@@ -89,6 +109,7 @@ def compose_search_results_html(
           </header>
           <div class="meta">
             <code class="sid">SID: {sid}</code>
+            {provider_badge(provider)}
             <a class="link" href="{esc(url)}" target="_blank" rel="noopener noreferrer">{esc(url)}</a>
           </div>
           <p class="snippet">{esc(body)}</p>
@@ -141,6 +162,7 @@ def compose_search_results_html(
     .link:hover{text-decoration:underline}
     .snippet{margin:.2rem 0 0;color:var(--fg)}
     .topline{margin:10px 0 0;display:flex;flex-wrap:wrap;gap:6px}
+    .provider-badge{display:inline-block;padding:2px 8px;border-radius:6px;color:#fff;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
     """
 
     q_pills = "".join(f'<span class="pill">Q: {esc(q)}</span>' for q in (queries or []))

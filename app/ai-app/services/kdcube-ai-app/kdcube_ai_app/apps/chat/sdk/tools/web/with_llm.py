@@ -48,6 +48,7 @@ async def sources_reconciler(
     - Penalize generic landing pages requiring click-through.
     - Use title/heading/body overlap; dedupe near-duplicates.
     - When uncertain, drop.
+    - Select the top {max_items} most relevant sources (ranked by o_relevance).
     
     OUTPUT (JSON ONLY)
     {array_desc}
