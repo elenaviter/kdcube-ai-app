@@ -75,7 +75,7 @@ def compose_search_results_html(
         # Map provider names to friendly display + colors
         provider_map = {
             "brave": {"label": "Brave", "color": "#f5c85b"},
-            "duckduckgo": {"label": "DDG", "color": "##fb542b"},
+            "duckduckgo": {"label": "DDG", "color": "#fb542b"},
             "exa": {"label": "Exa", "color": "#6366f1"},
             "serper": {"label": "Serper", "color": "#5bd5f5"},
         }
