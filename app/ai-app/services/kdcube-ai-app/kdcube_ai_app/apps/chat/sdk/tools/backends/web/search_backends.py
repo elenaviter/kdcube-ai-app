@@ -10,7 +10,7 @@ Goals
 -----
 1) Single normalized API:
    - inputs: query, max_results, freshness, country, safesearch
-   - outputs: [{"title","url","text","vendor"}]
+   - outputs: [{"title","url","text","provider"}]
 
 2) Canonical modifiers:
    - freshness: None | "day" | "week" | "month" | "year"
@@ -98,7 +98,7 @@ class SearchBackend(ABC):
     ) -> List[Dict[str, Any]]:
         """
         Public normalized search API.
-        Returns list of normalized hits: [{"title","url","text","vendor"}]
+        Returns list of normalized hits: [{"title","url","text","provider"}]
         """
         req = SearchRequest(
             query=query,
@@ -558,7 +558,7 @@ async def web_search(
     Main web search orchestrator.
 
     NO decorator here - accounting handled by backend.search_many() decorators.
-    Results are CLEAN - no provider/vendor metadata returned to LLM.
+    Results are CLEAN - no provider metadata returned to LLM.
     """
 
     WEB_SEARCH_AGENTIC_THINKING_BUDGET = int(os.getenv("WEB_SEARCH_AGENTIC_THINKING_BUDGET") or 0)
@@ -713,7 +713,7 @@ async def web_search(
     if not reconciling:
         # No snippet-based LLM reconciliation.
         # We still want content fetch + content-based filtering/segmentation.
-        reconciled_rows = rows[:]  # keep ephemeral for now
+        reconciled_rows = rows[:n]  # keep ephemeral for now
     else:
         # ---- Reconcile (keeps/annotates by ephemeral sids) ----
         try:
@@ -775,6 +775,7 @@ async def web_search(
                            float(r.get("query_relevance", 0.0))),
             reverse=True
         )
+        reconciled_rows = reconciled_rows[:n]
 
     # --- Fetch content ---
     filtered_rows = reconciled_rows
@@ -846,10 +847,9 @@ async def web_search(
         )
 
     # --- CLEAN OUTPUT: remove accounting metadata ---
-    # Provider/vendor are for accounting only, not for LLM
+    # Provider are for accounting only, not for LLM
     for r in final_rows:
         r.pop("provider", None)
-        r.pop("vendor", None)
         r["authority"] = "web"  # Tag for downstream
 
     return final_rows

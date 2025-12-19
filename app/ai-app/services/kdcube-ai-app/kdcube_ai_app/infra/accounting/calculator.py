@@ -26,7 +26,8 @@ from datetime import datetime, date, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple, AsyncIterator
 
 from kdcube_ai_app.infra.accounting import get_turn_events
-from kdcube_ai_app.infra.accounting.usage import price_table, _USAGE_KEYS, _BUCKETS
+from kdcube_ai_app.infra.accounting.usage import price_table, _USAGE_KEYS, _BUCKETS, _find_llm_price, _find_emb_price, \
+    _get_web_search_tier, _find_web_search_price, compute_llm_equivalent_tokens
 from kdcube_ai_app.storage.storage import IStorageBackend, create_storage_backend
 
 logger = logging.getLogger("AccountingCalculator")
@@ -2203,6 +2204,8 @@ class RateCalculator(AccountingCalculator):
             service_types: Optional[List[str]] = None,
             use_memory_cache: bool = False,
             accounting_services_config: Optional[Dict[str, Any]] = None,
+            ref_provider: Optional[str] = None,
+            ref_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Complete turn cost calculation with both overall breakdown and per-agent costs.
@@ -2310,16 +2313,11 @@ class RateCalculator(AccountingCalculator):
 
         # 4. Get price lists
         acct_cfg = price_table()
-        llm_pricelist = acct_cfg.get("llm", []) or []
-        emb_pricelist = acct_cfg.get("embedding", []) or []
-        web_search_pricelist = acct_cfg.get("web_search", []) or []
 
         # 5. Calculate per-agent costs (reuses existing _calculate_agent_costs)
         agent_costs = _calculate_agent_costs(
             agent_usage,
-            llm_pricelist=llm_pricelist,
-            emb_pricelist=emb_pricelist,
-            web_search_pricelist=web_search_pricelist,
+            pricing_table=acct_cfg,
             accounting_services_config=accounting_services_config,
         )
 
@@ -2331,32 +2329,6 @@ class RateCalculator(AccountingCalculator):
                 accounting_services_config = json.loads(config_str)
             except json.JSONDecodeError:
                 accounting_services_config = {}
-
-        # Helper functions (same logic as in _calculate_agent_costs)
-        def _find_llm_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
-            for p in llm_pricelist:
-                if p.get("provider") == provider and p.get("model") == model:
-                    return p
-            return None
-
-        def _find_emb_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
-            for p in emb_pricelist:
-                if p.get("provider") == provider and p.get("model") == model:
-                    return p
-            return None
-
-        def _find_web_search_price(provider: str, tier: str) -> Optional[Dict[str, Any]]:
-            for p in web_search_pricelist:
-                if p.get("provider") == provider and p.get("tier") == tier:
-                    return p
-            return None
-
-        def _get_web_search_tier(provider: str) -> str:
-            """Get tier for web_search provider from ACCOUNTING_SERVICES config."""
-            web_search_config = accounting_services_config.get("web_search", {})
-            provider_config = web_search_config.get(provider, {})
-            defaults = {"brave": "base", "duckduckgo": "free"}
-            return provider_config.get("tier", defaults.get(provider, "free"))
 
         # Cost calculation loop
         cost_total_usd = 0.0
@@ -2435,7 +2407,7 @@ class RateCalculator(AccountingCalculator):
                     cost_usd = input_cost + output_cost + cache_write_cost + cache_read_cost
 
             elif service == "embedding":
-                pr = _find_emb_price(provider, model)
+                pr = _find_emb_price(provider, model, pricing_table=price_table())
                 if pr:
                     cost_usd = (float(spent.get("tokens", 0)) / 1_000_000.0) * float(pr.get("tokens_1M", 0.0))
                     cost_details = {
@@ -2466,6 +2438,13 @@ class RateCalculator(AccountingCalculator):
                 **cost_details
             })
 
+        equiv = compute_llm_equivalent_tokens(
+            rollup=rollup,
+            ref_provider=ref_provider,
+            ref_model=ref_model,
+        )
+        llm_equivalent_tokens = equiv["llm_equivalent_tokens"]
+
         # 7. Return complete result
         return {
             "cost_total_usd": cost_total_usd,
@@ -2478,14 +2457,15 @@ class RateCalculator(AccountingCalculator):
                 "llm_output_sum": llm_output_sum,
                 "total_input_tokens": total_input_tokens,
                 "weighted_tokens": weighted_tokens,
+                "llm_equivalent_tokens": llm_equivalent_tokens,
+                "llm_equiv_debug": equiv
             },
         }
 
+
 def _calculate_agent_costs(
         agent_usage: Dict[str, List[Dict[str, Any]]],
-        llm_pricelist: List[Dict[str, Any]],
-        emb_pricelist: List[Dict[str, Any]],
-        web_search_pricelist: List[Dict[str, Any]],
+        pricing_table: dict|None = None,
         accounting_services_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -2493,7 +2473,7 @@ def _calculate_agent_costs(
 
     Args:
         agent_usage: Dict mapping agent_name -> list of usage items
-        llm_pricelist: LLM pricing from price_table()
+        pricing_table: pricing table
         emb_pricelist: Embedding pricing from price_table()
         web_search_pricelist: Web search pricing from price_table()
         accounting_services_config: Service tier configuration
@@ -2509,31 +2489,6 @@ def _calculate_agent_costs(
             accounting_services_config = json.loads(config_str)
         except json.JSONDecodeError:
             accounting_services_config = {}
-
-    def _find_llm_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
-        for p in llm_pricelist:
-            if p.get("provider") == provider and p.get("model") == model:
-                return p
-        return None
-
-    def _find_emb_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
-        for p in emb_pricelist:
-            if p.get("provider") == provider and p.get("model") == model:
-                return p
-        return None
-
-    def _find_web_search_price(provider: str, tier: str) -> Optional[Dict[str, Any]]:
-        for p in web_search_pricelist:
-            if p.get("provider") == provider and p.get("tier") == tier:
-                return p
-        return None
-
-    def _get_web_search_tier(provider: str) -> str:
-        """Get tier for web_search provider from config."""
-        web_search_config = accounting_services_config.get("web_search", {})
-        provider_config = web_search_config.get(provider, {})
-        defaults = {"brave": "base", "duckduckgo": "free"}
-        return provider_config.get("tier", defaults.get(provider, "free"))
 
     agent_costs: Dict[str, Dict[str, Any]] = {}
 
@@ -2562,7 +2517,7 @@ def _calculate_agent_costs(
             tier = None  # for web_search
 
             if service == "llm":
-                pr = _find_llm_price(provider, model)
+                pr = _find_llm_price(provider, model, pricing_table=pricing_table)
                 if pr:
                     input_tokens = float(spent.get("input", 0))
                     output_tokens = float(spent.get("output", 0))
@@ -2626,7 +2581,7 @@ def _calculate_agent_costs(
                     token_summary["cache_read"] += int(spent.get("cache_read", 0) or 0)
 
             elif service == "embedding":
-                pr = _find_emb_price(provider, model)
+                pr = _find_emb_price(provider, model, pricing_table=pricing_table)
                 if pr:
                     emb_tokens = float(spent.get("tokens", 0))
                     cost_usd = (
@@ -2637,9 +2592,9 @@ def _calculate_agent_costs(
                     token_summary["embedding"] += int(spent.get("tokens", 0) or 0)
 
             elif service == "web_search":
-                # NEW: web_search cost calculation
-                tier = _get_web_search_tier(provider)
-                pr = _find_web_search_price(provider, tier)
+                # web_search cost calculation
+                tier = _get_web_search_tier(provider, accounting_services_config)
+                pr = _find_web_search_price(provider, tier, pricing_table=pricing_table)
 
                 if pr:
                     search_queries = float(spent.get("search_queries", 0))
@@ -2787,23 +2742,10 @@ async def example_grouped_calc(tenant, project, bundle_id):
     configuration = price_table()
     # Compute estimated spend (no cache accounting yet)
     acct_cfg = (configuration or {}).get("accounting", {})
-    llm_pricelist = acct_cfg.get("llm", []) or []
-    emb_pricelist = acct_cfg.get("embedding", []) or []
-
-    def _find_llm_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
-        for p in llm_pricelist:
-            if p.get("provider") == provider and p.get("model") == model:
-                return p
-        return None
-
-    def _find_emb_price(provider: str, model: str) -> Optional[Dict[str, Any]]:
-        for p in emb_pricelist:
-            if p.get("provider") == provider and p.get("model") == model:
-                return p
-        return None
 
     cost_total_usd = 0.0
     cost_breakdown = []
+
     for item in rollup:
         service = item.get("service")
         provider = item.get("provider")
@@ -2811,6 +2753,7 @@ async def example_grouped_calc(tenant, project, bundle_id):
         spent = item.get("spent", {}) or {}
 
         cost_usd = 0.0
+
         if service == "llm":
             pr = _find_llm_price(provider, model)
             if pr:
@@ -2867,7 +2810,7 @@ async def example_grouped_calc(tenant, project, bundle_id):
                         + cache_read_cost
                 )
         elif service == "embedding":
-            pr = _find_emb_price(provider, model)
+            pr = _find_emb_price(provider, model, pricing_table=price_table())
             if pr:
                 cost_usd = (float(spent.get("tokens", 0)) / 1_000_000.0) * float(pr.get("tokens_1M", 0.0))
 

@@ -130,10 +130,8 @@ def compute_costs_from_folder(root_dir: str):
     agent_usage = build_agent_usage(root_dir)
 
     cfg = price_table()
-    llm_pricelist = cfg.get("llm", []) or []
-    emb_pricelist = cfg.get("embedding", []) or []
 
-    agent_costs = _calculate_agent_costs(agent_usage, llm_pricelist, emb_pricelist)
+    agent_costs = _calculate_agent_costs(agent_usage, pricing_table=cfg)
 
     total_cost = sum(info["total_cost_usd"] for info in agent_costs.values())
 

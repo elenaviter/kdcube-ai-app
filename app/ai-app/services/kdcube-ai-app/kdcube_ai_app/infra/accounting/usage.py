@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-
+import math
 # infra/accounting/usage.py
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
@@ -490,3 +490,169 @@ _BUCKETS = {
     "1h": 3600,
     "1d": 86400,
 }
+
+def _find_llm_price(provider: str,
+                    model: str,
+                    pricing_table = None) -> Optional[Dict[str, Any]]:
+    if not pricing_table:
+        pricing_table = price_table()
+    llm_pricelist = pricing_table.get("llm") or {}
+    for p in llm_pricelist:
+        if p.get("provider") == provider and p.get("model") == model:
+            return p
+    return None
+
+def _find_emb_price(provider: str,
+                    model: str,
+                    pricing_table=None) -> Optional[Dict[str, Any]]:
+    if not pricing_table:
+        pricing_table = price_table()
+    emb_pricelist = pricing_table.get("embedding") or {}
+    for p in emb_pricelist:
+        if p.get("provider") == provider and p.get("model") == model:
+            return p
+    return None
+
+def _find_web_search_price(provider: str,
+                           tier: str,
+                           pricing_table=None) -> Optional[Dict[str, Any]]:
+    if not pricing_table:
+        pricing_table = price_table()
+    web_search_pricelist = pricing_table.get("web_search") or {}
+
+    for p in web_search_pricelist:
+        if p.get("provider") == provider and p.get("tier") == tier:
+            return p
+    return None
+
+def _get_accounting_services_config(accounting_services_config=None):
+    if not accounting_services_config:
+        # Load from environment
+        config_str = os.environ.get("ACCOUNTING_SERVICES", "{}")
+        try:
+            accounting_services_config = json.loads(config_str)
+        except json.JSONDecodeError:
+            accounting_services_config = {}
+    if not accounting_services_config:
+        accounting_services_config = {}
+    return accounting_services_config
+
+def _get_web_search_tier(provider: str,
+                         accounting_services_config=None) -> str:
+
+    accounting_services_config = _get_accounting_services_config(accounting_services_config)
+
+    """Get tier for web_search provider from ACCOUNTING_SERVICES config."""
+    web_search_config = accounting_services_config.get("web_search", {})
+    provider_config = web_search_config.get(provider, {})
+    defaults = {"brave": "base", "duckduckgo": "free"}
+    return provider_config.get("tier", defaults.get(provider, "free"))
+
+# Referent prices
+def _ref_out_price_1m(ref_provider: str, ref_model: str) -> float:
+    pr = _find_llm_price(ref_provider, ref_model)
+    if not pr:
+        raise RuntimeError(f"Reference model not found in price_table(): {ref_provider}/{ref_model}")
+    out_1m = float(pr.get("output_tokens_1M") or 0.0)
+    if out_1m <= 0:
+        raise RuntimeError(f"Reference model has invalid output_tokens_1M: {ref_provider}/{ref_model} -> {out_1m}")
+    return out_1m
+
+def _llm_equiv_tokens_for_rollup_item(
+        spent: Dict[str, int],
+        pr: Dict[str, Any],
+        ref_out_1m: float,
+) -> float:
+    # prices (per 1M tokens)
+    p_in  = float(pr.get("input_tokens_1M") or 0.0)
+    p_out = float(pr.get("output_tokens_1M") or 0.0)
+    p_th  = float(pr.get("thinking_output_tokens_1M", p_out) or p_out)
+    p_cr  = float(pr.get("cache_read_tokens_1M") or 0.0)
+
+    # tokens
+    t_in   = float(spent.get("input", 0) or 0)
+    t_out  = float(spent.get("output", 0) or 0)
+    t_th   = float(spent.get("thinking", 0) or 0)
+    t_out_non_th = max(t_out - t_th, 0.0)
+
+    t_cache_read = float(spent.get("cache_read", 0) or 0)
+
+    # cache write: either split (anthropic) or single bucket
+    cache_write_equiv = 0.0
+    cache_pricing = pr.get("cache_pricing")
+
+    if isinstance(cache_pricing, dict):
+        t_5m = float(spent.get("cache_5m_write", 0) or 0)
+        t_1h = float(spent.get("cache_1h_write", 0) or 0)
+        p_5m = float((cache_pricing.get("5m") or {}).get("write_tokens_1M") or 0.0)
+        p_1h = float((cache_pricing.get("1h") or {}).get("write_tokens_1M") or 0.0)
+
+        cache_write_equiv += t_5m * (p_5m / ref_out_1m)
+        cache_write_equiv += t_1h * (p_1h / ref_out_1m)
+    else:
+        t_cw = float(spent.get("cache_creation", 0) or 0)
+        p_cw = float(pr.get("cache_write_tokens_1M") or 0.0)
+        cache_write_equiv += t_cw * (p_cw / ref_out_1m)
+
+    # main buckets
+    equiv = 0.0
+    equiv += t_in * (p_in / ref_out_1m)
+    equiv += t_out_non_th * (p_out / ref_out_1m)
+    equiv += t_th * (p_th / ref_out_1m)
+    equiv += t_cache_read * (p_cr / ref_out_1m)
+    equiv += cache_write_equiv
+    return equiv
+
+def compute_llm_equivalent_tokens(
+        rollup: list[dict[str, Any]],
+        *,
+        ref_provider: str,
+        ref_model: str,
+        unknown_model_coef: float = 1.0,  # safest default: treat unknown as “expensive”
+) -> dict[str, Any]:
+    ref_out_1m = _ref_out_price_1m(ref_provider, ref_model)
+
+    total_equiv = 0.0
+    breakdown = []
+
+    for item in rollup:
+        if item.get("service") != "llm":
+            continue
+
+        provider = item.get("provider")
+        model = item.get("model")
+        spent = item.get("spent") or {}
+
+        pr = _find_llm_price(provider, model)
+
+        if not pr:
+            # Unknown model: approximate using a single coefficient (or make it 1.0 to prevent abuse).
+            approx_tokens = (
+                    float(spent.get("input", 0) or 0)
+                    + float(spent.get("output", 0) or 0)
+                    + float(spent.get("cache_read", 0) or 0)
+                    + float(spent.get("cache_creation", 0) or 0)
+                    + float(spent.get("cache_5m_write", 0) or 0)
+                    + float(spent.get("cache_1h_write", 0) or 0)
+            )
+            equiv = approx_tokens * float(unknown_model_coef)
+            note = "missing_price"
+        else:
+            equiv = _llm_equiv_tokens_for_rollup_item(spent, pr, ref_out_1m)
+            note = None
+
+        total_equiv += equiv
+        breakdown.append({
+            "provider": provider,
+            "model": model,
+            "equiv_tokens": equiv,
+            "note": note,
+            "coeff_out": (float(pr.get("output_tokens_1M")) / ref_out_1m) if pr else None,
+        })
+
+    return {
+        "reference": {"provider": ref_provider, "model": ref_model, "ref_out_price_1M": ref_out_1m},
+        "llm_equivalent_tokens": int(math.ceil(total_equiv)),
+        "llm_equivalent_tokens_float": total_equiv,
+        "by_model": breakdown,
+    }

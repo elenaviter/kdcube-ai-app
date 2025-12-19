@@ -12,6 +12,8 @@ def ensure_control_plane():
     """
     provision("deploy", CONTROL_PLANE_COMPONENT, app="control_plane")
 
+def deprovision_control_plane():
+    provision("delete", CONTROL_PLANE_COMPONENT, app="control_plane")
 
 def step_provision(tenant, project, app: str = "knowledge_base"):
     """
@@ -46,8 +48,9 @@ if __name__ == "__main__":
 
     # Deploy control plane first (idempotent)
     ensure_control_plane()
+    # deprovision_control_plane()
 
     # Deploy project schemas
-    step_provision(tenant, project, "chatbot")
-    step_provision(tenant, project, "knowledge_base")
+    # step_provision(tenant, project, "chatbot")
+    # step_provision(tenant, project, "knowledge_base")
     # step_deprovision(tenant, project, "knowledge_base")

@@ -114,65 +114,68 @@ return 1
 """
 
 
-# --------- Replenishment Helpers ---------
-def _merge_policy_with_replenishment(
-    base_policy: QuotaPolicy,
-    replenishment: Optional['QuotaReplenishment']
+# --------- Tier Balance Helpers ---------
+def _merge_policy_with_tier_balance(
+        base_policy: QuotaPolicy,
+        tier_balance: Optional['UserTierBalance']
 ) -> QuotaPolicy:
     """
-    Merge base policy with user's replenishment to create effective policy.
+    Apply tier balance OVERRIDE (not additive).
 
-    Replenishment values are ADDITIVE - they increase the base limits.
+    If tier_balance exists and has tier override: Use override limits where set, else fall back to base tier.
 
     Args:
-        base_policy: Base quota policy from user type
-        replenishment: Additional quotas from purchases/grants
+        base_policy: Base tier policy
+        tier_balance: User's tier balance (contains tier override + lifetime budget)
 
     Returns:
-        Merged QuotaPolicy with increased limits
+        Merged QuotaPolicy with overrides applied
     """
-    if not replenishment or not replenishment.is_valid():
+    if not tier_balance or not tier_balance.has_tier_override():
         return base_policy
 
-    # Helper to add limits (None = unlimited, so None + X = None)
-    def add_limit(base: Optional[int], additional: Optional[int]) -> Optional[int]:
-        if base is None:  # Unlimited
-            return None
-        if additional is None:  # No additional quota
-            return base
-        return base + additional
+    # Check if tier override is expired
+    if tier_balance.is_expired():
+        return base_policy
 
+    # Apply OVERRIDE semantics (tier_balance fields override base_policy)
     return QuotaPolicy(
-        max_concurrent=add_limit(
-            base_policy.max_concurrent,
-            replenishment.additional_max_concurrent
+        max_concurrent=(
+            tier_balance.max_concurrent
+            if tier_balance.max_concurrent is not None
+            else base_policy.max_concurrent
         ),
-        requests_per_day=add_limit(
-            base_policy.requests_per_day,
-            replenishment.additional_requests_per_day
+        requests_per_day=(
+            tier_balance.requests_per_day
+            if tier_balance.requests_per_day is not None
+            else base_policy.requests_per_day
         ),
-        requests_per_month=add_limit(
-            base_policy.requests_per_month,
-            replenishment.additional_requests_per_month
+        requests_per_month=(
+            tier_balance.requests_per_month
+            if tier_balance.requests_per_month is not None
+            else base_policy.requests_per_month
         ),
-        total_requests=add_limit(
-            base_policy.total_requests,
-            replenishment.additional_total_requests
+        total_requests=(
+            tier_balance.total_requests
+            if tier_balance.total_requests is not None
+            else base_policy.total_requests
         ),
-        tokens_per_hour=add_limit(
-            base_policy.tokens_per_hour,
-            replenishment.additional_tokens_per_hour
+        tokens_per_hour=(
+            tier_balance.tokens_per_hour
+            if tier_balance.tokens_per_hour is not None
+            else base_policy.tokens_per_hour
         ),
-        tokens_per_day=add_limit(
-            base_policy.tokens_per_day,
-            replenishment.additional_tokens_per_day
+        tokens_per_day=(
+            tier_balance.tokens_per_day
+            if tier_balance.tokens_per_day is not None
+            else base_policy.tokens_per_day
         ),
-        tokens_per_month=add_limit(
-            base_policy.tokens_per_month,
-            replenishment.additional_tokens_per_month
+        tokens_per_month=(
+            tier_balance.tokens_per_month
+            if tier_balance.tokens_per_month is not None
+            else base_policy.tokens_per_month
         ),
     )
-
 
 # --------- API ---------
 @dataclass
@@ -182,8 +185,8 @@ class AdmitResult:
     lock_id: Optional[str]
     # snapshot after admission (remaining or current readings)
     snapshot: Dict[str, int]     # {req_day, req_month, req_total, tok_hour, tok_day, tok_month, in_flight}
-    # replenishment info (for transparency)
-    used_replenishment: bool = False
+    # tier balance info (for transparency)
+    used_tier_override: bool = False
     effective_policy: Optional[Dict[str, Any]] = None  # Merged policy used for admission
 
 
@@ -191,7 +194,7 @@ class RateLimiter:
     """
     Redis-backed, atomic admission & accounting for user-level rate limiting.
 
-    Supports quota replenishment - additional credits purchased or granted to users
+    Supports tier balance - tier overrides and lifetime token budgets purchased or granted to users
     above their base policy limits.
 
     Tracks:
@@ -225,7 +228,7 @@ class RateLimiter:
         redis: Redis,
         *,
         namespace: str = "kdcube:rl",
-        replenishment_service: Optional['QuotaReplenishmentService'] = None,
+        tier_balance_manager: Optional['TierBalanceManager'] = None,
     ):
         """
         Initialize RateLimiter.
@@ -233,11 +236,11 @@ class RateLimiter:
         Args:
             redis: Redis client
             namespace: Namespace prefix (default: "kdcube:rl")
-            replenishment_service: Service for querying quota replenishments
+            tier_balance_manager: Manager for querying user tier balances
         """
         self.r = redis
         self.ns = namespace
-        self.replenishment_service = replenishment_service
+        self.tier_balance_manager = tier_balance_manager
 
     async def admit(
         self,
@@ -253,8 +256,8 @@ class RateLimiter:
         Check request & token quotas (based on *already committed* usage),
         then (if allowed) acquire a concurrency slot.
 
-        If replenishment_service is configured, fetches and applies additional
-        quotas purchased or granted to the user.
+        If tier_balance_manager is configured, fetches and applies tier overrides
+        purchased or granted to the user.
 
         Args:
             bundle_id: Bundle identifier
@@ -265,7 +268,7 @@ class RateLimiter:
             now: Current time (for testing)
 
         Returns:
-            AdmitResult with allowed status, snapshot, and replenishment info
+            AdmitResult with allowed status, snapshot, and tier balance info
         """
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
         ymd, ym, ymdh = _ymd(now), _ym(now), _ymdh(now)
@@ -276,27 +279,26 @@ class RateLimiter:
         project = subject_parts[1] if len(subject_parts) > 1 else None
         user_id = subject_parts[2] if len(subject_parts) > 2 else None
 
-        # Fetch replenishment and merge with base policy
-        replenishment = None
-        used_replenishment = False
+        # Fetch tier balance and merge with base policy
+        tier_balance = None
+        used_tier_override = False
         effective_policy = policy
 
-        if self.replenishment_service and tenant and project and user_id:
+        if self.tier_balance_manager and tenant and project and user_id:
             try:
-                replenishment = await self.replenishment_service.get_replenishment(
+                tier_balance = await self.tier_balance_manager.get_user_tier_balance(
                     tenant=tenant,
                     project=project,
                     user_id=user_id,
-                    bundle_id=bundle_id,
                 )
 
-                if replenishment:
-                    effective_policy = _merge_policy_with_replenishment(policy, replenishment)
-                    used_replenishment = True
+                if tier_balance and tier_balance.has_tier_override():
+                    effective_policy = _merge_policy_with_tier_balance(policy, tier_balance)
+                    used_tier_override = True
             except Exception as e:
-                # Log but don't fail admission on replenishment errors
+                # Log but don't fail admission on tier balance errors
                 import logging
-                logging.warning(f"Failed to fetch replenishment for {subject_id}: {e}")
+                logging.warning(f"Failed to fetch tier balance for {subject_id}: {e}")
 
         # ---- Build keys using namespace prefix
         k_locks = _k(self.ns, bundle_id, subject_id, "locks")
@@ -314,7 +316,7 @@ class RateLimiter:
         req_d = int(vals[0] or 0); req_m = int(vals[1] or 0); req_t = int(vals[2] or 0)
         tok_h = int(vals[3] or 0); tok_d = int(vals[4] or 0); tok_m = int(vals[5] or 0)
 
-        # ---- policy checks using EFFECTIVE policy (base + replenishment)
+        # ---- policy checks using EFFECTIVE policy (base + tier override)
         violations = []
         if effective_policy.requests_per_day   is not None and req_d >= effective_policy.requests_per_day:   violations.append("requests_per_day")
         if effective_policy.requests_per_month is not None and req_m >= effective_policy.requests_per_month: violations.append("requests_per_month")
@@ -333,8 +335,8 @@ class RateLimiter:
                     "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                     "in_flight": 0,
                 },
-                used_replenishment=used_replenishment,
-                effective_policy=asdict(effective_policy) if used_replenishment else None,
+                used_tier_override=used_tier_override,
+                effective_policy=asdict(effective_policy) if used_tier_override else None,
             )
 
         # ---- concurrency lock (if configured)
@@ -364,8 +366,8 @@ class RateLimiter:
                         "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                         "in_flight": in_flight,
                     },
-                    used_replenishment=used_replenishment,
-                    effective_policy=asdict(effective_policy) if used_replenishment else None,
+                    used_tier_override=used_tier_override,
+                    effective_policy=asdict(effective_policy) if used_tier_override else None,
                 )
 
         return AdmitResult(
@@ -377,8 +379,8 @@ class RateLimiter:
                 "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                 "in_flight": in_flight,
             },
-            used_replenishment=used_replenishment,
-            effective_policy=asdict(effective_policy) if used_replenishment else None,
+            used_tier_override=used_tier_override,
+            effective_policy=asdict(effective_policy) if used_tier_override else None,
         )
 
     async def commit(
@@ -453,6 +455,125 @@ class RateLimiter:
         k_locks = _k(self.ns, bundle_id, subject_id, "locks")
         return int(await self.r.zrem(k_locks, lock_id))
 
+    async def breakdown(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            bundle_ids: Optional[List[str]] = None,
+            now: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        Get usage breakdown for a user across bundles.
+
+        Args:
+            tenant: Tenant ID
+            project: Project ID
+            user_id: User ID
+            bundle_ids: List of bundle IDs, or ["*"] for all bundles
+            now: Current time (for testing)
+
+        Returns:
+            {
+                "bundles": {
+                    "bundle_id": {
+                        "requests_today": int,
+                        "requests_this_month": int,
+                        "requests_total": int,
+                        "tokens_today": int,
+                        "tokens_this_month": int,
+                        "concurrent": int,
+                    }
+                },
+                "totals": {
+                    "requests_today": int,
+                    "requests_this_month": int,
+                    "requests_total": int,
+                    "tokens_today": int,
+                    "tokens_this_month": int,
+                }
+            }
+        """
+        now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
+        ymd = _ymd(now)
+        ym = _ym(now)
+
+        subject_id = subject_id_of(tenant, project, user_id)
+
+        # Find all bundles for this user if not specified
+        if not bundle_ids or (len(bundle_ids) == 1 and bundle_ids[0] == "*"):
+            # Scan Redis for all bundle keys
+            pattern = f"{self.ns}:*:{subject_id}:reqs:total"
+            cursor = 0
+            found_bundles = set()
+
+            while True:
+                cursor, keys = await self.r.scan(cursor, match=pattern, count=100)
+                for key in keys:
+                    # Extract bundle_id from key pattern: kdcube:rl:{bundle}:{subject}:reqs:total
+                    parts = key.decode().split(":")
+                    if len(parts) >= 3:
+                        bundle_id = parts[2]  # Index 2 is bundle_id
+                        found_bundles.add(bundle_id)
+
+                if cursor == 0:
+                    break
+
+            bundle_ids = list(found_bundles)
+
+        if not bundle_ids:
+            return {"bundles": {}, "totals": {
+                "requests_today": 0,
+                "requests_this_month": 0,
+                "requests_total": 0,
+                "tokens_today": 0,
+                "tokens_this_month": 0,
+            }}
+
+        # Collect usage for each bundle
+        bundles = {}
+        totals = {
+            "requests_today": 0,
+            "requests_this_month": 0,
+            "requests_total": 0,
+            "tokens_today": 0,
+            "tokens_this_month": 0,
+        }
+
+        for bundle_id in bundle_ids:
+            k_req_d = _k(self.ns, bundle_id, subject_id, "reqs:day", ymd)
+            k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", ym)
+            k_req_t = _k(self.ns, bundle_id, subject_id, "reqs:total")
+            k_tok_d = _k(self.ns, bundle_id, subject_id, "toks:day", ymd)
+            k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", ym)
+            k_locks = _k(self.ns, bundle_id, subject_id, "locks")
+
+            vals = await self.r.mget(k_req_d, k_req_m, k_req_t, k_tok_d, k_tok_m)
+            req_d = int(vals[0] or 0)
+            req_m = int(vals[1] or 0)
+            req_t = int(vals[2] or 0)
+            tok_d = int(vals[3] or 0)
+            tok_m = int(vals[4] or 0)
+            concurrent = await self.r.zcard(k_locks)
+
+            bundles[bundle_id] = {
+                "requests_today": req_d,
+                "requests_this_month": req_m,
+                "requests_total": req_t,
+                "tokens_today": tok_d,
+                "tokens_this_month": tok_m,
+                "concurrent": concurrent,
+            }
+
+            # Aggregate totals
+            totals["requests_today"] += req_d
+            totals["requests_this_month"] += req_m
+            totals["requests_total"] += req_t
+            totals["tokens_today"] += tok_d
+            totals["tokens_this_month"] += tok_m
+
+        return {"bundles": bundles, "totals": totals}
 
 def subject_id_of(tenant: str, project: str, user_id: str, session_id: Optional[str] = None) -> str:
     """
@@ -492,7 +613,7 @@ class QuotaInsight:
     messages_remaining: Optional[int]
     retry_after_sec: Optional[int]
     retry_scope: Optional[str]   # "hour" | "day" | "month" | None
-    used_replenishment: bool = False  # Whether additional quotas were applied
+    used_tier_override: bool = False  # Whether tier override was applied
 
 
 def _remaining_from_policy(policy: QuotaPolicy, snapshot: Dict[str, int]) -> Dict[str, Optional[int]]:
@@ -580,18 +701,60 @@ def compute_quota_insight(
         policy: QuotaPolicy,
         snapshot: Dict[str, int],
         reason: Optional[str],
-        used_replenishment: bool = False,
+        user_budget_tokens: Optional[int] = None,  # User's purchased token balance
+        used_tier_override: bool = False,
         now: Optional[datetime] = None,
 ) -> QuotaInsight:
     """
-    Single entrypoint: QuotaPolicy + snapshot + reason -> QuotaInsight.
+    Compute quota insight considering BOTH tier limits AND user token budget.
+
+    Early warning should trigger when user is close to running out of EITHER:
+    - Request quotas (tier)
+    - Token budget (tier + purchased)
+
+    Args:
+        policy: Effective QuotaPolicy (already merged with tier override if applicable)
+        snapshot: Current usage snapshot
+        reason: Violation reason if denied
+        user_budget_tokens: User's purchased lifetime token balance
+        used_tier_override: Whether tier override was applied
+        now: Current time (for testing)
+
+    Returns:
+        QuotaInsight with limits, remaining, violations, and recommendations
     """
-    limits = asdict(policy)   # includes max_concurrent; that's fine infra-wise
+    limits = asdict(policy)
     remaining = _remaining_from_policy(policy, snapshot)
     violations: List[str] = (reason or "").split("|") if reason else []
 
     retry_after_sec, retry_scope = _retry_after_from_violations(violations, now=now)
-    messages_remaining = _messages_remaining_from_remaining(remaining)
+
+    # Calculate messages_remaining from REQUEST quotas
+    request_remaining = _messages_remaining_from_remaining(remaining)
+
+    # Calculate messages_remaining from TOKEN BUDGET
+    # Tier tokens remaining
+    tier_token_remaining = remaining.get("tokens_per_month")
+
+    # Total available tokens = tier + user budget
+    total_token_remaining = tier_token_remaining
+    if total_token_remaining is not None and user_budget_tokens is not None:
+        total_token_remaining = total_token_remaining + user_budget_tokens
+    elif total_token_remaining is None and user_budget_tokens is not None:
+        total_token_remaining = user_budget_tokens
+
+    # Estimate messages from token budget (assuming ~100K tokens per request)
+    token_based_messages = None
+    if total_token_remaining is not None:
+        token_based_messages = max(total_token_remaining // 100_000, 0)
+
+    # Final messages_remaining is the MINIMUM (most restrictive)
+    messages_remaining = request_remaining
+    if token_based_messages is not None:
+        if messages_remaining is None:
+            messages_remaining = token_based_messages
+        else:
+            messages_remaining = min(messages_remaining, token_based_messages)
 
     return QuotaInsight(
         limits=limits,
@@ -600,35 +763,5 @@ def compute_quota_insight(
         messages_remaining=messages_remaining,
         retry_after_sec=retry_after_sec,
         retry_scope=retry_scope,
-        used_replenishment=used_replenishment,
+        used_tier_override=used_tier_override,
     )
-
-"""
-rom rate_limit in the service event:
-
-"rate_limit": {
-  "limits": { ... },             // asdict(policy), includes max_concurrent, requests_per_day, ...
-  "remaining": { ... },          // per-dimension remaining
-  "violations": ["requests_per_day"],
-  "messages_remaining": 0,
-  "retry_after_sec": 43200,
-  "retry_scope": "day",
-  "retry_after_hours": 12        // added in run()
-}
-
-
-The client can render:
-
-“You have N messages remaining”
-→ use messages_remaining from any event (including early warning).
-
-“You are out of quota, please come in N hours”
-→ when you see rate_limit.messages_remaining == 0 and retry_after_hours not None.
-
-And if reason == "concurrency" (no window violations):
-
-violations is ["concurrency"]
-
-retry_after_sec / retry_after_hours is None
-→ show a different message, like “Too many parallel requests, please retry in a moment”, without talking about quota.
-"""

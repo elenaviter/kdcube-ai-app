@@ -90,7 +90,7 @@ def compose_search_results_html(
         title = r.get("title") or r.get("url") or f"Result {sid}"
         url = r.get("url") or ""
         body = (r.get("body") or r.get("text") or "").strip()
-        provider = r.get("vendor") or r.get("provider")
+        provider = r.get("provider")
 
         # badges
         b = []
@@ -328,12 +328,13 @@ class SearchRequest:
 
 
 # Normalized hit notation for your pipeline
-def make_hit(title: str, url: str, text: str, vendor: str) -> Dict[str, str]:
+def make_hit(title: str, url: str, text: str, provider: str) -> Dict[str, str]:
+    p = (provider or UNKNOWN).strip()
     return {
         "title": (title or "").strip(),
         "url": (url or "").strip(),
         "text": (text or "").strip(),
-        "vendor": vendor,
+        "provider": p,
     }
 
 def dedup_round_robin_ranked(
@@ -345,33 +346,27 @@ def dedup_round_robin_ranked(
     """
     Merges multiple result streams into a single list of unique rows, using:
 
-    1) **Round-robin sampling** across streams (fair interleaving)
-    2) **URL-based deduplication** (after `_normalize_url(...)`)
-    3) **Provider authority ranking** to decide which duplicate “wins”
+    1) Round-robin sampling across streams (fair interleaving)
+    2) URL-based deduplication (after `_normalize_url(...)`)
+    3) Provider authority ranking to decide which duplicate “wins” (higher rank wins)
+       - Equal rank: NO upgrade (first-seen stays winner), but we may backfill missing fields.
 
-    It returns up to `n` unique items, each with an ephemeral `sid` (1..n).
+    Output ordering:
+    - Final rows are sorted by winner provider rank (DESC), so higher-rank providers come first.
+    - Ties (equal rank) preserve the original insertion order (i.e., round-robin/first-seen order).
+    - `sid` is assigned after sorting (1..k).
 
-    :param per_query_results: A list of result collections (one per provider/query). Each element is iterated once.
-    Each hit may contain:
-    - url (required to dedupe; empty/invalid URLs are skipped)
-    - title (optional)
-    - body (optional; mapped to output text)
-    - vendor (optional; used as provider name)
-    :param n: Maximum number of unique URLs to return.
-    :param default_provider_name: Default provider label if a hit has no vendor
-    :param authority_rank: Provider → rank mapping. Higher number = higher authority.
-    Providers not present in this mapping are treated as rank 0.
-    :return:
+    Providers not present in `authority_rank` are treated as rank 0.
     """
     if not authority_rank:
         authority_rank = PROVIDERS_AUTHORITY_RANK
-    # Normalize rank keys once
+
     rank_map = {k.lower(): int(v) for k, v in authority_rank.items()}
 
-    def get_rank(vendor: str | None) -> int:
-        if not vendor:
+    def get_rank(provider: str | None) -> int:
+        if not provider:
             return 0
-        return rank_map.get(vendor.lower(), 0)
+        return rank_map.get(provider.lower(), 0)
 
     streams = [iter(res) for res in per_query_results]
     active = deque(range(len(streams)))  # indices still in rotation
@@ -392,14 +387,14 @@ def dedup_round_robin_ranked(
         if not url:
             continue
 
-        vendor = hit.get("vendor") or default_provider_name
-        r = get_rank(vendor)
+        provider = hit.get("provider") or default_provider_name
+        r = get_rank(provider)
 
         incoming = {
             "title": hit.get("title") or "",
             "url": url,
             "text": hit.get("body") or hit.get("text") or "",
-            "provider": vendor,
+            "provider": provider,
         }
 
         if url not in unique:
@@ -421,7 +416,7 @@ def dedup_round_robin_ranked(
             }
             best_rank[url] = r
         else:
-            # Current stays primary; optionally backfill missing fields from lower rank
+            # Equal or lower rank: no upgrade, only backfill missing fields
             if not cur.get("title") and incoming["title"]:
                 cur["title"] = incoming["title"]
             if not cur.get("text") and incoming["text"]:
@@ -429,9 +424,16 @@ def dedup_round_robin_ranked(
             if not cur.get("provider") and incoming["provider"]:
                 cur["provider"] = incoming["provider"]
 
-    # Build rows (stable insertion order; replacing a url keeps its position)
+    # --- Sort by rank (desc), tie-break by insertion order (stable) ---
+    ranked_items = []
+    for order, (url, row) in enumerate(unique.items()):
+        ranked_items.append((best_rank.get(url, 0), order, row))
+
+    ranked_items.sort(key=lambda x: (-x[0], x[1]))  # higher rank first, stable within ties
+
+    # --- Build rows (SIDs assigned AFTER sorting) ---
     rows = []
-    for sid, row in enumerate(unique.values(), 1):
+    for sid, (_rank, _order, row) in enumerate(ranked_items[:n], 1):
         rows.append({
             "sid": sid,
             "title": row.get("title", ""),
@@ -439,7 +441,5 @@ def dedup_round_robin_ranked(
             "text": row.get("text", ""),
             "provider": row.get("provider") or default_provider_name,
         })
-        if len(rows) >= n:
-            break
 
     return rows

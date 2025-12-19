@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# apps/chat/sdk/infra/rate_limit/control_plane_manager.py
+# apps/chat/sdk/infra/rate_limit/control_plane/manager.py
 
 """
 Control Plane Manager
 
 Unified manager for:
-1. User quota replenishments (via ReplenishmentManager)
-2. User quota policies (base policies by user type)
-3. Application budget policies (spending limits per provider)
+1. User tier balance (via TierBalanceManager)
+2. User quota policies (base tier limits by user type)
+3. Application budget policies (spending limits per provider - NO bundle_id!)
 
 All with PostgreSQL storage and Redis caching.
 """
@@ -19,15 +19,15 @@ from __future__ import annotations
 import logging
 import json
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from datetime import datetime
+from typing import Optional, List
 
 import asyncpg
 from redis.asyncio import Redis
 
-from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.replenishment_manager import (
-    ReplenishmentManager,
-    QuotaReplenishment,
+from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.tier_balance_manager import (
+    TierBalanceManager,
+    UserTierBalance,
 )
 from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.policy import QuotaPolicy, ProviderBudgetPolicy
 
@@ -36,11 +36,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class UserQuotaPolicy:
-    """Base quota policy for a user type."""
+    """Base quota policy for a user type (free, paid, premium)."""
     tenant: str
     project: str
     user_type: str
-    bundle_id: str
+    # Policies are global per tenant/project
 
     # Quota limits (None = unlimited)
     max_concurrent: Optional[int] = None
@@ -73,11 +73,11 @@ class UserQuotaPolicy:
 
 @dataclass
 class ApplicationBudgetPolicy:
-    """Budget policy for a provider."""
+    """Budget policy for a provider (global per tenant/project)."""
     tenant: str
     project: str
-    bundle_id: str
     provider: str
+    # Budget policies are global per tenant/project
 
     # Budget limits in USD (None = unlimited)
     usd_per_hour: Optional[float] = None
@@ -106,9 +106,19 @@ class ControlPlaneManager:
     Unified Control Plane Manager.
 
     Manages:
-    1. User quota replenishments (delegates to ReplenishmentManager)
-    2. User quota policies (base policies)
-    3. Application budget policies
+    1. User Quota Policies (base tier limits by user type)
+    2. User Tier Balance (tier overrides + lifetime budget) - delegates to TierBalanceManager
+    3. Application Budget POLICIES (spending limits)
+    # Stores SPENDING LIMITS per provider
+    # Table: application_budget_policies
+        - set_tenant_project_budget_policy()
+        - list_tenant_project_budget_policies()
+        - Table: application_budget_policies
+    # Example: "Anthropic can spend max $200/day"
+    # set_tenant_project_budget_policy(
+    #     provider="anthropic",
+    #     usd_per_day=200.0  # LIMIT
+    # )
 
     All with PostgreSQL + Redis caching.
     """
@@ -120,8 +130,8 @@ class ControlPlaneManager:
             pg_pool: Optional[asyncpg.Pool] = None,
             redis: Optional[Redis] = None,
             *,
-            cache_ttl: int = 60,  # 60 seconds for policies (longer than replenishments)
-            replenishment_cache_ttl: int = 10,  # 10 seconds for replenishments
+            cache_ttl: int = 60,  # 60 seconds for policies
+            tier_balance_cache_ttl: int = 10,  # 10 seconds for tier balance
     ):
         """
         Initialize Control Plane Manager.
@@ -130,239 +140,167 @@ class ControlPlaneManager:
             pg_pool: asyncpg connection pool
             redis: Redis client for caching
             cache_ttl: Cache TTL for policies in seconds (default: 60)
-            replenishment_cache_ttl: Cache TTL for replenishments (default: 10)
+            tier_balance_cache_ttl: Cache TTL for tier balance (default: 10)
         """
         self._pg_pool = pg_pool
         self._redis = redis
         self.cache_ttl = cache_ttl
 
-        # Initialize ReplenishmentManager (delegates to it)
-        self.replenishment_mgr = ReplenishmentManager(
+        # Initialize TierBalanceManager (delegates to it)
+        self.tier_balance_mgr = TierBalanceManager(
             pg_pool=pg_pool,
             redis=redis,
-            cache_ttl=replenishment_cache_ttl,
+            cache_ttl=tier_balance_cache_ttl,
         )
 
         # Track if we own the pool/redis
         self._owns_pool = pg_pool is None
         self._owns_redis = redis is None
 
-    async def init(
-            self,
-            *,
-            pg_host: Optional[str] = None,
-            pg_port: Optional[int] = None,
-            pg_user: Optional[str] = None,
-            pg_password: Optional[str] = None,
-            pg_database: Optional[str] = None,
-            pg_ssl: Optional[str] = None,
-            redis_url: Optional[str] = None,
-    ):
+    async def init(self, *, redis_url: Optional[str] = None):
         """Initialize connections if not provided."""
-        # Initialize via replenishment manager
-        await self.replenishment_mgr.init(
-            pg_host=pg_host,
-            pg_port=pg_port,
-            pg_user=pg_user,
-            pg_password=pg_password,
-            pg_database=pg_database,
-            pg_ssl=pg_ssl,
-            redis_url=redis_url,
-        )
+        # Initialize via tier balance manager
+        await self.tier_balance_mgr.init(redis_url=redis_url)
 
         # Share connections
-        self._pg_pool = self.replenishment_mgr._pg_pool
-        self._redis = self.replenishment_mgr._redis
+        self._pg_pool = self.tier_balance_mgr._pg_pool
+        self._redis = self.tier_balance_mgr._redis
 
     async def close(self):
         """Close connections."""
-        await self.replenishment_mgr.close()
+        await self.tier_balance_mgr.close()
 
     # =========================================================================
-    # Replenishment Operations (delegate to ReplenishmentManager)
+    # Tier Balance Operations (delegate to TierBalanceManager)
     # =========================================================================
 
-    async def get_replenishment(
-            self, *, tenant: str, project: str, user_id: str, bundle_id: str
-    ) -> Optional[QuotaReplenishment]:
-        """Get user's quota replenishment (cached)."""
-        return await self.replenishment_mgr.get_replenishment(
-            tenant=tenant, project=project, user_id=user_id, bundle_id=bundle_id
+    async def get_user_tier_balance(
+            self, *, tenant: str, project: str, user_id: str
+    ) -> Optional[UserTierBalance]:
+        """Get user's tier balance (cached)."""
+        return await self.tier_balance_mgr.get_user_tier_balance(
+            tenant=tenant, project=project, user_id=user_id
         )
 
-    async def create_replenishment(
+    async def update_user_tier_budget(
             self,
             *,
             tenant: str,
             project: str,
             user_id: str,
-            bundle_id: str,
-            additional_requests_per_day: Optional[int] = None,
-            additional_requests_per_month: Optional[int] = None,
-            additional_total_requests: Optional[int] = None,
-            additional_tokens_per_hour: Optional[int] = None,
-            additional_tokens_per_day: Optional[int] = None,
-            additional_tokens_per_month: Optional[int] = None,
-            additional_max_concurrent: Optional[int] = None,
+            # Tier override fields (PARTIAL UPDATES SUPPORTED!)
+            max_concurrent: Optional[int] = None,
+            requests_per_day: Optional[int] = None,
+            requests_per_month: Optional[int] = None,
+            total_requests: Optional[int] = None,
+            tokens_per_hour: Optional[int] = None,
+            tokens_per_day: Optional[int] = None,
+            tokens_per_month: Optional[int] = None,
+            # Metadata
             expires_at: Optional[datetime] = None,
             purchase_id: Optional[str] = None,
             purchase_amount_usd: Optional[float] = None,
             purchase_notes: Optional[str] = None,
-    ) -> QuotaReplenishment:
-        """Create or update replenishment."""
-        return await self.replenishment_mgr.create_replenishment(
+    ) -> UserTierBalance:
+        """Update user's tier budget (supports partial updates via COALESCE)."""
+        return await self.tier_balance_mgr.update_user_tier_budget(
             tenant=tenant,
             project=project,
             user_id=user_id,
-            bundle_id=bundle_id,
-            additional_requests_per_day=additional_requests_per_day,
-            additional_requests_per_month=additional_requests_per_month,
-            additional_total_requests=additional_total_requests,
-            additional_tokens_per_hour=additional_tokens_per_hour,
-            additional_tokens_per_day=additional_tokens_per_day,
-            additional_tokens_per_month=additional_tokens_per_month,
-            additional_max_concurrent=additional_max_concurrent,
+            max_concurrent=max_concurrent,
+            requests_per_day=requests_per_day,
+            requests_per_month=requests_per_month,
+            total_requests=total_requests,
+            tokens_per_hour=tokens_per_hour,
+            tokens_per_day=tokens_per_day,
+            tokens_per_month=tokens_per_month,
             expires_at=expires_at,
             purchase_id=purchase_id,
             purchase_amount_usd=purchase_amount_usd,
             purchase_notes=purchase_notes,
         )
 
-    async def list_user_replenishments(
+    async def list_user_tier_balances(
             self, *, tenant: str, project: str, user_id: str, include_expired: bool = False
-    ) -> List[QuotaReplenishment]:
-        """List all replenishments for a user."""
-        return await self.replenishment_mgr.list_user_replenishments(
+    ) -> List[UserTierBalance]:
+        """List all tier balances for a user."""
+        return await self.tier_balance_mgr.list_user_tier_balances(
             tenant=tenant, project=project, user_id=user_id, include_expired=include_expired
         )
 
-    async def deactivate_replenishment(
-            self, *, tenant: str, project: str, user_id: str, bundle_id: str
+    async def deactivate_tier_balance(
+            self, *, tenant: str, project: str, user_id: str
     ):
-        """Deactivate a replenishment."""
-        await self.replenishment_mgr.deactivate_replenishment(
-            tenant=tenant, project=project, user_id=user_id, bundle_id=bundle_id
+        """Deactivate tier balance."""
+        await self.tier_balance_mgr.deactivate_tier_balance(
+            tenant=tenant, project=project, user_id=user_id
         )
 
-    async def list_all_replenishments(
+    async def add_user_credits_usd(
             self,
             *,
-            tenant: Optional[str] = None,
-            project: Optional[str] = None,
-            user_id: Optional[str] = None,
-            bundle_id: Optional[str] = None,
-            include_expired: bool = False,
-            limit: int = 100,
-    ) -> List[QuotaReplenishment]:
-        """List replenishments with filters (for admin UI)."""
-        if not self._pg_pool:
-            return []
+            tenant: str,
+            project: str,
+            user_id: str,
+            usd_amount: float,
+            ref_provider: str = "anthropic",
+            ref_model: str = "claude-sonnet-4-5-20250929",
+            purchase_id: Optional[str] = None,
+            notes: Optional[str] = None,
+    ) -> UserTierBalance:
+        """
+        Add purchased credits in USD (converted to lifetime tokens).
+        Uses tier balance manager's add_lifetime_tokens method.
+        """
+        from kdcube_ai_app.infra.accounting.usage import _find_llm_price
 
-        where_clauses = ["active = TRUE"]
-        args = []
+        # Convert USD to tokens
+        pr = _find_llm_price(ref_provider, ref_model)
+        p_ref_out = float(pr["output_tokens_1M"]) / 1_000_000
+        tokens = int(usd_amount / p_ref_out)
 
-        if tenant:
-            args.append(tenant)
-            where_clauses.append(f"tenant = ${len(args)}")
-        if project:
-            args.append(project)
-            where_clauses.append(f"project = ${len(args)}")
-        if user_id:
-            args.append(user_id)
-            where_clauses.append(f"user_id = ${len(args)}")
-        if bundle_id:
-            args.append(bundle_id)
-            where_clauses.append(f"bundle_id = ${len(args)}")
-
-        if not include_expired:
-            where_clauses.append("(expires_at IS NULL OR expires_at > NOW())")
-
-        where_sql = " AND ".join(where_clauses)
-
-        async with self._pg_pool.acquire() as conn:
-            rows = await conn.fetch(f"""
-                SELECT *
-                FROM {self.CONTROL_PLANE_SCHEMA}.user_quota_replenishment
-                WHERE {where_sql}
-                ORDER BY created_at DESC
-                LIMIT {int(limit)}
-            """, *args)
-
-        return [QuotaReplenishment(**dict(row)) for row in rows]
-
-    async def list_users_with_credits(
-            self,
-            *,
-            tenant: Optional[str] = None,
-            project: Optional[str] = None,
-            limit: int = 100,
-    ) -> List[Dict[str, Any]]:
-        """List users who have active credits."""
-        if not self._pg_pool:
-            return []
-
-        where_clauses = ["active = TRUE", "(expires_at IS NULL OR expires_at > NOW())"]
-        args = []
-
-        if tenant:
-            args.append(tenant)
-            where_clauses.append(f"tenant = ${len(args)}")
-        if project:
-            args.append(project)
-            where_clauses.append(f"project = ${len(args)}")
-
-        where_sql = " AND ".join(where_clauses)
-
-        async with self._pg_pool.acquire() as conn:
-            rows = await conn.fetch(f"""
-                SELECT 
-                    tenant, project, user_id,
-                    COUNT(*) as credit_count,
-                    SUM(additional_requests_per_day) as total_additional_requests_per_day,
-                    SUM(additional_tokens_per_day) as total_additional_tokens_per_day,
-                    MIN(expires_at) as earliest_expiry,
-                    MAX(created_at) as latest_purchase
-                FROM {self.CONTROL_PLANE_SCHEMA}.user_quota_replenishment
-                WHERE {where_sql}
-                GROUP BY tenant, project, user_id
-                ORDER BY latest_purchase DESC
-                LIMIT {int(limit)}
-            """, *args)
-
-        return [dict(row) for row in rows]
+        # Delegate to tier balance manager
+        return await self.tier_balance_mgr.add_lifetime_tokens(
+            tenant=tenant,
+            project=project,
+            user_id=user_id,
+            tokens=tokens,
+            usd_amount=usd_amount,
+            purchase_id=purchase_id,
+            notes=notes or f"USD purchase: ${usd_amount:.2f} → {tokens:,} tokens",
+        )
 
     # =========================================================================
     # User Quota Policy Operations
     # =========================================================================
 
     def _quota_policy_cache_key(
-            self, tenant: str, project: str, user_type: str, bundle_id: str
+            self, tenant: str, project: str, user_type: str
     ) -> str:
         """Build Redis cache key for quota policy."""
-        return f"kdcube:cp:quota_policy:{tenant}:{project}:{user_type}:{bundle_id}"
+        return f"kdcube:cp:quota_policy:{tenant}:{project}:{user_type}"
 
     async def get_user_quota_policy(
-            self, *, tenant: str, project: str, user_type: str, bundle_id: str
+            self, *, tenant: str, project: str, user_type: str,
     ) -> Optional[QuotaPolicy]:
         """
         Get quota policy for a user type.
 
         Lookup order:
         1. Redis cache
-        2. PostgreSQL (bundle-specific)
-        3. PostgreSQL (global bundle_id='*')
+        2. PostgreSQL
 
         Returns QuotaPolicy or None.
         """
         # Check Redis cache
         if self._redis:
-            cache_key = self._quota_policy_cache_key(tenant, project, user_type, bundle_id)
+            cache_key = self._quota_policy_cache_key(tenant, project, user_type)
             try:
                 cached = await self._redis.get(cache_key)
                 if cached:
                     data = json.loads(cached.decode())
                     if data:
-                        logger.debug(f"Quota policy cache HIT (Redis): {user_type}/{bundle_id}")
+                        logger.debug(f"Quota policy cache HIT (Redis): {user_type}")
                         return QuotaPolicy(**data)
             except Exception as e:
                 logger.warning(f"Redis cache read error for quota policy: {e}")
@@ -372,35 +310,22 @@ class ControlPlaneManager:
             return None
 
         async with self._pg_pool.acquire() as conn:
-            # Try bundle-specific first
             row = await conn.fetchrow(f"""
                 SELECT *
                 FROM {self.CONTROL_PLANE_SCHEMA}.user_quota_policies
-                WHERE tenant = $1 AND project = $2 AND user_type = $3 AND bundle_id = $4
+                WHERE tenant = $1 AND project = $2 AND user_type = $3
                   AND active = TRUE
-                ORDER BY created_at DESC
                 LIMIT 1
-            """, tenant, project, user_type, bundle_id)
-
-            # Fall back to global
-            if not row:
-                row = await conn.fetchrow(f"""
-                    SELECT *
-                    FROM {self.CONTROL_PLANE_SCHEMA}.user_quota_policies
-                    WHERE tenant = $1 AND project = $2 AND user_type = $3 AND bundle_id = '*'
-                      AND active = TRUE
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                """, tenant, project, user_type)
+            """, tenant, project, user_type)
 
         if row:
-            logger.debug(f"Quota policy cache MISS (DB hit): {user_type}/{bundle_id}")
+            logger.debug(f"Quota policy cache MISS (DB hit): {user_type}")
             policy_obj = UserQuotaPolicy(**dict(row))
             quota_policy = policy_obj.to_quota_policy()
 
             # Cache in Redis
             if self._redis:
-                cache_key = self._quota_policy_cache_key(tenant, project, user_type, bundle_id)
+                cache_key = self._quota_policy_cache_key(tenant, project, user_type)
                 try:
                     await self._redis.setex(
                         cache_key,
@@ -414,13 +339,12 @@ class ControlPlaneManager:
 
         return None
 
-    async def set_user_quota_policy(
+    async def set_tenant_project_user_quota_policy(
             self,
             *,
             tenant: str,
             project: str,
             user_type: str,
-            bundle_id: str,
             max_concurrent: Optional[int] = None,
             requests_per_day: Optional[int] = None,
             requests_per_month: Optional[int] = None,
@@ -431,19 +355,19 @@ class ControlPlaneManager:
             created_by: Optional[str] = None,
             notes: Optional[str] = None,
     ) -> UserQuotaPolicy:
-        """Create or update quota policy."""
+        """Create or update quota policy (supports partial updates via COALESCE)."""
         if not self._pg_pool:
             raise RuntimeError("PostgreSQL pool not initialized")
 
         async with self._pg_pool.acquire() as conn:
             row = await conn.fetchrow(f"""
                 INSERT INTO {self.CONTROL_PLANE_SCHEMA}.user_quota_policies (
-                    tenant, project, user_type, bundle_id,
+                    tenant, project, user_type,
                     max_concurrent, requests_per_day, requests_per_month, total_requests,
                     tokens_per_hour, tokens_per_day, tokens_per_month,
                     created_by, notes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-                ON CONFLICT (tenant, project, user_type, bundle_id)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (tenant, project, user_type)
                 DO UPDATE SET
                     max_concurrent = COALESCE(EXCLUDED.max_concurrent, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.max_concurrent),
                     requests_per_day = COALESCE(EXCLUDED.requests_per_day, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.requests_per_day),
@@ -457,7 +381,7 @@ class ControlPlaneManager:
                     updated_at = NOW()
                 RETURNING *
             """,
-                                      tenant, project, user_type, bundle_id,
+                                      tenant, project, user_type,
                                       max_concurrent, requests_per_day, requests_per_month, total_requests,
                                       tokens_per_hour, tokens_per_day, tokens_per_month,
                                       created_by, notes
@@ -465,7 +389,7 @@ class ControlPlaneManager:
 
         # Invalidate cache
         if self._redis:
-            cache_key = self._quota_policy_cache_key(tenant, project, user_type, bundle_id)
+            cache_key = self._quota_policy_cache_key(tenant, project, user_type)
             try:
                 await self._redis.delete(cache_key)
             except Exception:
@@ -503,74 +427,138 @@ class ControlPlaneManager:
 
         return [UserQuotaPolicy(**dict(row)) for row in rows]
 
+    async def tenant_project_user_quota_policies_policies_initialize_from_master_app(self,
+                                                                                     tenant: str,
+                                                                                     project: str,
+                                                                                     bundle_id: str,
+                                                                                     app_quota_policies,
+                                                                                     app_budget_policies):
+        """
+        Ensure policies are seeded from bundle configuration (one-time operation).
+
+        Uses Redis distributed lock to prevent concurrent initialization.
+        Idempotent - safe to call multiple times.
+
+        Flow:
+        1. Check if already initialized (instance flag)
+        2. Acquire distributed lock (Redis SET NX)
+        3. Check if policies exist in database
+        4. If not, seed from bundle configuration
+        5. Release lock
+        """
+
+        # Distributed lock key (global across all instances)
+        lock_key = f"kdcube:cp:init_lock:{tenant}:{project}"
+        lock_ttl = 30  # 30 seconds
+
+        policies_initialized = False
+        try:
+            # Try to acquire distributed lock
+            lock_acquired = await self._redis.set(
+                lock_key, "1", ex=lock_ttl, nx=True
+            )
+
+            if not lock_acquired:
+                # Another instance is initializing, wait a bit then assume done
+                logger.info(
+                    f"[tenant_project_user_quota_policies_policies_initialize_from_master_app] Lock held by another instance, waiting..."
+                )
+                import asyncio
+                await asyncio.sleep(2)
+                policies_initialized = True
+                return policies_initialized
+
+            # We have the lock - check if policies exist
+            existing_policies = await self.list_quota_policies(
+                tenant=tenant,
+                project=project,
+                limit=1,
+            )
+
+            if existing_policies:
+                logger.debug(
+                    f"[ensure_policies_initialized] Policies already exist, skipping seed"
+                )
+                policies_initialized = True
+                return policies_initialized
+
+            # Seed policies from bundle configuration
+            logger.info(
+                f"[ensure_policies_initialized] Seeding policies from bundle config..."
+            )
+
+            # Get hardcoded policies from bundle
+            bundle_quota_policies = app_quota_policies
+            bundle_budget_policies = app_budget_policies
+
+            # Seed quota policies
+            for user_type, policy in bundle_quota_policies.items():
+                try:
+                    await self.set_tenant_project_user_quota_policy(
+                        tenant=tenant,
+                        project=project,
+                        user_type=user_type,
+                        max_concurrent=policy.max_concurrent,
+                        requests_per_day=policy.requests_per_day,
+                        requests_per_month=policy.requests_per_month,
+                        total_requests=policy.total_requests,
+                        tokens_per_hour=policy.tokens_per_hour,
+                        tokens_per_day=policy.tokens_per_day,
+                        tokens_per_month=policy.tokens_per_month,
+                        created_by="bundle_seed",
+                        notes=f"Seeded from {bundle_id} configuration",
+                    )
+                    logger.info(
+                        f"[ensure_policies_initialized] Seeded quota policy for {user_type}"
+                    )
+                except Exception as e:
+                    logger.exception(
+                        f"[ensure_policies_initialized] Failed to seed {user_type}: {e}"
+                    )
+
+            # Seed budget policies
+            for provider, policy in bundle_budget_policies.items():
+                try:
+                    await self.set_tenant_project_budget_policy(
+                        tenant=tenant,
+                        project=project,
+                        provider=provider,
+                        usd_per_hour=policy.usd_per_hour,
+                        usd_per_day=policy.usd_per_day,
+                        usd_per_month=policy.usd_per_month,
+                        created_by="bundle_seed",
+                        notes=f"Seeded from {bundle_id} configuration",
+                    )
+                    logger.info(f"[ensure_policies_initialized] Seeded budget policy for {provider}")
+                except Exception as e:
+                    logger.exception(f"[ensure_policies_initialized] Failed to seed {provider}: {e}")
+
+            logger.info(f"[ensure_policies_initialized] Policy seeding complete")
+            policies_initialized = True
+
+        finally:
+            # Release lock
+            try:
+                await self._redis.delete(lock_key)
+            except Exception:
+                pass
+        return policies_initialized
+
     # =========================================================================
-    # Application Budget Policy Operations
+    # Tenant / Project (Application) Budget Policy Operations
     # =========================================================================
 
     def _budget_policy_cache_key(
-            self, tenant: str, project: str, bundle_id: str, provider: str
+            self, tenant: str, project: str, provider: str
     ) -> str:
         """Build Redis cache key for budget policy."""
-        return f"kdcube:cp:budget_policy:{tenant}:{project}:{bundle_id}:{provider}"
+        return f"kdcube:cp:budget_policy:{tenant}:{project}:{provider}"
 
-    async def get_budget_policy(
-            self, *, tenant: str, project: str, bundle_id: str, provider: str
-    ) -> Optional[ProviderBudgetPolicy]:
-        """Get budget policy for a provider."""
-        # Check Redis cache
-        if self._redis:
-            cache_key = self._budget_policy_cache_key(tenant, project, bundle_id, provider)
-            try:
-                cached = await self._redis.get(cache_key)
-                if cached:
-                    data = json.loads(cached.decode())
-                    if data:
-                        logger.debug(f"Budget policy cache HIT (Redis): {bundle_id}/{provider}")
-                        return ProviderBudgetPolicy(**data)
-            except Exception as e:
-                logger.warning(f"Redis cache read error for budget policy: {e}")
-
-        # Query PostgreSQL
-        if not self._pg_pool:
-            return None
-
-        async with self._pg_pool.acquire() as conn:
-            row = await conn.fetchrow(f"""
-                SELECT *
-                FROM {self.CONTROL_PLANE_SCHEMA}.application_budget_policies
-                WHERE tenant = $1 AND project = $2 AND bundle_id = $3 AND provider = $4
-                  AND active = TRUE
-                ORDER BY created_at DESC
-                LIMIT 1
-            """, tenant, project, bundle_id, provider)
-
-        if row:
-            logger.debug(f"Budget policy cache MISS (DB hit): {bundle_id}/{provider}")
-            policy_obj = ApplicationBudgetPolicy(**dict(row))
-            budget_policy = policy_obj.to_provider_budget_policy()
-
-            # Cache in Redis
-            if self._redis:
-                cache_key = self._budget_policy_cache_key(tenant, project, bundle_id, provider)
-                try:
-                    await self._redis.setex(
-                        cache_key,
-                        self.cache_ttl,
-                        json.dumps(asdict(budget_policy))
-                    )
-                except Exception as e:
-                    logger.warning(f"Redis cache write error for budget policy: {e}")
-
-            return budget_policy
-
-        return None
-
-    async def set_budget_policy(
+    async def set_tenant_project_budget_policy(
             self,
             *,
             tenant: str,
             project: str,
-            bundle_id: str,
             provider: str,
             usd_per_hour: Optional[float] = None,
             usd_per_day: Optional[float] = None,
@@ -585,11 +573,11 @@ class ControlPlaneManager:
         async with self._pg_pool.acquire() as conn:
             row = await conn.fetchrow(f"""
                 INSERT INTO {self.CONTROL_PLANE_SCHEMA}.application_budget_policies (
-                    tenant, project, bundle_id, provider,
+                    tenant, project, provider,
                     usd_per_hour, usd_per_day, usd_per_month,
                     created_by, notes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (tenant, project, bundle_id, provider)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (tenant, project, provider)
                 DO UPDATE SET
                     usd_per_hour = COALESCE(EXCLUDED.usd_per_hour, {self.CONTROL_PLANE_SCHEMA}.application_budget_policies.usd_per_hour),
                     usd_per_day = COALESCE(EXCLUDED.usd_per_day, {self.CONTROL_PLANE_SCHEMA}.application_budget_policies.usd_per_day),
@@ -599,14 +587,14 @@ class ControlPlaneManager:
                     updated_at = NOW()
                 RETURNING *
             """,
-                                      tenant, project, bundle_id, provider,
+                                      tenant, project, provider,
                                       usd_per_hour, usd_per_day, usd_per_month,
                                       created_by, notes
                                       )
 
         # Invalidate cache
         if self._redis:
-            cache_key = self._budget_policy_cache_key(tenant, project, bundle_id, provider)
+            cache_key = self._budget_policy_cache_key(tenant, project, provider)
             try:
                 await self._redis.delete(cache_key)
             except Exception:
@@ -614,7 +602,7 @@ class ControlPlaneManager:
 
         return ApplicationBudgetPolicy(**dict(row))
 
-    async def list_budget_policies(
+    async def list_tenant_project_budget_policies(
             self, *, tenant: Optional[str] = None, project: Optional[str] = None, limit: int = 100
     ) -> List[ApplicationBudgetPolicy]:
         """List all budget policies."""
@@ -643,25 +631,3 @@ class ControlPlaneManager:
             """, *args)
 
         return [ApplicationBudgetPolicy(**dict(row)) for row in rows]
-
-    async def get_all_budget_policies_for_bundle(
-            self, *, tenant: str, project: str, bundle_id: str
-    ) -> Dict[str, ProviderBudgetPolicy]:
-        """Get all budget policies for a bundle (returns dict by provider)."""
-        if not self._pg_pool:
-            return {}
-
-        async with self._pg_pool.acquire() as conn:
-            rows = await conn.fetch(f"""
-                SELECT *
-                FROM {self.CONTROL_PLANE_SCHEMA}.application_budget_policies
-                WHERE tenant = $1 AND project = $2 AND bundle_id = $3 AND active = TRUE
-                ORDER BY provider
-            """, tenant, project, bundle_id)
-
-        policies = {}
-        for row in rows:
-            policy_obj = ApplicationBudgetPolicy(**dict(row))
-            policies[policy_obj.provider] = policy_obj.to_provider_budget_policy()
-
-        return policies

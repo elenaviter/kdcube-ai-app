@@ -150,7 +150,7 @@ class OrchestrationEntrypoint:
         )
         
         # Budget limiter (for provider spending)
-        self.budget_limiter = BudgetLimiter(redis, tenant=settings.TENANT, project=settings.PROJECT)
+        self.budget_limiter = ProjectBudgetLimiter(redis, tenant=settings.TENANT, project=settings.PROJECT)
 ```
 
 **Use in run():**
@@ -181,12 +181,6 @@ async def run(self, state: State) -> dict:
     if user_admit.used_replenishment:
         logger.info(f"User {user_id} using purchased credits")
     
-    # Tier 2: Budget limits (from Control Plane)
-    budget_policies = await self.cp_manager.get_all_budget_policies_for_bundle(
-        tenant=self.settings.TENANT,
-        project=self.settings.PROJECT,
-        bundle_id=bundle_id,
-    )
     
     for provider, policy in budget_policies.items():
         insight = await self.budget_limiter.check_budget(

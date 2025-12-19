@@ -13,3 +13,7 @@ docker compose up -d
 ```shell
 docker compose stop redis && docker compose rm redis -f && docker compose up redis -d --build
 ```
+
+```shell
+docker compose stop proxylogin && docker compose rm proxylogin -f && docker compose build --no-cache && docker compose up proxylogin -d
+```
