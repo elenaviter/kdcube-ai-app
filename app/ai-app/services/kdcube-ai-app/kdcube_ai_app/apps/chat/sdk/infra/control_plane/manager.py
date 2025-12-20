@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# apps/chat/sdk/infra/rate_limit/control_plane/manager.py
+# apps/chat/sdk/infra/economics/control_plane/manager.py
 
 """
 Control Plane Manager
@@ -25,11 +25,15 @@ from typing import Optional, List
 import asyncpg
 from redis.asyncio import Redis
 
-from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.tier_balance_manager import (
-    TierBalanceManager,
+from kdcube_ai_app.apps.chat.sdk.infra.economics.user_budget import (
+    TierOverrideManager,
+    UserCreditsManager,
     UserTierBalance,
+    UserTierBalanceSnapshotManager
 )
-from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.policy import QuotaPolicy, ProviderBudgetPolicy
+from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import QuotaPolicy, ProviderBudgetPolicy
+from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription import SubscriptionManager
+from kdcube_ai_app.infra.accounting.usage import quote_tokens_for_usd
 
 logger = logging.getLogger(__name__)
 
@@ -147,11 +151,18 @@ class ControlPlaneManager:
         self.cache_ttl = cache_ttl
 
         # Initialize TierBalanceManager (delegates to it)
-        self.tier_balance_mgr = TierBalanceManager(
+        self.tier_override_mgr = TierOverrideManager(
             pg_pool=pg_pool,
             redis=redis,
             cache_ttl=tier_balance_cache_ttl,
         )
+        self.user_credits_mgr = UserCreditsManager(
+            pg_pool=pg_pool,
+            redis=redis,
+            cache_ttl=tier_balance_cache_ttl,
+        )
+        self.tier_balance_snapshot_mgr = UserTierBalanceSnapshotManager(pg_pool=pg_pool)
+        self.subscription_mgr = SubscriptionManager(pg_pool=pg_pool)
 
         # Track if we own the pool/redis
         self._owns_pool = pg_pool is None
@@ -160,27 +171,38 @@ class ControlPlaneManager:
     async def init(self, *, redis_url: Optional[str] = None):
         """Initialize connections if not provided."""
         # Initialize via tier balance manager
-        await self.tier_balance_mgr.init(redis_url=redis_url)
+        await self.tier_override_mgr.init(redis_url=redis_url)
+        await self.user_credits_mgr.init(redis_url=redis_url)
 
         # Share connections
-        self._pg_pool = self.tier_balance_mgr._pg_pool
-        self._redis = self.tier_balance_mgr._redis
+        self._pg_pool = self.tier_override_mgr._pg_pool
+        self._redis = self.tier_override_mgr._redis
+        self.tier_balance_snapshot_mgr.set_pg_pool(self._pg_pool)
 
     async def close(self):
         """Close connections."""
-        await self.tier_balance_mgr.close()
+        await self.tier_override_mgr.close()
+        await self.user_credits_mgr.close()
 
     # =========================================================================
-    # Tier Balance Operations (delegate to TierBalanceManager)
+    # Tier Balance Operations
     # =========================================================================
 
     async def get_user_tier_balance(
-            self, *, tenant: str, project: str, user_id: str
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            include_expired: bool = False,
     ) -> Optional[UserTierBalance]:
-        """Get user's tier balance (cached)."""
-        return await self.tier_balance_mgr.get_user_tier_balance(
-            tenant=tenant, project=project, user_id=user_id
+        return await self.tier_balance_snapshot_mgr.get_user_tier_balance(
+            tenant=tenant,
+            project=project,
+            user_id=user_id,
+            include_expired=include_expired,
         )
+
 
     async def update_user_tier_budget(
             self,
@@ -203,10 +225,8 @@ class ControlPlaneManager:
             purchase_notes: Optional[str] = None,
     ) -> UserTierBalance:
         """Update user's tier budget (supports partial updates via COALESCE)."""
-        return await self.tier_balance_mgr.update_user_tier_budget(
-            tenant=tenant,
-            project=project,
-            user_id=user_id,
+        await self.tier_override_mgr.update_user_tier_budget(
+            tenant=tenant, project=project, user_id=user_id,
             max_concurrent=max_concurrent,
             requests_per_day=requests_per_day,
             requests_per_month=requests_per_month,
@@ -215,24 +235,17 @@ class ControlPlaneManager:
             tokens_per_day=tokens_per_day,
             tokens_per_month=tokens_per_month,
             expires_at=expires_at,
-            purchase_id=purchase_id,
-            purchase_amount_usd=purchase_amount_usd,
-            purchase_notes=purchase_notes,
+            grant_id=purchase_id,
+            grant_amount_usd=purchase_amount_usd,
+            grant_notes=purchase_notes,
         )
-
-    async def list_user_tier_balances(
-            self, *, tenant: str, project: str, user_id: str, include_expired: bool = False
-    ) -> List[UserTierBalance]:
-        """List all tier balances for a user."""
-        return await self.tier_balance_mgr.list_user_tier_balances(
-            tenant=tenant, project=project, user_id=user_id, include_expired=include_expired
-        )
+        return await self.get_user_tier_balance(tenant=tenant, project=project, user_id=user_id)
 
     async def deactivate_tier_balance(
             self, *, tenant: str, project: str, user_id: str
     ):
         """Deactivate tier balance."""
-        await self.tier_balance_mgr.deactivate_tier_balance(
+        await self.tier_override_mgr.deactivate_tier_override(
             tenant=tenant, project=project, user_id=user_id
         )
 
@@ -252,15 +265,23 @@ class ControlPlaneManager:
         Add purchased credits in USD (converted to lifetime tokens).
         Uses tier balance manager's add_lifetime_tokens method.
         """
-        from kdcube_ai_app.infra.accounting.usage import _find_llm_price
 
-        # Convert USD to tokens
-        pr = _find_llm_price(ref_provider, ref_model)
-        p_ref_out = float(pr["output_tokens_1M"]) / 1_000_000
-        tokens = int(usd_amount / p_ref_out)
+
+        # from kdcube_ai_app.infra.accounting.usage import _find_llm_price
+        #
+        # # Convert USD to tokens
+        # pr = _find_llm_price(ref_provider, ref_model)
+        # p_ref_out = float(pr["output_tokens_1M"]) / 1_000_000
+        # tokens = int(usd_amount / p_ref_out)
+
+        tokens, usd_per_token = quote_tokens_for_usd(
+            usd_amount=usd_amount,
+            ref_provider=ref_provider,
+            ref_model=ref_model,
+        )
 
         # Delegate to tier balance manager
-        return await self.tier_balance_mgr.add_lifetime_tokens(
+        await self.user_credits_mgr.add_lifetime_tokens(
             tenant=tenant,
             project=project,
             user_id=user_id,
@@ -269,6 +290,13 @@ class ControlPlaneManager:
             purchase_id=purchase_id,
             notes=notes or f"USD purchase: ${usd_amount:.2f} → {tokens:,} tokens",
         )
+
+        # Return the canonical flattened snapshot (single SQL)
+        bal = await self.get_user_tier_balance(tenant=tenant, project=project, user_id=user_id, include_expired=True)
+        if not bal:
+            # extremely unlikely after add_lifetime_tokens succeeds
+            raise RuntimeError("Failed to load tier balance after adding credits")
+        return bal
 
     # =========================================================================
     # User Quota Policy Operations
@@ -452,6 +480,7 @@ class ControlPlaneManager:
         lock_ttl = 30  # 30 seconds
 
         policies_initialized = False
+        lock_acquired = False
         try:
             # Try to acquire distributed lock
             lock_acquired = await self._redis.set(
@@ -539,7 +568,8 @@ class ControlPlaneManager:
         finally:
             # Release lock
             try:
-                await self._redis.delete(lock_key)
+                if lock_acquired:
+                    await self._redis.delete(lock_key)
             except Exception:
                 pass
         return policies_initialized

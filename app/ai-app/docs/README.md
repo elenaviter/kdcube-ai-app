@@ -10,3 +10,7 @@
 * Monitoring & Observability: [README-monitoring-observability.md](../../../app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)
 * All-in-One Docker Compose: [README.md](../../../app/ai-app/deployment/docker/all_in_one/README.md)
 * Tenant/Project model: TBD add doc
+
+
+
+- User quota replenishment system [user-quota-replenishment-system.md](../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/user-quota-replenishment-system.md)

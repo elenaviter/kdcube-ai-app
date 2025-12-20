@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# sdk/rate_limit/limiter.py
+# sdk/infra/economics/limiter.py
 from __future__ import annotations
 
 import time
@@ -11,8 +11,8 @@ from datetime import datetime, timedelta, timezone
 
 from redis.asyncio import Redis
 
-from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.policy import QuotaPolicy
-
+from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import QuotaPolicy
+from kdcube_ai_app.infra.namespaces import REDIS
 
 # --------- helpers (keys / time) ---------
 def _k(ns: str, bundle: str, subject: str, *parts: str) -> str:
@@ -20,7 +20,7 @@ def _k(ns: str, bundle: str, subject: str, *parts: str) -> str:
     Build Redis key for user rate limiting.
 
     Format: {namespace}:{bundle}:{subject}:{parts}
-    Example: kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
+    Example: kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
     """
     return ":".join([ns, bundle, subject, *parts])
 
@@ -131,11 +131,9 @@ def _merge_policy_with_tier_balance(
     Returns:
         Merged QuotaPolicy with overrides applied
     """
-    if not tier_balance or not tier_balance.has_tier_override():
-        return base_policy
 
-    # Check if tier override is expired
-    if tier_balance.is_expired():
+    # Only apply when the override is ACTIVE (active flag + has override + not expired)
+    if not tier_balance or not tier_balance.tier_override_is_active():
         return base_policy
 
     # Apply OVERRIDE semantics (tier_balance fields override base_policy)
@@ -190,7 +188,7 @@ class AdmitResult:
     effective_policy: Optional[Dict[str, Any]] = None  # Merged policy used for admission
 
 
-class RateLimiter:
+class UserEconomicsRateLimiter:
     """
     Redis-backed, atomic admission & accounting for user-level rate limiting.
 
@@ -203,32 +201,32 @@ class RateLimiter:
       - Token budgets: hour / day / month (post-paid; checked at admit based on *previous* commits)
 
     Redis Keys (bundle-scoped with namespace prefix):
-      kdcube:rl:{bundle}:{subject}:locks
-      kdcube:rl:{bundle}:{subject}:reqs:day:{YYYYMMDD}
-      kdcube:rl:{bundle}:{subject}:reqs:month:{YYYYMM}
-      kdcube:rl:{bundle}:{subject}:reqs:total
-      kdcube:rl:{bundle}:{subject}:toks:hour:{YYYYMMDDHH}
-      kdcube:rl:{bundle}:{subject}:toks:day:{YYYYMMDD}
-      kdcube:rl:{bundle}:{subject}:toks:month:{YYYYMM}
-      kdcube:rl:{bundle}:{subject}:last_turn_tokens
-      kdcube:rl:{bundle}:{subject}:last_turn_at
+      kdcube:economics:rl:{bundle}:{subject}:locks
+      kdcube:economics:rl:{bundle}:{subject}:reqs:day:{YYYYMMDD}
+      kdcube:economics:rl:{bundle}:{subject}:reqs:month:{YYYYMM}
+      kdcube:economics:rl:{bundle}:{subject}:reqs:total
+      kdcube:economics:rl:{bundle}:{subject}:toks:hour:{YYYYMMDDHH}
+      kdcube:economics:rl:{bundle}:{subject}:toks:day:{YYYYMMDD}
+      kdcube:economics:rl:{bundle}:{subject}:toks:month:{YYYYMM}
+      kdcube:economics:rl:{bundle}:{subject}:last_turn_tokens
+      kdcube:economics:rl:{bundle}:{subject}:last_turn_at
 
     Where:
       - bundle = Bundle ID (e.g., "kdcube.codegen.orchestrator")
       - subject = {tenant}:{project}:{user_id} or {tenant}:{project}:{user_id}:{session_id}
 
     Example:
-      kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
-      kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:reqs:day:20250515
-      kdcube:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:toks:hour:2025051514
+      kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
+      kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:reqs:day:20250515
+      kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:toks:hour:2025051514
     """
 
     def __init__(
         self,
         redis: Redis,
         *,
-        namespace: str = "kdcube:rl",
-        tier_balance_manager: Optional['TierBalanceManager'] = None,
+        namespace: str = REDIS.ECONOMICS.RATE_LIMIT,
+        user_balance_snapshot_mgr: Optional['UserTierBalanceSnapshotManager'] = None
     ):
         """
         Initialize RateLimiter.
@@ -236,11 +234,11 @@ class RateLimiter:
         Args:
             redis: Redis client
             namespace: Namespace prefix (default: "kdcube:rl")
-            tier_balance_manager: Manager for querying user tier balances
+            user_balance_snapshot_mgr: Manager for querying user balances
         """
         self.r = redis
         self.ns = namespace
-        self.tier_balance_manager = tier_balance_manager
+        self.user_balance_snapshot_mgr = user_balance_snapshot_mgr
 
     async def admit(
         self,
@@ -251,12 +249,13 @@ class RateLimiter:
         lock_id: str,
         lock_ttl_sec: int = 120,
         now: Optional[datetime] = None,
+        apply_tier_override: bool = True
     ) -> AdmitResult:
         """
         Check request & token quotas (based on *already committed* usage),
         then (if allowed) acquire a concurrency slot.
 
-        If tier_balance_manager is configured, fetches and applies tier overrides
+        If user_balance_snapshot_mgr is configured, fetches and applies tier overrides
         purchased or granted to the user.
 
         Args:
@@ -284,15 +283,15 @@ class RateLimiter:
         used_tier_override = False
         effective_policy = policy
 
-        if self.tier_balance_manager and tenant and project and user_id:
+        if apply_tier_override and self.user_balance_snapshot_mgr and tenant and project and user_id:
             try:
-                tier_balance = await self.tier_balance_manager.get_user_tier_balance(
+                tier_balance = await self.user_balance_snapshot_mgr.get_user_tier_balance(
                     tenant=tenant,
                     project=project,
                     user_id=user_id,
                 )
 
-                if tier_balance and tier_balance.has_tier_override():
+                if tier_balance and tier_balance.tier_override_is_active():
                     effective_policy = _merge_policy_with_tier_balance(policy, tier_balance)
                     used_tier_override = True
             except Exception as e:
@@ -507,14 +506,19 @@ class RateLimiter:
             pattern = f"{self.ns}:*:{subject_id}:reqs:total"
             cursor = 0
             found_bundles = set()
+            ns_prefix = f"{self.ns}:"
 
             while True:
                 cursor, keys = await self.r.scan(cursor, match=pattern, count=100)
                 for key in keys:
-                    # Extract bundle_id from key pattern: kdcube:rl:{bundle}:{subject}:reqs:total
-                    parts = key.decode().split(":")
-                    if len(parts) >= 3:
-                        bundle_id = parts[2]  # Index 2 is bundle_id
+                    # Extract bundle_id from key pattern: kdcube:economics:rl:{bundle}:{subject}:reqs:total
+                    key_str = key.decode() if isinstance(key, (bytes, bytearray)) else str(key)
+                    if not key_str.startswith(ns_prefix):
+                        continue
+                    # key: "{ns}:{bundle}:{subject}:reqs:total"
+                    rest = key_str[len(ns_prefix):]          # "{bundle}:{subject}:reqs:total"
+                    bundle_id = rest.split(":", 1)[0]        # "{bundle}"
+                    if bundle_id:
                         found_bundles.add(bundle_id)
 
                 if cursor == 0:

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# sdk/rate_limit/policy.py
+# sdk/infra/economics/rate_limit/policy.py
 from dataclasses import dataclass
 from typing import Optional, Dict
 
@@ -78,3 +78,41 @@ class BudgetInsight:
     violations: list[str]                    # e.g., ["usd_per_day", "usd_per_month"]
     retry_after_sec: Optional[int]
     retry_scope: Optional[str]               # "hour" | "day" | "month" | None
+
+
+def estimate_turn_token_upper_bound(policy: QuotaPolicy) -> int:
+    """
+    Heuristic upper bound used ONLY for personal-credit reservations.
+    We want to block obvious oversubscription, not perfectly predict usage.
+
+    Tune if needed.
+    """
+    candidates = [100_000]
+
+    if policy.tokens_per_hour:
+        candidates.append(min(int(policy.tokens_per_hour), 1_000_000))
+
+    if policy.tokens_per_day and policy.requests_per_day and policy.requests_per_day > 0:
+        candidates.append(int(policy.tokens_per_day // max(int(policy.requests_per_day), 1)))
+
+    if policy.tokens_per_month and policy.requests_per_month and policy.requests_per_month > 0:
+        candidates.append(int(policy.tokens_per_month // max(int(policy.requests_per_month), 1)))
+
+    # keep within a sane ceiling
+    return max(50_000, min(max(candidates), 1_500_000))
+
+def paid_policy(base_policy: QuotaPolicy, tier_balance) -> QuotaPolicy:
+    # Concurrency still enforced (shared across both lanes)
+    maxc = int(base_policy.max_concurrent or 1)
+    if tier_balance and tier_balance.max_concurrent is not None:
+        maxc = max(maxc, int(tier_balance.max_concurrent))
+
+    return QuotaPolicy(
+        max_concurrent=maxc,
+        requests_per_day=None,
+        requests_per_month=None,
+        total_requests=None,
+        tokens_per_hour=None,
+        tokens_per_day=None,
+        tokens_per_month=None,
+    )

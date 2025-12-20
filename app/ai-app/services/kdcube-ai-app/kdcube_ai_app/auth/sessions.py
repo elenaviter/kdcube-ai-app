@@ -329,7 +329,7 @@ class UserType(Enum):
     ANONYMOUS = "anonymous"
     REGISTERED = "registered"
     PRIVILEGED = "privileged"
-    PAYED = "payed"
+    PAID = "paid"
 
 @dataclass
 class UserSession:

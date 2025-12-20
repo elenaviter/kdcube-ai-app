@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# apps/chat/sdk/infra/rate_limit/tier_balance_manager.py
+# apps/chat/sdk/infra/economics/tier_balance.py
 
 """
 Tier Balance Manager
@@ -20,11 +20,13 @@ from __future__ import annotations
 import logging
 import json
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 
 import asyncpg
 from redis.asyncio import Redis
+
+from kdcube_ai_app.infra.namespaces import REDIS
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +103,23 @@ class UserTierBalance:
             and self.lifetime_tokens_purchased > 0
         )
 
+@dataclass
+class TokenReservation:
+    tenant: str
+    project: str
+    user_id: str
+    reservation_id: str
+    tokens_reserved: int
+    status: str
+    expires_at: datetime
+    bundle_id: Optional[str] = None
+    tokens_used: Optional[int] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    committed_at: Optional[datetime] = None
+    released_at: Optional[datetime] = None
+    notes: Optional[str] = None
+
 
 class TierBalanceManager:
     """
@@ -115,6 +134,7 @@ class TierBalanceManager:
 
     CONTROL_PLANE_SCHEMA = "kdcube_control_plane"
     TABLE_NAME = "user_tier_balance"
+    RESERVATIONS_TABLE = "user_token_reservations"
 
     def __init__(
             self,
@@ -122,7 +142,7 @@ class TierBalanceManager:
             redis: Optional[Redis] = None,
             *,
             cache_ttl: int = 10,
-            cache_namespace: str = "kdcube:tier_balance",
+            cache_namespace: str = REDIS.ECONOMICS.TIER_BALANCE_CACHE,
     ):
         self._pg_pool: Optional[asyncpg.Pool] = pg_pool
         self._redis: Optional[Redis] = redis
@@ -177,7 +197,8 @@ class TierBalanceManager:
             try:
                 cached = await self._redis.get(cache_key)
                 if cached:
-                    data = json.loads(cached.decode())
+                    raw = cached.decode() if isinstance(cached, (bytes, bytearray)) else str(cached)
+                    data = json.loads(raw)
                     if data:
                         for k in ['expires_at', 'created_at', 'updated_at']:
                             if data.get(k):
@@ -393,42 +414,42 @@ class TierBalanceManager:
             usd_amount: float,
             purchase_id: Optional[str] = None,
             notes: Optional[str] = None,
+            conn: Optional[asyncpg.Connection] = None,
     ) -> UserTierBalance:
-        """
-        Add purchased tokens to lifetime budget.
-
-        This is ADDITIVE - adds to existing balance if user already has credits.
-        """
-        if not self._pg_pool:
+        if not self._pg_pool and not conn:
             raise RuntimeError("PostgreSQL pool not initialized")
+        if tokens <= 0:
+            # no-op, but still return current row if exists
+            bal = await self.get_user_tier_balance(tenant=tenant, project=project, user_id=user_id)
+            return bal  # type: ignore
 
-        async with self._pg_pool.acquire() as conn:
-            row = await conn.fetchrow(f"""
-                INSERT INTO {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME} (
-                    tenant, project, user_id,
-                    lifetime_tokens_purchased,
-                    lifetime_tokens_consumed,
-                    expires_at,
-                    purchase_id,
-                    purchase_amount_usd,
-                    purchase_notes
-                ) VALUES ($1, $2, $3, $4, 0, NULL, $5, $6, $7)
-                ON CONFLICT (tenant, project, user_id)
-                DO UPDATE SET
-                    -- ADDITIVE for lifetime tokens (intentional!)
-                    lifetime_tokens_purchased = COALESCE(
-                        {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}.lifetime_tokens_purchased, 
-                        0
-                    ) + EXCLUDED.lifetime_tokens_purchased,
-                    purchase_amount_usd = COALESCE(
-                        {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}.purchase_amount_usd,
-                        0
-                    ) + EXCLUDED.purchase_amount_usd,
-                    purchase_id = EXCLUDED.purchase_id,
-                    purchase_notes = EXCLUDED.purchase_notes,
-                    updated_at = NOW()
-                RETURNING *
-            """, tenant, project, user_id, tokens, purchase_id, usd_amount, notes)
+        sql = f"""
+          INSERT INTO {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME} (
+            tenant, project, user_id,
+            lifetime_tokens_purchased,
+            lifetime_tokens_consumed,
+            expires_at,
+            purchase_id,
+            purchase_amount_usd,
+            purchase_notes
+          ) VALUES ($1,$2,$3,$4,0,NULL,$5,$6,$7)
+          ON CONFLICT (tenant, project, user_id)
+          DO UPDATE SET
+            lifetime_tokens_purchased = COALESCE({self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}.lifetime_tokens_purchased, 0)
+                                     + EXCLUDED.lifetime_tokens_purchased,
+            purchase_amount_usd = COALESCE({self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}.purchase_amount_usd, 0)
+                                + EXCLUDED.purchase_amount_usd,
+            purchase_id = EXCLUDED.purchase_id,
+            purchase_notes = EXCLUDED.purchase_notes,
+            updated_at = NOW()
+          RETURNING *
+        """
+
+        if conn:
+            row = await conn.fetchrow(sql, tenant, project, user_id, int(tokens), purchase_id, float(usd_amount), notes)
+        else:
+            async with self._pg_pool.acquire() as c:
+                row = await c.fetchrow(sql, tenant, project, user_id, int(tokens), purchase_id, float(usd_amount), notes)
 
         await self._invalidate_cache(tenant, project, user_id)
         return UserTierBalance(**dict(row))
@@ -476,20 +497,300 @@ class TierBalanceManager:
     async def get_lifetime_balance(
             self, *, tenant: str, project: str, user_id: str
     ) -> Optional[int]:
-        """Get remaining lifetime budget tokens."""
+        """
+        Get remaining AVAILABLE lifetime tokens:
+        purchased - consumed - active_reservations
+        """
         if not self._pg_pool:
             return None
 
         async with self._pg_pool.acquire() as conn:
             row = await conn.fetchrow(f"""
-                SELECT 
-                    COALESCE(lifetime_tokens_purchased, 0) - COALESCE(lifetime_tokens_consumed, 0) AS remaining
-                FROM {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}
-                WHERE tenant = $1 AND project = $2 AND user_id = $3
-                  AND active = TRUE
-                  AND purchase_amount_usd IS NOT NULL
-                  AND purchase_amount_usd > 0
-                  AND (expires_at IS NULL OR expires_at > NOW())
+                SELECT
+                    COALESCE(utb.lifetime_tokens_purchased, 0) AS purchased,
+                    COALESCE(utb.lifetime_tokens_consumed, 0) AS consumed,
+                    COALESCE(rsv.reserved, 0) AS reserved
+                FROM {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME} utb
+                LEFT JOIN (
+                    SELECT tenant, project, user_id, COALESCE(SUM(tokens_reserved), 0) AS reserved
+                    FROM {self.CONTROL_PLANE_SCHEMA}.{self.RESERVATIONS_TABLE}
+                    WHERE tenant = $1 AND project = $2 AND user_id = $3
+                      AND status = 'reserved'
+                      AND expires_at > NOW()
+                    GROUP BY tenant, project, user_id
+                ) rsv
+                ON rsv.tenant = utb.tenant AND rsv.project = utb.project AND rsv.user_id = utb.user_id
+                WHERE utb.tenant = $1 AND utb.project = $2 AND utb.user_id = $3
+                  AND utb.active = TRUE
+                  AND utb.purchase_amount_usd IS NOT NULL
+                  AND utb.purchase_amount_usd > 0
+                  AND (utb.expires_at IS NULL OR utb.expires_at > NOW())
             """, tenant, project, user_id)
 
-        return row['remaining'] if row else None
+        if not row:
+            return None
+
+        remaining = int(row["purchased"]) - int(row["consumed"]) - int(row["reserved"])
+        return max(remaining, 0)
+
+    # =========================================================================
+    # Lifetime Token Reservations (Personal Credits)
+    # =========================================================================
+
+    async def _reserved_sum(
+            self, *, conn: asyncpg.Connection, tenant: str, project: str, user_id: str, exclude_reservation_id: Optional[str] = None
+    ) -> int:
+        exclude_sql = ""
+        args = [tenant, project, user_id]
+        if exclude_reservation_id:
+            args.append(exclude_reservation_id)
+            exclude_sql = f"AND reservation_id <> ${len(args)}"
+
+        row = await conn.fetchval(f"""
+            SELECT COALESCE(SUM(tokens_reserved), 0)
+            FROM {self.CONTROL_PLANE_SCHEMA}.{self.RESERVATIONS_TABLE}
+            WHERE tenant = $1 AND project = $2 AND user_id = $3
+              AND status = 'reserved'
+              AND expires_at > NOW()
+              {exclude_sql}
+        """, *args)
+        return int(row or 0)
+
+    async def reserve_lifetime_tokens(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            reservation_id: str,
+            tokens: int,
+            ttl_sec: int = 900,
+            bundle_id: Optional[str] = None,
+            notes: Optional[str] = None,
+    ) -> bool:
+        """
+        Atomically reserve 'tokens' from user's lifetime budget so concurrent in-flight requests
+        cannot oversubscribe credits.
+
+        Returns True if reserved, False if insufficient available tokens.
+        """
+        if not self._pg_pool:
+            raise RuntimeError("PostgreSQL pool not initialized")
+        if tokens <= 0:
+            return True
+
+        exp = datetime.now(timezone.utc) + timedelta(seconds=int(ttl_sec))
+
+        async with self._pg_pool.acquire() as conn:
+            async with conn.transaction():
+                bal = await conn.fetchrow(f"""
+                    SELECT
+                        COALESCE(lifetime_tokens_purchased, 0) AS purchased,
+                        COALESCE(lifetime_tokens_consumed, 0) AS consumed
+                    FROM {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}
+                    WHERE tenant = $1 AND project = $2 AND user_id = $3
+                      AND active = TRUE
+                      AND purchase_amount_usd IS NOT NULL
+                      AND purchase_amount_usd > 0
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    FOR UPDATE
+                """, tenant, project, user_id)
+
+                if not bal:
+                    return False
+
+                purchased = int(bal["purchased"] or 0)
+                consumed = int(bal["consumed"] or 0)
+                if purchased <= 0:
+                    return False
+
+                reserved = await self._reserved_sum(conn=conn, tenant=tenant, project=project, user_id=user_id)
+                available = purchased - consumed - reserved
+                if available < tokens:
+                    return False
+
+                # Idempotent per reservation_id; never shrink an existing reservation (GREATEST)
+                await conn.execute(f"""
+                    INSERT INTO {self.CONTROL_PLANE_SCHEMA}.{self.RESERVATIONS_TABLE} (
+                        tenant, project, user_id,
+                        reservation_id, bundle_id,
+                        tokens_reserved, status, expires_at, notes
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, 'reserved', $7, $8)
+                    ON CONFLICT (tenant, project, user_id, reservation_id)
+                    DO UPDATE SET
+                        tokens_reserved = GREATEST(
+                            EXCLUDED.tokens_reserved,
+                            {self.CONTROL_PLANE_SCHEMA}.{self.RESERVATIONS_TABLE}.tokens_reserved
+                        ),
+                        status = 'reserved',
+                        expires_at = EXCLUDED.expires_at,
+                        bundle_id = EXCLUDED.bundle_id,
+                        notes = EXCLUDED.notes,
+                        updated_at = NOW()
+                """, tenant, project, user_id, reservation_id, bundle_id, int(tokens), exp, notes)
+
+        # No need to invalidate tier-balance cache (purchased/consumed unchanged),
+        # but lifetime "available" reporting uses DB anyway.
+        return True
+
+    async def release_lifetime_token_reservation(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            reservation_id: str,
+            reason: Optional[str] = None,
+    ) -> None:
+        """Release an in-flight reservation (abort/error path)."""
+        if not self._pg_pool:
+            return
+
+        async with self._pg_pool.acquire() as conn:
+            await conn.execute(f"""
+                UPDATE {self.CONTROL_PLANE_SCHEMA}.{self.RESERVATIONS_TABLE}
+                SET status = 'released',
+                    released_at = NOW(),
+                    notes = COALESCE(notes, '') || CASE WHEN $5 IS NULL THEN '' ELSE (' | ' || $5) END,
+                    updated_at = NOW()
+                WHERE tenant = $1 AND project = $2 AND user_id = $3 AND reservation_id = $4
+                  AND status = 'reserved'
+            """, tenant, project, user_id, reservation_id, reason)
+
+    async def commit_reserved_lifetime_tokens(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            reservation_id: str,
+            tokens: int,
+    ) -> int:
+        """
+        Commit actual token spend against a reservation.
+
+        Returns overflow tokens (portion that could NOT be covered by personal credits),
+        respecting other active reservations.
+        """
+        if not self._pg_pool or tokens <= 0:
+            return tokens
+
+        async with self._pg_pool.acquire() as conn:
+            async with conn.transaction():
+                bal = await conn.fetchrow(f"""
+                    SELECT
+                        COALESCE(lifetime_tokens_purchased, 0) AS purchased,
+                        COALESCE(lifetime_tokens_consumed, 0) AS consumed
+                    FROM {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}
+                    WHERE tenant = $1 AND project = $2 AND user_id = $3
+                      AND active = TRUE
+                      AND purchase_amount_usd IS NOT NULL
+                      AND purchase_amount_usd > 0
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    FOR UPDATE
+                """, tenant, project, user_id)
+
+                if not bal:
+                    # No personal credits -> full overflow
+                    await self.release_lifetime_token_reservation(
+                        tenant=tenant, project=project, user_id=user_id,
+                        reservation_id=reservation_id, reason="commit: no_balance_row"
+                    )
+                    return tokens
+
+                purchased = int(bal["purchased"] or 0)
+                consumed = int(bal["consumed"] or 0)
+
+                # Exclude THIS reservation from the "reserved sum" so it becomes available for commit.
+                other_reserved = await self._reserved_sum(
+                    conn=conn, tenant=tenant, project=project, user_id=user_id,
+                    exclude_reservation_id=reservation_id
+                )
+                available = purchased - consumed - other_reserved
+                if available < 0:
+                    available = 0
+
+                consume = min(int(tokens), int(available))
+
+                if consume > 0:
+                    await conn.execute(f"""
+                        UPDATE {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}
+                        SET lifetime_tokens_consumed = LEAST(
+                                COALESCE(lifetime_tokens_consumed, 0) + $4,
+                                COALESCE(lifetime_tokens_purchased, 0)
+                            ),
+                            updated_at = NOW()
+                        WHERE tenant = $1 AND project = $2 AND user_id = $3
+                    """, tenant, project, user_id, consume)
+
+                await conn.execute(f"""
+                    UPDATE {self.CONTROL_PLANE_SCHEMA}.{self.RESERVATIONS_TABLE}
+                    SET status = 'committed',
+                        tokens_used = $5,
+                        committed_at = NOW(),
+                        expires_at = NOW(),
+                        updated_at = NOW()
+                    WHERE tenant = $1 AND project = $2 AND user_id = $3 AND reservation_id = $4
+                """, tenant, project, user_id, reservation_id, consume)
+
+        await self._invalidate_cache(tenant, project, user_id)
+        return max(int(tokens) - int(consume), 0)
+
+    async def consume_lifetime_tokens(
+            self,
+            *,
+            tenant: str,
+            project: str,
+            user_id: str,
+            tokens: int,
+    ) -> int:
+        """
+        Reservation-aware consumption WITHOUT a reservation_id.
+        This will NOT steal tokens that are currently reserved by other in-flight requests.
+
+        Returns overflow tokens.
+        """
+        if not self._pg_pool or tokens <= 0:
+            return tokens
+
+        async with self._pg_pool.acquire() as conn:
+            async with conn.transaction():
+                bal = await conn.fetchrow(f"""
+                    SELECT
+                        COALESCE(lifetime_tokens_purchased, 0) AS purchased,
+                        COALESCE(lifetime_tokens_consumed, 0) AS consumed
+                    FROM {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}
+                    WHERE tenant = $1 AND project = $2 AND user_id = $3
+                      AND active = TRUE
+                      AND purchase_amount_usd IS NOT NULL
+                      AND purchase_amount_usd > 0
+                      AND (expires_at IS NULL OR expires_at > NOW())
+                    FOR UPDATE
+                """, tenant, project, user_id)
+
+                if not bal:
+                    return tokens
+
+                purchased = int(bal["purchased"] or 0)
+                consumed = int(bal["consumed"] or 0)
+
+                reserved = await self._reserved_sum(conn=conn, tenant=tenant, project=project, user_id=user_id)
+                available = purchased - consumed - reserved
+                if available < 0:
+                    available = 0
+
+                consume = min(int(tokens), int(available))
+                if consume > 0:
+                    await conn.execute(f"""
+                        UPDATE {self.CONTROL_PLANE_SCHEMA}.{self.TABLE_NAME}
+                        SET lifetime_tokens_consumed = LEAST(
+                                COALESCE(lifetime_tokens_consumed, 0) + $4,
+                                COALESCE(lifetime_tokens_purchased, 0)
+                            ),
+                            updated_at = NOW()
+                        WHERE tenant = $1 AND project = $2 AND user_id = $3
+                    """, tenant, project, user_id, consume)
+
+        await self._invalidate_cache(tenant, project, user_id)
+        return max(int(tokens) - int(consume), 0)

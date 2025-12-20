@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List, Tuple
 import logging
 
 from kdcube_ai_app.auth.AuthManager import AuthManager, AuthenticationError, RequirementBase, PRIVILEGED_ROLES, \
-    PAYED_ROLES
+    PAID_ROLES
 from kdcube_ai_app.infra.gateway.backpressure import BackpressureError, BackpressureManager, \
     create_atomic_backpressure_manager
 from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitBreakerError, CircuitState, \
@@ -242,8 +242,8 @@ class RequestGateway:
 
             if PRIVILEGED_ROLES & set(user.roles):
                 user_type = UserType.PRIVILEGED
-            elif PAYED_ROLES & set(user.roles):
-                user_type = UserType.PAYED
+            elif PAID_ROLES & set(user.roles):
+                user_type = UserType.PAID
             else:
                 user_type = UserType.REGISTERED
             return user_type, {

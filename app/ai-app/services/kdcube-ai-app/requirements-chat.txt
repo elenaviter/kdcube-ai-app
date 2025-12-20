@@ -80,3 +80,5 @@ python-multipart
 # Geospatial libraries
 geopy
 folium
+
+stripe

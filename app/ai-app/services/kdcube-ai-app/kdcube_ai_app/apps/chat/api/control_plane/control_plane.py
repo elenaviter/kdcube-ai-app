@@ -18,20 +18,20 @@ Admin-only access with similar patterns to OPEX API.
 
 from typing import Optional
 import logging
-import hmac
-import hashlib
 import os
-import json
 
 from pydantic import BaseModel, Field
 from fastapi import Depends, HTTPException, Request, APIRouter, Query, Header
 from datetime import datetime, timedelta, timezone
 
 from kdcube_ai_app.apps.chat.api.resolvers import auth_without_pressure
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
-from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.limiter import RateLimiter
-from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.project_budget_limiter import ProjectBudgetLimiter
+from kdcube_ai_app.apps.chat.sdk.infra.economics.stripe import StripeEconomicsWebhookHandler
 from kdcube_ai_app.auth.sessions import UserSession
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import UserEconomicsRateLimiter
+from kdcube_ai_app.apps.chat.sdk.infra.economics.project_budget import ProjectBudgetLimiter
+from kdcube_ai_app.infra.accounting.usage import llm_output_price_usd_per_token, quote_tokens_for_usd, quote_usd_for_tokens
+
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,22 @@ router = APIRouter()
 # ============================================================================
 # Request/Response Models
 # ============================================================================
+
+class CreateSubscriptionRequest(BaseModel):
+    user_id: str
+    tier: str = Field(..., description="free|paid|premium|admin")
+    provider: str = Field("stripe", description="stripe|internal")
+
+    # Stripe params
+    stripe_price_id: str | None = None
+    stripe_customer_id: str | None = None
+    monthly_price_cents_hint: int | None = None
+
+
+class InternalRenewOnceRequest(BaseModel):
+    user_id: str = Field(..., description="User id to renew")
+    charge_at: datetime | None = Field(None, description="Optional charge timestamp (default now UTC)")
+    idempotency_key: str | None = Field(None, description="Optional explicit idempotency key")
 
 class GrantTrialRequest(BaseModel):
     """
@@ -301,10 +317,12 @@ async def get_user_tier_balance(
         mgr = _get_control_plane_manager(router)
         settings = get_settings()
 
+        # Load snapshot with expired data available, so we can decide what to show.
         tier_balance = await mgr.get_user_tier_balance(
             tenant=settings.TENANT,
             project=settings.PROJECT,
             user_id=user_id,
+            include_expired=True,
         )
 
         if not tier_balance:
@@ -316,20 +334,46 @@ async def get_user_tier_balance(
                 "message": "User has no tier balance"
             }
 
-        # Check if expired
-        if not include_expired and tier_balance.is_expired():
-            return {
-                "status": "ok",
-                "user_id": user_id,
-                "has_tier_override": False,
-                "has_lifetime_budget": tier_balance.has_lifetime_budget(),
-                "message": "Tier override expired"
+        override_expired = tier_balance.is_tier_override_expired()
+        override_active = tier_balance.tier_override_is_active()
+
+        # If caller does NOT want expired overrides, hide them
+        if not include_expired and override_expired:
+            override_active = False
+
+        lifetime_payload = None
+        if tier_balance.has_lifetime_budget():
+            purchased = int(tier_balance.lifetime_tokens_purchased or 0)
+            consumed = int(tier_balance.lifetime_tokens_consumed or 0)
+            gross_remaining = max(purchased - consumed, 0)
+
+            available = await mgr.user_credits_mgr.get_lifetime_balance(
+                tenant=settings.TENANT, project=settings.PROJECT, user_id=user_id
+            )
+            available = int(available or 0)
+
+            reserved = max(gross_remaining - available, 0)
+
+            usd_per_token = llm_output_price_usd_per_token("anthropic", "claude-sonnet-4-5-20250929")
+            available_usd = round(available * usd_per_token, 2)
+
+            lifetime_payload = {
+                "tokens_purchased": purchased,
+                "tokens_consumed": consumed,
+                "tokens_gross_remaining": gross_remaining,   # purchased-consumed
+                "tokens_reserved": reserved,                 # in-flight gates
+                "tokens_available": available,               # spendable now
+                "available_usd": available_usd,
+                # last purchase snapshot (credits purchase)
+                "purchase_amount_usd": float(tier_balance.last_purchase_amount_usd)
+                if tier_balance.last_purchase_amount_usd else None,
+                "reference_model": "anthropic/claude-sonnet-4-5-20250929",
             }
 
         return {
             "status": "ok",
             "user_id": user_id,
-            "has_tier_override": tier_balance.has_tier_override(),
+            "has_tier_override": override_active,
             "has_lifetime_budget": tier_balance.has_lifetime_budget(),
             "tier_override": {
                 "requests_per_day": tier_balance.requests_per_day,
@@ -338,23 +382,20 @@ async def get_user_tier_balance(
                 "tokens_per_month": tier_balance.tokens_per_month,
                 "max_concurrent": tier_balance.max_concurrent,
                 "expires_at": tier_balance.expires_at.isoformat() if tier_balance.expires_at else None,
-                "notes": tier_balance.purchase_notes,
-                "is_expired": tier_balance.is_expired(),
-            } if tier_balance.has_tier_override() else None,
-            "lifetime_budget": {
-                "tokens_purchased": tier_balance.lifetime_tokens_purchased,
-                "tokens_consumed": tier_balance.lifetime_tokens_consumed,
-                "tokens_remaining": (tier_balance.lifetime_tokens_purchased or 0) - (tier_balance.lifetime_tokens_consumed or 0),
-                "purchase_amount_usd": float(tier_balance.purchase_amount_usd) if tier_balance.purchase_amount_usd else None,
-            } if tier_balance.has_lifetime_budget() else None,
+                # override notes are grant_notes now
+                "notes": tier_balance.grant_notes,
+                "is_expired": override_expired,
+            } if (override_active or include_expired) else None,
+            "lifetime_budget": lifetime_payload,
         }
+
     except Exception as e:
         logger.exception(f"[get_user_tier_balance] Failed for {user_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/tier-balance/user/{user_id}")
-async def deactivate_tier_balance(
+async def deactivate_tier_override(
         user_id: str,
         session: UserSession = Depends(auth_without_pressure())
 ):
@@ -372,23 +413,23 @@ async def deactivate_tier_balance(
         mgr = _get_control_plane_manager(router)
         settings = get_settings()
 
-        await mgr.deactivate_tier_balance(
+        await mgr.deactivate_tier_override(
             tenant=settings.TENANT,
             project=settings.PROJECT,
             user_id=user_id,
         )
 
         logger.info(
-            f"[deactivate_tier_balance] {settings.TENANT}/{settings.PROJECT}/{user_id}: "
+            f"[deactivate_tier_override] {settings.TENANT}/{settings.PROJECT}/{user_id}: "
             f"deactivated by {session.username or session.user_id}"
         )
 
         return {
             "status": "ok",
-            "message": f"Tier balance deactivated for user {user_id}",
+            "message": f"Tier override deactivated for user {user_id}",
         }
     except Exception as e:
-        logger.exception(f"[deactivate_tier_balance] Failed for {user_id}")
+        logger.exception(f"[deactivate_tier_override] Failed for {user_id}")
         raise HTTPException(status_code=500, detail=f"Failed to deactivate: {str(e)}")
 
 
@@ -407,8 +448,13 @@ async def add_lifetime_credits(
         mgr = _get_control_plane_manager(router)
         settings = get_settings()
 
-        # Use ControlPlaneManager method (which delegates to TierBalanceManager)
-        tier_balance = await mgr.add_user_credits_usd(
+        tokens_added, usd_per_token = quote_tokens_for_usd(
+            usd_amount=payload.usd_amount,
+            ref_provider=payload.ref_provider,
+            ref_model=payload.ref_model,
+        )
+
+        await mgr.add_user_credits_usd(
             tenant=settings.TENANT,
             project=settings.PROJECT,
             user_id=payload.user_id,
@@ -419,18 +465,12 @@ async def add_lifetime_credits(
             notes=payload.notes,
         )
 
-        # Get current balance
-        balance = await mgr.tier_balance_mgr.get_lifetime_balance(
-            tenant=settings.TENANT,
-            project=settings.PROJECT,
-            user_id=payload.user_id,
+        # available balance (excludes reservations)
+        balance_tokens = await mgr.user_credits_mgr.get_lifetime_balance(
+            tenant=settings.TENANT, project=settings.PROJECT, user_id=payload.user_id
         )
-
-        # Convert to USD for display
-        from kdcube_ai_app.infra.accounting.usage import _find_llm_price
-        pr = _find_llm_price(payload.ref_provider, payload.ref_model)
-        p_ref_out = float(pr["output_tokens_1M"]) / 1_000_000
-        balance_usd = balance * p_ref_out if balance else 0
+        balance_tokens = int(balance_tokens or 0)
+        balance_usd = round(balance_tokens * usd_per_token, 2)
 
         logger.info(f"[add_lifetime_credits] {payload.user_id}: +${payload.usd_amount} by {session.username}")
 
@@ -438,9 +478,9 @@ async def add_lifetime_credits(
             "success": True,
             "user_id": payload.user_id,
             "usd_amount": payload.usd_amount,
-            "tokens_added": tier_balance.lifetime_tokens_purchased,
-            "new_balance_tokens": balance,
-            "new_balance_usd": round(balance_usd, 2),
+            "tokens_added": tokens_added,
+            "new_balance_tokens": balance_tokens,
+            "new_balance_usd": balance_usd,
             "reference_model": f"{payload.ref_provider}/{payload.ref_model}",
         }
 
@@ -462,7 +502,7 @@ async def get_lifetime_balance(
         settings = get_settings()
 
         # Get lifetime balance from TierBalanceManager
-        balance_tokens = await mgr.tier_balance_mgr.get_lifetime_balance(
+        balance_tokens = await mgr.user_credits_mgr.get_lifetime_balance(
             tenant=settings.TENANT,
             project=settings.PROJECT,
             user_id=user_id,
@@ -478,10 +518,11 @@ async def get_lifetime_balance(
             }
 
         # Convert to USD
-        from kdcube_ai_app.infra.accounting.usage import _find_llm_price
-        pr = _find_llm_price("anthropic", "claude-sonnet-4-5-20250929")
-        p_ref_out = float(pr["output_tokens_1M"]) / 1_000_000
-        balance_usd = balance_tokens * p_ref_out
+        balance_usd = quote_usd_for_tokens(
+            tokens=int(balance_tokens or 0),
+            ref_provider="anthropic",
+            ref_model="claude-sonnet-4-5-20250929",
+        )
 
         return {
             "user_id": user_id,
@@ -496,115 +537,184 @@ async def get_lifetime_balance(
         logger.error(f"Failed to get balance for {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/subscriptions/user/{user_id}")
+async def get_subscription(user_id: str, session: UserSession = Depends(auth_without_pressure())):
+    settings = get_settings()
+    mgr = _get_control_plane_manager(router)
+
+    sub = await mgr.subscription_mgr.get_subscription(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        user_id=user_id,
+    )
+    return {"status": "ok", "subscription": sub.__dict__ if sub else None}
+
+
+@router.get("/subscriptions/list")
+async def list_subscriptions(
+        provider: str | None = Query(None),
+        user_id: str | None = Query(None),
+        limit: int = Query(100, ge=1, le=500),
+        offset: int = Query(0, ge=0),
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    settings = get_settings()
+    mgr = _get_control_plane_manager(router)
+
+    subs = await mgr.subscription_mgr.list_subscriptions(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        provider=provider,
+        user_id=user_id,
+        limit=limit,
+        offset=offset,
+    )
+    return {"status": "ok", "count": len(subs), "subscriptions": [s.__dict__ for s in subs]}
+
+@router.post("/subscriptions/internal/renew-once")
+async def renew_internal_subscription_once(
+        payload: InternalRenewOnceRequest,
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    settings = get_settings()
+
+    pg_pool = getattr(router.state, "pg_pool", None)
+    redis = getattr(router.state.middleware, "redis", None)
+    if not pg_pool or not redis:
+        raise HTTPException(status_code=503, detail="Dependencies not initialized")
+
+    mgr = _get_control_plane_manager(router)
+
+    budget = ProjectBudgetLimiter(redis, pg_pool, tenant=settings.TENANT, project=settings.PROJECT)
+
+    try:
+        res = await mgr.subscription_mgr.renew_internal_subscription_once(
+            tenant=settings.TENANT,
+            project=settings.PROJECT,
+            user_id=payload.user_id,
+            budget=budget,
+            charged_at=payload.charge_at,
+            idempotency_key=payload.idempotency_key,
+            actor=session.username or session.user_id,
+        )
+        return {
+            "status": res.status,
+            "action": res.action,
+            "message": res.message,
+            "external_id": res.external_id,
+            "user_id": res.user_id,
+            "usd_amount": res.usd_amount,
+            "charged_at": res.charged_at.isoformat(),
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ============================================================================
-# Stripe Webhook - Public Endpoint (No Auth)
+# Stripe
 # ============================================================================
+@router.post("/subscriptions/create", status_code=201)
+async def create_subscription(
+        payload: CreateSubscriptionRequest,
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    settings = get_settings()
+
+    pg_pool = getattr(router.state, "pg_pool", None)
+    redis = getattr(router.state.middleware, "redis", None)
+    if not pg_pool or not redis:
+        raise HTTPException(status_code=503, detail="Dependencies not initialized")
+
+    mgr = _get_control_plane_manager(router)
+
+    tenant, project = settings.TENANT, settings.PROJECT
+
+    if payload.provider.lower() == "internal":
+        # create/ensure internal subscription row using ensure_subscription_for_user
+        tier_to_user_type = {"free": "registered", "paid": "paid", "premium": "privileged", "admin": "admin"}
+        user_type = tier_to_user_type.get(payload.tier.lower())
+        if not user_type:
+            raise HTTPException(400, detail="invalid tier")
+
+        sub = await mgr.subscription_mgr.ensure_subscription_for_user(
+            tenant=tenant,
+            project=project,
+            user_id=payload.user_id,
+            user_type=user_type,
+        )
+        return {"status": "ok", "provider": "internal", "subscription": {"tier": sub.tier, "status": sub.status}}
+
+    # stripe
+    if not payload.stripe_price_id:
+        raise HTTPException(400, detail="stripe_price_id is required for stripe provider")
+
+    from kdcube_ai_app.apps.chat.sdk.infra.economics.stripe import StripeSubscriptionService
+    svc = StripeSubscriptionService(
+        pg_pool=pg_pool,
+        subscription_mgr=mgr.subscription_mgr,
+        default_tenant=tenant,
+        default_project=project,
+    )
+
+    res = await svc.create_subscription(
+        tenant=tenant,
+        project=project,
+        user_id=payload.user_id,
+        tier=payload.tier,
+        stripe_price_id=payload.stripe_price_id,
+        stripe_customer_id=payload.stripe_customer_id,
+        monthly_price_cents_hint=payload.monthly_price_cents_hint,
+        metadata={"created_by": session.username or session.user_id},
+    )
+
+    return {
+        "status": res.status,
+        "action": res.action,
+        "message": res.message,
+        "stripe_customer_id": res.stripe_customer_id,
+        "stripe_subscription_id": res.stripe_subscription_id,
+        "stripe_latest_invoice_id": res.stripe_latest_invoice_id,
+        "stripe_payment_intent_id": res.stripe_payment_intent_id,
+    }
 
 @router.post("/webhooks/stripe")
 async def stripe_webhook(
         request: Request,
-        stripe_signature: Optional[str] = Header(None, alias="Stripe-Signature")
+        stripe_signature: str | None = Header(None, alias="Stripe-Signature"),
 ):
-    """
-    Stripe webhook endpoint for automated credit purchases.
+    settings = get_settings()
 
-    **Webhook Events Handled:**
-    - `payment_intent.succeeded` - Grant credits after successful payment
+    pg_pool = getattr(router.state, "pg_pool", None)
+    redis = getattr(router.state.middleware, "redis", None)
+    if not pg_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not available")
+    if not redis:
+        raise HTTPException(status_code=503, detail="Redis not available")
 
-    **Security:** Verifies Stripe signature using HMAC SHA256.
-    **Public endpoint** - No authentication required (Stripe signature verification instead).
-    """
-    try:
-        # Get webhook secret from environment
-        webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
-        if not webhook_secret:
-            logger.warning("[stripe_webhook] STRIPE_WEBHOOK_SECRET not set, skipping verification")
+    mgr = _get_control_plane_manager(router)
+    user_credits_mgr = mgr.user_credits_mgr
+    subscription_mgr = mgr.subscription_mgr
 
-        # Read raw body
-        body = await request.body()
+    def budget_factory(tenant: str, project: str) -> ProjectBudgetLimiter:
+        return ProjectBudgetLimiter(redis, pg_pool, tenant=tenant, project=project)
 
-        # Verify signature if secret is set
-        if webhook_secret and stripe_signature:
-            try:
-                # Simple HMAC verification (Stripe format: t=timestamp,v1=signature)
-                expected_sig = hmac.new(
-                    webhook_secret.encode(),
-                    body,
-                    hashlib.sha256
-                ).hexdigest()
+    handler = StripeEconomicsWebhookHandler(
+        pg_pool=pg_pool,
+        user_credits_mgr=user_credits_mgr,
+        budget_limiter_factory=budget_factory,
+        subscription_mgr=subscription_mgr,
+        default_tenant=settings.TENANT,
+        default_project=settings.PROJECT,
+        stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET"),
+    )
 
-                # Parse Stripe signature
-                sig_parts = dict(part.split("=") for part in stripe_signature.split(","))
-                provided_sig = sig_parts.get("v1", "")
+    body = await request.body()
+    result = await handler.handle_webhook(body=body, stripe_signature=stripe_signature)
 
-                if not hmac.compare_digest(expected_sig, provided_sig):
-                    logger.error("[stripe_webhook] Signature verification failed")
-                    raise HTTPException(status_code=401, detail="Invalid signature")
-            except Exception as e:
-                logger.error(f"[stripe_webhook] Signature verification error: {e}")
-                raise HTTPException(status_code=401, detail="Invalid signature")
+    if result.get("status") == "error":
+        raise HTTPException(status_code=500, detail=result.get("message"))
 
-        # Parse event
-        event = json.loads(body.decode())
-
-        # Handle payment success
-        if event["type"] == "payment_intent.succeeded":
-            payment = event["data"]["object"]
-            metadata = payment.get("metadata", {})
-
-            # Extract metadata
-            user_id = metadata.get("user_id")
-            tenant = metadata.get("tenant")
-            project = metadata.get("project")
-            package = metadata.get("package")
-
-            if not user_id:
-                logger.warning("[stripe_webhook] Missing user_id in payment metadata")
-                return {"status": "ok", "message": "Missing user_id"}
-
-            # Get control plane manager
-            mgr = _get_control_plane_manager(router)
-            settings = get_settings()
-
-            # Use metadata or fallback to settings
-            tenant = tenant or settings.TENANT
-            project = project or settings.PROJECT
-
-            usd = payment["amount"] / 100  # Cents to dollars
-
-            # Add lifetime credits
-            await mgr.add_user_credits_usd(
-                tenant=tenant,
-                project=project,
-                user_id=user_id,
-                usd_amount=usd,
-                purchase_id=payment["id"],
-                notes=f"Stripe payment - {package or 'custom'} package",
-            )
-
-            logger.info(
-                f"[stripe_webhook] Credits granted to {user_id}: "
-                f"${usd}, payment_id={payment['id']}"
-            )
-
-            return {
-                "status": "ok",
-                "message": f"Credits granted to user {user_id}",
-            }
-
-        # Other event types
-        return {
-            "status": "ok",
-            "message": f"Event {event['type']} received but not processed",
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("[stripe_webhook] Failed to process webhook")
-        raise HTTPException(status_code=500, detail=f"Webhook processing failed: {str(e)}")
-
+    return result
 
 # ============================================================================
 # Policy Management Endpoints - Admin Only
@@ -842,7 +952,7 @@ async def get_user_quota_breakdown(
         if not redis:
             raise HTTPException(status_code=503, detail="Redis not available")
 
-        rl = RateLimiter(redis)
+        rl = UserEconomicsRateLimiter(redis)
 
         # Get usage breakdown (handles "*" for all bundles)
         usage_breakdown = await rl.breakdown(
@@ -861,7 +971,7 @@ async def get_user_quota_breakdown(
         tok_month = totals["tokens_this_month"]
 
         # Merge policies (OVERRIDE semantics)
-        from kdcube_ai_app.apps.chat.sdk.infra.rate_limit.limiter import _merge_policy_with_tier_balance
+        from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import _merge_policy_with_tier_balance
 
         # Convert tier_balance to QuotaReplenishment-like object for compatibility
         if tier_balance:
@@ -905,7 +1015,7 @@ async def get_user_quota_breakdown(
                 "tokens_per_day": tier_balance.tokens_per_day if tier_balance else None,
                 "tokens_per_month": tier_balance.tokens_per_month if tier_balance else None,
                 "expires_at": tier_balance.expires_at.isoformat() if tier_balance and tier_balance.expires_at else None,
-                "purchase_notes": tier_balance.purchase_notes if tier_balance else None,
+                "purchase_notes": tier_balance.grant_notes if tier_balance else None,
             } if tier_balance else None,
             "effective_policy": {
                 "max_concurrent": effective_policy.max_concurrent,
@@ -936,6 +1046,51 @@ async def get_user_quota_breakdown(
         logger.exception(f"[get_user_quota_breakdown] Failed for user {user_id}")
         raise HTTPException(status_code=500, detail=f"Failed to get quota breakdown: {str(e)}")
 
+@router.get("/users/{user_id}/budget-breakdown")
+async def get_user_budget_breakdown(
+        user_id: str,
+        user_type: str = Query(..., description="User type (free, paid, premium, etc.)"),
+        include_expired_override: bool = Query(True),
+        reservations_limit: int = Query(50, ge=0, le=500),
+        session: UserSession = Depends(auth_without_pressure())
+):
+    """
+    Full user budget breakdown (quota + tier override + usage + lifetime credits + reservations).
+    REST layer is SQL-free: all orchestration lives in sdk/infra/economics/user_budget.py
+    """
+    mgr = _get_control_plane_manager(router)
+    settings = get_settings()
+
+    base_policy = await mgr.get_user_quota_policy(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        user_type=user_type,
+    )
+    if not base_policy:
+        raise HTTPException(status_code=404, detail=f"No policy found for user_type={user_type}")
+
+    pg_pool = getattr(router.state, "pg_pool", None)
+    redis = getattr(router.state.middleware, "redis", None)
+    if not pg_pool or not redis:
+        raise HTTPException(status_code=503, detail="Dependencies not initialized")
+
+    from kdcube_ai_app.apps.chat.sdk.infra.economics.user_budget import UserBudgetBreakdownService
+
+    svc = UserBudgetBreakdownService(
+        pg_pool=pg_pool,
+        redis=redis,
+        credits_mgr=mgr.user_credits_mgr,  # reuse existing manager instance
+    )
+
+    return await svc.get_user_budget_breakdown(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        user_id=user_id,
+        user_type=user_type,
+        base_policy=base_policy,
+        include_expired_override=include_expired_override,
+        reservations_limit=reservations_limit,
+    )
 
 # ============================================================================
 # App Budget Operations
@@ -961,6 +1116,7 @@ async def topup_app_budget(
         result = await limiter.topup_app_budget(
             usd_amount=payload.usd_amount,
             notes=payload.notes or f"Top-up by {session.username}",
+            user_id=session.user_id,
         )
 
         logger.info(f"[topup_app_budget] {settings.TENANT}/{settings.PROJECT}: +${payload.usd_amount} by {session.username}")

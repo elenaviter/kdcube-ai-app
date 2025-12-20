@@ -812,7 +812,13 @@ class SolverPresenter:
 
         This is the single implementation that handles all cases.
         """
-        dmap = self.sr.deliverables_map() or {}
+        raw_dmap = self.sr.deliverables_map() or {}
+        dmap = _to_jsonable(raw_dmap)
+        if not isinstance(dmap, dict):
+            dmap = {}
+        contract = _to_jsonable(self.contract or {})
+        if not isinstance(contract, dict):
+            contract = {}
 
         # --- Build parts ---
         parts = ProgramPresentationParts(run_id=self.codegen_run_id)
@@ -850,7 +856,7 @@ class SolverPresenter:
                 # Grouped by status with section headers and icons
                 produced_md, _has_draft = _format_produced_slots_grouped_by_status(
                     dmap=dmap,
-                    contract=self.contract,
+                    contract=contract,
                     extended=bool(config.deliverable_attrs and len(config.deliverable_attrs) > 4),
                     slot_attr_keys=config.deliverable_attrs,
                     exclude_slots=config.exclude_slots,
@@ -861,7 +867,7 @@ class SolverPresenter:
                 # Flat list WITH inline icons (enhanced version)
                 flat_md, _has_draft = _format_deliverables_flat_with_icons(
                     dmap=dmap,
-                    contract=self.contract,
+                    contract=contract,
                     slot_attr_keys=config.deliverable_attrs,
                     content_len=config.deliverables_content_len,
                     exclude_slots=config.exclude_slots,

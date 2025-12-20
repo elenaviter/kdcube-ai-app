@@ -92,6 +92,7 @@ class ConvTicketStore:
                  pool: Optional[asyncpg.Pool] = None):
 
         self._pool: Optional[asyncpg.Pool] = pool
+        self.is_shared_pool = pool is not None
         self._settings = get_settings()
         t = self._settings.TENANT.replace("-", "_").replace(" ", "_")
         p = self._settings.PROJECT.replace("-", "_").replace(" ", "_")
@@ -112,7 +113,7 @@ class ConvTicketStore:
             )
 
     async def close(self):
-        if self._pool: await self._pool.close()
+        if self._pool and not self.is_shared_pool: await self._pool.close()
 
     async def ensure_schema(self):
         # rely on external DDL execution; this makes sure the tables exist in dev

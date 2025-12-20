@@ -2,13 +2,18 @@
 # Copyright (c) 2025 Elena Viter
 from __future__ import annotations
 
-from dataclasses import is_dataclass, asdict
-from enum import Enum
 
 # chat/sdk/util.py
 import time, orjson, hashlib, re, json, unicodedata
 from typing import Any, List, Dict, Optional, Union
 from datetime import datetime, timezone
+import datetime as dt
+import pathlib
+from decimal import Decimal
+from enum import Enum
+from uuid import UUID
+import dataclasses
+import base64
 
 from pydantic import BaseModel
 
@@ -386,29 +391,84 @@ def _turn_id_from_tags_safe(tags: List[str]) -> Optional[str]:
             return t.split(":", 1)[1]
     return None
 
-def _to_jsonable(obj: Any) -> Any:
-    """
-    Convert dataclasses and pydantic/BaseModel (if any) to plain dicts.
-    Leaves basic types as-is. Avoids truncation and keeps all fields.
-    """
-    # dataclasses
-    if is_dataclass(obj):
-        return {k: _to_jsonable(v) for k, v in asdict(obj).items()}
-    # pydantic BaseModel (e.g., ProgramBrief, Deliverable subclasses)
+# def _to_jsonable(obj: Any) -> Any:
+#     """
+#     Convert dataclasses and pydantic/BaseModel (if any) to plain dicts.
+#     Leaves basic types as-is. Avoids truncation and keeps all fields.
+#     """
+#     # dataclasses
+#     if is_dataclass(obj):
+#         return {k: _to_jsonable(v) for k, v in asdict(obj).items()}
+#     # pydantic BaseModel (e.g., ProgramBrief, Deliverable subclasses)
+#     try:
+#         from pydantic import BaseModel  # type: ignore
+#         if isinstance(obj, BaseModel):
+#             return json.loads(obj.model_dump_json())  # full, including defaults
+#     except Exception:
+#         pass
+#     # dict
+#     if isinstance(obj, dict):
+#         return {k: _to_jsonable(v) for k, v in obj.items()}
+#     # list/tuple
+#     if isinstance(obj, (list, tuple)):
+#         return [_to_jsonable(v) for v in obj]
+#     # everything else
+#     return obj
+
+def _to_jsonable(obj: Any, *, _seen: set[int] | None = None) -> Any:
+    if _seen is None:
+        _seen = set()
+
+    # primitives
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    oid = id(obj)
+    if oid in _seen:
+        # cycle / repeated reference: keep stable, JSONable marker
+        return {"$ref": oid}
+    _seen.add(oid)
+
+    # common stdlib non-JSON types
+    if isinstance(obj, (dt.datetime, dt.date, dt.time)):
+        return obj.isoformat()
+    if isinstance(obj, pathlib.Path):
+        return str(obj)
+    if isinstance(obj, UUID):
+        return str(obj)
+    if isinstance(obj, Decimal):
+        # choose: str() preserves precision; float() loses it
+        return str(obj)
+    if isinstance(obj, Enum):
+        # SlotType is often an Enum -> this matters
+        return _to_jsonable(obj.value, _seen=_seen)
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return {"$bytes_b64": base64.b64encode(bytes(obj)).decode("ascii")}
+
+    # pydantic v2
     try:
         from pydantic import BaseModel  # type: ignore
         if isinstance(obj, BaseModel):
-            return json.loads(obj.model_dump_json())  # full, including defaults
+            # mode="json" coerces enums/datetime/path/etc to JSON-friendly values
+            return obj.model_dump(mode="json", exclude_none=False)
     except Exception:
         pass
-    # dict
+
+    # dataclass (avoid asdict() deep-copy)
+    if dataclasses.is_dataclass(obj):
+        out = {}
+        for f in dataclasses.fields(obj):
+            out[f.name] = _to_jsonable(getattr(obj, f.name), _seen=_seen)
+        return out
+
+    # containers
     if isinstance(obj, dict):
-        return {k: _to_jsonable(v) for k, v in obj.items()}
-    # list/tuple
-    if isinstance(obj, (list, tuple)):
-        return [_to_jsonable(v) for v in obj]
-    # everything else
-    return obj
+        return {str(k): _to_jsonable(v, _seen=_seen) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [_to_jsonable(v, _seen=_seen) for v in obj]
+
+    # last resort: keep structure (don’t crash websocket)
+    return {"$type": obj.__class__.__name__, "$repr": repr(obj)}
 
 import datetime as _dt
 

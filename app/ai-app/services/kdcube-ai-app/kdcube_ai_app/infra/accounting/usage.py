@@ -5,6 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List
 import logging, json, os
+from decimal import Decimal, ROUND_FLOOR
 
 logger = logging.getLogger(__name__)
 
@@ -656,3 +657,55 @@ def compute_llm_equivalent_tokens(
         "llm_equivalent_tokens_float": total_equiv,
         "by_model": breakdown,
     }
+
+
+def llm_output_price_usd_per_token(ref_provider: str, ref_model: str) -> float:
+    """
+    USD per *one output token* for the given model.
+    Canonical conversion rate used for:
+      - lifetime credit conversion (USD -> tokens)
+      - balance display (tokens -> USD)
+    """
+    out_1m = _ref_out_price_1m(ref_provider, ref_model)  # USD per 1M output tokens
+    return float(out_1m) / 1_000_000.0
+
+
+def quote_tokens_for_usd(
+        *,
+        usd_amount: float,
+        ref_provider: str,
+        ref_model: str,
+) -> tuple[int, float]:
+    """
+    Convert USD to reference output tokens using floor rounding.
+    Returns: (tokens, usd_per_output_token)
+    """
+    usd_per_token = llm_output_price_usd_per_token(ref_provider, ref_model)
+
+    if usd_amount is None:
+        raise ValueError("usd_amount must not be None")
+    if usd_amount <= 0:
+        # safe + predictable; your pydantic already enforces gt=0 in purchase endpoints
+        return 0, usd_per_token
+    if usd_per_token <= 0:
+        raise RuntimeError(f"Invalid usd_per_token for {ref_provider}/{ref_model}: {usd_per_token}")
+
+    # Use Decimal to avoid float rounding edge cases
+    tokens_dec = (Decimal(str(usd_amount)) / Decimal(str(usd_per_token))).to_integral_value(rounding=ROUND_FLOOR)
+    tokens = int(tokens_dec)
+    return tokens, usd_per_token
+
+
+def quote_usd_for_tokens(
+        *,
+        tokens: int,
+        ref_provider: str,
+        ref_model: str,
+) -> float:
+    """
+    Convert tokens to USD using the reference output token rate.
+    """
+    usd_per_token = llm_output_price_usd_per_token(ref_provider, ref_model)
+    if not tokens or tokens <= 0:
+        return 0.0
+    return float(Decimal(tokens) * Decimal(str(usd_per_token)))
