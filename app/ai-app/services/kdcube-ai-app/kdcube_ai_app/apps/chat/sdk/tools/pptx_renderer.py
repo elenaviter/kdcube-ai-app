@@ -68,6 +68,17 @@ class CSSParser:
     def __init__(self):
         self.styles: Dict[str, Dict[str, str]] = {}
 
+    def _extract_number(self, value: str) -> Optional[float]:
+        if not value:
+            return None
+        match = re.search(r'[-+]?\d*\.?\d+', value)
+        if not match:
+            return None
+        try:
+            return float(match.group(0))
+        except Exception:
+            return None
+
     def get_style(self, class_name: str) -> StyleInfo:
         """Get computed style for a class."""
         rules = self.styles.get(class_name, {})
@@ -88,8 +99,9 @@ class CSSParser:
             if len(parts) >= 3:
                 try:
                     # e.g., "4px solid #0066cc"
-                    width_str = parts[0].replace('px', '').replace('pt', '')
-                    style.border_width = Pt(float(width_str))
+                    width_val = self._extract_number(parts[0])
+                    if width_val is not None:
+                        style.border_width = Pt(width_val)
                     style.border_color = self._parse_color(parts[2])
                 except:
                     pass
@@ -99,8 +111,9 @@ class CSSParser:
             parts = rules['border-left'].split()
             if len(parts) >= 3:
                 try:
-                    width_str = parts[0].replace('px', '').replace('pt', '')
-                    style.border_left_width = Pt(float(width_str))
+                    width_val = self._extract_number(parts[0])
+                    if width_val is not None:
+                        style.border_left_width = Pt(width_val)
                     style.border_left_color = self._parse_color(parts[2])
                 except:
                     pass
@@ -152,23 +165,36 @@ class CSSParser:
 
     def _parse_font_size(self, size_str: str) -> Optional[Pt]:
         s = size_str.strip().lower()
-        if s.endswith('em'):
-            return Pt(float(s[:-2]) * 16 * 0.75)  # 1em=16px; 1px=0.75pt
+        if s.endswith('rem') or s.endswith('em'):
+            val = self._extract_number(s)
+            if val is None:
+                return None
+            return Pt(val * 16 * 0.75)  # 1em/rem=16px; 1px=0.75pt
         if s.endswith('px'):
-            return Pt(float(s[:-2]) * 0.75)
+            val = self._extract_number(s)
+            return Pt(val * 0.75) if val is not None else None
         if s.endswith('pt'):
-            return Pt(float(s[:-2]))
+            val = self._extract_number(s)
+            return Pt(val) if val is not None else None
         return None
 
     def _parse_length_to_inches(self, s: str) -> Optional[Inches]:
         s = s.strip().lower()
         try:
             if s.endswith('px'):  # assume 96dpi for CSS pixel
-                return Inches(float(s[:-2]) / 96.0)
+                val = self._extract_number(s)
+                return Inches(val / 96.0) if val is not None else None
             if s.endswith('pt'):
-                return Inches(float(s[:-2]) / 72.0)
+                val = self._extract_number(s)
+                return Inches(val / 72.0) if val is not None else None
             if s.endswith('in'):
-                return Inches(float(s[:-2]))
+                val = self._extract_number(s)
+                return Inches(val) if val is not None else None
+            if s.endswith('rem') or s.endswith('em'):
+                val = self._extract_number(s)
+                if val is None:
+                    return None
+                return Inches((val * 16.0) / 96.0)
         except:
             pass
         return None
@@ -207,7 +233,13 @@ class CSSParser:
                 style.font_size = self._parse_font_size(rules['font-size'])
             if 'line-height' in rules:
                 try:
-                    style.line_height = float(re.sub('[^0-9.]', '', rules['line-height']))
+                    lh = rules['line-height']
+                    if '%' in lh:
+                        val = self._extract_number(lh)
+                        style.line_height = (val / 100.0) if val is not None else None
+                    else:
+                        val = self._extract_number(lh)
+                        style.line_height = val if val is not None else None
                 except:
                     pass
             if 'padding' in rules:
@@ -227,7 +259,9 @@ class CSSParser:
                 parts = rules['border-bottom'].split()
                 if len(parts) >= 3:
                     try:
-                        style.border_width = Pt(float(re.sub('[^0-9.]', '', parts[0])))
+                        width_val = self._extract_number(parts[0])
+                        if width_val is not None:
+                            style.border_width = Pt(width_val)
                         style.border_color = self._parse_color(parts[-1])
                     except:
                         pass
@@ -235,7 +269,9 @@ class CSSParser:
                 parts = rules['border-left'].split()
                 if len(parts) >= 3:
                     try:
-                        style.border_left_width = Pt(float(re.sub('[^0-9.]', '', parts[0])))
+                        width_val = self._extract_number(parts[0])
+                        if width_val is not None:
+                            style.border_left_width = Pt(width_val)
                         style.border_left_color = self._parse_color(parts[-1])
                     except:
                         pass
