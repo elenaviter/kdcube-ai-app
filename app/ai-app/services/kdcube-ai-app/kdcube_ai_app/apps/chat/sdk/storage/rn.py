@@ -48,7 +48,7 @@ def rn_citable(tenant: str, project: str,
 import re
 FILE_PATH_RE = re.compile(
     r'^cb/tenants/(?P<tenant>[^/]+)/projects/(?P<project>[^/]+)/attachments/(?P<role>[^/]+)/'
-    r'(?P<user_id>admin-user-\d+)/'
+    r'(?P<user_id>[^/]+)/'
     r'(?P<conversation_id>[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})/'
     r'(?P<turn_id>turn_[^/]+)/(?P<filename>[^/]+)$'
 )
@@ -60,9 +60,8 @@ def parse_file_path(path: str) -> dict:
     return m.groupdict()
 
 def build_file_path(d: dict) -> str:
-    return "cb/tenants/{tenant}/projects/{project}/attachments/{role}/admin-user-1/{conversation_id}/{turn_id}/{filename}".format(**d)
+    return "cb/tenants/{tenant}/projects/{project}/attachments/{role}/{user_id}/{conversation_id}/{turn_id}/{filename}".format(**d)
 
 def rn_file_from_file_path(file_rel_path: str):
     places = parse_file_path(file_rel_path)
     return rn_attachment(**places)
-
