@@ -354,6 +354,10 @@ class ReactSolver:
     # ----------------------------
 
     def _route_after_decision(self, state: Dict[str, Any]) -> str:
+        last_decision = state.get("last_decision") or {}
+        action = last_decision.get("action")
+        if action in ("complete", "exit") and not state.get("exit_reason"):
+            state["exit_reason"] = "complete"
         # Centralized wrap-up gate: only when exiting with pending slots and unused artifacts.
         if state.get("exit_reason") and not state.get("wrapup_round_used", False):
             context: ReactContext = state.get("context")
@@ -378,7 +382,6 @@ class ReactSolver:
         if state.get("exit_reason"):
             return "max_iterations" if state["exit_reason"] == "max_iterations" else "exit"
 
-        last_decision = state.get("last_decision") or {}
         nxt = last_decision.get("action", "complete")
         if nxt == "call_tool":
             return "protocol_verify"
@@ -1354,6 +1357,7 @@ class ReactSolver:
         if tool_call_id and tool_call_id in context.tool_call_index:
             context.tool_call_index[tool_call_id]["produced_artifact_ids"] = actual_artifact_ids or []
 
+        hosted_files_to_emit: List[Dict[str, Any]] = []
         for tr in items:
             it_round = int(state["iteration"])
 
@@ -1545,7 +1549,7 @@ class ReactSolver:
                     if hosted_uri:
                         artifact["hosted_uri"] = hosted_uri
                         artifact["rn"] = hosted[0].get("rn")
-                    await self.hosting_service.emit_solver_artifacts(files=hosted, citations=[])
+                    hosted_files_to_emit.extend(hosted)
 
             # Session log
             log_entry = {
@@ -1577,6 +1581,11 @@ class ReactSolver:
             if tool_call_item_index is not None:
                 log_entry["tool_call_item_index"] = tool_call_item_index
             state["session_log"].append(log_entry)
+
+        if hosted_files_to_emit and self.hosting_service:
+            await self.hosting_service.emit_solver_artifacts(
+                files=hosted_files_to_emit, citations=[]
+            )
 
         # Events: finish
         finish_data = {

@@ -178,7 +178,6 @@ async def run_codegen_tool(
         solution_gen_stream=solution_gen_stream,
         exec_id=exec_id,
     )
-
     outdir = pathlib.Path(run_rec.get("outdir") or "")
     workdir = pathlib.Path(run_rec.get("workdir") or "")
     run_id = run_rec.get("run_id") or ""
