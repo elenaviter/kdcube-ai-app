@@ -6,8 +6,14 @@ import logging
 
 from kdcube_ai_app.apps.chat.sdk.tools.with_llm_backends import generate_content_llm
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import cap_sources_for_context
 
 logger = logging.getLogger(__name__)
+
+SEGMENTER_MAX_INPUT_TOKENS = 180000
+SEGMENTER_INPUT_RESERVED_TOKENS = 4000
+SEGMENTER_SOURCE_OVERHEAD_TOKENS = 140
+SEGMENTER_TOKEN_ESTIMATE_DIVISOR = 4
 
 async def sources_reconciler(
         _SERVICE,
@@ -484,7 +490,7 @@ async def sources_filter_and_segment(
                     mode=mode,
                     on_thinking_fn=on_thinking_fn,
                     thinking_budget=thinking_budget or 180,
-                    max_tokens=1000,
+                    max_tokens=3000,
                     role=role
                 )
 
@@ -757,16 +763,40 @@ async def filter_search_results_by_content(
             "content": content,
             "published_time_iso": pub_iso,
             "modified_time_iso": mod_iso,
+            "provider": row.get("provider"),
+            "provider_rank": row.get("provider_rank"),
+            "objective_relevance": row.get("objective_relevance"),
+            "query_relevance": row.get("query_relevance"),
+            "relevance_score": row.get("relevance_score"),
         })
 
     try:
         if do_segment:
+            sources_for_segmenter = cap_sources_for_context(
+                sources_for_filter,
+                context_texts=[objective] + list(queries or []),
+                max_tokens=SEGMENTER_MAX_INPUT_TOKENS,
+                reserved_tokens=SEGMENTER_INPUT_RESERVED_TOKENS,
+                overhead_tokens=SEGMENTER_SOURCE_OVERHEAD_TOKENS,
+                token_estimate_divisor=SEGMENTER_TOKEN_ESTIMATE_DIVISOR,
+            )
+            if len(sources_for_segmenter) < len(sources_for_filter):
+                logger.info(
+                    "filter_search_results_by_content: capped segmenter input %d -> %d sources",
+                    len(sources_for_filter),
+                    len(sources_for_segmenter),
+                )
+            if not sources_for_segmenter:
+                logger.warning(
+                    "filter_search_results_by_content: no sources fit within segmenter context budget; skipping filter+segment"
+                )
+                return search_results
             # ===== Combined path: filter + segment =====
             spans_map = await sources_filter_and_segment(
                 _SERVICE=_SERVICE,
                 objective=objective,
                 queries=queries,
-                sources_with_content=sources_for_filter,
+                sources_with_content=sources_for_segmenter,
                 mode=mode,
                 on_thinking_fn=on_thinking_fn,
                 on_delta_fn=on_delta_fn,
@@ -921,16 +951,40 @@ async def filter_fetch_results(_SERVICE,
                 "content": content,
                 "published_time_iso": entry.get("published_time_iso"),
                 "modified_time_iso": entry.get("modified_time_iso"),
+                "provider": entry.get("provider"),
+                "provider_rank": entry.get("provider_rank"),
+                "objective_relevance": entry.get("objective_relevance"),
+                "query_relevance": entry.get("query_relevance"),
+                "relevance_score": entry.get("relevance_score"),
             })
             url_to_sid[url] = sid
 
         if sources_for_seg:
+            sources_for_segmenter = cap_sources_for_context(
+                sources_for_seg,
+                context_texts=[obj],
+                max_tokens=SEGMENTER_MAX_INPUT_TOKENS,
+                reserved_tokens=SEGMENTER_INPUT_RESERVED_TOKENS,
+                overhead_tokens=SEGMENTER_SOURCE_OVERHEAD_TOKENS,
+                token_estimate_divisor=SEGMENTER_TOKEN_ESTIMATE_DIVISOR,
+            )
+            if len(sources_for_segmenter) < len(sources_for_seg):
+                logger.info(
+                    "filter_fetch_results: capped segmenter input %d -> %d sources",
+                    len(sources_for_seg),
+                    len(sources_for_segmenter),
+                )
+            if not sources_for_segmenter:
+                logger.warning(
+                    "filter_fetch_results: no sources fit within segmenter context budget; skipping segmentation"
+                )
+                return list(results.values())
             # Segmenter only: we pass [objective] as a single query.
             spans_map = await sources_filter_and_segment(
                 _SERVICE=_SERVICE,
                 objective=obj,
                 queries=[obj],
-                sources_with_content=sources_for_seg,
+                sources_with_content=sources_for_segmenter,
                 mode=mode,
                 on_thinking_fn=on_thinking_fn,
                 thinking_budget=thinking_budget,

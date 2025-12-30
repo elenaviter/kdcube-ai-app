@@ -235,7 +235,8 @@ CITATION_OPTIONAL_ATTRS = (
     "provider", "published_time_iso", "modified_time_iso", "expiration",
     "mime", "source_type", "rn", "author",
     "content_length", "fetch_status", # "content",
-    "objective_relevance", "query_relevance", "authority", "favicon_url"
+    "objective_relevance", "query_relevance", "authority", "favicon_url",
+    "provider_rank", "weighted_rank"
 )
 
 canonical_source_shape_reference = {

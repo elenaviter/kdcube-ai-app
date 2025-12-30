@@ -76,13 +76,16 @@ class CodegenTool:
                 "- Keep artifact_ids stable and machine-safe (snake_case recommended).\n"
                 "\n"
                 "RETURN VALUE\n"
-                "- The system returns an envelope like:\n"
+                "- The system returns a result with the produced artifacts keyed by the SAME artifact_ids\n"
+                "  as in output_contract (no aliases). Downstream consumes these items to map slots.\n"
+                "  Practical shape:\n"
                 "  {\n"
                 "    \"ok\": true|false,\n"
-                "    \"out_dyn\": { \"<artifact_id>\": <artifact_payload>, ... },\n"
-                "    \"out\": [ {\"resource_id\": \"artifact:<artifact_id>\", \"value\": <artifact_payload>}, ... ],\n"
                 "    \"error\": { ... } | null,\n"
-                "    \"summary\": \"...\"\n"
+                "    \"items\": [\n"
+                "      {\"artifact_id\": \"<contract_id>\", \"type\": \"inline|file\", \"format\"?: \"...\", \"mime\"?: \"...\",\n"
+                "       \"description\"?: \"...\", \"sources_used\"?: [...], \"draft\"?: true, \"summary\"?: \"...\"}\n"
+                "    ]\n"
                 "  }\n"
                 "\n"
                 "ARTIFACT PAYLOAD SHAPES\n"
@@ -121,7 +124,7 @@ class CodegenTool:
                     "Effective objective for THIS step. "
                     "Must be consistent with output_contract and must not request extra deliverables."
             )],
-    ) -> Annotated[dict, "Envelope: ok/out_dyn/out/error/summary."]:
+    ) -> Annotated[dict, "Result: {ok, error?, items:[{artifact_id, type, format?, mime?, description?, sources_used?, draft?, summary?}]}."]:
         pass
 
 async def run_codegen_tool(

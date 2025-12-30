@@ -15,6 +15,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad
 from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     normalize_sources_any, dedupe_sources_by_url, adapt_source_for_llm
 )
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import cap_sources_for_llm_evenly
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.strategy_and_budget import BudgetState, format_budget_for_llm
 
@@ -207,6 +208,7 @@ class ReactContext:
     conversation_id: Optional[str] = None
     user_id: Optional[str] = None
     bundle_id: Optional[str] = None
+    track_id: Optional[str] = None
     user_text: Optional[str] = None
     started_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     budget_state: BudgetState = field(default_factory=BudgetState)
@@ -1055,6 +1057,12 @@ class ReactContext:
             art.setdefault("mime", mime)
             if desc and not art.get("description"):
                 art["description"] = desc
+            hosted_uri = art.get("hosted_uri")
+            if hosted_uri:
+                art["hosted_uri"] = hosted_uri
+            hosted_key = art.get("key")
+            if hosted_key:
+                art["key"] = hosted_key
             if draft_flag:
                 art["draft"] = True
             if gaps:
@@ -1549,6 +1557,33 @@ class ReactContext:
 
         return acc
 
+    def _collect_sources_buckets_from_fetch(self, fetch_directives: list[dict]) -> list[list[dict]]:
+        """
+        Collect sources_used per fetch directive to preserve per-source buckets.
+        """
+        buckets: list[list[dict]] = []
+        for fd in (fetch_directives or []):
+            if not isinstance(fd, dict):
+                continue
+            p = (fd.get("path") or "").strip()
+            if not p:
+                continue
+            val, parent = self.resolve_path(p, mode="full")
+
+            candidates: list[dict] = []
+            if isinstance(parent, dict):
+                su = parent.get("sources_used")
+                if su:
+                    candidates.extend(normalize_sources_any(su))
+
+            if not candidates and isinstance(val, (list, dict)):
+                candidates.extend(normalize_sources_any(val))
+
+            if candidates:
+                buckets.append(candidates)
+
+        return buckets
+
     def _parse_sources_param_value(self, raw: Any) -> list[dict]:
         """
         Parse 'sources*' params (list or dict) into a flat list[dict].
@@ -1597,9 +1632,44 @@ class ReactContext:
 
         """
         # Get params AND lineage from bind_params (single pass)
-        params, content_lineage = self.bind_params(base_params=base_params,
-                                  fetch_directives=fetch_directives,
-                                  tool_id=tool_id)
+        # Normalize common envelope bindings (LLM gen -> writer content)
+        if tool_id and tools_insights.is_write_tool(tool_id) and isinstance(fetch_directives, list):
+            for fd in fetch_directives:
+                if not isinstance(fd, dict):
+                    continue
+                if (fd.get("param_name") or "") != "content":
+                    continue
+                path = fd.get("path") or ""
+                prefix = "current_turn.artifacts."
+                if not (isinstance(path, str) and path.startswith(prefix)):
+                    continue
+                rest = path[len(prefix):]
+                if not rest:
+                    continue
+                aid = (rest.split(".", 1)[0] or "").strip()
+                if not aid:
+                    continue
+                art = (self.artifacts or {}).get(aid)
+                if not isinstance(art, dict):
+                    continue
+                if art.get("tool_id") != "llm_tools.generate_content_llm":
+                    continue
+                # If binding the envelope directly, point to content leaf
+                if ".value.content" not in path:
+                    self.add_event(kind="protocol_violation", data={
+                        "code": "llm_envelope_content_leaf_required",
+                        "message": "Rebound writer content from .value to .value.content for LLM gen artifact",
+                        "tool_id": tool_id,
+                        "artifact_id": aid,
+                        "path": path,
+                    })
+                    fd["path"] = f"current_turn.artifacts.{aid}.value.content"
+
+        params, content_lineage = self.bind_params(
+            base_params=base_params,
+            fetch_directives=fetch_directives,
+            tool_id=tool_id
+        )
 
         # tools we auto-attach sources to (even if caller didn't map 'sources' explicitly)
         is_citation_aware = tools_insights.does_tool_accept_sources(tool_id)
@@ -1630,9 +1700,38 @@ class ReactContext:
         merged = self._reconcile_sources_lists([from_fetch, provided_list])
 
         if merged:
-            # For LLM + writer tools, normalize into a clean shape
-            if wants_sources_list or wants_sources_param:
-                merged = [adapt_source_for_llm(s) for s in merged if isinstance(s, dict)]
+            if wants_sources_list and tool_id == "llm_tools.generate_content_llm":
+                buckets = self._collect_sources_buckets_from_fetch(fetch_directives)
+                if provided_list:
+                    buckets.append(provided_list)
+                if not buckets and from_fetch:
+                    buckets = [from_fetch]
+
+                adapted_buckets: list[list[dict]] = []
+                total_bucketed = 0
+                for bucket in buckets:
+                    adapted = [adapt_source_for_llm(s) for s in bucket if isinstance(s, dict)]
+                    if adapted:
+                        adapted_buckets.append(adapted)
+                        total_bucketed += len(adapted)
+
+                capped = cap_sources_for_llm_evenly(
+                    adapted_buckets,
+                    instruction=params.get("instruction"),
+                    input_context=params.get("input_context"),
+                )
+                if len(capped) < total_bucketed:
+                    log.info(
+                        "bind_params_with_sources: capped sources_list for %s from %d to %d",
+                        tool_id,
+                        total_bucketed,
+                        len(capped),
+                    )
+                merged = self._reconcile_sources_lists([capped])
+            else:
+                # For LLM + writer tools, normalize into a clean shape
+                if wants_sources_list or wants_sources_param:
+                    merged = [adapt_source_for_llm(s) for s in merged if isinstance(s, dict)]
 
             if wants_sources_list:
                 params["sources_list"] = merged

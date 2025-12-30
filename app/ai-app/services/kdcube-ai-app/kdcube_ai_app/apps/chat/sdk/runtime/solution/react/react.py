@@ -69,6 +69,7 @@ class ReactState:
     context: ReactContext
 
     coordinator_turn_line: str = ""            # ← compact turn-decision line
+    next_decision_model: str = "strong"        # strong | regular
 
     # Timeline
     session_log: List[Dict[str, Any]] = field(default_factory=list)
@@ -120,6 +121,7 @@ class ReactSolver:
             scratchpad: TurnScratchpad,
             comm: ChatCommunicator,
             comm_context: ChatTaskPayload,
+            hosting_service: Optional[Any] = None,
             turn_view_class: Type[BaseTurnView] = BaseTurnView,
             react_decision_stream: Callable[..., Awaitable[Dict[str, Any]]],
             solution_gen_stream: Callable[..., Awaitable[Dict[str, Any]]],
@@ -134,6 +136,7 @@ class ReactSolver:
         self.graph = self._build_graph()
         self.react_decision_stream = react_decision_stream
         self.solution_gen_stream = solution_gen_stream
+        self.hosting_service = hosting_service
 
         self.codegen_runner = CodegenRunner(
             service=self.svc,
@@ -156,7 +159,7 @@ class ReactSolver:
         wf.add_conditional_edges(
             "decision",
             self._route_after_decision,
-            {"protocol_verify": "protocol_verify", "exit": "exit", "max_iterations": "exit"},
+            {"protocol_verify": "protocol_verify", "decision": "decision", "exit": "exit", "max_iterations": "exit"},
         )
 
         wf.add_conditional_edges(
@@ -228,6 +231,7 @@ class ReactSolver:
             )
         context.bind_storage(outdir)
         context.timezone = self.comm_context.user.timezone
+        context.track_id = runtime_ctx.get("track_id")
 
         # Get ALL available tools (respecting allowed_plugins filter for safety)
         adapters = self.tool_manager.tools.adapters_for_codegen(
@@ -251,6 +255,7 @@ class ReactSolver:
             output_contract=plan.output_contract or {},
             coordinator_guide=coordinator_guide,
             coordinator_turn_line=coordinator_turn_line,
+            next_decision_model="strong",
             adapters=adapters,
             workdir=workdir,
             outdir=outdir,
@@ -307,6 +312,7 @@ class ReactSolver:
             "output_contract": s.output_contract,
             "coordinator_guide": s.coordinator_guide,
             "coordinator_turn_line": s.coordinator_turn_line,
+            "next_decision_model": s.next_decision_model,
             "adapters": s.adapters,
             "workdir": str(s.workdir),
             "outdir": str(s.outdir),
@@ -372,7 +378,8 @@ class ReactSolver:
         if state.get("exit_reason"):
             return "max_iterations" if state["exit_reason"] == "max_iterations" else "exit"
 
-        nxt = (state.get("last_decision") or {}).get("next_step", "complete")
+        last_decision = state.get("last_decision") or {}
+        nxt = last_decision.get("action", "complete")
         if nxt == "call_tool":
             return "protocol_verify"
         if nxt == "decision":
@@ -403,7 +410,7 @@ class ReactSolver:
 
         decision = state.get("last_decision") or {}
         strategy = decision.get("strategy")
-        next_step = decision.get("next_step")
+        action = decision.get("action")
         tool_call = decision.get("tool_call") or {}
         tool_id = tool_call.get("tool_id")
 
@@ -411,7 +418,7 @@ class ReactSolver:
             "iteration": round_index,
             "duration_sec": duration,
             "strategy": strategy,
-            "next_step": next_step,
+            "action": action,
             "tool_id": tool_id,
             "end_reason": end_reason,
         }
@@ -664,31 +671,47 @@ class ReactSolver:
         # ---------- Budget hard gate ----------
         bs = getattr(context, "budget_state", None)
         if bs is not None and bs.must_finish():
-            # Budget exhausted: no new decision rounds with tools.
-            state["exit_reason"] = "max_iterations"
-            state["error"] = {
-                "where": "react.decision",
-                "error": "budget_exhausted",
-                "description": "Global decision/tool-call budget exhausted before explicit EXIT/COMPLETE.",
-                "details": {
-                    "iteration": it,
-                    "global_budget": {
-                        "max_decision_rounds": bs.global_budget.max_decision_rounds,
-                        "decision_rounds_used": bs.global_budget.decision_rounds_used,
-                        "max_tool_calls": bs.global_budget.max_tool_calls,
-                        "tool_calls_used": bs.global_budget.tool_calls_used,
-                        "max_explore_rounds": bs.global_budget.max_explore_rounds,
-                        "explore_rounds_used": bs.global_budget.explore_rounds_used,
-                        "max_exploit_rounds": bs.global_budget.max_exploit_rounds,
-                        "exploit_rounds_used": bs.global_budget.exploit_rounds_used,
-                        "max_render_rounds": bs.global_budget.max_render_rounds,
-                        "render_rounds_used": bs.global_budget.render_rounds_used,
+            # Budget exhausted: allow ONE wrapup round for mapping if needed.
+            declared = list((state.get("output_contract") or {}).keys())
+            filled = list((getattr(context, "current_slots", {}) or {}).keys()) if context else []
+            pending = [s for s in declared if s not in set(filled)]
+            artifacts = list((getattr(context, "artifacts", {}) or {}).keys()) if context else []
+            mapped_artifacts = set()
+            if context and getattr(context, "current_slots", None):
+                for slot in (context.current_slots or {}).values():
+                    if isinstance(slot, dict):
+                        aid = (slot.get("mapped_artifact_id") or "").strip()
+                        if aid:
+                            mapped_artifacts.add(aid)
+            has_unmapped = any(aid not in mapped_artifacts for aid in artifacts)
+            if pending and has_unmapped and not state.get("wrapup_round_used", False):
+                state["wrapup_round_used"] = True
+                state["is_wrapup_round"] = True
+            else:
+                state["exit_reason"] = "max_iterations"
+                state["error"] = {
+                    "where": "react.decision",
+                    "error": "budget_exhausted",
+                    "description": "Global decision/tool-call budget exhausted before explicit EXIT/COMPLETE.",
+                    "details": {
+                        "iteration": it,
+                        "global_budget": {
+                            "max_decision_rounds": bs.global_budget.max_decision_rounds,
+                            "decision_rounds_used": bs.global_budget.decision_rounds_used,
+                            "max_tool_calls": bs.global_budget.max_tool_calls,
+                            "tool_calls_used": bs.global_budget.tool_calls_used,
+                            "max_explore_rounds": bs.global_budget.max_explore_rounds,
+                            "explore_rounds_used": bs.global_budget.explore_rounds_used,
+                            "max_exploit_rounds": bs.global_budget.max_exploit_rounds,
+                            "exploit_rounds_used": bs.global_budget.exploit_rounds_used,
+                            "max_render_rounds": bs.global_budget.max_render_rounds,
+                            "render_rounds_used": bs.global_budget.render_rounds_used,
+                        },
                     },
-                },
-                "managed": True,
-            }
-            self.log.log("[react.decision] Budget exhausted; exiting", level="WARNING")
-            return state
+                    "managed": True,
+                }
+                self.log.log("[react.decision] Budget exhausted; exiting", level="WARNING")
+                return state
 
         # ---------- Start timing for this round (decision + optional tool) ----------
         if not state.get("round_open"):
@@ -722,7 +745,8 @@ class ReactSolver:
         )
         context.operational_digest = operational_digest
 
-        role = f"{self.MODULE_AGENT_NAME}.{self.DECISION_AGENT_NAME}"
+        model_kind = state.get("next_decision_model") or "strong"
+        role = f"{self.MODULE_AGENT_NAME}.{self.DECISION_AGENT_NAME}.{model_kind}"
         async with with_accounting(
                 context.bundle_id,
                 track_id="A",
@@ -747,14 +771,52 @@ class ReactSolver:
         # Accept both legacy envelope and direct schema
         agent_response = (decision_out or {}).get("agent_response") or (decision_out or {})
         if agent_response and agent_response.get("strategy") == "exit":
-            agent_response["next_step"] = "exit"
+            agent_response["action"] = "exit"
 
         elog = decision_out.get("log") or {}
         internal_thinking = decision_out.get("internal_thinking")
         error_text = (elog.get("error") or "").strip()
         focus_slot = agent_response.get("focus_slot") or ""
+        action = agent_response.get("action") or "complete"
+        next_decision_step = agent_response.get("next_decision_step") or ""
+        completion_summary = (agent_response.get("completion_summary") or "").strip()
+        raw_strategy = agent_response.get("strategy")
+        allowed_strategies = {"explore", "exploit", "render", "exit"}
+        strategy = raw_strategy
+        if isinstance(strategy, str):
+            strategy = strategy.strip().lower() or None
+        if completion_summary and (not strategy or strategy not in allowed_strategies):
+            strategy = "exit"
+            agent_response["strategy"] = "exit"
+        elif not strategy or strategy not in allowed_strategies:
+            pv = {
+                "code": "decision_invalid_strategy",
+                "message": f"strategy={raw_strategy!r}",
+                "tool_id": "react.decision",
+                "iteration": it + 1,
+            }
+            try:
+                state["protocol_violation_count"] = int(state.get("protocol_violation_count") or 0) + 1
+            except Exception:
+                state["protocol_violation_count"] = 1
+            state["last_protocol_violation"] = pv
+            context.add_event(kind="protocol_violation", data=pv)
+            context.add_event(kind="decision_protocol_violation", data=pv)
+            state["session_log"].append({
+                "type": "decision_protocol_violation",
+                "iteration": it + 1,
+                "timestamp": time.time(),
+                "details": pv,
+            })
+            strategy = state.get("last_strategy") or "exploit"
+            agent_response["strategy"] = strategy
+            agent_response["action"] = "decision"
+            action = "decision"
+            state["force_decision_rerun"] = True
+        if not agent_response.get("action"):
+            agent_response["action"] = action
         self.scratchpad.tlog.solver(
-            f"[react.decision] next_step={agent_response.get('next_step')} "
+            f"[react.decision] action={action} next_decision_step={next_decision_step} "
             f"reason={agent_response.get('reasoning','')[:120]} focus_slot={focus_slot}"
         )
         await emit_event(
@@ -767,6 +829,10 @@ class ReactSolver:
         )
         self.scratchpad.register_agentic_response(f"solver.react.decision ({it})", agent_response)
 
+        # Update model selection for next round (if provided)
+        if agent_response.get("next_decision_model"):
+            state["next_decision_model"] = agent_response.get("next_decision_model")
+
         # Track strategy + focus_slot
         strategy = agent_response.get("strategy") or None
         focus_slot = agent_response.get("focus_slot") or None
@@ -776,12 +842,13 @@ class ReactSolver:
         if isinstance(agent_response.get("tool_call"), dict):
             tool_call_id = (agent_response["tool_call"].get("tool_id") or "").strip()
         if isinstance(show_paths, list) and show_paths:
-            if agent_response.get("next_step") == "decision" or tool_call_id == "codegen_tools.codegen_python":
+            if action == "decision" or tool_call_id == "codegen_tools.codegen_python":
                 bs = getattr(context, "budget_state", None)
                 if bs is not None and bs.global_budget.remaining_context_reads() <= 0:
                     self.log.log("[react.journal] context_reads budget exhausted; skipping show_artifacts", level="WARNING")
-                    if agent_response.get("next_step") == "decision":
-                        agent_response["next_step"] = "exit"
+                    if action == "decision":
+                        agent_response["action"] = "exit"
+                        action = "exit"
                         state["exit_reason"] = "context_reads_exhausted"
                     show_paths = []
                 else:
@@ -882,10 +949,12 @@ class ReactSolver:
         if requested_maps:
             agent_response = dict(agent_response, map_slots=filtered_maps)
 
+        action = agent_response.get("action") or "complete"
         # Decision timeline event
         context.add_event(kind="decision", data={
             "iteration": it + 1,
-            "next_step": agent_response.get("next_step"),
+            "action": action,
+            "next_decision_step": agent_response.get("next_decision_step"),
             "reasoning": agent_response.get("reasoning"),
             "tool_call": agent_response.get("tool_call") or {},
             "map_slots": filtered_maps,
@@ -901,19 +970,20 @@ class ReactSolver:
         state["protocol_verify_ok"] = None
         state["iteration"] = it + 1
 
-        # ---- Handle next_step ----
-        nxt = agent_response.get("next_step", "complete")
+        # ---- Handle action ----
+        nxt = action
         is_wrapup = state.get("is_wrapup_round", False)
         if is_wrapup and nxt == "call_tool":
             nxt = "exit"
-            agent_response["next_step"] = "exit"
+            agent_response["action"] = "exit"
         if nxt == "decision":
             show_paths = agent_response.get("show_artifacts") or []
-            if not (isinstance(show_paths, list) and show_paths):
+            if not (isinstance(show_paths, list) and show_paths) and not state.get("force_decision_rerun"):
                 self.log.log("[react.decision] decision rerun without show_artifacts; exiting", level="WARNING")
                 nxt = "exit"
-                agent_response["next_step"] = "exit"
+                agent_response["action"] = "exit"
                 state["exit_reason"] = "decision_no_show_artifacts"
+            state["force_decision_rerun"] = False
 
         # ---------- MANDATORY mapping step: ONCE per round, only here ----------
         if filtered_maps and state.get("mapped_round_index") != state.get("round_index"):
@@ -966,7 +1036,7 @@ class ReactSolver:
             if is_wrapup:
                 self.log.log("[react.decision] decision rerun blocked during wrapup; exiting", level="WARNING")
                 nxt = "exit"
-                agent_response["next_step"] = "exit"
+                agent_response["action"] = "exit"
                 state["exit_reason"] = "wrapup_no_decision_rerun"
             else:
                 if bs is not None:
@@ -974,7 +1044,7 @@ class ReactSolver:
                     if gb.decision_reruns_used >= gb.max_decision_reruns:
                         self.log.log("[react.decision] decision rerun budget exhausted; exiting", level="WARNING")
                         nxt = "exit"
-                        agent_response["next_step"] = "exit"
+                        agent_response["action"] = "exit"
                         state["exit_reason"] = "decision_reruns_exhausted"
                     else:
                         bs.note_decision_rerun()
@@ -1030,7 +1100,7 @@ class ReactSolver:
         # Default: blocked unless proven OK
         state["protocol_verify_ok"] = False
 
-        nxt = decision.get("next_step")
+        nxt = decision.get("action")
         if nxt != "call_tool":
             # Nothing to verify
             state["protocol_verify_ok"] = True
@@ -1447,6 +1517,36 @@ class ReactSolver:
                 tool_call_item_index=tool_call_item_index,
             )
 
+            is_file_artifact = bool(
+                artifact_kind == "file"
+                or (isinstance(artifact.get("value"), dict) and artifact.get("value", {}).get("type") == "file")
+            )
+            if is_file_artifact and self.hosting_service:
+                svc = self.comm.service or {}
+                hosted = await self.hosting_service.host_files_to_conversation(
+                    rid=svc.get("request_id") or "",
+                    files=[artifact],
+                    outdir=outdir,
+                    tenant=svc.get("tenant") or "",
+                    project=svc.get("project") or "",
+                    user=svc.get("user") or self.comm.user_id,
+                    conversation_id=svc.get("conversation_id") or context.conversation_id or "",
+                    user_type=svc.get("user_type") or self.comm.user_type or "",
+                    turn_id=context.turn_id or "",
+                    track_id=context.track_id or svc.get("request_id") or "",
+                )
+                if hosted:
+                    hosted_uri = hosted[0].get("hosted_uri") or ""
+                    if isinstance(artifact.get("value"), dict) and hosted_uri:
+                        artifact["value"]["hosted_uri"] = hosted_uri
+                        artifact["value"]["key"] = hosted[0].get("key")
+                        artifact["value"]["rn"] = hosted[0].get("rn")
+                        artifact["value"]["local_path"] = hosted[0].get("local_path")
+                    if hosted_uri:
+                        artifact["hosted_uri"] = hosted_uri
+                        artifact["rn"] = hosted[0].get("rn")
+                    await self.hosting_service.emit_solver_artifacts(files=hosted, citations=[])
+
             # Session log
             log_entry = {
                 "type": "tool_execution",
@@ -1585,7 +1685,7 @@ class ReactSolver:
             self.log.log(
                 f"[react.merge_sources] empty merge result; "
                 f"inputs={[len(c or []) for c in collections]} "
-                f"raw_type={type(raw_output).__name__}",
+                f"raw_type={type(merged).__name__}",
                 level="WARNING",
             )
         else:
@@ -1705,6 +1805,18 @@ class ReactSolver:
                     "text": text,
                     "description": desc,
                 }
+                filename = art.get("filename")
+                if filename:
+                    out_dyn[slot_name]["filename"] = filename
+                hosted_uri = art.get("hosted_uri")
+                if hosted_uri:
+                    out_dyn[slot_name]["hosted_uri"] = hosted_uri
+                hosted_key = art.get("key")
+                if hosted_key:
+                    out_dyn[slot_name]["key"] = hosted_key
+                hosted_rn = art.get("rn")
+                if hosted_rn:
+                    out_dyn[slot_name]["rn"] = hosted_rn
             if draft:
                 out_dyn[slot_name]["draft"] = True
             if gaps:

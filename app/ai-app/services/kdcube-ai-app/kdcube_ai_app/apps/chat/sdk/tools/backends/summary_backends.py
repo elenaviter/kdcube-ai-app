@@ -480,6 +480,8 @@ async def generate_llm_summary_json(
             "- Pay special attention to whether the output contains concrete evidence for the key aspects in the goal.\n"
             "- When multiple inputs/pages/results/URLs are involved, assign short descriptive labels in strings "
             "(e.g. 'A: performance overview', 'B: docs page'). No 'former/latter', 'this page', etc.\n\n"            
+            "- If the tool output includes a service_error (or clearly indicates a model/service failure), "
+            "you MUST surface it explicitly and treat it as the primary failure cause.\n\n"
             "HARD CONSTRAINTS:\n"
             f"- Max {token_cap} tokens total; be dense.\n"
             "- Output MUST be exactly ONE JSON object with ONLY these top-level keys: input, output, strategy.\n"

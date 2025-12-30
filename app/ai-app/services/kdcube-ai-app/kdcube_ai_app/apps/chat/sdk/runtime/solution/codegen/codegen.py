@@ -466,7 +466,7 @@ class CodegenRunner:
         adapters = self.tool_manager.adapters_for_codegen(
             allowed_plugins=allowed_plugins,
             allowed_ids=None,  # ← None means "all tools" (subject to allowed_plugins)
-            denied_ids=["codegen_tools.codegen_python", "ctx_tools.fetch_turn_artifacts"],  # exclude codegen tool itself and the old fetch ctx tool
+            denied_ids=["codegen_tools.codegen_python", "exec_tools.execute_code_python", "ctx_tools.fetch_turn_artifacts"],  # exclude codegen tool itself and the old fetch ctx tool
         )
         common_ids = {
             a.get("id") for a in adapters

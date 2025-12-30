@@ -325,9 +325,10 @@ def build_turn_session_journal(*,
                 continue
 
             if kind == "decision":
-                nxt = e.get("next_step")
+                nxt = e.get("action")
                 strat = e.get("strategy")
                 focus = e.get("focus_slot")
+                next_plan = (e.get("next_decision_step") or "").strip()
 
                 tc = e.get("tool_call") or {}
                 tool_id = (tc.get("tool_id") or "").strip() if isinstance(tc, dict) else ""
@@ -406,9 +407,10 @@ def build_turn_session_journal(*,
                     tool_piece = f"tool={tool_id}->{arts_s}"
 
                 pieces = [
-                    f"next={nxt}",
+                    f"action={nxt}",
                     f"strategy={strat}" if strat else None,
                     f"focus={focus}" if focus else None,
+                    f"next_plan={next_plan}" if next_plan else None,
                     tool_piece,
                     f"map={maps_s}" if maps_s else None,
                     f"fetch={fetch_n}" if fetch_n else None,
@@ -806,7 +808,7 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
 
             if t == "decision":
                 dec = entry.get("decision", {}) or {}
-                nxt = dec.get("next_step")
+                nxt = dec.get("action")
                 tc = dec.get("tool_call") or {}
                 tool_id = tc.get("tool_id")
 

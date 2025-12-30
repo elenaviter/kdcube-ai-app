@@ -71,7 +71,7 @@ class ContextRAGClient:
             self,
             items: List[Dict[str, Any]],
             *,
-            s3_field: str = "s3_uri",
+            s3_field: str = "hosted_uri",
             out_field: str = "payload",
             max_concurrent: int = MAX_CONCURRENT_ARTIFACT_FETCHES,
     ) -> None:
@@ -88,13 +88,13 @@ class ContextRAGClient:
         sem = asyncio.Semaphore(max_concurrent)
 
         async def _one(item: Dict[str, Any]) -> None:
-            s3_uri = item.get(s3_field)
-            if not s3_uri:
+            hosted_uri = item.get(s3_field)
+            if not hosted_uri:
                 return
 
             async with sem:
                 try:
-                    data = await self.store.get_message(s3_uri)
+                    data = await self.store.get_message(hosted_uri)
                 except Exception:
                     # Keep item, just skip payload
                     return
@@ -123,13 +123,13 @@ class ContextRAGClient:
         On read error we keep the artifact but set data=None
         (matches previous behavior where we did `item["data"] = None` in except).
         """
-        s3_uri = item.get("s3_uri")
-        if not s3_uri:
+        hosted_uri = item.get("hosted_uri")
+        if not hosted_uri:
             return True
 
         async with sem:
             try:
-                data = await self.store.get_message(s3_uri) or {}
+                data = await self.store.get_message(hosted_uri) or {}
             except Exception:
                 # Best-effort: keep artifact but signal missing body
                 item["data"] = None
@@ -236,7 +236,7 @@ class ContextRAGClient:
                 "track_id": r.get("track_id"),
                 "turn_id": r.get("turn_id"),
                 "bundle_id": r.get("bundle_id"),
-                "s3_uri": r.get("s3_uri"),
+                "hosted_uri": r.get("hosted_uri"),
             }
             if include_deps and "deps" in r:
                 item["deps"] = r["deps"]
@@ -245,7 +245,7 @@ class ContextRAGClient:
         if with_payload:
             await self._materialize_payloads_for_items(
                 items,
-                s3_field="s3_uri",
+                s3_field="hosted_uri",
                 out_field="payload",
             )
 
@@ -318,14 +318,14 @@ class ContextRAGClient:
                 "track_id": r.get("track_id"),
                 "turn_id": r.get("turn_id"),
                 "bundle_id": r.get("bundle_id"),
-                "s3_uri": r.get("s3_uri"),
+                "hosted_uri": r.get("hosted_uri"),
             }
             items.append(item)
 
         if with_payload:
             await self._materialize_payloads_for_items(
                 items,
-                s3_field="s3_uri",
+                s3_field="hosted_uri",
                 out_field="payload",
             )
 
@@ -353,7 +353,7 @@ class ContextRAGClient:
         tags = TURN_LOG_TAGS_BASE + [f"turn:{turn_id}"] + ([f"track:{track_id}"] if track_id else [])
         if extra_tags:
             tags.extend([t for t in extra_tags if isinstance(t, str) and t.strip()])
-        s3_uri, message_id, rn = await self.store.put_message(
+        hosted_uri, message_id, rn = await self.store.put_message(
             tenant=tenant, project=project, user=user, fingerprint=None,
             conversation_id=conversation_id,
             bundle_id=bundle_id,
@@ -368,11 +368,11 @@ class ContextRAGClient:
             turn_id=turn_id,
             bundle_id=bundle_id,
             role="artifact",
-            text=md, s3_uri=s3_uri, ts=log.started_at_iso,
+            text=md, hosted_uri=hosted_uri, ts=log.started_at_iso,
             tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id, track_id=track_id
         )
-        return {"s3_uri": s3_uri, "message_id": message_id, "rn": rn}
+        return {"hosted_uri": hosted_uri, "message_id": message_id, "rn": rn}
 
     async def materialize_turn(
             self,
@@ -452,7 +452,7 @@ class ContextRAGClient:
                 "track_id": r.get("track_id"),
                 "turn_id": r.get("turn_id"),
                 "bundle_id": r.get("bundle_id"),
-                "s3_uri": r.get("s3_uri"),
+                "hosted_uri": r.get("hosted_uri"),
             }
 
         user_item: Optional[Dict[str, Any]] = None
@@ -526,11 +526,11 @@ class ContextRAGClient:
                     turn_log_item,
                     files_item,
                 ]
-                if it is not None and it.get("s3_uri")
+                if it is not None and it.get("hosted_uri")
             ]
             await self._materialize_payloads_for_items(
                 items_to_materialize,
-                s3_field="s3_uri",
+                s3_field="hosted_uri",
                 out_field="payload",
             )
 
@@ -655,7 +655,7 @@ class ContextRAGClient:
             original_tags = turn_log_item.get("tags") or []
 
             # Write new blob
-            s3_uri, message_id, rn = await self.store.put_message(
+            hosted_uri, message_id, rn = await self.store.put_message(
                 tenant=tenant, project=project, user=user, fingerprint=None,
                 conversation_id=conversation_id, bundle_id=bundle_id,
                 role="artifact", text="", id="turn.log",
@@ -665,12 +665,12 @@ class ContextRAGClient:
                 user_type=user_type, turn_id=turn_id, track_id=track_id,
             )
 
-            # Update only s3_uri/tags; preserve ts
+            # Update only hosted_uri/tags; preserve ts
             artifact_tag = "artifact:turn.log"
             tags = list(dict.fromkeys((original_tags or []) + [artifact_tag, f"turn:{turn_id}"]))
             await self.idx.update_message(
                 id=int(turn_log_item["id"]),
-                s3_uri=s3_uri,
+                hosted_uri=hosted_uri,
                 tags=tags,
                 ts=original_ts,
             )
@@ -711,7 +711,7 @@ class ContextRAGClient:
             tags.append(f"track:{track_id}")
 
         # persist as a small artifact tied to the same turn
-        s3_uri, message_id, rn = await self.store.put_message(
+        hosted_uri, message_id, rn = await self.store.put_message(
             tenant=tenant, project=project, user=user,
             conversation_id=conversation_id,
             bundle_id=bundle_id,
@@ -727,7 +727,7 @@ class ContextRAGClient:
             user_id=user, conversation_id=conversation_id, turn_id=turn_id,
             bundle_id=bundle_id,
             role="artifact",
-            text=f"[turn.log.reaction] {reaction}", s3_uri=s3_uri, ts=payload["reaction"]["ts"],
+            text=f"[turn.log.reaction] {reaction}", hosted_uri=hosted_uri, ts=payload["reaction"]["ts"],
             tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id, track_id=track_id
         )
@@ -747,7 +747,7 @@ class ContextRAGClient:
     ) -> Optional[dict]:
         """
         Fetch the turn log, append feedback to its structure,
-        then write new S3 blob and update only s3_uri in index (preserving ts, text, embedding).
+        then write new S3 blob and update only hosted_uri in index (preserving ts, text, embedding).
 
         Returns the updated turn log payload or None if turn not found.
         """
@@ -843,7 +843,7 @@ class ContextRAGClient:
             original_tags = turn_log_item.get("tags") or []
 
             # 9) Write NEW S3 blob with updated payload
-            s3_uri, message_id, rn = await self.store.put_message(
+            hosted_uri, message_id, rn = await self.store.put_message(
                 tenant=tenant,
                 project=project,
                 user=user,
@@ -861,7 +861,7 @@ class ContextRAGClient:
                 track_id=track_id,
             )
 
-            # 10) Update index: ONLY s3_uri and embedding, preserve ts and text
+            # 10) Update index: ONLY hosted_uri and embedding, preserve ts and text
             artifact_tag = "artifact:turn.log"
             unique_tags = [f"turn:{turn_id}"]
             merged_tags = list(dict.fromkeys(
@@ -870,7 +870,7 @@ class ContextRAGClient:
 
             await self.idx.update_message(
                 id=int(turn_log_item["id"]),
-                s3_uri=s3_uri,
+                hosted_uri=hosted_uri,
                 tags=merged_tags,
                 ts=original_ts,  # PRESERVE original timestamp
                 # text is NOT passed, so it won't be updated in PostgreSQL
@@ -880,7 +880,7 @@ class ContextRAGClient:
             f"Applied feedback to turn {turn_id}: "
             f"feedbacks_count={len(turn_log_dict.get('feedbacks', []))}, "
             f"entries_count={len(entries)}, "
-            f"new_s3_uri={s3_uri}, "
+            f"new_hosted_uri={hosted_uri}, "
             f"ts_preserved={original_ts}, "
             f"embedding_preserved={original_embedding is not None}, "
             f"origin={feedback_entry['origin']}, "
@@ -1373,7 +1373,7 @@ class ContextRAGClient:
             content_str = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else str(content)
         if extra_tags:
             tags.extend([t for t in extra_tags if isinstance(t, str) and t.strip()])
-        s3_uri, message_id, rn = await self.store.put_message(
+        hosted_uri, message_id, rn = await self.store.put_message(
             tenant=tenant, project=project, user=user_id, fingerprint=None,
             conversation_id=conversation_id,
             bundle_id=bundle_id,
@@ -1387,18 +1387,18 @@ class ContextRAGClient:
         await self.idx.add_message(
             user_id=user_id, conversation_id=conversation_id, turn_id=turn_id,
             bundle_id=bundle_id, role="artifact",
-            text=content_str, s3_uri=s3_uri, ts=datetime.datetime.utcnow().isoformat()+"Z",
+            text=content_str, hosted_uri=hosted_uri, ts=datetime.datetime.utcnow().isoformat()+"Z",
             tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id, track_id=track_id
         )
-        return {"s3_uri": s3_uri, "message_id": message_id, "rn": rn}
+        return {"hosted_uri": hosted_uri, "message_id": message_id, "rn": rn}
 
     async def _find_latest_artifact_by_tags(
             self, *, kind: str, user_id: str, conversation_id: str, all_tags: list[str]
     ) -> Optional[dict]:
         """
         Find the latest *index row* for an artifact of `kind` that contains ALL `all_tags`.
-        Returns a slim row dict (id, message_id, role, text, s3_uri, ts, tags, track_id).
+        Returns a slim row dict (id, message_id, role, text, hosted_uri, ts, tags, track_id).
         """
         artifact_tag = f"artifact:{kind}" if not kind.startswith("artifact:") else kind
         # ensure the kind tag is in all_tags
@@ -1430,10 +1430,10 @@ class ContextRAGClient:
         """
         Idempotent write of a single logical artifact (e.g., a memory bucket) identified
         by its unique_tags (e.g., ["mem:bucket:<id>"]). If an index row exists, update
-        that row (text, s3_uri, tags, ts) in place; otherwise create a fresh artifact.
+        that row (text, hosted_uri, tags, ts) in place; otherwise create a fresh artifact.
 
         If preserve_ts=True, keep the original timestamp instead of updating to now.
-        Returns: {"mode": "update"|"insert", "id": <conv_messages.id>, "message_id": "...", "s3_uri": "..."}
+        Returns: {"mode": "update"|"insert", "id": <conv_messages.id>, "message_id": "...", "hosted_uri": "..."}
         """
         # 1) find the existing row
         artifact_tag = f"artifact:{kind}" if not kind.startswith("artifact:") else kind
@@ -1456,7 +1456,7 @@ class ContextRAGClient:
             return {"mode": "insert", **saved}
 
         # 2) Write a new message blob and then point the index row at it
-        s3_uri, message_id, rn = await self.store.put_message(
+        hosted_uri, message_id, rn = await self.store.put_message(
             tenant=tenant, project=project, user=user_id, fingerprint=None,
             conversation_id=conversation_id, bundle_id=bundle_id,
             role="artifact", text=content_str,
@@ -1486,10 +1486,10 @@ class ContextRAGClient:
             id=int(existing["id"]),
             text=content_str,
             tags=tags,
-            s3_uri=s3_uri,
+            hosted_uri=hosted_uri,
             ts=update_ts,  # Use preserved or new timestamp
         )
-        return {"mode": "update", "id": int(existing["id"]), "message_id": existing.get("message_id"), "s3_uri": s3_uri}
+        return {"mode": "update", "id": int(existing["id"]), "message_id": existing.get("message_id"), "hosted_uri": hosted_uri}
 
     async def list_conversations_(self, user_id: str):
 
@@ -1746,13 +1746,13 @@ class ContextRAGClient:
                 "message_id": r.get("mid"),
                 "type": tag_type,
                 "ts": r.get("ts"),
-                "s3_uri": r.get("s3_uri"),
+                "hosted_uri": r.get("hosted_uri"),
                 "bundle_id": r.get("bundle_id"),
             }
 
             turns_map[tid]["artifacts"].append(item)
 
-            if materialize and item.get("s3_uri"):
+            if materialize and item.get("hosted_uri"):
                 # Keep a reference so we can materialize later
                 to_materialize.append(item)
 
@@ -1800,8 +1800,8 @@ class ContextRAGClient:
                 break
         payload = {}
         try:
-            if row.get("s3_uri"):
-                payload = await self.store.get_message(row["s3_uri"])
+            if row.get("hosted_uri"):
+                payload = await self.store.get_message(row["hosted_uri"])
         except Exception:
             payload = {}
         return {
@@ -1845,7 +1845,7 @@ class ContextRAGClient:
         }
 
         # Persist a tiny artifact for lineage
-        s3_uri, message_id, rn = await self.store.put_message(
+        hosted_uri, message_id, rn = await self.store.put_message(
             tenant=tenant, project=project, user=user_id, fingerprint=None,
             conversation_id=conversation_id, turn_id="conv", role="artifact", text="",
             id="conversation.state", bundle_id=bundle_id, payload=payload,
@@ -1856,7 +1856,7 @@ class ContextRAGClient:
 
         res = await self.idx.try_set_conversation_state_cas(
             user_id=user_id, conversation_id=conversation_id,
-            new_state=new_state, s3_uri=s3_uri, now_ts=now_iso,
+            new_state=new_state, hosted_uri=hosted_uri, now_ts=now_iso,
             require_not_in_progress=require_not_in_progress,
             last_turn_id=last_turn_id,   # <— NEW
             bundle_id=bundle_id,
@@ -2144,7 +2144,7 @@ async def search_context(
                 "source_query": query,
                 "source_where": where,
                 "text": r.get("text", ""),
-                "s3_uri": r.get("s3_uri"),
+                "hosted_uri": r.get("hosted_uri"),
             }
 
             if "deps" in r:
@@ -2164,7 +2164,7 @@ async def search_context(
         try:
             await ctx_client._materialize_payloads_for_items(
                 top_hits,
-                s3_field="s3_uri",
+                s3_field="hosted_uri",
                 out_field="payload",
                 max_concurrent=MAX_CONCURRENT_ARTIFACT_FETCHES,
             )

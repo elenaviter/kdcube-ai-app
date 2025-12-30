@@ -36,6 +36,7 @@ class KBClient:
                  pool: Optional[asyncpg.Pool] = None):
 
         self._pool: Optional[asyncpg.Pool] = pool
+        self.shared_pool = pool is not None
         self._settings = get_settings()
 
         tenant = self._settings.TENANT.replace("-", "_").replace(" ", "_")
@@ -74,7 +75,7 @@ class KBClient:
             )
 
     async def close(self):
-        if self._pool: await self._pool.close()
+        if self._pool and not self.shared_pool: await self._pool.close()
 
     async def hybrid_search(
             self, *, query:str, embedding:list[float] | None,
@@ -171,7 +172,7 @@ class KBClient:
             parts = []
             for ent in entity_filters:
                 parts.append("entities @> $%s::jsonb")
-                sink.append(json.dumps([{"key": ent.key, "value": ent.value}]))
+                sink.append(json.dumps([{"key": ent.key, "value": ent.value}], ensure_ascii=False))
             joiner = " AND " if use_and else " OR "
             # We don’t know the $N numbers yet; we’ll backfill below.
             return "(" + joiner.join(parts) + ")"
@@ -459,6 +460,14 @@ class KBClient:
           - published_on / modified_on:  day-closed range  [day, day+1)
           - published_after / modified_after:  >= instant (if date-only, start-of-day)
           - published_before / modified_before: < instant (if date-only, start-of-day)
+
+        Visibility filter semantics:
+          - 'anonymous': allows only ['anonymous']
+          - 'registered': allows ['anonymous', 'registered']
+          - 'paid': allows ['anonymous', 'registered', 'paid']
+          - 'privileged': allows ANY (no filtering)
+          - specific user_id: exact match only
+
         """
         # Normalize param container
         if isinstance(params, dict):
@@ -489,11 +498,37 @@ class KBClient:
             parts = []
             for ent in entity_filters:
                 parts.append("entities @> $%s::jsonb")
-                sink.append(json.dumps([{"key": ent.key, "value": ent.value}]))
+                sink.append(json.dumps([{"key": ent.key, "value": ent.value}], ensure_ascii=False))
             return "(" + (" AND " if use_and else " OR ").join(parts) + ")"
 
         def _is_date_only(x: Any) -> bool:
             return isinstance(x, str) and ("T" not in x) and len(x) >= 10 and x[4] == "-" and x[7] == "-"
+
+        # --- Build visibility filter clause
+        def _build_visibility_clause(visibility_scope: Optional[str]) -> tuple[str, List[Any]]:
+            """
+            Returns (sql_clause, params) for visibility filtering.
+            Logic:
+              - 'anonymous' → visibility IN ('anonymous')
+              - 'registered' → visibility IN ('anonymous', 'registered')
+              - 'paid' → visibility IN ('anonymous', 'registered', 'paid')
+              - 'privileged' → no filter (allow ANY)
+              - specific user_id → visibility = user_id
+              - None or empty → default to 'anonymous'
+            """
+            scope = visibility_scope or "anonymous"
+
+            if scope == "privileged":
+                return "", []  # No filtering for privileged users
+            elif scope == "anonymous":
+                return "rs.visibility = ANY($%s::text[])", [["anonymous"]]
+            elif scope == "registered":
+                return "rs.visibility = ANY($%s::text[])", [["anonymous", "registered"]]
+            elif scope == "paid":
+                return "rs.visibility = ANY($%s::text[])", [["anonymous", "registered", "paid"]]
+            else:
+                # Treat as specific user_id
+                return "rs.visibility = $%s::text", [scope]
 
         # --- Tokens for BM25 prefix recall
         raw_query = params.query or ""
@@ -504,6 +539,12 @@ class KBClient:
         # --- Facets on retrieval_segment
         rs_clauses: List[str] = []
         rs_params: List[Any] = []
+
+        # Add visibility filter
+        vis_clause, vis_params = _build_visibility_clause(params.visibility)
+        if vis_clause:
+            rs_clauses.append(vis_clause)
+            rs_params.extend(vis_params)
 
         if params.resource_ids:
             rs_clauses.append("resource_id = ANY($%s::text[])")
@@ -583,6 +624,11 @@ class KBClient:
 
             ann_clauses = ["embedding IS NOT NULL"]
             ann_params: List[Any] = []
+
+            # Add visibility filter to ANN stage
+            if vis_clause:
+                ann_clauses.append(vis_clause)
+                ann_params.extend(vis_params)
 
             if rs_facets_sql:
                 ann_rs_clauses: List[str] = []
@@ -667,6 +713,7 @@ class KBClient:
                   rs.extensions,
                   rs.tags,
                   rs.created_at,
+                  rs.visibility,
                   (1.0 - (rs.embedding <=> $1::vector)) AS semantic_score,
                   CASE WHEN rs.embedding IS NOT NULL THEN 1.0 ELSE 0.0 END AS has_embedding,
                   jsonb_build_object(
@@ -771,7 +818,7 @@ class KBClient:
             parts = []
             for ent in entity_filters:
                 parts.append("entities @> $%s::jsonb")
-                sink.append(json.dumps([{"key": ent.key, "value": ent.value}]))
+                sink.append(json.dumps([{"key": ent.key, "value": ent.value}], ensure_ascii=False))
             return "(" + (" AND " if use_and else " OR ").join(parts) + ")"
 
         def _is_date_only(x: Any) -> bool:

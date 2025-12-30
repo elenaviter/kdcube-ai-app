@@ -248,7 +248,7 @@ async def fetch_conversation(
     #   "conversation_id": ...,
     #   "turns": [
     #       {"turn_id": "t1", "artifacts": [
-    #           {"message_id": "...", "type": "...", "ts": "...", "s3_uri": "...", ["data": {...}]}
+    #           {"message_id": "...", "type": "...", "ts": "...", "hosted_uri": "...", ["data": {...}]}
     #       ]},
     #       ...
     #   ]

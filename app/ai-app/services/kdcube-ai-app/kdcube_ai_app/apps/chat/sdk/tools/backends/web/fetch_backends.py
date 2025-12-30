@@ -4,7 +4,7 @@
 # apps/chat/sdk/tools/backends/fetch_backends.py
 
 from typing import List, Optional, Dict, Any, Annotated
-import logging, json, os
+import logging, json, os, uuid
 
 from kdcube_ai_app.apps.chat.sdk.tools.web.web_extractors import WebContentFetcher
 from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import filter_fetch_results
@@ -190,7 +190,10 @@ async def fetch_url_contents(
         if len(normalized_urls) > 3:
             joined += ", ..."
         agent_name = f"fetch url contents for {joined}" if joined else "fetch url contents"
-    agent_name = agent_name[:120]
+    agent_label = agent_name[:120]
+    agent_suffix = uuid.uuid4().hex[:8]
+    max_label_len = max(1, 120 - (len(agent_suffix) + 3))
+    agent_name = f"{agent_label[:max_label_len]} [{agent_suffix}]"
 
     artifact_thinking = "Fetch URL Contents Trace"
     think_idx = 0
@@ -208,6 +211,7 @@ async def fetch_url_contents(
             index=think_idx,
             marker="thinking",
             agent=agent_name,
+            title=agent_label,
             format="markdown",
             artifact_name=artifact_thinking,
             completed=completed,

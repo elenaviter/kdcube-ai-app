@@ -253,6 +253,7 @@ def _derive_global_caps_from_stage_caps(
     total_max_exploit = sum(c.max_exploit for c in caps_by_stage.values())
     total_max_render = sum(c.render for c in caps_by_stage.values())
     total_max_context_reads = sum(c.ctx_reads for c in caps_by_stage.values())
+    total_max_context_reads = max(total_max_context_reads, 3)
 
     max_decision_rounds = total_max_explore + total_max_exploit + total_max_render
     if max_decision_rounds <= 0:

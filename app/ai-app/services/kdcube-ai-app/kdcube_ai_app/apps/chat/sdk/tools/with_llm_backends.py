@@ -66,7 +66,7 @@ async def generate_content_llm(
         code_fences: Annotated[bool, "Allow triple-backtick fenced blocks in output."] = True,
         continuation_hint: Annotated[str, "Optional extra hint used on continuation rounds."] = "",
         strict: Annotated[bool, "Require format OK and (if provided) schema OK and citations (if requested)."] = True,
-        role: str = "tool.generator",
+        role: str = "tool.generator.strong",
         cache_instruction: bool=True,
         channel_to_stream: Optional[str]="canvas",
         temperature: float=0.2,
@@ -84,7 +84,8 @@ async def generate_content_llm(
         "finished": true/false,        # saw end_marker
         "retries": <int>,              # rounds used - 1
         "reason": "<last failure reason or ''>",
-        "stats": { "rounds": n, "bytes": len(content), "validated": "format|schema|both|none", "citations": "present|missing|n/a" }
+        "stats": { "rounds": n, "bytes": len(content), "validated": "format|schema|both|none", "citations": "present|missing|n/a" },
+        "service_error": { ... }        # present only on streaming failure
       }
     """
 
@@ -718,7 +719,7 @@ async def generate_content_llm(
             author_for_chunks: str,
             author_for_complete: str,
             start_index: int,
-    ) -> tuple[str, int]:
+    ) -> tuple[str, int, Optional[dict]]:
         """
         Shared streaming helper used for both main generation and repair.
         Returns (raw_text, emitted_chunks_count).
@@ -911,8 +912,9 @@ async def generate_content_llm(
             text =  ret.get("text") or ""
             logger.info(f"Completed streaming round: thoughts:\n{thoughts}")
             logger.info(f"text:\n{text}")
+            svc_error = ret.get("service_error")
 
-        return "".join(round_buf), emitted_local
+        return "".join(round_buf), emitted_local, svc_error
 
     def _build_user_blocks_for_round(round_idx: int) -> List[dict]:
         """
@@ -970,7 +972,7 @@ async def generate_content_llm(
 
         author_for_chunks = agent_name or "Content Generator LLM"
 
-        chunk, emitted_inc = await _stream_round(
+        chunk, emitted_inc, svc_error = await _stream_round(
             messages=[system_msg, human_msg],
             role_name=role,
             temperature=temperature,
@@ -982,6 +984,31 @@ async def generate_content_llm(
         )
         emitted_count += emitted_inc
         buf_all.append(chunk)
+        if svc_error:
+            out = {
+                "ok": False,
+                "content": "",
+                "format": tgt,
+                "finished": False,
+                "retries": max(0, used_rounds - 1),
+                "reason": f"service_error: {svc_error.get('message') or svc_error}",
+                "stats": {
+                    "rounds": used_rounds,
+                    "bytes": 0,
+                    "validated": "none",
+                    "citations": "n/a",
+                    "service_error": svc_error,
+                },
+                "sources_used": [],
+                "service_error": svc_error,
+            }
+            logger.error(
+                "generate_content_llm: service_error during streaming round=%s role=%s error=%s",
+                used_rounds,
+                role,
+                svc_error,
+            )
+            return out
 
         cumulative = "".join(buf_all)
         if end_marker in cumulative:
@@ -1188,7 +1215,7 @@ async def generate_content_llm(
                 HumanMessage(content="\n".join(repair_instruction) + "\n\n" + payload_for_repair),
             ]
 
-            repaired_raw, emitted_inc_rep = await _stream_round(
+            repaired_raw, emitted_inc_rep, svc_error = await _stream_round(
                 messages=repair_messages,
                 role_name=role_repair,
                 temperature=0.1,
@@ -1199,6 +1226,31 @@ async def generate_content_llm(
                 thinking_budget=thinking_budget
             )
             emitted_count += emitted_inc_rep
+            if svc_error:
+                out = {
+                    "ok": False,
+                    "content": "",
+                    "format": tgt,
+                    "finished": False,
+                    "retries": max(0, used_rounds - 1),
+                    "reason": f"service_error: {svc_error.get('message') or svc_error}",
+                    "stats": {
+                        "rounds": used_rounds,
+                        "bytes": 0,
+                        "validated": "none",
+                        "citations": "n/a",
+                        "service_error": svc_error,
+                    },
+                    "sources_used": [],
+                    "service_error": svc_error,
+                }
+                logger.error(
+                    "generate_content_llm: service_error during repair round=%s role=%s error=%s",
+                    used_rounds,
+                    role,
+                    svc_error,
+                )
+                return out
 
             repaired = repaired_raw
 

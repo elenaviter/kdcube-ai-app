@@ -28,7 +28,7 @@ The feedback system lets **users** (explicit) and the **machine** (inferred) att
 1. **Receive/Detect feedback** (user API or machine inference)
 2. **Locate target turn** (known from API; or semantic search for machine)
 3. **Persist reaction artifact** (and optionally mirror into turn log payload)
-4. **Index update** (preserve original `ts`, `text`, `embedding`; update `s3_uri` only when turn log is rewritten)
+4. **Index update** (preserve original `ts`, `text`, `embedding`; update `hosted_uri` only when turn log is rewritten)
 
 ---
 
@@ -64,7 +64,7 @@ graph TB
     A2 --> A4[Write reaction artifact]
     A3 --> A4[Write reaction artifact]
     A4 --> A5[Optionally mirror into turn log payload]
-    A5 --> A6["Update index s3_uri (text/ts/embedding preserved)"]
+    A5 --> A6["Update index hosted_uri (text/ts/embedding preserved)"]
   end
 
   subgraph "4. Retrieval"
@@ -330,14 +330,14 @@ POST /conversations/{tenant}/{project}/feedback/conversations-in-period
   `['artifact:turn.log.reaction', 'turn:<turn_id>', 'origin:<user|machine>', 'track:<id>?']`
 * **turn_id:** populated
 * **text:** small printable header + reaction dict
-* **s3_uri → payload:** as shown above (contains `reaction`, `meta`, `conversation_id`, `bundle_id`, etc.)
+* **hosted_uri → payload:** as shown above (contains `reaction`, `meta`, `conversation_id`, `bundle_id`, etc.)
 
 ### Turn Log mirroring (optional)
 
 When mirroring into `artifact:turn.log`:
 
 * Update S3 blob payload (`feedbacks[]` + `entries[]` + append to `text`)
-* **Preserve** index row `ts`, `text`, `embedding`; update only `s3_uri` (and tags if needed)
+* **Preserve** index row `ts`, `text`, `embedding`; update only `hosted_uri` (and tags if needed)
 
 ---
 

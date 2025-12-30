@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_messages (
                                                       message_id       TEXT,                           -- ConversationStore id; present for artifacts
                                                       role             TEXT NOT NULL,                  -- 'user' | 'assistant' | 'artifact'
                                                       text             TEXT NOT NULL,
-                                                      s3_uri           TEXT NOT NULL,
+                                                      hosted_uri           TEXT NOT NULL,
                                                       ts               TIMESTAMPTZ NOT NULL DEFAULT now(),
     ttl_days         INT NOT NULL DEFAULT 365,
     user_type        TEXT NOT NULL DEFAULT 'anonymous',

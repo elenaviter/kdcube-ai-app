@@ -4,6 +4,10 @@
 # kdcube_ai_app/apps/chat/sdk/runtime/solution/solution_workspace.py
 
 import traceback, pathlib, logging
+from typing import Any, Optional, List, Dict
+
+from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
+from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
 
 logger = logging.getLogger(__name__)
 
@@ -178,3 +182,152 @@ async def rehost_previous_files(
         f"rehosted {sum(1 for a in out if a.get('rehosted'))} successfully"
     )
     return out
+
+
+class ApplicationHostingService:
+    """
+    Host local files into ConversationStore and emit chat events for hosted artifacts.
+    """
+
+    def __init__(
+        self,
+        *,
+        store: ConversationStore,
+        comm: Optional[ChatCommunicator] = None,
+        logger: Optional[logging.Logger] = None,
+    ):
+        self.store = store
+        self.comm = comm
+        self.log = logger or logging.getLogger(__name__)
+
+    def _is_hosted_path(self, path: str) -> bool:
+        if not isinstance(path, str) or not path.strip():
+            return False
+        p = path.strip()
+        return p.startswith("cb/") or "://" in p
+
+    def _extract_file_fields(self, a: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(a, dict):
+            return None
+
+        if a.get("type") == "file":
+            output = a.get("output") or {}
+            path = output.get("path") or a.get("path") or ""
+            text = output.get("text") if isinstance(output, dict) else None
+            return {
+                "path": path,
+                "mime": a.get("mime") or (output.get("mime") if isinstance(output, dict) else None),
+                "tool_id": a.get("tool_id") or "",
+                "description": a.get("description") or "",
+                "slot": a.get("resource_id") or a.get("slot") or a.get("artifact_id") or "",
+                "text": text,
+            }
+
+        val = a.get("value") if isinstance(a.get("value"), dict) else None
+        if isinstance(val, dict) and val.get("type") == "file":
+            return {
+                "path": val.get("path") or "",
+                "mime": val.get("mime"),
+                "tool_id": a.get("tool_id") or "",
+                "description": a.get("description") or "",
+                "slot": a.get("resource_id") or a.get("slot") or a.get("artifact_id") or "",
+                "text": val.get("text"),
+            }
+
+        return None
+
+    async def host_files_to_conversation(
+        self,
+        *,
+        rid: str,
+        files: List[Dict[str, Any]],
+        outdir: str | pathlib.Path | None,
+        tenant: str,
+        project: str,
+        user: str,
+        conversation_id: str,
+        user_type: str,
+        turn_id: str,
+        track_id: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Copy deliverable file artifacts from local outdir → ConversationStore.
+        Returns rows: [{slot, key, hosted_uri, filename, mime, size, tool_id, description, owner_id, rn, local_path}]
+        """
+        import pathlib as _pathlib
+
+        files_rehosted: List[Dict[str, Any]] = []
+        base = _pathlib.Path(outdir) if outdir else None
+        for a in (files or []):
+            info = self._extract_file_fields(a)
+            if not info:
+                continue
+            rel_or_abs = (info.get("path") or "").strip()
+            if not rel_or_abs:
+                continue
+            if self._is_hosted_path(rel_or_abs):
+                continue
+
+            p = _pathlib.Path(rel_or_abs)
+            if not p.is_absolute():
+                p = (base / rel_or_abs).resolve() if base else p.resolve()
+            try:
+                data = p.read_bytes()
+            except Exception as ex:
+                self.log.log(f"[host_files] Failed to read file {p}: {ex}", level="ERROR")
+                continue
+
+            name = p.name
+            uri, key, rn_f = await self.store.put_attachment(
+                tenant=tenant,
+                project=project,
+                user=user,
+                fingerprint=None,
+                conversation_id=conversation_id,
+                filename=name,
+                data=data,
+                mime=info.get("mime") or "application/octet-stream",
+                user_type=user_type,
+                turn_id=turn_id,
+                request_id=rid,
+                track_id=track_id,
+            )
+            files_rehosted.append({
+                "slot": info.get("slot") or "",
+                "key": key,
+                "filename": name,
+                "mime": info.get("mime") or "application/octet-stream",
+                "size": len(data),
+                "tool_id": info.get("tool_id") or "",
+                "description": info.get("description") or "",
+                "owner_id": user,
+                "rn": rn_f,
+                "hosted_uri": uri,
+                "local_path": str(p),
+            })
+        return files_rehosted
+
+    async def emit_solver_artifacts(self, *, files: List[Dict[str, Any]], citations: List[Dict[str, Any]]) -> None:
+        """
+        Emits chat events for batch files + citations.
+        """
+        if not self.comm:
+            return
+        if files:
+            await self.comm.event(
+                agent="tooling",
+                type="chat.files",
+                title=f"Files Ready ({len(files)})",
+                step="files",
+                status="completed",
+                data={"count": len(files), "items": files},
+            )
+        if citations:
+            await self.comm.event(
+                agent="tooling",
+                type="chat.citations",
+                title=f"Citations ({len(citations)})",
+                step="citations",
+                status="completed",
+                data={"count": len(citations), "items": citations},
+            )

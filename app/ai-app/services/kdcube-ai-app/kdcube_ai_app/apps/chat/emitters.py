@@ -51,6 +51,7 @@ class _DeltaAggregate:
     ts_last: int = 0
     format: Optional[str] = None
     artifact_name: Optional[str] = None
+    title: Optional[str] = None
 
     chunks: List[_DeltaChunk] = field(default_factory=list)
 
@@ -421,7 +422,7 @@ class ChatCommunicator:
         # default room = session_id
         self.room = self.room or self.conversation.get("session_id")
         self.target_sid = self.target_sid or self.conversation.get("socket_id")
-        self._delta_cache: dict[Tuple[str, str, str, str, str, str], _DeltaAggregate] = {}
+        self._delta_cache: dict[Tuple[str, str, str, str, str, str, str], _DeltaAggregate] = {}
         # self.event_filter: IEventFilter = self.event_filter or DefaultEventFilter()
 
     # ---------- low-level ----------
@@ -467,17 +468,18 @@ class ChatCommunicator:
         )
 
     # ----- internal buffer helpers -----
-    def _record_delta(self, *, text: str, index: int, agent: str, marker: str, format: str, artifact_name: str):
+    def _record_delta(self, *, text: str, index: int, agent: str, marker: str, format: str, artifact_name: str, title: Optional[str] = None):
         if not text:
             return
         conv_id = (self.conversation or {}).get("conversation_id") or ""
         turn_id = (self.conversation or {}).get("turn_id") or ""
-        key = (conv_id, turn_id, agent or "assistant", marker or "answer", format, artifact_name)
+        title_norm = title or ""
+        key = (conv_id, turn_id, agent or "assistant", marker or "answer", format, artifact_name, title_norm)
         agg = self._delta_cache.get(key)
         if not agg:
             agg = _DeltaAggregate(conversation_id=conv_id, turn_id=turn_id,
                                   agent=agent or "assistant", marker=marker or "answer",
-                                  format=format, artifact_name=artifact_name)
+                                  format=format, artifact_name=artifact_name, title=title_norm)
             self._delta_cache[key] = agg
         agg.append(ts=_now_ms(), idx=int(index), text=text)
 
@@ -492,7 +494,7 @@ class ChatCommunicator:
         Filter by any of the fields if provided.
         """
         out = []
-        for (cid, tid, a, m, f, an), agg in self._delta_cache.items():
+        for (cid, tid, a, m, f, an, title), agg in self._delta_cache.items():
             if conversation_id and cid != conversation_id: continue
             if turn_id and tid != turn_id: continue
             if agent and a != agent: continue
@@ -504,6 +506,7 @@ class ChatCommunicator:
                 "marker": m,
                 "format": f,
                 "artifact_name": an,
+                "title": title,
                 "ts_first": agg.ts_first,
                 "ts_last": agg.ts_last,
                 "text": agg.merged_text() if merge_text else "",
@@ -521,7 +524,7 @@ class ChatCommunicator:
             return
         keys = list(self._delta_cache.keys())
         for k in keys:
-            cid, tid, _, _, _, _ = k
+            cid, tid, *_ = k
             if conversation_id and cid != conversation_id: continue
             if turn_id and tid != turn_id: continue
             self._delta_cache.pop(k, None)
@@ -566,7 +569,7 @@ class ChatCommunicator:
         Merge exported aggregates (items) into this communicator's cache.
         Deduplicates chunks by (idx, ts, text) per aggregate key.
         """
-        def _k(it: dict) -> tuple[str, str, str, str, str, str]:
+        def _k(it: dict) -> tuple[str, str, str, str, str, str, str]:
             return (
                 it.get("conversation_id") or "",
                 it.get("turn_id") or "",
@@ -574,6 +577,7 @@ class ChatCommunicator:
                 it.get("marker") or "answer",
                 it.get("format") or "markdown",
                 it.get("artifact_name") or "Unknown",
+                it.get("title") or "",
             )
 
         for it in (items or []):
@@ -583,7 +587,7 @@ class ChatCommunicator:
                 agg = _DeltaAggregate(
                     conversation_id=key[0], turn_id=key[1],
                     agent=key[2], marker=key[3],
-                    format=key[4], artifact_name=key[5]
+                    format=key[4], artifact_name=key[5], title=key[6]
                 )
                 self._delta_cache[key] = agg
             # dedupe chunks
@@ -641,7 +645,8 @@ class ChatCommunicator:
                 agent  = eve.get("agent") or "assistant"
                 format  = eve.get("format") or "markdown"
                 artifact_name  = eve.get("artifact_name") or "Unknown"
-                self._record_delta(text=text, index=idx, agent=agent, marker=marker, format=format, artifact_name=artifact_name)
+                title = eve.get("title") or None
+                self._record_delta(text=text, index=idx, agent=agent, marker=marker, format=format, artifact_name=artifact_name, title=title)
         except Exception:
             pass
 
@@ -686,7 +691,8 @@ class ChatCommunicator:
         # record before sending
         try:
             self._record_delta(text=text, index=index, agent=agent, marker=marker,
-                               format=kwargs.get("format"), artifact_name=kwargs.get("artifact_name"))
+                               format=kwargs.get("format"), artifact_name=kwargs.get("artifact_name"),
+                               title=kwargs.get("title"))
         except Exception:
             pass
 

@@ -413,6 +413,10 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
         mime: Optional[str],
         desc: str,
         text: str,
+        hosted_uri: Optional[str] = None,
+        key: Optional[str] = None,
+        rn: Optional[str] = None,
+        filename: Optional[str] = None,
         citable: bool = False,
         sources_used: Any = None,
         draft: bool = False,
@@ -455,6 +459,14 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
             "description": desc or "",
             "input": {},
         }
+        if hosted_uri:
+            row["hosted_uri"] = hosted_uri
+        if key:
+            row["key"] = key
+        if rn:
+            row["rn"] = rn
+        if filename:
+            row["filename"] = filename
 
         if draft or invalid_path:
             row["draft"] = True
@@ -500,12 +512,20 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
             mime = val.get("mime") or None
             text_surrogate = val.get("text") or ""
             filepath = val.get("path") or ""
+            hosted_uri = val.get("hosted_uri")
+            hosted_key = val.get("key")
+            hosted_rn = val.get("rn")
+            filename = val.get("filename")
             push_file(
                 slot,
                 filepath,
                 mime=mime,
                 desc=desc,
                 text=text_surrogate,
+                hosted_uri=hosted_uri,
+                key=hosted_key,
+                rn=hosted_rn,
+                filename=filename,
                 sources_used=sources_used,
                 draft=draft,
                 gaps=gaps,

@@ -171,7 +171,7 @@ class ConversationStore:
                     try:
                         raw = self.backend.read_text(child)
                         obj = json.loads(raw)
-                        obj.setdefault("meta", {})["s3_uri"] = self._uri_for_path(child)
+                        obj.setdefault("meta", {})["hosted_uri"] = self._uri_for_path(child)
                         if "turn_id" not in obj:
                             # .../conversation/<who>/<user>/<conv>/<turn>/<message>.json
                             parts = child.strip("/").split("/")
@@ -197,7 +197,7 @@ class ConversationStore:
                 try:
                     raw = self.backend.read_text(child)
                     obj = json.loads(raw)
-                    obj.setdefault("meta", {})["s3_uri"] = self._uri_for_path(child)
+                    obj.setdefault("meta", {})["hosted_uri"] = self._uri_for_path(child)
                     out_all.append(obj)
                 except Exception:
                     pass
@@ -495,7 +495,7 @@ class ConversationStore:
         """
         Load a single message JSON by its URI or path and return the record (dict).
         - Supports 'file://', 's3://', absolute file paths, or backend-relative keys.
-        - Ensures meta.s3_uri is set to a dereferenceable URI for this storage,
+        - Ensures meta.hosted_uri is set to a dereferenceable URI for this storage,
           and fills in 'turn_id' if missing by parsing the path.
         """
         rel = self._rel_from_uri_or_path(uri_or_path)

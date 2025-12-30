@@ -192,6 +192,9 @@ async def _build_program_run_items(
         ctx = (
             f"[Call Reason]\n{call_reason}\n"
             f"[artifact: {artifact_id}]\n"
+            "IMPORTANT: Summarize ONLY this artifact. "
+            "Do NOT assess or mention other artifacts in the contract; "
+            "they will be summarized separately.\n"
             f"[In contract]\n{contract_entry}\n"
             f"[Code file]\n```python\n{codefile or ''}\n```\n[]"
         )
@@ -228,7 +231,11 @@ async def _build_program_run_items(
         }
         items.append(item)
 
-    missing_ids = [k for k in contract.keys() if k not in set(produced_ids)]
+    from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import SERVICE_LOG_SLOT
+    missing_ids = [
+        k for k in contract.keys()
+        if k not in set(produced_ids) and k != SERVICE_LOG_SLOT
+    ]
     for i, artifact_id in enumerate(missing_ids, len(items)):
         contract_entry = contract.get(artifact_id) or {}
         err_code = "missing_artifact"

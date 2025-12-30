@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os, copy
+import os, copy, uuid
 from abc import ABC, abstractmethod
 
 import json, itertools
@@ -50,6 +50,7 @@ from kdcube_ai_app.infra.accounting import track_web_search, with_accounting
 from kdcube_ai_app.infra.accounting.usage import ws_provider_extractor, ws_model_extractor, ws_usage_extractor, \
     ws_meta_extractor
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.fetch_backends import fetch_search_results_content
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import apply_weighted_rank
 
 logger = logging.getLogger(__name__)
 
@@ -612,11 +613,16 @@ async def web_search(
 
     if not artifact_id:
         if objective and objective.strip():
-            artifact_id = f"web search for {objective.strip()}"
+            artifact_id = f"Web search for {objective.strip()}"
         else:
             joined = ", ".join(q_list)
-            artifact_id = f"web search for {joined}" if joined else "web search"
+            artifact_id = f"Web search for {joined}" if joined else "web search"
         artifact_id = artifact_id[:120]
+
+    agent_label = artifact_id
+    agent_suffix = uuid.uuid4().hex[:8]
+    max_label_len = max(1, 120 - (len(agent_suffix) + 3))
+    agent_id = f"{agent_label[:max_label_len]} [{agent_suffix}]"
 
     async def emit_thinking(text: str, completed: bool = False, **kwargs):
         """Wrapper to emit thinking deltas."""
@@ -631,7 +637,8 @@ async def web_search(
             text=text,
             index=think_idx,
             marker="thinking",
-            agent=artifact_id,
+            agent=agent_id,
+            title=agent_label,
             format="markdown",
             artifact_name=artifact_thinking,
             completed=completed,
@@ -801,6 +808,7 @@ async def web_search(
 
     # --- Finalize SIDs ---
     final_rows = new_rows or []
+    apply_weighted_rank(final_rows, force=True)
     base = _claim_sid_block(len(final_rows))
 
     sid_map: Dict[int, int] = {}
@@ -824,13 +832,14 @@ async def web_search(
             filtered_rows=final_rows,
             title="Web Search Results",
         )
-        artifact_html = "Web Search Results"
+        artifact_html = f"Web Search Results [{agent_suffix}]"
         html_idx = 0
         await emit_delta_fn(
             html_view,
             index=html_idx,
             marker="tool",
-            agent=artifact_id,
+            agent=agent_id,
+            title=agent_label,
             format="html",
             artifact_name=artifact_html,
         )
@@ -840,7 +849,8 @@ async def web_search(
             completed=True,
             index=html_idx,
             marker="tool",
-            agent=artifact_id,
+            agent=agent_id,
+            title=agent_label,
             format="html",
             artifact_name=artifact_html,
         )

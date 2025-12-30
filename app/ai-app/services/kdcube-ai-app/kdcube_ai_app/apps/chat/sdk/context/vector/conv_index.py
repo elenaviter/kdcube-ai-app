@@ -101,7 +101,7 @@ class ConvIndex:
             self, *, user_id: str, conversation_id: str
     ) -> Optional[Dict[str, Any]]:
         q = f"""
-          SELECT id, message_id, role, text, s3_uri, ts, tags, track_id, turn_id, bundle_id
+          SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id, turn_id, bundle_id
           FROM {self.schema}.conv_messages
           WHERE user_id=$1 AND conversation_id=$2
             AND role='artifact'
@@ -218,7 +218,7 @@ class ConvIndex:
             user_id: str,
             conversation_id: str,
             new_state: str,             # 'idle' | 'in_progress' | 'error'
-            s3_uri: str,
+            hosted_uri: str,
             now_ts: str,
             bundle_id: str,
             require_not_in_progress: bool = False,
@@ -257,11 +257,11 @@ class ConvIndex:
                 ))
                 q_ins = f"""
                   INSERT INTO {self.schema}.conv_messages
-                    (user_id, conversation_id, role, text, s3_uri, bundle_id, ts, ttl_days, user_type, tags)
+                    (user_id, conversation_id, role, text, hosted_uri, bundle_id, ts, ttl_days, user_type, tags)
                   VALUES ($1,$2,'artifact','', $3, $4, $5, 3650, 'system', $6)
                   RETURNING id, tags
                 """
-                rec = await con.fetchrow(q_ins, user_id, conversation_id, s3_uri, bundle_id, _coerce_ts(now_ts), tags)
+                rec = await con.fetchrow(q_ins, user_id, conversation_id, hosted_uri, bundle_id, _coerce_ts(now_ts), tags)
                 st, cur_turn = _parse_tags(rec["tags"])
                 return {"ok": True, "row": {"id": rec["id"], "tags": rec["tags"]}, "state": st, "current_turn_id": cur_turn}
 
@@ -269,7 +269,7 @@ class ConvIndex:
             q_upd = f"""
               UPDATE {self.schema}.conv_messages
               SET
-                s3_uri = $1,
+                hosted_uri = $1,
                 ts     = $2,
                 bundle_id  = $3,
                 tags = (
@@ -291,7 +291,7 @@ class ConvIndex:
             """
             # tags_add = base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])
             tags_add = list(dict.fromkeys( base_tags + [new_state_tag] + ([turn_tag] if turn_tag else [])))
-            rec = await con.fetchrow(q_upd, s3_uri, _coerce_ts(now_ts), bundle_id, tags_add, int(row["id"]))
+            rec = await con.fetchrow(q_upd, hosted_uri, _coerce_ts(now_ts), bundle_id, tags_add, int(row["id"]))
             if rec is None:
                 # CAS failed
                 # Fetch current row to report state/turn to caller
@@ -309,7 +309,7 @@ class ConvIndex:
             conversation_id: str,
             role: str,
             text: str,
-            s3_uri: str,
+            hosted_uri: str,
             ts: Union[str, datetime],
             tags: Optional[List[str]] = None,
             ttl_days: int = 365,
@@ -324,7 +324,7 @@ class ConvIndex:
         async with self._pool.acquire() as con:
             q = f"""
                 INSERT INTO {self.schema}.conv_messages
-                  (user_id, conversation_id, message_id, role, text, s3_uri, ts,
+                  (user_id, conversation_id, message_id, role, text, hosted_uri, ts,
                    ttl_days, user_type, tags, embedding, track_id, turn_id, bundle_id)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::vector,$12,$13,$14)
                 RETURNING id
@@ -336,7 +336,7 @@ class ConvIndex:
                 message_id,
                 role,
                 text,
-                s3_uri,
+                hosted_uri,
                 ts_dt,
                 int(ttl_days),
                 user_type,
@@ -377,7 +377,7 @@ class ConvIndex:
             where.append(f"bundle_id = ${len(args)}")
 
         q = f"""
-            SELECT id, message_id, role, text, s3_uri, ts, tags, track_id, turn_id, bundle_id,
+            SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id, turn_id, bundle_id,
                    1 - (embedding <=> $5::vector) AS score
             FROM {self.schema}.conv_messages
             WHERE {' AND '.join(where)}
@@ -435,7 +435,7 @@ class ConvIndex:
             clauses.append(f"bundle_id = ${len(args)}")
 
         q = f"""
-            SELECT id, message_id, role, text, s3_uri, ts, tags, track_id, turn_id, bundle_id,
+            SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id, turn_id, bundle_id,
                    1 - (embedding <=> $5::vector) AS score
             FROM {self.schema}.conv_messages
             WHERE {' AND '.join(clauses)}
@@ -489,11 +489,11 @@ class ConvIndex:
           LIMIT {int(top_k)}
         )
         SELECT
-          h.id AS hit_id, h.role AS hit_role, h.text AS hit_text, h.s3_uri AS hit_s3_uri,
+          h.id AS hit_id, h.role AS hit_role, h.text AS hit_text, h.hosted_uri AS hit_hosted_uri,
           h.ts AS hit_ts, h.tags AS hit_tags, h.track_id AS hit_track_id, h.turn_id AS hit_turn_id, h.score AS hit_score,
         
-          u.id AS user_id_msg, u.text AS user_text, u.s3_uri AS user_s3_uri, u.ts AS user_ts, u.turn_id AS user_turn_id,
-          a.id AS assistant_id_msg, a.text AS assistant_text, a.s3_uri AS assistant_s3_uri, a.ts AS assistant_ts, a.turn_id AS assistant_turn_id
+          u.id AS user_id_msg, u.text AS user_text, u.hosted_uri AS user_hosted_uri, u.ts AS user_ts, u.turn_id AS user_turn_id,
+          a.id AS assistant_id_msg, a.text AS assistant_text, a.hosted_uri AS assistant_hosted_uri, a.ts AS assistant_ts, a.turn_id AS assistant_turn_id
         
         FROM hits h
         LEFT JOIN LATERAL (
@@ -577,7 +577,7 @@ class ConvIndex:
                     message_id=meta.get("message_id"),
                     role=rec.get("role"),
                     text=rec.get("text") or "",
-                    s3_uri=meta.get("s3_uri") or "",
+                    hosted_uri=meta.get("hosted_uri") or "",
                     ts=rec.get("timestamp") or meta.get("timestamp") or datetime.utcnow(),
                     ttl_days=ttl_days,
                     user_type=user_type,
@@ -722,7 +722,7 @@ class ConvIndex:
                 SELECT COALESCE(json_agg(
                   json_build_object(
                     'id', cm2.id, 'message_id', cm2.message_id, 'role', cm2.role,
-                    'tags', cm2.tags, 's3_uri', cm2.s3_uri, 'ts', cm2.ts,
+                    'tags', cm2.tags, 'hosted_uri', cm2.hosted_uri, 'ts', cm2.ts,
                     'policy', e.policy,
                     'text_preview', CASE WHEN cm2.text IS NULL THEN NULL ELSE left(cm2.text, 400) END
                   )
@@ -746,7 +746,7 @@ class ConvIndex:
             FROM {self.schema}.conv_messages m
             WHERE {' AND '.join(where)}
           )
-          SELECT m.id, m.message_id, m.role, m.text, m.s3_uri, m.ts, m.tags, m.track_id, m.turn_id, m.bundle_id,
+          SELECT m.id, m.message_id, m.role, m.text, m.hosted_uri, m.ts, m.tags, m.track_id, m.turn_id, m.bundle_id,
                  m.sim, m.rec, m.age_sec, m.rboost,
                  (0.70*m.sim + 0.25*exp(-ln(2) * m.age_sec / ({half_life_days_s}*24*3600.0)) + 0.05*m.rboost) AS score
                  {deps_select}
@@ -807,7 +807,7 @@ class ConvIndex:
             where.append(f"NOT (tags && ${len(args)}::text[])")
 
         q = f"""
-          SELECT id, message_id, role, text, s3_uri, ts, tags, track_id, turn_id, bundle_id
+          SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id, turn_id, bundle_id
           FROM {self.schema}.conv_messages
           WHERE {' AND '.join(where)}
           ORDER BY ts DESC
@@ -915,7 +915,7 @@ class ConvIndex:
 
     async def fetch_latest_summary(self, *, user_id: str, conversation_id: str, kind: str = "conversation.summary") -> Optional[Dict[str, Any]]:
         q = f"""
-          SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
+          SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id
           FROM {self.schema}.conv_messages
           WHERE user_id=$1 AND conversation_id=$2
             AND role='artifact' AND tags @> ARRAY[$3]::text[]
@@ -933,7 +933,7 @@ class ConvIndex:
         """
         q = f"""
         WITH cand AS (
-          SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
+          SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id
           FROM {self.schema}.conv_messages
           WHERE user_id=$1 AND conversation_id=$2
             AND role='artifact' AND tags @> ARRAY['kind:turn.log']::text[]
@@ -955,7 +955,7 @@ class ConvIndex:
           FROM tagged
           WHERE turn_key IS NOT NULL
         )
-        SELECT id, message_id, role, text, s3_uri, ts, tags, track_id
+        SELECT id, message_id, role, text, hosted_uri, ts, tags, track_id
         FROM ranked
         WHERE rn = 1
         ORDER BY ts DESC
@@ -1170,7 +1170,7 @@ class ConvIndex:
             message_id: Optional[str] = None,
             text: Optional[str] = None,
             tags: Optional[List[str]] = None,
-            s3_uri: Optional[str] = None,
+            hosted_uri: Optional[str] = None,
             ts: Optional[Union[str, datetime]] = None,
             turn_id: Optional[str] = None,
             bundle_id: Optional[str] = None,
@@ -1186,9 +1186,9 @@ class ConvIndex:
         if tags is not None:
             sets.append(f"tags = ${len(args)+1}")
             args.append(list(tags))
-        if s3_uri is not None:
-            sets.append(f"s3_uri = ${len(args)+1}")
-            args.append(s3_uri)
+        if hosted_uri is not None:
+            sets.append(f"hosted_uri = ${len(args)+1}")
+            args.append(hosted_uri)
         if ts is not None:
             ts_dt = _coerce_ts(ts)  # moved inside the guard
             sets.append(f"ts = ${len(args)+1}::timestamptz")
@@ -1295,7 +1295,7 @@ class ConvIndex:
               SELECT
                 m.ts,
                 m.message_id AS mid,
-                m.s3_uri     AS s3_uri,
+                m.hosted_uri     AS hosted_uri,
                 m.tags       AS tags,
                 m.bundle_id  AS bundle_id,
                 t.tag        AS tag,
@@ -1307,7 +1307,7 @@ class ConvIndex:
                 AND {turn_ids_cond}
             )
             SELECT substring(tag FROM '^turn:(.+)$') AS turn_id,
-                   ts, tags, mid, s3_uri, bundle_id
+                   ts, tags, mid, hosted_uri, bundle_id
             FROM exploded
             ORDER BY ts ASC, mid ASC, tag_idx ASC
         """
@@ -1325,7 +1325,7 @@ class ConvIndex:
                 "ts": ts.isoformat() if hasattr(ts, "isoformat") else ts,
                 "tags": list(r.get("tags") or []),
                 "mid": r.get("mid"),
-                "s3_uri": r.get("s3_uri"),
+                "hosted_uri": r.get("hosted_uri"),
                 "bundle_id": r.get("bundle_id"),
             })
         return out
@@ -1542,7 +1542,7 @@ class ConvIndex:
             LIMIT {int(top_k)}
         )
         SELECT 
-            log.id, log.message_id, log.role, log.text, log.s3_uri, log.ts, log.tags,
+            log.id, log.message_id, log.role, log.text, log.hosted_uri, log.ts, log.tags,
             log.track_id, log.turn_id, log.bundle_id,
             ut.sim,
             ut.rec,
