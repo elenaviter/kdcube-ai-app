@@ -42,6 +42,15 @@ def _prepare_workspace_for_executor(
             f"[workspace_prep] Set ownership of {output_dir} to UID {executor_uid}",
             level="INFO"
         )
+        # Ensure shared workspace remains writable across containers/users
+        try:
+            os.chmod(output_dir, 0o777)
+            os.chmod(logs_dir, 0o777)
+        except Exception as chmod_err:
+            log.log(
+                f"[workspace_prep] chmod after chown failed: {chmod_err}",
+                level="WARNING"
+            )
     except subprocess.CalledProcessError as e:
         # Not root - try fallback (chmod)
         log.log(
