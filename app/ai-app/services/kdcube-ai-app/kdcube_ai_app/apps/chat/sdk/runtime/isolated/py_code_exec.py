@@ -14,6 +14,7 @@ from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 def _prepare_workspace_for_executor(
         output_dir: pathlib.Path,
         executor_uid: int = 1001,
+        executor_gid: Optional[int] = None,
         logger: Optional[AgentLogger] = None
 ) -> None:
     """
@@ -30,16 +31,18 @@ def _prepare_workspace_for_executor(
     logs_dir = output_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Try to chown to executor user (requires root)
+    # Try to chown to executor user (requires root). Keep group as chat's GID for shared writes.
     try:
+        if executor_gid is None:
+            executor_gid = int(os.environ.get("EXECUTOR_GID", "1000"))
         subprocess.run(
-            ["chown", "-R", f"{executor_uid}:{executor_uid}", str(output_dir)],
+            ["chown", "-R", f"{executor_uid}:{executor_gid}", str(output_dir)],
             check=True,
             capture_output=True,
             timeout=5
         )
         log.log(
-            f"[workspace_prep] Set ownership of {output_dir} to UID {executor_uid}",
+            f"[workspace_prep] Set ownership of {output_dir} to UID {executor_uid} GID {executor_gid}",
             level="INFO"
         )
         # Ensure shared workspace remains writable across containers/users
@@ -125,7 +128,7 @@ async def run_py_code(
     workdir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    _prepare_workspace_for_executor(output_dir, executor_uid=1001, logger=log)
+    _prepare_workspace_for_executor(output_dir, executor_uid=1001, executor_gid=None, logger=log)
 
     main_path = workdir / "main.py"
     if not main_path.exists():
