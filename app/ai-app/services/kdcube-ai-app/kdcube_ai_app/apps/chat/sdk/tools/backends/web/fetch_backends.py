@@ -198,7 +198,8 @@ async def fetch_url_contents(
     artifact_thinking = "Fetch URL Contents Trace"
     think_idx = 0
 
-    async def emit_thinking(text: str, completed: bool = False, **kwargs):
+    marker = "timeline_text" # "thinking"
+    async def emit_progress(text: str, completed: bool = False, **kwargs):
         """Wrapper to emit thinking deltas."""
         nonlocal think_idx
         if not (emit_delta_fn and comm):
@@ -209,7 +210,7 @@ async def fetch_url_contents(
         await emit_delta_fn(
             text=text,
             index=think_idx,
-            marker="thinking",
+            marker=marker,
             agent=agent_name,
             title=agent_label,
             format="markdown",
@@ -296,7 +297,7 @@ async def fetch_url_contents(
             results=results,
             objective=objective,
             mode=mode,
-            on_thinking_fn=emit_thinking if (emit_delta_fn and comm) else None,
+            on_progress_fn=emit_progress if (emit_delta_fn and comm) else None,
             thinking_budget=FETCH_URL_AGENTIC_THINKING_BUDGET,
         )
 

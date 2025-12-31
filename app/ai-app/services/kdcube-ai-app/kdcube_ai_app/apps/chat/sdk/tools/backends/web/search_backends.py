@@ -624,8 +624,9 @@ async def web_search(
     max_label_len = max(1, 120 - (len(agent_suffix) + 3))
     agent_id = f"{agent_label[:max_label_len]} [{agent_suffix}]"
 
-    async def emit_thinking(text: str, completed: bool = False, **kwargs):
-        """Wrapper to emit thinking deltas."""
+    marker = "timeline_text" # "thinking"
+    async def emit_progress(text: str, completed: bool = False, **kwargs):
+        """Wrapper to emit thinking/timeline_text deltas."""
         nonlocal think_idx
         nonlocal finish_thinking_is_sent
         if not (emit_delta_fn and comm):
@@ -636,7 +637,7 @@ async def web_search(
         await emit_delta_fn(
             text=text,
             index=think_idx,
-            marker="thinking",
+            marker=marker,
             agent=agent_id,
             title=agent_label,
             format="markdown",
@@ -653,7 +654,7 @@ async def web_search(
         """Signal thinking completion."""
         nonlocal finish_thinking_is_sent
         if think_idx:
-            await emit_thinking("", completed=True)
+            await emit_progress("", completed=True)
         finish_thinking_is_sent = True
 
     # --- Get backend ---
@@ -802,7 +803,7 @@ async def web_search(
                 search_results=new_rows,
                 do_segment=True,
                 mode=refinement,
-                on_thinking_fn=emit_thinking,
+                on_progress_fn=emit_progress,
                 thinking_budget=WEB_SEARCH_AGENTIC_THINKING_BUDGET
             )
 

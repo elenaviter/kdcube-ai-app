@@ -25,6 +25,7 @@ UI_ARTIFACT_TAGS = {
     "artifact:codegen.program.files",
     "artifact:conv.thinking.stream",
     "artifact:conv.canvas.stream",
+    "artifact:conv.timeline_text.stream",
     "artifact:turn.log.reaction",
     "artifact:conv.user_shortcuts",
     "chat:user",
@@ -2083,12 +2084,17 @@ async def search_context(
                 where = "artifact"
                 # search_tags = ["artifact:project.log"]
                 search_tags = ["artifact:codegen.program.presentation", "artifact:solver.failure"]
+            if where == "user":
+                search_roles = ("user", "artifact")
+                search_tags = ["chat:user", "artifact:user.input.summary", "artifact:attachment.summary"]
+            else:
+                search_roles = (where,)
             res = await conv_idx.search_turn_logs_via_content(
                 user_id=user,
                 conversation_id=conv,
                 track_id=track,
                 query_embedding=qvec,
-                search_roles=(where,),
+                search_roles=search_roles,
                 search_tags=search_tags,
                 top_k=top_k,
                 days=days,

@@ -5,6 +5,7 @@ This guide covers setup and configuration for running [AI-]generated Python code
 ## Table of Contents
 
 - [Overview](#overview)
+- [ISO Runtime Readme](#iso-runtime-readme)
 - [Deployment Modes](#deployment-modes)
 - [Prerequisites](#prerequisites)
 - [Mode 1: Chat Service on Host](#mode-1-chat-service-on-host-bare-metal)
@@ -26,6 +27,14 @@ The isolated execution system allows running untrusted AI-generated code safely 
 **Supported deployment modes:**
 1. **Bare metal** - Chat service runs on host, spawns Docker containers for code execution
 2. **Docker-in-Docker** - Chat service runs in Docker, spawns sibling containers for code execution
+
+---
+
+## ISO Runtime Readme
+
+For implementation details (runtime flow, supervisor/executor roles, mounts, permissions, env vars, and parallel-exec notes), see:
+
+- `kdcube_ai_app/apps/chat/sdk/runtime/isolated/README-iso-runtime.md`
 
 ---
 
@@ -670,10 +679,3 @@ docker logs <py-code-exec> | grep "tool_call"
 - [ ] Security verified (executor isolated, supervisor has access)
 
 ---
-
-## Next Steps
-
-- Read [ARCHITECTURE.md](./ARCHITECTURE.md) for technical deep-dive
-- Configure resource limits (CPU, memory) in docker run
-- Set up monitoring for execution failures
-- Implement cleanup for old workspaces (`/exec-workspace/codegen_*`)

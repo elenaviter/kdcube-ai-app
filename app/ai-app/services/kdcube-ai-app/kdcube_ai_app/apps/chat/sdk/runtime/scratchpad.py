@@ -102,6 +102,7 @@ class TurnScratchpad:
             text = ""
         # User section
         self.user_text = text.strip()
+        self.user_input_summary = ""
         self.uvec = None
         self.user_attachments = attachments
 
@@ -289,7 +290,10 @@ class TurnScratchpad:
             "completion": self.answer
         }
         tl["user"] = {
-            "prompt": (self.user_text or "").strip()
+            "prompt": (self.user_text or "").strip(),
+            "input_summary": (self.user_input_summary or "").strip(),
+            "summary": (self.user_input_summary or "").strip(),
+            "inv": (self.user_input_summary or "").strip(),
         }
         tl["turn_log"] = self.tlog.to_payload()
         return tl

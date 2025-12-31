@@ -189,6 +189,8 @@ class ContextBrowser:
         ctx.conversation_id = conversation_id
         ctx.user_id = user_id
         ctx.user_text = getattr(scratchpad, "user_text", "")
+        ctx.user_input_summary = getattr(scratchpad, "user_input_summary", "")
+        ctx.user_attachments = list(getattr(scratchpad, "user_attachments", None) or [])
         ctx.started_at = getattr(scratchpad, "started_at", None)
         ctx.bundle_id = bundle_id
         ctx.context_bundle = bundle
@@ -231,6 +233,5 @@ class ContextBrowser:
                 f"[{ctx}] Warning: Failed to rehost previous files: {e}",
                 level="WARNING"
             )
-
 
 

@@ -210,6 +210,8 @@ class ReactContext:
     bundle_id: Optional[str] = None
     track_id: Optional[str] = None
     user_text: Optional[str] = None
+    user_input_summary: Optional[str] = None
+    user_attachments: List[Dict[str, Any]] = field(default_factory=list)
     started_at: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     budget_state: BudgetState = field(default_factory=BudgetState)
     context_bundle: Optional["ContextBundle"] = None
@@ -419,7 +421,10 @@ class ReactContext:
             cur = {}
 
         self.turn_id = cur.get("turn_id") or self.turn_id
-        self.user_text = ((cur.get("user") or {}).get("prompt")) if isinstance(cur.get("user"), dict) else self.user_text
+        if isinstance(cur.get("user"), dict):
+            self.user_text = (cur.get("user") or {}).get("prompt") or self.user_text
+            self.user_input_summary = (cur.get("user") or {}).get("input_summary") or (cur.get("user") or {}).get("summary") or self.user_input_summary
+            self.user_attachments = (cur.get("user") or {}).get("attachments") or self.user_attachments
         self.started_at = cur.get("ts") or self.started_at
 
         self.current_slots = cur.get("slots") or {}
@@ -498,6 +503,9 @@ class ReactContext:
                 "turn_id": self.turn_id,
                 "user": {
                     "prompt": self.user_text,
+                    "input_summary": self.user_input_summary,
+                    "summary": self.user_input_summary,
+                    "attachments": self.user_attachments,
                 },
                 "ts": self.started_at,
                 "slots": self.current_slots,
@@ -830,6 +838,7 @@ class ReactContext:
         Supported:
           - current_turn.artifacts.<artifact_id>
           - current_turn.slots.<slot_name>
+          - current_turn.user.attachment.<name>
           - <turn_id>.slots.<slot_name>
         """
         if not path or not isinstance(path, str):
@@ -853,6 +862,19 @@ class ReactContext:
             if isinstance(pack, dict) and "value" in pack and isinstance(pack.get("value"), dict):
                 return pack["value"]
             return pack if isinstance(pack, dict) else None
+
+        # current turn: user attachment object
+        if path.startswith("current_turn.user.attachment.") or path.startswith("user.attachment."):
+            rel = path.split("user.attachment.", 1)[1]
+            name = (rel.split(".", 1)[0] or "").strip()
+            if not name:
+                return None
+            for a in (self.user_attachments or []):
+                if not isinstance(a, dict):
+                    continue
+                if (a.get("name") or a.get("filename")) == name:
+                    return a
+            return None
 
         return None
 
@@ -1182,10 +1204,55 @@ class ReactContext:
                     # fallback (shouldn't happen with allowed leaves)
                     val = (turn.get(leaf) or "")
 
-                # For messages, summary mode returns ≤ ~600 chars
-                if mode == "summary" and isinstance(val, str) and len(val) > _SUMMARY_MAX:
-                    val = val[:_SUMMARY_MAX] + "…"
                 return val, {"_kind": "message", "turn_id": turn_id}
+
+        # ---------- Current turn user aliases ----------
+        if path == "current_turn.user.prompt" or path == "user.prompt" or path == "current_turn.user":
+            val = self.user_text or ""
+            return val, {"_kind": "message", "turn_id": "current_turn"}
+
+        if path in ("current_turn.user.input.summary", "current_turn.user.input_summary",
+                    "user.input.summary", "user.input_summary"):
+            val = self.user_input_summary or ""
+            return val, {"_kind": "message", "turn_id": "current_turn"}
+
+        if path.startswith("current_turn.user.attachment.") or path.startswith("user.attachment."):
+            rel = path.split("user.attachment.", 1)[1]
+            name, _, leaf = rel.partition(".")
+            if not name or not leaf:
+                return None, None
+            match = None
+            for a in (self.user_attachments or []):
+                if not isinstance(a, dict):
+                    continue
+                if (a.get("name") or a.get("filename")) == name:
+                    match = a
+                    break
+            if not match:
+                return None, None
+            if leaf in ("content", "text"):
+                if mode == "summary":
+                    val = match.get("summary") or match.get("input_summary") or match.get("text") or ""
+                else:
+                    val = match.get("text") or ""
+            elif leaf in ("summary", "input_summary"):
+                val = match.get("summary") or match.get("input_summary") or ""
+            else:
+                val = match.get(leaf)
+            return val, {"_kind": "attachment", "turn_id": "current_turn"}
+
+        # ---------- Past turn user leaves ----------
+        if ".user." in path:
+            turn_id, _, rest = path.partition(".user.")
+            turn = self.prior_turns.get(turn_id) or {}
+            user_obj = (turn.get("user") or {}) if isinstance(turn.get("user"), dict) else {}
+            if rest in ("prompt",):
+                val = user_obj.get("prompt") or ""
+            elif rest in ("input.summary", "input_summary", "summary"):
+                val = user_obj.get("input_summary") or user_obj.get("summary") or ""
+            else:
+                val = user_obj.get(rest)
+            return val, {"_kind": "message", "turn_id": turn_id}
 
         # ---------- Current turn tool results ----------
         if path.startswith("current_turn.artifacts."):

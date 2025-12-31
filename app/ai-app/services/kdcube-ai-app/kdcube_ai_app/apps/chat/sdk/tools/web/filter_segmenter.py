@@ -76,7 +76,7 @@ async def filter_and_segment_stream(
         queries: List[str],
         sources_with_content: List[Dict[str, Any]],
         mode: str = "balanced",  # "balanced", "precision", "recall"
-        on_thinking_fn: Optional[Any] = None,
+        on_progress_delta: Optional[Any] = None,
         thinking_budget: int = 180,
         max_tokens: int = 700,
         role: Optional[str] = None,
@@ -211,7 +211,7 @@ async def filter_and_segment_stream(
             sys_prompt=system_msg,
             user_msg=user_msg,
             schema_model=None,  # Parse as raw dict, no Pydantic validation
-            on_progress_delta=on_thinking_fn,
+            on_progress_delta=on_progress_delta,
             ctx="filter.segmenter",
             max_tokens=max_tokens
         )

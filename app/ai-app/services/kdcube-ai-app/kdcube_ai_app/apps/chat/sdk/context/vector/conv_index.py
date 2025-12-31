@@ -1441,6 +1441,7 @@ class ConvIndex:
             query_text: Optional[str] = None,
             search_roles: tuple[str, ...] = ("user", "assistant", "artifact"),  # roles to search for turn_id match
             search_tags: Optional[Sequence[str]] = None,
+            role_tag_filters: Optional[List[Dict[str, Any]]] = None,
             top_k: int = 8,
             days: int = 90,
             scope: str = "track",
@@ -1466,11 +1467,10 @@ class ConvIndex:
         """
 
         # Build WHERE clause for content search (stage 1)
-        args: List[Any] = [user_id, list(search_roles), str(days)]
+        args: List[Any] = [user_id, str(days)]
         where = [
             "m.user_id = $1",
-            "m.role = ANY($2)",
-            "m.ts >= now() - ($3::text || ' days')::interval",
+            "m.ts >= now() - ($2::text || ' days')::interval",
             "m.ts + (m.ttl_days || ' days')::interval >= now()",
         ]
 
@@ -1484,9 +1484,25 @@ class ConvIndex:
             sim_sql = "0.0::float AS sim"
             order_by = "m.ts DESC"
 
-        if search_tags:
-            args.append(list(search_tags))
-            where.append(f"m.tags && ${len(args)}::text[]")
+        def _role_tag_clause(roles: Sequence[str], tags: Optional[Sequence[str]]) -> str:
+            args.append(list(roles))
+            role_cond = f"m.role = ANY(${len(args)})"
+            if tags:
+                args.append(list(tags))
+                return f"({role_cond} AND m.tags && ${len(args)}::text[])"
+            return f"({role_cond})"
+
+        role_clauses: List[str] = []
+        if search_roles:
+            role_clauses.append(_role_tag_clause(search_roles, search_tags))
+        for filt in (role_tag_filters or []):
+            roles = list(filt.get("roles") or [])
+            if not roles:
+                continue
+            tags = filt.get("tags")
+            role_clauses.append(_role_tag_clause(roles, tags))
+        if role_clauses:
+            where.append("(" + " OR ".join(role_clauses) + ")")
 
         # Scope filters
         if scope == "track" and track_id:
@@ -1616,4 +1632,3 @@ class ConvIndex:
         else:  # "any"
             where.append(f"tags && ${len(args)}::text[]")
 """
-

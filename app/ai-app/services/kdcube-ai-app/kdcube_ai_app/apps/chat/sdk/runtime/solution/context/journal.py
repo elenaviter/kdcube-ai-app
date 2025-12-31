@@ -1461,46 +1461,6 @@ def extract_turn_ids_from_guess_package(guess_package: Dict[str, Any]) -> set:
 
     return turn_ids
 
-class TurnCompressor(Protocol):
-    def __call__(
-            self,
-            *,
-            turn_id: str,
-            tlog: dict,
-            payload: dict,
-            user_text: str,
-            assistant_text: str,
-    ) -> str: ...
-
-
-def _default_turn_compressor(
-        *,
-        turn_id: str,
-        tlog: dict,
-        payload: dict,
-        user_text: str,
-        assistant_text: str,
-) -> str:
-    """
-    Generic, dependency-free fallback:
-    - pull a one-liner from turn_summary if present
-    - otherwise user text + a short assistant snippet.
-    """
-    summary = (tlog or {}).get("turn_summary") or {}
-    one_liner = (summary.get("one_liner") or "").strip()
-    if one_liner:
-        return one_liner
-
-    u = (user_text or "").strip()
-    a = (assistant_text or "").strip()
-
-    parts = []
-    if u:
-        parts.append(f"User: {u[:280]}")
-    if a:
-        parts.append(f"Assistant: {a[:280]}")
-    return " | ".join(parts)
-
 async def retrospective_context_view(
         *,
         ctx_client: ContextRAGClient,
@@ -1690,7 +1650,7 @@ async def retrospective_context_view(
                 tlog=turn_log_data,
                 payload=item,  # Pass the FULL item (with double-wrapped structure)
                 user_text=user_data.get("prompt"),
-                user_inv=user_data.get("inv"),
+                user_inv=user_data.get("inv") or user_data.get("summary"),
                 assistant_text=asst_data.get("completion"),
                 assistant_inv=asst_data.get("inv"),
             )

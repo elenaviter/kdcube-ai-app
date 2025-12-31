@@ -876,10 +876,6 @@ class ContextTools:
             # Normalize first segment in the working path
             parts[0] = tid
 
-            # ---- Forgive message mistakes: turn.assistant.whatever -> turn.assistant ----
-            if parts[1] in {"user", "assistant"} and len(parts) > 2:
-                parts = parts[:2]
-
             # ---- Messages: current_turn.user/current_turn.assistant are NOT handled by resolve_path ----
             if parts[1] in {"user", "assistant"}:
                 leaf = parts[1]
@@ -889,6 +885,16 @@ class ContextTools:
                     if leaf == "assistant":
                         return {"ret": (turn_view.get("assistant")), "err": None}
                 # prior messages: let resolve_path do it (it already knows turn.user / turn.assistant)
+                normalized_path = ".".join(parts[:2])
+                from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.context import ReactContext
+                rctx = ReactContext.load_from_dict(ctx)
+                val, _owner = rctx.resolve_path(normalized_path, mode="full")
+                if val is None:
+                    return {"ret": None, "err": _err("not_found", "Path not found", {"normalized_path": normalized_path})}
+                return {"ret": val, "err": None}
+
+            # ---- User nested fields (prompt/input_summary/attachments) ----
+            if parts[1] == "user" and len(parts) >= 3:
                 normalized_path = ".".join(parts)
                 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.context import ReactContext
                 rctx = ReactContext.load_from_dict(ctx)
