@@ -81,7 +81,7 @@ async def promote_user_preferences(
 
     # buckets per (key, desired, semantic value)
     buckets: Dict[Tuple[str, bool, int], Dict[str, Any]] = {}
-    index: Dict[str, List[Tuple[int, Any]]] = {}
+    index: Dict[Tuple[str, bool], List[Tuple[int, Any]]] = {}
     next_id = 1
 
     for a in items:
@@ -98,16 +98,14 @@ async def promote_user_preferences(
 
         # find equivalent bucket
         bid = None
-        for (bid_i, v0) in index.get(key, []):
-            if buckets[(key, desired, bid_i)]["desired"] != desired:
-                continue
+        for (bid_i, v0) in index.get((key, desired), []):
             if values_equivalent(key, v0, val, get_policy=policy_for_key):
                 bid = bid_i
                 break
         if bid is None:
             bid = next_id
             next_id += 1
-            index.setdefault(key, []).append((bid, val))
+            index.setdefault((key, desired), []).append((bid, val))
             buckets[(key, desired, bid)] = {
                 "key": key, "desired": desired, "value": val,
                 "support": 0,
