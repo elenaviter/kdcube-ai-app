@@ -79,7 +79,7 @@ async def generate_content_llm(
         on_thinking_fn = None,
         infra_call: bool = False,
         include_url_in_source_digest: bool = False
-) -> Annotated[dict, 'Object: {ok, content, format, finished, retries, reason, stats, sources_used: [ { "sid": 1, "url": "...", "title": "...", "text": "..." }, ... ]}']:
+) -> Annotated[dict, 'Object: {ok, content, format, finished, retries, reason, stats, sources_used: [sid, ...]}']:
     """
     Returns object:
       {
@@ -1410,7 +1410,7 @@ async def generate_content_llm(
 
     combined_used_sids = sorted(set((artifact_used_sids or []) + (usage_sids or [])))
 
-    sources_used: List[Dict[str, Any]] = []
+    sources_used: List[int] = []
     if combined_used_sids and sources_list:
         try:
             raw_sources = sources_list
@@ -1428,9 +1428,8 @@ async def generate_content_llm(
             by_sid[sid_val] = s
 
         for sid in combined_used_sids:
-            src = by_sid.get(sid)
-            if src is not None:
-                sources_used.append(dict(src))
+            if sid in by_sid:
+                sources_used.append(int(sid))
 
     logger.info(
         "generate_content_llm completed: agent=%s artifact=%s finished=%s ok=%s",

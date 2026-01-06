@@ -518,36 +518,33 @@ class TurnScratchpad:
                 "kind": "file",
             })
         return out
-    #
-    # def user_attachments_for_fetch(self) -> List[Dict[str, Any]]:
-    #     out: List[Dict[str, Any]] = []
-    #     self._ensure_attachment_artifact_names(self.user_attachments or [])
-    #     for a in self.user_attachments or []:
-    #         if not isinstance(a, dict):
-    #             continue
-    #         out.append({
-    #             "mid": a.get("mid"),
-    #             "filename": (a.get("filename") or "attachment").strip(),
-    #             "artifact_name": (a.get("artifact_name") or "").strip(),
-    #             "mime": (a.get("mime") or a.get("mime_type") or "").strip(),
-    #             "size": a.get("size") or a.get("size_bytes"),
-    #             "hosted_uri": a.get("hosted_uri") or a.get("source_path") or a.get("path"),
-    #             "rn": a.get("rn"),
-    #         })
-    #     return out
 
-    def user_attachments_for_reranker(self) -> List[Dict[str, Any]]:
-        out: List[Dict[str, Any]] = []
+    def user_attachments_section_for_gate_agents(self) -> str:
+        attachment_items: List[Dict[str, Any]] = []
         for a in self.user_attachments or []:
             if not isinstance(a, dict):
                 continue
-            out.append({
+            attachment_items.append({
                 "filename": (a.get("filename") or "attachment").strip(),
                 "mime": (a.get("mime") or a.get("mime_type") or "").strip(),
                 "size": a.get("size") or a.get("size_bytes"),
                 "summary": (a.get("summary") or "").strip(),
             })
-        return out
+        lines = []
+        for item in attachment_items:
+            filename = (item.get("filename") or "attachment").strip()
+            mime = (item.get("mime") or "").strip()
+            size = item.get("size")
+            summary = (item.get("summary") or "").strip()
+            parts = [filename]
+            if mime:
+                parts.append(f"mime={mime}")
+            if size is not None:
+                parts.append(f"size={size}")
+            lines.append("- " + " | ".join(parts))
+            if summary:
+                lines.append(f"  {summary}")
+        return "\n".join(lines)
 
 T = TypeVar('T', bound='BaseTurnView')
 class BaseTurnView(ABC):
@@ -625,7 +622,19 @@ class BaseTurnView(ABC):
 # TurnLog - Structured logging
 # ============================================================================
 
-LogArea = Literal["objective", "user", "attachments", "solver", "react", "answer", "note", "summary", "feedback"]
+LogArea = Literal[
+    "objective",
+    "user",
+    "user.prompt",
+    "user.prompt.summary",
+    "attachments",
+    "solver",
+    "react",
+    "answer",
+    "note",
+    "summary",
+    "feedback",
+] | str
 LogLevel = Literal["info", "warn", "error"]
 
 class TurnLogEntry(BaseModel):
@@ -659,11 +668,56 @@ class TurnLog(BaseModel):
     # Convenience shorthands
     def objective(self, msg: str, **kw): self.add("objective", msg, **kw)
     def user(self, msg: str, **kw): self.add("user", msg, **kw)
+    def user_prompt(self, msg: str, **kw): self.add("user.prompt", msg, **kw)
+    def user_prompt_summary(self, msg: str, **kw): self.add("user.prompt.summary", msg, **kw)
     def attachments(self, msg: str, **kw): self.add("attachments", msg, **kw)
     def solver(self, msg: str, **kw): self.add("solver", msg, **kw)
     def react(self, msg: str, **kw): self.add("react", msg, **kw)
     def answer(self, msg: str, **kw): self.add("answer", msg, **kw)
     def note(self, msg: str, **kw): self.add("note", msg, **kw)
+
+    def _attachment_log_name(self, raw_name: str, used: Dict[str, int]) -> str:
+        base = (raw_name or "").strip() or "attachment"
+        base = re.sub(r"[\\s./:]+", "_", base)
+        base = re.sub(r"[^A-Za-z0-9_-]+", "", base) or "attachment"
+        count = used.get(base, 0) + 1
+        used[base] = count
+        return base if count == 1 else f"{base}_{count}"
+
+    def user_attachment_summary(self, name: str, summary: str, **kw) -> None:
+        area = f"user.attachments.{name}.summary"
+        self.add(area, summary, **kw)
+
+    def user_attachment(self, name: str, meta: str, **kw) -> None:
+        area = f"user.attachments.{name}"
+        self.add(area, meta, **kw)
+
+    def user_attachments(self, items: List[Dict[str, Any]]) -> None:
+        used: Dict[str, int] = {}
+        for a in items or []:
+            if not isinstance(a, dict):
+                continue
+            artifact_name = (a.get("artifact_name") or "").strip()
+            raw_name = (artifact_name or a.get("filename") or "attachment").strip()
+            name = self._attachment_log_name(raw_name, used)
+            summary = (a.get("summary") or "").strip()
+            parts = []
+            filename = (a.get("filename") or "").strip()
+            mime = (a.get("mime") or a.get("mime_type") or "").strip()
+            size = a.get("size") or a.get("size_bytes")
+            if artifact_name:
+                parts.append(f"artifact_name={artifact_name}")
+            if filename:
+                parts.append(f"filename={filename}")
+            if mime:
+                parts.append(f"mime={mime}")
+            if size is not None:
+                parts.append(f"size={size}")
+            meta = " | ".join(parts) if parts else ""
+            if meta:
+                self.user_attachment(name, meta)
+            if summary:
+                self.user_attachment_summary(name, summary)
 
     def prefs(self, prefs):
         try:
@@ -773,6 +827,7 @@ class TurnLog(BaseModel):
             elif o == "user_inquiry":
                 artifact = turn_summary[o]
                 turn_summary_entries.append(f"• user prompt summary: {artifact} ")
+                # self.user_prompt_summary(artifact)
 
             elif o == "assistant_answer":
                 artifact = turn_summary[o]
@@ -797,7 +852,10 @@ class TurnLog(BaseModel):
 
     @property
     def user_entry(self):
-        return next((d.model_dump_json() for d in self.entries if d.area == "user"), None)
+        return next(
+            (d.model_dump_json() for d in self.entries if d.area in {"user", "user.prompt"}),
+            None,
+        )
 
     @property
     def objective_entry(self):

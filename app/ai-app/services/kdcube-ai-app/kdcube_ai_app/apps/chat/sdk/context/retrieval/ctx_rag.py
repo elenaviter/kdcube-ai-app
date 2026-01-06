@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import datetime, traceback, logging
 import pathlib, json, asyncio
-from typing import Optional, Sequence, List, Dict, Any, Union, Callable
+from typing import Optional, Sequence, List, Dict, Any, Union, Callable, Awaitable
 
 from kdcube_ai_app.apps.chat.sdk.storage.rn import rn_file_from_file_path
 from kdcube_ai_app.apps.chat.sdk.util import _turn_id_from_tags_safe
@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 TURN_LOG_TAGS_BASE = ["kind:turn.log", "artifact:turn.log"]
 
 UI_ARTIFACT_TAGS = {
-    "artifact:codegen.program.citables",
-    "artifact:codegen.program.files",
+    "artifact:solver.program.citables",
+    "artifact:solver.program.files",
     "artifact:conv.thinking.stream",
     "artifact:conv.canvas.stream",
     "artifact:conv.timeline_text.stream",
@@ -36,6 +36,394 @@ UI_ARTIFACT_TAGS = {
 
 FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
 CONV_START_FPS_TAG = "conv.start"
+
+async def persist_single_artifact_message(
+        *,
+        store: ConversationStore,
+        conv_idx: ConvIndex,
+        bundle_id: str,
+        embed_fn: Optional[Callable[[List[str]], Any]] = None,
+        ttl_fn: Optional[Callable[[str, int], int]] = None,
+        attachment_summary_index_text_fn: Optional[Callable[[Dict[str, Any]], str]] = None,
+        tenant: str,
+        project: str,
+        user: str,
+        conversation_id: str,
+        user_type: str,
+        turn_id: str,
+        title: str,
+        kind: str,
+        payload: Dict[str, Any],
+        rid: str,
+        track_id: str,
+        payload_txt: Optional[str] = None,
+        codegen_run_id: Optional[str] = None,
+        extra_tags: Optional[List[str]] = None,
+        embed: Optional[bool] = None,
+        add_to_index: bool = True,
+) -> tuple[str, str]:
+    """
+    Persist a single artifact message and optionally index it.
+    """
+    def _short_val(v, n=160) -> str:
+        try:
+            s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False)
+        except Exception:
+            s = str(v)
+        s = s.strip()
+        return s if len(s) <= n else s[: n - 1] + "…"
+
+    def _kv_preview(d: dict, limit: int = 8) -> str:
+        if not isinstance(d, dict):
+            return _short_val(d)
+        items = []
+        for i, (k, v) in enumerate(d.items()):
+            if i >= limit:
+                break
+            vv = _short_val(v, 120)
+            items.append(f"{k}={vv}")
+        return ", ".join(items)
+
+    def _files_section(files: List[dict], heading: str) -> List[str]:
+        lines = []
+        if not files:
+            return lines
+        lines.append(f"### {heading} ({len(files)})")
+        for f in files:
+            name = (f.get("filename") or f.get("path") or "").split("/")[-1]
+            mime = f.get("mime") or ""
+            desc = f.get("description") or ""
+            key = f.get("key") or f.get("hosted_uri") or f.get("path") or ""
+            parts = [name]
+            if mime:
+                parts.append(f"({mime})")
+            if desc:
+                parts.append(f"— {desc}")
+            if key:
+                parts.append(f"[path:{key}]")
+            lines.append(f"- {' '.join(parts)}")
+        return lines
+
+    def _make_payload_txt(kind: str, payload: Dict[str, Any], title: str) -> str:
+        """
+        Build a human-readable markdown body with a single '[kind]' header line.
+        """
+        lines: List[str] = [f"[{kind}]"]
+
+        if kind == "conv.user_shortcuts":
+            items = [str(x) for x in (payload.get("items") or [])]
+            lines.append("## Follow-up suggestions")
+            if items:
+                for s in items:
+                    lines.append(f"- {s}")
+            else:
+                lines.append("_none_")
+            return "\n".join(lines)
+
+        if kind == "conv.clarification_questions":
+            items = [str(x) for x in (payload.get("items") or [])]
+            lines.append("## Clarification questions")
+            if items:
+                for s in items:
+                    lines.append(f"- {s}")
+            else:
+                lines.append("_none_")
+            return "\n".join(lines)
+
+        if kind == "project.log":
+            md = payload.get("markdown") or ""
+            return (("\n".join(lines) + "\n") + (md.strip() or "## Project Log\n_No content_")).rstrip()
+
+        if kind == "solver.program.presentation":
+            md = payload.get("markdown") or ""
+            return (("\n".join(lines) + "\n") + (md.strip() or "## Program Presentation\n_No content_")).rstrip()
+
+        if kind == "solver.failure":
+            md = payload.get("markdown") or ""
+            return (("\n".join(lines) + "\n") + (md.strip() or "## Solver Failure\n_No content_")).rstrip()
+
+        if kind == "solver.program.exec":
+            mani = payload.get("manifest") or {}
+            out = (mani.get("out") or {})
+            pkg = (mani.get("pkg") or {})
+            out_files = out.get("files") or []
+            pkg_files = pkg.get("files") or []
+
+            def _dir_of(node: dict) -> str:
+                return (node.get("dir") or node.get("prefix") or node.get("s3_prefix")
+                        or node.get("root") or node.get("base_uri") or "")
+
+            lines.append("## Execution Snapshot")
+            od = _dir_of(out)
+            pd = _dir_of(pkg)
+            if od:
+                lines.append(f"- Out dir: `{od}`")
+            if pd:
+                lines.append(f"- Pkg dir: `{pd}`")
+            lines.extend(_files_section(out_files, "Out files"))
+            lines.extend(_files_section(pkg_files, "Pkg files"))
+            return "\n".join(lines)
+
+        if kind == "solver.program.out.deliverables":
+            items = payload.get("items") or []
+            lines.append("## Deliverables")
+            if not items:
+                lines.append("_none_")
+            else:
+                for it in items:
+                    slot = it.get("slot") or ""
+                    desc = it.get("description") or ""
+                    lines.append(f"### {slot} — {desc}")
+                    v = it.get("value")
+                    if not isinstance(v, dict):
+                        lines.append("- _no value_")
+                        continue
+                    if v.get("type") == "file":
+                        name = v.get("filename") or (v.get("path") or "").split("/")[-1]
+                        mime = v.get("mime") or ""
+                        dsc = v.get("description") or ""
+                        path = v.get("path") or ""
+                        parts = [f"file: `{name}`"]
+                        if mime:
+                            parts.append(f"({mime})")
+                        if dsc:
+                            parts.append(f"— {dsc}")
+                        if path:
+                            parts.append(f"[path:{path}]")
+                        lines.append(f"- {' '.join(parts)}")
+                    else:
+                        prev = v.get("value_preview") or v.get("value") or ""
+                        mime = v.get("mime") or ""
+                        parts = [f"inline{f' ({mime})' if mime else ''}:"]
+                        s = _short_val(prev, 280)
+                        lines.append(f"- {' '.join(parts)} {s}")
+            return "\n".join(lines)
+
+        if kind == "solver.program.out":
+            items = payload.get("items") or []
+            lines.append("## Program OUT")
+            if not items:
+                lines.append("_none_")
+            else:
+                for it in items:
+                    rid = it.get("resource_id") or ""
+                    desc = it.get("description") or ""
+                    lines.append(f"### {rid} — {desc}")
+                    inp = it.get("input")
+                    outp = it.get("output")
+                    if outp:
+                        if rid and rid.startswith("slot:"):
+                            outp = outp.get("text")
+                    if inp is not None:
+                        lines.append(f"- **in:** {_kv_preview(inp)}")
+                    if outp is not None:
+                        lines.append(f"- **out:** {_kv_preview(outp)}")
+            return "\n".join(lines)
+
+        if kind == "solver.program.citables":
+            cites = payload.get("items") or []
+            lines.append("## Citations")
+            if not cites:
+                lines.append("_none_")
+            else:
+                for c in cites:
+                    url = (c or {}).get("url") or ""
+                    ttl = (c or {}).get("title") or (c or {}).get("description") or ""
+                    rid = (c or {}).get("resource_id") or ""
+                    tool = (c or {}).get("tool_id") or ""
+                    head = ttl or url or "source"
+                    trail = []
+                    if url:
+                        trail.append(url)
+                    if tool:
+                        trail.append(f"[tool:{tool}]")
+                    if rid:
+                        trail.append(f"[res:{rid}]")
+                    lines.append(f"- {head}{(': ' + ', '.join(trail)) if trail else ''}")
+            return "\n".join(lines)
+
+        if kind == "solver.program.files":
+            fb = payload.get("files_by_slot") or {}
+            lines.append("## Files")
+            if not fb:
+                lines.append("_none_")
+            else:
+                for slot, pack in fb.items():
+                    files = pack.get("files") or []
+                    lines.append(f"### slot: {slot}")
+                    for f in files:
+                        name = f.get("filename") or ""
+                        mime = f.get("mime") or ""
+                        path = f.get("path") or ""
+                        desc = f.get("description") or ""
+                        parts = [name]
+                        if mime:
+                            parts.append(f"({mime})")
+                        if desc:
+                            parts.append(f"— {desc}")
+                        if path:
+                            parts.append(f"[path:{path}]")
+                        lines.append(f"- {' '.join(parts)}")
+            return "\n".join(lines)
+
+        lines.append(f"## {title or 'Artifact'}")
+        lines.append(json.dumps(payload, ensure_ascii=False))
+        return "\n".join(lines)
+
+    def _index_text(kind: str, payload: Dict[str, Any]) -> str:
+        if kind == "conv.user_shortcuts":
+            items = payload.get("items") or []
+            return "followups: " + " ; ".join([str(x) for x in items][:20])
+        if kind == "conv.clarification_questions":
+            items = payload.get("items") or []
+            return "clarification questions: " + " ; ".join([str(x) for x in items][:20])
+
+        if kind == "user.input.summary":
+            return (payload.get("summary") or "")[:4000]
+
+        if kind == "user.attachment":
+            if attachment_summary_index_text_fn:
+                return attachment_summary_index_text_fn(payload)
+            return str(payload)[:1000]
+
+        if kind == "project.log":
+            return payload.get("markdown") or ""
+
+        if kind == "solver.program.presentation":
+            return payload.get("markdown") or ""
+
+        if kind == "solver.failure":
+            return payload.get("markdown") or ""
+
+        if kind == "solver.program.exec":
+            mani = payload.get("manifest") or {}
+            out = (mani.get("out") or {})
+            pkg = (mani.get("pkg") or {})
+            def _dir_of(node: dict) -> str:
+                return (node.get("dir") or node.get("prefix") or node.get("s3_prefix")
+                        or node.get("root") or node.get("base_uri") or "")
+            out_dir = _dir_of(out)
+            pkg_dir = _dir_of(pkg)
+            return (
+                f"exec_snapshot: out_dir={out_dir} pkg_dir={pkg_dir} "
+                f"out_files={len(out.get('files') or [])} pkg_files={len(pkg.get('files') or [])}"
+            )
+
+        if kind == "solver.program.out.deliverables":
+            lines = []
+            reason = payload.get("round_reasoning") or ""
+            if reason:
+                lines.append("# reasoning")
+                lines.append(reason.strip())
+            for it in (payload.get("items") or []):
+                slot = it.get("slot") or ""
+                desc = it.get("description") or ""
+                lines.append(f"\n## {slot}\n{desc}")
+                v = (it or {}).get("value") or {}
+                if v.get("type") == "file":
+                    path = v.get("path") or v.get("filename") or ""
+                    lines.append(f"- file: {v.get('filename','')} ({v.get('mime','')}) path={path}")
+                else:
+                    val = v.get("value_preview") or v.get("value") or ""
+                    lines.append(f"- inline: {val}")
+            return "\n".join(lines).strip()
+
+        if kind == "solver.program.out":
+            lines = []
+            reason = payload.get("round_reasoning") or ""
+            if reason:
+                lines.append("# reasoning")
+                lines.append(reason.strip())
+            lines.append("\n# out")
+            for it in (payload.get("items") or []):
+                rid = it.get("resource_id") or ""
+                desc = it.get("description") or ""
+                typ = "slot" if str(rid).startswith("slot:") else "tool"
+                params = it.get("input") or {}
+                short = []
+                for k, v in list((params or {}).items())[:8]:
+                    txt = str(v)
+                    short.append(f"{k}={txt[:20]}")
+                lines.append(f"{rid} -> {desc} ({typ}) {' '.join(short)}")
+            return "\n".join(lines).strip()
+
+        if kind == "solver.program.citables":
+            return "citations"
+
+        if kind == "solver.program.files":
+            files = payload.get("files_by_slot") or {}
+            total = sum(len(v.get("files", [])) for v in files.values())
+            return f"files: {total}"
+
+        return str(payload)[:1000]
+
+    if payload_txt:
+        text_body = payload_txt if payload_txt.startswith("[") else f"[{kind}]\n{payload_txt}"
+    else:
+        text_body = _make_payload_txt(kind, payload, title)
+
+    emb = None
+    if embed_fn:
+        try:
+            if embed is True:
+                [emb] = await embed_fn([_index_text(kind, payload)])
+            elif embed is False:
+                emb = None
+            else:
+                default_embed = kind in ("solver.program.presentation", "project.log", "solver.failure")
+                if default_embed:
+                    [emb] = await embed_fn([_index_text(kind, payload)])
+        except Exception:
+            emb = None
+
+    meta = {"title": title, "kind": kind, "turn_id": turn_id, "request_id": rid, "track_id": track_id}
+
+    uri, mid, rn = await store.put_message(
+        tenant=tenant,
+        project=project,
+        user=user,
+        fingerprint=None,
+        conversation_id=conversation_id,
+        bundle_id=bundle_id,
+        role="artifact",
+        user_type=user_type,
+        id=kind,
+        turn_id=turn_id,
+        payload=payload,
+        text=text_body,
+        meta=meta,
+        track_id=track_id,
+    )
+
+    a_tag = lambda item: f"artifact:{item}" if not item.startswith("artifact:") else item
+    tags = [a_tag(kind), f"track:{track_id}", f"turn:{turn_id}"]
+    if codegen_run_id:
+        tags.append(f"codegen_run:{codegen_run_id}")
+    if extra_tags:
+        for t in extra_tags:
+            if t and t not in tags:
+                tags.append(t)
+
+    if add_to_index:
+        ttl_days = ttl_fn(user_type, 365) if ttl_fn else 365
+        await conv_idx.add_message(
+            user_id=user,
+            conversation_id=conversation_id,
+            bundle_id=bundle_id,
+            turn_id=turn_id,
+            role="artifact",
+            user_type=user_type,
+            text=text_body,
+            hosted_uri=uri,
+            ts=datetime.datetime.utcnow().isoformat() + "Z",
+            tags=tags,
+            ttl_days=ttl_days,
+            embedding=emb,
+            message_id=mid,
+            track_id=track_id,
+        )
+
+    return uri, mid
 
 class ContextRAGClient:
     def __init__(self, *,
@@ -158,7 +546,7 @@ class ContextRAGClient:
             return False
 
         kind = meta.get("kind")
-        if kind == "codegen.program.files":
+        if kind == "solver.program.files":
             files = list((payload.get("files_by_slot") or {}).values())
             for f in files:
                 f["rn"] = rn_file_from_file_path(f["path"])
@@ -492,13 +880,7 @@ class ContextRAGClient:
                     assistant_item = item
                 continue
 
-            # role == 'artifact'
-            # if "artifact:codegen.program.presentation" in tags:
-            #     if presentation_item is None:
-            #         presentation_item = item
-            #     continue
-
-            if "artifact:codegen.program.out.deliverables" in tags:
+            if "artifact:solver.program.out.deliverables" in tags:
                 if deliverables_item is None:
                     deliverables_item = item
                 continue
@@ -508,7 +890,7 @@ class ContextRAGClient:
             #         solver_failure_item = item
             #     continue
 
-            if "artifact:codegen.program.citables" in tags:
+            if "artifact:solver.program.citables" in tags:
                 if citables_item is None:
                     citables_item = item
                 continue
@@ -518,7 +900,7 @@ class ContextRAGClient:
                     turn_log_item = item
                 continue
 
-            if "artifact:codegen.program.files" in tags:
+            if "artifact:solver.program.files" in tags:
                 if files_item is None:
                     files_item = item
                 continue
@@ -1758,7 +2140,7 @@ class ContextRAGClient:
         turns_map: Dict[str, Dict[str, Any]] = {}
         order: List[str] = []
         to_materialize: List[Dict[str, Any]] = []
-        skip_types = {"artifact:user.attachment", "artifact:codegen.program.files"}
+        skip_types = {"artifact:user.attachment", "artifact:solver.program.files"}
 
         if turn_ids:
             for tid in turn_ids:
@@ -1825,7 +2207,15 @@ class ContextRAGClient:
                     ]
 
         # 3) Add attachments + produced files from turn log (source of truth)
-        async def _materialize_turn_log_artifacts(tid: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        def _unwrap_payload(obj: Any) -> Dict[str, Any]:
+            if not isinstance(obj, dict):
+                return {}
+            inner = obj.get("payload")
+            return inner if isinstance(inner, dict) else obj
+
+        async def _materialize_turn_log_artifacts(
+            tid: str,
+        ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, bool]]:
             mat = await self.materialize_turn(
                 turn_id=tid,
                 scope="conversation",
@@ -1835,16 +2225,30 @@ class ContextRAGClient:
                 with_payload=True,
             )
             turn_log_item = mat.get("turn_log") or {}
-            turn_log_payload = (turn_log_item.get("payload") if turn_log_item else None)
+            turn_log_payload = _unwrap_payload(turn_log_item.get("payload") if turn_log_item else None)
             if not isinstance(turn_log_payload, dict):
-                return [], []
+                return [], [], {}
 
             tl = turn_log_payload.get("turn_log") or {}
             ts = tl.get("ended_at_iso") or tl.get("started_at_iso") or turn_log_item.get("ts")
             out: List[Dict[str, Any]] = []
             sources_pool = turn_log_payload.get("sources_pool") or []
+            replace_types: Dict[str, bool] = {}
 
             user = turn_log_payload.get("user") or {}
+            prompt = user.get("prompt") or {}
+            prompt_text = (prompt.get("text") or prompt.get("prompt") or "").strip()
+            if prompt_text:
+                out.append({
+                    "message_id": prompt.get("message_id"),
+                    "type": "chat:user",
+                    "ts": ts,
+                    "hosted_uri": None,
+                    "bundle_id": turn_log_item.get("bundle_id"),
+                    "data": {"text": prompt_text, "meta": {"source": "turn_log"}},
+                })
+                replace_types["chat:user"] = True
+
             for a in (user.get("attachments") or []):
                 if not isinstance(a, dict):
                     continue
@@ -1858,6 +2262,18 @@ class ContextRAGClient:
                 })
 
             assistant = turn_log_payload.get("assistant") or {}
+            completion = assistant.get("completion") or {}
+            completion_text = (completion.get("text") or completion.get("completion") or "").strip()
+            if completion_text:
+                out.append({
+                    "message_id": completion.get("message_id"),
+                    "type": "chat:assistant",
+                    "ts": ts,
+                    "hosted_uri": None,
+                    "bundle_id": turn_log_item.get("bundle_id"),
+                    "data": {"text": completion_text, "meta": {"source": "turn_log"}},
+                })
+                replace_types["chat:assistant"] = True
             for f in (assistant.get("files") or []):
                 if not isinstance(f, dict):
                     continue
@@ -1870,23 +2286,39 @@ class ContextRAGClient:
                     "data": {"payload": f, "meta": {"kind": "assistant.file", "turn_id": tid}},
                 })
 
-            return out, sources_pool
+            return out, sources_pool, replace_types
 
         if order:
             sem = asyncio.Semaphore(MAX_CONCURRENT_ARTIFACT_FETCHES)
 
-            async def _build_turn_artifacts(tid: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+            async def _build_turn_artifacts(
+                tid: str,
+            ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Dict[str, bool]]:
                 async with sem:
                     return await _materialize_turn_log_artifacts(tid)
 
             turn_artifacts = await asyncio.gather(*(_build_turn_artifacts(tid) for tid in order))
             sources_pool_by_turn: Dict[str, List[Dict[str, Any]]] = {}
+            replace_by_turn: Dict[str, Dict[str, bool]] = {}
             for tid, result in zip(order, turn_artifacts):
-                artifacts, sources_pool = result
+                artifacts, sources_pool, replace_types = result
                 if artifacts:
                     turns_map[tid]["artifacts"].extend(artifacts)
                 if isinstance(sources_pool, list) and sources_pool:
                     sources_pool_by_turn[tid] = sources_pool
+                if replace_types:
+                    replace_by_turn[tid] = replace_types
+
+            if replace_by_turn:
+                for tid, rep in replace_by_turn.items():
+                    if not rep:
+                        continue
+                    kept = []
+                    for a in (turns_map.get(tid) or {}).get("artifacts") or []:
+                        if a.get("type") in rep and (a.get("data") or {}).get("meta", {}).get("source") != "turn_log":
+                            continue
+                        kept.append(a)
+                    turns_map[tid]["artifacts"] = kept
 
             if materialize and sources_pool_by_turn:
                 for tid in order:
@@ -1900,11 +2332,7 @@ class ContextRAGClient:
                         if item.get("type") != "chat:assistant":
                             continue
                         data = item.get("data") or {}
-                        payload = data.get("payload") or {}
-                        inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
-                        if not isinstance(inner, dict):
-                            continue
-                        raw_text = (inner.get("completion") or inner.get("text") or "").strip()
+                        raw_text = (data.get("text") or "").strip()
                         if not raw_text:
                             continue
                         opts = md_utils.CitationRenderOptions(
@@ -1914,8 +2342,7 @@ class ContextRAGClient:
                             first_only=False,
                         )
                         rendered = md_utils.replace_citation_tokens_batch(raw_text, citation_map, opts)
-                        inner["completion"] = rendered
-                        inner["text"] = rendered
+                        data["text"] = rendered
 
         return {
             "user_id": user_id,
@@ -2219,7 +2646,7 @@ async def search_context(
             if where in ("assistant_artifact", "artifact", "project_log"):
                 where = "artifact"
                 # search_tags = ["artifact:project.log"]
-                search_tags = ["artifact:codegen.program.presentation", "artifact:solver.failure"]
+                search_tags = ["artifact:solver.program.presentation", "artifact:solver.failure"]
             if where == "user":
                 search_roles = ("user", "artifact")
                 search_tags = ["chat:user", "artifact:user.attachment"]
@@ -2328,12 +2755,11 @@ def _enrich_sources_used_to_deliverables(
     New-format normalization for turn log:
 
     We now store:
-      solver_result.execution.sources_pool: [ { sid, ... }, ... ]
       solver_result.execution.deliverables[slot].value.sources_used: [sid, sid, ...]
 
     This helper runs on READ:
       - If deliverable.value has sources_used as dicts, normalize to SID list.
-      - If it has only sources_used_sids, copy into sources_used (SID list).
+      - If it has dicts, normalize to SID list.
 
     It mutates turn_log_item["payload"] in-place and is best-effort
     (never raises).
@@ -2353,10 +2779,6 @@ def _enrich_sources_used_to_deliverables(
         execution = solver_result.get("execution") or {}
         if not isinstance(execution, dict):
             return
-
-        sources_pool = execution.get("sources_pool") or []
-        if not isinstance(sources_pool, list):
-            sources_pool = []
 
         deliverables = execution.get("deliverables") or {}
         # deliverables can be dict (slot→spec) or list; handle both
@@ -2388,13 +2810,6 @@ def _enrich_sources_used_to_deliverables(
                         sids.append(int(item))
                     elif isinstance(item, dict):
                         sid = item.get("sid")
-                        if isinstance(sid, (int, float)):
-                            sids.append(int(sid))
-
-            if not sids:
-                sids_alt = art.get("sources_used_sids")
-                if isinstance(sids_alt, list):
-                    for sid in sids_alt:
                         if isinstance(sid, (int, float)):
                             sids.append(int(sid))
 

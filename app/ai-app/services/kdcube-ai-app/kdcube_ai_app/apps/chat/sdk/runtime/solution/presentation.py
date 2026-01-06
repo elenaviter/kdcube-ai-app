@@ -326,6 +326,7 @@ def _format_produced_slots_grouped_by_status(
         extended: bool = False,
         slot_attr_keys: Optional[Set[str]] = None,
         exclude_slots: Optional[List[str]] = None,
+        file_path_prefix: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """
     Render a compact, status-grouped overview of produced/expected slots.
@@ -498,6 +499,21 @@ def _format_produced_slots_grouped_by_status(
             )
             if fpath:
                 lines.append(f"  - Filename: {fpath}")
+        if slot_type == "file" and art is not None and file_path_prefix is not None:
+            fpath = (art or {}).get("filename") or ""
+            if not fpath:
+                src_path = (art or {}).get("path") or ""
+                if isinstance(src_path, str) and src_path.strip():
+                    try:
+                        from pathlib import Path
+                        fpath = Path(src_path).name
+                    except Exception:
+                        fpath = ""
+            if fpath:
+                if file_path_prefix:
+                    lines.append(f"  - Path (OUT_DIR-relative): {file_path_prefix}/{fpath}")
+                else:
+                    lines.append(f"  - Path (OUT_DIR-relative): {fpath}")
 
         # description / guidance
         if "description" in slot_attr_keys:
@@ -513,7 +529,7 @@ def _format_produced_slots_grouped_by_status(
         summary = art.get("summary")
         tool_id = art.get("tool_id") or (spec.get("tool_id") if isinstance(spec, dict) else None)
         citable = art.get("citable")
-        sources_sids = art.get("sources_used") or art.get("sources_used_sids") or []
+        sources_sids = art.get("sources_used") or []
 
         if "gaps" in slot_attr_keys and gaps:
             lines.append(f"  - Gaps: {gaps}")
@@ -572,6 +588,59 @@ def _format_produced_slots_grouped_by_status(
             "and may require further work before being shown to end users."
         )
 
+    # Files produced (OUT_DIR-relative paths)
+    if file_path_prefix is not None:
+        file_lines: List[str] = []
+        for slot in ordered_slots:
+            st = _slot_status_for_presentation(slot, dmap)
+            if st not in {"completed", "draft"}:
+                continue
+            spec = (dmap or {}).get(slot) or {}
+            art = spec.get("value") if isinstance(spec, dict) else None
+            art = art if isinstance(art, dict) else None
+            if not art:
+                continue
+            slot_type = (
+                (art or {}).get("type")
+                or (spec.get("type") if isinstance(spec, dict) else None)
+                or ""
+            )
+            if str(slot_type).strip().lower() != "file":
+                continue
+            filename = (art or {}).get("filename") or ""
+            if not filename:
+                src_path = (art or {}).get("path") or ""
+                if isinstance(src_path, str) and src_path.strip():
+                    try:
+                        from pathlib import Path
+                        filename = Path(src_path).name
+                    except Exception:
+                        filename = ""
+            if not filename:
+                continue
+            desc = (
+                (spec.get("description") if isinstance(spec, dict) else None)
+                or (contract or {}).get(slot, {}).get("description")
+                or ""
+            )
+            summary = (art or {}).get("summary") or ""
+            mime = (art or {}).get("mime") or (spec.get("mime") if isinstance(spec, dict) else None) or ""
+            file_lines.append(f"- `{slot}` ({mime or 'file'})")
+            if desc:
+                file_lines.append(f"  - Description: {desc}")
+            if summary:
+                file_lines.append(f"  - Summary: {summary}")
+            file_lines.append(f"  - Filename: {filename}")
+            if file_path_prefix:
+                file_lines.append(f"  - Path (OUT_DIR-relative): {file_path_prefix}/{filename}")
+            else:
+                file_lines.append(f"  - Path (OUT_DIR-relative): {filename}")
+        if file_lines:
+            lines.append("")
+            lines.append("## Files produced")
+            lines.append("")
+            lines.extend(file_lines)
+
     return "\n".join(lines).rstrip(), has_any_draft
 
 def _format_deliverables_flat_with_icons(
@@ -582,6 +651,7 @@ def _format_deliverables_flat_with_icons(
         slot_attr_keys: Optional[Set[str]] = None,
         exclude_slots: Optional[List[str]] = None,
         slot_order: Optional[List[str]] = None,
+        file_path_prefix: Optional[str] = None,
 ) -> Tuple[str, bool]:
     """
     Flat list with inline status icons.
@@ -702,6 +772,28 @@ def _format_deliverables_flat_with_icons(
             )
             if fpath:
                 lines.append(f"  Filename: {fpath}")
+        if status != "missing" and art is not None and file_path_prefix is not None:
+            slot_type = (
+                (art or {}).get("type")
+                or (spec.get("type") if isinstance(spec, dict) else None)
+                or c_spec.get("type")
+                or ""
+            )
+            if str(slot_type).strip().lower() == "file":
+                filename = (art or {}).get("filename") or ""
+                if not filename:
+                    src_path = (art or {}).get("path") or ""
+                    if isinstance(src_path, str) and src_path.strip():
+                        try:
+                            from pathlib import Path
+                            filename = Path(src_path).name
+                        except Exception:
+                            filename = ""
+                if filename:
+                    if file_path_prefix:
+                        lines.append(f"  Path (OUT_DIR-relative): {file_path_prefix}/{filename}")
+                    else:
+                        lines.append(f"  Path (OUT_DIR-relative): {filename}")
 
         # Description
         if "description" in slot_attr_keys and desc:
@@ -762,10 +854,12 @@ class SolverPresenter:
             *,
             contract: Optional[Dict[str, Any]] = None,
             codegen_run_id: Optional[str] = None,
+            file_path_prefix: Optional[str] = None,
     ):
         self.sr = sr
         self.contract = contract or (sr.plan.output_contract if sr.plan else {}) or {}
         self.codegen_run_id = codegen_run_id or sr.run_id()
+        self.file_path_prefix = file_path_prefix
 
     # ========== Convenience views (common use cases) ==========
 
@@ -942,6 +1036,7 @@ class SolverPresenter:
                     extended=bool(config.deliverable_attrs and len(config.deliverable_attrs) > 4),
                     slot_attr_keys=config.deliverable_attrs,
                     exclude_slots=config.exclude_slots,
+                    file_path_prefix=self.file_path_prefix,
                 )
                 parts.produced_slots_md = produced_md
 
@@ -953,6 +1048,7 @@ class SolverPresenter:
                     slot_attr_keys=config.deliverable_attrs,
                     content_len=config.deliverables_content_len,
                     exclude_slots=config.exclude_slots,
+                    file_path_prefix=self.file_path_prefix,
                 )
                 parts.produced_slots_md = flat_md
 
@@ -1205,7 +1301,7 @@ def program_brief_from_contract(sr: "SolveResult",
 
     # Deliverables section (reflect what was actually produced)
     if deliverables_map:
-        presenter = SolverPresenter(sr, contract=contract)
+        presenter = SolverPresenter(sr, contract=contract, file_path_prefix="")
         deliverables_md = presenter.render(SolverPresenterConfig(
             include_deliverables=True,
             deliverables_grouping="flat",
@@ -1228,6 +1324,7 @@ def format_live_slots(
         contract: Optional[Dict[str, Any]] = None,
         grouping: Literal["status", "flat"] = "flat",
         slot_attrs: Optional[Set[str]] = None,
+        file_path_prefix: Optional[str] = None,
 ) -> str:
     """
     Format current/live slots that don't yet have a SolveResult wrapper.
@@ -1280,6 +1377,7 @@ def format_live_slots(
             extended=False,
             slot_attr_keys=slot_attrs,
             exclude_slots=["project_log", "project_canvas"],
+            file_path_prefix=file_path_prefix,
         )
     else:  # flat
         md, _has_draft = _format_deliverables_flat_with_icons(
@@ -1289,6 +1387,7 @@ def format_live_slots(
             slot_attr_keys=slot_attrs,
             exclude_slots=["project_log", "project_canvas"],
             slot_order=slot_order,
+            file_path_prefix=file_path_prefix,
         )
 
     return md

@@ -5,39 +5,18 @@
 
 from __future__ import annotations
 
-import copy, logging
 import uuid as _uuid
 from typing import Any, Dict, List, Optional
 
-from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient, FINGERPRINT_KIND
-from kdcube_ai_app.apps.chat.sdk.tools.tools_insights import CITABLE_TOOL_IDS
 from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     CITATION_OPTIONAL_ATTRS,
     normalize_sources_any,
     dedupe_sources_by_url,
-    normalize_url, _rewrite_md_citation_tokens,
+    rewrite_citation_tokens,
 )
 from kdcube_ai_app.apps.chat.sdk.util import ts_key
 
 PROJECT_LOG_SLOTS = { "project_log" }
-
-def _latest_merge_sources_row(out_items: list[dict]) -> list[dict]:
-    """Return the output list from the latest ctx_tools.merge_sources (if any)."""
-    import re
-    latest_idx, latest_row = -1, None
-    for r in (out_items or []):
-        if not (isinstance(r, dict) and r.get("type") == "inline" and r.get("citable") is True):
-            continue
-        if (r.get("tool_id") or "") != "ctx_tools.merge_sources":
-            continue
-        rid = str(r.get("resource_id") or "")
-        m = re.search(r":(\d+)$", rid)
-        idx = int(m.group(1)) if m else -1
-        if idx > latest_idx:
-            latest_idx, latest_row = idx, r
-    if latest_row and isinstance(latest_row.get("output"), list):
-        return latest_row["output"]
-    return []
 
 def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 60, rewrite_tokens_in_place: bool = True):
     """
@@ -82,22 +61,61 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
                     sid = rec.get("sid")
                     if isinstance(sid, (int, float)):
                         used.add(int(sid))
-            for sid in (artifact.get("sources_used_sids") or []):
-                if isinstance(sid, (int, float)):
-                    used.add(int(sid))
             text = artifact.get("text") or ""
             if isinstance(text, str) and text.strip():
                 used.update(sids_in_text(text))
         return used
 
+    def _map_sids(seq: Any, sid_map: Dict[int, int]) -> list[int]:
+        out: list[int] = []
+        if not seq:
+            return out
+        if not isinstance(seq, list):
+            return out
+        for s in seq:
+            if isinstance(s, dict):
+                sid = s.get("sid")
+            else:
+                sid = s
+            if isinstance(sid, (int, float)):
+                new = sid_map.get(int(sid), int(sid))
+                if new not in out:
+                    out.append(new)
+        return out
+
+    def _rewrite_artifact_sources(artifact: dict, sid_map: Dict[int, int]) -> None:
+        if not isinstance(artifact, dict) or not sid_map:
+            return
+
+        # Rewrite inline citation tokens in text-like fields
+        for key in ("text", "content"):
+            if isinstance(artifact.get(key), str):
+                artifact[key] = rewrite_citation_tokens(artifact.get(key) or "", sid_map)
+        val = artifact.get("value")
+        if isinstance(val, dict):
+            for key in ("text", "content"):
+                if isinstance(val.get(key), str):
+                    val[key] = rewrite_citation_tokens(val.get(key) or "", sid_map)
+
+        # Normalize sources_used lists to reconciled SIDs
+        su = _map_sids(artifact.get("sources_used"), sid_map)
+        if su:
+            artifact["sources_used"] = su
+        if isinstance(val, dict):
+            v_su = _map_sids(val.get("sources_used"), sid_map)
+            if v_su:
+                val["sources_used"] = v_su
+
     collected: list[dict] = []
     per_turn_used: dict[str, set[int]] = {}
+    per_turn_pool: dict[str, list[dict]] = {}
 
     for rec in (history or []):
         run_id, meta = next(iter(rec.items()))
         pool_rows = _meta_sources_pool(meta)
         used_sids = _collect_used_sids(meta)
         per_turn_used[run_id] = used_sids
+        per_turn_pool[run_id] = pool_rows
         if not pool_rows or not used_sids:
             continue
         for row in pool_rows:
@@ -113,19 +131,83 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
     ]
     sources_pool = sources_pool[:max_sources]
     canonical_by_sid = {s["sid"]: s for s in sources_pool}
+    canonical_by_url = {s.get("url"): s for s in sources_pool if s.get("url")}
+    sid_maps: dict[str, dict[int, int]] = {}
 
     if rewrite_tokens_in_place:
         for rec in (history or []):
             run_id, meta = next(iter(rec.items()))
+            pool_rows = per_turn_pool.get(run_id) or []
+            sid_map: Dict[int, int] = {}
+            for row in pool_rows:
+                if not isinstance(row, dict):
+                    continue
+                old_sid = row.get("sid")
+                url = row.get("url")
+                if not isinstance(old_sid, int) or not url:
+                    continue
+                canon = canonical_by_url.get(url)
+                if canon and isinstance(canon.get("sid"), int):
+                    sid_map[int(old_sid)] = int(canon["sid"])
+            if sid_map:
+                sid_maps[run_id] = sid_map
+
+            # Rewrite citations in project log
+            proj = meta.get("project_log") or {}
+            if isinstance(proj, dict):
+                txt = proj.get("text") or proj.get("value") or ""
+                if isinstance(txt, str) and txt:
+                    new_txt = rewrite_citation_tokens(txt, sid_map)
+                    if proj.get("text"):
+                        proj["text"] = new_txt
+                    else:
+                        proj["value"] = new_txt
+
+            # Rewrite citations + sources_used in deliverables
+            for d in (meta.get("deliverables") or []):
+                if not isinstance(d, dict):
+                    continue
+                art = d.get("value")
+                if not isinstance(art, dict):
+                    continue
+                _rewrite_artifact_sources(art, sid_map)
+
+            # Rewrite citations + sources_used in assistant completion
+            assistant = meta.get("assistant") if isinstance(meta.get("assistant"), dict) else {}
+            completion = assistant.get("completion") if isinstance(assistant.get("completion"), dict) else {}
+            if completion:
+                _rewrite_artifact_sources(completion, sid_map)
+                assistant["completion"] = completion
+                meta["assistant"] = assistant
+
+            # Rewrite citations in turn_log assistant completion if present
+            tlog = meta.get("turn_log") if isinstance(meta.get("turn_log"), dict) else {}
+            if tlog:
+                t_asst = tlog.get("assistant") if isinstance(tlog.get("assistant"), dict) else {}
+                t_comp = t_asst.get("completion") if isinstance(t_asst.get("completion"), dict) else {}
+                if t_comp:
+                    _rewrite_artifact_sources(t_comp, sid_map)
+                    t_asst["completion"] = t_comp
+                    tlog["assistant"] = t_asst
+                    meta["turn_log"] = tlog
+
             used = per_turn_used.get(run_id) or set()
-            if used:
-                meta["sources_pool_used"] = [canonical_by_sid[sid] for sid in sorted(used) if sid in canonical_by_sid]
+            used_mapped = {sid_map.get(sid, sid) for sid in used if isinstance(sid, int)}
+            if used_mapped:
+                used_sources = [
+                    canonical_by_sid[sid] for sid in sorted(used_mapped) if sid in canonical_by_sid
+                ]
             else:
-                meta["sources_pool_used"] = []
+                used_sources = []
+
+            # Update per-turn sources_pool to reconciled, used-only sources
+            meta["sources_pool"] = used_sources
+            if isinstance(meta.get("turn_log"), dict):
+                meta["turn_log"]["sources_pool"] = used_sources
 
     return {
         "sources_pool": sources_pool,
-        "sid_maps": {},
+        "sid_maps": sid_maps,
     }
 
 def _pick_project_log_slot(d_items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -138,38 +220,6 @@ def _pick_project_log_slot(d_items: List[Dict[str, Any]]) -> Optional[Dict[str, 
             continue
         fmt  = (v.get("format") or "").lower()
         return { "slot": m, "format": fmt or "markdown", "value": txt }
-
-def _extract_citable_items_from_out_items(out_items: list[dict]) -> list[dict]:
-    rows = []
-    for r in (out_items or []):
-        if not isinstance(r, dict):
-            continue
-        if r.get("type") != "inline" or not bool(r.get("citable")):
-            continue
-        tid = (r.get("tool_id") or "").lower()
-        if not (tid in CITABLE_TOOL_IDS or tid.endswith(".kb_search") or tid.endswith(".kb_search_advanced")):
-            continue
-        out = r.get("output")
-        pack = out if isinstance(out, list) else ([out] if isinstance(out, dict) else [])
-        for c in pack:
-            if isinstance(c, dict):
-                url = normalize_url(str(c.get("url") or c.get("href") or ""))
-                if not url:
-                    continue
-                item = {
-                    "url": url,
-                    "title": c.get("title") or c.get("description") or url,
-                    "text": c.get("text") or c.get("body") or c.get("content") or "",
-                    "sid": c.get("sid"),
-                    "_tool_id": r.get("tool_id") or "",
-                    "_resource_id": r.get("resource_id") or "",
-                }
-                for k in CITATION_OPTIONAL_ATTRS:
-                    if c.get(k):
-                        item[k] = c[k]
-                rows.append(item)
-    return rows
-
 
 def transform_codegen_to_turnid(data):
     transformed = []
@@ -266,15 +316,15 @@ async def build_program_history_from_turn_ids(self, *,
         # Extract canvas/log from deliverables items
         # canvas = _pick_canvas_slot(d_items) or {}
         project_log = _pick_project_log_slot(d_items) or {}
-        materialized_canvas = {}
-        try:
-            glue = project_log.get("value","") if project_log else ""
-            from kdcube_ai_app.apps.chat.sdk.runtime.solution.context.journal import _materialize_glue_canvas
-            mat = _materialize_glue_canvas(glue, d_items)
-            if mat and mat != glue:
-                materialized_canvas = {"format": "markdown", "text": mat}
-        except Exception as ex:
-            materialized_canvas = {}
+        # materialized_canvas = {}
+        # try:
+        #     glue = project_log.get("value","") if project_log else ""
+        #     from kdcube_ai_app.apps.chat.sdk.runtime.solution.context.journal import _materialize_glue_canvas
+        #     mat = _materialize_glue_canvas(glue, d_items)
+        #     if mat and mat != glue:
+        #         materialized_canvas = {"format": "markdown", "text": mat}
+        # except Exception as ex:
+        #     materialized_canvas = {}
 
         exec_id = codegen_run_id
         if exec_id in seen_runs:
@@ -295,11 +345,11 @@ async def build_program_history_from_turn_ids(self, *,
             **({"project_log": {"format": project_log.get("format","markdown"), "text": project_log.get("value","")}} if project_log else {}),
             **({"turn_log": turn_log} if turn_log else {}),
             **({"sources_pool": sources_pool} if sources_pool else {}),
-            **({"project_log_materialized": materialized_canvas} if materialized_canvas else {}),
+            # **({"project_log_materialized": materialized_canvas} if materialized_canvas else {}),
             **({"solver_failure": solver_failure_md} if solver_failure_md else {}),
             **{"media": []},
             "ts": ts_val,
-            **({"codegen_run_id": codegen_run_id} if codegen_run_id else {}),
+            # **({"codegen_run_id": codegen_run_id} if codegen_run_id else {}),
             "turn_id": tid,
             **({"round_reasoning": round_reason} if round_reason else {}),
             "assistant": assistant,
@@ -374,68 +424,3 @@ def merge_pairs_chronological(materialized: list[dict], synthetic: list[dict]) -
 
     merged.sort(key=_ts_of_pair)
     return merged
-
-# ---------------------------------------------------------------------------
-# Fingerprints loading
-# ---------------------------------------------------------------------------
-
-async def load_latest_fingerprint_for_turn(
-        ctx_client: ContextRAGClient,
-        *, user_id: str, conversation_id: str, turn_id: str
-) -> Optional[dict]:
-    try:
-        hit = await ctx_client.recent(
-            kinds=(FINGERPRINT_KIND,),
-            roles=("artifact",),
-            all_tags=[f"turn:{turn_id}"],
-            limit=1,
-            days=365,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            track_id=None,
-            with_payload=True,
-        )
-        item = next(iter((hit or {}).get("items") or []), None)
-        if not item:
-            return None
-        doc = (item.get("doc") or {})
-        return doc.get("json") or doc.get("payload") or doc.get("content_json") or {}
-    except Exception:
-        return None
-
-async def load_fingerprints_for_turns(
-        *,
-        ctx_client: ContextRAGClient,
-        user_id: str,
-        conversation_id: str,
-        track_id: Optional[str],
-        turn_ids: List[str],
-        days: int = 365,
-) -> Dict[str, Dict[str, Any]]:
-    """
-    For each turn_id, fetch the latest fingerprint artifact (kind=artifact:turn.fingerprint.v1).
-    Returns a dict turn_id -> fingerprint_json
-    """
-    out: Dict[str, Dict[str, Any]] = {}
-    for tid in [t for t in turn_ids or [] if t]:
-        try:
-            hit = await ctx_client.recent(
-                kinds=(FINGERPRINT_KIND,),
-                roles=("artifact",),
-                all_tags=[f"turn:{tid}"],
-                limit=1,
-                days=days,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                track_id=track_id,
-                with_payload=True,
-            )
-            item = next(iter((hit or {}).get("items") or []), {})
-            doc = (item.get("doc") or {})
-            fp = doc.get("json") or doc.get("payload") or doc.get("content_json") or {}
-            if isinstance(fp, dict):
-                out[tid] = fp
-        except Exception:
-            # non-fatal
-            continue
-    return out

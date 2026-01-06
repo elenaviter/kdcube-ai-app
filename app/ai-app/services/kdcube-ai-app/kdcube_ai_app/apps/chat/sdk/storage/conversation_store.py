@@ -30,9 +30,8 @@ async def attachment_rn_and_rel_name(tenant, project, user_or_fp, conversation_i
     return rn, rel_name
 
 async def file_rn_and_rel_name(tenant, project, user_or_fp, conversation_id, turn_id, role, filename: str):
-    ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
     safe_name = os.path.basename(filename) or "file.bin"
-    rel_name = f"{ts}-{safe_name}"
+    rel_name = safe_name
     rn = rn_file(tenant, project, user_or_fp, conversation_id, turn_id, role, rel_name)
     return rn, rel_name
 

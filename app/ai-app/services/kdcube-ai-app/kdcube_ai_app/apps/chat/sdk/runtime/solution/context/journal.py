@@ -117,6 +117,23 @@ def build_turn_session_journal(*,
         lines_local.append("")
         return lines_local
 
+    def _format_sources_lines(sources: List[Dict[str, Any]], *, used_sids: Optional[set[int]] = None) -> List[str]:
+        lines_local: List[str] = []
+        for i, src in enumerate(sources[:max_sources_per_turn], 1):
+            if not isinstance(src, dict):
+                continue
+            sid = src.get("sid")
+            url = (src.get("url") or "").strip()
+            title = (src.get("title") or "").strip()
+            if not url:
+                continue
+            used_mark = "used" if used_sids is None or sid in used_sids else "unused"
+            if title:
+                lines_local.append(f"  {i}. {used_mark} S{sid} {url} | {title}")
+            else:
+                lines_local.append(f"  {i}. {used_mark} S{sid} {url}")
+        return lines_local
+
     def _slot_kind(name: Optional[str]) -> Optional[str]:
         if not name or not isinstance(output_contract, dict):
             return None
@@ -207,8 +224,9 @@ def build_turn_session_journal(*,
             # Sources (NOT part of solver, formatted separately)
             from kdcube_ai_app.apps.chat.sdk.tools.citations import normalize_sources_any, sids_in_text
             sources_pool = normalize_sources_any(
-                # meta.get("sources_pool") or (meta.get("turn_log") or {}).get("sources_pool") or []
-                meta.get("sources_pool") or (meta.get("payload") or {}).get("sources_pool") or []
+                meta.get("sources_pool")
+                or (meta.get("payload") or {}).get("sources_pool")
+                or []
             )
             used_sids: set[int] = set()
             for d in (meta.get("deliverables") or []):
@@ -224,9 +242,6 @@ def build_turn_session_journal(*,
                         sid = rec.get("sid")
                         if isinstance(sid, (int, float)):
                             used_sids.add(int(sid))
-                for sid in (art.get("sources_used_sids") or []):
-                    if isinstance(sid, (int, float)):
-                        used_sids.add(int(sid))
                 text = art.get("text") or ""
                 if isinstance(text, str) and text.strip():
                     used_sids.update(sids_in_text(text))
@@ -234,29 +249,10 @@ def build_turn_session_journal(*,
             if used_sids:
                 sources = [s for s in sources_pool if isinstance(s.get("sid"), int) and s.get("sid") in used_sids]
             else:
-                sources = sources_pool
+                sources = []
 
             if sources:
-                src_lines = []
-                for i, src in enumerate(sources[:max_sources_per_turn], 1):
-                    if not isinstance(src, dict):
-                        continue
-                    title = (src.get("title") or "").strip()
-                    url = (src.get("url") or "").strip()
-                    domain = ""
-                    if url:
-                        try:
-                            domain = urlparse(url).netloc or ""
-                        except Exception:
-                            domain = url[:30]
-
-                    if title and domain:
-                        src_lines.append(f"  {i}. {_short_with_count(title, 80)} ({domain})")
-                    elif title:
-                        src_lines.append(f"  {i}. {_short_with_count(title, 80)}")
-                    elif url:
-                        src_lines.append(f"  {i}. {_short_with_count(url, 100)}")
-
+                src_lines = _format_sources_lines(sources, used_sids=used_sids)
                 if src_lines:
                     lines.append("")
                     lines.append(f"[**Turn Sources:** ({len(sources)} total)]")
@@ -296,6 +292,50 @@ def build_turn_session_journal(*,
         print(f"Failed to build TurnView for current_turn: {ex}")
         print(traceback.format_exc())
         lines.append("(failed to render current turn view)")
+
+    # Current turn sources (full pool with used/unused marks)
+    try:
+        from kdcube_ai_app.apps.chat.sdk.tools.citations import normalize_sources_any, sids_in_text
+
+        current_used_sids: set[int] = set()
+        for d in (context.current_slots or {}).values():
+            if not isinstance(d, dict):
+                continue
+            art = d.get("value") if isinstance(d.get("value"), dict) else d
+            for rec in (art.get("sources_used") or []):
+                if isinstance(rec, (int, float)):
+                    current_used_sids.add(int(rec))
+                elif isinstance(rec, dict):
+                    sid = rec.get("sid")
+                    if isinstance(sid, (int, float)):
+                        current_used_sids.add(int(sid))
+            text = art.get("text") or art.get("content") or ""
+            if isinstance(text, str) and text.strip():
+                current_used_sids.update(sids_in_text(text))
+
+        for art in (context.artifacts or {}).values():
+            if not isinstance(art, dict):
+                continue
+            for rec in (art.get("sources_used") or []):
+                if isinstance(rec, (int, float)):
+                    current_used_sids.add(int(rec))
+                elif isinstance(rec, dict):
+                    sid = rec.get("sid")
+                    if isinstance(sid, (int, float)):
+                        current_used_sids.add(int(sid))
+            text = art.get("text") or art.get("content") or ""
+            if isinstance(text, str) and text.strip():
+                current_used_sids.update(sids_in_text(text))
+
+        sources_pool = normalize_sources_any(context.sources_pool or [])
+        if sources_pool:
+            src_lines = _format_sources_lines(sources_pool, used_sids=current_used_sids)
+            if src_lines:
+                lines.append(f"[**Turn Sources:** ({len(sources_pool)} total)]")
+                lines.extend(src_lines)
+                lines.append("")
+    except Exception:
+        pass
 
     if coordinator_turn_line:
         lines.append("[COORDINATOR TURN DECISION]")
@@ -645,30 +685,6 @@ def build_turn_session_journal(*,
 
         lines.append("")
 
-        # py dict save the items in the order they've been added
-        # latest_tool_call = next(reversed(context.tool_call_index.values()), None) or {}
-        # artifact_ids =  latest_tool_call.get("artifact_ids") or []
-        # latest_artifacts = None
-        # if artifact_ids:
-        #     latest_artifacts = [context.artifacts.get(aid) for aid in artifact_ids if context.artifacts.get(aid)]
-        # if latest_artifacts and latest_tool_call and not latest_tool_call.get("error"):
-        #     latest_sig = latest_tool_call.get("signature")
-        #
-        #     if latest_sig:
-        #         lines.append("##### Latest Tool Call — Invocation")
-        #         lines.append(latest_sig)
-        #         lines.append("")
-        #
-        #     lines.append("##### Latest Artifacts — Summaries")
-        #     for a in latest_artifacts:
-        #         if not isinstance(a, dict):
-        #             continue
-        #         lines.append(a.get("artifact_id") or "Unnamed Artifact")
-        #         summ = (a.get("summary") or "").strip()
-        #         if summ:
-        #             lines.append(summ)
-        #         lines.append("")
-
     # 2) Live snapshot (current contract/slots/tool results)
     declared = list((output_contract or {}).keys())
     filled = list((context.current_slots or {}).keys())
@@ -691,6 +707,7 @@ def build_turn_session_journal(*,
             contract=output_contract,
             grouping="flat",  # or "status" if you want grouping
             slot_attrs={"description", "gaps", "artifact_id", "filename"},
+            file_path_prefix="",
         )
 
         lines.append("# Current Slots")
@@ -1173,7 +1190,7 @@ def _ctx_line(sn: dict, why: str = "") -> str:
     gist = _title_or_gist(raw)
 
     # normalize a friendly type label
-    if kind == "codegen.program.presentation" or "program presentation" in gist.lower():
+    if kind == "solver.program.presentation" or "program presentation" in gist.lower():
         typ = "Program Presentation"
     elif kind == "project.log":
         typ = "Project log"
@@ -1524,9 +1541,11 @@ async def retrospective_context_view(
         recommended_turn_ids: Optional[List[str]] = None,
         memory_log_entries: Optional[List[Dict[str, Any]]] = None,
         delta_fps: Optional[List[Dict[str, Any]]] = None,
+        scratchpad: Optional[Any] = None,
         current_turn_log: Optional[str] = None,
         current_turn_fp: Optional[TurnFingerprintV1] = None,
         current_turn_payload: Optional[Dict[str, Any]] = None,
+        context_bundle: Optional[Any] = None,
         selected_bucket_cards: Optional[List[dict]] = None,
         objective_memory_timelines: Optional[Dict[str, List[dict]]] = None,
         filter_turn_ids: Optional[List[str]] = None,
@@ -1567,44 +1586,62 @@ async def retrospective_context_view(
     # ---------- 1) Fetch recent turn logs + include pinned ones ----------
     raw_items: List[Dict[str, Any]] = []
 
-    try:
-        hit = await ctx_client.recent(
-            kinds=("artifact:turn.log",),
-            roles=("artifact",),
-            limit=last_turns,
-            days=365,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            track_id=None,
-            with_payload=True,
-        )
-        for item in (hit or {}).get("items") or []:
-            raw_items.append(item)
-    except Exception:
-        pass
-
-    # Add recommended pins (only if not already present)
-    already = {_turn_id_from_tags_safe(list(item.get("tags") or [])) for item in raw_items}
-    for tid in (recommended_turn_ids or []):
-        if not tid or tid in already:
-            continue
+    if context_bundle and getattr(context_bundle, "program_history_reconciled", None):
+        for rec in (context_bundle.program_history_reconciled or []):
+            if not isinstance(rec, dict):
+                continue
+            exec_id, meta = next(iter(rec.items()))
+            if not isinstance(meta, dict):
+                continue
+            tid = meta.get("turn_id") or ""
+            ts = meta.get("ts") or ""
+            raw_items.append({
+                "id": f"context_bundle:{exec_id}",
+                "ts": ts,
+                "timestamp": ts,
+                "tags": [f"turn:{tid}"] if tid else [],
+                "payload": {"payload": meta.get("turn_log") or {}},
+            })
+    else:
         try:
             hit = await ctx_client.recent(
                 kinds=("artifact:turn.log",),
                 roles=("artifact",),
-                all_tags=[f"turn:{tid}"],
-                limit=1,
+                limit=last_turns,
                 days=365,
                 user_id=user_id,
                 conversation_id=conversation_id,
                 track_id=None,
                 with_payload=True,
             )
-            item = next(iter((hit or {}).get("items") or []), None)
-            if item:
+            for item in (hit or {}).get("items") or []:
                 raw_items.append(item)
         except Exception:
             pass
+
+    # Add recommended pins (only if not already present)
+    if not (context_bundle and getattr(context_bundle, "program_history_reconciled", None)):
+        already = {_turn_id_from_tags_safe(list(item.get("tags") or [])) for item in raw_items}
+        for tid in (recommended_turn_ids or []):
+            if not tid or tid in already:
+                continue
+            try:
+                hit = await ctx_client.recent(
+                    kinds=("artifact:turn.log",),
+                    roles=("artifact",),
+                    all_tags=[f"turn:{tid}"],
+                    limit=1,
+                    days=365,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    track_id=None,
+                    with_payload=True,
+                )
+                item = next(iter((hit or {}).get("items") or []), None)
+                if item:
+                    raw_items.append(item)
+            except Exception:
+                pass
 
     # Dedupe by turn_id; keep newest
     by_tid: Dict[str, Dict[str, Any]] = {}
@@ -1637,15 +1674,55 @@ async def retrospective_context_view(
     text_blocks: List[str] = []
     items_struct: List[Dict[str, Any]] = []
 
-    # 2.a Objective memory (selected buckets only)
-    if selected_bucket_cards:
-        text_blocks.append(
-            objective_memory_block(selected_bucket_cards or [], objective_memory_timelines or {})
-        )
+    def _selected_memories_block() -> str:
+        if not selected_bucket_cards:
+            return ""
+        lines = ["[selected.memories]"]
+        for card in selected_bucket_cards or []:
+            if not isinstance(card, dict):
+                continue
+            bid = (card.get("bucket_id") or "").strip()
+            name = (card.get("name") or "").strip()
+            desc = (card.get("short_desc") or "").strip()
+            parts: list[str] = []
+            if bid:
+                parts.append(f"id={bid}")
+            if name:
+                parts.append(f"name={name}")
+            if desc:
+                parts.append(f"desc={desc}")
+            if parts:
+                lines.append("- " + " | ".join(parts))
+        return "\n".join(lines) if len(lines) > 1 else ""
 
-    # 2.b Current turn (insights from provided current_turn_fp; no loading)
+    # 2.a Current turn (insights from provided current_turn_fp; no loading)
+    if scratchpad is not None:
+        if current_turn_log is None:
+            try:
+                current_turn_log = scratchpad.tlog.to_markdown()
+            except Exception:
+                pass
+        if current_turn_fp is None:
+            current_turn_fp = getattr(scratchpad, "turn_fp", None)
+        if current_turn_payload is None:
+            try:
+                current_turn_payload = scratchpad.turn_view
+            except Exception:
+                pass
+
     if current_turn_log or current_turn_fp or current_turn_payload:
-        ts_now_iso = _dt.datetime.utcnow().isoformat() + "Z"
+        started_at = None
+        if scratchpad is not None:
+            try:
+                started_at = getattr(scratchpad.tlog, "started_at_iso", None)
+            except Exception:
+                started_at = None
+        ts_now_iso = (
+            started_at
+            or (current_turn_payload.get("timestamp") if isinstance(current_turn_payload, dict) else None)
+            or (current_turn_fp.made_at if isinstance(current_turn_fp, TurnFingerprintV1) else None)
+            or _dt.datetime.utcnow().isoformat() + "Z"
+        )
         one_line = ""
         if isinstance(current_turn_fp, TurnFingerprintV1):
             try:
@@ -1653,36 +1730,22 @@ async def retrospective_context_view(
             except Exception:
                 pass
 
+        log_block = (current_turn_log or "").strip()
+        if not log_block and one_line:
+            log_block = "[turn insights]\n" + one_line
+        mem_block = _selected_memories_block()
+        if mem_block:
+            if log_block:
+                log_block = f"{log_block}\n{mem_block}"
+            else:
+                log_block = mem_block
+
         text_blocks.append("\n".join([
-            "[CURRENT TURN]",
+            f"[CURRENT TURN turn_id={turn_id}]",
             _fmt_ts_for_humans(ts_now_iso),
-            "[turn id]",
-            turn_id,
-            "[turn insights]",
-            (one_line or "(none)"),
-            (current_turn_log or "[turn log]"),
+            (log_block or "[turn log]"),
             ""
         ]))
-        if current_turn_payload:
-            try:
-                tv = turn_view_class.from_turn_log_dict(payload=current_turn_payload)
-                current_turn_compressed = tv.to_compressed_search_view(
-                    include_turn_info=False,
-                    user_prompt_limit=600,
-                    include_turn_summary=True,
-                    include_context_used=True,
-                    deliverables_detalization="summary",
-                )
-                if current_turn_compressed:
-                    text_blocks.append("\n".join([
-                        "[CURRENT TURN — COMPRESSED VIEW]",
-                        current_turn_compressed,
-                        ""
-                    ]))
-            except Exception as ex:
-                import traceback
-                print(traceback.format_exc())
-                pass
         items_struct.append({
             "ts": ts_now_iso,
             "turn_id": turn_id,
@@ -1692,6 +1755,18 @@ async def retrospective_context_view(
             "log": current_turn_log,
         })
 
+    # 2.b Active memory insights
+    text_blocks.append("[ACTIVE MEMORY INSIGHTS]")
+    if memory_log_entries:
+        for entry in (memory_log_entries or []):
+            try:
+                text_blocks.append(json.dumps(entry, ensure_ascii=False))
+            except Exception:
+                text_blocks.append(str(entry))
+    else:
+        text_blocks.append("(none)")
+    text_blocks.append("")
+
     # 2.c Prior turns — COMPRESSED VIEWS using TurnView (newest→oldest)
     last_turns_details: List[dict] = []
     last_turns_mate: List[dict] = []
@@ -1700,8 +1775,7 @@ async def retrospective_context_view(
                           key=lambda item: item.get("ts") or item.get("timestamp") or "",
                           reverse=True)
 
-    if items_sorted:
-        text_blocks.append("\n[PRIOR TURNS — COMPRESSED VIEWS]")
+    text_blocks.append("[PRIOR TURNS — COMPRESSED VIEWS]")
 
     for item in items_sorted:
         tid = _turn_id_from_tags_safe(list(item.get("tags") or [])) or ""
@@ -1711,13 +1785,11 @@ async def retrospective_context_view(
 
         try:
             # Build TurnView from the raw item
-            # turn_log_data = payload.get("turn_log") or {}
 
             tv = turn_view_class.from_saved_payload(
                 turn_id=tid,
                 user_id=user_id,
                 conversation_id=conversation_id,
-                # tlog=turn_log_data,
                 payload=item,  # Pass the full item (payload already unwrapped)
             )
 
@@ -1732,9 +1804,8 @@ async def retrospective_context_view(
 
             # Add timestamp header
             text_blocks.append("\n".join([
+                f"[TURN turn_id={tid}]",
                 _fmt_ts_for_humans(ts_raw),
-                "[turn id]",
-                (tid + "\n") if tid else "",
                 compressed_view,
                 ""
             ]))
@@ -1803,10 +1874,10 @@ async def retrospective_context_view(
 
         if orphan_insights:
             orphan_sorted = sorted(orphan_insights, key=lambda x: x.get("ts") or "", reverse=True)
-            lines = ["\n[EARLIER TURNS — NON-RECONCILED INSIGHTS]"]
+            lines = ["[EARLIER TURNS — SUMMARY]"]
             for it in orphan_sorted[:16]:
                 lines.append(
-                    f"{_fmt_ts_for_humans(it.get('ts') or '')}\n[turn id]\n{it.get('turn_id')}\n[insights]\n{it.get('insights_one_liner')}\n"
+                    f"[TURN turn_id={it.get('turn_id')}]\n{_fmt_ts_for_humans(it.get('ts') or '')}\n{it.get('insights_one_liner')}\n"
                 )
             text_blocks.append("\n".join(lines).strip() + "\n")
 
@@ -1959,8 +2030,29 @@ async def materialize_prior_pairs(
 
     materialize_ids = list(getattr(scratchpad, "materialize_turn_ids", []) or [])
 
+    # Prefer reconciled history if present on scratchpad (avoids re-materializing)
+    history_by_tid: Dict[str, Dict[str, Any]] = {}
+    try:
+        bundle = getattr(scratchpad, "context_bundle", None)
+        if bundle and getattr(bundle, "program_history_reconciled", None):
+            for rec in (bundle.program_history_reconciled or []):
+                try:
+                    _, meta = next(iter(rec.items()))
+                except Exception:
+                    continue
+                tid = meta.get("turn_id")
+                if tid:
+                    history_by_tid[tid] = meta
+    except Exception:
+        history_by_tid = {}
+
     newest_prior_nonclar_idx = -1
     for idx, tid in enumerate(materialize_ids):
+        if tid in history_by_tid:
+            saved_payload = history_by_tid[tid].get("turn_log") or {}
+            if newest_prior_nonclar_idx == -1 and not _is_clarification_turn(saved_payload or {}):
+                newest_prior_nonclar_idx = idx
+            continue
         try:
             mat_meta = await ctx_client.materialize_turn(
                 turn_id=tid,
@@ -1977,20 +2069,26 @@ async def materialize_prior_pairs(
                 newest_prior_nonclar_idx = idx
 
     for idx, tid in enumerate(materialize_ids):
-        try:
-            mat = await ctx_client.materialize_turn(
-                turn_id=tid,
-                user_id=user,
-                conversation_id=conversation_id,
-                track_id=track_id,
-                with_payload=True
-            )
-        except Exception:
-            continue
+        mat = None
+        saved_payload = {}
+        if tid in history_by_tid:
+            saved_payload = history_by_tid[tid].get("turn_log") or {}
+        else:
+            try:
+                mat = await ctx_client.materialize_turn(
+                    turn_id=tid,
+                    user_id=user,
+                    conversation_id=conversation_id,
+                    track_id=track_id,
+                    with_payload=True
+                )
+            except Exception:
+                continue
 
         artifacts: list[dict] = []
 
-        saved_payload = unwrap_payload((mat.get("turn_log") or {}).get("payload") or {}) or {}
+        if not saved_payload:
+            saved_payload = unwrap_payload((mat.get("turn_log") or {}).get("payload") or {}) or {}
         entries, turn_summary, gate = _extract_entries_and_summary(saved_payload)
         deliverables_map = _solver_deliverables(saved_payload)
         is_clar = _is_clarification_turn(saved_payload)
@@ -2015,7 +2113,7 @@ async def materialize_prior_pairs(
                 "title": f"Program Presentation (turn {tid})",
                 "content": prez_md,
                 "turn_id": tid,
-                "kind": "codegen.program.presentation",
+                "kind": "solver.program.presentation",
             })
 
         # INTERNAL: Solver Failure
@@ -2090,13 +2188,31 @@ async def materialize_prior_pairs(
                     })
 
         # Materialized shown text
-        user_obj = unwrap_payload((mat.get("user") or {}).get("payload") or {})
-        user_ts = (mat.get("user") or {}).get("ts")
-        asst_obj = unwrap_payload((mat.get("assistant") or {}).get("payload") or {})
-        asst_ts = (mat.get("assistant") or {}).get("ts")
+        def _extract_text_field(obj: Dict[str, Any], key: str) -> str:
+            v = obj.get(key)
+            if isinstance(v, str):
+                return v
+            if isinstance(v, dict):
+                return (v.get("text") or v.get("content") or v.get("value") or "").strip()
+            return ""
 
-        user_text = (user_obj.get("prompt") or "").strip()
-        asst_text = (asst_obj.get("completion") or "").strip()
+        user_obj = {}
+        asst_obj = {}
+        user_ts = None
+        asst_ts = None
+        if mat:
+            user_obj = unwrap_payload((mat.get("user") or {}).get("payload") or {})
+            user_ts = (mat.get("user") or {}).get("ts")
+            asst_obj = unwrap_payload((mat.get("assistant") or {}).get("payload") or {})
+            asst_ts = (mat.get("assistant") or {}).get("ts")
+        else:
+            user_obj = history_by_tid[tid].get("user") or {}
+            asst_obj = history_by_tid[tid].get("assistant") or {}
+            user_ts = history_by_tid[tid].get("ts")
+            asst_ts = history_by_tid[tid].get("ts")
+
+        user_text = _extract_text_field(user_obj, "prompt").strip()
+        asst_text = _extract_text_field(asst_obj, "completion").strip()
         attachments = list(user_obj.get("attachments") or [])
 
         if compressed_turn and (not user_text or not asst_text):
@@ -2123,9 +2239,14 @@ async def materialize_prior_pairs(
         })
 
         # Citations
-        cit = (unwrap_payload((mat.get("citables") or {}).get("payload") or {}).get("items")) or []
-        if cit:
-            citations_merged.extend(cit)
+        if mat:
+            cit = (unwrap_payload((mat.get("citables") or {}).get("payload") or {}).get("items")) or []
+            if cit:
+                citations_merged.extend(cit)
+        else:
+            cit = history_by_tid[tid].get("sources_pool") or []
+            if cit:
+                citations_merged.extend(cit)
 
     pairs.sort(key=lambda p: (p.get("user") or {}).get("ts") or (p.get("assistant") or {}).get("ts") or "")
     citations_merged = ctx_retrieval_module._dedup_citations(citations_merged)

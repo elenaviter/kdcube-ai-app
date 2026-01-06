@@ -207,7 +207,7 @@ def _messages_with_context(
         meta = ta.get("meta") or {}
         kind = meta.get("kind") or ""
         if isinstance(txt, str):
-            if "[codegen.program.presentation]" in txt.lower() or kind == "codegen.program.presentation":
+            if "[solver.program.presentation]" in txt.lower() or kind == "solver.program.presentation":
                 return "Solver Program Presentation", "presentation"
             elif "[solver.failure]" in txt.lower() or kind == "solver.failure":
                 return "Solver Failure", "failure"
@@ -234,7 +234,7 @@ def _messages_with_context(
         for art in arts:
             kind = art.get("kind") or ""
             # Internal: program presentation (digest), project log (working draft)
-            if kind in ("project.log", "codegen.program.presentation", "solver.failure"):
+            if kind in ("project.log", "solver.program.presentation", "solver.failure"):
                 internal_artifacts.append(art)
             # User-facing: deliverables (files, documents)
             elif kind in ("deliverables.list", "deliverable.full"):
@@ -384,7 +384,7 @@ def _messages_with_context(
 
             payload_parts.append(intro)
             payload_parts.append("")
-            significator = "[solver.failure]" if ta_type == "failure" else "[codegen.program.presentation]"
+            significator = "[solver.failure]" if ta_type == "failure" else "[solver.program.presentation]"
             if not ta_text.startswith(significator):
                 payload_parts.append(significator)
             payload_parts.append(ta_text)

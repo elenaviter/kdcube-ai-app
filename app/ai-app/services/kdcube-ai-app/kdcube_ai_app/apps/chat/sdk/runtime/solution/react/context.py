@@ -570,7 +570,7 @@ class ReactContext:
                     if not isinstance(art, dict):
                         continue
                     used_sids.update(self._extract_source_sids(art.get("sources_used")))
-                    for sid in (art.get("sources_used_sids") or []):
+                    for sid in (art.get(" ") or []):
                         if isinstance(sid, (int, float)):
                             used_sids.add(int(sid))
             pool = (turn or {}).get("sources_pool") or []
@@ -861,7 +861,11 @@ class ReactContext:
             content_inventorization: Optional[Any] = None,
     ) -> Dict[str, Any]:
         fmt = slot_spec.format or "text"  # Pydantic attribute access
-        text_repr = _text_repr(source_value)
+        mapped_value = source_value
+        if tool_id and tools_insights.is_generative_tool(tool_id) and isinstance(source_value, dict):
+            if "content" in source_value:
+                mapped_value = source_value.get("content")
+        text_repr = _text_repr(mapped_value)
 
         gaps_clean = (gaps or "").strip() if gaps else ""
 
@@ -869,7 +873,7 @@ class ReactContext:
             "type": "inline",
             "format": fmt,
             "text": text_repr,
-            "value": source_value,
+            "value": mapped_value,
             "sources_used": self._extract_source_sids(sources_used) if sources_used else [],
             "tool_id": tool_id,
             "description": slot_spec.description or "",
@@ -2064,7 +2068,7 @@ class ReactContext:
                 art = (self.artifacts or {}).get(aid)
                 if not isinstance(art, dict):
                     continue
-                if art.get("tool_id") != "llm_tools.generate_content_llm":
+                if not tools_insights.is_generative_tool(art.get("tool_id")):
                     continue
                 # If binding the envelope directly, point to content leaf
                 if ".value.content" not in path:

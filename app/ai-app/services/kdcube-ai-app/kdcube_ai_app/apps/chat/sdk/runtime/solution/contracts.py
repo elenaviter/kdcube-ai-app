@@ -200,12 +200,12 @@ class SolveResult:
 
     @property
     def program_presentation(self):
-        presenter = SolverPresenter(self, codegen_run_id=self.run_id())
+        presenter = SolverPresenter(self, codegen_run_id=self.run_id(), file_path_prefix="")
         return presenter.full_view(include_reasoning=True, extended=False)
 
     @property
     def program_presentation_ext(self):
-        presenter = SolverPresenter(self, codegen_run_id=self.run_id())
+        presenter = SolverPresenter(self, codegen_run_id=self.run_id(), file_path_prefix="")
         return presenter.full_view(include_reasoning=True, extended=True)
 
     def program_brief(self, rehosted_files: List[dict]) -> Tuple[str, ProgramBrief]:
@@ -578,9 +578,8 @@ def build_full_solver_payload(sr) -> Dict[str, Any]:
         return {}
 
     plan = _to_jsonable(sr.plan)
-    execution = _to_jsonable(sr.execution)
-    # Keep execution.deliverables sources_used (SIDs only)
-    execution = _filter_execution(execution)
+    normalized_deliverables = normalize_deliverables_map(sr.deliverables_map() or {})
+    execution = _build_execution_payload(sr.execution, normalized_deliverables)
 
     failure_presentation = _to_jsonable(sr.failure_presentation)
     failure = _to_jsonable(sr.failure)
@@ -617,36 +616,136 @@ def build_full_solver_payload(sr) -> Dict[str, Any]:
         "program_presentation": program_presentation,
     }
 
-def _filter_execution(execution: Any) -> Any:
+def _normalize_sources_used(sources: Any) -> List[int]:
+    out: List[int] = []
+    if isinstance(sources, list):
+        for s in sources:
+            if isinstance(s, (int, float)) and int(s) not in out:
+                out.append(int(s))
+            elif isinstance(s, dict):
+                sid = s.get("sid")
+                if isinstance(sid, (int, float)) and int(sid) not in out:
+                    out.append(int(sid))
+    return out
+
+def _normalize_deliverable_value(val: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(val, dict):
+        return None
+
+    def _copy_if_present(dst: Dict[str, Any], src: Dict[str, Any], keys: List[str]) -> None:
+        for k in keys:
+            if k in src and src.get(k) is not None:
+                dst[k] = src.get(k)
+
+    if val.get("type") == "file":
+        v_orig = (val.get("output") or {}).get("text") or val.get("text") or ""
+        fname = (
+            (val.get("output") or {}).get("path")
+            or val.get("path")
+            or val.get("filename")
+            or ""
+        )
+        fname = fname.split("/")[-1] if isinstance(fname, str) else ""
+        hosted_uri = val.get("hosted_uri")
+        hosted_key = val.get("key")
+        value_obj: Dict[str, Any] = {
+            "type": "file",
+            "filename": fname,
+            "text": v_orig or val.get("text"),
+            "mime": val.get("mime"),
+            "path": hosted_key or hosted_uri or val.get("path"),
+            "key": hosted_key,
+            "rn": val.get("rn"),
+            "hosted_uri": hosted_uri,
+            "description": val.get("description") or "",
+            "tool_id": val.get("tool_id") or "",
+            "summary": val.get("summary"),
+            "sources_used": _normalize_sources_used(val.get("sources_used") or []),
+            "citable": val.get("citable") or False,
+        }
+        _copy_if_present(value_obj, val, ["draft", "gaps", "artifact_id", "mapped_from", "format"])
+        return value_obj
+
+    v_orig = (val.get("output") or {}).get("text") or val.get("text") or ""
+    if not isinstance(v_orig, str):
+        try:
+            v_orig = json.dumps(v_orig, ensure_ascii=False)
+        except Exception:
+            v_orig = str(v_orig)
+
+    value_obj = {
+        "type": "inline",
+        "mime": val.get("mime"),
+        "value": v_orig,
+        "text": v_orig or val.get("text"),
+        "description": val.get("description") or "",
+        "tool_id": val.get("tool_id") or "",
+        "summary": val.get("summary"),
+        "sources_used": _normalize_sources_used(val.get("sources_used") or []),
+        "format": val.get("format") or "",
+        "citable": val.get("citable") or False,
+    }
+    _copy_if_present(value_obj, val, ["draft", "gaps", "artifact_id", "mapped_from"])
+    return value_obj
+
+def normalize_deliverables_map(dmap: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Given JSON-safe `execution`, return a copy where each deliverable's
-    value.sources_used is preserved (SIDs only).
+    Normalize deliverables to a stable, artifact-first representation.
 
-    Safe to call on the result of _to_jsonable(sr.execution);
-    does not mutate sr.execution.
+    Output shape:
+      { slot: { description, content_guidance?, type?, value }, ... }
     """
-    if not isinstance(execution, dict):
-        return execution
-
-    exec_copy = dict(execution)
-
-    deliverables = exec_copy.get("deliverables")
-    if not isinstance(deliverables, dict):
-        return exec_copy
-
-    new_delivs: Dict[str, Any] = {}
-
-    for slot, spec in deliverables.items():
+    out: Dict[str, Any] = {}
+    for slot_name, spec in (dmap or {}).items():
         if not isinstance(spec, dict):
-            new_delivs[slot] = spec
+            out[slot_name] = {"description": "", "value": None}
             continue
 
-        spec_copy = dict(spec)
-        art = spec_copy.get("value")
+        desc = spec.get("description") or ""
+        content_guidance = spec.get("content_guidance") or ""
+        slot_type = spec.get("type") or ""
+        value_obj = _normalize_deliverable_value(spec.get("value"))
 
-        new_delivs[slot] = spec_copy
+        spec_out: Dict[str, Any] = {
+            "description": desc,
+            "value": value_obj,
+        }
+        if content_guidance:
+            spec_out["content_guidance"] = content_guidance
+        if slot_type:
+            spec_out["type"] = slot_type
+        out[slot_name] = spec_out
+    return out
 
-    exec_copy["deliverables"] = new_delivs
-    if "calls" in exec_copy:
-        del exec_copy["calls"]
-    return exec_copy
+def deliverables_items_from_map(dmap: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Convert normalized deliverables map to list payload used by artifacts.
+    """
+    items: List[Dict[str, Any]] = []
+    for slot_name, spec in (dmap or {}).items():
+        if not isinstance(spec, dict):
+            items.append({"slot": slot_name, "description": "", "value": None})
+            continue
+        item = {"slot": slot_name}
+        item.update(spec)
+        items.append(item)
+    return items
+
+def _build_execution_payload(execution: Any, deliverables: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Build execution payload with normalized deliverables and without redundant fields.
+    """
+    if execution is None:
+        return {"deliverables": deliverables}
+
+    def _jsonable_detached(val: Any) -> Any:
+        return _to_jsonable(val, _seen=set())
+
+    return {
+        "error": _jsonable_detached(getattr(execution, "error", None)),
+        "failure_presentation": _jsonable_detached(getattr(execution, "failure_presentation", None)),
+        "deliverables": deliverables,
+        "result_interpretation_instruction": _jsonable_detached(
+            getattr(execution, "result_interpretation_instruction", None)
+        ),
+    }

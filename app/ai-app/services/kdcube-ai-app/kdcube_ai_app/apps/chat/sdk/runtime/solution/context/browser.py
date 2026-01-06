@@ -85,12 +85,6 @@ class ContextBrowser:
             except Exception as e:
                 self.log.log(f"[context_browser] history error: {e}", level="ERROR")
 
-        # # --- 2) canvas block (based on original history, not the reconciled copy)
-        # try:
-        #     last_mat_working_canvas = ctx_representation_module._compose_last_materialized_canvas_block(program_history)
-        # except Exception:
-        #     last_mat_working_canvas = "(no prior project work)"
-
         # --- 3) reconcile (updates tokens + sources_pool-derived citations)
         program_history_reconciled = copy.deepcopy(program_history)
         sources_pool: List[Dict[str, Any]] = []

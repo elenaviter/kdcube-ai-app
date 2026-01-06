@@ -623,9 +623,6 @@ class ContextTools:
                 for sid in (artifact.get("sources_used") or []):
                     if isinstance(sid, (int, float)):
                         sids_used.add(int(sid))
-                for sid in (artifact.get("sources_used_sids") or []):
-                    if isinstance(sid, (int, float)):
-                        sids_used.add(int(sid))
                 sids_used = sorted(sids_used)
 
                 slot_data["sources_used"] = [
@@ -892,12 +889,6 @@ class ContextTools:
                                 sids.append(int(entry))
                             elif isinstance(entry, dict):
                                 sid = entry.get("sid")
-                                if isinstance(sid, (int, float)):
-                                    sids.append(int(sid))
-                    if not sids:
-                        su_alt = out.get("sources_used_sids")
-                        if isinstance(su_alt, list):
-                            for sid in su_alt:
                                 if isinstance(sid, (int, float)):
                                     sids.append(int(sid))
                     if sids:

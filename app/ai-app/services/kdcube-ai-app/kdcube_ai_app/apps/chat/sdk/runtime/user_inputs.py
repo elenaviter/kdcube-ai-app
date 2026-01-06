@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from kdcube_ai_app.tools.file_text_extractor import DocumentTextExtractor, ExtractInfo
@@ -105,25 +106,36 @@ async def ingest_user_attachments(
 def attachment_summary_text(items: List[Dict[str, Any]]) -> str:
     if not items:
         return ""
-    lines = ["ATTACHMENTS:"]
+    lines: List[str] = []
+    used: Dict[str, int] = {}
     for a in items:
         if not isinstance(a, dict):
             continue
-        name = (a.get("artifact_name") or a.get("filename") or "attachment").strip()
+        raw_name = (a.get("artifact_name") or a.get("filename") or "attachment").strip()
+        name = re.sub(r"[\\s./:]+", "_", raw_name)
+        name = re.sub(r"[^A-Za-z0-9_-]+", "", name) or "attachment"
+        count = used.get(name, 0) + 1
+        used[name] = count
+        if count > 1:
+            name = f"{name}_{count}"
         filename = (a.get("filename") or "").strip()
         mime = (a.get("mime") or a.get("mime_type") or "").strip()
         size = a.get("size") or a.get("size_bytes")
         summary = (a.get("summary") or "").strip()
-        parts = [name]
+        parts = []
         if filename:
             parts.append(f"filename={filename}")
         if mime:
             parts.append(f"mime={mime}")
         if size is not None:
             parts.append(f"size={size}")
-        lines.append("- " + " | ".join(parts))
         if summary:
-            lines.append(f"  {summary}")
+            line = f"[user.attachments.{name}.summary] {summary}"
+        else:
+            line = f"[user.attachments.{name}.summary]"
+        if parts:
+            line += " | " + " | ".join(parts)
+        lines.append(line)
     return "\n".join(lines).strip()
 
 

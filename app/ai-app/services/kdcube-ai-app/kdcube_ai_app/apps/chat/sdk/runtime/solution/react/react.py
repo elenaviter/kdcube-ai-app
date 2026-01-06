@@ -198,15 +198,23 @@ class ReactSolver:
 
         self.log.log(f"[react] Start {session_id} in {workdir}")
 
-        # use ContextBrowser
-        browser = ContextBrowser(tool_manager=self.tool_manager,
-                                 logger=self.log,
-                                 turn_view_class=self.turn_view_class)
-        bundle = await browser.materialize(
-            materialize_turn_ids=materialize_turn_ids,
-            user_id=user_id,
-            conversation_id=conversation_id,
+        # use ContextBrowser unless ctx.reconciler already materialized bundle
+        browser = ContextBrowser(
+            tool_manager=self.tool_manager,
+            logger=self.log,
+            turn_view_class=self.turn_view_class,
         )
+        bundle = getattr(self.scratchpad, "context_bundle", None)
+        if not bundle:
+            bundle = await browser.materialize(
+                materialize_turn_ids=materialize_turn_ids,
+                user_id=user_id,
+                conversation_id=conversation_id,
+            )
+            try:
+                setattr(self.scratchpad, "context_bundle", bundle)
+            except Exception:
+                pass
 
         await browser.rehost_previous_files(bundle=bundle,
                                             workdir=outdir,
@@ -699,18 +707,6 @@ class ReactSolver:
     async def _decision_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         it = int(state["iteration"])
         context: ReactContext = state["context"]
-        # Force reload from persisted state
-        # if context.outdir:
-        #     try:
-        #         ctx_path = context.outdir / "context.json"
-        #         if ctx_path.exists():
-        #             payload = json.loads(ctx_path.read_text(encoding="utf-8"))
-        #             context = ReactContext.load_from_dict(payload)
-        #             context.bind_storage(context.outdir)
-        #             state["context"] = context
-        #     except Exception as e:
-        #         self.log.log(f"Failed to reload context: {e}", level="WARNING")
-
         # === DEBUG: Check context state ===
         self.log.log(
             f"[react.decision.{it}] Context check: "

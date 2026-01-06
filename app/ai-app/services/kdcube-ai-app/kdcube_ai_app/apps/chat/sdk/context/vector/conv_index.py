@@ -872,7 +872,7 @@ class ConvIndex:
             track_id: Optional[str],
             mention: str,
             mention_emb: Optional[List[float]],
-            prefer_kinds: Sequence[str] = ("codegen.out.inline", "codegen.program.presentation", "codegen.out.file"),
+            prefer_kinds: Sequence[str] = ("solver.out.inline", "solver.program.presentation", "solver.out.file"),
             window_limit: int = 40,
             turn_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:

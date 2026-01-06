@@ -4,10 +4,11 @@ import time
 # kdcube_ai_app/apps/chat/sdk/runtime/solution/solution_workspace.py
 
 import traceback, pathlib, logging
-from typing import Any, Optional, List, Dict
+from typing import Any, Optional, List, Dict, Union
 
 from kdcube_ai_app.apps.chat.emitters import ChatCommunicator
 from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
+from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
 logger = logging.getLogger(__name__)
 
@@ -43,24 +44,91 @@ def _unique_target(base_dir: pathlib.Path, basename: str) -> pathlib.Path:
             return c
         i += 1
 
+async def persist_program_out_deliverables(
+        *,
+        sr,  # SolveResult
+        tenant: str,
+        project: str,
+        user: str,
+        conversation_id: str,
+        user_type: str,
+        turn_id: str,
+        rid: str,
+        track_id: str,
+        persist_fn,
+        log: Optional[logging.Logger] = None,
+) -> None:
+    """
+    Persist normalized solver deliverables as a single artifact.
+    """
+    if not sr or not sr.execution or not sr.deliverables_map():
+        if log:
+            log.warning(
+                f"[persist_program_out_deliverables. uid={user}; cid={conversation_id}; tid={turn_id}] "
+                f"No execution or deliverables_map"
+            )
+        return
+
+    from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import (
+        normalize_deliverables_map,
+        deliverables_items_from_map,
+    )
+
+    normalized = normalize_deliverables_map(sr.deliverables_map() or {})
+    items = deliverables_items_from_map(normalized)
+
+    exec_id = sr.execution_id() or ""
+    extra_tags = [f"execution_id:{exec_id}"] if exec_id else []
+    for it in items:
+        extra_tags.append(f"slot:{it['slot']}")
+        v = (it or {}).get("value") or {}
+        tid = v.get("tool_id")
+        if tid:
+            extra_tags.append(f"tool:{tid}")
+
+    payload = {
+        "execution_id": exec_id,
+        "items": items,
+        "round_reasoning": sr.round_reasoning() or "",
+    }
+
+    await persist_fn(
+        tenant=tenant,
+        project=project,
+        user=user,
+        conversation_id=conversation_id,
+        user_type=user_type,
+        turn_id=turn_id,
+        rid=rid,
+        track_id=track_id,
+        codegen_run_id=sr.run_id(),
+        title="Program Out — Deliverables",
+        kind="solver.program.out.deliverables",
+        payload=payload,
+        add_to_index=True,
+        embed=False,
+        extra_tags=extra_tags,
+    )
+
 async def rehost_previous_files(
         prev_files: list[dict],
         workdir: pathlib.Path,
         turn_id: str  # ← turn_id for this deliverable's source turn
 ) -> list[dict]:
     """
-    Copy files from conversation storage into workdir/<turn_id>/,
+    Copy files from conversation storage into workdir/<turn_id>/files/,
     organizing historical files by their source turn.
 
     Structure:
       workdir/
         turn_1765841825124_s1lw9s/
-          report.pdf
-          data.xlsx
+          files/
+            report.pdf
+            data.xlsx
         turn_1765841834567_a2bc3d/
           chart.png
 
-    Updated paths in artifacts reflect this structure: "turn_<id>/filename"
+    Updated paths in artifacts reflect this structure: "<turn_id>/files/<filename>"
 
     **Draft file slots:** File slots with `path: ""` are draft artifacts (no actual file).
     These are skipped with `rehosted: False` and `file_exists: False` flags.
@@ -74,7 +142,7 @@ async def rehost_previous_files(
         return out
 
     # Create turn-specific subdirectory
-    turn_dir = workdir / turn_id
+    turn_dir = workdir / turn_id / "files"
     turn_dir.mkdir(parents=True, exist_ok=True)
 
     store = ConversationStore(get_settings().STORAGE_PATH)
@@ -115,7 +183,7 @@ async def rehost_previous_files(
                 })
                 continue
 
-            # Target: workdir/<turn_id>/filename
+            # Target: workdir/<turn_id>/files/<filename>
             target = turn_dir / filename
 
             # Attempt to read and write file
@@ -131,11 +199,11 @@ async def rehost_previous_files(
                 out.append({
                     **artifact,
                     "source_path": src_path,  # Original storage path
-                    "path": f"{turn_id}/{filename}",  # ← Turn-namespaced path
+                    "path": f"{turn_id}/files/{filename}",  # ← Turn-namespaced path
                     "rehosted": True,
                     "file_exists": True,  # ← File successfully copied
                 })
-                logger.info(f"[rehost] ✓ {turn_id}/{filename} from {src_path}")
+                logger.info(f"[rehost] ✓ {turn_id}/files/{filename} from {src_path}")
 
             except FileNotFoundError:
                 logger.warning(
@@ -289,7 +357,7 @@ class ApplicationHostingService:
         *,
         store: ConversationStore,
         comm: Optional[ChatCommunicator] = None,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Union[logging.Logger, AgentLogger]] = None,
     ):
         self.store = store
         self.comm = comm
