@@ -6,9 +6,8 @@
 from __future__ import annotations
 
 import base64
-import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME, \
     MODALITY_MAX_DOC_BYTES, MODALITY_MAX_IMAGE_BYTES
@@ -21,18 +20,10 @@ async def ingest_user_attachments(
     *,
     attachments: List[Dict[str, Any]],
     store: Any,
-    max_mb: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     if not attachments:
         return []
 
-    if max_mb is None:
-        try:
-            max_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
-        except Exception:
-            max_mb = 20
-
-    max_bytes = max_mb * 1024 * 1024
     extractor = DocumentTextExtractor()
 
     out: List[Dict[str, Any]] = []
@@ -59,8 +50,12 @@ async def ingest_user_attachments(
         size = a.get("size") or a.get("size_bytes") or len(data)
         base["size"] = size
         base["size_bytes"] = size
-        if size > max_bytes:
-            base["error"] = f"size_limit: {size} > {max_bytes}"
+        if mime in MODALITY_IMAGE_MIME and size > MODALITY_MAX_IMAGE_BYTES:
+            base["error"] = f"size_limit: {size} > {MODALITY_MAX_IMAGE_BYTES}"
+            out.append(base)
+            continue
+        if mime in MODALITY_DOC_MIME and size > MODALITY_MAX_DOC_BYTES:
+            base["error"] = f"size_limit: {size} > {MODALITY_MAX_DOC_BYTES}"
             out.append(base)
             continue
 

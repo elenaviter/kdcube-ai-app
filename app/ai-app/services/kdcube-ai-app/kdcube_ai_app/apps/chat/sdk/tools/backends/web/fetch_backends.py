@@ -4,12 +4,46 @@
 # apps/chat/sdk/tools/backends/fetch_backends.py
 
 from typing import List, Optional, Dict, Any, Annotated
-import logging, json, os, uuid
+import logging, json, os, uuid, base64, asyncio
 
 from kdcube_ai_app.apps.chat.sdk.tools.web.web_extractors import WebContentFetcher
 from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import filter_fetch_results
+from kdcube_ai_app.tools.content_type import fetch_url_with_content_type, guess_mime_from_url
+from kdcube_ai_app.infra.service_hub.multimodality import (
+    MODALITY_IMAGE_MIME,
+    MODALITY_DOC_MIME,
+    MODALITY_MAX_IMAGE_BYTES,
+    MODALITY_MAX_DOC_BYTES,
+)
 
 logger = logging.getLogger(__name__)
+
+async def _materialize_binary_attachment(url: str) -> Dict[str, Any]:
+    if not url:
+        return {}
+    try:
+        loop = asyncio.get_running_loop()
+        content_bytes, content_type, filename = await loop.run_in_executor(
+            None, fetch_url_with_content_type, url
+        )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    mime = (content_type or "").split(";")[0].strip().lower()
+    if not mime:
+        mime = (guess_mime_from_url(url) or "").strip().lower()
+    size_bytes = len(content_bytes or b"")
+    base64_data = None
+    if mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME:
+        limit = MODALITY_MAX_IMAGE_BYTES if mime in MODALITY_IMAGE_MIME else MODALITY_MAX_DOC_BYTES
+        if size_bytes and size_bytes <= limit:
+            base64_data = base64.b64encode(content_bytes).decode("ascii")
+    return {
+        "mime": mime or None,
+        "base64": base64_data,
+        "size_bytes": size_bytes or None,
+        "filename": filename or None,
+    }
 
 async def fetch_search_results_content(
         search_results: List[dict],
@@ -56,6 +90,21 @@ async def fetch_search_results_content(
         fetch_status = fetch_result.get("status", "unknown")
         row["fetch_status"] = fetch_status
 
+        if fetch_status in ("non_html", "pdf_redirect"):
+            attach = await _materialize_binary_attachment(row.get("url", ""))
+            if attach.get("mime"):
+                row["mime"] = attach.get("mime")
+            if attach.get("size_bytes") is not None:
+                row["size_bytes"] = attach.get("size_bytes")
+            if attach.get("filename"):
+                row["filename"] = attach.get("filename")
+            if attach.get("base64"):
+                row["base64"] = attach.get("base64")
+                row["fetch_status"] = "binary"
+            if attach.get("error"):
+                row["fetch_error"] = attach.get("error")
+            continue
+
         if fetch_status != "success" and fetch_status != "archive":
             # Keep the row, just record the failure status + optional error
             if fetch_result.get("error"):
@@ -69,6 +118,7 @@ async def fetch_search_results_content(
         # Successful fetch: attach content + metadata
         row["content"] = fetch_result.get("content", "")
         row["content_length"] = fetch_result.get("content_length", 0)
+        row["mime"] = "text/html"
 
         for k in [
             "published_time_raw",
@@ -281,6 +331,22 @@ async def fetch_url_contents(
 
         if "error" in fetch_result and fetch_result.get("error"):
             entry["error"] = fetch_result.get("error")
+
+        if status in ("non_html", "pdf_redirect"):
+            attach = await _materialize_binary_attachment(url)
+            if attach.get("mime"):
+                entry["mime"] = attach.get("mime")
+            if attach.get("size_bytes") is not None:
+                entry["size_bytes"] = attach.get("size_bytes")
+            if attach.get("filename"):
+                entry["filename"] = attach.get("filename")
+            if attach.get("base64"):
+                entry["base64"] = attach.get("base64")
+                entry["status"] = "binary"
+            if attach.get("error"):
+                entry["error"] = attach.get("error")
+        elif status in ("success", "archive"):
+            entry["mime"] = "text/html"
 
         results[url] = entry
 

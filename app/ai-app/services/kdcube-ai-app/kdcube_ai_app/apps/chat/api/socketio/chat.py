@@ -37,6 +37,7 @@ from kdcube_ai_app.apps.chat.api.ingress.chat_core import (
     get_conversation_status, build_ws_connect_request_context, upgrade_session_from_tokens,
     build_ws_chat_request_context,
 )
+from kdcube_ai_app.infra.service_hub.multimodality import MESSAGE_MAX_BYTES
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,6 @@ class SocketIOChatHandler:
         )
         self._listener_started = False
 
-        self.max_upload_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
-
         self.sio = self._create_socketio_server()
         self._setup_event_handlers()
 
@@ -116,8 +115,7 @@ class SocketIOChatHandler:
     def _create_socketio_server(self):
         try:
             mgr = socketio.AsyncRedisManager(self.redis_url)
-            max_mb = getattr(self, "max_upload_mb", 20)
-            max_bytes = int(max_mb) * 1024 * 1024
+            max_bytes = MESSAGE_MAX_BYTES + (1024 * 1024)
 
             sio = socketio.AsyncServer(
                 cors_allowed_origins=self.allowed_origins,

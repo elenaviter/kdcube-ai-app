@@ -8,3 +8,5 @@ MODALITY_DOC_MIME = {"application/pdf"}
 
 MODALITY_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
 MODALITY_MAX_DOC_BYTES = 10 * 1024 * 1024   # 10 MB
+
+MESSAGE_MAX_BYTES = 25 * 1024 * 1024  # total message size cap (text + attachments); keep margin

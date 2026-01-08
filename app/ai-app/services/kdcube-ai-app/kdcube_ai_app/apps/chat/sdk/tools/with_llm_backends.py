@@ -22,7 +22,13 @@ from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove
 from kdcube_ai_app.apps.chat.sdk.util import _today_str, _now_up_to_minutes
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import create_cached_human_message, create_cached_system_message
-from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME
+from kdcube_ai_app.infra.service_hub.multimodality import (
+    MODALITY_IMAGE_MIME,
+    MODALITY_DOC_MIME,
+    MODALITY_MAX_IMAGE_BYTES,
+    MODALITY_MAX_DOC_BYTES,
+)
+from kdcube_ai_app.apps.chat.sdk.util import estimate_b64_size
 
 logger = logging.getLogger("with_llm_backends")
 
@@ -52,7 +58,7 @@ async def generate_content_llm(
         "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
         sources_list: Annotated[
             list[dict],
-            "List of sources: {sid:int, title:str, url?:str, text:str, content?: str}. "
+            "List of sources: {sid:int, title:str, url?:str, text:str, content?: str, mime?: str, base64?: str, size_bytes?: int}. "
             "Sources must be passed ONLY here (never inside input_context)."
         ] = None,
         attachments: Annotated[
@@ -191,6 +197,54 @@ async def generate_content_llm(
         sources_list = []
     if not isinstance(sources_list, list):
         raise ValueError("sources_list must be a list of dicts")
+
+    def _collect_multimodal_source_attachments(src_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        collected: List[Dict[str, Any]] = []
+        seen_mime: Set[str] = set()
+        for src in src_list or []:
+            if not isinstance(src, dict):
+                continue
+            mime = (src.get("mime") or "").strip().lower()
+            data_b64 = src.get("base64")
+            if not mime or not data_b64:
+                continue
+            if mime not in MODALITY_IMAGE_MIME and mime not in MODALITY_DOC_MIME:
+                continue
+            if mime in seen_mime:
+                continue
+            size_bytes = src.get("size_bytes")
+            if size_bytes is None:
+                size_bytes = estimate_b64_size(data_b64)
+            if size_bytes is None:
+                continue
+            limit = MODALITY_MAX_IMAGE_BYTES if mime in MODALITY_IMAGE_MIME else MODALITY_MAX_DOC_BYTES
+            if size_bytes > limit:
+                continue
+            summary = ""
+            sid = src.get("sid")
+            title = (src.get("title") or "").strip()
+            if sid or title:
+                summary = f"source sid={sid} title={title}".strip()
+            collected.append({
+                "mime": mime,
+                "base64": data_b64,
+                "filename": src.get("filename") or "",
+                "summary": summary,
+                "size_bytes": size_bytes,
+            })
+            seen_mime.add(mime)
+            if len(collected) >= 2:
+                break
+        return collected
+
+    if attachments is None:
+        attachments = []
+    elif not isinstance(attachments, list):
+        raise ValueError("attachments must be a list of dicts")
+
+    source_attachments = _collect_multimodal_source_attachments(sources_list)
+    if source_attachments:
+        attachments = attachments + source_attachments
 
     def _looks_like_sources_payload(val: Any) -> bool:
         if not isinstance(val, list) or not val:

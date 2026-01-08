@@ -546,11 +546,6 @@ def create_sse_router(
 
         # ---------- attachments (transport → RawAttachment) ----------
         raw_attachments: List[RawAttachment] = []
-        max_mb = 20
-        try:
-            max_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
-        except Exception:
-            pass
 
         attachment_meta_list: List[Dict[str, Any]] = []
         if files:

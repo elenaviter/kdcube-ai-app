@@ -233,7 +233,7 @@ def _normalize_citation_chars(text: str) -> str:
 # ---- shared optional attributes carried through citations ----
 CITATION_OPTIONAL_ATTRS = (
     "provider", "published_time_iso", "modified_time_iso", "expiration",
-    "mime", "source_type", "rn", "author",
+    "mime", "base64", "size_bytes", "source_type", "rn", "author",
     "content_length", "fetch_status", # "content",
     "objective_relevance", "query_relevance", "authority", "favicon_url",
     "provider_rank", "weighted_rank"
@@ -248,6 +248,9 @@ canonical_source_shape_reference = {
     # full content (if fetched)
     "content": str,              # optional
     "content_length": int,       # optional
+    "mime": str,                 # optional
+    "base64": str,               # optional (multimodal payloads)
+    "size_bytes": int,           # optional (multimodal payload size)
 
     # metadata
     "provider": str, # "web" | "kb." | ...

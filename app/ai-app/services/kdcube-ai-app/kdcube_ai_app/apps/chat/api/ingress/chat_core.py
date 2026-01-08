@@ -242,6 +242,31 @@ async def process_chat_message(
             http_status=400,
         )
 
+    from kdcube_ai_app.infra.service_hub.multimodality import (
+        MESSAGE_MAX_BYTES,
+        MODALITY_DOC_MIME,
+        MODALITY_IMAGE_MIME,
+        MODALITY_MAX_DOC_BYTES,
+        MODALITY_MAX_IMAGE_BYTES,
+    )
+
+    text_bytes = len(text.encode("utf-8"))
+    if text_bytes > MESSAGE_MAX_BYTES:
+        total_limit_mb = int(MESSAGE_MAX_BYTES / (1024 * 1024))
+        await chat_comm.emit_error(
+            svc,
+            conv,
+            error=f"Message exceeds the {total_limit_mb} MB total limit (text + attachments).",
+            target_sid=ingress.stream_id,
+            session_id=session.session_id,
+        )
+        return IngressResult(
+            ok=False,
+            error_type="message_size_limit",
+            error="message exceeds total size limit",
+            http_status=413,
+        )
+
     spec_resolved = resolve_bundle(provided_bundle_id, override=None)
     if not spec_resolved:
         err = f"Unknown bundle_id '{provided_bundle_id}'"
@@ -428,12 +453,6 @@ async def process_chat_message(
 
     # --- Attachments (host after lock; reject entire message on any failure) ---
     if raw_attachments:
-        max_mb = 20
-        try:
-            max_mb = int(os.environ.get("CHAT_MAX_UPLOAD_MB", "20"))
-        except Exception:
-            max_mb = 20
-        max_bytes = max_mb * 1024 * 1024
         store = getattr(app.state, "conversation_store", None)
         enable_av = os.getenv("APP_AV_SCAN", "1") == "1"
         av_timeout = float(os.getenv("APP_AV_TIMEOUT_S", "3.0"))
@@ -465,18 +484,40 @@ async def process_chat_message(
             except Exception:
                 logger.exception("failed to emit attachment failure event")
 
+        total_bytes = text_bytes + sum(len(a.content or b"") for a in raw_attachments)
+        total_limit_mb = int(MESSAGE_MAX_BYTES / (1024 * 1024))
+        if total_bytes > MESSAGE_MAX_BYTES:
+            attachment_errors.append("message_size_limit")
+            await _safe_attachment_event(
+                "message_size_limit",
+                (
+                    f"Total message size exceeds {total_limit_mb} MB (includes message text + attachments; "
+                    f"per-file caps: images {int(MODALITY_MAX_IMAGE_BYTES / (1024 * 1024))} MB, "
+                    f"PDFs {int(MODALITY_MAX_DOC_BYTES / (1024 * 1024))} MB)."
+                ),
+                raw_attachments[0],
+                {"size_bytes": total_bytes, "max_bytes": MESSAGE_MAX_BYTES, "max_mb": total_limit_mb, "text_bytes": text_bytes},
+            )
+
         for a in raw_attachments:
             if not a.content:
                 attachment_errors.append("empty")
                 await _safe_attachment_event("empty", "Attachment is empty.", a)
                 continue
-            if len(a.content) > max_bytes:
+            mime = (a.mime or "").strip().lower()
+            per_file_cap = MESSAGE_MAX_BYTES
+            if mime in MODALITY_IMAGE_MIME:
+                per_file_cap = MODALITY_MAX_IMAGE_BYTES
+            elif mime in MODALITY_DOC_MIME:
+                per_file_cap = MODALITY_MAX_DOC_BYTES
+            if len(a.content) > per_file_cap:
                 attachment_errors.append("size_limit")
+                per_file_mb = int(per_file_cap / (1024 * 1024))
                 await _safe_attachment_event(
                     "size_limit",
-                    f"Attachment '{a.name or 'file'}' exceeds the {max_mb} MB limit.",
+                    f"Attachment '{a.name or 'file'}' exceeds the per-file size limit ({per_file_mb} MB).",
                     a,
-                    {"size_bytes": len(a.content), "max_bytes": max_bytes, "max_mb": max_mb},
+                    {"size_bytes": len(a.content), "max_bytes": per_file_cap},
                 )
                 continue
             if not store:

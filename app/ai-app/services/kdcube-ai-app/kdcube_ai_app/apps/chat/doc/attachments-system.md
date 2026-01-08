@@ -38,7 +38,7 @@ When a user submits attachments:
 
 Both flows:
 1) Collect raw bytes + metadata (filename, mime).
-2) Enforce size limit (`CHAT_MAX_UPLOAD_MB`, default 20 MB).
+2) Enforce total message cap and per-file caps (see 2.4).
 3) Run `safe_preflight.preflight_async(...)` when `APP_AV_SCAN=1`.
 4) If allowed, store via `ConversationStore.put_attachment(...)`.
 5) Emit attachment metadata into the message payload.
@@ -53,6 +53,15 @@ In the workflow (`kdcube_ai_app/apps/custom_apps/codegen/orchestrator/workflow.p
   - Images: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
   - Docs: `application/pdf`
 - Base64 payloads are size-limited (`MODALITY_MAX_IMAGE_BYTES`, `_SUMMARY_MAX_DOC_BYTES`).
+
+### 2.4 Attachment size caps (ingress)
+
+Ingress enforces both per-file and total-message caps, sourced from
+`kdcube_ai_app/infra/service_hub/multimodality.py`.
+
+- Per-image cap: `MODALITY_MAX_IMAGE_BYTES` (5 MB)
+- Per-PDF cap: `MODALITY_MAX_DOC_BYTES` (10 MB)
+- Total message cap (text + attachments): `MESSAGE_MAX_BYTES` (25 MB)
 
 When composing messages, `_messages_with_context(...)` in
 `kdcube_ai_app/apps/chat/sdk/context/retrieval/documenting.py` uses
@@ -119,7 +128,7 @@ When `APP_AV_SCAN=1` (default, and always enabled in prod):
     - `text/*` (subject to size limit)
 
 Additional safeguards:
-- Size limit at ingress (`CHAT_MAX_UPLOAD_MB`).
+- Message and per-file size caps (see 2.4).
 - Base64 only for whitelisted mime types and size caps.
 
 ### 3.2 Gaps and implications (even with preflight ON)

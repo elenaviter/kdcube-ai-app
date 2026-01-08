@@ -7,6 +7,7 @@ import logging
 from kdcube_ai_app.apps.chat.sdk.tools.with_llm_backends import generate_content_llm
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import cap_sources_for_context
+from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME
 
 logger = logging.getLogger(__name__)
 
@@ -743,9 +744,23 @@ async def filter_search_results_by_content(
 
     import kdcube_ai_app.apps.chat.sdk.tools.web.content_filters as content_filters
 
+    def _is_multimodal_row(row: Dict[str, Any]) -> bool:
+        mime = (row.get("mime") or "").strip().lower()
+        return mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME
+
+    multimodal_sids: Set[int] = set()
+    for row in search_results:
+        if _is_multimodal_row(row):
+            try:
+                multimodal_sids.add(int(row.get("sid")))
+            except Exception:
+                continue
+
     # Prepare items with extra signals
     sources_for_filter = []
     for row in search_results:
+        if _is_multimodal_row(row):
+            continue
         # Only keep rows where content fetch really succeeded
         fetch_status = row.get("fetch_status")
         if fetch_status not in ("success", "archive"):
@@ -818,6 +833,7 @@ async def filter_search_results_by_content(
                 spans_map = {}
 
             kept_sids_set = set(spans_map.keys())
+            kept_sids_set.update(multimodal_sids)
             filtered_rows = [row for row in search_results if row["sid"] in kept_sids_set]
 
             # Apply spans to content
@@ -891,6 +907,7 @@ async def filter_search_results_by_content(
             )
 
             kept_sids_set = set(kept_sids)
+            kept_sids_set.update(multimodal_sids)
             filtered_rows = [row for row in search_results if row["sid"] in kept_sids_set]
 
             dropped = len(search_results) - len(filtered_rows)

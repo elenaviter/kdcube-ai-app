@@ -32,6 +32,12 @@ def json_dumps(data: Any) -> str:
 def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
+def estimate_b64_size(data_b64: str) -> Optional[int]:
+    if not isinstance(data_b64, str) or not data_b64:
+        return None
+    padding = data_b64.count("=")
+    return max(0, (len(data_b64) * 3 // 4) - padding)
+
 def slug(s: str) -> str:
     # fold accents → ascii, then normalize
     s = unicodedata.normalize("NFKD", s)
