@@ -12,11 +12,8 @@ import pathlib
 from typing import Any, Dict, Optional
 
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
-
-SUMMARY_IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-SUMMARY_DOC_MIME = {"application/pdf"}
-SUMMARY_MAX_IMAGE_BYTES = 5 * 1024 * 1024
-SUMMARY_MAX_DOC_BYTES = 10 * 1024 * 1024
+from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_DOC_MIME, MODALITY_IMAGE_MIME, \
+    MODALITY_MAX_IMAGE_BYTES, MODALITY_MAX_DOC_BYTES
 
 
 def _coerce_summary_text(value: Any) -> str:
@@ -89,8 +86,8 @@ def prepare_summary_artifact(
     if file_path and file_path.exists() and file_path.is_file():
         try:
             size_bytes = file_path.stat().st_size
-            if mime in SUMMARY_IMAGE_MIME or mime in SUMMARY_DOC_MIME:
-                limit = SUMMARY_MAX_IMAGE_BYTES if mime in SUMMARY_IMAGE_MIME else SUMMARY_MAX_DOC_BYTES
+            if mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME:
+                limit = MODALITY_MAX_IMAGE_BYTES if mime in MODALITY_IMAGE_MIME else MODALITY_MAX_DOC_BYTES
                 if size_bytes <= limit:
                     base64_data = base64.b64encode(file_path.read_bytes()).decode("ascii")
                 else:

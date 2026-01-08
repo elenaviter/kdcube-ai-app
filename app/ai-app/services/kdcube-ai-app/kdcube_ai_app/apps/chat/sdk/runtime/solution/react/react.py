@@ -701,7 +701,7 @@ class ReactSolver:
                 if nm:
                     artifact_specs.append(a)
         if not artifact_specs:
-            is_codegen = tool_id == "codegen_tools.codegen_python"
+            is_codegen = tools_insights.is_codegen_tool(tool_id)
             has_contract = isinstance(params.get("output_contract"), (dict, str))
             if not (is_codegen and has_contract):
                 violations.append({

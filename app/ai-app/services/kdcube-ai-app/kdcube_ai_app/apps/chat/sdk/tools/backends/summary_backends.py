@@ -15,6 +15,8 @@ from kdcube_ai_app.apps.chat.sdk.util import _now_str, _today_str
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import create_cached_system_message, create_cached_human_message
 import kdcube_ai_app.apps.chat.sdk.viz.logging_helpers as logging_helpers
+from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME
+
 
 def _attachment_summary_system_prompt() -> str:
     return (
@@ -47,11 +49,6 @@ def _attachment_summary_prompt(modality_kind: Optional[str]) -> str:
 
 log = logging.getLogger(__name__)
 
-_SUMMARY_IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-_SUMMARY_DOC_MIME = {"application/pdf"}
-_SUMMARY_MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB
-_SUMMARY_MAX_DOC_BYTES = 10 * 1024 * 1024   # 10 MB
-
 def _artifact_block_for_summary(artifact: Optional[Dict[str, Any]]) -> Tuple[Optional[dict], Optional[str], Optional[str]]:
     if not isinstance(artifact, dict):
         return None, None, None
@@ -66,10 +63,10 @@ def _artifact_block_for_summary(artifact: Optional[Dict[str, Any]]) -> Tuple[Opt
 
     block = None
     modality_kind = None
-    if base64_data and mime in _SUMMARY_IMAGE_MIME:
+    if base64_data and mime in MODALITY_IMAGE_MIME:
         modality_kind = "image"
         block = {"type": "image", "data": base64_data, "media_type": mime}
-    elif base64_data and mime in _SUMMARY_DOC_MIME:
+    elif base64_data and mime in MODALITY_DOC_MIME:
         modality_kind = "document"
         block = {"type": "document", "data": base64_data, "media_type": mime}
     elif text:
@@ -87,7 +84,7 @@ def _artifact_block_for_summary(artifact: Optional[Dict[str, Any]]) -> Tuple[Opt
     ]
     if read_error:
         meta_lines.append(f"- read_error: {read_error}")
-    if art_type == "file" and not block and mime and mime not in _SUMMARY_IMAGE_MIME and mime not in _SUMMARY_DOC_MIME:
+    if art_type == "file" and not block and mime and mime not in MODALITY_IMAGE_MIME and mime not in MODALITY_DOC_MIME:
         meta_lines.append("- note: mime not supported for vision; using text surrogate only")
 
     return block, "\n".join(meta_lines), modality_kind

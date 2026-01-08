@@ -10,13 +10,10 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME, \
+    MODALITY_MAX_DOC_BYTES, MODALITY_MAX_IMAGE_BYTES
 from kdcube_ai_app.tools.file_text_extractor import DocumentTextExtractor, ExtractInfo
-from kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends import (
-    _SUMMARY_IMAGE_MIME,
-    _SUMMARY_DOC_MIME,
-    _SUMMARY_MAX_IMAGE_BYTES,
-    _SUMMARY_MAX_DOC_BYTES,
-)
+
 from kdcube_ai_app.tools.content_type import is_text_mime_type
 
 
@@ -80,8 +77,8 @@ async def ingest_user_attachments(
             info = ExtractInfo(mime=resolved_mime, ext=resolved_ext, meta={}, warnings=[])
 
         base64_data = None
-        if mime in _SUMMARY_IMAGE_MIME or mime in _SUMMARY_DOC_MIME:
-            limit = _SUMMARY_MAX_IMAGE_BYTES if mime in _SUMMARY_IMAGE_MIME else _SUMMARY_MAX_DOC_BYTES
+        if mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME:
+            limit = MODALITY_MAX_IMAGE_BYTES if mime in MODALITY_IMAGE_MIME else MODALITY_MAX_DOC_BYTES
             if size <= limit:
                 base64_data = base64.b64encode(data).decode("ascii")
             else:
@@ -155,9 +152,9 @@ def attachment_blocks(
         mime = (a.get("mime") or a.get("mime_type") or "").strip()
         base64_data = a.get("base64")
         if include_modal:
-            if base64_data and mime in _SUMMARY_IMAGE_MIME:
+            if base64_data and mime in MODALITY_IMAGE_MIME:
                 blocks.append({"type": "image", "data": base64_data, "media_type": mime, "cache": True})
-            elif base64_data and mime in _SUMMARY_DOC_MIME:
+            elif base64_data and mime in MODALITY_DOC_MIME:
                 blocks.append({"type": "document", "data": base64_data, "media_type": mime, "cache": True})
         if include_text and is_text_mime_type(mime):
             text_val = (a.get("text") or "").strip()

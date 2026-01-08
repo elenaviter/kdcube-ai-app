@@ -22,7 +22,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove
 from kdcube_ai_app.apps.chat.sdk.util import _today_str, _now_up_to_minutes
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import create_cached_human_message, create_cached_system_message
-from kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends import _SUMMARY_IMAGE_MIME, _SUMMARY_DOC_MIME
+from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME
 
 logger = logging.getLogger("with_llm_backends")
 
@@ -952,9 +952,9 @@ async def generate_content_llm(
                     filename = (a.get("filename") or "").strip()
                     summary = (a.get("summary") or "").strip()
                     size = a.get("size") or a.get("size_bytes")
-                    if data_b64 and mime in _SUMMARY_IMAGE_MIME:
+                    if data_b64 and mime in MODALITY_IMAGE_MIME:
                         blocks.append({"type": "image", "data": data_b64, "media_type": mime, "cache": False})
-                    elif data_b64 and mime in _SUMMARY_DOC_MIME:
+                    elif data_b64 and mime in MODALITY_DOC_MIME:
                         blocks.append({"type": "document", "data": data_b64, "media_type": mime, "cache": False})
                     elif data_b64 and mime:
                         logger.warning("generate_content_llm: skipping unsupported attachment mime=%s", mime)

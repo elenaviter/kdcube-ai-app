@@ -557,7 +557,7 @@ You will see an "objective" and "queries" below in INPUT CONTEXT section. This i
                     artifact_name=None,
                     channel_to_stream="debug",
                     temperature=0.7,
-                    on_thinking_fn=on_thinking_fn,
+                    on_thinking_fn=on_progress_delta,
                     on_delta_fn=on_delta_fn,
                     infra_call=True,
                     include_url_in_source_digest=True

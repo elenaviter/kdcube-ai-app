@@ -52,7 +52,7 @@ In the workflow (`kdcube_ai_app/apps/custom_apps/codegen/orchestrator/workflow.p
   supported mimes:
   - Images: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
   - Docs: `application/pdf`
-- Base64 payloads are size-limited (`_SUMMARY_MAX_IMAGE_BYTES`, `_SUMMARY_MAX_DOC_BYTES`).
+- Base64 payloads are size-limited (`MODALITY_MAX_IMAGE_BYTES`, `_SUMMARY_MAX_DOC_BYTES`).
 
 When composing messages, `_messages_with_context(...)` in
 `kdcube_ai_app/apps/chat/sdk/context/retrieval/documenting.py` uses

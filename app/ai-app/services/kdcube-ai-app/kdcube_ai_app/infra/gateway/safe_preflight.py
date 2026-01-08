@@ -8,10 +8,12 @@ import io, re, asyncio, zipfile, time, os
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 
+from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_IMAGE_MIME, MODALITY_DOC_MIME
+
+
 # ---------- Config & Result ----------
 
-_SUMMARY_IMAGE_MIME = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-_SUMMARY_DOC_MIME = {"application/pdf"}
+
 
 @dataclass
 class PreflightConfig:
@@ -258,7 +260,7 @@ async def preflight_async(
         if infected:
             return res.deny(f"AV detected malware: {sig}")
 
-    if mime in _SUMMARY_DOC_MIME or data.startswith(b"%PDF"):
+    if mime in MODALITY_DOC_MIME or data.startswith(b"%PDF"):
         r = preflight_pdf(data, cfg)
         res.meta.update(r.meta)
         if not r.allowed:
@@ -286,7 +288,7 @@ async def preflight_async(
             res.reasons.extend(r.reasons)
         return res
 
-    if mime in _SUMMARY_IMAGE_MIME:
+    if mime in MODALITY_IMAGE_MIME:
         r = preflight_image(data, mime)
         res.meta.update(r.meta)
         return res
