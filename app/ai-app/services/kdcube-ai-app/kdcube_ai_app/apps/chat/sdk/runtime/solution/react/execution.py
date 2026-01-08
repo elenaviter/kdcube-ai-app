@@ -126,6 +126,44 @@ def _prepare_summary_artifact(artifact: Dict[str, Any], base_dir: Optional[pathl
         "read_error": read_error,
     }
 
+def _prepare_write_tool_summary_artifact(
+    *,
+    tool_id: str,
+    output: Any,
+    inputs: Optional[Dict[str, Any]],
+    base_dir: Optional[pathlib.Path],
+    context: ReactContext,
+) -> Optional[Dict[str, Any]]:
+    if not tools_insights.is_write_tool(tool_id):
+        return None
+
+    file_path = ""
+    if isinstance(output, dict) and isinstance(output.get("path"), str):
+        file_path = output.get("path", "").strip()
+    elif isinstance(output, str):
+        file_path = output.strip()
+
+    if not file_path:
+        return None
+
+    surrogate_text, mime_hint = context._surrogate_from_writer_inputs(
+        tool_id=tool_id,
+        inputs=inputs or {},
+    )
+    filename = pathlib.Path(file_path).name if file_path else ""
+    artifact = {
+        "type": "file",
+        "output": {
+            "path": file_path,
+            "text": surrogate_text or "",
+            "mime": mime_hint or tools_insights.default_mime_for_write_tool(tool_id),
+            "filename": filename,
+        },
+        "mime": mime_hint or "",
+        "filename": filename,
+    }
+    return _prepare_summary_artifact(artifact, base_dir)
+
 def _extract_error_from_output(output: Any) -> Optional[Dict[str, Any]]:
     """
     Extract error information from tool output if present.
@@ -762,9 +800,17 @@ async def _execute_tool_in_memory(
             msg = msg[:197] + "..."
         summary = f"ERROR [{code}] at {where}: {msg}"
     else:
+        summary_artifact = _prepare_write_tool_summary_artifact(
+            tool_id=tool_id,
+            output=output,
+            inputs=params,
+            base_dir=outdir,
+            context=context,
+        )
         summary_obj, summary = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=output,
+            summary_artifact=summary_artifact,
             use_llm_summary=use_llm_summary,
             llm_service=llm_service,
             call_reason=call_reason,
@@ -1015,9 +1061,17 @@ async def execute_tool_in_isolation(
             msg = msg[:197] + "..."
         summary = f"ERROR [{code}] at {where}: {msg}"
     else:
+        summary_artifact = _prepare_write_tool_summary_artifact(
+            tool_id=tool_id,
+            output=output,
+            inputs=params,
+            base_dir=outdir,
+            context=context,
+        )
         summary_obj, summary = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=output,
+            summary_artifact=summary_artifact,
             use_llm_summary=use_llm_summary,
             llm_service=llm_service,
             call_reason=call_reason,
