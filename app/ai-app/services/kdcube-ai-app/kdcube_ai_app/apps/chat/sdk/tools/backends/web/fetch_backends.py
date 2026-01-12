@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from kdcube_ai_app.apps.chat.sdk.tools.web.web_extractors import WebContentFetcher
 from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import filter_fetch_results
 from kdcube_ai_app.tools.content_type import fetch_url_with_content_type, guess_mime_from_url
+from kdcube_ai_app.tools.scrap_utils import build_content_blocks_from_html
 from kdcube_ai_app.infra.service_hub.multimodality import (
     MODALITY_IMAGE_MIME,
     MODALITY_DOC_MIME,
@@ -19,7 +20,7 @@ from kdcube_ai_app.infra.service_hub.multimodality import (
 
 logger = logging.getLogger(__name__)
 
-async def _materialize_binary_attachment(url: str) -> Dict[str, Any]:
+async def _materialize_binary_attachment(url: str, *, include_base64: bool = True) -> Dict[str, Any]:
     if not url:
         return {}
     try:
@@ -35,7 +36,7 @@ async def _materialize_binary_attachment(url: str) -> Dict[str, Any]:
         mime = (guess_mime_from_url(url) or "").strip().lower()
     size_bytes = len(content_bytes or b"")
     base64_data = None
-    if mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME:
+    if include_base64 and (mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME):
         limit = MODALITY_MAX_IMAGE_BYTES if mime in MODALITY_IMAGE_MIME else MODALITY_MAX_DOC_BYTES
         if size_bytes and size_bytes <= limit:
             base64_data = base64.b64encode(content_bytes).decode("ascii")
@@ -52,6 +53,8 @@ async def fetch_search_results_content(
         use_archive_fallback: bool = False,
         extraction_mode: Optional[str]="custom",
         MAX_CONCURRENT_WEB_FETCHES: int = 5,
+        include_binary_base64: bool = True,
+        include_content_blocks: bool = True,
 ) -> list[dict]:
     """
     Best-effort content materialization for search results.
@@ -74,7 +77,11 @@ async def fetch_search_results_content(
             enable_archive=use_archive_fallback,
             extraction_mode=extraction_mode
     ) as fetcher:
-        fetch_results = await fetcher.fetch_multiple(urls=urls, max_length=max_content_length)
+        fetch_results = await fetcher.fetch_multiple(
+            urls=urls,
+            max_length=max_content_length,
+            include_raw_html=include_content_blocks,
+        )
 
     success_count = 0
 
@@ -94,7 +101,10 @@ async def fetch_search_results_content(
             row["mime"] = fetch_result.get("mime")
 
         if fetch_status in ("non_html", "pdf_redirect"):
-            attach = await _materialize_binary_attachment(row.get("url", ""))
+            attach = await _materialize_binary_attachment(
+                row.get("url", ""),
+                include_base64=include_binary_base64,
+            )
             if attach.get("mime"):
                 row["mime"] = attach.get("mime")
             if attach.get("size_bytes") is not None:
@@ -123,6 +133,8 @@ async def fetch_search_results_content(
         row["content_length"] = fetch_result.get("content_length", 0)
         if not row.get("mime"):
             row["mime"] = "text/html"
+        if include_content_blocks:
+            row["content_blocks"] = []
 
         for k in [
             "published_time_raw",
@@ -136,6 +148,16 @@ async def fetch_search_results_content(
         ]:
             if k in fetch_result:
                 row[k] = fetch_result.get(k)
+
+        if include_content_blocks:
+            raw_html = fetch_result.get("raw_html") or ""
+            if raw_html.strip():
+                blocks = build_content_blocks_from_html(
+                    post_url=row.get("url") or "",
+                    raw_html=raw_html,
+                    title=row.get("title") or "",
+                )
+                row["content_blocks"] = blocks
 
         success_count += 1
 
@@ -161,6 +183,12 @@ async def fetch_url_contents(
                 "If true, then for pages that are blocked, paywalled, or error on direct fetch, "
                 "also try an archive mirror (e.g. web.archive.org).",
         )] = False,
+        include_binary_base64: Annotated[bool, (
+                "If true, attach base64 for binary/image/PDF fetches when size limits allow."
+        )] = True,
+        include_content_blocks: Annotated[bool, (
+                "If true, include ordered content blocks (text/image) derived from the page HTML."
+        )] = True,
         extraction_mode: str = "custom",
         refinement="none",
         objective: Optional[str] = None,
@@ -175,6 +203,11 @@ async def fetch_url_contents(
         '    "modified_time_iso": "2025-09-20T11:00:00+00:00" | null,\n'
         '    "date_method": "<how the date was inferred>" | null,\n'
         '    "date_confidence": 0.0–1.0,\n'
+        '    "content_blocks": [\n'
+        '      {"type": "text", "text": "..."},\n'
+        '      {"type": "image", "url": "https://...", "alt": "...", "caption": "..."},\n'
+        '      {"type": "image", "mime": "image/png", "base64": "...", "alt": "...", "caption": "..."}\n'
+        '    ],\n'
         '    "error": "<error message if any>"\n'
         "  },\n"
         "  \"...\": { ... }\n"
@@ -303,6 +336,7 @@ async def fetch_url_contents(
         fetch_list = await fetcher.fetch_multiple(
             urls=normalized_urls,
             max_length=max_content_length,
+            include_raw_html=include_content_blocks,
         )
 
     for url, fetch_result in zip(normalized_urls, fetch_list):
@@ -313,6 +347,7 @@ async def fetch_url_contents(
                 "status": "error",
                 "content": "",
                 "content_length": 0,
+                "source_type": "web",
                 "fetched_time_iso": fetched_time_iso,
                 "published_time_iso": None,
                 "modified_time_iso": None,
@@ -329,12 +364,15 @@ async def fetch_url_contents(
             "status": status,
             "content": content,
             "content_length": len(content),
+            "source_type": "web",
             "fetched_time_iso": fetched_time_iso,
             "published_time_iso": fetch_result.get("published_time_iso"),
             "modified_time_iso": fetch_result.get("modified_time_iso"),
             "date_method": fetch_result.get("date_method"),
             "date_confidence": fetch_result.get("date_confidence", 0.0),
         }
+        if include_content_blocks:
+            entry["content_blocks"] = []
         if fetch_result.get("mime"):
             entry["mime"] = fetch_result.get("mime")
 
@@ -342,7 +380,10 @@ async def fetch_url_contents(
             entry["error"] = fetch_result.get("error")
 
         if status in ("non_html", "pdf_redirect"):
-            attach = await _materialize_binary_attachment(url)
+            attach = await _materialize_binary_attachment(
+                url,
+                include_base64=include_binary_base64,
+            )
             if attach.get("mime"):
                 entry["mime"] = attach.get("mime")
             if attach.get("size_bytes") is not None:
@@ -356,6 +397,13 @@ async def fetch_url_contents(
                 entry["error"] = attach.get("error")
         elif status in ("success", "archive"):
             entry["mime"] = entry.get("mime") or "text/html"
+            if include_content_blocks:
+                raw_html = fetch_result.get("raw_html") or ""
+                blocks = build_content_blocks_from_html(
+                    post_url=url,
+                    raw_html=raw_html,
+                )
+                entry["content_blocks"] = blocks
 
         results[url] = entry
 

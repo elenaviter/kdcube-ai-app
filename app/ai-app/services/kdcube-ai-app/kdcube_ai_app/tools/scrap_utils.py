@@ -18,6 +18,103 @@ from kdcube_ai_app.tools.extraction_types import ImageSpec
 
 logger = logging.getLogger(__name__)
 
+_DATA_IMAGE_RE = re.compile(r"^data:([^;]+);base64,(.+)$", re.IGNORECASE)
+
+def build_content_blocks_from_html(
+        *,
+        post_url: str,
+        raw_html: str,
+        title: str = "",
+) -> List[Dict[str, Any]]:
+    """
+    Build ordered content blocks (text/image) from cleaned HTML.
+    Keeps inline data:image embeds as image blocks; text blocks are kept in order.
+    """
+    raw_html = raw_html or ""
+    if not raw_html.strip():
+        return []
+
+    if not title:
+        title = html_title(raw_html) or ""
+
+    clean_fragment = make_clean_content_html(
+        post_url=post_url,
+        raw_html=raw_html,
+        title=title or "",
+        strip_data_images=False,
+    )
+    if not clean_fragment:
+        return []
+
+    soup = BeautifulSoup(clean_fragment, "lxml")
+    container = soup.find("article") or soup.body or soup
+    blocks: List[Dict[str, Any]] = []
+    skipped: set[int] = set()
+
+    def _add_text(text: str) -> None:
+        t = (text or "").strip()
+        if t:
+            blocks.append({"type": "text", "text": t})
+
+    def _add_image(src: str, alt: Optional[str] = None, caption: Optional[str] = None) -> None:
+        if not src:
+            return
+        src = src.strip()
+        block: Dict[str, Any] = {"type": "image"}
+        if alt:
+            block["alt"] = alt.strip()
+        if caption:
+            block["caption"] = caption.strip()
+        m = _DATA_IMAGE_RE.match(src)
+        if m:
+            block["mime"] = m.group(1).strip().lower()
+            block["base64"] = m.group(2).strip()
+        else:
+            block["url"] = src
+        blocks.append(block)
+
+    def _walk(node: Any) -> None:
+        for child in list(getattr(node, "children", []) or []):
+            if not hasattr(child, "name"):
+                continue
+            if id(child) in skipped:
+                continue
+            if not child.name:
+                continue
+            tag = child.name.lower()
+            if tag in {"h1", "h2", "h3", "h4", "h5", "h6", "p", "pre", "blockquote"}:
+                _add_text(child.get_text(" ", strip=True))
+                continue
+            if tag in {"ul", "ol"}:
+                for li in child.find_all("li", recursive=False):
+                    _add_text(li.get_text(" ", strip=True))
+                continue
+            if tag == "table":
+                _add_text(child.get_text(" ", strip=True))
+                continue
+            if tag == "figure":
+                img = child.find("img")
+                caption = None
+                cap = child.find("figcaption")
+                if cap:
+                    caption = cap.get_text(" ", strip=True)
+                    skipped.add(id(cap))
+                if img and img.get("src"):
+                    _add_image(
+                        img.get("src"),
+                        alt=img.get("alt"),
+                        caption=caption,
+                    )
+                    skipped.add(id(img))
+                continue
+            if tag == "img":
+                _add_image(child.get("src", ""), alt=child.get("alt"))
+                continue
+            _walk(child)
+
+    _walk(container)
+    return blocks
+
 try:
     from markdownify import markdownify as _md_convert
 except Exception:
@@ -813,6 +910,7 @@ def make_clean_content_html(
         canonical: Optional[str] = None,
         categories: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
+        strip_data_images: bool = True,
 ) -> str:
     """
     PRODUCTION-READY version with two-phase cleaning:
@@ -915,6 +1013,9 @@ def make_clean_content_html(
 
             for img in content_container.select("img[src]"):
                 src = img.get("src")
+                if strip_data_images and src and src.strip().lower().startswith("data:"):
+                    img.decompose()
+                    continue
                 if src:
                     try:
                         img["src"] = urljoin(post_url, src)

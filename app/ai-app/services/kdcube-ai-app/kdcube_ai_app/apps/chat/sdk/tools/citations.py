@@ -237,6 +237,7 @@ def _normalize_citation_chars(text: str) -> str:
 CITATION_OPTIONAL_ATTRS = (
     "provider", "published_time_iso", "modified_time_iso", "fetched_time_iso", "expiration",
     "mime", "base64", "size_bytes", "source_type", "rn", "local_path", "artifact_path", "author",
+    "turn_id",
     "content_length", "fetch_status", # "content",
     "objective_relevance", "query_relevance", "authority", "favicon_url",
     "favicon", "favicon_status",
@@ -257,6 +258,7 @@ canonical_source_shape_reference = {
     "size_bytes": int,           # optional (multimodal payload size)
     "local_path": str,           # optional (local file path for file sources)
     "artifact_path": str,        # optional (turn_id.files.<artifact_name>)
+    "turn_id": str,              # optional (turn where source first appeared)
 
     # metadata
     "provider": str, # "web" | "kb." | ...
@@ -505,6 +507,7 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
                 existing["title"] = row.get("title","")
             if len(row.get("text","")) > len(existing.get("text","")):
                 existing["text"] = row.get("text","")
+            existing.pop("content_blocks", None)
 
             # Richer full content wins
             if len(row.get("content", "")) > len(existing.get("content", "")):
@@ -555,6 +558,7 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
         for k in CITATION_OPTIONAL_ATTRS:
             if row.get(k):
                 kept[k] = row[k]
+        kept.pop("content_blocks", None)
         by_url[key] = kept
 
     for r in prior or []:

@@ -31,6 +31,15 @@ from urllib.parse import urlparse
 
 from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import truncate_text
 
+_DATA_IMAGE_MD_RE = re.compile(r"!\[[^\]]*\]\(\s*data:image[^)]*\)", re.IGNORECASE)
+_DATA_IMAGE_HTML_RE = re.compile(r"<img[^>]+src=[\"']data:image[^\"']*[\"'][^>]*>", re.IGNORECASE)
+
+def _strip_data_image_embeds(text: str) -> str:
+    if not text:
+        return ""
+    out = _DATA_IMAGE_MD_RE.sub("", text)
+    return _DATA_IMAGE_HTML_RE.sub("", out)
+
 # Trafilatura for main content extraction
 try:
     import trafilatura
@@ -924,6 +933,7 @@ class ContentExtractor:
             return ""
 
         content = text_utils.strip_surrogates(content)
+        content = _strip_data_image_embeds(content)
 
         # Basic quality check - but be lenient
         if len(content.strip()) < 50:
@@ -955,6 +965,7 @@ class ContentExtractor:
                 title=title or "",
             )
             markdown = html_fragment_to_markdown(clean_fragment)
+            markdown = _strip_data_image_embeds(markdown)
 
             if markdown and len(markdown.strip()) >= 200:
                 markdown = text_utils.strip_surrogates(markdown)
@@ -1139,7 +1150,8 @@ class WebContentFetcher:
     async def fetch_multiple(
             self,
             urls: list[str],
-            max_length: int = 15000
+            max_length: int = 15000,
+            include_raw_html: bool = False,
     ) -> list[Dict[str, Any]]:
         """
         Fetch content for multiple URLs with concurrency control.
@@ -1155,12 +1167,12 @@ class WebContentFetcher:
 
         async def fetch_with_semaphore(url: str):
             async with semaphore:
-                return await self.fetch_single(url, max_length)
+                return await self.fetch_single(url, max_length, include_raw_html=include_raw_html)
 
         tasks = [fetch_with_semaphore(url) for url in urls]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def fetch_single(self, url: str, max_length: int = 15000) -> Dict[str, Any]:
+    async def fetch_single(self, url: str, max_length: int = 15000, *, include_raw_html: bool = False) -> Dict[str, Any]:
         """
         Fetch and extract content from a single URL with smart header selection.
 
@@ -1204,6 +1216,8 @@ class WebContentFetcher:
             html, status, last_modified, content_type = await self._fetch_html(url)
             if content_type:
                 result["mime"] = content_type
+            if include_raw_html and html:
+                result["raw_html"] = html
 
             if not html:
                 result["status"] = status

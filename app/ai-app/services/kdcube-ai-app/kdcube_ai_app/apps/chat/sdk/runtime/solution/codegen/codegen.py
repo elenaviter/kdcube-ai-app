@@ -473,7 +473,7 @@ class CodegenRunner:
         )
         common_ids = {
             a.get("id") for a in adapters
-            if a.get("id") not in tools_insights.INFRA_TOOL_IDS
+            if a.get("id") not in tools_insights.CODEGEN_ONLY_TOOL_IDS
         }
         special_adapters = [a for a in adapters if a.get("id") not in common_ids]
         # ---------- light defaults (not passed in this signature) ----------

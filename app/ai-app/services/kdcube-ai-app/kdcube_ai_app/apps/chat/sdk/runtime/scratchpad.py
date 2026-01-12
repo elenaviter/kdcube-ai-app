@@ -15,6 +15,7 @@ from abc import ABC, abstractmethod
 
 from kdcube_ai_app.apps.chat.sdk.context.vector.conv_ticket_store import Ticket
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import build_full_solver_payload, SolveResult
+from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import strip_base64_from_value
 from kdcube_ai_app.apps.chat.sdk.util import _to_jsonable, _shorten
 import re
 from kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends import summarize_user_attachment
@@ -306,7 +307,7 @@ class TurnScratchpad:
             "prompt": prompt_artifact,
             "attachments": self._compact_user_attachments_for_turn_log(),
         }
-        tl["sources_pool"] = self.sources_pool
+        tl["sources_pool"] = self._compact_sources_pool_for_turn_log()
         tl["turn_log"] = self.tlog.to_payload()
         return tl
 
@@ -519,6 +520,19 @@ class TurnScratchpad:
                 "description": (f.get("description") or "").strip(),
                 "kind": "file",
             })
+        return out
+
+    def _compact_sources_pool_for_turn_log(self) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for src in self.sources_pool or []:
+            if not isinstance(src, dict):
+                continue
+            compact = strip_base64_from_value(src)
+            if not isinstance(compact, dict):
+                continue
+            compact.pop("content", None)
+            compact.pop("content_blocks", None)
+            out.append(compact)
         return out
 
     def user_attachments_section_for_gate_agents(self) -> str:

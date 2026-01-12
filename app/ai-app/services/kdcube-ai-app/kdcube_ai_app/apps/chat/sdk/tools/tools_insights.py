@@ -19,9 +19,18 @@ BUILTIN_TOOLS = {
     "exec_tools.execute_code_python",
 }
 
+# Infrastructure tools (all infra helpers).
 INFRA_TOOL_IDS = {
     "io_tools.save_ret",
     "io_tools.tool_call",
+    "ctx_tools.fetch_turn_artifacts",
+    "ctx_tools.fetch_ctx",
+    "ctx_tools.merge_sources",
+}
+
+# Codegen-only infra tools (hidden from decision/common tool list).
+CODEGEN_ONLY_TOOL_IDS = {
+    "io_tools.save_ret",
     "ctx_tools.fetch_turn_artifacts",
     "ctx_tools.fetch_ctx",
     "ctx_tools.merge_sources",
@@ -41,13 +50,11 @@ CITATION_AWARE_TOOL_IDS = {
 }
 
 CITATION_AWARE_WANT_SOURCES_LIST_TOOL_IDS = {
-    "llm_tools.generate_content_llm"
-}
-CITATION_AWARE_WANT_SOURCES_PARAM_TOOL_IDS = {
+    "llm_tools.generate_content_llm",
     "generic_tools.write_pdf",
     "generic_tools.write_docx",
     "generic_tools.write_html",
-    "generic_tools.write_pptx"
+    "generic_tools.write_pptx",
 }
 
 WRITE_TOOLS = {
@@ -100,9 +107,6 @@ def does_tool_accept_sources(tool_id: str) -> bool:
 
 def wants_sources_list(tool_id: str) -> bool:
     return tool_id in CITATION_AWARE_WANT_SOURCES_LIST_TOOL_IDS
-
-def wants_sources_param(tool_id: str) -> bool:
-    return tool_id in CITATION_AWARE_WANT_SOURCES_PARAM_TOOL_IDS
 
 def is_search_tool(tool_id: str) -> bool|None:
     # None means "we do not know"

@@ -681,7 +681,8 @@ class AgentIO:
         name="tool_call",
         description=(
                 "Execute a tool function and persist the call payload to OUTPUT_DIR as JSON "
-                "(indexing the filename per tool). Returns the tool's raw result."
+                "(indexing the filename per tool). Returns the tool's raw result. "
+                "Mandatory to use from generated code (and ONLY from generated code) to invoke any catalog tool. Never should be called as a tool from tool-calling agents."
         )
     )
     async def tool_call(

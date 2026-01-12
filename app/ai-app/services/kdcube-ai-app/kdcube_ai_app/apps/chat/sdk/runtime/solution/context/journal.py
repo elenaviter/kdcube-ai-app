@@ -15,7 +15,8 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.strategy_and_budget impo
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.context.retrieval as ctx_retrieval_module
-from kdcube_ai_app.apps.chat.sdk.util import _truncate, _turn_id_from_tags_safe, _to_jsonable, ts_key, _shorten
+from kdcube_ai_app.apps.chat.sdk.util import _truncate, _turn_id_from_tags_safe, _to_jsonable, ts_key, _shorten, estimate_b64_size
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import estimate_tokens
 
 
 def _format_full_value_for_journal(val: Any) -> str:
@@ -163,9 +164,30 @@ def build_turn_session_journal(*,
 
     def _format_sources_lines(sources: List[Dict[str, Any]], *, used_sids: Optional[set[int]] = None) -> List[str]:
         lines_local: List[str] = []
-        for i, src in enumerate(sources[:max_sources_per_turn], 1):
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        order: List[str] = []
+        for src in sources[:max_sources_per_turn]:
             if not isinstance(src, dict):
                 continue
+            origin = (src.get("turn_id") or "").strip() or "unknown"
+            if origin not in groups:
+                groups[origin] = []
+                order.append(origin)
+            groups[origin].append(src)
+        idx = 0
+        for origin in order:
+            group = groups.get(origin) or []
+            sids = []
+            for src in group:
+                try:
+                    sid = int(src.get("sid"))
+                    sids.append(f"S{sid}")
+                except Exception:
+                    continue
+            if sids:
+                lines_local.append(f"  {origin}: " + ", ".join(sids))
+            for src in group:
+                idx += 1
             sid = src.get("sid")
             url = (src.get("url") or "").strip()
             title = (src.get("title") or "").strip()
@@ -177,6 +199,28 @@ def build_turn_session_journal(*,
             extra = []
             if mime:
                 extra.append(f"mime={mime}")
+            source_type = (src.get("source_type") or "").strip()
+            if source_type:
+                extra.append(f"type={source_type}")
+            text_val = src.get("content") or src.get("text") or ""
+            if isinstance(text_val, str) and text_val:
+                try:
+                    text_bytes = len(text_val.encode("utf-8"))
+                except Exception:
+                    text_bytes = None
+                try:
+                    text_tokens = estimate_tokens(text_val)
+                except Exception:
+                    text_tokens = None
+                if text_bytes is not None:
+                    extra.append(f"text_bytes={text_bytes}")
+                if text_tokens is not None:
+                    extra.append(f"text_toks={text_tokens}")
+            if has_b64 and isinstance(src.get("base64"), str):
+                b64_bytes = estimate_b64_size(src.get("base64"))
+                if b64_bytes is not None:
+                    extra.append(f"b64_bytes={b64_bytes}")
+                    extra.append(f"b64_toks={max(1, int(b64_bytes // 4))}")
             fetched_time_iso = (src.get("fetched_time_iso") or "").strip()
             if fetched_time_iso:
                 extra.append(f"fetched={fetched_time_iso}")
@@ -190,9 +234,9 @@ def build_turn_session_journal(*,
                 extra.append("multimodal")
             extra_txt = (" | " + " ".join(extra)) if extra else ""
             if title:
-                lines_local.append(f"  {i}. {used_mark} S{sid} {url} | {title}{extra_txt}")
+                lines_local.append(f"    {idx}. {used_mark} S{sid} {url} | {title}{extra_txt}")
             else:
-                lines_local.append(f"  {i}. {used_mark} S{sid} {url}{extra_txt}")
+                lines_local.append(f"    {idx}. {used_mark} S{sid} {url}{extra_txt}")
         return lines_local
 
     def _format_attachment_paths(attachments: List[Dict[str, Any]], *, turn_id: str) -> List[str]:
@@ -687,8 +731,8 @@ def build_turn_session_journal(*,
             objective_preview = ""
             if isinstance(obj, str) and obj.strip():
                 objective_preview = obj.strip()
-                if len(objective_preview) > 160:
-                    objective_preview = objective_preview[:157] + "…"
+                if len(objective_preview) > 300:
+                    objective_preview = objective_preview[:299] + "…"
 
             return queries_preview, objective_preview
 
@@ -723,7 +767,7 @@ def build_turn_session_journal(*,
                 if error:
                     lines.append(
                         f"- {idx:02d}. {art_id} ← {tid}: {status} - "
-                        f"{error.get('code')}: {error.get('message', '')[:150]}"
+                        f"{error.get('code')}: {error.get('message', '')[:300]}"
                     )
                     if summ:
                         lines.append(f"    summary: {summ}")
@@ -756,6 +800,20 @@ def build_turn_session_journal(*,
                             lines.append(f"      queries  : {q_prev}")
                         if obj_prev:
                             lines.append(f"      objective: \"{obj_prev}\"")
+                if tools_insights.is_search_tool(tid) or tid == "generic_tools.fetch_url_contents":
+                    produced_sids: List[str] = []
+                    if isinstance(value, list):
+                        for row in value:
+                            sid = row.get("sid") if isinstance(row, dict) else None
+                            if isinstance(sid, int):
+                                produced_sids.append(f"S{sid}")
+                    elif isinstance(value, dict):
+                        for row in value.values():
+                            sid = row.get("sid") if isinstance(row, dict) else None
+                            if isinstance(sid, int):
+                                produced_sids.append(f"S{sid}")
+                    if produced_sids:
+                        lines.append("    produced_sids: " + ", ".join(produced_sids))
 
         lines.append("")
 
@@ -785,6 +843,68 @@ def build_turn_session_journal(*,
         if file_lines:
             lines.append("[FILES — OUT_DIR-relative paths]")
             lines.extend(file_lines)
+            lines.append("")
+    except Exception:
+        pass
+
+    # Web artifacts summary (search + fetch only)
+    try:
+        web_lines: List[str] = []
+        for art_id, art in (context.artifacts or {}).items():
+            if not isinstance(art, dict):
+                continue
+            tid = (art.get("tool_id") or "").strip()
+            if not (tools_insights.is_search_tool(tid) or tid == "generic_tools.fetch_url_contents"):
+                continue
+            inputs = art.get("inputs") or {}
+            queries_preview = ""
+            if isinstance(inputs, dict):
+                q_raw = inputs.get("queries")
+                q_list: list[str] = []
+                if isinstance(q_raw, list):
+                    q_list = [str(q) for q in q_raw if isinstance(q, (str, int, float))]
+                elif isinstance(q_raw, str):
+                    try:
+                        parsed = json.loads(q_raw)
+                        if isinstance(parsed, list):
+                            q_list = [str(q) for q in parsed if isinstance(q, (str, int, float))]
+                        else:
+                            q_list = [q_raw]
+                    except Exception:
+                        q_list = [q_raw]
+                if q_list:
+                    q2 = q_list[:2]
+                    queries_preview = "; ".join([f"\"{q.strip()}\"" for q in q2 if str(q).strip()])
+                    if len(q_list) > 2:
+                        queries_preview += f"; ...+{len(q_list) - 2} more"
+            obj_preview = ""
+            obj = inputs.get("objective") if isinstance(inputs, dict) else None
+            if isinstance(obj, str) and obj.strip():
+                obj_preview = obj.strip()
+                if len(obj_preview) > 300:
+                    obj_preview = obj_preview[:299] + "..."
+            produced_sids: List[str] = []
+            value = art.get("value")
+            if isinstance(value, list):
+                for row in value:
+                    sid = row.get("sid") if isinstance(row, dict) else None
+                    if isinstance(sid, int):
+                        produced_sids.append(f"S{sid}")
+            elif isinstance(value, dict):
+                for row in value.values():
+                    sid = row.get("sid") if isinstance(row, dict) else None
+                    if isinstance(sid, int):
+                        produced_sids.append(f"S{sid}")
+            web_lines.append(f"- {art_id} <- {tid}")
+            if queries_preview:
+                web_lines.append(f"    queries  : {queries_preview}")
+            if obj_preview:
+                web_lines.append(f"    objective: \"{obj_preview}\"")
+            if produced_sids:
+                web_lines.append("    produced_sids: " + ", ".join(produced_sids))
+        if web_lines:
+            lines.append("[EXPLORED IN THIS TURN. WEB SEARCH/FETCH ARTIFACTS]")
+            lines.extend(web_lines)
             lines.append("")
     except Exception:
         pass

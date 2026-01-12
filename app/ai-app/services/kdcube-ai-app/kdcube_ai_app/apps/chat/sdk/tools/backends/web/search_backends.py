@@ -548,6 +548,9 @@ async def web_search(
         refinement: Annotated[str, "Content refinement: 'none'|'balanced'|'recall'|'precision'"] = "balanced",
         n: Annotated[int, "Max results (1-20)", {"min": 1, "max": 20}] = 8,
         fetch_content: Annotated[bool, "If true, fetch page content according to 'refinement' option."] = True,
+        include_binary_base64: Annotated[bool, (
+                "If true, attach base64 for binary/image/PDF fetches when size limits allow."
+        )] = True,
         freshness: Annotated[Optional[str], "Canonical freshness: 'day'|'week'|'month'|'year' or null."] = None,
         country: Annotated[Optional[str], "Canonical country ISO2, e.g. 'DE', 'US'."] = None,
         safesearch: Annotated[str, "Canonical safesearch: 'off'|'moderate'|'strict'."] = "moderate",
@@ -844,8 +847,13 @@ async def web_search(
 
         artifact_filtered = f"Web Search Filtered Results [{agent_suffix}]"
         filtered_idx = 0
+        filtered_results = {
+            "results": filtered_payload,
+            "objective": objective,
+            "queries": q_list,
+        }
         await emit_delta_fn(
-            json.dumps(filtered_payload, ensure_ascii=True),
+            json.dumps(filtered_results, ensure_ascii=True),
             index=filtered_idx,
             marker="subsystem",
             agent=agent_id,
@@ -863,7 +871,8 @@ async def web_search(
         fetched_rows = await fetch_search_results_content(
             search_results=reconciled_rows,
             max_content_length=-1,
-            extraction_mode="custom"
+            extraction_mode="custom",
+            include_binary_base64=include_binary_base64,
         )
         new_rows = fetched_rows
         if fetched_rows and len(fetched_rows) > 1:

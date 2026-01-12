@@ -34,6 +34,8 @@ UI_ARTIFACT_TAGS = {
     "chat:assistant"
 }
 
+SOURCES_POOL_ARTIFACT_TAG = "artifact:conv:sources_pool"
+
 FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
 CONV_START_FPS_TAG = "conv.start"
 
@@ -784,6 +786,7 @@ class ContextRAGClient:
             conversation_id: Optional[str] = None,
             track_id: Optional[str] = None,
             with_payload: bool = True,
+            extra_artifact_tags: Optional[Sequence[str]] = None,
     ) -> dict:
         """
         Returns the user msg, assistant reply, and user-visible artifacts for the turn.
@@ -862,6 +865,12 @@ class ContextRAGClient:
         citables_item: Optional[Dict[str, Any]] = None
         turn_log_item: Optional[Dict[str, Any]] = None
         files_item: Optional[Dict[str, Any]] = None
+        extra_items: Dict[str, Dict[str, Any]] = {}
+        extra_tags = {
+            (t if t.startswith("artifact:") else f"artifact:{t}")
+            for t in (extra_artifact_tags or [])
+            if isinstance(t, str) and t.strip()
+        }
 
         # rows are ordered newest-first by ts; first hit per slot wins (same semantics
         # as the old recent(..., limit=1) + first()).
@@ -905,6 +914,12 @@ class ContextRAGClient:
                     files_item = item
                 continue
 
+            if extra_tags:
+                extra_hits = tags & extra_tags
+                for hit in extra_hits:
+                    if hit not in extra_items:
+                        extra_items[hit] = item
+
         # 2) Optionally materialize payloads (ConversationStore blobs) for the items we found
         if with_payload:
             items_to_materialize = [
@@ -921,11 +936,26 @@ class ContextRAGClient:
                 ]
                 if it is not None and it.get("hosted_uri")
             ]
+            if extra_items:
+                items_to_materialize.extend(
+                    it for it in extra_items.values() if it.get("hosted_uri")
+                )
             await self._materialize_payloads_for_items(
                 items_to_materialize,
                 s3_field="hosted_uri",
                 out_field="payload",
             )
+
+            if extra_items:
+                sources_item = extra_items.get(SOURCES_POOL_ARTIFACT_TAG)
+                sources_payload = sources_item.get("payload") if sources_item else None
+                sources_pool = None
+                if isinstance(sources_payload, dict) and "sources_pool" in sources_payload:
+                    sources_pool = sources_payload.get("sources_pool")
+                elif isinstance(sources_payload, list):
+                    sources_pool = sources_payload
+                if sources_pool is not None and turn_log_item and isinstance(turn_log_item.get("payload"), dict):
+                    turn_log_item["payload"]["sources_pool"] = sources_pool
 
             # Turn-log normalization: ensure deliverables[*].value.sources_used
             # is a SID list (no materialized source dicts).

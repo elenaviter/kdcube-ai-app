@@ -335,6 +335,7 @@ def make_hit(title: str, url: str, text: str, provider: str) -> Dict[str, str]:
         "url": (url or "").strip(),
         "text": (text or "").strip(),
         "provider": p,
+        "source_type": "web",
     }
 
 def dedup_round_robin_ranked(

@@ -929,7 +929,7 @@ class ReactSolver:
         contract_for_agent = {k: v.model_dump() for k, v in (state["output_contract"] or {}).items()}
         announced_adapters = [
             a for a in state["adapters"]
-            if a["id"] not in tools_insights.INFRA_TOOL_IDS and not tools_insights.is_code_tool(a["id"])
+            if a["id"] not in tools_insights.CODEGEN_ONLY_TOOL_IDS and not tools_insights.is_code_tool(a["id"])
         ]
         extra_adapters = [a for a in state["adapters"] if tools_insights.is_code_tool(a["id"])]
         operational_digest = build_operational_digest(
@@ -1682,7 +1682,7 @@ class ReactSolver:
 
             elif tools_insights.does_tool_accept_sources(tool_id):
                 # Try to parse sources from the params we just bound
-                raw = final_params.get("sources_list") or final_params.get("sources")
+                raw = final_params.get("sources_list")
                 if isinstance(raw, list):
                     srcs_for_artifact = raw or []
 

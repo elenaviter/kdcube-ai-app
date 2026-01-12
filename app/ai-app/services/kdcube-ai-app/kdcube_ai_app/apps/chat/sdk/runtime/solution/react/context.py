@@ -187,6 +187,7 @@ class ReactContext:
     """
     Canonical in-memory state for a ReAct session.
     Persisted to <outdir>/context.json after every mutation.
+    Sources pool is stored separately in <outdir>/sources_pool.json.
     """
     # Historical materialized turns (immutable during session)
     history_turns: list[Dict] = field(default_factory=list)
@@ -199,7 +200,7 @@ class ReactContext:
     tool_call_index: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # Canonical sources pool for the *current turn* (stable SIDs)
-    sources_pool: List[Dict[str, Any]] = field(default_factory=list)
+    _sources_pool: List[Dict[str, Any]] = field(default_factory=list, repr=False)
 
     # Counters
     max_sid: int = 0
@@ -548,8 +549,43 @@ class ReactContext:
     # ---------- Persistence ----------
     def bind_storage(self, outdir: pathlib.Path) -> "ReactContext":
         self.outdir = outdir
+        self._load_sources_pool_from_disk()
         self.persist()
         return self
+
+    def _read_text_from_file_artifact(self, obj: Dict[str, Any]) -> Optional[str]:
+        try:
+            if not isinstance(obj, dict):
+                return None
+            file_obj = obj
+            if obj.get("type") != "file" and isinstance(obj.get("value"), dict) and obj["value"].get("type") == "file":
+                file_obj = obj["value"]
+            if file_obj.get("type") != "file":
+                return None
+            file_path = (file_obj.get("path") or file_obj.get("local_path") or "").strip()
+            if not file_path:
+                return None
+            fp = pathlib.Path(file_path)
+            if not fp.is_absolute() and self.outdir:
+                fp = self.outdir / fp
+            if not fp.exists() or not fp.is_file():
+                return None
+            mime = (file_obj.get("mime") or "").strip().lower()
+            suffix = fp.suffix.lower()
+            is_text = (
+                mime.startswith("text/")
+                or mime in {
+                    "application/json",
+                    "application/xml",
+                    "application/xhtml+xml",
+                }
+                or suffix in {".html", ".htm", ".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".csv", ".xml"}
+            )
+            if not is_text:
+                return None
+            return fp.read_text(encoding="utf-8")
+        except Exception:
+            return None
 
     @staticmethod
     def load_from_dict(payload: Dict[str, Any]) -> "ReactContext":
@@ -581,7 +617,9 @@ class ReactContext:
         self.tool_result_counter = cur.get("tool_result_counter") or self.tool_result_counter
 
         self.max_sid = payload.get("max_sid") or self.max_sid
-        self.sources_pool = payload.get("sources_pool") or self.sources_pool
+        legacy_pool = payload.get("sources_pool")
+        if isinstance(legacy_pool, list):
+            self._set_sources_pool(legacy_pool, persist=False)
         self.tool_call_index = payload.get("tool_call_index") or self.tool_call_index
 
         # No compatibility shims: current schema only.
@@ -592,6 +630,55 @@ class ReactContext:
         if not self.outdir:
             raise RuntimeError("ReactContext.outdir is not bound")
         return self.outdir / "context.json"
+
+    def _sources_pool_path(self) -> pathlib.Path:
+        if not self.outdir:
+            raise RuntimeError("ReactContext.outdir is not bound")
+        return self.outdir / "sources_pool.json"
+
+    def _sync_sources_pool_to_scratchpad(self) -> None:
+        try:
+            if self.scratchpad is not None:
+                self.scratchpad.sources_pool = self._sources_pool
+        except Exception:
+            pass
+
+    def _load_sources_pool_from_disk(self) -> None:
+        if not self.outdir:
+            return
+        path = self._sources_pool_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if isinstance(data, dict):
+            pool = data.get("sources_pool") or []
+        elif isinstance(data, list):
+            pool = data
+        else:
+            pool = []
+        if isinstance(pool, list):
+            self._sources_pool = pool
+            self._sync_sources_pool_to_scratchpad()
+
+    def _save_sources_pool_to_disk(self) -> None:
+        if not self.outdir:
+            return
+        payload = {"sources_pool": self._sources_pool}
+        self._sources_pool_path().write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+
+    @property
+    def sources_pool(self) -> List[Dict[str, Any]]:
+        return self._sources_pool
+
+    @sources_pool.setter
+    def sources_pool(self, pool: List[Dict[str, Any]] | None) -> None:
+        self._set_sources_pool(pool, persist=True)
 
     # --- Slot mapping logging helpers ---------------------------------
     def _slot_mapping_status(self, one_map: Dict[str, Any]) -> Dict[str, Any]:
@@ -652,7 +739,7 @@ class ReactContext:
                 "tool_result_counter": self.tool_result_counter,
             },
             "max_sid": self.max_sid,
-            "sources_pool": self.sources_pool,
+            "sources_pool": self._sources_pool,
             "last_persisted_at_ts": time.time(),
             "tool_call_index": self.tool_call_index,
         }
@@ -662,6 +749,7 @@ class ReactContext:
                 payload["budget_state"] = asdict(self.budget_state)
         except Exception:
             pass
+        self._save_sources_pool_to_disk()
         self._ctx_path().write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _surrogate_from_writer_inputs(self, *, tool_id: str, inputs: Dict[str, Any]) -> tuple[str | None, str | None]:
@@ -731,15 +819,14 @@ class ReactContext:
                 pass
             self.persist()
 
-    def set_sources_pool(self, pool: List[Dict[str, Any]] | None, *, persist: bool = True) -> None:
-        self.sources_pool = pool or []
-        try:
-            if self.scratchpad is not None:
-                self.scratchpad.sources_pool = self.sources_pool
-        except Exception:
-            pass
+    def _set_sources_pool(self, pool: List[Dict[str, Any]] | None, *, persist: bool) -> None:
+        self._sources_pool = pool or []
+        self._sync_sources_pool_to_scratchpad()
         if persist:
             self.persist()
+
+    def set_sources_pool(self, pool: List[Dict[str, Any]] | None, *, persist: bool = True) -> None:
+        self._set_sources_pool(pool, persist=persist)
 
     def _extract_source_sids(self, sources: Any) -> List[int]:
         used: List[int] = []
@@ -804,6 +891,33 @@ class ReactContext:
             return sid_list
 
         normalized = normalize_sources_any(sources)
+        if normalized:
+            for row in normalized:
+                if not isinstance(row, dict):
+                    continue
+                if not row.get("turn_id") and self.turn_id:
+                    row["turn_id"] = self.turn_id
+        if normalized:
+            try:
+                from kdcube_ai_app.infra.service_hub.multimodality import (
+                    MODALITY_IMAGE_MIME,
+                    MODALITY_DOC_MIME,
+                )
+                allowed_mime = {m.lower() for m in (MODALITY_IMAGE_MIME | MODALITY_DOC_MIME)}
+            except Exception:
+                allowed_mime = set()
+            if allowed_mime:
+                filtered: List[Dict[str, Any]] = []
+                for row in normalized:
+                    if not isinstance(row, dict):
+                        continue
+                    source_type = (row.get("source_type") or "").strip()
+                    if source_type in ("file", "attachment"):
+                        mime = (row.get("mime") or "").strip().lower()
+                        if not mime or mime not in allowed_mime:
+                            continue
+                    filtered.append(row)
+                normalized = filtered
         if not normalized:
             return sid_list
 
@@ -1379,12 +1493,19 @@ class ReactContext:
 
         # ---------- INLINE ----------
         if slot_type == "inline":
-
             # 1) Leaf-first (preferred)
             val, owner = self.resolve_path(art_path) if art_path else (None, None)
             if val:
+                if isinstance(val, dict):
+                    file_text = self._read_text_from_file_artifact(val)
+                    if isinstance(file_text, str) and file_text.strip():
+                        val = file_text
                 if not isinstance(val, str):
-                    val = json.dumps(_to_jsonable(val), ensure_ascii=False)
+                    file_text = self._read_text_from_file_artifact(owner or {})
+                    if isinstance(file_text, str) and file_text.strip():
+                        val = file_text
+                    else:
+                        val = json.dumps(_to_jsonable(val), ensure_ascii=False)
                 sources_used = (owner or {}).get("sources_used") or []
                 tool_id = (owner or {}).get("tool_id")
 
@@ -1601,6 +1722,47 @@ class ReactContext:
             if not sids:
                 return None, None
             return self.materialize_sources_by_sids(sids), {"_kind": "sources_pool", "turn_id": "current_turn"}
+
+        if path.endswith("]") and "[" in path and path.startswith("current_turn.artifacts."):
+            base_path, _, selector = path.rpartition("[")
+            base_path = base_path.strip()
+            selector = selector.rstrip("]").strip()
+            if base_path and selector:
+                val, parent = self.resolve_path(base_path)
+                rows: List[Dict[str, Any]] = []
+                if isinstance(val, dict) and isinstance(val.get("value"), list):
+                    rows = [r for r in val.get("value") if isinstance(r, dict)]
+                elif isinstance(val, list):
+                    rows = [r for r in val if isinstance(r, dict)]
+                elif isinstance(val, dict) and isinstance(val.get("value"), dict):
+                    rows = [v for v in val.get("value").values() if isinstance(v, dict)]
+                if rows:
+                    selected: List[Dict[str, Any]] = []
+                    if ":" in selector:
+                        start_s, end_s = selector.split(":", 1)
+                        start = int(start_s) if start_s.strip().isdigit() else None
+                        end = int(end_s) if end_s.strip().isdigit() else None
+                        for row in rows:
+                            sid = row.get("sid")
+                            if not isinstance(sid, int):
+                                continue
+                            if start is not None and sid < start:
+                                continue
+                            if end is not None and sid > end:
+                                continue
+                            selected.append(row)
+                    else:
+                        wanted: set[int] = set()
+                        for tok in selector.split(","):
+                            tok = tok.strip()
+                            if tok.isdigit():
+                                wanted.add(int(tok))
+                        for row in rows:
+                            sid = row.get("sid")
+                            if isinstance(sid, int) and sid in wanted:
+                                selected.append(row)
+                    if selected:
+                        return selected, parent if isinstance(parent, dict) else {"_kind": "artifact", "turn_id": "current_turn"}
 
         # ---------- Messages (past turns) ----------
         if path.endswith(".user") or path.endswith(".assistant"):
@@ -1935,9 +2097,8 @@ class ReactContext:
             multiple contributions with two newlines.
 
         Special behavior for tools that declare sources params:
-          - If tools_insights.wants_sources_param(tool_id) or
-            tools_insights.wants_sources_list(tool_id) is true, then params
-            named "sources" / "sources_list" are treated as lists:
+          - If tools_insights.wants_sources_list(tool_id) is true, then params
+            named "sources_list" are treated as lists:
               * Inline value (base_params[...] or params[...]) is used directly
                 if it's list/dict.
               * Each fetched contribution is used directly if list/dict.
@@ -1953,11 +2114,9 @@ class ReactContext:
 
         # Which special behavior do we need?
         wants_sources_list = tools_insights.wants_sources_list(tool_id=tool_id)
-        wants_sources_param = tools_insights.wants_sources_param(tool_id=tool_id)
-
         # Buckets:
         # - normal_buckets → string concatenation
-        # - sources_buckets → raw contributions for "sources"/"sources_list"
+        # - sources_buckets → raw contributions for "sources_list"
         # - attachments_buckets → raw contributions for "attachments"
         normal_buckets: Dict[str, List[str]] = {}
         sources_buckets: Dict[str, List[Any]] = {}
@@ -1974,6 +2133,39 @@ class ReactContext:
             val, parent = self.resolve_path(p)
             if val is None:
                 continue
+            try:
+                src_tool_id = (parent or {}).get("tool_id") if isinstance(parent, dict) else ""
+                if src_tool_id and (tools_insights.is_search_tool(src_tool_id) or src_tool_id == "generic_tools.fetch_url_contents"):
+                    if "[" not in p:
+                        self.add_event(
+                            kind="param_binding_skipped_unsliced_search",
+                            data={"path": p, "param": name, "tool_id": src_tool_id},
+                        )
+                        continue
+            except Exception:
+                pass
+            # If binding a file artifact to a text param, materialize file content.
+            try:
+                should_materialize = (
+                    (tools_insights.is_write_tool(tool_id) and name == "content")
+                    or (tool_id == "llm_tools.generate_content_llm" and name == "input_context")
+                )
+                if isinstance(val, dict) and val.get("type") == "file" and should_materialize:
+                    file_text = self._read_text_from_file_artifact(val)
+                    if isinstance(file_text, str):
+                        val = file_text
+            except Exception:
+                pass
+            # If binding a file path string to the same text params, materialize file content.
+            try:
+                if isinstance(val, str) and should_materialize:
+                    rel = val.strip()
+                    if rel:
+                        file_text = self._read_text_from_file_artifact({"type": "file", "path": rel})
+                        if isinstance(file_text, str):
+                            val = file_text
+            except Exception:
+                pass
 
             # NEW: Extract content lineage (single pass with binding)
             # Only track artifact paths (not messages)
@@ -2034,10 +2226,7 @@ class ReactContext:
                     pass
 
             # Special handling only for tools that actually accept sources params
-            if name in {"sources", "sources_list"} and (
-                    (name == "sources_list" and wants_sources_list)
-                    or (name == "sources" and wants_sources_param)
-            ):
+            if name == "sources_list" and wants_sources_list:
                 # For sources params we keep raw values (list/dict/str) and
                 # will parse/normalize them later.
                 sources_buckets.setdefault(name, []).append(val)
@@ -2064,7 +2253,7 @@ class ReactContext:
             else:
                 params[k] = joined
 
-        # 2) Special merging for sources / sources_list
+        # 2) Special merging for sources_list
         def _gather_sources_for_param(param_name: str) -> List[Dict[str, Any]]:
             """
             Collect inline + fetched contribution for a single sources-like param,
@@ -2102,12 +2291,6 @@ class ReactContext:
             if flat:
                 merged = self._reconcile_sources_lists([flat])
                 params["sources_list"] = merged
-
-        if wants_sources_param:
-            flat = _gather_sources_for_param("sources")
-            if flat:
-                merged = self._reconcile_sources_lists([flat])
-                params["sources"] = merged
 
         # 3) Special merging for attachments
         def _gather_attachments_for_param(param_name: str) -> List[Dict[str, Any]]:
@@ -2261,10 +2444,10 @@ class ReactContext:
     ) -> tuple[dict[str, Any], list[str]]:
         """
         1) Do the regular text binding (concatenate leaves into params).
-        2) For citations-aware tools or when sources/sources_list is explicitly present:
+        2) For citations-aware tools or when sources_list is explicitly present:
            - Gather sources from fetched artifacts' owners
            - Merge with any caller-provided sources
-           - Insert as correct param ('sources_list' for LLM generator, 'sources' for write tools), as list
+           - Insert as correct param ('sources_list'), as list
         3) Extract content lineage via bind_params (paths to non-write_* artifacts used as inputs)
 
         Returns:
@@ -2314,17 +2497,16 @@ class ReactContext:
             tool_id=tool_id
         )
 
-        # tools we auto-attach sources to (even if caller didn't map 'sources' explicitly)
+        # tools we auto-attach sources to (even if caller didn't map 'sources_list' explicitly)
         is_citation_aware = tools_insights.does_tool_accept_sources(tool_id)
 
         # choose which param this tool expects
         wants_sources_list = tools_insights.wants_sources_list(tool_id=tool_id)
-        wants_sources_param = tools_insights.wants_sources_param(tool_id=tool_id)
 
         # detect explicit mapping
         explicitly_requests_sources = any(
-            (fd or {}).get("param_name") in {"sources", "sources_list"} for fd in (fetch_directives or [])
-        ) or ("sources" in (base_params or {})) or ("sources_list" in (base_params or {}))
+            (fd or {}).get("param_name") == "sources_list" for fd in (fetch_directives or [])
+        ) or ("sources_list" in (base_params or {}))
 
         if not (is_citation_aware or explicitly_requests_sources):
             return params, content_lineage
@@ -2336,8 +2518,6 @@ class ReactContext:
         provided_list: List[Dict[str, Any]] = []
         if "sources_list" in params:
             provided_list = self._parse_sources_param_value(params["sources_list"])
-        elif "sources" in params:
-            provided_list = self._parse_sources_param_value(params["sources"])
 
         # merge + dedupe in-engine (pool-aware; ensures SIDs align with pool)
         merged = self._reconcile_sources_lists([from_fetch, provided_list])
@@ -2373,17 +2553,13 @@ class ReactContext:
                 merged = self._reconcile_sources_lists([capped])
             else:
                 # For LLM + writer tools, normalize into a clean shape
-                if wants_sources_list or wants_sources_param:
+                if wants_sources_list:
                     merged = [adapt_source_for_llm(s) for s in merged if isinstance(s, dict)]
 
             if wants_sources_list:
                 params["sources_list"] = merged
-            elif wants_sources_param:
-                params["sources"] = merged
             else:
-                # fallback: prefer 'sources' if tool unknown but asked explicitly
-                target_key = "sources_list" if ("sources_list" in (base_params or {})) else "sources"
-                params[target_key] = merged
+                params["sources_list"] = merged
 
             self.add_event(kind="param_binding_sources", data={
                 "tool": tool_id,

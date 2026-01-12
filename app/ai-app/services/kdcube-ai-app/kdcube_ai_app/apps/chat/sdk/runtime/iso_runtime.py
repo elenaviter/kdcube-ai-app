@@ -157,13 +157,27 @@ def _fix_json_bools(src: str) -> str:
 
 def _max_sid_from_context(outdir: pathlib.Path) -> int:
     try:
+        import json as _json
         p = outdir / "context.json"
         if not p.exists():
             return 0
-        import json as _json
         data = _json.loads(p.read_text(encoding="utf-8"))
+        sources_path = outdir / "sources_pool.json"
+        sources_data = None
+        if sources_path.exists():
+            try:
+                sources_data = _json.loads(sources_path.read_text(encoding="utf-8"))
+            except Exception:
+                sources_data = None
         mx = 0
-        for row in (data.get("sources_pool") or []):
+        pool = None
+        if isinstance(sources_data, dict):
+            pool = sources_data.get("sources_pool")
+        elif isinstance(sources_data, list):
+            pool = sources_data
+        if pool is None:
+            pool = data.get("sources_pool") or []
+        for row in (pool or []):
             try:
                 mx = max(mx, int(row.get("sid") or 0))
             except Exception:

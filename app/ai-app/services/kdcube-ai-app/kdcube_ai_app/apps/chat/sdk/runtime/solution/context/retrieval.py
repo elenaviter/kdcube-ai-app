@@ -17,6 +17,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.citations import (
 from kdcube_ai_app.apps.chat.sdk.util import ts_key
 
 PROJECT_LOG_SLOTS = { "project_log" }
+SOURCES_POOL_ARTIFACT_TAG = "artifact:conv:sources_pool"
 
 def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 60, rewrite_tokens_in_place: bool = True):
     """
@@ -110,12 +111,19 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
     per_turn_used: dict[str, set[int]] = {}
     per_turn_pool: dict[str, list[dict]] = {}
 
-    for rec in (history or []):
+    history_list = list(history or [])
+    for rec in history_list:
         run_id, meta = next(iter(rec.items()))
         pool_rows = _meta_sources_pool(meta)
         used_sids = _collect_used_sids(meta)
         per_turn_used[run_id] = used_sids
         per_turn_pool[run_id] = pool_rows
+
+    # Preserve first-seen turn_id by iterating oldest -> newest.
+    for rec in reversed(history_list):
+        run_id, meta = next(iter(rec.items()))
+        pool_rows = per_turn_pool.get(run_id) or []
+        used_sids = per_turn_used.get(run_id) or set()
         if not pool_rows or not used_sids:
             continue
         for row in pool_rows:
@@ -268,7 +276,8 @@ async def build_program_history_from_turn_ids(self, *,
             turn_id=tid,
             scope=scope,
             days=days,
-            with_payload=True
+            with_payload=True,
+            extra_artifact_tags=[SOURCES_POOL_ARTIFACT_TAG],
         )
 
         # Unpack rich envelopes (payload + ts + tags)

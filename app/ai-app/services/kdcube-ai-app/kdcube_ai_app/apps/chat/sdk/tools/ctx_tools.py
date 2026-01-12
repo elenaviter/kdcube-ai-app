@@ -400,6 +400,7 @@ class ContextTools:
             # Already have this URL → merge & keep original SID
             if key in by_url:
                 _merge_richer(by_url[key], src)
+                by_url[key].pop("content_blocks", None)
                 # do NOT touch SID / used_sids / max_sid
                 continue
 
@@ -438,6 +439,8 @@ class ContextTools:
             by_url[key] = row
 
         # Stable output: sort by SID so left-most items (assigned earlier) appear first
+        for row in by_url.values():
+            row.pop("content_blocks", None)
         merged = sorted(by_url.values(), key=lambda x: x["sid"])
         next_sid = _compute_next_sid(merged)
         try:
