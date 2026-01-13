@@ -1729,6 +1729,11 @@ class ReactContext:
             selector = selector.rstrip("]").strip()
             if base_path and selector:
                 val, parent = self.resolve_path(base_path)
+                if val is None and base_path.count(".") == 2 and base_path.startswith("current_turn.artifacts."):
+                    # Allow slicing on artifact root (no leaf), e.g. current_turn.artifacts.search_1[1,2]
+                    art = self.resolve_object(base_path)
+                    if isinstance(art, dict):
+                        val, parent = art, art
                 rows: List[Dict[str, Any]] = []
                 if isinstance(val, dict) and isinstance(val.get("value"), list):
                     rows = [r for r in val.get("value") if isinstance(r, dict)]
@@ -1738,13 +1743,20 @@ class ReactContext:
                     rows = [v for v in val.get("value").values() if isinstance(v, dict)]
                 if rows:
                     selected: List[Dict[str, Any]] = []
+                    def _coerce_sid(raw: Any) -> Optional[int]:
+                        if isinstance(raw, int):
+                            return raw
+                        if isinstance(raw, str) and raw.strip().isdigit():
+                            return int(raw.strip())
+                        return None
+
                     if ":" in selector:
                         start_s, end_s = selector.split(":", 1)
                         start = int(start_s) if start_s.strip().isdigit() else None
                         end = int(end_s) if end_s.strip().isdigit() else None
                         for row in rows:
-                            sid = row.get("sid")
-                            if not isinstance(sid, int):
+                            sid = _coerce_sid(row.get("sid"))
+                            if sid is None:
                                 continue
                             if start is not None and sid < start:
                                 continue
@@ -1758,8 +1770,8 @@ class ReactContext:
                             if tok.isdigit():
                                 wanted.add(int(tok))
                         for row in rows:
-                            sid = row.get("sid")
-                            if isinstance(sid, int) and sid in wanted:
+                            sid = _coerce_sid(row.get("sid"))
+                            if sid is not None and sid in wanted:
                                 selected.append(row)
                     if selected:
                         return selected, parent if isinstance(parent, dict) else {"_kind": "artifact", "turn_id": "current_turn"}
@@ -2132,6 +2144,13 @@ class ReactContext:
                 continue
             val, parent = self.resolve_path(p)
             if val is None:
+                if name == "sources_list" and wants_sources_list:
+                    self.add_event(kind="param_binding_missing", data={
+                        "param": name,
+                        "path": p,
+                        "tool_id": tool_id,
+                        "reason": "resolve_path_none",
+                    })
                 continue
             try:
                 src_tool_id = (parent or {}).get("tool_id") if isinstance(parent, dict) else ""
@@ -2229,6 +2248,20 @@ class ReactContext:
             if name == "sources_list" and wants_sources_list:
                 # For sources params we keep raw values (list/dict/str) and
                 # will parse/normalize them later.
+                if isinstance(val, list):
+                    self.add_event(kind="param_binding_sources_resolved", data={
+                        "param": name,
+                        "path": p,
+                        "tool_id": tool_id,
+                        "count": len([r for r in val if isinstance(r, dict)]),
+                    })
+                elif isinstance(val, dict):
+                    self.add_event(kind="param_binding_sources_resolved", data={
+                        "param": name,
+                        "path": p,
+                        "tool_id": tool_id,
+                        "count": 1,
+                    })
                 sources_buckets.setdefault(name, []).append(val)
                 continue
             if name == "attachments":
@@ -2566,6 +2599,16 @@ class ReactContext:
                 "merged_sources": len(merged),
                 "from_fetch": len(normalize_sources_any(from_fetch)),
                 "from_params": len(normalize_sources_any(provided_list)),
+            })
+        elif wants_sources_list and explicitly_requests_sources:
+            paths = [
+                (fd or {}).get("path")
+                for fd in (fetch_directives or [])
+                if (fd or {}).get("param_name") == "sources_list"
+            ]
+            self.add_event(kind="param_binding_sources_empty", data={
+                "tool": tool_id,
+                "paths": [p for p in paths if isinstance(p, str)],
             })
 
         return params, content_lineage

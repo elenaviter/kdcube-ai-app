@@ -282,7 +282,7 @@ async def fetch_url_contents(
     max_label_len = max(1, 120 - (len(agent_suffix) + 3))
     agent_name = f"{agent_label[:max_label_len]} [{agent_suffix}]"
 
-    artifact_thinking = "Fetch URL Contents Trace"
+    artifact_thinking = f"Fetch URL Contents Trace {agent_suffix}"
     think_idx = 0
 
     marker = "timeline_text" # "thinking"

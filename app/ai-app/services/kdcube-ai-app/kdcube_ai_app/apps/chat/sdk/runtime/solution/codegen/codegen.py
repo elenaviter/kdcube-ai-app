@@ -25,8 +25,13 @@ from kdcube_ai_app.apps.chat.sdk.runtime.snapshot import build_portable_spec
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger
 
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.infra import (mk_thinking_streamer, emit_event, collect_outputs,
-                                                                get_exec_workspace_root)
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.infra import (
+    mk_thinking_streamer,
+    emit_event,
+    collect_outputs,
+    get_exec_workspace_root,
+)
+from kdcube_ai_app.apps.chat.sdk.streaming.artifacts_channeled_streaming import CodegenJsonCodeStreamer
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import SolutionPlan, SERVICE_LOG_SLOT, _service_log_contract_entry
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.protocol import (
@@ -85,6 +90,23 @@ class CodegenRunner:
             "    asyncio.run(_main())",
             "",
         ])
+
+    def _mk_codegen_json_streamer(self, *, author: str, invocation_idx: int = 0):
+        streamer = CodegenJsonCodeStreamer(
+            channel="canvas",
+            agent=author,
+            artifact_name=f"codegen.{invocation_idx}.main_py",
+            emit_delta=self.comm.delta,
+        )
+
+        async def _emit_json(piece: str, completed: bool = False, **kwargs):
+            if completed:
+                await streamer.finish()
+                return
+            await streamer.feed(piece)
+
+        _emit_json._stream_json = True
+        return _emit_json
 
     def __init__(
             self,
@@ -244,6 +266,7 @@ class CodegenRunner:
             metadata={"track_id": track_id, "agent": self.AGENT_NAME},
         ):
             with self.scratchpad.phase("solver.codegen", agent="solver.codegen"):
+                json_streamer = self._mk_codegen_json_streamer(author=f"{self.AGENT_NAME}.solver.codegen", invocation_idx=0)
                 cg_stream = await solution_gen_stream(
                     self.svc,
                     task=current_task_spec,
@@ -252,6 +275,7 @@ class CodegenRunner:
                     output_contract=output_contract,
                     on_thinking_delta=mk_thinking_streamer(comm=self.comm,
                                                            author=f"{self.AGENT_NAME}.solver.codegen"),
+                    on_json_delta=json_streamer,
                     ctx=self.AGENT_NAME,
                     current_tool_imports=current_tool_imports,
                     code_packages=code_packages,
@@ -521,6 +545,10 @@ class CodegenRunner:
                 author = f"{self.AGENT_NAME}.solver.codegen"
                 if invocation_idx is not None:
                     author = f"{author}.{invocation_idx}"
+                json_streamer = self._mk_codegen_json_streamer(
+                    author=author,
+                    invocation_idx=invocation_idx or 0,
+                )
                 cg_stream = await solution_gen_stream(
                     self.svc,
                     timezone=self.comm_context.user.timezone,
@@ -531,6 +559,7 @@ class CodegenRunner:
                     instruction=instruction,
                     on_thinking_delta=mk_thinking_streamer(comm=self.comm,
                                                            author=author),
+                    on_json_delta=json_streamer,
                     ctx=self.AGENT_NAME,
                     code_packages=code_packages,
                     max_tokens=7000,

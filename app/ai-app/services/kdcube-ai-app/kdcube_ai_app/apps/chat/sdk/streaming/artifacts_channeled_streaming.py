@@ -354,7 +354,7 @@ class CodegenJsonCodeStreamer:
             text = "```python\n" + text
             self.started = True
         await self.emit_delta(
-            text,
+            text=text,
             index=self.index,
             marker=self.channel,
             agent=self.agent,
@@ -466,7 +466,7 @@ class CodegenJsonCodeStreamer:
         if self.started:
             await self._emit_chunk("\n```")
         await self.emit_delta(
-            "",
+            text="",
             index=self.index,
             marker=self.channel,
             agent=self.agent,

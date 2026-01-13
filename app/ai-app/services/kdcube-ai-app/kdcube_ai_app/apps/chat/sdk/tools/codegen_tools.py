@@ -146,6 +146,8 @@ async def run_codegen_tool(
         exec_id: Optional[str] = None,
         invocation_idx: Optional[int] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
+        emit_delta_fn: Optional[Callable[..., Awaitable[None]]] = None,
+        timeline_agent: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Supervisor-side meta-tool wrapper.
@@ -236,6 +238,28 @@ async def run_codegen_tool(
             "error": err,
             "summary": "ERROR: malformed result.json",
         }
+
+    if emit_delta_fn and reasoning:
+        agent_name = (timeline_agent or "solver.codegen").strip() or "solver.codegen"
+        artifact_name = f"timeline_text.codegen.{exec_id or run_id or 'run'}"
+        await emit_delta_fn(
+            text=reasoning,
+            index=0,
+            marker="timeline_text",
+            agent=agent_name,
+            format="markdown",
+            artifact_name=artifact_name,
+            completed=False,
+        )
+        await emit_delta_fn(
+            text="",
+            index=1,
+            marker="timeline_text",
+            agent=agent_name,
+            format="markdown",
+            artifact_name=artifact_name,
+            completed=True,
+        )
 
     ok = bool(payload.get("ok", False))
     out = payload.get("out") or []

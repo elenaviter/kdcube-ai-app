@@ -800,11 +800,12 @@ class _TwoSectionParser:
       internal : after <<< BEGIN INTERNAL THINKING >>> (stream via callback)
       json     : after <<< BEGIN STRUCTURED JSON >>> (buffer only)
     """
-    def __init__(self, *, on_internal):
+    def __init__(self, *, on_internal, on_json=None):
         self.buf = ""
         self.mode = "pre"
         self.emit_from = 0
         self.on_internal = on_internal
+        self.on_json = on_json
         self.internal = ""
         self.json = ""
 
@@ -998,7 +999,10 @@ class _TwoSectionParser:
 
             if self.mode == "json":
                 # buffer tail
-                self.json += self.buf[self.emit_from:]
+                tail = self.buf[self.emit_from:]
+                if tail and self.on_json:
+                    await self.on_json(tail)
+                self.json += tail
                 self.emit_from = len(self.buf)
                 break
 
@@ -1021,7 +1025,10 @@ class _TwoSectionParser:
                     self.json = json_content
 
         elif self.mode == "json":
-            self.json += self.buf[self.emit_from:]
+            tail = self.buf[self.emit_from:]
+            if tail and self.on_json:
+                await self.on_json(tail)
+            self.json += tail
 
             # SAFEGUARD: Extract ONLY the JSON block, ignore any extra content
             # This protects against models that add content after the ```
@@ -1066,13 +1073,21 @@ async def _stream_agent_two_sections_to_json(
             if piece:
                 deltas += 1
 
-    parser = _TwoSectionParser(on_internal=_emit_progress)
+    json_cb = getattr(on_progress_delta, "_on_json", None)
+
+    async def _emit_json(piece: str):
+        if json_cb is not None:
+            await json_cb(piece, completed=False)
+
+    parser = _TwoSectionParser(on_internal=_emit_progress, on_json=_emit_json if json_cb else None)
 
     async def on_delta(piece: str):
         await parser.feed(piece)
 
     async def on_complete(_):
         await parser.finalize()
+        if json_cb is not None:
+            await json_cb("", completed=True)
         await _emit_progress("", completed=True)
         run_logger.log_step("stream_complete", {"deltas": deltas})
 

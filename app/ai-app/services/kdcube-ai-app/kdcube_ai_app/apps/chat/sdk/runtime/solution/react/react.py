@@ -52,6 +52,224 @@ from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
 )
 from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any
 
+
+class DecisionExecCodeStreamer:
+    """
+    Stream exec_tools.execute_code_python code as fenced Markdown.
+    Consumes JSON chunks from the decision agent's structured section.
+    """
+
+    def __init__(
+            self,
+            *,
+            emit_delta: Callable[..., Awaitable[None]],
+            agent: str,
+            marker: str,
+            artifact_name: str,
+    ):
+        self.emit_delta = emit_delta
+        self.agent = agent
+        self.marker = marker
+        self.artifact_name = artifact_name
+
+        self.in_string = False
+        self.escaping = False
+        self.unicode_mode = False
+        self.unicode_buf = ""
+
+        self.reading_key = False
+        self.current_key = ""
+        self.last_key: Optional[str] = None
+        self.expecting_value = False
+        self.active_key: Optional[str] = None
+        self.active_value_buf = ""
+
+        self.path_stack: List[Optional[str]] = []
+        self.tool_exec = False
+        self.streaming_code = False
+
+        self.started = False
+        self.index = 0
+
+    def _path_has(self, *keys: str) -> bool:
+        stack = [k for k in self.path_stack if k]
+        if len(stack) < len(keys):
+            return False
+        return stack[-len(keys):] == list(keys)
+
+    async def _emit_chunk(self, text: str) -> None:
+        if not text:
+            return
+        if not self.started:
+            text = "```python\n" + text
+            self.started = True
+        await self.emit_delta(
+            text=text,
+            index=self.index,
+            marker=self.marker,
+            agent=self.agent,
+            format="markdown",
+            artifact_name=self.artifact_name,
+        )
+        self.index += 1
+
+    async def feed(self, chunk: str) -> None:
+        if not chunk:
+            return
+
+        for ch in chunk:
+            if self.in_string:
+                if self.unicode_mode:
+                    self.unicode_buf += ch
+                    if len(self.unicode_buf) == 4:
+                        try:
+                            code = int(self.unicode_buf, 16)
+                            decoded = chr(code)
+                        except Exception:
+                            decoded = ""
+                        if self.reading_key:
+                            self.current_key += decoded
+                        elif self.active_key:
+                            self.active_value_buf += decoded
+                        self.unicode_mode = False
+                        self.unicode_buf = ""
+                    continue
+
+                if self.escaping:
+                    self.escaping = False
+                    if ch == "n":
+                        decoded = "\n"
+                    elif ch == "r":
+                        decoded = "\r"
+                    elif ch == "t":
+                        decoded = "\t"
+                    elif ch == "b":
+                        decoded = "\b"
+                    elif ch == "f":
+                        decoded = "\f"
+                    elif ch == "u":
+                        self.unicode_mode = True
+                        self.unicode_buf = ""
+                        continue
+                    else:
+                        decoded = ch
+
+                    if self.reading_key:
+                        self.current_key += decoded
+                    elif self.active_key:
+                        self.active_value_buf += decoded
+                    continue
+
+                if ch == "\\":
+                    self.escaping = True
+                    continue
+
+                if ch == '"':
+                    self.in_string = False
+                    if self.reading_key:
+                        self.reading_key = False
+                        self.last_key = self.current_key
+                        self.current_key = ""
+                    elif self.active_key:
+                        if self.streaming_code and self.active_value_buf:
+                            await self._emit_chunk(self.active_value_buf)
+                        value = self.active_value_buf
+                        self.active_value_buf = ""
+
+                        if self.last_key == "tool_id" and self._path_has("tool_call"):
+                            self.tool_exec = (value == "exec_tools.execute_code_python")
+                        if self.last_key == "code" and self.streaming_code:
+                            self.streaming_code = False
+
+                        self.active_key = None
+                    continue
+
+                if self.reading_key:
+                    self.current_key += ch
+                elif self.active_key:
+                    self.active_value_buf += ch
+                    if self.streaming_code:
+                        await self._emit_chunk(self.active_value_buf)
+                        self.active_value_buf = ""
+                continue
+
+            if ch == "{":
+                if self.expecting_value and self.last_key:
+                    self.path_stack.append(self.last_key)
+                else:
+                    self.path_stack.append(None)
+                self.expecting_value = False
+                continue
+
+            if ch == "}":
+                if self.path_stack:
+                    self.path_stack.pop()
+                self.expecting_value = False
+                continue
+
+            if ch == "[":
+                if self.expecting_value and self.last_key:
+                    self.path_stack.append(self.last_key)
+                else:
+                    self.path_stack.append(None)
+                self.expecting_value = False
+                continue
+
+            if ch == "]":
+                if self.path_stack:
+                    self.path_stack.pop()
+                self.expecting_value = False
+                continue
+
+            if ch == '"':
+                self.in_string = True
+                if not self.expecting_value:
+                    self.reading_key = True
+                    self.current_key = ""
+                else:
+                    if self.last_key:
+                        self.active_key = self.last_key
+                        self.active_value_buf = ""
+                        if (
+                            self.last_key == "code"
+                            and self.tool_exec
+                            and self._path_has("tool_call", "params")
+                        ):
+                            self.streaming_code = True
+                continue
+
+            if ch == ":":
+                if self.last_key is not None:
+                    self.expecting_value = True
+                continue
+
+            if ch == ",":
+                self.expecting_value = False
+                continue
+
+        if self.streaming_code and self.active_value_buf:
+            await self._emit_chunk(self.active_value_buf)
+            self.active_value_buf = ""
+
+    async def finish(self) -> None:
+        if not self.started and not self.streaming_code:
+            return
+        if self.streaming_code and self.active_value_buf:
+            await self._emit_chunk(self.active_value_buf)
+            self.active_value_buf = ""
+        if self.started:
+            await self._emit_chunk("\n```")
+        await self.emit_delta(
+            text="",
+            index=self.index,
+            marker=self.marker,
+            agent=self.agent,
+            format="markdown",
+            artifact_name=self.artifact_name,
+            completed=True,
+        )
+        self.index += 1
+
 @dataclass
 class ReactState:
     session_id: str
@@ -142,6 +360,7 @@ class ReactSolver:
         self.react_decision_stream = react_decision_stream
         self.solution_gen_stream = solution_gen_stream
         self.hosting_service = hosting_service
+        self._timeline_text_idx = 0
 
         self.codegen_runner = CodegenRunner(
             service=self.svc,
@@ -376,6 +595,47 @@ class ReactSolver:
             author = f"{self.MODULE_AGENT_NAME}.{phase}"
             await self.comm.delta(text=text, index=i, marker="thinking", agent=author, completed=completed)
         return emit_thinking_delta
+
+    def _mk_exec_code_streamer(self, phase: str, idx: int) -> Callable[[str], Awaitable[None]]:
+        streamer = DecisionExecCodeStreamer(
+            emit_delta=self.comm.delta,
+            agent=f"{self.MODULE_AGENT_NAME}.{phase}",
+            marker="canvas",
+            artifact_name=f"react.{idx}.exec_code",
+        )
+
+        async def emit_json_delta(text: str, completed: bool = False, **kwargs):
+            if completed:
+                await streamer.finish()
+                return
+            await streamer.feed(text)
+
+        return emit_json_delta
+
+    async def _emit_timeline_text(self, *, text: str, agent: str, artifact_name: str):
+        if not text:
+            return
+        idx = self._timeline_text_idx
+        await self.comm.delta(
+            text=text,
+            index=idx,
+            marker="timeline_text",
+            agent=agent,
+            format="markdown",
+            artifact_name=artifact_name,
+            completed=False,
+        )
+        self._timeline_text_idx += 1
+        await self.comm.delta(
+            text="",
+            index=self._timeline_text_idx,
+            marker="timeline_text",
+            agent=agent,
+            format="markdown",
+            artifact_name=artifact_name,
+            completed=True,
+        )
+        self._timeline_text_idx += 1
 
 
     # ----------------------------
@@ -950,11 +1210,14 @@ class ReactSolver:
                 metadata={"track_id": "A", "agent": role},
         ):
             is_wrapup = state.get("is_wrapup_round", False)
+            thinking_streamer = self._mk_thinking_streamer(f"decision ({it})")
+            exec_streamer = self._mk_exec_code_streamer(f"decision ({it})", it)
+            thinking_streamer._on_json = exec_streamer
             decision_out = await self.react_decision_stream(
                 svc=self.svc,
                 operational_digest=operational_digest,
                 adapters=extra_adapters,
-                on_progress_delta=self._mk_thinking_streamer(f"decision ({it})"),
+                on_progress_delta=thinking_streamer,
                 iteration_idx=it,
                 max_iterations=state["max_iterations"],
                 agent_name=role,
@@ -973,6 +1236,18 @@ class ReactSolver:
         elog = decision_out.get("log") or {}
         internal_thinking = decision_out.get("internal_thinking")
         error_text = (elog.get("error") or "").strip()
+        tool_call = agent_response.get("tool_call") if isinstance(agent_response, dict) else None
+        tool_reason = ""
+        if isinstance(tool_call, dict):
+            tool_reason = (tool_call.get("reasoning") or "").strip()
+        if not tool_reason:
+            tool_reason = (agent_response.get("reasoning") or "").strip()
+        if tool_reason:
+            await self._emit_timeline_text(
+                text=tool_reason,
+                agent=role,
+                artifact_name=f"timeline_text.react.decision.{it}",
+            )
         focus_slot = agent_response.get("focus_slot") or ""
         action = agent_response.get("action") or "complete"
         next_decision_step = agent_response.get("next_decision_step") or ""
