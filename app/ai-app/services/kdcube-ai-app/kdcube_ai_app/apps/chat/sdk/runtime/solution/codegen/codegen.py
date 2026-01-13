@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import time
 import pathlib
 import textwrap
 from typing import Any, Dict, List, Optional, Type, Callable, Awaitable
@@ -31,7 +32,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.infra import (
     collect_outputs,
     get_exec_workspace_root,
 )
-from kdcube_ai_app.apps.chat.sdk.streaming.artifacts_channeled_streaming import CodegenJsonCodeStreamer
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.exec import CodegenJsonCodeStreamer
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import SolutionPlan, SERVICE_LOG_SLOT, _service_log_contract_entry
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.protocol import (
@@ -91,8 +92,14 @@ class CodegenRunner:
             "",
         ])
 
-    def _mk_codegen_json_streamer(self, *, author: str, invocation_idx: int = 0):
-        streamer = CodegenJsonCodeStreamer(
+    def _mk_codegen_json_streamer(
+            self,
+            *,
+            author: str,
+            invocation_idx: int = 0,
+            streamer: Optional[CodegenJsonCodeStreamer] = None,
+    ):
+        streamer = streamer or CodegenJsonCodeStreamer(
             channel="canvas",
             agent=author,
             artifact_name=f"codegen.{invocation_idx}.main_py",
@@ -246,6 +253,8 @@ class CodegenRunner:
         # ---------- loop (single or chained) ----------
         rounds: List[Dict[str, Any]] = []
         remaining = 1  # default single pass;
+        codegen_ms: Optional[int] = None
+        exec_ms: Optional[int] = None
         current_task_spec = {
             # "objective": user_text,
             "constraints": constraints,
@@ -473,6 +482,7 @@ class CodegenRunner:
             exec_id: Optional[str] = None,
             invocation_idx: Optional[int] = None,
             attachments: Optional[List[Dict[str, Any]]] = None,
+            json_streamer: Optional[CodegenJsonCodeStreamer] = None,
     ) -> Dict[str, Any]:
         import uuid as _uuid
         import tempfile as _tempfile
@@ -548,7 +558,9 @@ class CodegenRunner:
                 json_streamer = self._mk_codegen_json_streamer(
                     author=author,
                     invocation_idx=invocation_idx or 0,
+                    streamer=json_streamer,
                 )
+                codegen_t0 = time.perf_counter()
                 cg_stream = await solution_gen_stream(
                     self.svc,
                     timezone=self.comm_context.user.timezone,
@@ -566,6 +578,7 @@ class CodegenRunner:
                     attachments=attachments,
 
                 )
+                codegen_ms = int((time.perf_counter() - codegen_t0) * 1000)
                 if cg_stream and (cg_stream.get("log") or {}).get("error"):
                     err = cg_stream["log"]["error"]
                     msg = (
@@ -658,6 +671,7 @@ class CodegenRunner:
             )
         # Do not write context because it is already written by react
         self.log.log(f"[{self.AGENT_NAME}]\nworkdir={workdir} \noutdir={outdir}", level="INFO")
+        exec_t0 = time.perf_counter()
         run_res = await self._execute_program(
             workdir=workdir,
             output_dir=outdir,
@@ -672,6 +686,7 @@ class CodegenRunner:
                 **({"EXECUTION_ID": exec_id} if exec_id else {}),
             }
         )
+        exec_ms = int((time.perf_counter() - exec_t0) * 1000)
 
         # merge streamed deltas from child
         try:
@@ -707,7 +722,13 @@ class CodegenRunner:
         )
         remaining -= 1
 
-        return {"rounds": rounds, "outdir": str(outdir), "workdir": str(workdir), "run_id": run_id}
+        return {
+            "rounds": rounds,
+            "outdir": str(outdir),
+            "workdir": str(workdir),
+            "run_id": run_id,
+            "timings": {"codegen_ms": codegen_ms, "exec_ms": exec_ms},
+        }
 
     # ---- helpers ------------------------------------------------------------
 

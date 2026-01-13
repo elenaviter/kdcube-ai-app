@@ -102,6 +102,143 @@ def collect_local_file_sources_from_content(
     return sources
 
 
+def resolve_cited_file_sources_from_content(
+    content: Any,
+    *,
+    outdir: pathlib.Path,
+    get_turn_log: Any,
+    produced_files: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Resolve cited local file paths to real artifacts/attachments.
+    Only return hits that exist on disk and map to a known artifact.
+    """
+    text = unwrap_llm_content_payload(content)
+    if not isinstance(text, str) or not text.strip():
+        return []
+
+    produced_files = produced_files or []
+
+    def _strip_anchor_and_query(p: str) -> str:
+        p = p.split("#", 1)[0]
+        p = p.split("?", 1)[0]
+        return p
+
+    def _find_attachment_artifact(turn_id: str, filename: str) -> tuple[str, str]:
+        tlog = get_turn_log(turn_id) if callable(get_turn_log) else {}
+        user_obj = tlog.get("user") if isinstance(tlog.get("user"), dict) else {}
+        for a in (user_obj.get("attachments") or []):
+            if not isinstance(a, dict):
+                continue
+            if (a.get("filename") or "").strip() != filename:
+                continue
+            art_name = (a.get("artifact_name") or a.get("filename") or "").strip()
+            hosted_uri = (a.get("hosted_uri") or a.get("source_path") or a.get("path") or "").strip()
+            return art_name, hosted_uri
+        return "", ""
+
+    def _find_produced_file(filename: str) -> tuple[str, str, str]:
+        for f in (produced_files or []):
+            if not isinstance(f, dict):
+                continue
+            if (f.get("filename") or "").strip() != filename:
+                continue
+            art_name = (f.get("artifact_name") or f.get("filename") or "").strip()
+            hosted_uri = (f.get("hosted_uri") or "").strip()
+            rn = (f.get("rn") or "").strip()
+            return art_name, hosted_uri, rn
+        return "", "", ""
+
+    sources: List[Dict[str, Any]] = []
+    for raw in extract_local_paths_any(text):
+        candidate = (raw or "").strip()
+        if not candidate:
+            continue
+        candidate = _strip_anchor_and_query(candidate).lstrip("./")
+        if not candidate:
+            continue
+        rel_path = pathlib.Path(candidate)
+        fs_path = outdir / rel_path
+        try:
+            fs_path = fs_path.resolve()
+        except Exception:
+            continue
+        try:
+            rel_path = fs_path.relative_to(outdir)
+        except Exception:
+            continue
+        if not fs_path.exists() or not fs_path.is_file():
+            continue
+
+        rel_str = str(rel_path)
+        filename = fs_path.name
+        artifact_path = ""
+        hosted_uri = ""
+        found_rn = ""
+
+        if rel_str.startswith("turn_") and "/files/" in rel_str:
+            turn_id, _, _tail = rel_str.partition("/files/")
+            if turn_id != "current_turn":
+                tlog = get_turn_log(turn_id) if callable(get_turn_log) else {}
+                assistant_obj = tlog.get("assistant") if isinstance(tlog.get("assistant"), dict) else {}
+                for f in (assistant_obj.get("files") or []):
+                    if not isinstance(f, dict):
+                        continue
+                    if (f.get("filename") or "").strip() != filename:
+                        continue
+                    artifact_path = f"{turn_id}.files.{(f.get('artifact_name') or f.get('filename') or '').strip()}"
+                    hosted_uri = (f.get("hosted_uri") or "").strip()
+                    found_rn = (f.get("rn") or "").strip()
+                    break
+        elif rel_str.startswith("turn_") and "/attachments/" in rel_str:
+            turn_id, _, _tail = rel_str.partition("/attachments/")
+            art_name, hosted_uri = _find_attachment_artifact(turn_id, filename)
+            if art_name:
+                artifact_path = f"{turn_id}.user.attachments.{art_name}"
+        elif rel_str.startswith("current_turn/attachments/"):
+            art_name, hosted_uri = _find_attachment_artifact("current_turn", filename)
+            if art_name:
+                artifact_path = f"current_turn.user.attachments.{art_name}"
+        else:
+            art_name, hosted_uri, found_rn = _find_produced_file(filename)
+            if art_name:
+                artifact_path = f"current_turn.files.{art_name}"
+
+        if not artifact_path and not hosted_uri:
+            continue
+
+        mime = mimetypes.guess_type(str(fs_path))[0] or ""
+        try:
+            stat = fs_path.stat()
+            size_bytes = int(stat.st_size)
+            modified_time_iso = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+        except Exception:
+            size_bytes = None
+            modified_time_iso = ""
+
+        row: Dict[str, Any] = {
+            "url": hosted_uri or str(rel_path),
+            "title": filename,
+            "source_type": "file",
+            "local_path": str(rel_path),
+        }
+        if artifact_path:
+            row["artifact_path"] = artifact_path
+        if hosted_uri:
+            row["url"] = hosted_uri
+        if found_rn:
+            row["rn"] = found_rn
+        if mime:
+            row["mime"] = mime
+        if isinstance(size_bytes, int):
+            row["size_bytes"] = size_bytes
+        if modified_time_iso:
+            row["modified_time_iso"] = modified_time_iso
+        sources.append(row)
+
+    return sources
+
+
 def strip_base64_from_value(val: Any) -> Any:
     if isinstance(val, list):
         out_list = []

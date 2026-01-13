@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import base64
+import datetime
 import re
 from typing import Any, Dict, List
 
@@ -27,11 +28,14 @@ async def ingest_user_attachments(
     extractor = DocumentTextExtractor()
 
     out: List[Dict[str, Any]] = []
+    now_iso = datetime.datetime.utcnow().isoformat() + "Z"
     for a in attachments or []:
         if not isinstance(a, dict):
             continue
 
         base = dict(a)
+        if not base.get("ts"):
+            base["ts"] = now_iso
         name = (a.get("filename") or a.get("name") or "file").strip()
         mime = (a.get("mime") or a.get("mime_type") or "application/octet-stream").strip()
         src = a.get("hosted_uri") or a.get("source_path") or a.get("path") or a.get("key")

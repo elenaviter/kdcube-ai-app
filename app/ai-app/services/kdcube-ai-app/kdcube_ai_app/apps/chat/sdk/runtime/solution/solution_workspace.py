@@ -58,57 +58,8 @@ async def persist_program_out_deliverables(
         persist_fn,
         log: Optional[logging.Logger] = None,
 ) -> None:
-    """
-    Persist normalized solver deliverables as a single artifact.
-    """
-    if not sr or not sr.execution or not sr.deliverables_map():
-        if log:
-            log.warning(
-                f"[persist_program_out_deliverables. uid={user}; cid={conversation_id}; tid={turn_id}] "
-                f"No execution or deliverables_map"
-            )
-        return
-
-    from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import (
-        normalize_deliverables_map,
-        deliverables_items_from_map,
-    )
-
-    normalized = normalize_deliverables_map(sr.deliverables_map() or {})
-    items = deliverables_items_from_map(normalized)
-
-    exec_id = sr.execution_id() or ""
-    extra_tags = [f"execution_id:{exec_id}"] if exec_id else []
-    for it in items:
-        extra_tags.append(f"slot:{it['slot']}")
-        v = (it or {}).get("value") or {}
-        tid = v.get("tool_id")
-        if tid:
-            extra_tags.append(f"tool:{tid}")
-
-    payload = {
-        "execution_id": exec_id,
-        "items": items,
-        "round_reasoning": sr.round_reasoning() or "",
-    }
-
-    await persist_fn(
-        tenant=tenant,
-        project=project,
-        user=user,
-        conversation_id=conversation_id,
-        user_type=user_type,
-        turn_id=turn_id,
-        rid=rid,
-        track_id=track_id,
-        codegen_run_id=sr.run_id(),
-        title="Program Out — Deliverables",
-        kind="solver.program.out.deliverables",
-        payload=payload,
-        add_to_index=True,
-        embed=False,
-        extra_tags=extra_tags,
-    )
+    # Deprecated: deliverables are read from turn log.
+    return
 
 async def rehost_previous_files(
         prev_files: list[dict],

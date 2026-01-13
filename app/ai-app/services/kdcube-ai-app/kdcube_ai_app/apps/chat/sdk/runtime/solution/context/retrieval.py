@@ -40,6 +40,19 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
         from kdcube_ai_app.apps.chat.sdk.tools.citations import sids_in_text
         used: set[int] = set()
 
+        # Prefer explicit "used" flags in sources_pool if present
+        pool_rows = _meta_sources_pool(meta)
+        if pool_rows and any(isinstance(r, dict) and r.get("used") is True for r in pool_rows):
+            for r in pool_rows:
+                if not isinstance(r, dict):
+                    continue
+                if r.get("used") is not True:
+                    continue
+                sid = r.get("sid")
+                if isinstance(sid, (int, float)):
+                    used.add(int(sid))
+            return used
+
         # project log
         proj = meta.get("project_log") or {}
         if isinstance(proj, dict):
@@ -210,11 +223,12 @@ def reconcile_citations_for_context(history: list[dict], *, max_sources: int = 6
 
             # Update per-turn sources_pool to reconciled, used-only sources
             meta["sources_pool"] = used_sources
-            if isinstance(meta.get("turn_log"), dict):
-                meta["turn_log"]["sources_pool"] = used_sources
 
     return {
-        "sources_pool": sources_pool,
+        "sources_pool": [
+            {**row, "used": False} if isinstance(row, dict) else row
+            for row in sources_pool
+        ],
         "sid_maps": sid_maps,
     }
 

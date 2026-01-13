@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-
+import datetime
 # kdcube_ai_app/apps/chat/sdk/runtime/solution/react/react.py
 
 import json
@@ -46,229 +46,16 @@ from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad, BaseT
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger, _mid
 import kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends as summary
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.execution import execute_tool
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.exec import (
+    DecisionExecCodeStreamer,
+    CodegenJsonCodeStreamer,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
-    collect_local_file_sources_from_content,
+    resolve_cited_file_sources_from_content,
     unwrap_llm_content_payload,
 )
 from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any
 
-
-class DecisionExecCodeStreamer:
-    """
-    Stream exec_tools.execute_code_python code as fenced Markdown.
-    Consumes JSON chunks from the decision agent's structured section.
-    """
-
-    def __init__(
-            self,
-            *,
-            emit_delta: Callable[..., Awaitable[None]],
-            agent: str,
-            marker: str,
-            artifact_name: str,
-    ):
-        self.emit_delta = emit_delta
-        self.agent = agent
-        self.marker = marker
-        self.artifact_name = artifact_name
-
-        self.in_string = False
-        self.escaping = False
-        self.unicode_mode = False
-        self.unicode_buf = ""
-
-        self.reading_key = False
-        self.current_key = ""
-        self.last_key: Optional[str] = None
-        self.expecting_value = False
-        self.active_key: Optional[str] = None
-        self.active_value_buf = ""
-
-        self.path_stack: List[Optional[str]] = []
-        self.tool_exec = False
-        self.streaming_code = False
-
-        self.started = False
-        self.index = 0
-
-    def _path_has(self, *keys: str) -> bool:
-        stack = [k for k in self.path_stack if k]
-        if len(stack) < len(keys):
-            return False
-        return stack[-len(keys):] == list(keys)
-
-    async def _emit_chunk(self, text: str) -> None:
-        if not text:
-            return
-        if not self.started:
-            text = "```python\n" + text
-            self.started = True
-        await self.emit_delta(
-            text=text,
-            index=self.index,
-            marker=self.marker,
-            agent=self.agent,
-            format="markdown",
-            artifact_name=self.artifact_name,
-        )
-        self.index += 1
-
-    async def feed(self, chunk: str) -> None:
-        if not chunk:
-            return
-
-        for ch in chunk:
-            if self.in_string:
-                if self.unicode_mode:
-                    self.unicode_buf += ch
-                    if len(self.unicode_buf) == 4:
-                        try:
-                            code = int(self.unicode_buf, 16)
-                            decoded = chr(code)
-                        except Exception:
-                            decoded = ""
-                        if self.reading_key:
-                            self.current_key += decoded
-                        elif self.active_key:
-                            self.active_value_buf += decoded
-                        self.unicode_mode = False
-                        self.unicode_buf = ""
-                    continue
-
-                if self.escaping:
-                    self.escaping = False
-                    if ch == "n":
-                        decoded = "\n"
-                    elif ch == "r":
-                        decoded = "\r"
-                    elif ch == "t":
-                        decoded = "\t"
-                    elif ch == "b":
-                        decoded = "\b"
-                    elif ch == "f":
-                        decoded = "\f"
-                    elif ch == "u":
-                        self.unicode_mode = True
-                        self.unicode_buf = ""
-                        continue
-                    else:
-                        decoded = ch
-
-                    if self.reading_key:
-                        self.current_key += decoded
-                    elif self.active_key:
-                        self.active_value_buf += decoded
-                    continue
-
-                if ch == "\\":
-                    self.escaping = True
-                    continue
-
-                if ch == '"':
-                    self.in_string = False
-                    if self.reading_key:
-                        self.reading_key = False
-                        self.last_key = self.current_key
-                        self.current_key = ""
-                    elif self.active_key:
-                        if self.streaming_code and self.active_value_buf:
-                            await self._emit_chunk(self.active_value_buf)
-                        value = self.active_value_buf
-                        self.active_value_buf = ""
-
-                        if self.last_key == "tool_id" and self._path_has("tool_call"):
-                            self.tool_exec = (value == "exec_tools.execute_code_python")
-                        if self.last_key == "code" and self.streaming_code:
-                            self.streaming_code = False
-
-                        self.active_key = None
-                    continue
-
-                if self.reading_key:
-                    self.current_key += ch
-                elif self.active_key:
-                    self.active_value_buf += ch
-                    if self.streaming_code:
-                        await self._emit_chunk(self.active_value_buf)
-                        self.active_value_buf = ""
-                continue
-
-            if ch == "{":
-                if self.expecting_value and self.last_key:
-                    self.path_stack.append(self.last_key)
-                else:
-                    self.path_stack.append(None)
-                self.expecting_value = False
-                continue
-
-            if ch == "}":
-                if self.path_stack:
-                    self.path_stack.pop()
-                self.expecting_value = False
-                continue
-
-            if ch == "[":
-                if self.expecting_value and self.last_key:
-                    self.path_stack.append(self.last_key)
-                else:
-                    self.path_stack.append(None)
-                self.expecting_value = False
-                continue
-
-            if ch == "]":
-                if self.path_stack:
-                    self.path_stack.pop()
-                self.expecting_value = False
-                continue
-
-            if ch == '"':
-                self.in_string = True
-                if not self.expecting_value:
-                    self.reading_key = True
-                    self.current_key = ""
-                else:
-                    if self.last_key:
-                        self.active_key = self.last_key
-                        self.active_value_buf = ""
-                        if (
-                            self.last_key == "code"
-                            and self.tool_exec
-                            and self._path_has("tool_call", "params")
-                        ):
-                            self.streaming_code = True
-                continue
-
-            if ch == ":":
-                if self.last_key is not None:
-                    self.expecting_value = True
-                continue
-
-            if ch == ",":
-                self.expecting_value = False
-                continue
-
-        if self.streaming_code and self.active_value_buf:
-            await self._emit_chunk(self.active_value_buf)
-            self.active_value_buf = ""
-
-    async def finish(self) -> None:
-        if not self.started and not self.streaming_code:
-            return
-        if self.streaming_code and self.active_value_buf:
-            await self._emit_chunk(self.active_value_buf)
-            self.active_value_buf = ""
-        if self.started:
-            await self._emit_chunk("\n```")
-        await self.emit_delta(
-            text="",
-            index=self.index,
-            marker=self.marker,
-            agent=self.agent,
-            format="markdown",
-            artifact_name=self.artifact_name,
-            completed=True,
-        )
-        self.index += 1
 
 @dataclass
 class ReactState:
@@ -596,12 +383,13 @@ class ReactSolver:
             await self.comm.delta(text=text, index=i, marker="thinking", agent=author, completed=completed)
         return emit_thinking_delta
 
-    def _mk_exec_code_streamer(self, phase: str, idx: int) -> Callable[[str], Awaitable[None]]:
+    def _mk_exec_code_streamer(self, phase: str, idx: int, execution_id: Optional[str] = None) -> Callable[[str], Awaitable[None]]:
         streamer = DecisionExecCodeStreamer(
             emit_delta=self.comm.delta,
             agent=f"{self.MODULE_AGENT_NAME}.{phase}",
             marker="canvas",
             artifact_name=f"react.{idx}.exec_code",
+            execution_id=execution_id,
         )
 
         async def emit_json_delta(text: str, completed: bool = False, **kwargs):
@@ -774,6 +562,29 @@ class ReactSolver:
             if tid:
                 idx[tid] = a
         return idx
+
+    def _append_react_timing(
+            self,
+            *,
+            round_idx: int,
+            stage: str,
+            elapsed_ms: Optional[int],
+            tool_id: Optional[str] = None,
+            artifact_id: Optional[str] = None,
+    ) -> None:
+        if elapsed_ms is None:
+            return
+        if not getattr(self, "scratchpad", None):
+            return
+        timings = getattr(self.scratchpad, "timings", None)
+        if not isinstance(timings, list):
+            return
+        title = f"react.{round_idx}.{stage}"
+        if tool_id:
+            title += f".{tool_id}"
+        if artifact_id:
+            title += f".{artifact_id}"
+        timings.append({"title": title, "elapsed_ms": int(elapsed_ms)})
 
     def _snapshot_artifact_ids(self, context: ReactContext) -> List[str]:
         """
@@ -1211,8 +1022,10 @@ class ReactSolver:
         ):
             is_wrapup = state.get("is_wrapup_round", False)
             thinking_streamer = self._mk_thinking_streamer(f"decision ({it})")
-            exec_streamer = self._mk_exec_code_streamer(f"decision ({it})", it)
+            exec_id = f"exec_{uuid.uuid4().hex[:12]}"
+            exec_streamer = self._mk_exec_code_streamer(f"decision ({it})", it, execution_id=exec_id)
             thinking_streamer._on_json = exec_streamer
+            t0 = time.perf_counter()
             decision_out = await self.react_decision_stream(
                 svc=self.svc,
                 operational_digest=operational_digest,
@@ -1226,6 +1039,8 @@ class ReactSolver:
                 max_tokens=6000,
                 attachments=context.show_artifact_attachments,
             )
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            self._append_react_timing(round_idx=it, stage="decision", elapsed_ms=elapsed_ms)
         logging_helpers.log_agent_packet(role, "react.decision", decision_out)
 
         # Accept both legacy envelope and direct schema
@@ -1237,17 +1052,41 @@ class ReactSolver:
         internal_thinking = decision_out.get("internal_thinking")
         error_text = (elog.get("error") or "").strip()
         tool_call = agent_response.get("tool_call") if isinstance(agent_response, dict) else None
+        state["exec_code_streamer"] = exec_streamer
+        state["pending_exec_id"] = exec_id
+        tool_id = tool_call.get("tool_id") if isinstance(tool_call, dict) else ""
+        if tools_insights.is_codegen_tool(tool_id):
+            if not state.get("pending_codegen_exec_id"):
+                state["pending_codegen_exec_id"] = f"codegen_{uuid.uuid4().hex[:12]}"
+            if not state.get("codegen_streamer"):
+                invocation_idx = int(state.get("iteration") or 0)
+                author = f"{self.codegen_runner.AGENT_NAME}.solver.codegen"
+                author = f"{author}.{invocation_idx}" if invocation_idx is not None else author
+                state["codegen_streamer"] = CodegenJsonCodeStreamer(
+                    channel="canvas",
+                    agent=author,
+                    artifact_name=f"codegen.{invocation_idx}.main_py",
+                    emit_delta=self.comm.delta,
+                    execution_id=state.get("pending_codegen_exec_id"),
+                )
         tool_reason = ""
         if isinstance(tool_call, dict):
             tool_reason = (tool_call.get("reasoning") or "").strip()
         if not tool_reason:
             tool_reason = (agent_response.get("reasoning") or "").strip()
         if tool_reason:
-            await self._emit_timeline_text(
-                text=tool_reason,
-                agent=role,
-                artifact_name=f"timeline_text.react.decision.{it}",
-            )
+            if tools_insights.is_exec_tool(tool_id) and exec_streamer:
+                await exec_streamer.emit_reasoning(tool_reason)
+            elif tools_insights.is_codegen_tool(tool_id):
+                codegen_streamer = state.get("codegen_streamer")
+                if codegen_streamer:
+                    await codegen_streamer.emit_reasoning(tool_reason)
+            else:
+                await self._emit_timeline_text(
+                    text=tool_reason,
+                    agent=role,
+                    artifact_name=f"timeline_text.react.decision.{it}",
+                )
         focus_slot = agent_response.get("focus_slot") or ""
         action = agent_response.get("action") or "complete"
         next_decision_step = agent_response.get("next_decision_step") or ""
@@ -1777,6 +1616,27 @@ class ReactSolver:
         )
         # we must be able to accept the list of "tool results" here and save them all in context with certain mark which the note
         # that relayed these results to the common tool call
+        t0 = time.perf_counter()
+        exec_streamer = state.get("exec_code_streamer") if tools_insights.is_exec_tool(tool_id) else None
+        exec_id = state.get("pending_exec_id") if tools_insights.is_exec_tool(tool_id) else None
+        codegen_streamer = state.get("codegen_streamer") if tools_insights.is_codegen_tool(tool_id) else None
+        codegen_exec_id = state.get("pending_codegen_exec_id") if tools_insights.is_codegen_tool(tool_id) else None
+        if tools_insights.is_codegen_tool(tool_id):
+            if not codegen_exec_id:
+                codegen_exec_id = f"codegen_{tool_call_id}"
+                state["pending_codegen_exec_id"] = codegen_exec_id
+            if not codegen_streamer:
+                author = f"{self.codegen_runner.AGENT_NAME}.solver.codegen"
+                invocation_idx = int(state.get("iteration") or 0)
+                author = f"{author}.{invocation_idx}" if invocation_idx is not None else author
+                codegen_streamer = CodegenJsonCodeStreamer(
+                    channel="canvas",
+                    agent=author,
+                    artifact_name=f"codegen.{invocation_idx}.main_py",
+                    emit_delta=self.comm.delta,
+                    execution_id=codegen_exec_id,
+                )
+                state["codegen_streamer"] = codegen_streamer
         tool_response = await execute_tool(
             tool_execution_context={
                 **tool_call,
@@ -1784,6 +1644,8 @@ class ReactSolver:
                 "call_signature": sig,
                 "param_bindings_for_summary": param_bindings_for_summary,
                 "tool_doc_for_summary": tool_doc_for_summary,
+                **({"exec_id": exec_id} if exec_id else {}),
+                **({"exec_id": codegen_exec_id} if codegen_exec_id else {}),
                 # "fs_isolated": True,      # Optional: request FS sandbox. This currently overridden in the exec layer.
                 # "net_isolated": False,    # Optional: disable network (False for most tools, including built-in).  This currently overridden in the exec layer.
             },
@@ -1797,8 +1659,12 @@ class ReactSolver:
             llm_service=llm_service,
             codegen_runner=self.codegen_runner,
             artifacts_contract=declared_specs,
-            tool_call_id=tool_call_id
+            tool_call_id=tool_call_id,
+            exec_streamer=exec_streamer,
+            codegen_streamer=codegen_streamer,
         )
+        elapsed_ms = int((time.perf_counter() - t0) * 1000)
+        self._append_react_timing(round_idx=int(state["iteration"]), stage="tool.call", elapsed_ms=elapsed_ms, tool_id=tool_id)
         items = tool_response.get("items") or []
         call_error = tool_response.get("error") if isinstance(tool_response, dict) else None
 
@@ -1825,6 +1691,15 @@ class ReactSolver:
             tool_exec_output = tr.get("output")
             tool_exec_error = tr.get("error")
             tool_exec_status = tr.get("status")
+            summary_timing_ms = tr.get("summary_timing_ms")
+            if isinstance(summary_timing_ms, (int, float)):
+                self._append_react_timing(
+                    round_idx=it_round,
+                    stage="summary",
+                    elapsed_ms=int(summary_timing_ms),
+                    tool_id=tool_id,
+                    artifact_id=artifact_id,
+                )
 
             # if tool_exec_summary:
             await emit_event(
@@ -1973,42 +1848,12 @@ class ReactSolver:
                     if cited_sids:
                         srcs_for_artifact.extend(cited_sids)
 
-                    file_sources = collect_local_file_sources_from_content(
+                    file_sources = resolve_cited_file_sources_from_content(
                         content_text,
                         outdir=outdir,
+                        get_turn_log=context._get_turn_log,
+                        produced_files=self.scratchpad.produced_files or [],
                     )
-                    for row in file_sources:
-                        if not isinstance(row, dict):
-                            continue
-                        if row.get("source_type") != "file":
-                            continue
-                        local_path = (row.get("local_path") or "").strip()
-                        if not local_path:
-                            local_path = (row.get("url") or "").strip()
-                        if not local_path:
-                            continue
-                        hosted_uri = ""
-                        found_rn = ""
-                        found_artifact_name = ""
-                        filename = pathlib.Path(local_path).name
-                        for f in (self.scratchpad.produced_files or []):
-                            if not isinstance(f, dict):
-                                continue
-                            f_name = (f.get("filename") or "").strip()
-                            if f_name != filename:
-                                continue
-                            hosted_uri = (f.get("hosted_uri") or "").strip()
-                            found_rn = (f.get("rn") or "").strip()
-                            found_artifact_name = (f.get("artifact_name") or "").strip()
-                            if hosted_uri:
-                                break
-                        if hosted_uri:
-                            row["url"] = hosted_uri
-                            if found_rn:
-                                row["rn"] = found_rn
-                            row["local_path"] = local_path
-                            if found_artifact_name:
-                                row["artifact_path"] = f"current_turn.files.{found_artifact_name}"
                     if file_sources:
                         file_sids = context.ensure_sources_in_pool(file_sources)
                         if file_sids:
@@ -2067,6 +1912,8 @@ class ReactSolver:
             )
             if is_file_artifact and self.hosting_service:
                 svc = self.comm.service or {}
+                host_iso = datetime.datetime.utcnow().isoformat() + "Z"
+                t_host = time.perf_counter()
                 hosted = await self.hosting_service.host_files_to_conversation(
                     rid=svc.get("request_id") or "",
                     files=[artifact],
@@ -2078,6 +1925,14 @@ class ReactSolver:
                     user_type=svc.get("user_type") or self.comm.user_type or "",
                     turn_id=context.turn_id or "",
                     track_id=context.track_id or svc.get("request_id") or "",
+                )
+                host_ms = int((time.perf_counter() - t_host) * 1000)
+                self._append_react_timing(
+                    round_idx=it_round,
+                    stage="file.hosting",
+                    elapsed_ms=host_ms,
+                    tool_id=tool_id,
+                    artifact_id=artifact_id,
                 )
                 if hosted:
                     hosted_uri = hosted[0].get("hosted_uri") or ""
@@ -2184,6 +2039,7 @@ class ReactSolver:
                                     "hosted_uri": h.get("hosted_uri"),
                                     "key": h.get("key"),
                                     "rn": h.get("rn"),
+                                    "ts": host_iso,
                                     "text": value_obj.get("text") or "",
                                     "summary": summary_text,
                                     "used_sids": used_sids,

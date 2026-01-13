@@ -822,7 +822,10 @@ async def web_search(
                     "title": row.get("title"),
                 }
 
+    widget = None
     if emit_delta_fn and comm:
+        from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.web_search import WebSearchWidget
+
         rel_weight = 0.60
         prov_weight = 0.25
         denom = rel_weight + prov_weight
@@ -845,23 +848,17 @@ async def web_search(
             payload_row["weighted_score"] = weighted_score
             filtered_payload.append(payload_row)
 
-        artifact_filtered = f"Web Search Filtered Results [{agent_suffix}]"
-        filtered_idx = 0
-        filtered_results = {
-            "results": filtered_payload,
-            "objective": objective,
-            "queries": q_list,
-        }
-        await emit_delta_fn(
-            json.dumps(filtered_results, ensure_ascii=True),
-            index=filtered_idx,
-            marker="subsystem",
+        widget = WebSearchWidget(
+            emit_delta=emit_delta_fn,
             agent=agent_id,
             title=agent_label,
-            format="json",
-            artifact_name=artifact_filtered,
-            sub_type="web_search.filtered_results",
+            artifact_name=f"Web Search [{agent_suffix}]",
             search_id=search_id,
+        )
+        await widget.send_search_results(
+            filtered_payload=filtered_payload,
+            objective=objective,
+            queries=q_list,
         )
 
     # --- Fetch content ---
@@ -929,7 +926,8 @@ async def web_search(
 
     # ---- HTML artifact emission (tool channel) ----
     should_emit_html = True
-    if should_emit_html and emit_delta_fn and comm:
+    if should_emit_html and emit_delta_fn and comm and widget:
+
         html_view = compose_search_results_html(
             objective=objective or "",
             queries=q_list,
@@ -938,19 +936,7 @@ async def web_search(
             filtered_rows=final_rows,
             title="Web Search Results",
         )
-        artifact_html = f"Web Search Results [{agent_suffix}]"
-        html_idx = 0
-        await emit_delta_fn(
-            html_view,
-            index=html_idx,
-            marker="subsystem",
-            agent=agent_id,
-            title=agent_label,
-            format="html",
-            artifact_name=artifact_html,
-            sub_type="web_search.html_view",
-            search_id=search_id,
-        )
+        await widget.send_search_report(html_view=html_view)
         # html_idx += 1
         # await emit_delta_fn(
         #     "",

@@ -4,6 +4,7 @@
 # kdcube_ai_app/apps/chat/sdk/runtime/solution/react/execution.py
 
 import json
+import time
 import pathlib
 import re
 import shutil
@@ -109,6 +110,7 @@ async def _build_program_run_items(
             f"[In contract]\n{contract_entry}\n"
             f"[Code file]\n```python\n{codefile or ''}\n```\n[]"
         )
+        t0 = time.perf_counter()
         summary_obj, summary_txt = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=value,
@@ -124,6 +126,7 @@ async def _build_program_run_items(
             timezone=context.timezone,
             structured=False,
         )
+        summary_timing_ms = int((time.perf_counter() - t0) * 1000)
 
         item = {
             "artifact_id": artifact_id,
@@ -132,6 +135,7 @@ async def _build_program_run_items(
             "tool_id": tool_id,
             "output": value,
             "summary": summary_txt or "",
+            "summary_timing_ms": summary_timing_ms,
             "inputs": params,
             "call_record_rel": call_record_rel,
             "call_record_abs": call_record_abs,
@@ -198,6 +202,8 @@ async def _execute_tool_in_memory(
     use_llm_summary: bool = False,
     llm_service: Optional[Any] = None,
     artifacts_contract: list[dict] = None,
+    exec_streamer: Optional[Any] = None,
+    codegen_streamer: Optional[Any] = None,
 
 ) -> Dict[str, Any]:
     """
@@ -254,7 +260,24 @@ async def _execute_tool_in_memory(
                     "managed": True,
                 },
             }
-        exec_id = _safe_exec_id(tool_call_id)
+        exec_id = _safe_exec_id(tool_execution_context.get("exec_id") or tool_call_id)
+        if exec_streamer:
+            try:
+                exec_streamer.set_execution_id(exec_id)
+            except Exception:
+                pass
+        prog_name = (params.get("prog_name") or "").strip()
+        if exec_streamer and prog_name:
+            try:
+                await exec_streamer.emit_program_name(prog_name)
+            except Exception:
+                logger.log("[react.exec] Failed to emit program name", level="WARNING")
+        if exec_streamer:
+            try:
+                await exec_streamer.emit_contract(contract)
+            except Exception:
+                logger.log("[react.exec] Failed to emit execution contract", level="WARNING")
+        exec_t0 = time.perf_counter()
         envelope = await run_exec_tool(
             tool_manager=tool_manager,
             logger=logger,
@@ -266,6 +289,16 @@ async def _execute_tool_in_memory(
             workdir=workdir,
             exec_id=exec_id,
         )
+        exec_ms = int((time.perf_counter() - exec_t0) * 1000)
+        if exec_streamer:
+            try:
+                exec_streamer.set_timings(exec_ms=exec_ms)
+                await exec_streamer.emit_status(
+                    status="done" if envelope.get("ok", False) else "error",
+                    error=envelope.get("error") if not envelope.get("ok", False) else None,
+                )
+            except Exception:
+                logger.log("[react.exec] Failed to emit execution status", level="WARNING")
         err_tail = errors_log_tail(outdir / "logs" / "errors.log", exec_id=exec_id)
         project_log = envelope.get("project_log")
         if isinstance(project_log, dict) and project_log:
@@ -371,6 +404,22 @@ async def _execute_tool_in_memory(
         allowed_plugins = ["security_tools", "llm_tools", "generic_tools", "codegen_tools"]
         contract = params.get("output_contract") or {}
         instruction = params.get("instruction") or ""
+        exec_id = _safe_exec_id(tool_execution_context.get("exec_id") or tool_call_id)
+        if codegen_streamer:
+            try:
+                codegen_streamer.set_execution_id(exec_id)
+            except Exception:
+                pass
+            prog_name = (params.get("prog_name") or "").strip()
+            if prog_name:
+                try:
+                    await codegen_streamer.emit_program_name(prog_name)
+                except Exception:
+                    logger.log("[react.codegen] Failed to emit program name", level="WARNING")
+            try:
+                await codegen_streamer.emit_contract(contract)
+            except Exception:
+                logger.log("[react.codegen] Failed to emit codegen contract", level="WARNING")
         if not contract or not instruction:
             return {
                 "status": "error",
@@ -388,7 +437,6 @@ async def _execute_tool_in_memory(
                     "managed": True,
                 },
             }
-        exec_id = _safe_exec_id(tool_call_id)
         dest_dir = outdir / "executed_programs"
         dest_dir.mkdir(parents=True, exist_ok=True)
         i = 0
@@ -408,7 +456,21 @@ async def _execute_tool_in_memory(
                                           invocation_idx=i,
                                           attachments=context.show_artifact_attachments,
                                           emit_delta_fn=getattr(tool_manager, "comm", None) and tool_manager.comm.delta,
-                                          timeline_agent="solver.codegen")
+                                          timeline_agent="solver.codegen",
+                                          json_streamer=codegen_streamer)
+        if codegen_streamer:
+            try:
+                timings = envelope.get("timings") or {}
+                codegen_streamer.set_timings(
+                    codegen_ms=timings.get("codegen_ms"),
+                    exec_ms=timings.get("exec_ms"),
+                )
+                await codegen_streamer.emit_status(
+                    status="done" if envelope.get("ok", False) else "error",
+                    error=envelope.get("error") if not envelope.get("ok", False) else None,
+                )
+            except Exception:
+                logger.log("[react.codegen] Failed to emit codegen status", level="WARNING")
         err_tail = errors_log_tail(outdir / "logs" / "errors.log", exec_id=exec_id)
         project_log = envelope.get("project_log")
         if isinstance(project_log, dict) and project_log:
@@ -676,6 +738,7 @@ async def _execute_tool_in_memory(
         if len(msg) > 200:
             msg = msg[:197] + "..."
         summary = f"ERROR [{code}] at {where}: {msg}"
+        summary_timing_ms = None
     else:
         surrogate_text = ""
         mime_hint = ""
@@ -692,6 +755,7 @@ async def _execute_tool_in_memory(
             surrogate_text=surrogate_text,
             mime_hint=mime_hint,
         )
+        t0 = time.perf_counter()
         summary_obj, summary = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=output,
@@ -707,6 +771,7 @@ async def _execute_tool_in_memory(
             timezone=context.timezone,
             structured=False,
         )
+        summary_timing_ms = int((time.perf_counter() - t0) * 1000)
 
         if summary_obj is None or isinstance(summary_obj, str):
             summary = summary_obj or summary
@@ -961,6 +1026,7 @@ async def execute_tool_in_isolation(
         if len(msg) > 200:
             msg = msg[:197] + "..."
         summary = f"ERROR [{code}] at {where}: {msg}"
+        summary_timing_ms = None
     else:
         surrogate_text = ""
         mime_hint = ""
@@ -977,6 +1043,7 @@ async def execute_tool_in_isolation(
             surrogate_text=surrogate_text,
             mime_hint=mime_hint,
         )
+        t0 = time.perf_counter()
         summary_obj, summary = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=output,
@@ -992,6 +1059,7 @@ async def execute_tool_in_isolation(
             timezone=context.timezone,
             structured=False,
         )
+        summary_timing_ms = int((time.perf_counter() - t0) * 1000)
 
         if summary_obj is None or isinstance(summary_obj, str):
             summary = summary_obj or summary
@@ -1058,6 +1126,7 @@ async def execute_tool_in_isolation(
         "tool_id": tool_id,
         "output": output,
         "summary": summary or "",
+        "summary_timing_ms": summary_timing_ms,
         "inputs": inputs,
         "call_record_rel": call_record_rel,
         "call_record_abs": call_record_abs,
@@ -1092,6 +1161,8 @@ async def execute_tool(
     llm_service: Optional[Any] = None,
     codegen_runner: "CodegenRunner" = None,
     artifacts_contract: list[dict] = None,
+    exec_streamer: Optional[Any] = None,
+    codegen_streamer: Optional[Any] = None,
 
 ) -> Dict[str, Any]:
     """
@@ -1114,7 +1185,9 @@ async def execute_tool(
             codegen=codegen_runner,
             tool_call_id=tool_call_id,
             artifacts_contract=artifacts_contract,
-            solution_gen_stream=solution_gen_stream
+            solution_gen_stream=solution_gen_stream,
+            exec_streamer=exec_streamer,
+            codegen_streamer=codegen_streamer,
         )
 
     # fs_isolated = bool(tool_execution_context.get("fs_isolated", False))

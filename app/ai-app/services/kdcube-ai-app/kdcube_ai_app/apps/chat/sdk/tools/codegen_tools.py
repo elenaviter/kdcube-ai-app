@@ -43,17 +43,19 @@ class CodegenTool:
                 "- Do NOT use it for simple single-tool lookups.\n"
                 
                 "\n"
-                "INPUTS (YOU MUST PROVIDE BOTH)\n"
-                "1) `instruction` (string): must include the effective objective for THIS step.\n"
+                "INPUTS\n"
+                "1) `instruction` (string, required): must include the effective objective for THIS step.\n"
                 "   - Must describe what the artifacts are, what they should contain, and any constraints (tone/length/format).\n"
                 "   - Must be consistent with `output_contract`.\n"
                 "   - MUST NOT request extra deliverables beyond what is listed in `output_contract`.\n"
                 "   - May contain your advices and how to solve the objective, what to avoid, some facts you know shortly. Telegraphic style\n"
                 "\n"
-                "2) `output_contract` (JSON object or dict): map of artifact_id -> artifact spec.\n"
+                "2) `output_contract` (JSON object or dict, required): map of artifact_id -> artifact spec.\n"
                 "   - Keys (artifact_id) become the artifact names in the result.\n"
                 "   - You must list ALL artifacts required for this step.\n"
                 "   - The executor will produce EXACTLY these artifacts (no more).\n"
+                "\n"
+                "3) `prog_name` (string, optional): short name of the program for UI labeling.\n"
                 "\n"
                 "OUTPUT_CONTRACT SCHEMA\n"
                 "output_contract := {\n"
@@ -128,6 +130,7 @@ class CodegenTool:
                     "Effective objective for THIS step. "
                     "Must be consistent with output_contract and must not request extra deliverables."
             )],
+            prog_name: Annotated[Optional[str], "Short name of the program for UI labeling."] = None,
     ) -> Annotated[dict, "Result: {ok, error?, items:[{artifact_id, type, format?, mime?, description?, sources_used?, draft?, summary?}]}."]:
         pass
 
@@ -148,6 +151,7 @@ async def run_codegen_tool(
         attachments: Optional[List[Dict[str, Any]]] = None,
         emit_delta_fn: Optional[Callable[..., Awaitable[None]]] = None,
         timeline_agent: Optional[str] = None,
+        json_streamer: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Supervisor-side meta-tool wrapper.
@@ -187,7 +191,9 @@ async def run_codegen_tool(
         exec_id=exec_id,
         invocation_idx=invocation_idx,
         attachments=attachments,
+        json_streamer=json_streamer,
     )
+    timings = run_rec.get("timings") or {}
     outdir = pathlib.Path(run_rec.get("outdir") or "")
     workdir = pathlib.Path(run_rec.get("workdir") or "")
     run_id = run_rec.get("run_id") or ""
@@ -214,6 +220,7 @@ async def run_codegen_tool(
             "sources_pool": [],
             "error": err,
             "summary": "ERROR: missing result file",
+            "timings": timings,
         }
 
     try:
@@ -237,6 +244,7 @@ async def run_codegen_tool(
             "sources_pool": [],
             "error": err,
             "summary": "ERROR: malformed result.json",
+            "timings": timings,
         }
 
     if emit_delta_fn and reasoning:
@@ -310,6 +318,7 @@ async def run_codegen_tool(
         "sources_pool": sources_pool,
         "error": error,
         "project_log": project_log,
+        "timings": timings,
     }
 
 # module-level exports

@@ -111,14 +111,15 @@ class ExecTools:
             "- After execution, the executor checks for the requested output files.\n"
             "- For each requested file that exists and is non-empty, an artifact is produced.\n"
             "\n"
-            "INPUTS (REQUIRED)\n"
-            "1) `code` (string): Python code snippet to run (inserted into async main()).\n"
-            "2) `artifacts` (list or JSON string): list of artifact specs with fields:\n"
+            "INPUTS\n"
+            "1) `code` (string, required): Python code snippet to run (inserted into async main()).\n"
+            "2) `artifacts` (list or JSON string, required): list of artifact specs with fields:\n"
             "   - name (artifact id)\n"
             "   - filename (relative path in OUTPUT_DIR)\n"
             "   - mime\n"
             "   - description (text surrogate / promise of content)\n"
             "   Each artifact is ALWAYS a file.\n"
+            "3) `prog_name` (string, optional): short name of the program for UI labeling.\n"
             "\n"
             "FILES & PATHS\n"
             "- Input artifacts from context are available by their filenames under OUTPUT_DIR.\n"
@@ -139,6 +140,7 @@ class ExecTools:
         self,
         code: Annotated[str, "Python code snippet (string). Inserted into async main()."],
         artifacts: Annotated[Any, "List or JSON string of artifact specs (name, filename, mime, description)."],
+        prog_name: Annotated[Optional[str], "Short name of the program for UI labeling."] = None,
         timeout_s: Annotated[Optional[int], "Execution timeout seconds (default: 600)."] = None,
     ) -> Annotated[dict, "Envelope: ok/out_dyn/out/error/summary."]:
         pass

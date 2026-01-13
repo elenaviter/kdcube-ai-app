@@ -107,6 +107,7 @@ class TurnScratchpad:
         self.user_text = text.strip()
         self.user_input_summary = ""
         self.uvec = None
+        self.user_ts = None
         self.user_attachments = attachments
         self.user_blocks = []
         self.produced_files = []
@@ -120,6 +121,7 @@ class TurnScratchpad:
         self.answer = None
         self.answer_raw = None
         self.answer_used_sids: List[int] = []
+        self.answer_ts = None
         self.avec = None
         self.service_error = None
         self.turn_summary = None
@@ -384,6 +386,7 @@ class TurnScratchpad:
             "size": len(text),
             "sources_used": [],
             "kind": "text",
+            "ts": self.user_ts,
         }
 
     def _assistant_completion_artifact_payload(self) -> Optional[Dict[str, Any]]:
@@ -405,6 +408,7 @@ class TurnScratchpad:
             "size": len(text),
             "sources_used": list(self.answer_used_sids or self._used_sids_from_sources(self.citations)),
             "kind": "text",
+            "ts": self.answer_ts,
         }
 
     def _ensure_produced_file_artifact_names(self, items: List[Dict[str, Any]]) -> None:
@@ -487,6 +491,7 @@ class TurnScratchpad:
                 "size": a.get("size") or a.get("size_bytes"),
                 "hosted_uri": a.get("hosted_uri") or a.get("source_path") or a.get("path"),
                 "rn": a.get("rn"),
+                "ts": a.get("ts"),
                 "text": (a.get("text") or ""),
                 "base64": a.get("base64"),
                 "summary": (a.get("summary") or "").strip(),
@@ -513,6 +518,7 @@ class TurnScratchpad:
                 "hosted_uri": f.get("hosted_uri") or f.get("source_path") or f.get("path"),
                 "rn": f.get("rn"),
                 "key": f.get("key"),
+                "ts": f.get("ts"),
                 "text": (f.get("text") or ""),
                 "summary": (f.get("summary") or "").strip(),
                 "sources_used": f.get("sources_used") or self._used_sids_from_sources(f.get("sources_used")),
@@ -527,12 +533,11 @@ class TurnScratchpad:
         for src in self.sources_pool or []:
             if not isinstance(src, dict):
                 continue
-            compact = strip_base64_from_value(src)
-            if not isinstance(compact, dict):
+            full = _to_jsonable(src)
+            if not isinstance(full, dict):
                 continue
-            compact.pop("content", None)
-            compact.pop("content_blocks", None)
-            out.append(compact)
+            full.pop("content_blocks", None)
+            out.append(full)
         return out
 
     def user_attachments_section_for_gate_agents(self) -> str:
