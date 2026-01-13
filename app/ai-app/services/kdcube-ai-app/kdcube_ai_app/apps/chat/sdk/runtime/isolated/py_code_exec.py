@@ -177,6 +177,7 @@ async def run_py_code(
         "LOG_MAX_MB",
         "LOG_BACKUP_COUNT",
         "RESULT_FILENAME",
+        "EXECUTION_ID",
         "EXECUTION_MODE",
         "EXEC_NO_UNEXPECTED_EXIT"
     }

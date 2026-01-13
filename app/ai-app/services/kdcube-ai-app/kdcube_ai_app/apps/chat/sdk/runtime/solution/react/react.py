@@ -5,7 +5,10 @@ import datetime
 
 import json
 import pathlib
+import re
 import traceback
+import time
+import asyncio
 
 import time
 import uuid
@@ -45,7 +48,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.infra import emit_event, colle
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad, BaseTurnView
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, AgentLogger, _mid
 import kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends as summary
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.execution import execute_tool
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.execution import execute_tool, _safe_label
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.exec import (
     DecisionExecCodeStreamer,
     CodegenJsonCodeStreamer,
@@ -228,21 +231,33 @@ class ReactSolver:
             except Exception:
                 pass
 
-        await browser.rehost_previous_files(bundle=bundle,
-                                            workdir=outdir,
-                                            ctx="react")
-        await browser.rehost_previous_attachments(bundle=bundle,
-                                                  workdir=outdir,
-                                                  ctx="react")
+        t_rehost = time.perf_counter()
+        rehost_results = await asyncio.gather(
+            browser.rehost_previous_files(bundle=bundle, workdir=outdir, ctx="react"),
+            browser.rehost_previous_attachments(bundle=bundle, workdir=outdir, ctx="react"),
+            return_exceptions=True,
+        )
+        for res in rehost_results:
+            if isinstance(res, Exception):
+                self.log.log(f"[react] Warning: Failed to rehost previous context: {res}", level="WARNING")
+        self.scratchpad.timings.append({
+            "title": "react.rehost_context",
+            "elapsed_ms": int((time.perf_counter() - t_rehost) * 1000)
+        })
         try:
             from kdcube_ai_app.apps.chat.sdk.runtime.solution import solution_workspace
             if getattr(self.scratchpad, "user_attachments", None):
+                t_rehost_current = time.perf_counter()
                 rehosted = await solution_workspace.rehost_previous_attachments(
                     self.scratchpad.user_attachments,
                     outdir,
                     turn_id=turn_id or "current_turn",
                 )
                 self.scratchpad.user_attachments = rehosted
+                self.scratchpad.timings.append({
+                    "title": "react.rehost_current_attachments",
+                    "elapsed_ms": int((time.perf_counter() - t_rehost_current) * 1000)
+                })
         except Exception as e:
             self.log.log(f"[react] Warning: Failed to rehost current attachments: {e}", level="WARNING")
         context = browser.make_react_context(
@@ -383,7 +398,12 @@ class ReactSolver:
             await self.comm.delta(text=text, index=i, marker="thinking", agent=author, completed=completed)
         return emit_thinking_delta
 
-    def _mk_exec_code_streamer(self, phase: str, idx: int, execution_id: Optional[str] = None) -> Callable[[str], Awaitable[None]]:
+    def _mk_exec_code_streamer(
+        self,
+        phase: str,
+        idx: int,
+        execution_id: Optional[str] = None,
+    ) -> tuple[Callable[[str], Awaitable[None]], DecisionExecCodeStreamer]:
         streamer = DecisionExecCodeStreamer(
             emit_delta=self.comm.delta,
             agent=f"{self.MODULE_AGENT_NAME}.{phase}",
@@ -398,7 +418,23 @@ class ReactSolver:
                 return
             await streamer.feed(text)
 
-        return emit_json_delta
+        return emit_json_delta, streamer
+
+    def _next_tool_streamer_idx(self, outdir: pathlib.Path, tool_id: str) -> int:
+        dest_dir = outdir / "executed_programs"
+        if not dest_dir.exists():
+            return 0
+        label = _safe_label(tool_id)
+        max_idx = -1
+        for path in dest_dir.glob("*_main.py"):
+            match = re.search(rf"^{re.escape(label)}_(\d+)_main\\.py$", path.name)
+            if not match:
+                continue
+            try:
+                max_idx = max(max_idx, int(match.group(1)))
+            except Exception:
+                continue
+        return max_idx + 1
 
     async def _emit_timeline_text(self, *, text: str, agent: str, artifact_name: str):
         if not text:
@@ -1023,8 +1059,16 @@ class ReactSolver:
             is_wrapup = state.get("is_wrapup_round", False)
             thinking_streamer = self._mk_thinking_streamer(f"decision ({it})")
             exec_id = f"exec_{uuid.uuid4().hex[:12]}"
-            exec_streamer = self._mk_exec_code_streamer(f"decision ({it})", it, execution_id=exec_id)
-            thinking_streamer._on_json = exec_streamer
+            exec_streamer_idx = self._next_tool_streamer_idx(
+                pathlib.Path(state["outdir"]),
+                "exec_tools.execute_code_python",
+            )
+            exec_streamer_fn, exec_streamer_widget = self._mk_exec_code_streamer(
+                f"decision ({it})",
+                exec_streamer_idx,
+                execution_id=exec_id,
+            )
+            thinking_streamer._on_json = exec_streamer_fn
             t0 = time.perf_counter()
             decision_out = await self.react_decision_stream(
                 svc=self.svc,
@@ -1052,20 +1096,21 @@ class ReactSolver:
         internal_thinking = decision_out.get("internal_thinking")
         error_text = (elog.get("error") or "").strip()
         tool_call = agent_response.get("tool_call") if isinstance(agent_response, dict) else None
-        state["exec_code_streamer"] = exec_streamer
+        state["exec_code_streamer"] = exec_streamer_widget
         state["pending_exec_id"] = exec_id
         tool_id = tool_call.get("tool_id") if isinstance(tool_call, dict) else ""
         if tools_insights.is_codegen_tool(tool_id):
             if not state.get("pending_codegen_exec_id"):
                 state["pending_codegen_exec_id"] = f"codegen_{uuid.uuid4().hex[:12]}"
             if not state.get("codegen_streamer"):
+                stream_idx = self._next_tool_streamer_idx(pathlib.Path(state["outdir"]), tool_id)
                 invocation_idx = int(state.get("iteration") or 0)
                 author = f"{self.codegen_runner.AGENT_NAME}.solver.codegen"
                 author = f"{author}.{invocation_idx}" if invocation_idx is not None else author
                 state["codegen_streamer"] = CodegenJsonCodeStreamer(
                     channel="canvas",
                     agent=author,
-                    artifact_name=f"codegen.{invocation_idx}.main_py",
+                    artifact_name=f"codegen.{stream_idx}.main_py",
                     emit_delta=self.comm.delta,
                     execution_id=state.get("pending_codegen_exec_id"),
                 )
@@ -1626,13 +1671,14 @@ class ReactSolver:
                 codegen_exec_id = f"codegen_{tool_call_id}"
                 state["pending_codegen_exec_id"] = codegen_exec_id
             if not codegen_streamer:
+                stream_idx = self._next_tool_streamer_idx(pathlib.Path(state["outdir"]), tool_id)
                 author = f"{self.codegen_runner.AGENT_NAME}.solver.codegen"
                 invocation_idx = int(state.get("iteration") or 0)
                 author = f"{author}.{invocation_idx}" if invocation_idx is not None else author
                 codegen_streamer = CodegenJsonCodeStreamer(
                     channel="canvas",
                     agent=author,
-                    artifact_name=f"codegen.{invocation_idx}.main_py",
+                    artifact_name=f"codegen.{stream_idx}.main_py",
                     emit_delta=self.comm.delta,
                     execution_id=codegen_exec_id,
                 )
@@ -1663,6 +1709,9 @@ class ReactSolver:
             exec_streamer=exec_streamer,
             codegen_streamer=codegen_streamer,
         )
+        if tools_insights.is_codegen_tool(tool_id):
+            state.pop("codegen_streamer", None)
+            state.pop("pending_codegen_exec_id", None)
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         self._append_react_timing(round_idx=int(state["iteration"]), stage="tool.call", elapsed_ms=elapsed_ms, tool_id=tool_id)
         items = tool_response.get("items") or []
@@ -1690,7 +1739,7 @@ class ReactSolver:
             artifact_summary = tr.get("summary") or ""
             tool_exec_output = tr.get("output")
             tool_exec_error = tr.get("error")
-            tool_exec_status = tr.get("status")
+            tool_exec_status = tr.get("status") or "ok"
             summary_timing_ms = tr.get("summary_timing_ms")
             if isinstance(summary_timing_ms, (int, float)):
                 self._append_react_timing(

@@ -101,13 +101,64 @@ async def _build_program_run_items(
         summary_artifact = prepare_summary_artifact(a, run_outdir)
         contract_entry = contract.get(artifact_id) or {}
 
+        def _file_stats(artifact: Dict[str, Any]) -> Dict[str, Any]:
+            output = artifact.get("output") if isinstance(artifact.get("output"), dict) else {}
+            filename = (output.get("filename") or "").strip()
+            path = (output.get("path") or "").strip()
+            mime = (output.get("mime") or artifact.get("mime") or "").strip()
+            size_bytes = None
+            if path:
+                p = pathlib.Path(path)
+                if not p.is_absolute():
+                    p = run_outdir / p
+                if p.exists() and p.is_file():
+                    try:
+                        size_bytes = p.stat().st_size
+                    except Exception:
+                        size_bytes = None
+            elif filename:
+                p = run_outdir / filename
+                if p.exists() and p.is_file():
+                    try:
+                        size_bytes = p.stat().st_size
+                    except Exception:
+                        size_bytes = None
+            return {
+                "artifact_id": (artifact.get("resource_id") or "").removeprefix("artifact:"),
+                "filename": filename or path or "",
+                "mime": mime,
+                "size_bytes": size_bytes,
+            }
+
+        sibling_stats = []
+        for sibling in artifacts:
+            sib_id = (sibling.get("resource_id") or "").removeprefix("artifact:")
+            if not sib_id or sib_id == artifact_id:
+                continue
+            sibling_stats.append(_file_stats(sibling))
+
+        sibling_lines = []
+        for stat in sibling_stats:
+            parts = [f"artifact_id={stat.get('artifact_id') or 'unknown'}"]
+            filename = stat.get("filename") or ""
+            if filename:
+                parts.append(f"filename={filename}")
+            size_bytes = stat.get("size_bytes")
+            if isinstance(size_bytes, int):
+                parts.append(f"size_bytes={size_bytes}")
+            mime = stat.get("mime") or ""
+            if mime:
+                parts.append(f"mime={mime}")
+            sibling_lines.append("- " + "; ".join(parts))
+
         ctx = (
             f"[Call Reason]\n{call_reason}\n"
             f"[artifact: {artifact_id}]\n"
-            "IMPORTANT: Summarize ONLY this artifact. "
-            "Do NOT assess or mention other artifacts in the contract; "
-            "they will be summarized separately.\n"
-            f"[In contract]\n{contract_entry}\n"
+            "CRITICAL: Summarize ONLY this artifact. "
+            "Do NOT assess, compare, or mention other artifacts; "
+            "do NOT claim missing siblings. They are summarized separately.\n"
+            + (("[Sibling artifacts (context only)]\n" + "\n".join(sibling_lines) + "\n") if sibling_lines else "")
+            + f"[In contract]\n{contract_entry}\n"
             f"[Code file]\n```python\n{codefile or ''}\n```\n[]"
         )
         t0 = time.perf_counter()
@@ -128,6 +179,7 @@ async def _build_program_run_items(
         )
         summary_timing_ms = int((time.perf_counter() - t0) * 1000)
 
+        item_status = "error" if envelope_error or a.get("error") else "success"
         item = {
             "artifact_id": artifact_id,
             "artifact_type": contract_entry.get("format"),
@@ -135,11 +187,12 @@ async def _build_program_run_items(
             "tool_id": tool_id,
             "output": value,
             "summary": summary_txt or "",
+            "status": item_status,
             "summary_timing_ms": summary_timing_ms,
             "inputs": params,
             "call_record_rel": call_record_rel,
             "call_record_abs": call_record_abs,
-            "error": None,
+            "error": a.get("error") if a.get("error") else None,
             "content_inventorization": a.get("content_inventorization"),
             "tool_call_id": tool_call_id,
             "tool_call_item_index": i,
@@ -176,6 +229,7 @@ async def _build_program_run_items(
             "tool_id": tool_id,
             "output": None,
             "summary": f"MISSING: {artifact_id}",
+            "status": "error",
             "inputs": params,
             "call_record_rel": call_record_rel,
             "call_record_abs": call_record_abs,
@@ -809,6 +863,7 @@ async def _execute_tool_in_memory(
         "tool_id": tool_id,
         "output": output,
         "summary": summary or "",
+        "status": status,
         "inputs": inputs,
         "call_record_rel": call_record_rel,
         "call_record_abs": call_record_abs,

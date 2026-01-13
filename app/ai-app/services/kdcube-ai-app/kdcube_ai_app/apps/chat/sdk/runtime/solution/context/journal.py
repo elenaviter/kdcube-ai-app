@@ -162,7 +162,12 @@ def build_turn_session_journal(*,
             lines_local.append("- " + " | ".join(parts))
         return lines_local
 
-    def _format_sources_lines(sources: List[Dict[str, Any]], *, used_sids: Optional[set[int]] = None) -> List[str]:
+    def _format_sources_lines(
+        sources: List[Dict[str, Any]],
+        *,
+        used_sids: Optional[set[int]] = None,
+        current_turn_id: Optional[str] = None,
+    ) -> List[str]:
         lines_local: List[str] = []
         groups: Dict[str, List[Dict[str, Any]]] = {}
         order: List[str] = []
@@ -185,7 +190,13 @@ def build_turn_session_journal(*,
                 except Exception:
                     continue
             if sids:
-                lines_local.append(f"  {origin}: " + ", ".join(sids))
+                origin_label = origin
+                if current_turn_id:
+                    if origin == "current_turn":
+                        origin_label = f"{current_turn_id} (current turn)"
+                    elif origin == current_turn_id:
+                        origin_label = f"{origin} (current turn)"
+                lines_local.append(f"  {origin_label}: " + ", ".join(sids))
             for src in group:
                 idx += 1
                 sid = src.get("sid")
@@ -945,7 +956,16 @@ def build_turn_session_journal(*,
 
         sources_pool = normalize_sources_any(context.sources_pool or [])
         if sources_pool:
-            src_lines = _format_sources_lines(sources_pool, used_sids=current_used_sids)
+            current_turn_id = None
+            try:
+                current_turn_id = getattr(context.scratchpad, "turn_id", None) or context.turn_id
+            except Exception:
+                current_turn_id = None
+            src_lines = _format_sources_lines(
+                sources_pool,
+                used_sids=current_used_sids,
+                current_turn_id=current_turn_id,
+            )
             if src_lines:
                 lines.append(f"[TURN SOURCES POOL. ({len(sources_pool)} total)]")
                 lines.extend(src_lines)
@@ -1083,7 +1103,17 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
         # Aggregate status similarly to old semantics but aware of multi-artifact calls.
         if any(isinstance(g.get("error"), dict) and g.get("error") for g in group):
             return "FAILED"
-        sts = [str(g.get("status", "")).strip() for g in group if str(g.get("status", "")).strip()]
+        sts = []
+        for g in group:
+            raw = g.get("status", "")
+            if raw is None:
+                continue
+            val = str(raw).strip()
+            if not val:
+                continue
+            if val.lower() in {"none", "null"}:
+                continue
+            sts.append(val)
         if not sts:
             return "ok"
         uniq: List[str] = []
@@ -1245,7 +1275,7 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
 
                     for n, g in enumerate(group, 1):
                         tool_id, art_name, art_type, art_kind, res_summ = _artifact_fields_from_entry(g)
-                        status = g.get("status")
+                        status = g.get("status") or "ok"
                         error = g.get("error")
 
                         kind = art_kind or _artifact_kind_from_tool_id(tool_id0)

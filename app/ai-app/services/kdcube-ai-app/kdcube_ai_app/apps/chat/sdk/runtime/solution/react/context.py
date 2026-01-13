@@ -2492,6 +2492,14 @@ class ReactContext:
 
         # COPY the directives to avoid mutating caller's state
         fetch_directives = [dict(fd) for fd in (fetch_directives or [])]
+        if tool_id and tools_insights.is_write_tool(tool_id):
+            if "sources_list" in (base_params or {}):
+                base_params = dict(base_params)
+                base_params.pop("sources_list", None)
+            fetch_directives = [
+                fd for fd in fetch_directives
+                if (fd or {}).get("param_name") != "sources_list"
+            ]
         if tool_id and tools_insights.is_write_tool(tool_id) and isinstance(fetch_directives, list):
             for fd in fetch_directives:
                 if not isinstance(fd, dict):

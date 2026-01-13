@@ -43,18 +43,10 @@ EXEC_TOOLS = {
 # Tools that accept/need citations on input
 CITATION_AWARE_TOOL_IDS = {
     "llm_tools.generate_content_llm",
-    "generic_tools.write_pdf",
-    "generic_tools.write_docx",
-    "generic_tools.write_html",
-    "generic_tools.write_pptx",
 }
 
 CITATION_AWARE_WANT_SOURCES_LIST_TOOL_IDS = {
     "llm_tools.generate_content_llm",
-    "generic_tools.write_pdf",
-    "generic_tools.write_docx",
-    "generic_tools.write_html",
-    "generic_tools.write_pptx",
 }
 
 WRITE_TOOLS = {

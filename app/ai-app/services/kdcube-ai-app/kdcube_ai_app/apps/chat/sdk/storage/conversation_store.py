@@ -3,7 +3,7 @@
 
 # chatbot/storage/storage.py
 
-import json, time, os, mimetypes, pathlib
+import json, time, os, mimetypes, pathlib, tempfile, zipfile
 from typing import Optional, Tuple, List, Dict, Any
 from urllib.parse import urlparse, unquote
 
@@ -405,38 +405,55 @@ class ConversationStore:
             "executions", user_type, user_or_fp, conversation_id, turn_id, codegen_run_id
         )
 
-        async def _copy_tree(src: Optional[str], kind: str) -> Tuple[Optional[str], List[dict]]:
+        async def _zip_tree(src: Optional[str], kind: str) -> Tuple[Optional[str], List[dict], int]:
             if not src:
-                return None, []
+                return None, [], 0
             srcp = pathlib.Path(src)
             if not srcp.exists():
-                return None, []
-            root_rel = self._join(base, kind)
+                return None, [], 0
+            root_rel = self._join(base, f"{kind}.zip")
             files_meta: List[dict] = []
-            for p in srcp.rglob("*"):
-                if not p.is_file():
-                    continue
-                rel_under = str(p.relative_to(srcp)).replace("\\", "/")
-                key = self._join(root_rel, rel_under)
-                data = p.read_bytes()
-                ctype = mimetypes.guess_type(p.name)[0] or "application/octet-stream"
-                await self.backend.write_bytes_a(key, data, meta={"ContentType": ctype})
-                url = self._uri_for_path(key)
+            file_count = 0
+            with tempfile.NamedTemporaryFile(prefix=f"exec_{kind}_", suffix=".zip", delete=False) as tmp:
+                zip_path = pathlib.Path(tmp.name)
+            try:
+                with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                    for p in srcp.rglob("*"):
+                        if not p.is_file():
+                            continue
+                        rel_under = str(p.relative_to(srcp)).replace("\\", "/")
+                        zf.write(p, arcname=rel_under)
+                        file_count += 1
+                data = zip_path.read_bytes()
+            finally:
+                try:
+                    zip_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            ctype = "application/zip"
+            await self.backend.write_bytes_a(root_rel, data, meta={"ContentType": ctype})
+            url = self._uri_for_path(root_rel)
+            files_meta.append({
+                "key": root_rel,
+                "url": url,
+                "size": len(data),
+                "sha256": self._sha256_bytes(data),
+                "mime": ctype,
+                "kind": kind,
+                "rn": rn_execution_file(tenant, project, user_or_fp, conversation_id, turn_id, role, kind, f"{kind}.zip")
+            })
+            return self._uri_for_path(root_rel), files_meta, file_count
 
-                files_meta.append({
-                    "key": key,
-                    "url": url,
-                    "size": len(data),
-                    "sha256": self._sha256_bytes(data),
-                    "mime": ctype,
-                    "kind": kind,
-                    "rn": rn_execution_file(tenant, project, user_or_fp, conversation_id, turn_id, role, kind, rel_under)
-                })
-            return self._uri_for_path(root_rel), files_meta
-
-        out_root, out_files = await _copy_tree(out_dir, "out")
-        pkg_root, pkg_files = await _copy_tree(pkg_dir, "pkg")
-        return {"roots": {"out": out_root, "pkg": pkg_root}, "files": out_files + pkg_files}
+        out_root, out_files, out_count = await _zip_tree(out_dir, "out")
+        pkg_root, pkg_files, pkg_count = await _zip_tree(pkg_dir, "pkg")
+        out_info = {"dir": out_root, "files": out_files, "file_count": out_count}
+        pkg_info = {"dir": pkg_root, "files": pkg_files, "file_count": pkg_count}
+        return {
+            "out": out_info,
+            "pkg": pkg_info,
+            "roots": {"out": out_root, "pkg": pkg_root},
+            "files": out_files + pkg_files,
+        }
 
     async def close(self):
         return None

@@ -987,6 +987,19 @@ def extract_citation_sids_any(text: str) -> List[int]:
     # Otherwise, treat as markdown/text
     return extract_citation_sids_from_text(text)
 
+def strip_citation_tokens(text: str) -> str:
+    """
+    Remove inline citation tokens from markdown/text and HTML.
+    Intended for cleaning surrogates before LLM summaries.
+    """
+    if not isinstance(text, str) or not text:
+        return ""
+    out = CITE_TOKEN_RE.sub("", text)
+    out = HTML_CITE_RE.sub("", out)
+    out = HTML_DATASIDS_RE.sub("", out)
+    out = HTML_BRACKET_S_RE.sub("", out)
+    return out
+
 # ---------------------------------------------------------------------------
 # Extract local file paths from rendered content
 # ---------------------------------------------------------------------------

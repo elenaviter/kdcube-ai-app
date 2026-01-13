@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 import time
+import os
+import asyncio
 # kdcube_ai_app/apps/chat/sdk/runtime/solution/solution_workspace.py
 
 import traceback, pathlib, logging
@@ -43,6 +45,16 @@ def _unique_target(base_dir: pathlib.Path, basename: str) -> pathlib.Path:
         if not c.exists():
             return c
         i += 1
+
+def _alloc_unique_name(name: str, used: Dict[str, int]) -> str:
+    base = name or "file"
+    count = used.get(base, 0)
+    used[base] = count + 1
+    if count == 0:
+        return base
+    stem = pathlib.Path(base).stem
+    suf = pathlib.Path(base).suffix
+    return f"{stem}-{count}{suf}"
 
 async def persist_program_out_deliverables(
         *,
@@ -98,103 +110,113 @@ async def rehost_previous_files(
 
     store = ConversationStore(get_settings().STORAGE_PATH)
 
+    used_names: Dict[str, int] = {}
+    items: List[Dict[str, Any]] = []
     for file in prev_files:
-        artifact = {}
-        try:
-            artifact = file.get("value") or {}
-            mime = artifact.get("mime") or ""
-            src_path = (artifact.get("path") or "").strip()  # ← Normalize to stripped string
-            is_draft = bool(artifact.get("draft"))
+        artifact = (file or {}).get("value") if isinstance(file, dict) else None
+        if not isinstance(artifact, dict):
+            items.append({"_artifact": artifact, "_src": None, "_filename": None, "_mime": "", "_draft": False})
+            continue
+        mime = artifact.get("mime") or ""
+        src_path = (artifact.get("path") or "").strip()
+        is_draft = bool(artifact.get("draft"))
+        filename = pathlib.Path(src_path).name if src_path else ""
+        filename = _alloc_unique_name(filename, used_names) if filename else ""
+        items.append({
+            "_artifact": artifact,
+            "_src": src_path,
+            "_filename": filename,
+            "_mime": mime,
+            "_draft": is_draft
+        })
 
-            # Handle missing/empty path (draft file slots)
-            if not src_path:
-                # Draft file slot with no actual file - skip rehosting
-                # The surrogate text in artifact["text"] is still accessible
-                logger.info(
-                    f"[rehost] Skipping turn {turn_id} - "
-                    f"{'draft ' if is_draft else ''}file slot with no path"
-                )
-                out.append({
-                    **artifact,
-                    "rehosted": False,
-                    "file_exists": False,  # ← NEW: explicit flag
-                    "rehost_reason": "no_source_path"  # ← Why rehosting was skipped
-                })
-                continue
+    sem = asyncio.Semaphore(os.cpu_count() or 4)
 
-            # Extract just the filename (no parent dirs from storage)
-            filename = pathlib.Path(src_path).name
-            if not filename:
-                logger.warning(f"[rehost] Invalid path (no filename): {src_path}")
-                out.append({
-                    **artifact,
-                    "rehosted": False,
-                    "file_exists": False,
-                    "rehost_reason": "invalid_path"
-                })
-                continue
-
-            # Target: workdir/<turn_id>/files/<filename>
-            target = turn_dir / filename
-
-            # Attempt to read and write file
+    async def _process_one(idx: int, item: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+        async with sem:
+            artifact = item.get("_artifact")
+            src_path = (item.get("_src") or "").strip()
+            filename = item.get("_filename") or ""
+            mime = item.get("_mime") or ""
+            is_draft = bool(item.get("_draft"))
             try:
-                if _is_text_mime(mime):
-                    content = await store.backend.read_text_a(src_path)
-                    target.write_text(content, encoding="utf-8")
-                else:
-                    content = await store.backend.read_bytes_a(src_path)
-                    target.write_bytes(content)
-
-                # Success - update artifact with new path
-                out.append({
-                    **artifact,
-                    "source_path": src_path,  # Original storage path
-                    "path": f"{turn_id}/files/{filename}",  # ← Turn-namespaced path
-                    "rehosted": True,
-                    "file_exists": True,  # ← File successfully copied
-                })
-                logger.info(f"[rehost] ✓ {turn_id}/files/{filename} from {src_path}")
-
-            except FileNotFoundError:
-                logger.warning(
-                    f"[rehost] File not found in storage: {src_path} "
-                    f"(turn {turn_id}, file: {filename})"
-                )
-                out.append({
-                    **artifact,
-                    "rehosted": False,
-                    "file_exists": False,
-                    "rehost_reason": "file_not_found",
-                    "source_path": src_path
-                })
-
-            except Exception as read_err:
+                if not isinstance(artifact, dict):
+                    return idx, artifact
+                if not src_path:
+                    logger.info(
+                        f"[rehost] Skipping turn {turn_id} - "
+                        f"{'draft ' if is_draft else ''}file slot with no path"
+                    )
+                    return idx, {
+                        **artifact,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "no_source_path"
+                    }
+                if not filename:
+                    logger.warning(f"[rehost] Invalid path (no filename): {src_path}")
+                    return idx, {
+                        **artifact,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "invalid_path"
+                    }
+                target = turn_dir / filename
+                try:
+                    if _is_text_mime(mime):
+                        content = await store.backend.read_text_a(src_path)
+                        target.write_text(content, encoding="utf-8")
+                    else:
+                        content = await store.backend.read_bytes_a(src_path)
+                        target.write_bytes(content)
+                    logger.info(f"[rehost] ✓ {turn_id}/files/{filename} from {src_path}")
+                    return idx, {
+                        **artifact,
+                        "source_path": src_path,
+                        "path": f"{turn_id}/files/{filename}",
+                        "rehosted": True,
+                        "file_exists": True,
+                    }
+                except FileNotFoundError:
+                    logger.warning(
+                        f"[rehost] File not found in storage: {src_path} "
+                        f"(turn {turn_id}, file: {filename})"
+                    )
+                    return idx, {
+                        **artifact,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "file_not_found",
+                        "source_path": src_path
+                    }
+                except Exception as read_err:
+                    logger.error(f"[rehost] Failed to read {src_path}: {read_err}")
+                    return idx, {
+                        **artifact,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "read_error",
+                        "rehost_error": str(read_err)[:200],
+                        "source_path": src_path
+                    }
+            except Exception as e:
                 logger.error(
-                    f"[rehost] Failed to read {src_path}: {read_err}"
+                    f"[rehost] Failed to process file artifact: {e}\n"
+                    f"{traceback.format_exc()}"
                 )
-                out.append({
-                    **artifact,
+                return idx, {
+                    **(artifact or {}),
                     "rehosted": False,
                     "file_exists": False,
-                    "rehost_reason": "read_error",
-                    "rehost_error": str(read_err)[:200],
-                    "source_path": src_path
-                })
+                    "rehost_reason": "processing_error",
+                    "rehost_error": str(e)[:200]
+                }
 
-        except Exception as e:
-            logger.error(
-                f"[rehost] Failed to process file artifact: {e}\n"
-                f"{traceback.format_exc()}"
-            )
-            # Append original artifact unchanged with error flag
-            out.append({
-                **artifact,
-                "rehosted": False,
-                "file_exists": False,
-                "rehost_reason": "processing_error",
-                "rehost_error": str(e)[:200]
-            })
+    tasks = [asyncio.create_task(_process_one(i, item)) for i, item in enumerate(items)]
+    results = await asyncio.gather(*tasks)
+    out = [None] * len(results)
+    for idx, res in results:
+        out[idx] = res
 
     logger.info(
         f"[rehost] Turn {turn_id}: processed {len(prev_files)} files, "
@@ -228,68 +250,84 @@ async def rehost_previous_attachments(
 
     store = ConversationStore(get_settings().STORAGE_PATH)
 
+    used_names: Dict[str, int] = {}
+    items: List[Dict[str, Any]] = []
     for att in prev_attachments:
-        base = {}
-        try:
-            base = dict(att) if isinstance(att, dict) else {}
-            if not base:
-                out.append(base)
-                continue
+        base = dict(att) if isinstance(att, dict) else {}
+        if not base:
+            items.append({"_artifact": base, "_src": None, "_filename": None})
+            continue
+        raw_name = (base.get("filename") or "attachment.bin").strip() or "attachment.bin"
+        filename = _alloc_unique_name(raw_name, used_names)
+        src = base.get("hosted_uri") or base.get("source_path") or base.get("path") or base.get("key")
+        items.append({"_artifact": base, "_src": src, "_filename": filename})
 
-            filename = (base.get("filename") or "attachment.bin").strip() or "attachment.bin"
-            src = base.get("hosted_uri") or base.get("source_path") or base.get("path") or base.get("key")
-            if not src:
-                out.append({
-                    **base,
-                    "rehosted": False,
-                    "file_exists": False,
-                    "rehost_reason": "no_source_path",
-                })
-                continue
+    sem = asyncio.Semaphore(os.cpu_count() or 4)
 
-            target = _unique_target(turn_dir, filename)
+    async def _process_one(idx: int, item: Dict[str, Any]) -> tuple[int, Dict[str, Any]]:
+        async with sem:
+            base = item.get("_artifact") or {}
+            src = item.get("_src")
+            filename = item.get("_filename")
             try:
-                content = await store.get_blob_bytes(src)
-                target.write_bytes(content)
-                out.append({
-                    **base,
-                    "source_path": src,
-                    "path": f"{turn_id}/attachments/{target.name}",
-                    "rehosted": True,
-                    "file_exists": True,
-                })
-                logger.info(f"[rehost] ✓ {turn_id}/attachments/{target.name} from {src}")
-            except FileNotFoundError:
-                logger.warning(f"[rehost] Attachment not found in storage: {src}")
-                out.append({
+                if not base:
+                    return idx, base
+                if not src:
+                    return idx, {
+                        **base,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "no_source_path",
+                    }
+                target = turn_dir / filename
+                try:
+                    content = await store.get_blob_bytes(src)
+                    target.write_bytes(content)
+                    logger.info(f"[rehost] ✓ {turn_id}/attachments/{target.name} from {src}")
+                    return idx, {
+                        **base,
+                        "source_path": src,
+                        "path": f"{turn_id}/attachments/{target.name}",
+                        "rehosted": True,
+                        "file_exists": True,
+                    }
+                except FileNotFoundError:
+                    logger.warning(f"[rehost] Attachment not found in storage: {src}")
+                    return idx, {
+                        **base,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "file_not_found",
+                        "source_path": src,
+                    }
+                except Exception as read_err:
+                    logger.error(f"[rehost] Failed to read attachment {src}: {read_err}")
+                    return idx, {
+                        **base,
+                        "rehosted": False,
+                        "file_exists": False,
+                        "rehost_reason": "read_error",
+                        "rehost_error": str(read_err)[:200],
+                        "source_path": src,
+                    }
+            except Exception as e:
+                logger.error(
+                    f"[rehost] Failed to process attachment: {e}\n"
+                    f"{traceback.format_exc()}"
+                )
+                return idx, {
                     **base,
                     "rehosted": False,
                     "file_exists": False,
-                    "rehost_reason": "file_not_found",
-                    "source_path": src,
-                })
-            except Exception as read_err:
-                logger.error(f"[rehost] Failed to read attachment {src}: {read_err}")
-                out.append({
-                    **base,
-                    "rehosted": False,
-                    "file_exists": False,
-                    "rehost_reason": "read_error",
-                    "rehost_error": str(read_err)[:200],
-                    "source_path": src,
-                })
-        except Exception as e:
-            logger.error(
-                f"[rehost] Failed to process attachment: {e}\n"
-                f"{traceback.format_exc()}"
-            )
-            out.append({
-                **base,
-                "rehosted": False,
-                "file_exists": False,
-                "rehost_reason": "processing_error",
-                "rehost_error": str(e)[:200],
-            })
+                    "rehost_reason": "processing_error",
+                    "rehost_error": str(e)[:200],
+                }
+
+    tasks = [asyncio.create_task(_process_one(i, item)) for i, item in enumerate(items)]
+    results = await asyncio.gather(*tasks)
+    out = [None] * len(results)
+    for idx, res in results:
+        out[idx] = res
 
     logger.info(
         f"[rehost] Turn {turn_id}: processed {len(prev_attachments)} attachments, "

@@ -20,7 +20,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
     artifact_blocks_for_summary,
     collect_multimodal_artifacts_from_tool_output,
     strip_base64_from_tool_output,
+    MODALITY_IMAGE_MIME,
+    MODALITY_DOC_MIME,
 )
+from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any, strip_citation_tokens
 
 
 def _attachment_summary_system_prompt() -> str:
@@ -61,6 +64,59 @@ def _artifact_blocks_for_summary(
     artifacts: Optional[Any],
 ) -> Tuple[List[dict], Optional[str], Set[str]]:
     return artifact_blocks_for_summary(artifacts)
+
+def _sanitize_summary_artifacts(
+    summary_artifact: Optional[Any],
+) -> Tuple[Optional[Any], List[str]]:
+    if summary_artifact is None:
+        return None, []
+
+    def _sanitize_one(artifact: Dict[str, Any]) -> Dict[str, Any]:
+        art = dict(artifact)
+        text = art.get("text") or ""
+        mime = (art.get("mime") or "").strip().lower()
+        if not text:
+            return art
+        if mime not in MODALITY_IMAGE_MIME and mime not in MODALITY_DOC_MIME:
+            return art
+        has_citations = False
+        try:
+            has_citations = bool(extract_citation_sids_any(text))
+        except Exception:
+            has_citations = bool(CITE_TOKEN_RE.search(text))
+        if has_citations:
+            art["text"] = ""
+            return art
+        cleaned = strip_citation_tokens(text).strip()
+        if cleaned:
+            art["text"] = "[SURROGATE ONLY; NOT VERIFIED]\n" + cleaned
+        else:
+            art["text"] = ""
+        return art
+
+    notes: List[str] = []
+    artifacts_list: List[Dict[str, Any]] = []
+    if isinstance(summary_artifact, dict):
+        artifacts_list = [summary_artifact]
+    elif isinstance(summary_artifact, list):
+        artifacts_list = [a for a in summary_artifact if isinstance(a, dict)]
+
+    sanitized_list = []
+    for art in artifacts_list:
+        before_text = art.get("text") or ""
+        mime = (art.get("mime") or "").strip().lower()
+        sanitized = _sanitize_one(art)
+        after_text = sanitized.get("text") or ""
+        if mime in MODALITY_IMAGE_MIME or mime in MODALITY_DOC_MIME:
+            if before_text and not after_text:
+                notes.append(f"- text_surrogate_omitted: citations_present_or_removed; mime={mime}")
+            elif after_text:
+                notes.append(f"- text_surrogate_note: multimodal text is a surrogate only; mime={mime}")
+        sanitized_list.append(sanitized)
+
+    if isinstance(summary_artifact, dict):
+        return (sanitized_list[0] if sanitized_list else summary_artifact), notes
+    return sanitized_list, notes
 
 async def summarize_user_attachment(
     *,
@@ -344,6 +400,7 @@ async def _generate_llm_summary(
         if timezone:
             time_evidence_reminder += f"The user's timezone is {timezone}."
         time_evidence_reminder += f"Current UTC timestamp: {now}. Current UTC date: {today}. Any dates before this are in the past, and any dates after this are in the future. When dealing with modern entities/companies/people, and the user asks for the 'latest', 'most recent', 'today's', etc. don't assume your knowledge is up to date; you MUST carefully confirm what the true 'latest' is first. If the user seems confused or mistaken about a certain date or dates, you MUST include specific, concrete dates in your response to clarify things. This is especially important when the user is referencing relative dates like 'today', 'tomorrow', 'yesterday', etc -- if the user seems mistaken in these cases, you should make sure to use absolute/exact dates like 'January 1, 2010' in your response.\n"
+        summary_artifact, sanitize_notes = _sanitize_summary_artifacts(summary_artifact)
         artifact_blocks, artifact_meta, modality_kinds = _artifact_blocks_for_summary(summary_artifact)
 
         system_prompt = (
@@ -360,6 +417,10 @@ async def _generate_llm_summary(
             "  ## Risks, quality & next moves\n"
             "- Each section MUST have 1–2 bullet points (`- ...`) and nothing else.\n"
             "- Bullets must be short, dense, and telegraphic; pack multiple signals per bullet with semicolons.\n\n"
+            "CRITICAL SCOPE:\n"
+            "- You are summarizing ONE artifact from a tool call that may produce many artifacts.\n"
+            "- Focus ONLY on the current artifact; do NOT assess, imply, or list missing/failed siblings.\n"
+            "- Treat sibling metadata as context only; ignore it in Output/Risks unless it affects THIS artifact.\n\n"
 
             "GLOBAL BEHAVIOR:\n"
             "- Assume the reader of yiur summary agent often sees ONLY your summary, not the raw tool inputs/outputs.\n"
@@ -470,6 +531,12 @@ async def _generate_llm_summary(
             {"type": "text", "text": tool_doc, "cache": True},
             {"type": "text", "text": operational_msg, "cache": False},
         ]
+        if sanitize_notes:
+            user_blocks.append({
+                "type": "text",
+                "text": "### Surrogate handling notes\n" + "\n".join(sanitize_notes),
+                "cache": False,
+            })
         if artifact_meta:
             user_blocks.append({"type": "text", "text": artifact_meta, "cache": False})
         for block in artifact_blocks:
@@ -565,6 +632,7 @@ async def generate_llm_summary_json(
         )
 
 # ---- SYSTEM PROMPT (compact schema; no giant JSON examples) ----
+        summary_artifact, sanitize_notes = _sanitize_summary_artifacts(summary_artifact)
         artifact_blocks, artifact_meta, modality_kinds = _artifact_blocks_for_summary(summary_artifact)
 
         system_prompt = (
@@ -587,6 +655,10 @@ async def generate_llm_summary_json(
             f"- Max {token_cap} tokens total; be dense.\n"
             "- Output MUST be exactly ONE JSON object with ONLY these top-level keys: input, output, strategy.\n"
             "- NEVER omit fields; if unknown/missing use literal string \"NONE\" (or [\"NONE\"]).\n\n"
+            "CRITICAL SCOPE:\n"
+            "- You are summarizing ONE artifact from a tool call that may produce many artifacts.\n"
+            "- Focus ONLY on the current artifact; do NOT assess, imply, or list missing/failed siblings.\n"
+            "- Treat sibling metadata as context only; ignore it in output/strategy unless it affects THIS artifact.\n\n"
             "JSON SHAPE (keys must match exactly):\n"
             "{\n"
             "  \"input\": {\n"
@@ -692,6 +764,12 @@ async def generate_llm_summary_json(
             {"type": "text", "text": tool_doc, "cache": True},
             {"type": "text", "text": operational_msg, "cache": False},
         ]
+        if sanitize_notes:
+            user_blocks.append({
+                "type": "text",
+                "text": "### Surrogate handling notes\n" + "\n".join(sanitize_notes),
+                "cache": False,
+            })
         if artifact_meta:
             user_blocks.append({"type": "text", "text": artifact_meta, "cache": False})
         for block in artifact_blocks:
