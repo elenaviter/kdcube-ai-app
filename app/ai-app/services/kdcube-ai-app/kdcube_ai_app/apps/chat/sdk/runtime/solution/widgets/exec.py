@@ -110,7 +110,7 @@ class CodegenChanneledStreamingWidget:
             index=0,
             sub_type="code_exec.objective",
             fmt="text",
-            title="Reasoning",
+            title="Objective",
             language=None,
         )
         await self._emit_subsystem_delta(
@@ -118,7 +118,7 @@ class CodegenChanneledStreamingWidget:
             index=1,
             sub_type="code_exec.objective",
             fmt="text",
-            title="Reasoning",
+            title="Objective",
             completed=True,
             language=None,
         )
