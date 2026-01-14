@@ -18,7 +18,7 @@ class CodegenChanneledStreamingWidget:
         *,
         emit_delta: Callable[..., Awaitable[None]],
         agent: str,
-        marker: str,
+        # marker: str,
         artifact_name: str,
         stream_xpath: str,
         execution_id: Optional[str] = None,
@@ -30,11 +30,11 @@ class CodegenChanneledStreamingWidget:
         subsystem_title: str = "Generated Code",
         subsystem_language: Optional[str] = "python",
         fence_language: Optional[str] = None,
-        on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
+        # on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         self.emit_delta = emit_delta
         self.agent = agent
-        self.marker = marker
+        # self.marker = marker
         self.artifact_name = artifact_name
         self.execution_id = execution_id
         self.subsystem_marker = subsystem_marker
@@ -43,7 +43,7 @@ class CodegenChanneledStreamingWidget:
         self.subsystem_title = subsystem_title
         self.subsystem_language = subsystem_language
         self.fence_language = fence_language
-        self.on_delta_fn = on_delta_fn
+        # self.on_delta_fn = on_delta_fn
 
         self.stream_xpath = (stream_xpath or "").strip(".")
         parts = [p for p in self.stream_xpath.split(".") if p]
@@ -207,21 +207,21 @@ class CodegenChanneledStreamingWidget:
             return
         if self.current_status != "gen":
             await self.send_status(status="gen")
-        canvas_text = text
-        if not self.started and self.fence_language:
-            canvas_text = f"```{self.fence_language}\n" + text
-            self.started = True
-        await self.emit_delta(
-            text=canvas_text,
-            index=self.index,
-            marker=self.marker,
-            agent=self.agent,
-            format="markdown",
-            artifact_name=self.artifact_name,
-        )
-        self.index += 1
-        if self.on_delta_fn:
-            await self.on_delta_fn(canvas_text)
+        # canvas_text = text
+        # if not self.started and self.fence_language:
+        #     canvas_text = f"```{self.fence_language}\n" + text
+        #     self.started = True
+        # await self.emit_delta(
+        #     text=canvas_text,
+        #     index=self.index,
+        #     marker=self.marker,
+        #     agent=self.agent,
+        #     format="markdown",
+        #     artifact_name=self.artifact_name,
+        # )
+        # self.index += 1
+        # if self.on_delta_fn:
+        #     await self.on_delta_fn(canvas_text)
         await self.emit_delta(
             text=text,
             index=self.subsystem_index,
@@ -397,25 +397,25 @@ class CodegenChanneledStreamingWidget:
         if self.streaming_code and self.active_value_buf:
             await self._emit_chunk(self.active_value_buf)
             self.active_value_buf = ""
-        if self.started and self.fence_language:
-            await self.emit_delta(
-                text="\n```",
-                index=self.index,
-                marker=self.marker,
-                agent=self.agent,
-                format="markdown",
-                artifact_name=self.artifact_name,
-            )
-            self.index += 1
-        await self.emit_delta(
-            text="",
-            index=self.index,
-            marker=self.marker,
-            agent=self.agent,
-            format="markdown",
-            artifact_name=self.artifact_name,
-            completed=True,
-        )
+        # if self.started and self.fence_language:
+        #     await self.emit_delta(
+        #         text="\n```",
+        #         index=self.index,
+        #         marker=self.marker,
+        #         agent=self.agent,
+        #         format="markdown",
+        #         artifact_name=self.artifact_name,
+        #     )
+        #     self.index += 1
+        # await self.emit_delta(
+        #     text="",
+        #     index=self.index,
+        #     marker=self.marker,
+        #     agent=self.agent,
+        #     format="markdown",
+        #     artifact_name=self.artifact_name,
+        #     completed=True,
+        # )
         self.index += 1
         if self.subsystem_started:
             await self.emit_delta(
@@ -503,14 +503,14 @@ class DecisionExecCodeStreamer(CodegenChanneledStreamingWidget):
         *,
         emit_delta: Callable[..., Awaitable[None]],
         agent: str,
-        marker: str,
+        # marker: str,
         artifact_name: str,
         execution_id: Optional[str] = None,
     ):
         super().__init__(
             emit_delta=emit_delta,
             agent=agent,
-            marker=marker,
+            # marker=marker,
             artifact_name=artifact_name,
             execution_id=execution_id,
             stream_xpath="tool_call.params.code",
@@ -523,19 +523,19 @@ class CodegenJsonCodeStreamer(CodegenChanneledStreamingWidget):
     def __init__(
         self,
         *,
-        channel: str,
+        # channel: str,
         agent: str,
         artifact_name: str,
         emit_delta: Callable[..., Awaitable[None]],
-        on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
+        # on_delta_fn: Optional[Callable[[str], Awaitable[None]]] = None,
         execution_id: Optional[str] = None,
     ):
         super().__init__(
             emit_delta=emit_delta,
             agent=agent,
-            marker=channel,
+            # marker=channel,
             artifact_name=artifact_name,
             execution_id=execution_id,
             stream_xpath="files.content",
-            on_delta_fn=on_delta_fn,
+            # on_delta_fn=on_delta_fn,
         )

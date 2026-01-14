@@ -407,7 +407,7 @@ class ReactSolver:
         streamer = DecisionExecCodeStreamer(
             emit_delta=self.comm.delta,
             agent=f"{self.MODULE_AGENT_NAME}.{phase}",
-            marker="canvas",
+            # marker="canvas",
             artifact_name=f"react.{idx}.exec_code",
             execution_id=execution_id,
         )
@@ -1108,7 +1108,7 @@ class ReactSolver:
                 author = f"{self.codegen_runner.AGENT_NAME}.solver.codegen"
                 author = f"{author}.{invocation_idx}" if invocation_idx is not None else author
                 state["codegen_streamer"] = CodegenJsonCodeStreamer(
-                    channel="canvas",
+                    # channel="canvas",
                     agent=author,
                     artifact_name=f"codegen.{stream_idx}.main_py",
                     emit_delta=self.comm.delta,
@@ -1675,7 +1675,7 @@ class ReactSolver:
                 invocation_idx = int(state.get("iteration") or 0)
                 author = f"{author}.{invocation_idx}" if invocation_idx is not None else author
                 codegen_streamer = CodegenJsonCodeStreamer(
-                    channel="canvas",
+                    # channel="canvas",
                     agent=author,
                     artifact_name=f"codegen.{stream_idx}.main_py",
                     emit_delta=self.comm.delta,
