@@ -319,7 +319,7 @@ class ReactContext:
                     out["text"] = json.dumps(strip_base64_from_value(val), ensure_ascii=False, indent=2)
                 for k in (
                     "artifact_id", "tool_id", "summary", "sources_used", "error",
-                    "inputs", "description", "content_inventorization", "content_lineage",
+                    "inputs", "description", "content_lineage",
                     "timestamp",
                 ):
                     if k in obj and k not in out:
@@ -355,7 +355,7 @@ class ReactContext:
                         out["text"] = json.dumps(strip_base64_from_value(val), ensure_ascii=False, indent=2)
                 for k in (
                     "artifact_id", "tool_id", "summary", "sources_used", "error",
-                    "inputs", "description", "content_inventorization", "content_lineage",
+                    "inputs", "description", "content_lineage",
                     "timestamp",
                 ):
                     if k in obj and k not in out:
@@ -383,7 +383,7 @@ class ReactContext:
                     out["format"] = default_format
                 for k in (
                     "artifact_id", "tool_id", "summary", "sources_used", "error",
-                    "inputs", "description", "content_inventorization", "content_lineage",
+                    "inputs", "description", "content_lineage",
                     "timestamp",
                 ):
                     if k in obj and k not in out:
@@ -1004,7 +1004,6 @@ class ReactContext:
             artifact_type: Optional[str] = None,
             artifact_kind: Optional[str] = None,
             error: Optional[Dict[str, Any]] = None,
-            content_inventorization: Optional[Any] = None,
             content_lineage: List[str] | None = None,
             tool_call_id: str|None=None,
             tool_call_item_index: int|None=None,
@@ -1097,8 +1096,6 @@ class ReactContext:
         # Add error if present
         if error:
             artifact["error"] = error
-        if content_inventorization is not None:
-            artifact["content_inventorization"] = content_inventorization
         self.artifacts[artifact_id] = artifact
         self.persist()
         return artifact
@@ -1116,7 +1113,6 @@ class ReactContext:
             summary: Optional[str] = None,
             draft: bool = False,
             gaps: Optional[str] = None,
-            content_inventorization: Optional[Any] = None,
     ) -> Dict[str, Any]:
         fmt = slot_spec.format or "text"  # Pydantic attribute access
         mapped_value = source_value
@@ -1141,10 +1137,6 @@ class ReactContext:
             artifact["draft"] = True
         if gaps_clean:
             artifact["gaps"] = gaps_clean
-        if content_inventorization is not None:
-            artifact["content_inventorization"] = content_inventorization
-
-
         self.current_slots[slot_name] = artifact
         self.persist()
         self.mark_sources_used(artifact.get("sources_used") or [])
@@ -1174,7 +1166,6 @@ class ReactContext:
             mime_override: Optional[str] = None,
             draft: bool = False,
             gaps: Optional[str] = None,
-            content_inventorization: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         FILE SLOT GATE: caller is responsible for ensuring BOTH surrogate and file_path are ready.
@@ -1195,9 +1186,6 @@ class ReactContext:
             artifact["draft"] = True
         if gaps_clean:
             artifact["gaps"] = gaps_clean
-        if content_inventorization is not None:
-            artifact["content_inventorization"] = content_inventorization
-
         self.current_slots[slot_name] = artifact
         self.persist()
         self.mark_sources_used(artifact.get("sources_used") or [])
@@ -1509,7 +1497,6 @@ class ReactContext:
                 sources_used = (owner or {}).get("sources_used") or []
                 tool_id = (owner or {}).get("tool_id")
 
-                content_inventorization = (owner or {}).get("content_inventorization")
                 summary = (owner or {}).get("summary")
 
                 # If leaf is under current_turn.artifacts.*, also look into .value.sources_used
@@ -1523,9 +1510,6 @@ class ReactContext:
                             sources_used = v_su
                     if not tool_id:
                         tool_id = tr_obj.get("tool_id")
-                    inv = tr_obj.get("content_inventorization")
-                    if inv is not None:
-                        content_inventorization = inv
                     summary = tr_obj.get("summary")
 
                 art = self.map_inline_slot(
@@ -1536,7 +1520,6 @@ class ReactContext:
                     tool_id=tool_id,
                     draft=draft_flag,
                     gaps=gaps or None,
-                    content_inventorization=content_inventorization,
                     summary=summary
                 )
                 _log("slot_mapped_ok", {"slot": slot_name, "type": "inline", "len": len(val), "from": "leaf"})
@@ -1555,7 +1538,6 @@ class ReactContext:
                         tool_id=src_obj.get("tool_id"),
                         draft=draft_flag,
                         gaps=gaps or None,
-                        content_inventorization=src_obj.get("content_inventorization"),
                         summary=src_obj.get("summary"),
                     )
                     _log("slot_mapped_ok", {"slot": slot_name, "type": "inline", "len": len(text), "from": "object"})
@@ -1664,8 +1646,6 @@ class ReactContext:
                 if sources_used:
                     art["sources_used"] = self._extract_source_sids(sources_used)
                     self.mark_sources_used(art["sources_used"])
-                if isinstance(actual_owner, dict) and actual_owner.get("content_inventorization") is not None:
-                    art["content_inventorization"] = actual_owner.get("content_inventorization")
                 if isinstance(actual_owner, dict) and actual_owner.get("summary") is not None:
                     art["summary"] = actual_owner.get("summary")
                 self.current_slots[slot_name] = art

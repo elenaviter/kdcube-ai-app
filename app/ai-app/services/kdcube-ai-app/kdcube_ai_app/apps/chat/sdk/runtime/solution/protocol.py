@@ -25,10 +25,8 @@ NextStep = Literal["codegen", "react_loop", "llm_only", "clarification_only"]
 
 # ---------- Policy (advisory posture/scope only — no slots here) ----------
 class CoordinatorPolicy(BaseModel):
-    objective_hint: str = ""
     turn_scope: TurnScope = "new_request"
     project_mode: ProjectMode = "plan_breakdown"
-    context_use: Literal["always", "auto", "never"] = "auto"
     scope_notes: str = ""
     avoid: List[str] = Field(default_factory=lambda: ["avoid giant one-shot solutions"])
     turn_scope_contract: Dict[str, Any] = Field(default_factory=lambda: {
@@ -56,20 +54,7 @@ class CoordinatorPolicy(BaseModel):
         )
     )
 
-# ---------- Decision (Tool selection + Solvability; binding) ----------
-class SelectedTool(BaseModel):
-    name: str                                 # must match catalog id
-    reason: str = ""
-    confidence: float = Field(0.6, ge=0.0, le=1.0)
-    # parameters: Dict[str, Any] = Field(default_factory=dict)  # minimal scaffolding only
-
 class UnifiedDecision(BaseModel):
-    solvable: bool = True
-    confidence: float = Field(0.5, ge=0.0, le=1.0)
-    reasoning: str = ""                          # ≤25–30 words; user-safe
-    selected_tools: List[SelectedTool] = Field(default_factory=list)
-    context_use: bool = True                     # binding for execution path
-
     # Authoritative, typed dynamic contract: slot_name -> SlotSpec
     output_contract: Dict[str, SlotSpec] = Field(default_factory=dict)
 
@@ -85,9 +70,6 @@ def _build_compact_guidance(c_out: "UnifiedCoordinatorOut") -> str:
 
     parts: list[str] = []
 
-    if pol.objective_hint:
-        parts.append(f"Turn Objective: {pol.objective_hint}")
-
     if pol.turn_scope and pol.project_mode:
         parts.append(f"Scope: {pol.turn_scope} | Mode: {pol.project_mode}")
 
@@ -96,9 +78,6 @@ def _build_compact_guidance(c_out: "UnifiedCoordinatorOut") -> str:
         depth = pol.turn_scope_contract.get("max_depth")
         if uow or depth:
             parts.append(f"Unit: {uow or 'N/A'} | Depth: {depth or 'N/A'}")
-
-    if dec.reasoning:
-        parts.append(f"Reasoning: {dec.reasoning}")
 
     if dec.instructions_for_downstream:
         parts.append(f"Instructions: {dec.instructions_for_downstream}")
@@ -135,19 +114,13 @@ def format_turn_decision_line(c_out: "UnifiedCoordinatorOut") -> str:
             return
         parts.append(f"{label}={value}")
 
-    _add("Turn Objective", pol.objective_hint)
     _add("turn_scope", pol.turn_scope)
     _add("project_mode", pol.project_mode)
-    _add("context_use", pol.context_use)
     _add("scope_notes", pol.scope_notes)
     _add("avoid", pol.avoid)
     _add("turn_scope_contract", pol.turn_scope_contract)
     _add("sb", pol.sb)
-    _add("solvable", dec.solvable)
-    _add("confidence", dec.confidence)
-    _add("reasoning", dec.reasoning)
     _add("next_step", dec.next_step)
-    _add("context_use_decision", dec.context_use)
     _add("instructions_for_downstream", dec.instructions_for_downstream)
     _add("clarification_questions", dec.clarification_questions)
     return " | ".join(parts) if parts else "(no decision line)"
@@ -155,11 +128,8 @@ def _build_detailed_guidance(c_out: "UnifiedCoordinatorOut") -> str:
     """Build detailed guidance for downstream agents (unifies _build_planner_guidance and presentation_detailed)."""
     pol = c_out.policy
     dec = c_out.decision
-    tools = dec.selected_tools or []
     contract = dec.output_contract or {}
     header_lines: list[str] = []
-    if pol.objective_hint:
-        header_lines.append(f"- Turn Objective: {pol.objective_hint}")
     if pol.turn_scope or pol.project_mode:
         header_lines.append(f"- Scope: {pol.turn_scope} | {pol.project_mode}")
     if pol.turn_scope_contract:
@@ -170,14 +140,10 @@ def _build_detailed_guidance(c_out: "UnifiedCoordinatorOut") -> str:
 
     # Policy section
     policy_lines = []
-    if pol.objective_hint:
-        policy_lines.append(f"- objective_hint: {pol.objective_hint}")
     if pol.turn_scope:
         policy_lines.append(f"- turn_scope: {pol.turn_scope}")
     if pol.project_mode:
         policy_lines.append(f"- project_mode: {pol.project_mode}")
-    if pol.context_use:
-        policy_lines.append(f"- context_use: {pol.context_use}")
     if pol.scope_notes:
         policy_lines.append(f"- scope_notes: {pol.scope_notes}")
     if pol.avoid:
@@ -193,22 +159,6 @@ def _build_detailed_guidance(c_out: "UnifiedCoordinatorOut") -> str:
         if notes:
             policy_lines.append(f"- contract_notes: {notes}")
 
-    # Tools section
-    tool_lines = []
-    for i, t in enumerate(tools, 1):
-        name = t.name or ""
-        reason = t.reason.strip() or ""
-        conf = t.confidence or 0.0
-        tool_line = [
-            f"{i}. tool_id: {name}",
-            f"   confidence: {conf}"
-        ]
-        if reason:
-            tool_line.append(f"   reason: {reason}")
-        tool_lines.append(
-            "\n".join(tool_line)
-        )
-
     # Contract slots section
     slot_lines = []
     for slot, spec in contract.items():
@@ -217,14 +167,10 @@ def _build_detailed_guidance(c_out: "UnifiedCoordinatorOut") -> str:
         desc = (spec.description or "").strip()
         slot_lines.append(f"- {slot} ({dtype}{f', {fmt}' if fmt else ''}): {desc[:160]}")
 
-    # Solvability and decision section
+    # Decision section
     decision_lines = []
-    decision_lines.append(f"- solvable: {dec.solvable}")
-    decision_lines.append(f"- confidence: {dec.confidence}")
-    if dec.reasoning:
-        decision_lines.append(f"- reasoning: {dec.reasoning}")
     decision_lines.append(f"- next_step: {dec.next_step}")
-    decision_lines.append(f"- context_use: {dec.context_use}")
+    decision_lines.append(f"- instructions_for_downstream: {dec.instructions_for_downstream}")
 
     # Budget hints section
     budget_lines = []
@@ -288,10 +234,8 @@ class UnifiedCoordinatorOut(BaseModel):
         """Create a minimal UnifiedCoordinatorOut for error cases."""
         return UnifiedCoordinatorOut(
             policy=CoordinatorPolicy(
-                objective_hint="",
                 turn_scope="new_request",
                 project_mode="plan_breakdown",
-                context_use="never",
                 scope_notes="Error state - planner failed",
                 avoid=[],
                 turn_scope_contract={
@@ -302,14 +246,9 @@ class UnifiedCoordinatorOut(BaseModel):
             ),
             decision=UnifiedDecision(
                 next_step="llm_only",
-                reasoning="Planner error",
-                confidence=0.0,
-                selected_tools=[],
                 clarification_questions=[],
                 instructions_for_downstream="",
                 output_contract={},
-                solvable=False,
-                context_use=False,
             ),
         )
 
@@ -344,8 +283,6 @@ class UnifiedCoordinatorOut(BaseModel):
             return SolutionPlan(
                 mode="llm_only",
                 tools=[],
-                confidence=0.0,
-                reasoning="Planner failed to produce a valid decision.",
                 clarification_questions=[],
                 instructions_for_downstream="Explain failure briefly and request the user to rephrase or narrow scope.",
                 error=error_text,
@@ -353,7 +290,6 @@ class UnifiedCoordinatorOut(BaseModel):
                 tool_router_notes="",
                 output_contract={},
                 service={"unified_planner": {"error": error_text, "log": error_context}},
-                solvable=False,
             )
 
         # 2) Extract decision and policy
@@ -370,12 +306,9 @@ class UnifiedCoordinatorOut(BaseModel):
             return SolutionPlan(
                 mode="clarification_only",
                 tools=[],
-                confidence=float(dec.confidence or 0.0),
-                reasoning=str(dec.reasoning or ""),
                 clarification_questions=list(dec.clarification_questions or []),
                 instructions_for_downstream=str(dec.instructions_for_downstream or ""),
                 output_contract={},
-                solvable=False,
                 service={
                     "unified_planner": {
                         "policy": pol.model_dump(),
@@ -387,29 +320,14 @@ class UnifiedCoordinatorOut(BaseModel):
         # 4) Handle normal execution (codegen, react_loop, llm_only)
         mode = next_step
         output_contract = dec.output_contract or {}
-        confidence = float(dec.confidence or 0.0)
-        reasoning = str(dec.reasoning or "")
-
         planned_tools: List[PlannedTool] = []
-        for t in dec.selected_tools or []:
-            planned_tools.append(
-                PlannedTool(
-                    id=t.name or "",
-                    reason=t.reason or "",
-                    confidence=float(t.confidence or 0.0),
-                )
-            )
 
         # Build both compact and detailed guidance
         compact_guidance = _build_compact_guidance(self)
         detailed_guidance = _build_detailed_guidance(self)
-        solvable = mode in ("codegen", "react_loop", "llm_only")
-
         return SolutionPlan(
             mode=mode,
             tools=planned_tools,
-            confidence=confidence,
-            reasoning=reasoning,
             clarification_questions=list(dec.clarification_questions or []),
             instructions_for_downstream=detailed_guidance,
             instructions_for_downstream_compact=compact_guidance,
@@ -421,7 +339,6 @@ class UnifiedCoordinatorOut(BaseModel):
                     "decision": dec.model_dump(),
                 }
             },
-            solvable=solvable,
         )
 
     @property

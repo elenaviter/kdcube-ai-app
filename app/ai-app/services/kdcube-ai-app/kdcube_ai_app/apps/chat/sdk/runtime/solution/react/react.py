@@ -7,6 +7,7 @@ import json
 import pathlib
 import re
 import traceback
+import random
 import time
 import asyncio
 
@@ -52,6 +53,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.execution import execute
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.exec import (
     DecisionExecCodeStreamer,
     CodegenJsonCodeStreamer,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.conversation_turn_work_status import (
+    ConversationTurnWorkStatus,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
     resolve_cited_file_sources_from_content,
@@ -320,7 +324,21 @@ class ReactSolver:
             materialize_turn_ids: List[str],
             runtime_ctx: Dict[str, Any],
     ) -> dict:
-
+        turn_status = ConversationTurnWorkStatus(
+            emit_delta=self.comm.delta,
+            agent=self.MODULE_AGENT_NAME,
+        )
+        await turn_status.send(
+            random.choice(
+                [
+                    "executing",
+                    "working through it",
+                    "solving",
+                    "working",
+                    "executing the plan",
+                ]
+            )
+        )
         state = await self.prepare_session(
             coordinator_out=coordinator_out,
             allowed_plugins=allowed_plugins,
@@ -1126,9 +1144,11 @@ class ReactSolver:
                 if codegen_streamer:
                     await codegen_streamer.emit_reasoning(call_reason)
             else:
+                turn_id = state.get("turn_id") or "current_turn"
+                timeline_agent = f"{role}.timeline.{turn_id}.{it}"
                 await self._emit_timeline_text(
                     text=call_reason,
-                    agent=role,
+                    agent=timeline_agent,
                     artifact_name=f"timeline_text.react.decision.{it}",
                 )
         focus_slot = agent_response.get("focus_slot") or ""
@@ -1921,7 +1941,6 @@ class ReactSolver:
                 call_record_rel=tr.get("call_record_rel"),
                 call_record_abs=tr.get("call_record_abs"),
                 error=tool_exec_error,  # ← pass error to artifact
-                content_inventorization=tr.get("content_inventorization"),
                 content_lineage=content_lineage,
                 tool_call_id=tool_call_id,
                 tool_call_item_index=tool_call_item_index,
@@ -2350,7 +2369,6 @@ class ReactSolver:
             sources_used = art.get("sources_used")  # pass-through; SID recon happens later
             summary = art.get("summary")
 
-            inventory = art.get("content_inventorization")
             if t == "inline":
                 fmt = art.get("format") or _get(spec, "format", "markdown")
                 # prefer explicit text; fall back to "value" for convenience
@@ -2365,8 +2383,6 @@ class ReactSolver:
                 # IMPORTANT: do NOT mark slots citable by default
                 if "citable" in art:
                     out_dyn[slot_name]["citable"] = bool(art.get("citable"))
-                if inventory is not None:
-                    out_dyn[slot_name]["content_inventorization"] = inventory
 
             else:  # file
                 mime = art.get("mime") or _get(spec, "mime", "application/octet-stream")
@@ -2397,8 +2413,6 @@ class ReactSolver:
                 out_dyn[slot_name]["gaps"] = gaps
             if sources_used:
                 out_dyn[slot_name]["sources_used"] = sources_used
-            if inventory is not None:
-                out_dyn[slot_name]["content_inventorization"] = inventory
             if summary:
                 out_dyn[slot_name]["summary"] = summary
                 # files are not citable

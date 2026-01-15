@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     NEO4J_URI: str = Field(default="bolt://neo4j:7687", alias="APP_NEO4J_URI")
     NEO4J_USER: str = Field(default="neo4j", alias="APP_NEO4J_USERNAME")
     NEO4J_PASSWORD: str = Field(default="neo4j", alias="APP_NEO4J_PASSWORD")
+    APP_GRAPH_ENABLED: bool = Field(default=False, alias="APP_GRAPH_ENABLED")
 
     # S3
     AWS_REGION: str = "us-east-1"

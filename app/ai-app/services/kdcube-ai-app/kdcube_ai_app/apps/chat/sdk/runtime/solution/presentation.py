@@ -10,61 +10,10 @@ import itertools
 import json
 from dataclasses import dataclass
 from typing import Literal, Optional, Dict, Any, Set, List, Union, Tuple
-from pydantic import BaseModel, Field
 
 from kdcube_ai_app.apps.chat.sdk.util import _to_jsonable
 
 SERVICE_LOG_SLOT = "project_log"   # a.k.a. "turn_log" inside Solver module (normalized to project_log)
-
-
-class ProgramInputs(BaseModel):
-    objective: str = ""
-    topics: List[str] = Field(default_factory=list)
-    policy_summary: str = ""
-    constraints: Dict[str, object] = Field(default_factory=dict)
-    tools_selected: List[str] = Field(default_factory=list)
-
-class Deliverable(BaseModel):
-    # Contract slot id (snake_case)
-    slot: str
-    description: str = ""
-    content_guidance: Optional[str] = None
-
-    # Contract typing
-    _type: Optional[str] = None             # "inline" | "file" (normalized)
-    format: Optional[str] = None            # inline only (markdown|text|json|url|xml|yaml|mermaid)
-    mime: Optional[str] = None              # file only
-
-    # Artifact text surrogate (mandatory for files in runtime)
-    text: Optional[str] = None
-
-    # Optional tool provenance for files
-    tool_id: Optional[str] = None
-
-    # structured content inventory attached to this deliverable
-    content_inventorization: Optional[Dict[str, Any]] = None
-
-
-class FileRef(Deliverable):
-    filename: str
-    filename_hint: Optional[str] = None
-    key: Optional[str] = None               # conversation-store key (if rehosted)
-    size: Optional[int] = None
-    _type: str = "file"
-
-class InlineRef(Deliverable):
-    citable: bool = False
-    value_preview: str = ""                 # short preview for indexing/UX
-    _type: str = "inline"
-
-
-class ProgramBrief(BaseModel):
-    title: str = "Codegen Program"
-    language: str = "python"
-    codegen_run_id: Optional[str] = None
-    inputs: ProgramInputs = Field(default_factory=ProgramInputs)
-    deliverables: List[Deliverable] = Field(default_factory=list)
-    notes: List[Any] = Field(default_factory=list)
 
 
 def _artifact_text(art: Dict[str, Any]) -> str:
@@ -181,9 +130,9 @@ class SolverPresenterConfig:
     # --- Which deliverable attributes to show ---
     deliverable_attrs: Optional[Set[str]] = None
     # None = auto (rich set for extended, minimal for base)
-    # Supported: "description", "content_guidance", "format", "mime",
+    # Supported: "description", "format", "mime",
     #            "tool_id", "citable", "sources_used",
-    #            "gaps", "summary", "slot_value_inventorization", "artifact_id", "mapped_from"
+    #            "gaps", "summary", "artifact_id", "mapped_from"
 
     # --- Filters ---
     exclude_slots: Optional[List[str]] = None
@@ -194,85 +143,6 @@ class SolverPresenterConfig:
     # "markdown" → stitched string
     # "parts" → ProgramPresentationParts object
 
-def format_inventory(inv: Any) -> str:
-    """
-    Render a `content_inventorization` payload as markdown.
-
-    It does **not**:
-    - rename fields
-    - guess semantics
-    - inject extra attributes
-
-    It only turns the structure into human/LLM-friendly markdown.
-    """
-    if not inv:
-        return ""
-
-    lines: list[str] = []
-
-    def _render_scalar(val: Any) -> str:
-        if isinstance(val, (int, float, bool)):
-            return str(val)
-        if isinstance(val, str):
-            return val
-        try:
-            return json.dumps(val, ensure_ascii=False)
-        except Exception:
-            return str(val)
-
-    if isinstance(inv, dict):
-        for section_name, value in inv.items():
-            lines.append(f"**{section_name}**")
-            if isinstance(value, list):
-                if value and all(isinstance(it, dict) for it in value):
-                    # list of dicts → table
-                    all_keys: list[str] = []
-                    for it in value:
-                        for k in it.keys():
-                            if k not in all_keys:
-                                all_keys.append(k)
-
-                    if all_keys:
-                        header = "| # | " + " | ".join(all_keys) + " |"
-                        sep    = "|---|" + "|".join(["---"] * len(all_keys)) + "|"
-                        lines.append(header)
-                        lines.append(sep)
-                        for idx, it in enumerate(value, 1):
-                            row_cells = [_render_scalar(it.get(k)) for k in all_keys]
-                            lines.append("| " + str(idx) + " | " + " | ".join(row_cells) + " |")
-                else:
-                    for idx, it in enumerate(value, 1):
-                        lines.append(f"- ({idx}) {_render_scalar(it)}")
-            elif isinstance(value, dict):
-                lines.append("| key | value |")
-                lines.append("|-----|--------|")
-                for k, v in value.items():
-                    lines.append(f"| {k} | {_render_scalar(v)} |")
-            else:
-                lines.append(_render_scalar(value))
-            lines.append("")  # blank line after each section
-
-    elif isinstance(inv, list):
-        if inv and all(isinstance(it, dict) for it in inv):
-            all_keys: list[str] = []
-            for it in inv:
-                for k in it.keys():
-                    if k not in all_keys:
-                        all_keys.append(k)
-
-            if all_keys:
-                lines.append("| # | " + " | ".join(all_keys) + " |")
-                lines.append("|---|" + "|".join(["---"] * len(all_keys)) + "|")
-                for idx, it in enumerate(inv, 1):
-                    row_cells = [_render_scalar(it.get(k)) for k in all_keys]
-                    lines.append("| " + str(idx) + " | " + " | ".join(row_cells) + " |")
-        else:
-            for idx, it in enumerate(inv, 1):
-                lines.append(f"- ({idx}) {_render_scalar(it)}")
-    else:
-        lines.append(_render_scalar(inv))
-
-    return "\n".join(lines).rstrip()
 
 def _slot_status_for_presentation(
         slot: str,
@@ -302,22 +172,6 @@ def _last_non_empty_note(notes) -> str:
         return notes.strip()
     return ""
 
-def build_runtime_inventory_from_artifact(art: dict) -> dict:
-    """
-    Runtime view of structured content inventory for a deliverable artifact.
-
-    This is intentionally **shape-preserving**:
-    - If art["content_inventorization"] is a dict → return a shallow copy.
-    - Otherwise → return {}.
-
-    We do **not** inject draft/gaps/summary/char_count/kind here.
-    Those remain first-class artifact fields and are rendered separately.
-    """
-    if not isinstance(art, dict):
-        return {}
-
-    raw_inv = art.get("content_inventorization")
-    return dict(raw_inv) if isinstance(raw_inv, dict) else {}
 
 def _format_produced_slots_grouped_by_status(
         *,
@@ -342,9 +196,9 @@ def _format_produced_slots_grouped_by_status(
       - ✅ Completed (artifact exists, not draft)
 
     slot_attr_keys controls which per-slot metadata we show. Supported keys:
-      "description", "content_guidance", "format", "mime",
+      "description", "format", "mime",
       "tool_id", "citable", "sources_used",
-      "gaps", "summary", "slot_value_inventorization", "filename",
+      "gaps", "summary", "filename",
       "artifact_id", "mapped_from"
 
     Returns:
@@ -358,7 +212,6 @@ def _format_produced_slots_grouped_by_status(
         if extended:
             slot_attr_keys = {
                 "description",
-                "content_guidance",
                 "format",
                 "mime",
                 "tool_id",
@@ -366,16 +219,13 @@ def _format_produced_slots_grouped_by_status(
                 "sources_used",
                 "gaps",
                 "summary",
-                "slot_value_inventorization",
                 "artifact_id",
                 "mapped_from",
             }
         else:
             slot_attr_keys = {
                 "description",
-                "content_guidance",
                 "sources_used",
-                "slot_value_inventorization",
                 "artifact_id",
                 "mapped_from",
             }
@@ -444,11 +294,6 @@ def _format_produced_slots_grouped_by_status(
         desc = (
                 (spec.get("description") if isinstance(spec, dict) else None)
                 or c_spec.get("description")
-                or ""
-        )
-        guidance = (
-                (spec.get("content_guidance") if isinstance(spec, dict) else None)
-                or c_spec.get("content_guidance")
                 or ""
         )
 
@@ -520,11 +365,9 @@ def _format_produced_slots_grouped_by_status(
                 else:
                     lines.append(f"  - Path (OUT_DIR-relative): {fpath}")
 
-        # description / guidance
+        # description
         if "description" in slot_attr_keys:
             lines.append(f"  - Description: {desc or '(none)'}")
-        if "content_guidance" in slot_attr_keys and guidance:
-            lines.append(f"  - Content guidance: {guidance}")
 
         # No further fields for missing slots
         if status == "missing" or art is None:
@@ -901,7 +744,6 @@ class SolverPresenter:
         if extended:
             config.deliverable_attrs = {
                 "description",
-                "content_guidance",
                 "format",
                 "mime",
                 "tool_id",
@@ -909,14 +751,11 @@ class SolverPresenter:
                 "sources_used",
                 "gaps",
                 "summary",
-                "slot_value_inventorization",
             }
         else:
             config.deliverable_attrs = {
                 "description",
-                "content_guidance",
                 "sources_used",
-                "slot_value_inventorization",
             }
 
         return self.render(config)
@@ -1073,209 +912,6 @@ class SolverPresenter:
                 include_reasoning=config.include_reasoning,
                 extended=extended,
             )
-
-def program_brief_from_contract(sr: "SolveResult",
-                                rehosted_files: List[dict]) -> Tuple[str, ProgramBrief]:
-    """
-    Returns: (brief_text, ProgramBrief)
-
-    - Reads artifacts exactly as produced by io_tools normalization (execution.deliverables[slot]['value']).
-    - Uses plan.output_contract only for human-facing description and optional content_guidance.
-    - Treats content_inventorization as a **runtime** concept attached to the artifact:
-        - Prefer art['content_inventorization'] if present.
-        - Otherwise, fall back to a summary derived from the artifact text.
-        - Always reflect draft/gaps in that inventory (without overwriting if already present).
-    """
-    sr = sr or {}
-    codegen = sr.codegen or {}
-    plan = sr.plan
-    execution = sr.execution
-
-    contract = (plan.output_contract if plan else {}) or {}
-    deliverables_map = (execution.deliverables if execution else {}) or {}
-
-    # ---- program metadata
-    program = (codegen.get("program") or {})
-    title = (program.get("title") or "").strip() or "Codegen Program"
-    language = (program.get("language") or "python").strip() or "python"
-
-    rounds = (codegen.get("rounds") or [])
-    latest_round = next((r for r in reversed(rounds) if isinstance(r, dict)), {}) if rounds else {}
-    if not title:
-        nt = (latest_round.get("notes") or "")
-        if isinstance(nt, str) and nt.strip():
-            title = nt.strip()[:120]
-
-    inputs_raw = (latest_round.get("inputs") or {})
-    inputs = ProgramInputs(
-        objective=inputs_raw.get("objective") or "",
-        topics=list(inputs_raw.get("topics") or []),
-        policy_summary=inputs_raw.get("policy_summary") or "",
-        constraints=dict(inputs_raw.get("constraints") or {}),
-        tools_selected=list(inputs_raw.get("tools_selected") or []),
-    )
-
-    # ---- fold deliverables into the typed list for ProgramBrief (view only)
-    struct_delivs: List[Deliverable] = []
-
-    for slot, row in (deliverables_map.items() if isinstance(deliverables_map, dict) else []):
-        spec = row or {}
-        art = spec.get("value") or {}
-
-        # Normalize type / description / guidance
-        slot_type = (art.get("type") or spec.get("type") or "inline").strip().lower()
-        desc = spec.get("description") or (contract.get(slot, {}) or {}).get("description") or ""
-        guidance = spec.get("content_guidance") or (contract.get(slot, {}) or {}).get("content_guidance")
-
-        # ---- Runtime text extraction (for inventory + inline text) ----
-        output = art.get("output") or {}
-        raw_text = output.get("text")
-        # Fallback for shapes that kept text at top-level
-        if raw_text is None and art.get("text") is not None:
-            raw_text = art.get("text")
-
-        # Build a string version for inline deliverables
-        if isinstance(raw_text, (str, int, float)):
-            text_str = str(raw_text)
-        elif raw_text is not None:
-            # structured content → JSON string
-            try:
-                text_str = json.dumps(raw_text, ensure_ascii=False)
-            except Exception:
-                text_str = str(raw_text)
-        else:
-            text_str = ""
-
-        # ---- Runtime inventory: from artifact only ----
-        inv = build_runtime_inventory_from_artifact(art)
-        # ---- Build typed deliverables for the brief ----
-
-        if slot_type == "inline":
-            # text = ((art.get("output") or {}).get("text") or "")
-            struct_delivs.append(InlineRef(
-                slot=slot,
-                description=desc,
-                content_guidance=guidance,
-                content_inventorization=inv,
-                citable=bool(art.get("citable")),
-                value_preview=(text_str[:280] if isinstance(text_str, str) else ""),
-                text=text_str,
-                tool_id=art.get("tool_id"),
-                mime="application/json",  # presentation value only
-                _type="inline",
-            ))
-            continue
-
-        # file
-        if slot_type == "file":
-            output = art.get("output") or {}
-            path = output.get("path") or art.get("path") or ""
-            filename = path.split("/")[-1] if path else (art.get("filename") or slot)
-            struct_delivs.append(FileRef(
-                slot=slot,
-                description=desc,
-                content_guidance=guidance,
-                content_inventorization=inv,
-                tool_id=art.get("tool_id"),
-                mime=art.get("mime"),
-                text=output.get("text") or art.get("text") or "",
-                filename=filename,
-                key=art.get("key"),
-                size=art.get("size"),
-                _type="file",
-            ))
-            continue
-
-        # fallback (treat unknown as inline text)
-        struct_delivs.append(InlineRef(
-            slot=slot,
-            description=desc,
-            content_guidance=guidance,
-            content_inventorization=inv,
-            citable=bool(art.get("citable")),
-            value_preview=(text_str[:280] if isinstance(text_str, str) else ""),
-            text=text_str,
-            tool_id=art.get("tool_id"),
-            mime="application/json",
-            _type="inline",
-        ))
-
-    # (optional) include rehosted files metadata for UX/debug — kept as FileRef but this
-    # does not alter the authoritative artifacts; it's additive for the brief only.
-    for rf in (rehosted_files or []):
-        struct_delivs.append(FileRef(
-            slot=rf.get("slot") or "",
-            description=rf.get("description") or "",
-            content_guidance=rf.get("content_guidance"),
-            # rehosted files don't carry inventory; leave None
-            content_inventorization=None,
-            tool_id=rf.get("tool_id"),
-            mime=rf.get("mime"),
-            text=rf.get("text") or "",
-            filename=rf.get("filename") or "",
-            key=rf.get("key"),
-            size=rf.get("size"),
-            _type="file",
-        ))
-
-    brief_struct = ProgramBrief(
-        title=title[:120],
-        language=language,
-        codegen_run_id=codegen.get("run_id"),
-        inputs=inputs,
-        deliverables=struct_delivs,
-        notes=list(latest_round.get("notes") or [] if isinstance(latest_round.get("notes"), list)
-                   else ([latest_round.get("notes")] if latest_round.get("notes") else []))
-    )
-
-    # ---- compact, deterministic text ----
-    lines: List[str] = []
-    lines.append(f"# {brief_struct.title}")
-    lines.append(f"- Language: {brief_struct.language}")
-    if brief_struct.codegen_run_id:
-        lines.append(f"- Run: {brief_struct.codegen_run_id}")
-
-    # Inputs
-    lines.append("- Objective:" + (f" {inputs.objective}" if inputs.objective else ""))
-    lines.append("- Topics:")
-    for t in inputs.topics:
-        lines.append(f"  - {t}")
-    lines.append("- Policy Summary:" + (f" {inputs.policy_summary}" if inputs.policy_summary else ""))
-    lines.append("- Constraints:")
-    if inputs.constraints:
-        for k in sorted(inputs.constraints):
-            v = inputs.constraints[k]
-            try:
-                vv = json.dumps(v, ensure_ascii=False) if not isinstance(v, (str, int, float, bool)) else v
-            except Exception:
-                vv = str(v)
-            lines.append(f"  - {k}: {vv}")
-    lines.append("- Tools Selected:")
-    for tool in inputs.tools_selected:
-        lines.append(f"  - {tool}")
-
-    lines.append("\n## Notes:")
-    for note in brief_struct.notes:
-        lines.append(f"  - {note}")
-
-    # Deliverables section (reflect what was actually produced)
-    if deliverables_map:
-        presenter = SolverPresenter(sr, contract=contract, file_path_prefix="")
-        deliverables_md = presenter.render(SolverPresenterConfig(
-            include_deliverables=True,
-            deliverables_grouping="flat",
-            deliverables_content_len=0,  # No content in brief
-            deliverable_attrs={"description", "slot_value_inventorization"},
-            exclude_slots=[SERVICE_LOG_SLOT, "project_canvas"],
-            output_format="markdown",
-        ))
-
-        if deliverables_md.strip():
-            lines.append("")
-            lines.append(deliverables_md)
-
-    brief_text = "\n".join(lines).rstrip()
-    return brief_text, brief_struct
 
 def format_live_slots(
         *,

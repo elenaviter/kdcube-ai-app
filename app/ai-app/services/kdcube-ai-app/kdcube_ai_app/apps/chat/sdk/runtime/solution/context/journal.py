@@ -17,6 +17,12 @@ import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.context.retrieval as ctx_retrieval_module
 from kdcube_ai_app.apps.chat.sdk.util import _truncate, _turn_id_from_tags_safe, _to_jsonable, ts_key, _shorten, estimate_b64_size
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import estimate_tokens
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.gate.gate_contract import (
+    gate_topics,
+    expand_gate_assertions,
+    expand_gate_exceptions,
+    expand_gate_facts,
+)
 
 
 def _format_full_value_for_journal(val: Any) -> str:
@@ -1595,7 +1601,12 @@ def _extract_entries_and_summary(saved_payload: Dict[str, Any]) -> Tuple[List[Di
     gate = saved_payload.get("gate") or {}
     return entries, turn_summary, gate
 
-def _memories_artifact_from_gate(gate: Dict[str, Any], *, turn_id: str) -> Optional[dict]:
+def _memories_artifact_from_gate(
+    gate: Dict[str, Any],
+    *,
+    turn_id: str,
+    objective: Optional[str] = None,
+) -> Optional[dict]:
     """
     Build a compact memories artifact from GateOut fields for the turn.
     Surfaces assertions / exceptions / facts so callers have `turn_log.memories`.
@@ -1603,17 +1614,17 @@ def _memories_artifact_from_gate(gate: Dict[str, Any], *, turn_id: str) -> Optio
     if not isinstance(gate, dict) or not gate:
         return None
 
-    assertions = list(gate.get("assertions") or [])
-    exceptions = list(gate.get("exceptions") or [])
-    facts = list(gate.get("facts") or [])
+    assertions = expand_gate_assertions(gate)
+    exceptions = expand_gate_exceptions(gate)
+    facts = expand_gate_facts(gate)
 
     lines: List[str] = ["# Memories (Gate extraction)"]
-    if gate.get("current_objective_short"):
-        lines.append(f"- Objective: {gate.get('current_objective_short')}")
+    obj = (objective or gate.get("current_objective_short") or "").strip()
+    if obj:
+        lines.append(f"- Objective: {obj}")
     if gate.get("topics"):
         try:
-            tnames = [t.get("name") for t in gate.get("topics") if isinstance(t, dict)]
-            tnames = [t for t in tnames if t]
+            tnames = gate_topics(gate)
             if tnames:
                 lines.append(f"- Topics: {', '.join(tnames[:8])}")
         except Exception:
@@ -1705,8 +1716,8 @@ def _pairs_from_guess_ctx_turn_logs(
             # Build CompressedTurn from structured data
             compressed_turn = CompressedTurn.from_structured(entries, turn_summary)
 
-            # gate objective short → into context lines via insights
-            g_obj = (gate.get("current_objective_short") or "").strip()
+            # objective short → into context lines via insights
+            g_obj = (turn_summary.get("objective") or gate.get("current_objective_short") or "").strip()
             if g_obj:
                 # put it in insights line to surface in user context block
                 compressed_turn.insights = (one + ("; " if one and g_obj else "") + g_obj) if one or g_obj else ""
@@ -1795,6 +1806,7 @@ async def retrospective_context_view(
         turn_id: str,
         last_turns: int = 3,
         recommended_turn_ids: Optional[List[str]] = None,
+        context_hit_queries: Optional[Dict[str, List[str]]] = None,
         memory_log_entries: Optional[List[Dict[str, Any]]] = None,
         delta_fps: Optional[List[Dict[str, Any]]] = None,
         scratchpad: Optional[Any] = None,
@@ -1856,6 +1868,7 @@ async def retrospective_context_view(
                 "ts": ts,
                 "timestamp": ts,
                 "tags": [f"turn:{tid}"] if tid else [],
+                "sources": ["recent"],
                 "payload": {"payload": meta.get("turn_log") or {}},
             })
     else:
@@ -1871,6 +1884,10 @@ async def retrospective_context_view(
                 with_payload=True,
             )
             for item in (hit or {}).get("items") or []:
+                item = dict(item or {})
+                sources = set(item.get("sources") or [])
+                sources.add("recent")
+                item["sources"] = list(sources)
                 raw_items.append(item)
         except Exception:
             pass
@@ -1895,18 +1912,32 @@ async def retrospective_context_view(
                 )
                 item = next(iter((hit or {}).get("items") or []), None)
                 if item:
+                    item = dict(item)
+                    sources = set(item.get("sources") or [])
+                    sources.add("context_hit")
+                    item["sources"] = list(sources)
                     raw_items.append(item)
             except Exception:
                 pass
 
-    # Dedupe by turn_id; keep newest
+    # Dedupe by turn_id; keep newest and merge sources
     by_tid: Dict[str, Dict[str, Any]] = {}
     for item in raw_items:
         tid = _turn_id_from_tags_safe(list(item.get("tags") or [])) or f"id:{item.get('id') or ''}"
         ts = item.get("ts") or item.get("timestamp") or ""
         cur = by_tid.get(tid)
         if not cur or ts_key(ts) >= ts_key(cur.get("ts") or cur.get("timestamp") or ""):
-            by_tid[tid] = item
+            merged = dict(item)
+            cur_sources = set((cur or {}).get("sources") or [])
+            new_sources = set(item.get("sources") or [])
+            merged["sources"] = list(cur_sources | new_sources)
+            by_tid[tid] = merged
+        else:
+            merged = dict(cur)
+            cur_sources = set((cur or {}).get("sources") or [])
+            new_sources = set(item.get("sources") or [])
+            merged["sources"] = list(cur_sources | new_sources)
+            by_tid[tid] = merged
 
     raw_items = list(by_tid.values())
 
@@ -2036,6 +2067,9 @@ async def retrospective_context_view(
     for item in items_sorted:
         tid = _turn_id_from_tags_safe(list(item.get("tags") or [])) or ""
         ts_raw = item.get("ts") or item.get("timestamp") or ""
+        sources = set(item.get("sources") or [])
+        if context_hit_queries and tid in context_hit_queries:
+            sources.add("context_hit")
 
         # payload = item.get("payload") or {}
 
@@ -2059,12 +2093,13 @@ async def retrospective_context_view(
             )
 
             # Add timestamp header
-            text_blocks.append("\n".join([
-                f"[TURN turn_id={tid}]",
+            block_lines = [f"[TURN turn_id={tid}]"]
+            block_lines.extend([
                 _fmt_ts_for_humans(ts_raw),
                 compressed_view,
                 ""
-            ]))
+            ])
+            text_blocks.append("\n".join(block_lines))
 
             # For structured data - generate one-liner for backwards compat
             one_liner = tv.generate_one_liner()
@@ -2136,6 +2171,32 @@ async def retrospective_context_view(
                     f"[TURN turn_id={it.get('turn_id')}]\n{_fmt_ts_for_humans(it.get('ts') or '')}\n{it.get('insights_one_liner')}\n"
                 )
             text_blocks.append("\n".join(lines).strip() + "\n")
+
+    # 2.e Turn candidates table (oldest -> newest)
+    if items_sorted:
+        table_lines = ["[TURNS CANDIDATES TABLE]"]
+        for item in sorted(items_sorted, key=lambda it: it.get("ts") or it.get("timestamp") or ""):
+            tid = _turn_id_from_tags_safe(list(item.get("tags") or [])) or ""
+            ts_raw = item.get("ts") or item.get("timestamp") or ""
+            sources = set(item.get("sources") or [])
+            reasons: list[str] = []
+            if "recent" in sources:
+                reasons.append("recent_turn")
+            if "context_hit" in sources:
+                queries = context_hit_queries.get(tid, []) if context_hit_queries else []
+                if queries:
+                    reasons.append("context_hit: " + " | ".join(queries))
+                else:
+                    reasons.append("context_hit")
+
+            log_payload = (item.get("payload") or {}).get("payload") or {}
+            _, turn_summary, gate = _extract_entries_and_summary(log_payload)
+            obj = (turn_summary.get("objective") or gate.get("current_objective_short") or "").strip()
+            reason_str = "; ".join(reasons) if reasons else "recent_turn"
+            ts_str = _fmt_ts_for_humans(ts_raw)
+            obj_str = f" | objective: {obj}" if obj else ""
+            table_lines.append(f"- {tid} ({ts_str}) | {reason_str}{obj_str}")
+        text_blocks.append("\n".join(table_lines) + "\n")
 
     # ---------- 3) Assemble outputs ----------
     guess_ctx_str = ("\n".join(text_blocks)).strip()
@@ -2213,7 +2274,6 @@ async def materialize_prior_pairs(
         name = parsed["name"]
         is_draft = bool(parsed["artifact"].get("draft"))
         gap = parsed["artifact"].get("gaps")
-        inventorization = parsed["artifact"].get("content_inventorization") or {}
         draft_marker = " [DRAFT]" if is_draft else ""
 
         if full:
@@ -2226,8 +2286,6 @@ async def materialize_prior_pairs(
                 content_parts.append("**Status:** ⚠️ DRAFT — Incomplete/partial content")
             if gap:
                 content_parts.append(f"**Gap:** {gap}")
-            if inventorization:
-                content_parts.append(f"**Content inventorization:** {json.dumps(inventorization, ensure_ascii=False, indent=2)}")
 
             if parsed["typ"] == "file":
                 content_parts.extend([
@@ -2354,8 +2412,8 @@ async def materialize_prior_pairs(
         if entries and turn_summary:
             try:
                 compressed_turn = CompressedTurn.from_structured(entries, turn_summary)
-                # inject gate objective into insights (to surface in user context)
-                g_obj = (gate.get("current_objective_short") or "").strip()
+                # inject objective into insights (to surface in user context)
+                g_obj = (turn_summary.get("objective") or gate.get("current_objective_short") or "").strip()
                 if g_obj:
                     compressed_turn.insights = (compressed_turn.insights + ("; " if compressed_turn.insights and g_obj else "") + g_obj) if compressed_turn.insights or g_obj else g_obj
             except Exception:
@@ -2393,7 +2451,11 @@ async def materialize_prior_pairs(
             })
 
         # MEMORIES: GateOut (added)
-        mem_art = _memories_artifact_from_gate(gate, turn_id=tid)
+        mem_art = _memories_artifact_from_gate(
+            gate,
+            turn_id=tid,
+            objective=(turn_summary.get("objective") or ""),
+        )
         if mem_art:
             artifacts.append(mem_art)
 

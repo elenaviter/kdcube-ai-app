@@ -519,6 +519,9 @@ Emits:
 Also:
 
 * records chunks into the internal delta cache
+* **Reset behavior:** if a new delta arrives with `index=0` for the same
+  `{conversation_id, turn_id, agent, marker, format, artifact_name, title}`,
+  the cache resets the accumulated chunks for that artifact before recording.
 
 ---
 

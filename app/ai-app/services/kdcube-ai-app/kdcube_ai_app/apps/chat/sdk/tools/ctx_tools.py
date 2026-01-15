@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 # Slot leaves we allow agents to read
 _ALLOWED_SLOT_LEAVES = {
-    "name", "type", "description", "content_guidance", "summary", "gaps", "draft", "sources_used",
+    "name", "type", "description", "summary", "gaps", "draft", "sources_used",
     "text", "format", "path", "mime", "filename"
 }
 
@@ -183,7 +183,7 @@ def _coerce_text(v: Any) -> str:
 def _flatten_slot(slot_name: str, raw: Any) -> Dict[str, Any]:
     """
     Return a flattened slot object that matches the fetch_ctx doc:
-      {name,type,description,text,format?,path?,mime?,filename?,sources_used?,summary?,gaps?,draft?,content_guidance?}
+      {name,type,description,text,format?,path?,mime?,filename?,sources_used?,summary?,gaps?,draft?}
 
     Supports both:
       - current_turn slots (already mostly flat)
@@ -206,7 +206,7 @@ def _flatten_slot(slot_name: str, raw: Any) -> Dict[str, Any]:
         }
 
         # Optional fields (prefer outer if present)
-        for k in ("summary", "gaps", "draft", "content_guidance"):
+        for k in ("summary", "gaps", "draft"):
             if raw.get(k) is not None:
                 out[k] = raw.get(k)
             elif v.get(k) is not None:
@@ -237,7 +237,7 @@ def _flatten_slot(slot_name: str, raw: Any) -> Dict[str, Any]:
         "text": _coerce_text(raw.get("text") if raw.get("text") is not None else raw.get("value")),
     }
 
-    for k in ("summary", "gaps", "draft", "content_guidance"):
+    for k in ("summary", "gaps", "draft"):
         if raw.get(k) is not None:
             out2[k] = raw.get(k)
 
@@ -713,7 +713,7 @@ class ContextTools:
                 "Forgiving behavior: if the agent accidentally appends segments (e.g. turn_12.assistant.whatever),\n"
                 "the tool will ignore extra segments and treat it as turn_12.assistant.\n"
                 "• Slots (deliverables): <turn_id>.slots | <turn_id>.slots.<slot> | <turn_id>.slots.<slot>.<leaf>\n"
-                "Allowed slot leaves: name, type, description, content_guidance, summary, gaps, draft, sources_used, text, format, path, mime, filename, .\n"
+                "Allowed slot leaves: name, type, description, summary, gaps, draft, sources_used, text, format, path, mime, filename, .\n"
                 "Hard rule: Slots NEVER allow '.value' ('.value' or '.value.*' is an error).\n"
                 "Forgiving behavior: if extra segments appear after a valid slot leaf, they are ignored.\n"                
                 "• Tool results (CURRENT TURN ONLY): current_turn.artifacts | current_turn.artifacts.<artifact_id> |\n"

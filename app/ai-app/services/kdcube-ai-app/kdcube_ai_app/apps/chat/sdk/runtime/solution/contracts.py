@@ -6,12 +6,10 @@
 from __future__ import annotations
 from pydantic import BaseModel, Field
 import json, logging
-import itertools
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple, Literal
 
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.presentation import SolverPresenter, SolverPresenterConfig, \
-    build_runtime_inventory_from_artifact, ProgramBrief, program_brief_from_contract
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.presentation import SolverPresenter
 from kdcube_ai_app.apps.chat.sdk.tools.citations import normalize_url, enrich_sources_pool_with_favicons
 from kdcube_ai_app.infra.service_hub.cache import create_namespaced_kv_cache
 from kdcube_ai_app.apps.chat.sdk.util import _to_jsonable
@@ -26,7 +24,6 @@ def _service_log_contract_entry() -> dict:
         "type": "inline",
         "description": "Live run log",
         "format": "markdown",
-        "content_guidance": "",
         "_hidden": True,
     }
 
@@ -38,7 +35,6 @@ class PlannedTool:
     # purpose: str
     # params: Dict[str, Any]
     reason: str
-    confidence: float
 
 class SlotSpec(BaseModel):
     # IMPORTANT: 'name' must equal the dict key under output_contract
@@ -50,27 +46,12 @@ class SlotSpec(BaseModel):
     # file:
     mime: Optional[str] = None
     filename_hint: Optional[str] = None
-    # all:
-    content_guidance: Optional[str] = Field(
-        default=None,
-        description=(
-            "Single place for tone/sections/size/examples; "
-            "source-text & rendering hints; citation policy."
-        ),
-    )
-    # structured content inventory hint/payload for this slot
-    content_inventorization: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Optional structured content inventory/schema for this slot.",
-    )
 
 
 @dataclass
 class SolutionPlan:
     mode: str                 # "codegen" | "react_loop" | "llm_only" | "clarification_only"
     tools: List[PlannedTool]  # subset of candidates with concrete params
-    confidence: float
-    reasoning: str
     clarification_questions: Optional[List[str]] = None
     instructions_for_downstream: Optional[str] = None
     instructions_for_downstream_compact: Optional[str] = None
@@ -79,7 +60,6 @@ class SolutionPlan:
     tool_router_notes: Optional[str] = None
     output_contract: Optional[Dict[str, any]] = None  # slot -> description
     service: Optional[dict] = None
-    solvable: Optional[bool] = None
 
     @property
     def tool_selector_internal_thinking(self) -> str:
@@ -112,10 +92,8 @@ class SolutionPlan:
         return sv_service.get("error")
 
     def result_interpretation_instruction(self, solved: bool) -> str:
-        if not self.solvable:
-            return f"The objective is considered as not solvable.\nReasoning: {self.reasoning}.\nMessage for answer consolidator: {self.instructions_for_downstream}"
         if not solved:
-            return f"The objective was considered solvable with reasoning: {self.reasoning}.\nIt was not solved (see solver errors). \nMessage for answer consolidator: {self.instructions_for_downstream}"
+            return f"The objective was not solved (see solver errors).\nMessage for answer consolidator: {self.instructions_for_downstream}"
         return ""
 
 @dataclass
@@ -175,14 +153,12 @@ class SolveResult:
         return len(complete) > 0 and len(complete) < len(contract)
 
     @staticmethod
-    def status(sr) -> Optional[Literal["success", "partial", "failed", "llm_only", "not_solvable"]]:
+    def status(sr) -> Optional[Literal["success", "partial", "failed", "llm_only"]]:
         if not sr:
             return None
         if sr.plan:
             if sr.plan.mode == "llm_only":
                 return "llm_only"
-            if sr.plan.solvable is False:
-                return "not_solvable"
 
         has_delivs = bool(sr.execution and sr.execution.deliverables)
 
@@ -208,9 +184,6 @@ class SolveResult:
     def program_presentation_ext(self):
         presenter = SolverPresenter(self, codegen_run_id=self.run_id(), file_path_prefix="")
         return presenter.full_view(include_reasoning=True, extended=True)
-
-    def program_brief(self, rehosted_files: List[dict]) -> Tuple[str, ProgramBrief]:
-        return program_brief_from_contract(self, rehosted_files=rehosted_files)
 
     @property
     def failure_presentation(self):
@@ -269,7 +242,7 @@ class SolveResult:
                 out.append(val)
         return out
 
-    # ----- reasoning & hints from the first codegen round -----
+    # ----- hints from the first codegen round -----
     def interpretation_instruction(self) -> str:
         exec_instruction = self.execution.result_interpretation_instruction if self.execution else ""
         if exec_instruction:
@@ -489,13 +462,12 @@ def _mk_planned_tool(d: Dict[str, Any]) -> PlannedTool:
         # purpose=d.get("purpose") or "",
         # params=_sd(d.get("params")),
         reason=d.get("reason") or "",
-        confidence=float(d.get("confidence") or 0.0),
     )
 
 def ensure_contract_dict(output_contract: dict | None) -> dict:
     """
     Normalize output_contract to a plain dict-of-dicts:
-      { slot: {type, description, format?, mime?, filename_hint?, content_guidance?}, ... }
+      { slot: {type, description, format?, mime?, filename_hint?}, ... }
     Accepts values that may be pydantic models (SlotSpec), dataclasses, or plain dicts.
     """
     out: dict[str, dict] = {}
@@ -517,7 +489,6 @@ def ensure_contract_dict(output_contract: dict | None) -> dict:
                     "format": getattr(v, "format", None),
                     "mime": getattr(v, "mime", None),
                     "filename_hint": getattr(v, "filename_hint", None),
-                    "content_guidance": getattr(v, "content_guidance", None),
                 }
     return out
 
@@ -528,8 +499,6 @@ def _mk_solution_plan(d: Dict[str, Any]) -> SolutionPlan:
     return SolutionPlan(
         mode=d.get("mode") or "llm_only",
         tools=tools,
-        confidence=float(d.get("confidence") or 0.0),
-        reasoning=d.get("reasoning") or "",
         clarification_questions=_sl(d.get("clarification_questions")),
         instructions_for_downstream=d.get("instructions_for_downstream"),
         error=d.get("error"),
@@ -537,7 +506,6 @@ def _mk_solution_plan(d: Dict[str, Any]) -> SolutionPlan:
         tool_router_notes=d.get("tool_router_notes"),
         output_contract=ensure_contract_dict(raw_contract),  # ← always dict-of-dict
         service=_sd(d.get("service")),
-        solvable=d.get("solvable"),
     )
 
 def _mk_solution_execution(d: Dict[str, Any]) -> SolutionExecution:
@@ -699,7 +667,7 @@ def normalize_deliverables_map(dmap: Dict[str, Any]) -> Dict[str, Any]:
     Normalize deliverables to a stable, artifact-first representation.
 
     Output shape:
-      { slot: { description, content_guidance?, type?, value }, ... }
+      { slot: { description, type?, value }, ... }
     """
     out: Dict[str, Any] = {}
     for slot_name, spec in (dmap or {}).items():
@@ -708,7 +676,6 @@ def normalize_deliverables_map(dmap: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         desc = spec.get("description") or ""
-        content_guidance = spec.get("content_guidance") or ""
         slot_type = spec.get("type") or ""
         value_obj = _normalize_deliverable_value(spec.get("value"))
 
@@ -716,8 +683,6 @@ def normalize_deliverables_map(dmap: Dict[str, Any]) -> Dict[str, Any]:
             "description": desc,
             "value": value_obj,
         }
-        if content_guidance:
-            spec_out["content_guidance"] = content_guidance
         if slot_type:
             spec_out["type"] = slot_type
         out[slot_name] = spec_out

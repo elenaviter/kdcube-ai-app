@@ -100,7 +100,7 @@ class CodegenRunner:
             streamer: Optional[CodegenJsonCodeStreamer] = None,
     ):
         streamer = streamer or CodegenJsonCodeStreamer(
-            channel="canvas",
+            # channel="canvas",
             agent=author,
             artifact_name=f"codegen.{invocation_idx}.main_py",
             emit_delta=self.comm.delta,

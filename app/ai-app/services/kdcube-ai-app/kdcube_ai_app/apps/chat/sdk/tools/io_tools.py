@@ -292,7 +292,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
       - draft: bool (optional; True = incomplete/partial deliverable)
       - gaps: str (optional; missing parts / TODOs)
       - summary: str (optional; short slot summary)
-      - content_inventorization: dict (optional; structured inventory/schema payload)
       - input: {}   # reserved, empty for program slots
       - sources_used: list of int SIDs (optional)
     """
@@ -359,7 +358,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
         draft: bool = False,
         gaps: Any = None,
         summary: Any = None,
-        content_inventorization: Any = None,
         artifact_lvl: Optional[str] = "slot",
     ):
         v, use_fmt = _coerce_value_and_format(value, fmt)
@@ -395,9 +393,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
         if summary_s:
             row["summary"] = summary_s
 
-        if isinstance(content_inventorization, dict) and content_inventorization:
-            row["content_inventorization"] = content_inventorization
-
         if use_fmt:
             row["format"] = use_fmt
         if final_sids:
@@ -421,7 +416,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
         draft: bool = False,
         gaps: Any = None,
         summary: Any = None,
-        content_inventorization: Any = None,
         artifact_lvl: Optional[str] = "slot",
     ):
         invalid_path = False
@@ -486,9 +480,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
         if summary_s:
             row["summary"] = summary_s
 
-        if isinstance(content_inventorization, dict) and content_inventorization:
-            row["content_inventorization"] = content_inventorization
-
         if final_sids:
             row["sources_used"] = final_sids
 
@@ -507,7 +498,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
 
         gaps = val.get("gaps")
         summary = val.get("summary")
-        content_inventorization = val.get("content_inventorization")
 
         if slot_type == "file":
             mime = val.get("mime") or None
@@ -531,7 +521,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
                 draft=draft,
                 gaps=gaps,
                 summary=summary,
-                content_inventorization=content_inventorization,
                 artifact_lvl=artifact_lvl
             )
             continue
@@ -549,7 +538,6 @@ def normalize_contract_deliverables(out_dyn: Dict[str, Any],
                     draft=draft,
                     gaps=gaps,
                     summary=summary,
-                    content_inventorization=content_inventorization,
                     artifact_lvl=artifact_lvl
                 )
             continue

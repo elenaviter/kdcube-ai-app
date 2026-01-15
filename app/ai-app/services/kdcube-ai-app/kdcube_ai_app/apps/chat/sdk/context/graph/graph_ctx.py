@@ -7,7 +7,10 @@ from __future__ import annotations
 import json, time, uuid, hashlib
 from typing import Optional, Dict, Any, List, Tuple
 
-from neo4j import AsyncGraphDatabase
+try:
+    from neo4j import AsyncGraphDatabase
+except Exception:
+    AsyncGraphDatabase = None
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
@@ -47,7 +50,60 @@ def _pack_for_neo4j_value(v: Any) -> Tuple[Any, Optional[str], str, str]:
 
 # ---------- GraphCtx ----------
 
+class NullGraphCtx:
+    enabled = False
+
+    async def close(self):
+        return None
+
+    async def ensure_schema(self):
+        return None
+
+    async def ensure_user_and_conversation(self, **kwargs):
+        return None
+
+    async def set_conversation_meta(self, **kwargs):
+        return None
+
+    async def set_conversation_blob(self, **kwargs):
+        return None
+
+    async def get_conversation_blob(self, **kwargs):
+        return None
+
+    async def load_user_assertions_with_support(self, **kwargs):
+        return []
+
+    async def mark_user_key_challenged(self, **kwargs):
+        return None
+
+    async def upsert_assertion(self, **kwargs):
+        return None
+
+    async def add_assertion(self, **kwargs):
+        return None
+
+    async def add_exception(self, **kwargs):
+        return None
+
+    async def snapshot(self, **kwargs):
+        return {}
+
+    async def load_user_assertions(self, **kwargs):
+        return []
+
+    async def forget_user_key(self, **kwargs):
+        return None
+
+    async def forget_user_all(self, **kwargs):
+        return None
+
+    async def purge_anonymous(self, **kwargs):
+        return None
+
+
 class GraphCtx:
+    enabled = True
     """
     Minimal surface:
       - ensure_schema()
@@ -63,6 +119,8 @@ class GraphCtx:
     """
 
     def __init__(self):
+        if AsyncGraphDatabase is None:
+            raise RuntimeError("neo4j driver not installed; set APP_GRAPH_ENABLED=false or install 'neo4j'")
         self._settings = get_settings()
         self._driver = AsyncGraphDatabase.driver(
             self._settings.NEO4J_URI,

@@ -655,7 +655,7 @@ class StyledHTMLParser(HTMLParser):
 # ============================================================================
 # RENDERER WITH OVERFLOW PROTECTION
 # ============================================================================
-def _resolve_image_path(src: str, base_dir: Optional[str]) -> Optional[Path]:
+def _resolve_image_path(src: str, base_dir: Optional[str], workdir: Optional[str]) -> Optional[Path]:
     if not src:
         return None
     src = src.strip()
@@ -669,12 +669,22 @@ def _resolve_image_path(src: str, base_dir: Optional[str]) -> Optional[Path]:
         parsed = urlparse(src)
         src = parsed.path
     path = Path(src)
-    if not path.is_absolute():
+    candidates: list[Path] = []
+    if path.is_absolute():
+        candidates.append(path)
+    else:
         if base_dir:
-            path = Path(base_dir) / src
-    if path.exists():
-        return path
-    logger.warning("PPTX renderer: image not found. src=%s resolved=%s", src, path)
+            candidates.append(Path(base_dir) / src)
+        if workdir and (not base_dir or Path(base_dir).resolve() != Path(workdir).resolve()):
+            candidates.append(Path(workdir) / src)
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    logger.warning(
+        "PPTX renderer: image not found. src=%s tried=%s",
+        src,
+        ", ".join(str(c) for c in candidates) if candidates else "<none>",
+    )
     return None
 
 
@@ -1350,6 +1360,7 @@ def render_slide(
         sources_map: Dict[int, Dict[str, str]],
         resolve_citations: bool,
         base_dir: Optional[str],
+        workdir: Optional[str],
 ):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
@@ -1525,7 +1536,7 @@ def render_slide(
             y += box_h + Inches(0.12 * scale_factor)
 
         elif elem_type == 'image':
-            img_path = _resolve_image_path(elem.get('src', ''), base_dir)
+            img_path = _resolve_image_path(elem.get('src', ''), base_dir, workdir)
             if not img_path:
                 continue
             width_len, height_len = _compute_image_dims(
@@ -1669,7 +1680,7 @@ def render_slide(
                         y_col += box_h + Inches(0.08 * scale_factor)
 
                     elif bt == 'image':
-                        img_path = _resolve_image_path(b.get('src', ''), base_dir)
+                        img_path = _resolve_image_path(b.get('src', ''), base_dir, workdir)
                         if not img_path:
                             continue
                         width_len, height_len = _compute_image_dims(
@@ -2032,6 +2043,7 @@ def render_pptx(
         *,
         title: Optional[str] = None,
         base_dir: Optional[str] = None,
+        workdir: Optional[str] = None,
         sources: Optional[list[dict] | dict] = None,
         resolve_citations: bool = False,
         include_sources_slide: bool = False
@@ -2089,7 +2101,7 @@ def render_pptx(
         # Render ALL slides
         for slide_data in slides_data:
             print(f"Rendering slide: {slide_data.get('title')}")
-            render_slide(prs, slide_data, css_parser, sources_map, resolve_citations, base_dir)
+            render_slide(prs, slide_data, css_parser, sources_map, resolve_citations, base_dir, workdir)
 
         # Always add Sources slide when we have sources (per spec)
         if sources_map:

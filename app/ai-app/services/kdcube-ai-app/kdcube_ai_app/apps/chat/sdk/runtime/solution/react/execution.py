@@ -193,7 +193,6 @@ async def _build_program_run_items(
             "call_record_rel": call_record_rel,
             "call_record_abs": call_record_abs,
             "error": a.get("error") if a.get("error") else None,
-            "content_inventorization": a.get("content_inventorization"),
             "tool_call_id": tool_call_id,
             "tool_call_item_index": i,
         }
@@ -234,7 +233,6 @@ async def _build_program_run_items(
             "call_record_rel": call_record_rel,
             "call_record_abs": call_record_abs,
             "error": missing_error,
-            "content_inventorization": None,
             "tool_call_id": tool_call_id,
             "tool_call_item_index": i,
         })
@@ -782,7 +780,6 @@ async def _execute_tool_in_memory(
     status = "error" if error_info else "success"
 
     # Build summary with centralized logic
-    content_inventorization = None
     mime_hint = ""
     if error_info:
         # Error-focused summary, short and consistent
@@ -837,7 +834,6 @@ async def _execute_tool_in_memory(
                     summary = str(summary_obj)
             else:
                 summary = str(summary_obj)
-            content_inventorization = _to_jsonable(summary_obj)
 
     inputs = (payload.get("in") or {}).get("params") or {}
     call_record_rel = last_rel
@@ -874,8 +870,6 @@ async def _execute_tool_in_memory(
         item["artifact_stats"] = artifact_stats
     if error_info:
         item["error"] = error_info
-    if content_inventorization is not None:
-        item["content_inventorization"] = content_inventorization
 
     result = {
         "status": status,
@@ -1071,7 +1065,6 @@ async def execute_tool_in_isolation(
     error_info = _extract_error_from_output(output) or subprocess_error
     status = "error" if error_info else "success"
 
-    content_inventorization = None
     mime_hint = ""
     # Build summary with centralized logic
     if error_info:
@@ -1126,7 +1119,6 @@ async def execute_tool_in_isolation(
                     summary = str(summary_obj)
             else:
                 summary = str(summary_obj)
-            content_inventorization = _to_jsonable(summary_obj)
 
     # Preserve executed main.py (existing code)
     try:
@@ -1192,8 +1184,6 @@ async def execute_tool_in_isolation(
         item["artifact_stats"] = artifact_stats
     if error_info:
         item["error"] = error_info
-    if content_inventorization is not None:
-        item["content_inventorization"] = content_inventorization
     result = {
         "status": status,
         "items": [item],

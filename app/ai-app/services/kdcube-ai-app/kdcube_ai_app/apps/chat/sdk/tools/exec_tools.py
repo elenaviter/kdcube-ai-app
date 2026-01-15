@@ -51,7 +51,7 @@ def _normalize_artifacts_spec(artifacts: Any) -> Tuple[Optional[List[Dict[str, A
         name = (item.get("name") or item.get("artifact_name") or item.get("artifact_id") or "").strip()
         filename = (item.get("filename") or item.get("artifact_filename") or item.get("path") or "").strip()
         mime = (item.get("mime") or "").strip()
-        description = (item.get("description") or item.get("content_guidance") or item.get("inventorization") or "").strip()
+        description = (item.get("description") or "").strip()
         if not name or not filename or not mime or not description:
             return None, {
                 "code": "invalid_artifact_spec",
@@ -89,7 +89,6 @@ def build_exec_output_contract(
             "filename": a["filename"],
             "mime": a["mime"],
             "description": a["description"],
-            "content_guidance": a["description"],
         }
     return contract, normalized, None
 
@@ -253,7 +252,6 @@ async def run_exec_tool(
             "mime": a["mime"],
             "text": a["description"],
             "description": a["description"],
-            "content_inventorization": {"promise": a["description"]},
         }
 
     stderr_tail = ""
@@ -306,7 +304,6 @@ async def run_exec_tool(
             "description": artifact.get("description"),
             "sources_used": artifact.get("sources_used"),
             "draft": artifact.get("draft"),
-            "content_inventorization": artifact.get("content_inventorization"),
         }
         for name, artifact in out_dyn.items()
         if isinstance(artifact, dict)

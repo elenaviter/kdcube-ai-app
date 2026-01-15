@@ -441,7 +441,7 @@ class CodegenChanneledStreamingWidget:
             contract_items.append(
                 {
                     "artifact_name": name,
-                    "description": spec.get("description") or spec.get("content_guidance") or "",
+                    "description": spec.get("description") or "",
                     "mime": spec.get("mime") or "",
                     "filename": spec.get("filename") or "",
                 }

@@ -58,6 +58,9 @@ class _DeltaAggregate:
     chunks: List[_DeltaChunk] = field(default_factory=list)
 
     def append(self, *, ts: int, idx: int, text: str):
+        if idx == 0 and self.chunks:
+            self.chunks = []
+            self.ts_first = 0
         if not self.ts_first:
             self.ts_first = ts
         self.ts_last = ts

@@ -62,7 +62,6 @@ class CodegenTool:
                 "  \"<artifact_id>\": {\n"
                 "     \"type\": \"inline\" | \"file\",\n"
                 "     \"description\": \"human readable description\",\n"
-                "     \"content_guidance\": \"(optional) short constraints: length/sections/tone\", \n"
                 "\n"
                 "     # If type == \"inline\":\n"
                 "     \"format\": \"markdown\" | \"json\" | \"yaml\" | \"html\" | \"text\",\n"
@@ -77,8 +76,7 @@ class CodegenTool:
                 "- The tool will produce EXACTLY the artifacts listed in the contract.\n"
                 "- For inline artifacts you MUST specify `format`.\n"
                 "- For file artifacts you MUST specify both `filename` and `mime`.\n"
-                "- If you need sources/citations, request them inside `content_guidance`.\n"
-                "- Tone, structural/semantic expectations - specify in `content_guidance`. Teelgraphic style\n"
+                "- Put any constraints or composition requirements into the instruction.\n"
                 "- Keep artifact_ids stable and machine-safe (snake_case recommended).\n"
                 "\n"
                 "RETURN VALUE\n"
@@ -105,15 +103,13 @@ class CodegenTool:
                 "    \"summary_md\": {\n"
                 "      \"type\": \"inline\",\n"
                 "      \"format\": \"markdown\",\n"
-                "      \"description\": \"1-page executive summary\",\n"
-                "      \"content_guidance\": \"~400 words, 3 bullet sections\"\n"
+                "      \"description\": \"1-page executive summary\"\n"
                 "    },\n"
                 "    \"brief_pdf\": {\n"
                 "      \"type\": \"file\",\n"
                 "      \"filename\": \"brief.pdf\",\n"
                 "      \"mime\": \"application/pdf\",\n"
-                "      \"description\": \"2–3 page PDF brief\",\n"
-                "      \"content_guidance\": \"include citations; formal, concise(Boardsitzung);avoid fuzziness;concrete numbers + plots\"\n"
+                "      \"description\": \"2–3 page PDF brief\"\n"
                 "    }\n"
                 "  }\n"
                 "}\n"
@@ -292,7 +288,6 @@ async def run_codegen_tool(
                     "description": artifact.get("description"),
                     "sources_used": artifact.get("sources_used"),
                     "draft": artifact.get("draft"),
-                    "content_inventorization": artifact.get("content_inventorization"),
                 }
             )
     else:
