@@ -15,7 +15,7 @@ class ConversationTurnWorkStatus:
         emit_delta: Callable[..., Awaitable[None]],
         agent: str,
         artifact_name: str = "conversation.turn.status",
-        sub_type: str = "converastion.turn.status",
+        sub_type: str = "conversation.turn.status",
         title: str = "Conversation Turn Status",
         execution_id: Optional[str] = None,
     ):
