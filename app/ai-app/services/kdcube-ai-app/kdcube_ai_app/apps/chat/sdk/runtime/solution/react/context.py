@@ -987,6 +987,18 @@ class ReactContext:
             if tool_call_id and tool_call_id in self.tool_call_index:
                 self.tool_call_index[tool_call_id]["produced_artifact_ids"] = data.get("produced_artifact_ids") or []
 
+        if kind in {"exec_proj_log", "code_proj_log"}:
+            try:
+                proj = (data or {}).get("project_log") or {}
+                if isinstance(proj, dict):
+                    log_text = proj.get("value") or (proj.get("output") or {}).get("text") or ""
+                else:
+                    log_text = str(proj) if proj is not None else ""
+                if log_text and self.scratchpad is not None:
+                    self.scratchpad.tlog.solver(f"[project.log]\n{log_text.strip()[:4000]}")
+            except Exception:
+                pass
+
         self.persist()
 
     # ---------- Tool results ----------
