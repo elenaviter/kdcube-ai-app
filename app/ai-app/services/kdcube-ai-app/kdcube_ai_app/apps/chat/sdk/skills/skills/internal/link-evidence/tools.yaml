@@ -1,0 +1,7 @@
+tools:
+  - id: llm_tools.generate_content_llm
+    role: content generation
+    why: Generates the report content while enforcing evidence-only linking rules.
+  - id: generic_tools.fetch_url_contents
+    role: fetch
+    why: Retrieves source pages so links are grounded in actual evidence.

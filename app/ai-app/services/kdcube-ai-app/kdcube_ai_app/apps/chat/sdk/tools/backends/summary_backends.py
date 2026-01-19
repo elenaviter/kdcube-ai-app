@@ -355,7 +355,6 @@ def _build_structural_summary(obj: Any, max_depth: int = 2, current_depth: int =
     else:
         return f"{type(obj).__name__}"
 
-
 async def _generate_llm_summary(
         obj: Any,
         tool_id: str,

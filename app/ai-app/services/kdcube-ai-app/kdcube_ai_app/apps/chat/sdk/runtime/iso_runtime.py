@@ -1658,6 +1658,12 @@ class _InProcessRuntime:
         if ps is not None:
             portable_spec_str = ps if isinstance(ps, str) else json.dumps(ps, ensure_ascii=False)
             child_env["PORTABLE_SPEC"] = portable_spec_str
+        skills_desc = g.get("SKILLS_DESCRIPTOR")
+        if isinstance(skills_desc, dict) and skills_desc:
+            try:
+                child_env["SKILLS_DESCRIPTOR_JSON"] = json.dumps(skills_desc, ensure_ascii=False)
+            except Exception:
+                pass
 
         child_env["RUNTIME_TOOL_MODULES"] = json.dumps(tool_module_names, ensure_ascii=False)
         shutdown_candidates = list(tool_module_names) + ["kdcube_ai_app.apps.chat.sdk.retrieval.kb_client"]

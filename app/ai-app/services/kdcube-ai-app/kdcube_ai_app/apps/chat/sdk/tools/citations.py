@@ -161,6 +161,9 @@ MD_CITE_RE    = re.compile(CITE_CORE, re.I)
 #     re.compile(r"(?:\u200b|\s)?\[\[\s*S:\s*[0-9,\s\-–]*\]$", re.I),
 # ]
 CITATION_SUFFIX_PATS = [
+    # "[" at end (possible start of [[S:...]] split across chunks)
+    re.compile(r"\[\s*$"),
+
     # "[[" at end
     re.compile(r"(?:\u200b|\s)?\[\[$"),
 

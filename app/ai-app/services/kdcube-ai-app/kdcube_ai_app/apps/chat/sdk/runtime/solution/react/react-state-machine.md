@@ -25,7 +25,7 @@ When a terminal condition is met, the state machine routes to `exit`.
 stateDiagram-v2
     [*] --> decision
     decision --> protocol_verify: action=call_tool & no exit_reason
-    decision --> decision: action=decision
+    decision --> decision: action=decision (show_artifacts/show_skills)
     decision --> exit: action=complete/exit/clarify OR exit_reason set
     protocol_verify --> tool_execution: ok
     protocol_verify --> decision: not ok
@@ -54,8 +54,8 @@ flowchart TD
     F1 -- yes --> G[protocol_verify]
     F -- no --> G
 
-    D -- decision --> H{show_artifacts provided?}
-    H -- no --> Z3[pending_exit_reason=decision_no_show_artifacts] --> R
+    D -- decision --> H{show_artifacts or show_skills provided?}
+    H -- no --> Z3[pending_exit_reason=decision_no_progress] --> R
     H -- yes --> G2[decision rerun] --> A
 
     D -- clarify --> Z4[pending_exit_reason=clarify] --> R
@@ -206,7 +206,7 @@ Typical reasons:
 - `clarify`
 - `max_iterations`
 - `context_reads_exhausted`
-- `decision_no_show_artifacts`
+- `decision_no_progress`
 - `decision_reruns_exhausted`
 - `wrapup_no_decision_rerun`
 - `exploit_overdraft_blocked`

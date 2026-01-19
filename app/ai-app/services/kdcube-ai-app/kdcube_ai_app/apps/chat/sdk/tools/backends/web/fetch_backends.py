@@ -3,12 +3,15 @@
 
 # apps/chat/sdk/tools/backends/fetch_backends.py
 
-from typing import List, Optional, Dict, Any, Annotated
+from typing import List, Optional, Dict, Any, Annotated, Callable, Awaitable
 import logging, json, os, uuid, base64, asyncio
 from datetime import datetime, timezone
 
 from kdcube_ai_app.apps.chat.sdk.tools.web.web_extractors import WebContentFetcher
 from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import filter_fetch_results
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.fetch_url_contents import (
+    FetchWebResourceWidget,
+)
 from kdcube_ai_app.tools.content_type import fetch_url_with_content_type, guess_mime_from_url
 from kdcube_ai_app.tools.scrap_utils import build_content_blocks_from_html
 from kdcube_ai_app.infra.service_hub.multimodality import (
@@ -47,6 +50,164 @@ async def _materialize_binary_attachment(url: str, *, include_base64: bool = Tru
         "filename": filename or None,
     }
 
+def _normalize_widget_status(status: Optional[str]) -> str:
+    raw = (status or "").lower()
+    if raw in ("success", "archive", "binary"):
+        return "success"
+    if "timeout" in raw:
+        return "timeout"
+    if "paywall" in raw:
+        return "paywall"
+    return "error"
+
+async def _fetch_urls_core(
+    *,
+    urls: List[str],
+    max_content_length: int,
+    use_archive_fallback: bool,
+    extraction_mode: Optional[str],
+    max_concurrent: int,
+    include_binary_base64: bool,
+    include_content_blocks: bool,
+    objective: Optional[str] = None,
+    content_block_titles: Optional[Dict[str, str]] = None,
+    emit_delta_fn: Optional[Callable[..., Awaitable[None]]] = None,
+    comm: Optional[object] = None,
+    widget_agent: Optional[str] = None,
+) -> Dict[str, Dict[str, Any]]:
+    if not urls:
+        return {}
+
+    if emit_delta_fn is None or comm is None:
+        try:
+            from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import delta as emit_delta_fn, get_comm
+            comm = comm or get_comm()
+        except Exception:
+            emit_delta_fn = None
+            comm = None
+
+    widget = None
+    widget_payload = None
+    url_items: Dict[str, Dict[str, Any]] = {}
+    if emit_delta_fn and comm:
+        widget = FetchWebResourceWidget(
+            emit_delta=emit_delta_fn,
+            agent=widget_agent or "fetch.url_contents",
+        )
+        widget_payload = {}
+        if objective:
+            widget_payload["objective"] = objective
+        widget_payload["urls"] = [{"url": u} for u in urls]
+        url_items = {item["url"]: item for item in widget_payload["urls"]}
+        await widget.send(widget_payload)
+
+    async with WebContentFetcher(
+            timeout=15,
+            max_concurrent=max_concurrent,
+            enable_archive=use_archive_fallback,
+            extraction_mode=extraction_mode,
+    ) as fetcher:
+        fetch_list = await fetcher.fetch_multiple(
+            urls=urls,
+            max_length=max_content_length,
+            include_raw_html=include_content_blocks,
+        )
+
+    results: Dict[str, Dict[str, Any]] = {}
+
+    for url, fetch_result in zip(urls, fetch_list):
+        fetched_time_iso = datetime.now(timezone.utc).isoformat()
+        if isinstance(fetch_result, Exception):
+            results[url] = {
+                "status": "error",
+                "content": "",
+                "content_length": 0,
+                "source_type": "web",
+                "fetched_time_iso": fetched_time_iso,
+                "published_time_iso": None,
+                "modified_time_iso": None,
+                "date_method": None,
+                "date_confidence": 0.0,
+                "error": str(fetch_result),
+            }
+        else:
+            status = fetch_result.get("status", "unknown")
+            content = (fetch_result.get("content") or "").strip()
+
+            entry: Dict[str, Any] = {
+                "status": status,
+                "content": content,
+                "content_length": len(content),
+                "source_type": "web",
+                "fetched_time_iso": fetched_time_iso,
+                "published_time_iso": fetch_result.get("published_time_iso"),
+                "published_time_raw": fetch_result.get("published_time_raw"),
+                "modified_time_iso": fetch_result.get("modified_time_iso"),
+                "modified_time_raw": fetch_result.get("modified_time_raw"),
+                "archive_snapshot_date": fetch_result.get("archive_snapshot_date"),
+                "archive_snapshot_url": fetch_result.get("archive_snapshot_url"),
+                "date_method": fetch_result.get("date_method"),
+                "date_confidence": fetch_result.get("date_confidence", 0.0),
+            }
+            if include_content_blocks:
+                entry["content_blocks"] = []
+            if fetch_result.get("mime"):
+                entry["mime"] = fetch_result.get("mime")
+
+            if "error" in fetch_result and fetch_result.get("error"):
+                entry["error"] = fetch_result.get("error")
+
+            if status in ("non_html", "pdf_redirect"):
+                attach = await _materialize_binary_attachment(
+                    url,
+                    include_base64=include_binary_base64,
+                )
+                if attach.get("mime"):
+                    entry["mime"] = attach.get("mime")
+                if attach.get("size_bytes") is not None:
+                    entry["size_bytes"] = attach.get("size_bytes")
+                if attach.get("filename"):
+                    entry["filename"] = attach.get("filename")
+                if attach.get("base64"):
+                    entry["base64"] = attach.get("base64")
+                    entry["status"] = "binary"
+                if attach.get("error"):
+                    entry["error"] = attach.get("error")
+            elif status in ("success", "archive"):
+                entry["mime"] = entry.get("mime") or "text/html"
+                if include_content_blocks:
+                    raw_html = fetch_result.get("raw_html") or ""
+                    blocks = build_content_blocks_from_html(
+                        post_url=url,
+                        raw_html=raw_html,
+                        title=(content_block_titles or {}).get(url) or "",
+                    )
+                    entry["content_blocks"] = blocks
+
+            results[url] = entry
+
+        if widget and widget_payload:
+            item = url_items.get(url)
+            if item is not None:
+                entry = results.get(url) or {}
+                if entry.get("status"):
+                    item["status_orig"] = entry.get("status")
+                item["status"] = _normalize_widget_status(entry.get("status"))
+                if entry.get("mime"):
+                    item["mime"] = entry.get("mime")
+                content_length = entry.get("content_length")
+                if content_length is None:
+                    content_length = entry.get("size_bytes")
+                if content_length is not None:
+                    item["content_length"] = content_length
+                if entry.get("published_time_iso"):
+                    item["published_time_iso"] = entry.get("published_time_iso")
+                if entry.get("modified_time_iso"):
+                    item["modified_time_iso"] = entry.get("modified_time_iso")
+                await widget.send(widget_payload)
+
+    return results
+
 async def fetch_search_results_content(
         search_results: List[dict],
         max_content_length: int = 15000,
@@ -71,28 +232,29 @@ async def fetch_search_results_content(
 
     urls = [row.get("url", "") for row in search_results]
 
-    async with WebContentFetcher(
-            timeout=15,
-            max_concurrent=MAX_CONCURRENT_WEB_FETCHES,
-            enable_archive=use_archive_fallback,
-            extraction_mode=extraction_mode
-    ) as fetcher:
-        fetch_results = await fetcher.fetch_multiple(
-            urls=urls,
-            max_length=max_content_length,
-            include_raw_html=include_content_blocks,
-        )
+    fetch_results = await _fetch_urls_core(
+        urls=urls,
+        max_content_length=max_content_length,
+        use_archive_fallback=use_archive_fallback,
+        extraction_mode=extraction_mode,
+        max_concurrent=MAX_CONCURRENT_WEB_FETCHES,
+        include_binary_base64=include_binary_base64,
+        include_content_blocks=include_content_blocks,
+        objective=None,
+        content_block_titles={row.get("url", ""): (row.get("title") or "") for row in search_results},
+    )
 
     success_count = 0
 
-    for row, fetch_result in zip(search_results, fetch_results):
+    for row, url in zip(search_results, urls):
+        fetch_result = fetch_results.get(url)
         # Default metadata in case of failure
         row.setdefault("fetch_status", "error")
 
-        if isinstance(fetch_result, Exception):
+        if not fetch_result:
             # Transport-level failure
-            row["fetch_error"] = str(fetch_result)
-            logger.debug(f"Fetch exception for {row.get('url')}: {fetch_result}")
+            row["fetch_error"] = "fetch_failed"
+            logger.debug(f"Fetch exception for {row.get('url')}: no result")
             continue
 
         fetch_status = fetch_result.get("status", "unknown")
@@ -100,22 +262,18 @@ async def fetch_search_results_content(
         if fetch_result.get("mime"):
             row["mime"] = fetch_result.get("mime")
 
-        if fetch_status in ("non_html", "pdf_redirect"):
-            attach = await _materialize_binary_attachment(
-                row.get("url", ""),
-                include_base64=include_binary_base64,
-            )
-            if attach.get("mime"):
-                row["mime"] = attach.get("mime")
-            if attach.get("size_bytes") is not None:
-                row["size_bytes"] = attach.get("size_bytes")
-            if attach.get("filename"):
-                row["filename"] = attach.get("filename")
-            if attach.get("base64"):
-                row["base64"] = attach.get("base64")
+        if fetch_status in ("non_html", "pdf_redirect", "binary"):
+            if fetch_result.get("mime"):
+                row["mime"] = fetch_result.get("mime")
+            if fetch_result.get("size_bytes") is not None:
+                row["size_bytes"] = fetch_result.get("size_bytes")
+            if fetch_result.get("filename"):
+                row["filename"] = fetch_result.get("filename")
+            if fetch_result.get("base64"):
+                row["base64"] = fetch_result.get("base64")
                 row["fetch_status"] = "binary"
-            if attach.get("error"):
-                row["fetch_error"] = attach.get("error")
+            if fetch_result.get("error"):
+                row["fetch_error"] = fetch_result.get("error")
             continue
 
         if fetch_status != "success" and fetch_status != "archive":
@@ -131,10 +289,12 @@ async def fetch_search_results_content(
         # Successful fetch: attach content + metadata
         row["content"] = fetch_result.get("content", "")
         row["content_length"] = fetch_result.get("content_length", 0)
+        if fetch_result.get("mime"):
+            row["mime"] = fetch_result.get("mime")
         if not row.get("mime"):
             row["mime"] = "text/html"
         if include_content_blocks:
-            row["content_blocks"] = []
+            row["content_blocks"] = fetch_result.get("content_blocks", [])
 
         for k in [
             "published_time_raw",
@@ -148,16 +308,6 @@ async def fetch_search_results_content(
         ]:
             if k in fetch_result:
                 row[k] = fetch_result.get(k)
-
-        if include_content_blocks:
-            raw_html = fetch_result.get("raw_html") or ""
-            if raw_html.strip():
-                blocks = build_content_blocks_from_html(
-                    post_url=row.get("url") or "",
-                    raw_html=raw_html,
-                    title=row.get("title") or "",
-                )
-                row["content_blocks"] = blocks
 
         success_count += 1
 
@@ -255,11 +405,6 @@ async def fetch_url_contents(
     if not normalized_urls:
         return {}
 
-    # ==== thinking / comm setup (parallel to web_search) ====
-    # If this env var is >0, we let the LLM agent burn that budget internally
-    # and avoid extra heuristic thinking text here (same pattern as web_search).
-    FETCH_URL_AGENTIC_THINKING_BUDGET = int(os.getenv("FETCH_URL_AGENTIC_THINKING_BUDGET") or 0)
-
     try:
         from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import delta as emit_delta_fn, get_comm
     except Exception:
@@ -271,141 +416,30 @@ async def fetch_url_contents(
 
     # Human-readable agent name
     if objective and objective.strip():
-        agent_name = f"fetch url contents for {objective.strip()}"
+        agent_name = f"fetch url contents objective={objective.strip()}"
     else:
         joined = ", ".join(normalized_urls[:3])
         if len(normalized_urls) > 3:
             joined += ", ..."
-        agent_name = f"fetch url contents for {joined}" if joined else "fetch url contents"
+        agent_name = f"fetch url contents urls={joined}" if joined else "fetch url contents"
     agent_label = agent_name[:120]
     agent_suffix = uuid.uuid4().hex[:8]
     max_label_len = max(1, 120 - (len(agent_suffix) + 3))
     agent_name = f"{agent_label[:max_label_len]} [{agent_suffix}]"
 
-    artifact_thinking = f"Fetch URL Contents Trace {agent_suffix}"
-    think_idx = 0
-
-    marker = "timeline_text" # "thinking"
-    async def emit_progress(text: str, completed: bool = False, **kwargs):
-        """Wrapper to emit thinking deltas."""
-        nonlocal think_idx
-        if not (emit_delta_fn and comm):
-            return
-        if not text and not completed:
-            return
-
-        await emit_delta_fn(
-            text=text,
-            index=think_idx,
-            marker=marker,
-            agent=agent_name,
-            title=agent_label,
-            format="markdown",
-            artifact_name=artifact_thinking,
-            completed=completed,
-            **kwargs
-        )
-        if text or completed:  # Only increment if we actually emitted something
-            think_idx += 1
-
-    async def finish_thinking():
-        """Signal thinking completion."""
-        await emit_progress("", completed=True)
-
-    # Initial trace, only when we are not delegating to an agent with its own budget
-    if not FETCH_URL_AGENTIC_THINKING_BUDGET:
-        initial_lines: list[str] = ["### URL content fetch"]
-        if objective and objective.strip():
-            initial_lines.append("")
-            initial_lines.append(f"- Objective: {objective.strip()}")
-        initial_lines.append("")
-        initial_lines.append("- URLs to fetch:")
-        for u in normalized_urls[:10]:
-            initial_lines.append(f"  - `{u}`")
-        await emit_progress("\n".join(initial_lines))
-
-    results: Dict[str, Dict[str, Any]] = {}
-
-    # ---- fetch all URLs concurrently, NO SEARCH ----
-    async with WebContentFetcher(
-            timeout=15,
-            max_concurrent=5,
-            enable_archive=use_archive_fallback,
-            extraction_mode=extraction_mode,
-    ) as fetcher:
-        fetch_list = await fetcher.fetch_multiple(
-            urls=normalized_urls,
-            max_length=max_content_length,
-            include_raw_html=include_content_blocks,
-        )
-
-    for url, fetch_result in zip(normalized_urls, fetch_list):
-        fetched_time_iso = datetime.now(timezone.utc).isoformat()
-        if isinstance(fetch_result, Exception):
-            # Transport-level failure
-            results[url] = {
-                "status": "error",
-                "content": "",
-                "content_length": 0,
-                "source_type": "web",
-                "fetched_time_iso": fetched_time_iso,
-                "published_time_iso": None,
-                "modified_time_iso": None,
-                "date_method": None,
-                "date_confidence": 0.0,
-                "error": str(fetch_result),
-            }
-            continue
-
-        status = fetch_result.get("status", "unknown")
-        content = (fetch_result.get("content") or "").strip()
-
-        entry: Dict[str, Any] = {
-            "status": status,
-            "content": content,
-            "content_length": len(content),
-            "source_type": "web",
-            "fetched_time_iso": fetched_time_iso,
-            "published_time_iso": fetch_result.get("published_time_iso"),
-            "modified_time_iso": fetch_result.get("modified_time_iso"),
-            "date_method": fetch_result.get("date_method"),
-            "date_confidence": fetch_result.get("date_confidence", 0.0),
-        }
-        if include_content_blocks:
-            entry["content_blocks"] = []
-        if fetch_result.get("mime"):
-            entry["mime"] = fetch_result.get("mime")
-
-        if "error" in fetch_result and fetch_result.get("error"):
-            entry["error"] = fetch_result.get("error")
-
-        if status in ("non_html", "pdf_redirect"):
-            attach = await _materialize_binary_attachment(
-                url,
-                include_base64=include_binary_base64,
-            )
-            if attach.get("mime"):
-                entry["mime"] = attach.get("mime")
-            if attach.get("size_bytes") is not None:
-                entry["size_bytes"] = attach.get("size_bytes")
-            if attach.get("filename"):
-                entry["filename"] = attach.get("filename")
-            if attach.get("base64"):
-                entry["base64"] = attach.get("base64")
-                entry["status"] = "binary"
-            if attach.get("error"):
-                entry["error"] = attach.get("error")
-        elif status in ("success", "archive"):
-            entry["mime"] = entry.get("mime") or "text/html"
-            if include_content_blocks:
-                raw_html = fetch_result.get("raw_html") or ""
-                blocks = build_content_blocks_from_html(
-                    post_url=url,
-                    raw_html=raw_html,
-                )
-                entry["content_blocks"] = blocks
-
-        results[url] = entry
+    results = await _fetch_urls_core(
+        urls=normalized_urls,
+        max_content_length=max_content_length,
+        use_archive_fallback=use_archive_fallback,
+        extraction_mode=extraction_mode,
+        max_concurrent=5,
+        include_binary_base64=include_binary_base64,
+        include_content_blocks=include_content_blocks,
+        objective=objective,
+        emit_delta_fn=emit_delta_fn,
+        comm=comm,
+        widget_agent=agent_name,
+    )
 
     # ---------- Optional: objective-aware segmentation on fetched pages ----------
     # Only run if objective is non-empty and we have a service for the LLM backend.
@@ -420,26 +454,6 @@ async def fetch_url_contents(
             results=results,
             objective=objective,
             mode=mode,
-            on_progress_fn=emit_progress if (emit_delta_fn and comm) else None,
-            thinking_budget=FETCH_URL_AGENTIC_THINKING_BUDGET,
         )
-
-    if not FETCH_URL_AGENTIC_THINKING_BUDGET:
-        # Short completion marker with a quick summary
-        success_count = sum(
-            1
-            for r in results.values()
-            if r.get("status") in ("success", "archive")
-        )
-        lines = [
-            "\n",
-            "### URL fetch complete",
-            "",
-            f"- Total URLs requested: {len(normalized_urls)}",
-            f"- Successful/archived: {success_count}",
-        ]
-        await emit_progress("\n".join(lines))
-
-    await finish_thinking()
     # ---------- Done ----------
     return results

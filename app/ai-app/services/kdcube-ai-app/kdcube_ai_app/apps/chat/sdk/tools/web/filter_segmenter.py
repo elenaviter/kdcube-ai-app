@@ -22,7 +22,7 @@ def _get_2section_protocol_filter_segmenter(json_shape_hint: str) -> str:
       2) STRUCTURED JSON CHANNEL (spans dict as JSON)
     """
     return (
-        "\n\nCRITICAL OUTPUT PROTOCOL — TWO SECTIONS, IN THIS ORDER:\n"
+        "\n\n[CRITICAL OUTPUT PROTOCOL — TWO SECTIONS, IN THIS ORDER]:\n"
         "• You MUST produce EXACTLY TWO SECTIONS in this order.\n"
         "• Use EACH START marker below EXACTLY ONCE.\n"
         "• NEVER write any END markers like <<< END ... >>>.\n"
@@ -58,7 +58,7 @@ def _get_2section_protocol_filter_segmenter(json_shape_hint: str) -> str:
         f"{json_shape_hint}\n"
         "```\n\n"
 
-        "STRICT RULES FOR CHANNEL 2 (JSON):\n"
+        "[STRICT RULES FOR CHANNEL 2 (JSON)]:\n"
         "1. Channel 2 MUST contain ONLY a single JSON object.\n"
         "2. JSON MUST be inside the ```json fenced block shown above.\n"
         "3. DO NOT write any text, markdown, or comments before ```json.\n"

@@ -56,6 +56,8 @@ class CodegenTool:
                 "   - The executor will produce EXACTLY these artifacts (no more).\n"
                 "\n"
                 "3) `prog_name` (string, optional): short name of the program for UI labeling.\n"
+                "4) `skills` (list, optional): skill refs to inject into the run (e.g., SK1 or skills.public.pdf-press).\n"
+                "5) `sources_list` (list, optional): list of sources to use (same shape as llm_tools.generate_content_llm).\n"
                 "\n"
                 "OUTPUT_CONTRACT SCHEMA\n"
                 "output_contract := {\n"
@@ -127,6 +129,18 @@ class CodegenTool:
                     "Must be consistent with output_contract and must not request extra deliverables."
             )],
             prog_name: Annotated[Optional[str], "Short name of the program for UI labeling."] = None,
+            skills: Annotated[
+                Optional[List[str]],
+                "Optional list of skill refs to inject into the run (e.g., SK1 or skills.public.pdf-press).",
+            ] = None,
+            sources_list: Annotated[
+                Optional[List[Dict[str, Any]]],
+                (
+                    "List of sources: [{sid:int, title?:str, url?:str, text?:str, content?:str, "
+                    "mime?:str, base64?:str, filename?:str, ...}]. "
+                    "This is the ONLY channel for artifacts representing raw search results, citations, and multimodal inputs such as media files / attachments."
+                ),
+            ] = None,
     ) -> Annotated[dict, "Result: {ok, error?, items:[{artifact_id, type, format?, mime?, description?, sources_used?, draft?, summary?}]}."]:
         pass
 
@@ -148,6 +162,7 @@ async def run_codegen_tool(
         emit_delta_fn: Optional[Callable[..., Awaitable[None]]] = None,
         timeline_agent: Optional[str] = None,
         json_streamer: Optional[Any] = None,
+        skills: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Supervisor-side meta-tool wrapper.
@@ -174,13 +189,28 @@ async def run_codegen_tool(
 
     # 2) run codegen in docker (via CodegenRunner.run_as_a_tool)
     log.log(f"[codegen.tool] starting: reasoning={reasoning}; instruction={instruction}", level="INFO")
+    program_playbook = context.operational_digest or ""
+    normalized_skills: List[str] = []
+    if skills:
+        try:
+            from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (
+                build_skill_short_id_map,
+                import_skillset,
+            )
+            short_map = build_skill_short_id_map(consumer="solver.react.decision")
+            skills_list = skills if isinstance(skills, list) else [skills]
+            normalized_skills = import_skillset(skills_list, short_id_map=short_map)
+        except Exception:
+            normalized_skills = []
+
     run_rec = await codegen.run_as_a_tool(
-        program_playbook=context.operational_digest,
+        program_playbook=program_playbook,
         output_contract=output_contract,
         allowed_plugins=allowed_plugins,
         result_filename=result_filename,
         bundle=context.context_bundle,
         instruction=instruction,
+        skills=normalized_skills,
         outdir=outdir,
         workdir=workdir,
         solution_gen_stream=solution_gen_stream,

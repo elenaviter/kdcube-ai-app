@@ -52,7 +52,7 @@ async def generate_content_llm(
             Optional[str],
             "Optional text or data to use as a base. Do NOT embed sources here; use sources_list only."
         ] = "",
-        target_format: Annotated[str, "html|markdown|json|yaml|text|managed_json_artifact",
+        target_format: Annotated[str, "html|markdown|json|yaml|text|managed_json_artifact. Must output ONLY that format; no markdown or code fences.",
             {"enum": ["html", "markdown", "mermaid", "json", "yaml", "text", "xml", "managed_json_artifact"]}] = "markdown",        schema_json: Annotated[str,
         "Optional JSON Schema. If provided (and target_format is json|yaml), "
         "the schema is inserted into the prompt and the model MUST produce an output that validates against it."] = "",
@@ -60,6 +60,10 @@ async def generate_content_llm(
             list[dict],
             "List of sources: {sid:int, title:str, url?:str, text:str, content?: str, mime?: str, base64?: str, size_bytes?: int}. "
             "Sources must be passed ONLY here (never inside input_context)."
+        ] = None,
+        skills: Annotated[
+            Optional[List[str]],
+            "Optional skills to apply. Use SKx, namespace.skill_id, or skills.namespace.skill_id.",
         ] = None,
         attachments: Annotated[
             list[dict],
@@ -74,7 +78,7 @@ async def generate_content_llm(
         max_tokens: Annotated[int, "Per-round token cap.", {"min": 256, "max": 8000}] = 7000,
         thinking_budget: Annotated[int, "Per-round thinking token cap.", {"min": 128, "max": 4000}] = 0,
         max_rounds: Annotated[int, "Max generation/repair rounds.", {"min": 1, "max": 10}] = 4,
-        code_fences: Annotated[bool, "Allow triple-backtick fenced blocks in output."] = True,
+        # code_fences: Annotated[bool, "Allow triple-backtick fenced blocks in output."] = True,
         continuation_hint: Annotated[str, "Optional extra hint used on continuation rounds."] = "",
         strict: Annotated[bool, "Require format OK and (if provided) schema OK and citations (if requested)."] = True,
         role: str = "tool.generator.strong",
@@ -100,6 +104,8 @@ async def generate_content_llm(
       }
     """
 
+    code_fences: Annotated[bool, "Allow triple-backtick fenced blocks in output."] = True
+
     from langchain_core.messages import SystemMessage, HumanMessage
     from kdcube_ai_app.infra.accounting import _get_context
 
@@ -117,7 +123,7 @@ async def generate_content_llm(
 
     TIMEZONE = timezone or "Europe/Berlin"
     time_evidence = (
-        "AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)\n"
+        "[AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)]\n"
         f"Current UTC date: {today}\n"
         # "User timezone: Europe/Berlin\n"
         "All relative dates (today/yesterday/last year/next month) MUST be "
@@ -348,8 +354,10 @@ async def generate_content_llm(
 
         basic_sys_instruction = "\n".join([
             "You are a precise generator. Produce ONLY the requested artifact in the requested format.",
+            "If [ACTIVE SKILLS] are present, they are dominant. Follow them over any general guidance here.",
             "NEVER include meta-explanations. Do not apologize. No prefaces. No trailing notes.",
-            "If continuing, resume exactly where you left off.",
+            "You must produce content exactly of format stated in [TARGET GENERATION FORMAT]. No any deviations!"
+            # "If continuing, resume exactly where you left off.",
             "",
             "GENERAL OUTPUT RULES:",
             "- Keep the output self-contained.",
@@ -363,17 +371,17 @@ async def generate_content_llm(
         "- If you cannot find a requested numeric fact in any source or context, say so instead of guessing.",
         ])
     basic_sys_instruction += "\n" + time_evidence
-    target_format_sys_instruction = f"TARGET FORMAT: {tgt}"
+    target_format_sys_instruction = f"[TARGET GENERATION FORMAT]: {tgt}"
 
     sys_lines = []
     if tgt == "markdown":
         sys_lines += [
-            "MARKDOWN RULES:",
+            "[MARKDOWN RULES]:",
             "- Use proper headings, lists, tables, and code blocks as needed.",
         ]
     elif tgt == "mermaid":
         sys_lines += [
-            "MERMAID DIAGRAM RULES:",
+            "[MERMAID DIAGRAM RULES]:",
             "- Start with diagram type (flowchart TD / sequenceDiagram / etc.). NO code fences (```).",
             "- Node IDs: simple alphanumerics only (A, B, step1). Never use reserved words (graph, end, class).",
             "- Labels with special chars (:;,()[]{}|/#&*+-<>?!\\\"') MUST be in double quotes: A[\"Label: value\"]",
@@ -392,16 +400,16 @@ async def generate_content_llm(
         sys_lines += ["""
     You are an HTML generator. Your output MUST be valid, well-formed HTML.
     
-    ⚠️ CRITICAL FORMAT RULE: Output PURE HTML ONLY. NO markdown. NO code fences (```). NO explanations.
+    [⚠️ CRITICAL FORMAT RULE]: Output PURE HTML ONLY. NO markdown. NO code fences (```). NO explanations.
     Start IMMEDIATELY with <!DOCTYPE html> or the opening tag. End with </html> and the completion marker.
     CRITICAL RULE: NEVER produce broken HTML. An incomplete document is worthless.
     
-    TOKEN BUDGET MANAGEMENT:
+    [TOKEN BUDGET MANAGEMENT]:
     - You have a token budget for this generation (typically 4000-8000 tokens).
     - You CANNOT see when you're about to hit the limit.
     - Strategy: Be CONSERVATIVE. Stop early to guarantee closure.
     
-    SAFE GENERATION PATTERN:
+    [SAFE GENERATION PATTERN]:
     1. Calculate safe capacity:
        - If user requests N items, plan to deliver 60-70% of N
        - Reserve 15-20% of your budget for structure and closing tags
@@ -434,7 +442,7 @@ async def generate_content_llm(
        - Add the completion marker
        - DO NOT add any content after </html>
     
-    VALID HTML REQUIREMENTS:
+    [VALID HTML REQUIREMENTS]:
     - Major tags MUST close: <div>...</div>, <section>...</section>, <table>...</table>
     - Proper nesting: <div><p></p></div>
     - Self-closing tags OK: <br>, <img>, <hr>, <meta>, <input>
@@ -442,19 +450,19 @@ async def generate_content_llm(
     - Special characters escaped in text: &lt; &gt; &amp;
     - ALWAYS close: <body>, <html>, <head>, <title>, <script>, <style>
     
-    OUTPUT FORMAT:
+    [OUTPUT FORMAT]:
     - Pure HTML only (no markdown, no code fences, no explanations)
     - Start immediately with <!DOCTYPE html>
     - End with </html> followed by <<<GENERATION FINISHED>>>
     - No apologetic messages like "Due to space constraints..."
     
-    EXAMPLES OF SAFE SCALING:
+    [EXAMPLES OF SAFE SCALING]:
     - Request: "100 blog post cards" → Deliver: 60-70 complete cards
     - Request: "50 employee profiles" → Deliver: 30-35 complete profiles
     - Request: "25 dashboard widgets" → Deliver: 15-18 complete widgets
     - Request: "10 detailed sections" → Deliver: 6-7 complete sections
     
-    FAILURE MODES TO AVOID:
+    [FAILURE MODES TO AVOID]:
     ❌ <body><div><p>...</p><div>...  [TRUNCATED - no closing </body></html>]
     ❌ <html><body>...</body></html>Here's the webpage...  [TEXT AFTER </html>]
     ❌ <div class="item  [ATTRIBUTE NOT CLOSED]
@@ -478,12 +486,12 @@ async def generate_content_llm(
     
     CRITICAL RULE: NEVER produce broken XML. An incomplete document is worthless.
     
-    TOKEN BUDGET MANAGEMENT:
+    [TOKEN BUDGET MANAGEMENT]:
     - You have a token budget for this generation (typically 4000-8000 tokens).
     - You CANNOT see when you're about to hit the limit.
     - Strategy: Be CONSERVATIVE. Stop early to guarantee closure.
     
-    SAFE GENERATION PATTERN:
+    [SAFE GENERATION PATTERN]:
     1. Calculate safe capacity:
        - If user requests N items, plan to deliver 60-70% of N
        - Reserve 15-20% of your budget for structure and closing tags
@@ -509,26 +517,26 @@ async def generate_content_llm(
        - Add the completion marker
        - DO NOT add any content after the root closing tag
     
-    VALID XML REQUIREMENTS:
+    [VALID XML REQUIREMENTS]:
     - Every opening tag has a closing tag: <item>...</item>
     - Proper nesting: <outer><inner></inner></outer>
     - Attributes quoted: <item id="123">
     - No orphaned tags
     - Special characters escaped: &lt; &gt; &amp; &quot; &apos;
     
-    OUTPUT FORMAT:
+    [OUTPUT FORMAT]:
     - Pure XML only (no markdown, no code fences, no explanations)
     - Start immediately with <?xml or <root>
     - End with </root> followed by <<<GENERATION FINISHED>>>
     - No apologetic messages like "Due to space constraints..."
     
-    EXAMPLES OF SAFE SCALING:
+    [EXAMPLES OF SAFE SCALING]:
     - Request: "100 book entries" → Deliver: 60-70 complete entries
     - Request: "50 customer records" → Deliver: 30-35 complete records
     - Request: "25 configuration items" → Deliver: 15-18 complete items
     - Request: "10 detailed reports" → Deliver: 6-7 complete reports
     
-    FAILURE MODES TO AVOID:
+    [FAILURE MODES TO AVOID]:
     ❌ <items><item>...</item><item>...  [TRUNCATED - no closing </items>]
     ❌ <items><item>...</item></items>Here's what I generated...  [TEXT AFTER ROOT]
     ❌ <items><item id="5  [ATTRIBUTE NOT CLOSED]
@@ -541,29 +549,29 @@ async def generate_content_llm(
     if sources_list:
         sys_lines += [
             "",
-            "SOURCE & CONTEXT USAGE POLICY:",
+            "[SOURCE & CONTEXT USAGE POLICY]:",
             "- Always base factual and numeric claims on the most relevant parts of the provided input_context and sources.",
             "- Within long texts, prefer sections that clearly match the user’s question (e.g. headings or surrounding text mentioning the same entity, product, feature, timeframe, or metric).",
             "- Ignore clearly irrelevant or off-topic fragments, even if they appear earlier in the text.",
             "",
-            "WHEN MULTIPLE SOURCES OR NUMBERS CONFLICT:",
+            "[WHEN MULTIPLE SOURCES OR NUMBERS CONFLICT]:",
             "- If multiple sources give different numeric values (e.g. price, limit, count, metric):",
             "  - Prefer values that are more recent when date metadata is available (e.g. modified_time_iso over published_time_iso).",
             "  - Prefer values from sources with higher authority / objective_relevance when such metadata is present.",
             "  - Prefer values that are explicitly marked as current (e.g. 'current price', 'as of <date>', 'latest plan'), rather than older historical examples.",
             "- If you still cannot confidently choose a single value, mention that there is disagreement and show the key alternatives instead of silently picking one.",
             "",
-            "CURRENCY, UNITS & NUMERIC TRANSFORMATIONS:",
+            "[CURRENCY, UNITS & NUMERIC TRANSFORMATIONS]:",
             "- Do NOT silently convert currencies or units (e.g. EUR→USD, km→miles, hours→minutes).",
             "- If the question asks for a currency/unit that does NOT appear in the sources, answer using the units actually present and clearly label them (e.g. 'The sources only specify prices in EUR: 49.90 EUR').",
             "- Do NOT apply exchange rates or similar numeric transformations unless the user explicitly permits approximate conversions; even then, prefer to explain the limitation instead of computing new numbers.",
             "- Do NOT normalize or scale numbers (e.g. monthly→yearly total, per-user→per-100-users) unless that exact transformation is explicitly given in a source.",
             "",
-            "EXPIRATION & STALENESS (WHEN METADATA EXISTS):",
+            "[EXPIRATION & STALENESS (WHEN METADATA EXISTS)]:",
             "- If a source has an 'expiration' timestamp and it is in the past, treat its numeric values as stale. Use them only if there is no fresher alternative and say that they may be outdated.",
             "- When both published_time_iso and modified_time_iso are available, treat modified_time_iso as the best indicator of freshness.",
             "",
-            "METADATA-AWARE PRIORITISATION:",
+            "[METADATA-AWARE PRIORITISATION]:",
             "- When source metadata such as provider, published_time_iso, modified_time_iso, expiration, objective_relevance, query_relevance, authority is available (in the source description, context, or content):",
             "  - Prefer higher authority and objective_relevance scores when sources disagree.",
             "  - Prefer more recent modified_time_iso / published_time_iso for time-sensitive facts like prices or availability.",
@@ -573,7 +581,7 @@ async def generate_content_llm(
         allowed_sids_line = f"ALLOWED SIDS: {', '.join(str(x) for x in sorted(sids))}" if sids else "ALLOWED SIDS: (none)"
         strict_source_boundary = [
             "",
-            "STRICT SOURCE BOUNDARY:",
+            "[STRICT SOURCE BOUNDARY]:",
             "- You may ONLY cite sources whose SID is listed below.",
             "- NEVER invent or reference any SID not listed.",
             "- If a claim cannot be supported by the provided sources, either omit the claim or present it without a citation.",
@@ -585,11 +593,13 @@ async def generate_content_llm(
         if tgt in ("markdown", "text") and eff_embed == "inline":
             sys_lines += [
                 "",
-                "CITATION REQUIREMENTS (MARKDOWN/TEXT):",
+                "[CITATION REQUIREMENTS (MARKDOWN/TEXT)]:",
                 "- Insert [[S:<sid>]] tokens at the end of sentences/bullets that contain NEW or materially CHANGED factual claims.",
+                "- Keep citations balanced: if consecutive sentences or bullets rely on the same source(s), cite once at the end of the block instead of tagging every line.",
+                "- Avoid per-line citation spam; prefer one citation per coherent paragraph/section when the source set is unchanged.",
                 "- Multiple sources allowed: [[S:1,3]] for enumeration and [[S:2-4]] for inclusive range. Use only the provided sid values. Never invent.",
                 "",
-                "CODE BLOCK CITATION RULES:",
+                "[CODE BLOCK CITATION RULES]:",
                 "- NEVER place citation tokens inside code fences (```) of any kind.",
                 "- ESPECIALLY: Do NOT put citations inside Mermaid diagrams, JSON blocks, YAML blocks, or any other fenced code.",
                 "- Instead, place citations in the explanatory prose BEFORE or AFTER the code block.",
@@ -598,7 +608,7 @@ async def generate_content_llm(
         elif tgt == "html" and eff_embed == "inline":
             sys_lines += [
                 "",
-                "CITATION REQUIREMENTS (HTML):",
+                "[CITATION REQUIREMENTS (HTML)]:",
                 '- Insert <sup class="cite" data-sids="1,3">[S:1,3]</sup> immediately after the sentence/phrase introducing NEW or materially CHANGED facts.',
                 "- Use only provided sid values. Never invent.",
             ]
@@ -606,7 +616,7 @@ async def generate_content_llm(
         elif is_json_like and eff_embed == "sidecar":
             sys_lines += [
                 "",
-                "CITATION REQUIREMENTS (STRUCTURED, SIDECAR):",
+                "[CITATION REQUIREMENTS (STRUCTURED, SIDECAR)]:",
                 f'- You MUST provide a sidecar array at JSON Pointer "{citation_container_path}" with objects:',
                 '  { "path": "<JSON Pointer to the string field containing the claim>", "sids": [<sid>, ...] }',
                 "- 'path' MUST point to an existing string field in the returned document.",
@@ -626,7 +636,7 @@ async def generate_content_llm(
 
         sys_lines+= [
             (
-                "### SOURCE RELEVANCE POLICY\n"
+                "[SOURCE RELEVANCE POLICY]\n"
                 "- Only use sources that directly support the requested topic and the claims you make.\n"
                 "- If source is off-topic (different domain/subject, spammy listing, irrelevant brand/news), exclude it from reasoning and citations.\n"
                 "- Do not cite a source unless it substantively supports the sentence you attach it to.\n"
@@ -647,7 +657,7 @@ async def generate_content_llm(
     if have_sources and not require_citations:
         sys_lines += [
             "",
-            "USAGE TELEMETRY (INVISIBLE TO USER):",
+            "[USAGE TELEMETRY (INVISIBLE TO USER)]:",
             "- If sources are provided but citations are not required, you MUST record which source IDs you actually relied on.",
             "- Do this by inserting a single line `[[USAGE:<sid(s)>]]` immediately BEFORE the completion marker.",
             "- Example: [[USAGE:1,3,5]]",
@@ -656,7 +666,7 @@ async def generate_content_llm(
     if have_sources and require_citations:
         sys_lines += [
             "",
-            "USAGE TELEMETRY (INVISIBLE TO USER):",
+            "[USAGE TELEMETRY (INVISIBLE TO USER)]:",
             "- - Since sources are provided (and citations are required), you MUST also record which source IDs you actually relied on.",
             "- Do this by inserting a single line `[[USAGE:<sid(s)>]]` immediately BEFORE the completion marker.",
             "- Example: [[USAGE:1,3,5]]",
@@ -682,7 +692,7 @@ async def generate_content_llm(
     if schema_text_for_prompt:
         sys_lines += [
             "",
-            "SCHEMA CONFORMANCE (MANDATORY):",
+            "[SCHEMA CONFORMANCE (MANDATORY)]:",
             "- You MUST return output that VALIDATES against the following JSON Schema.",
             "- Do not add commentary outside the structured document.",
             "- Do not invent fields not permitted by the schema.",
@@ -726,6 +736,24 @@ async def generate_content_llm(
 
     sys_prompt = "\n".join(sys_lines)
 
+    skills_block = ""
+    if skills:
+        try:
+            from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (
+                build_skill_short_id_map,
+                import_skillset,
+                build_skills_instruction_block,
+            )
+            short_map = build_skill_short_id_map(consumer=role)
+            normalized = import_skillset(skills, short_id_map=short_map)
+            skills_block = build_skills_instruction_block(
+                normalized,
+                variant="full",
+                header="ACTIVE SKILLS",
+            )
+        except Exception as e:
+            logger.warning("Failed to load skills for llm generator: %s", e)
+
     line_with_token_budget = f"CRITICAL RULE FOR TOKENS USAGE AND DATA INTEGRITY: You have {max_tokens} tokens to accomplish this generation task. You must plan the generation content that fully fit this budget."
     if tgt in ("html", "xml", "json", "yaml"):
         line_with_token_budget += " Your output must pass the format validation."
@@ -736,6 +764,8 @@ async def generate_content_llm(
         # {"text": target_format_sys_instruction, "cache": True},
         {"text": target_format_sys_instruction + "\n" + sys_prompt, "cache": True},
     ]
+    if skills_block:
+        sys_instruction = "\n\n".join([s for s in [sys_instruction, skills_block] if s])
     if sys_instruction:
         system_msg_blocks.append({"text": sys_instruction, "cache": True})
     system_msg_blocks.append({"text": line_with_token_budget + "\n" + time_evidence_reminder, "cache": False})
@@ -1156,10 +1186,17 @@ async def generate_content_llm(
         content_clean = _strip_code_fences(content_raw, allow=code_fences)
         content_clean = _strip_bom_zwsp(content_clean)
 
+    if tgt in ("json", "yaml", "xml", "html", "mermaid") or is_managed_json:
+        content_clean = _strip_code_fences(content_clean, allow=False).strip()
+
     if tgt == "html" and content_clean.lstrip().startswith(("<?xml", "<xsl:")):
         tgt = "xml"
 
     if tgt in ("html", "xml"):
+        if tgt == "html":
+            m = re.search(r"(?is)(<!DOCTYPE\\s+html|<html\\b)", content_clean)
+            if m:
+                content_clean = content_clean[m.start():]
         content_clean = _trim_to_last_safe_tag_boundary(content_clean)
 
     # --------- Validation phase ---------

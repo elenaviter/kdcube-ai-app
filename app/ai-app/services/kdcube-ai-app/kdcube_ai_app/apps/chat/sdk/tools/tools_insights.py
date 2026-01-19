@@ -32,7 +32,6 @@ INFRA_TOOL_IDS = {
 CODEGEN_ONLY_TOOL_IDS = {
     "io_tools.save_ret",
     "ctx_tools.fetch_turn_artifacts",
-    "ctx_tools.fetch_ctx",
     "ctx_tools.merge_sources",
 }
 

@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, Callable, Awaitable, Tuple, List
 
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
 from kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends import build_summary_for_tool_output
-from kdcube_ai_app.apps.chat.sdk.util import _to_jsonable
+
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 from kdcube_ai_app.apps.chat.sdk.runtime.snapshot import build_portable_spec
 from kdcube_ai_app.apps.chat.sdk.runtime.logging_utils import errors_log_tail
@@ -501,6 +501,7 @@ async def _execute_tool_in_memory(
                                           output_contract=contract,
                                           instruction=instruction,
                                           reasoning=call_reason,
+                                          skills=params.get("skills"),
                                           outdir=outdir,
                                           workdir=workdir,
                                           solution_gen_stream=solution_gen_stream,

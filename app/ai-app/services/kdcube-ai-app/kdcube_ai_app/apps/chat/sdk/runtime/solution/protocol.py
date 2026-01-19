@@ -171,6 +171,8 @@ def _build_detailed_guidance(c_out: "UnifiedCoordinatorOut") -> str:
     decision_lines = []
     decision_lines.append(f"- next_step: {dec.next_step}")
     decision_lines.append(f"- instructions_for_downstream: {dec.instructions_for_downstream}")
+    if getattr(dec, "recommended_skills", None):
+        decision_lines.append(f"- recommended_skills: {dec.recommended_skills}")
 
     # Budget hints section
     budget_lines = []

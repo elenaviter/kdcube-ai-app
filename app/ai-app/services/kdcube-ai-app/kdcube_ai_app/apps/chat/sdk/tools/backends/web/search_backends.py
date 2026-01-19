@@ -737,6 +737,15 @@ async def web_search(
         # No snippet-based LLM reconciliation.
         # We still want content fetch + content-based filtering/segmentation.
         reconciled_rows = rows[:n]  # keep ephemeral for now
+        for row in reconciled_rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("provider") or "").lower() != "brave":
+                continue
+            if row.get("objective_relevance") is None:
+                row["objective_relevance"] = 1.0
+            if row.get("query_relevance") is None:
+                row["query_relevance"] = 1.0
     else:
         # ---- Reconcile (keeps/annotates by ephemeral sids) ----
         try:

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-import time, json, logging, re
+import time, json, logging, re, os
 import pathlib
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Tuple, Optional, Set
@@ -27,6 +27,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
 )
 
 _SUMMARY_MAX = 600
+_SHOW_ARTIFACTS_MAX_MODAL_ATTACHMENTS = int(
+    os.getenv("REACT_SHOW_ARTIFACTS_MAX_MODAL_ATTACHMENTS", "2")
+)
 
 log = logging.getLogger(__name__)
 
@@ -416,10 +419,18 @@ class ReactContext:
 
         return None
 
-    def materialize_show_artifacts(self, show_paths: List[str]) -> List[Dict[str, Any]]:
+    def materialize_show_artifacts(
+        self,
+        show_paths: List[str],
+        *,
+        max_modal_attachments: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Materialize full artifacts for the playbook from show_artifacts paths.
         """
+        if max_modal_attachments is None:
+            max_modal_attachments = _SHOW_ARTIFACTS_MAX_MODAL_ATTACHMENTS
+        max_modal_attachments = max(0, int(max_modal_attachments))
         items: List[Dict[str, Any]] = []
         selected_attachments: List[Dict[str, Any]] = []
         seen_mime: Set[str] = set()
@@ -462,17 +473,47 @@ class ReactContext:
                 )
                 if item_attachments:
                     kept_for_item: List[Dict[str, Any]] = []
+                    omitted_info: List[Dict[str, str]] = []
                     for att in item_attachments:
                         mime = (att.get("mime") or "").strip().lower()
-                        if not mime or mime in seen_mime:
+                        path = (att.get("path") or att.get("filename") or "").strip()
+                        size = att.get("size") or att.get("size_bytes")
+                        if not mime:
+                            omitted_info.append({
+                                "mime": "",
+                                "reason": "invalid_mime",
+                                "path": path,
+                                "size": str(size) if size is not None else "",
+                            })
                             continue
-                        if len(selected_attachments) >= 2:
+                        if mime in seen_mime:
+                            omitted_info.append({
+                                "mime": mime,
+                                "reason": "duplicate_mime",
+                                "path": path,
+                                "size": str(size) if size is not None else "",
+                            })
+                            continue
+                        if len(selected_attachments) >= max_modal_attachments:
+                            omitted_info.append({
+                                "mime": mime,
+                                "reason": "cap_exceeded",
+                                "path": path,
+                                "size": str(size) if size is not None else "",
+                            })
                             break
                         kept_for_item.append(att)
                         selected_attachments.append(att)
                         seen_mime.add(mime)
                     if kept_for_item:
                         item["modal_attachments"] = kept_for_item
+                    item["modal_attachments_status"] = {
+                        "total": len(item_attachments),
+                        "included": len(kept_for_item),
+                        "omitted": max(0, len(item_attachments) - len(kept_for_item)),
+                        "cap": max_modal_attachments,
+                        "omitted_mimes": omitted_info[:10],
+                    }
                 items.append(item)
                 continue
 
@@ -530,17 +571,47 @@ class ReactContext:
             item_attachments = collect_modal_attachments_from_artifact_obj(obj, outdir=self.outdir)
             if item_attachments:
                 kept_for_item: List[Dict[str, Any]] = []
+                omitted_info: List[Dict[str, str]] = []
                 for att in item_attachments:
                     mime = (att.get("mime") or "").strip().lower()
-                    if not mime or mime in seen_mime:
+                    path = (att.get("path") or att.get("filename") or "").strip()
+                    size = att.get("size") or att.get("size_bytes")
+                    if not mime:
+                        omitted_info.append({
+                            "mime": "",
+                            "reason": "invalid_mime",
+                            "path": path,
+                            "size": str(size) if size is not None else "",
+                        })
                         continue
-                    if len(selected_attachments) >= 2:
+                    if mime in seen_mime:
+                        omitted_info.append({
+                            "mime": mime,
+                            "reason": "duplicate_mime",
+                            "path": path,
+                            "size": str(size) if size is not None else "",
+                        })
+                        continue
+                    if len(selected_attachments) >= max_modal_attachments:
+                        omitted_info.append({
+                            "mime": mime,
+                            "reason": "cap_exceeded",
+                            "path": path,
+                            "size": str(size) if size is not None else "",
+                        })
                         break
                     kept_for_item.append(att)
                     selected_attachments.append(att)
                     seen_mime.add(mime)
                 if kept_for_item:
                     item["modal_attachments"] = kept_for_item
+                item["modal_attachments_status"] = {
+                    "total": len(item_attachments),
+                    "included": len(kept_for_item),
+                    "omitted": max(0, len(item_attachments) - len(kept_for_item)),
+                    "cap": max_modal_attachments,
+                    "omitted_mimes": omitted_info[:10],
+                }
             items.append(item)
 
         self.show_artifact_attachments = selected_attachments
@@ -2362,7 +2433,8 @@ class ReactContext:
         merged = dedupe_sources_by_url(self.sources_pool, combined)
         self.set_sources_pool(merged, persist=True)
         self._sync_max_sid_from_pool()
-        return self.remap_sources_to_pool_sids(combined)
+        deduped = dedupe_sources_by_url([], combined)
+        return self.remap_sources_to_pool_sids(deduped)
 
     def _collect_sources_from_fetch(self, fetch_directives: list[dict]) -> list[dict]:
         """

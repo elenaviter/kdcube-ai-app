@@ -1,0 +1,7 @@
+tools:
+  - id: llm_tools.generate_content_llm
+    role: content generation
+    why: Generates content and appends a sources section using web SIDs.
+  - id: generic_tools.write_pdf
+    role: document rendering
+    why: Renders HTML/Markdown with a sources section into a PDF when required.

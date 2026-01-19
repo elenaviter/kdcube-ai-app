@@ -1,0 +1,4 @@
+tools:
+  - id: generic_tools.fetch_url_contents
+    role: fetch
+    why: Fetches content from the generated URLs for evidence gathering.

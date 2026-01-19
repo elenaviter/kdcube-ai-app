@@ -98,6 +98,8 @@ class ReactState:
     exit_reason: Optional[str] = None
     pending_exit_reason: Optional[str] = None
     clarification_questions: Optional[List[str]] = None
+    show_skills: Optional[List[str]] = None
+    pending_tool_skills: Optional[List[str]] = None
 
     # Lasts
     last_decision: Optional[Dict[str, Any]] = None
@@ -912,6 +914,9 @@ class ReactSolver:
             self.log.log("[react.decision] exit_reason already set; skipping decision", level="WARNING")
             return state
         if state.get("pending_exit_reason") and not state.get("is_wrapup_round", False):
+            if not state.get("exit_reason"):
+                state["exit_reason"] = state.get("pending_exit_reason")
+                state["pending_exit_reason"] = None
             self.log.log("[react.decision] pending exit set; skipping decision", level="WARNING")
             return state
         # === DEBUG: Check context state ===
@@ -1039,11 +1044,13 @@ class ReactSolver:
                 bs.exploit_overdraft_used = None
                 bs.exploit_overdraft_total = None
         show_artifacts_for_journal = state.get("show_artifacts")
+        show_skills_for_journal = state.get("show_skills")
         turn_session_journal = build_turn_session_journal(
             context=context,
             output_contract=state["output_contract"],
             turn_view_class=self.turn_view_class,
             show_artifacts=show_artifacts_for_journal,
+            show_skills=show_skills_for_journal,
             is_codegen_agent=False,
             coordinator_turn_line=state.get("coordinator_turn_line"),
         )
@@ -1051,12 +1058,17 @@ class ReactSolver:
             context.show_artifact_attachments = []
         if state.get("show_artifacts"):
             state["show_artifacts"] = None
+        if state.get("show_skills"):
+            state["show_skills"] = None
         contract_for_agent = {k: v.model_dump() for k, v in (state["output_contract"] or {}).items()}
         announced_adapters = [
             a for a in state["adapters"]
             if a["id"] not in tools_insights.CODEGEN_ONLY_TOOL_IDS and not tools_insights.is_code_tool(a["id"])
         ]
         extra_adapters = [a for a in state["adapters"] if tools_insights.is_code_tool(a["id"])]
+        extra_adapters_for_decision = [
+            a for a in extra_adapters if not tools_insights.is_codegen_tool(a["id"])
+        ]
         operational_digest = build_operational_digest(
             turn_session_journal=turn_session_journal,
             session_log=state["session_log"],
@@ -1091,7 +1103,9 @@ class ReactSolver:
             decision_out = await self.react_decision_stream(
                 svc=self.svc,
                 operational_digest=operational_digest,
-                adapters=extra_adapters,
+                adapters=announced_adapters,
+                infra_adapters=extra_adapters_for_decision,
+                active_skills=show_skills_for_journal or None,
                 on_progress_delta=thinking_streamer,
                 iteration_idx=it,
                 max_iterations=state["max_iterations"],
@@ -1213,34 +1227,105 @@ class ReactSolver:
         focus_slot = agent_response.get("focus_slot") or None
 
         show_paths = agent_response.get("show_artifacts") or []
+        show_skills_raw = agent_response.get("show_skills") or []
         tool_call_id = ""
         if isinstance(agent_response.get("tool_call"), dict):
             tool_call_id = (agent_response["tool_call"].get("tool_id") or "").strip()
-        if isinstance(show_paths, list) and show_paths:
-            if action == "decision" or tool_call_id == "codegen_tools.codegen_python":
+        show_skills_norm: List[str] = []
+        if show_skills_raw:
+            try:
+                from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (
+                    build_skill_short_id_map,
+                    resolve_skill_ref,
+                )
+                short_map = build_skill_short_id_map(consumer="solver.react.decision")
+                for ref in show_skills_raw:
+                    resolved = resolve_skill_ref(str(ref or ""), short_id_map=short_map)
+                    if resolved:
+                        show_skills_norm.append(resolved)
+            except Exception:
+                pass
+
+        if show_skills_norm and action != "decision":
+            self.log.log(
+                "[react.decision] show_skills ignored unless action=decision",
+                level="WARNING",
+            )
+            show_skills_norm = []
+        if show_skills_norm:
+            target_label = "agent:react.decision" if action == "decision" else "target:unknown"
+            context.add_event(
+                kind="show_skills",
+                data={
+                    "iteration": it + 1,
+                    "action": action,
+                    "target": target_label,
+                    "skills": list(show_skills_norm),
+                },
+            )
+            state["session_log"].append({
+                "type": "show_skills",
+                "iteration": it + 1,
+                "timestamp": time.time(),
+                "details": {
+                    "action": action,
+                    "target": target_label,
+                    "skills": list(show_skills_norm),
+                },
+            })
+        if show_paths:
+            target_label = "agent:react.decision" if action == "decision" else "target:unknown"
+            context.add_event(
+                kind="show_artifacts",
+                data={
+                    "iteration": it + 1,
+                    "action": action,
+                    "target": target_label,
+                    "paths": list(show_paths),
+                },
+            )
+            state["session_log"].append({
+                "type": "show_artifacts",
+                "iteration": it + 1,
+                "timestamp": time.time(),
+                "details": {
+                    "action": action,
+                    "target": target_label,
+                    "paths": list(show_paths),
+                },
+            })
+
+        if isinstance(show_paths, list) and show_paths or show_skills_norm:
+            if action == "decision":
                 bs = getattr(context, "budget_state", None)
-                if bs is not None and bs.global_budget.remaining_context_reads() <= 0:
-                    self.log.log("[react.journal] context_reads budget exhausted; skipping show_artifacts", level="WARNING")
+                if (show_paths or show_skills_norm) and bs is not None and bs.global_budget.remaining_context_reads() <= 0:
+                    self.log.log(
+                        "[react.journal] context_reads budget exhausted; skipping show_artifacts/show_skills",
+                        level="WARNING",
+                    )
                     if action == "decision":
                         agent_response["action"] = "exit"
                         action = "exit"
                         state["pending_exit_reason"] = "context_reads_exhausted"
                     show_paths = []
+                    show_skills_norm = []
                 else:
-                    if bs is not None:
+                    if (show_paths or show_skills_norm) and bs is not None:
                         bs.note_context_read()
-                if show_paths:
+                if show_paths or show_skills_norm:
                     self.log.log(
-                        f"[react.journal] rebuilding with show_artifacts={len(show_paths)}",
+                        f"[react.journal] rebuilding with show_artifacts={len(show_paths)} show_skills={len(show_skills_norm)}",
                         level="INFO",
                     )
                     show_items = context.materialize_show_artifacts(show_paths)
                     state["show_artifacts"] = show_items or []
+                    state["show_skills"] = show_skills_norm or []
                     turn_session_journal = build_turn_session_journal(
                         context=context,
                         output_contract=state["output_contract"],
                         turn_view_class=self.turn_view_class,
                         show_artifacts=show_items or None,
+                        show_skills=show_skills_norm or None,
                         is_codegen_agent=tool_call_id == "codegen_tools.codegen_python",
                         coordinator_turn_line=state.get("coordinator_turn_line"),
                     )
@@ -1336,11 +1421,17 @@ class ReactSolver:
             agent_response["action"] = "exit"
         if nxt == "decision":
             show_paths = agent_response.get("show_artifacts") or []
-            if not (isinstance(show_paths, list) and show_paths) and not state.get("force_decision_rerun"):
-                self.log.log("[react.decision] decision rerun without show_artifacts; exiting", level="WARNING")
+            show_skills = agent_response.get("show_skills") or []
+            has_show_artifacts = isinstance(show_paths, list) and bool(show_paths)
+            has_show_skills = isinstance(show_skills, list) and bool(show_skills)
+            if not (has_show_artifacts or has_show_skills) and not state.get("force_decision_rerun"):
+                self.log.log(
+                    "[react.decision] decision rerun without show_artifacts/show_skills; exiting",
+                    level="WARNING",
+                )
                 nxt = "exit"
                 agent_response["action"] = "exit"
-                state["pending_exit_reason"] = "decision_no_show_artifacts"
+                state["pending_exit_reason"] = "decision_no_progress"
             state["force_decision_rerun"] = False
 
         # ---------- MANDATORY mapping step: ONCE per round, only here ----------
@@ -1618,6 +1709,12 @@ class ReactSolver:
         declared_kinds = [a.get("kind") for a in declared_specs]
 
         base_params = tool_call.get("params") or {}
+        pending_skills = state.get("pending_tool_skills") or []
+        if pending_skills and tool_id == "llm_tools.generate_content_llm":
+            if "skills" not in base_params:
+                base_params = dict(base_params)
+                base_params["skills"] = pending_skills
+            state["pending_tool_skills"] = None
         fetch_ctx = decision.get("fetch_context") or []
 
         final_params, content_lineage = context.bind_params_with_sources(
@@ -2270,6 +2367,12 @@ class ReactSolver:
         merged = first_item.get("output") if isinstance(first_item, dict) else None
         if not isinstance(merged, list):
             merged = []
+        if merged:
+            turn_id = context.turn_id or ""
+            if turn_id:
+                for row in merged:
+                    if isinstance(row, dict) and not row.get("turn_id"):
+                        row["turn_id"] = turn_id
 
         if not merged and collections:
             self.log.log(

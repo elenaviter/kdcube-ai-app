@@ -12,6 +12,8 @@ from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClie
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import BaseTurnView, CompressedTurn, turn_to_pair
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.context import ReactContext
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.strategy_and_budget import format_budget_for_llm
+from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import build_skills_instruction_block
+from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import skills_gallery_text
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.context.retrieval as ctx_retrieval_module
@@ -42,6 +44,7 @@ def _render_full_artifact_for_journal(item: Dict[str, Any]) -> List[str]:
     art_type = (item.get("artifact_type") or "").strip()
     ts = (item.get("timestamp") or item.get("ts_human") or item.get("time") or "").strip()
     modal_attachments = item.get("modal_attachments") or []
+    modal_status = item.get("modal_attachments_status") or {}
     art = item.get("artifact") or {}
     if not isinstance(art, dict):
         art = {"value": art}
@@ -69,7 +72,41 @@ def _render_full_artifact_for_journal(item: Dict[str, Any]) -> List[str]:
     if meta_bits:
         lines_local.append("meta: " + "; ".join(meta_bits))
 
-    if modal_attachments:
+    if modal_status:
+        total = modal_status.get("total")
+        included = modal_status.get("included")
+        cap = modal_status.get("cap")
+        omitted = modal_status.get("omitted")
+        status_line = f"modal_attachments: included {included}/{total} (cap={cap})"
+        if not included:
+            status_line = f"modal_attachments: none attached (0/{total}, cap={cap})"
+        lines_local.append(status_line)
+        if modal_attachments:
+            included_entries = []
+            for att in modal_attachments:
+                path = (att.get("path") or att.get("filename") or "").strip()
+                mime = (att.get("mime") or "").strip()
+                size = att.get("size") or att.get("size_bytes")
+                label = path or "unknown"
+                parts = []
+                if mime:
+                    parts.append(f"mime={mime}")
+                if size is not None:
+                    parts.append(f"size={size}")
+                if parts:
+                    label = f"{label} ({', '.join(parts)})"
+                included_entries.append(label)
+            if included_entries:
+                lines_local.append("modal_attachments_included: " + ", ".join(included_entries))
+        omitted_mimes = modal_status.get("omitted_mimes") or []
+        if omitted_mimes:
+            om_txt = ", ".join(
+                f"{(o.get('path') or 'unknown')} (mime={(o.get('mime') or 'unknown')}, "
+                f"size={o.get('size') or 'n/a'}, {o.get('reason') or 'omitted'})"
+                for o in omitted_mimes
+            )
+            lines_local.append(f"modal_attachments_omitted: {om_txt}")
+    elif modal_attachments:
         lines_local.append(
             "note: multimodal content attached in modal blocks; content not shown here"
         )
@@ -117,6 +154,7 @@ def build_turn_session_journal(*,
                                is_codegen_agent: bool = False, # False for decision, True for codegen
                                # fetch_context_tool_retrieval_example: Optional[str] = "ctx_tools.fetch_turn_artifacts([turn_id])",
                                show_artifacts: Optional[List[Dict[str, Any]]] = None,
+                               show_skills: Optional[List[str]] = None,
                                coordinator_turn_line: Optional[str] = None) -> str:
     """
     Unified, LLM-friendly Turn Session Journal used by the Decision node.
@@ -282,34 +320,6 @@ def build_turn_session_journal(*,
                 lines_local.append("- " + " | ".join(parts))
         return lines_local
 
-    def _format_file_paths(slots: Dict[str, Any], *, turn_id: str) -> List[str]:
-        lines_local: List[str] = []
-        for slot_name, spec in (slots or {}).items():
-            if not isinstance(spec, dict):
-                continue
-            art = spec.get("value") if isinstance(spec.get("value"), dict) else spec
-            if not isinstance(art, dict):
-                continue
-            slot_type = (art.get("type") or spec.get("type") or "").strip().lower()
-            if slot_type != "file":
-                continue
-            filename = (art.get("filename") or "").strip()
-            path = (art.get("path") or "").strip()
-            mime = (art.get("mime") or spec.get("mime") or "").strip()
-            if not filename and path:
-                filename = path.split("/")[-1]
-            if not path and filename:
-                path = filename if turn_id == "current_turn" else f"{turn_id}/files/{filename}"
-            parts = [f"slot={slot_name}"]
-            if path:
-                parts.append(f"path=\"{path}\"")
-            if filename:
-                parts.append(f"filename={filename}")
-            if mime:
-                parts.append(f"mime={mime}")
-            lines_local.append("- " + " | ".join(parts))
-        return lines_local
-
     def _slot_kind(name: Optional[str]) -> Optional[str]:
         if not name or not isinstance(output_contract, dict):
             return None
@@ -411,7 +421,7 @@ def build_turn_session_journal(*,
                 assistant_files = ((turn_log.get("assistant") or {}).get("files") or [])
                 file_lines = _format_assistant_files_lines(assistant_files, turn_id=str(turn_id), is_current=False)
                 if file_lines:
-                    lines.append("[FILES — OUT_DIR-relative paths]")
+                    lines.append("[FILES (HISTORICAL) - OUT_DIR-relative paths]")
                     lines.extend(file_lines)
                     lines.append("")
             except Exception:
@@ -631,6 +641,36 @@ def build_turn_session_journal(*,
                 ]
                 pieces = [p for p in pieces if p]
                 lines.append(f"- {ts} — decision: " + " — ".join(pieces))
+                continue
+
+            if kind == "show_skills":
+                skills = e.get("skills") or []
+                action = (e.get("action") or "").strip()
+                target = (e.get("target") or "").strip()
+                skills_s = ", ".join([str(s) for s in skills]) if isinstance(skills, list) else str(skills)
+                parts = []
+                if action:
+                    parts.append(f"action={action}")
+                if target:
+                    parts.append(f"target={target}")
+                if skills_s:
+                    parts.append(f"skills={skills_s}")
+                lines.append(f"- {ts} — show_skills: " + " — ".join(parts))
+                continue
+
+            if kind == "show_artifacts":
+                paths = e.get("paths") or []
+                action = (e.get("action") or "").strip()
+                target = (e.get("target") or "").strip()
+                paths_s = ", ".join([str(p) for p in paths]) if isinstance(paths, list) else str(paths)
+                parts = []
+                if action:
+                    parts.append(f"action={action}")
+                if target:
+                    parts.append(f"target={target}")
+                if paths_s:
+                    parts.append(f"paths={paths_s}")
+                lines.append(f"- {ts} — show_artifacts: " + " — ".join(parts))
                 continue
 
             if kind == "tool_started":
@@ -858,7 +898,7 @@ def build_turn_session_journal(*,
 
         file_lines = _format_assistant_files_lines(current_files, turn_id="current_turn", is_current=True)
         if file_lines:
-            lines.append("[FILES — OUT_DIR-relative paths]")
+            lines.append("[FILES (CURRENT) — OUT_DIR-relative paths]")
             lines.extend(file_lines)
             lines.append("")
     except Exception:
@@ -1018,6 +1058,7 @@ def build_turn_session_journal(*,
         pass
 
     lines.append("")
+
     return "\n".join(lines)
 
 def build_session_log_summary(session_log: List[Dict[str, Any]],
@@ -1216,7 +1257,33 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
                 i += 1
                 continue
 
-            elif t == "tool_execution":
+            if t == "show_skills":
+                details = (entry.get("details") or {})
+                skills = details.get("skills") or []
+                action = details.get("action") or ""
+                target = details.get("target") or ""
+                sk_txt = ", ".join(skills) if skills else "-"
+                tgt = f"action={action}" if action else "action=?"
+                if target:
+                    tgt += f"; target={target}"
+                log_summary.append(f"[{it or '?'}] show_skills — {tgt} — {sk_txt}")
+                i += 1
+                continue
+
+            if t == "show_artifacts":
+                details = (entry.get("details") or {})
+                paths = details.get("paths") or []
+                action = details.get("action") or ""
+                target = details.get("target") or ""
+                p_txt = ", ".join(paths) if paths else "-"
+                tgt = f"action={action}" if action else "action=?"
+                if target:
+                    tgt += f"; target={target}"
+                log_summary.append(f"[{it or '?'}] show_artifacts — {tgt} — {p_txt}")
+                i += 1
+                continue
+
+            if t == "tool_execution":
                 # ---  group consecutive tool_execution entries for same tool call ---
                 group: List[Dict[str, Any]] = [entry]
                 j = i + 1
@@ -1357,13 +1424,6 @@ def build_operational_digest(*,
     The journal must remain the prefix to preserve cache behavior across agents.
     """
     playbook_text = (turn_session_journal or "").strip()
-    tool_catalog = build_tool_catalog(adapters, exclude_tool_ids=exclude_tool_ids)
-    tool_block = ""
-    if tool_catalog:
-        tool_block = "\n".join([
-            "[AVAILABLE COMMON TOOLS]",
-            json.dumps(tool_catalog or [], ensure_ascii=False, indent=2),
-        ])
     log_summary = build_session_log_summary(session_log=session_log, slot_specs=slot_specs)
     log_block = "\n".join([
         "## Session Log (recent events, summary)",
@@ -1371,14 +1431,77 @@ def build_operational_digest(*,
     ])
     full_context_block = render_full_context_artifacts_for_journal(show_artifacts)
     parts = []
-    if tool_block:
-        parts.append(tool_block)
     if playbook_text:
         parts.append(playbook_text)
     parts.append(log_block)
     if full_context_block:
         parts.append(full_context_block)
     return "\n\n".join(parts)
+
+
+def build_instruction_catalog_block(
+        *,
+        consumer: str,
+        tool_catalog: Optional[List[Dict[str, Any]]] = None,
+        tool_catalog_json: Optional[str] = None,
+        active_skills: Optional[List[str]] = None,
+        include_skill_gallery: bool = True,
+) -> str:
+    tools_list: List[Dict[str, Any]] = []
+    if tool_catalog:
+        tools_list = list(tool_catalog)
+    elif tool_catalog_json:
+        try:
+            parsed = json.loads(tool_catalog_json or "[]")
+            if isinstance(parsed, list):
+                tools_list = parsed
+        except Exception:
+            tools_list = []
+
+    tool_block = ""
+    if tools_list:
+        tool_block = "\n".join([
+            "[AVAILABLE COMMON TOOLS]",
+            json.dumps(tools_list or [], ensure_ascii=False, indent=2),
+        ])
+
+    skill_block = ""
+    if include_skill_gallery:
+        skill_block = skills_gallery_text(
+            consumer=consumer,
+            tool_catalog=tools_list,
+        )
+    active_block = ""
+    if active_skills:
+        active_block = build_skills_instruction_block(active_skills, variant="full", header="ACTIVE SKILLS")
+
+    parts = []
+    if tool_block:
+        parts.append(tool_block)
+    if skill_block:
+        parts.append(skill_block)
+    if active_block:
+        parts.append(active_block)
+    return "\n\n".join(parts)
+
+
+def build_tools_block(
+        tool_catalog: Optional[List[Dict[str, Any]]],
+        *,
+        header: str,
+) -> str:
+    if not tool_catalog:
+        return ""
+    return "\n".join([
+        header,
+        json.dumps(tool_catalog or [], ensure_ascii=False, indent=2),
+    ])
+
+
+def build_active_skills_block(active_skills: Optional[List[str]]) -> str:
+    if not active_skills:
+        return ""
+    return build_skills_instruction_block(active_skills, variant="full", header="ACTIVE SKILLS")
 
 
 def _short_with_count(text: str, limit: int) -> str:
@@ -1847,7 +1970,7 @@ async def retrospective_context_view(
     Layout (freshest → oldest):
       - [OBJECTIVE MEMORY — SELECTED BUCKETS]    — compact, contextual, not chronological
       - [CURRENT TURN]                           — ts, turn id, insights (from current_turn_fp), full current_turn_log
-      - [PRIOR TURNS — COMPRESSED VIEWS]         — newest→oldest, using TurnView.to_compressed_search_view()
+      - [PRIOR TURNS (newest→oldest) - COMPRESSED VIEWS]         — newest→oldest, using TurnView.to_compressed_search_view()
       - [EARLIER TURNS — NON-RECONCILED INSIGHTS]— newest→oldest, from delta_fps (filtered & deduped)
     """
 
@@ -2062,7 +2185,7 @@ async def retrospective_context_view(
                           key=lambda item: item.get("ts") or item.get("timestamp") or "",
                           reverse=True)
 
-    text_blocks.append("[PRIOR TURNS — COMPRESSED VIEWS]")
+    text_blocks.append("[PRIOR TURNS (newest→oldest) - COMPRESSED VIEWS]")
 
     for item in items_sorted:
         tid = _turn_id_from_tags_safe(list(item.get("tags") or [])) or ""

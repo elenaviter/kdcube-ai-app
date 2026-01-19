@@ -189,6 +189,15 @@ async def run_py_in_docker(
         tg["BUNDLE_ID"] = bundle_spec.get("id") or bundle_dir
         tg["BUNDLE_DIR"] = bundle_dir
         tg["BUNDLE_ROOT_CONTAINER"] = container_bundle_root
+        skills_desc = tg.get("SKILLS_DESCRIPTOR") or {}
+        if isinstance(skills_desc, dict):
+            csr = skills_desc.get("custom_skills_root")
+            if isinstance(csr, str) and csr.startswith(host_bundle_root):
+                rel = os.path.relpath(csr, host_bundle_root)
+                skills_desc = dict(skills_desc)
+                skills_desc["custom_skills_root"] = f"{container_bundle_root}/{rel}"
+                tg["SKILLS_DESCRIPTOR"] = skills_desc
+
         runtime_globals = tg
 
     base_env["RUNTIME_GLOBALS_JSON"] = json.dumps(runtime_globals, ensure_ascii=False)

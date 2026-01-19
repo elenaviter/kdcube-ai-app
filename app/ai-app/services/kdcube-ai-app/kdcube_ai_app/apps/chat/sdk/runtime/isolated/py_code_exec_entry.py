@@ -78,6 +78,12 @@ def _load_runtime_globals() -> Dict[str, Any]:
             data = {}
     except Exception:
         data = {}
+    skills_desc = data.get("SKILLS_DESCRIPTOR")
+    if isinstance(skills_desc, dict) and skills_desc:
+        try:
+            os.environ["SKILLS_DESCRIPTOR_JSON"] = json.dumps(skills_desc, ensure_ascii=False)
+        except Exception:
+            pass
     return data
 
 
