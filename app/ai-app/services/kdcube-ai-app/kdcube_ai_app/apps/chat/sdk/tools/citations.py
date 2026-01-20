@@ -61,6 +61,43 @@ USAGE_TAG_RE = re.compile(
     re.I,
 )
 
+def redact_citations_for_log(citations: Any) -> Any:
+    if not citations:
+        return citations
+    drop_keys = {"base64", "content", "raw", "bytes", "data"}
+    def _clean_one(item: Any) -> Any:
+        if not isinstance(item, dict):
+            return item
+        cleaned = {}
+        for k, v in item.items():
+            if k in drop_keys:
+                continue
+            if k == "text" and isinstance(v, str) and len(v) > 500:
+                cleaned[k] = v[:500] + "...(truncated)"
+            else:
+                cleaned[k] = v
+        return cleaned
+    if isinstance(citations, list):
+        return [_clean_one(c) for c in citations]
+    if isinstance(citations, dict):
+        return _clean_one(citations)
+    return citations
+
+def strip_base64_from_citables_artifact(artifact: Any) -> Any:
+    if not isinstance(artifact, dict):
+        return artifact
+    if artifact.get("type") != "artifact:solver.program.citables":
+        return artifact
+    data = artifact.get("data") or {}
+    payload = data.get("payload") or {}
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return artifact
+    for item in items:
+        if isinstance(item, dict) and "base64" in item:
+            item["base64"] = None
+    return artifact
+
 USAGE_SUFFIX_PATS = [
     # "[[" at end (optionally with ZWSP/space before it)
     re.compile(r"(?:\u200b|\s)?\[\[$"),
@@ -109,16 +146,16 @@ def _split_safe_tag_prefix(chunk: str, tag_start_re: re.Pattern) -> tuple[str, i
 #     re.I | re.S
 # )
 HTML_CITE_RE = re.compile(
-    r'(?is)<sup[^>]*class=["\'][^"\']*\bcite\b[^"\']*["\'][^>]*>\s*\[S:\s*\d+(?:\s*[,–-]\s*\d+)*\]\s*</sup>'
+    r'(?is)<sup[^>]*class=["\'][^"\']*\bcite\b[^"\']*["\'][^>]*>\s*\[\[?S:\s*\d+(?:\s*[,–-]\s*\d+)*\]\]?\s*</sup>'
 )
 # Footnotes block that lists [S:n] style references inside a .footnotes container
 HTML_FOOTNOTES_RE = re.compile(
-    r'<(?:div|section)[^>]*class="[^"]*\bfootnotes\b[^"]*"[^>]*>.*?\[S:\s*\d+.*?</(?:div|section)>',
+    r'<(?:div|section)[^>]*class="[^"]*\bfootnotes\b[^"]*"[^>]*>.*?\[\[?S:\s*\d+.*?</(?:div|section)>',
     re.I | re.S
 )
 # Also allow a generic "Sources" section containing [S:n]
 HTML_SOURCES_RE = re.compile(
-    r'<h[1-6][^>]*>\s*Sources\s*</h[1-6]>.*?\[S:\s*\d+',
+    r'<h[1-6][^>]*>\s*Sources\s*</h[1-6]>.*?\[\[?S:\s*\d+',
     re.I | re.S
 )
 HTML_DATASIDS_RE = re.compile(
@@ -163,6 +200,10 @@ MD_CITE_RE    = re.compile(CITE_CORE, re.I)
 CITATION_SUFFIX_PATS = [
     # "[" at end (possible start of [[S:...]] split across chunks)
     re.compile(r"\[\s*$"),
+    # "［" full-width at end (possible start of full-width [[S:...]] split)
+    re.compile(r"［\s*$"),
+    # "[<ZWSP>" at end (ZWSP between brackets can split tokens)
+    re.compile(r"\[\u200b\s*$"),
 
     # "[[" at end
     re.compile(r"(?:\u200b|\s)?\[\[$"),
@@ -882,6 +923,7 @@ def citations_present_inline(content: str, fmt: str) -> bool:
         return bool(MD_CITE_RE.search(content))
     if fmt == "html":
         return (
+                bool(HTML_DATASIDS_RE.search(content)) or
                 bool(HTML_CITE_RE.search(content)) or
                 bool(HTML_FOOTNOTES_RE.search(content)) or
                 bool(HTML_SOURCES_RE.search(content))
@@ -985,7 +1027,7 @@ def extract_citation_sids_any(text: str) -> List[int]:
     if not isinstance(text, str) or not text:
         return []
     # If it looks like HTML with <sup class="cite"...>, use the HTML path
-    if HTML_CITE_RE.search(text):
+    if HTML_DATASIDS_RE.search(text) or HTML_CITE_RE.search(text):
         return extract_citation_sids_from_html(text)
     # Otherwise, treat as markdown/text
     return extract_citation_sids_from_text(text)
@@ -1231,7 +1273,7 @@ def replace_html_citations(
         rendered = _render_html_sup_links(ids, citation_map)
         return rendered or (tag if keep_unresolved else "")
 
-    out = HTML_CITE_RE.sub(_sub_html_sup, out)
+    out = HTML_DATASIDS_RE.sub(_sub_html_sup, out)
     return out
 
 def _to_str_for_llm(value: Any) -> str:

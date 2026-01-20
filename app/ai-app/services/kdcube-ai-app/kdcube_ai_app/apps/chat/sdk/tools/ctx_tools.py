@@ -43,6 +43,143 @@ def _max_sid(rows: List[Dict[str,Any]]) -> int:
 def _outdir() -> pathlib.Path:
     return resolve_output_dir()
 
+class SourcesUsedStore:
+    def __init__(self) -> None:
+        self.path = _outdir() / "sources_used.json"
+        self.entries: List[Dict[str, Any]] = []
+
+    def load(self) -> None:
+        if not self.path.exists():
+            return
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if isinstance(raw, list):
+            self.entries = [r for r in raw if isinstance(r, dict)]
+
+    def save(self) -> None:
+        try:
+            self.path.write_text(json.dumps(self.entries, ensure_ascii=True, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def upsert(self, records: List[Dict[str, Any]]) -> None:
+        if not records:
+            return
+        changed = False
+        touched: List[Dict[str, Any]] = []
+        deduped: Dict[Tuple[Optional[str], Optional[str]], Dict[str, Any]] = {}
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            name = (rec.get("artifact_name") or "").strip() or None
+            filename = (rec.get("filename") or "").strip() or None
+            if not (name or filename):
+                continue
+            sids_val = rec.get("sids")
+            sids = None
+            if isinstance(sids_val, list):
+                sids = sorted({int(s) for s in sids_val if isinstance(s, int)})
+            key = (name, filename)
+            if key not in deduped:
+                deduped[key] = {"artifact_name": name, "filename": filename, "sids": sids}
+            else:
+                if deduped[key].get("sids") is None and sids is not None:
+                    deduped[key]["sids"] = sids
+
+        for (name, filename), rec in deduped.items():
+            sids = rec.get("sids")
+            idx = None
+            for i, existing in enumerate(self.entries):
+                if not isinstance(existing, dict):
+                    continue
+                existing_name = existing.get("artifact_name") or None
+                existing_filename = existing.get("filename") or None
+                if (existing_name, existing_filename) == (name, filename):
+                    idx = i
+                    break
+                if name and existing_name == name:
+                    idx = i
+                    break
+                if filename and existing_filename == filename:
+                    idx = i
+                    break
+            if idx is None:
+                row = {
+                    "artifact_name": name,
+                    "filename": filename,
+                    "sids": sids if sids is not None else [],
+                }
+                self.entries.append(row)
+                touched.append(row)
+                changed = True
+                continue
+            row = self.entries[idx]
+            row_changed = False
+            if name and not row.get("artifact_name"):
+                row["artifact_name"] = name
+                row_changed = True
+            if filename and not row.get("filename"):
+                row["filename"] = filename
+                row_changed = True
+            if sids is not None:
+                if row.get("sids") != sids:
+                    row["sids"] = sids
+                    row_changed = True
+            if row_changed:
+                touched.append(row)
+                changed = True
+        if changed:
+            self.save()
+            total = len(self.entries)
+            files = 0
+            files_with_sources = 0
+            nonfiles_with_sources = 0
+            without_sources = 0
+            for entry in self.entries:
+                if not isinstance(entry, dict):
+                    continue
+                has_file = bool(entry.get("filename"))
+                has_sources = bool(entry.get("sids"))
+                if has_file:
+                    files += 1
+                    if has_sources:
+                        files_with_sources += 1
+                else:
+                    if has_sources:
+                        nonfiles_with_sources += 1
+                if not has_sources:
+                    without_sources += 1
+            log.info(
+                "sources_used upsert: touched=%s stats={total:%s files:%s files_with_sources:%s nonfiles_with_sources:%s without_sources:%s}",
+                touched,
+                total,
+                files,
+                files_with_sources,
+                nonfiles_with_sources,
+                without_sources,
+            )
+
+    def get_sids(self, *, artifact_name: Optional[str] = None, filename: Optional[str] = None) -> List[int]:
+        name = (artifact_name or "").strip()
+        fname = (filename or "").strip()
+        if not (name or fname):
+            return []
+        for entry in self.entries:
+            if not isinstance(entry, dict):
+                continue
+            e_name = (entry.get("artifact_name") or "").strip()
+            e_fname = (entry.get("filename") or "").strip()
+            if name and fname:
+                if e_name == name and e_fname == fname:
+                    return entry.get("sids") or []
+            elif name and e_name == name:
+                return entry.get("sids") or []
+            elif fname and e_fname == fname:
+                return entry.get("sids") or []
+        return []
+
 def _read_context() -> Dict[str, Any]:
     str_path = os.environ.get("CTX_PATH")
     if str_path:
@@ -951,6 +1088,7 @@ class ContextTools:
             prior = (ctx.get("prior_turns") or {})
             cur = (ctx.get("current_turn") or {})
             cur_id = (cur.get("turn_id") or "").strip()  # canonical id of current turn (may be "")
+            top_cur_id = (ctx.get("current_turn_id") or ctx.get("turn_id") or "").strip()
 
             def normalize_tid(seg0: str) -> Optional[str]:
                 s = (seg0 or "").strip()
@@ -964,6 +1102,10 @@ class ContextTools:
                         return cand
                 # canonical current id can appear; normalize it to 'current_turn'
                 if cur_id and s == cur_id:
+                    return "current_turn"
+                if top_cur_id and s == top_cur_id:
+                    return "current_turn"
+                if not cur_id and not top_cur_id and cur and not prior and s.startswith("turn_"):
                     return "current_turn"
                 return None
 

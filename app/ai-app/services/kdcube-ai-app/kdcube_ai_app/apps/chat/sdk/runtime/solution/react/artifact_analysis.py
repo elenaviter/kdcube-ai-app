@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import mimetypes
 import pathlib
 from typing import Any, Dict, Optional
@@ -14,6 +15,27 @@ from typing import Any, Dict, Optional
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.infra.service_hub.multimodality import MODALITY_DOC_MIME, MODALITY_IMAGE_MIME, \
     MODALITY_MAX_IMAGE_BYTES, MODALITY_MAX_DOC_BYTES
+
+logger = logging.getLogger(__name__)
+
+
+def format_tool_error_message(raw: str, max_chars: int = 1000) -> str:
+    msg = (raw or "").strip()
+    if not msg:
+        return ""
+    msg = msg.replace("Error logs tail:\nError logs tail:", "Error logs tail:", 1)
+    if len(msg) > max_chars:
+        msg = msg[-max_chars:]
+    return msg
+
+
+def format_tool_error_for_journal(err_msg: str) -> str:
+    if not err_msg:
+        return ""
+    if "Error logs tail:" in err_msg:
+        tail = err_msg.split("Error logs tail:", 1)[1].strip()
+        return f"LOGS: {tail}" if tail else "LOGS: (empty)"
+    return err_msg
 
 
 def _coerce_summary_text(value: Any) -> str:
@@ -150,6 +172,7 @@ def analyze_write_tool_output(
     file_path: str,
     mime: str,
     output_dir: Optional[pathlib.Path],
+    artifact_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     stats: Dict[str, Any] = {}
     if not file_path:
@@ -178,6 +201,21 @@ def analyze_write_tool_output(
         min_size = min_sizes.get(mime_check)
         if min_size and size_bytes < min_size:
             stats["write_warning"] = "file_unusually_small"
+        if mime_check == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+                visible = [ws for ws in wb.worksheets if ws.sheet_state == "visible"]
+                if not visible:
+                    stats["write_error"] = "xlsx_no_visible_sheets"
+            except Exception as exc:
+                stats["write_error"] = f"xlsx_open_failed: {exc}"
     except Exception:
         stats["write_warning"] = "file_stat_failed"
+    logger.info(
+        "[artifact_analysis] artifact=%s path=%s stats=%s",
+        artifact_id or "",
+        file_path,
+        stats,
+    )
     return stats

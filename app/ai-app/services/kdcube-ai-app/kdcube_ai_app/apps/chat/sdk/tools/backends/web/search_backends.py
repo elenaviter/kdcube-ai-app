@@ -879,6 +879,10 @@ async def web_search(
             max_content_length=-1,
             extraction_mode="custom",
             include_binary_base64=include_binary_base64,
+            widget_agent=agent_id,
+            widget_artifact_name=f"Fetch URL Contents [{agent_suffix}]",
+            widget_title=agent_label,
+            namespaced_kv_cache=namespaced_kv_cache,
         )
         new_rows = fetched_rows
         if fetched_rows and len(fetched_rows) > 1:

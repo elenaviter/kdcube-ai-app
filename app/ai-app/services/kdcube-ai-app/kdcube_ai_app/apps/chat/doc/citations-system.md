@@ -16,12 +16,12 @@ We want our agents to:
 The system is built around:
 
 1. A **canonical source object model** (`sid`, `title`, `url`, `text`, `content`, + metadata).
-2. A set of **tools** that transform or filter sources:
+2. A set of **tools** that produce or consume sources:
 
-    * `web_search`
-    * `sources_reconciler`
-    * `sources_content_filter`
-    * `generate_content_llm`
+    * `generic_tools.web_search`
+    * `generic_tools.fetch_url_contents`
+    * `llm_tools.generate_content_llm`
+    * `write_*` renderers (for parsing citations from output content)
 3. A **citation protocol** that encodes how sources are referenced in different output formats.
 
 ---
@@ -79,121 +79,27 @@ All components should converge on this shape when passing sources around:
 
 ## 3. Source Lifecycle & Tools
 
-### 3.1 `web_search`
+### 3.1 `generic_tools.web_search`
 
 `web_search` is responsible for:
 
 * Running multiple queries and interleaving results.
 * Deduplicating by URL.
 * Assigning SIDs.
-* Optionally:
+* Returning a list of canonical sources (`sid`, `title`, `url`, `text`, optionally `content`).
 
-    * Fetching full page content,
-    * Running reconciliation and content filters.
-
-Shape of search results *before* reconciliation:
-
-```jsonc
-[
-  {
-    "sid": 1,                      // ephemeral, later remapped to global
-    "title": "Page title",
-    "url": "https://example.com/path",
-    "text": "Short snippet (from search hit body)..."
-  },
-  ...
-]
-```
-
-When `reconciling=True`, `web_search`:
-
-1. Calls `sources_reconciler` with `{sid, title, text}`.
-2. Keeps only relevant sources and annotates them with:
-
-    * `objective_relevance`
-    * `query_relevance`
-3. When `fetch_content=True`, it also:
-
-    * Fetches full page content (`content`),
-    * Calls `sources_content_filter` to deduplicate and drop low-value pages.
-
-Final reconciled & filtered rows are returned as canonical sources with:
-
-* `sid`, `title`, `url`, `text`, possibly `content`,
-* `objective_relevance`, `query_relevance`, etc.
+The results are merged into the turn’s `sources_pool`.
 
 ---
 
-### 3.2 `sources_reconciler`
+### 3.2 `generic_tools.fetch_url_contents`
 
-**Purpose:** Filter search results by relevance to an objective and queries.
-
-Input to `sources_reconciler`:
-
-```python
-sources_list: [{"sid": int, "title": str, "text": str}, ...]
-objective: str
-queries: [q1, q2, ...]
-```
-
-The tool:
-
-* Uses only the **`text`** field (short snippet) for scoring.
-* Returns **only kept sources** with:
-
-```jsonc
-[
-  {
-    "sid": 1,
-    "o_relevance": 0.93,
-    "q_relevance": [
-      {"qid": "1", "score": 0.9},
-      {"qid": "2", "score": 0.8}
-    ],
-    "reasoning": "Short explanation (≤320 chars)…"
-  },
-  ...
-]
-```
-
-All irrelevant sources are **omitted** from the result.
-
-Downstream, `web_search` merges this metadata back into the canonical source objects.
+`fetch_url_contents` fetches full content for specific URLs and returns canonical sources
+with `sid`, `url`, `title`, and `content`/`text`. These rows are merged into `sources_pool`.
 
 ---
 
-### 3.3 `sources_content_filter`
-
-**Purpose:** Drop near-duplicates and low-quality content after we’ve already fetched full page bodies.
-
-Input:
-
-```python
-sources_with_content: [
-  {
-    "sid": int,
-    "content": str,           // may be truncated for prompt length
-    "published_time_iso"?: str,
-    "modified_time_iso"?: str
-  },
-  ...
-]
-```
-
-The LLM:
-
-* Evaluates **relevance**, **substance**, **uniqueness**, and **freshness**.
-* Returns a **JSON array of SIDs** to keep:
-
-```jsonc
-[3, 5, 8]
-```
-
-We then keep only those sources in the pipeline.
-
----
-
-### 3.4 `generate_content_llm`
+### 3.3 `llm_tools.generate_content_llm`
 
 `generate_content_llm` is the general LLM wrapper that:
 
@@ -238,6 +144,39 @@ digest = "\n\n---\n\n".join(parts)[:total_budget]
 
 * If `content` is present, it is preferred for the digest.
   → Full documents yield a detailed context for the LLM.
+
+`generate_content_llm` returns `sources_used` (SIDs) extracted from citations or sidecar
+citations. These SIDs are persisted into the produced artifacts and into `sources_used.json`
+by artifact name.
+
+---
+
+### 3.4 `write_*` renderers
+
+Write tools parse citations from the input content and update `sources_used.json`
+by filename. This lets file artifacts inherit accurate `sources_used` even when the
+renderer is called from generated code.
+
+---
+
+### 3.5 File & Attachment Sources
+
+Files and attachments (e.g., images) can appear as sources in the pool:
+
+* `source_type: "file"` or `"attachment"`
+* `local_path` (OUT_DIR-relative)
+* `mime`, `size_bytes`, `title`
+
+This is how multimodal inputs are represented and traced in citations.
+
+---
+
+### 3.6 Cross-turn carry & reconciliation
+
+The context browser builds a unified `sources_pool` from prior turns and reconciles SIDs
+by URL. When current work uses prior artifacts, their `sources_used` SIDs are carried
+forward and merged so citations remain stable. The React context marks `sources_pool[*].used`
+based on the aggregated `sources_used.json` records.
 * If `content` is absent, it falls back to `text`.
   → Cheaper, snippet-based reasoning.
 

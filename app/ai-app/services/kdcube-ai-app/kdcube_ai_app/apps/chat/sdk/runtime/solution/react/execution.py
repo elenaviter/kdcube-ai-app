@@ -17,7 +17,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.backends.summary_backends import build_su
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 from kdcube_ai_app.apps.chat.sdk.runtime.snapshot import build_portable_spec
-from kdcube_ai_app.apps.chat.sdk.runtime.logging_utils import errors_log_tail
+from kdcube_ai_app.apps.chat.sdk.runtime.logging_utils import errors_log_tail, last_error_block
 
 from kdcube_ai_app.apps.chat.sdk.runtime.iso_runtime import _InProcessRuntime
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.context import ReactContext
@@ -28,6 +28,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.artifact_analysis import
 )
 
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
+from kdcube_ai_app.apps.chat.sdk.tools.ctx_tools import SourcesUsedStore
 
 def _safe_label(s: str, *, maxlen: int = 96) -> str:
     """Filesystem-safe label from tool_id."""
@@ -59,6 +60,146 @@ def _extract_error_from_output(output: Any) -> Optional[Dict[str, Any]]:
 
     return None
 
+def _format_error_tail(raw_tail: str) -> str:
+    tail = (raw_tail or "").strip()
+    if not tail:
+        return ""
+    if tail.startswith("Error logs tail:"):
+        return tail
+    return f"Error logs tail:\n{tail}"
+
+_INFO_LINE_RE = re.compile(r"^\\d{4}-\\d{2}-\\d{2} .*\\bINFO\\b")
+
+def _extract_non_info_tail(text: str, max_chars: int) -> Optional[str]:
+    if not text:
+        return None
+    lines = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        if _INFO_LINE_RE.match(line):
+            continue
+        lines.append(line)
+    if not lines:
+        return None
+    payload = "\n".join(lines).strip()
+    if not payload:
+        return None
+    return payload[-max_chars:] if max_chars and max_chars > 0 else payload
+
+def _block_tail(log_path: pathlib.Path, exec_id: Optional[str], *, max_chars: int, filter_info: bool) -> Optional[str]:
+    blk = last_error_block(log_path, exec_id=exec_id)
+    if not blk:
+        return None
+    text = (blk.get("text") or "").strip()
+    if not text:
+        return None
+    if filter_info:
+        return _extract_non_info_tail(text, max_chars)
+    return text[-max_chars:] if max_chars and max_chars > 0 else text
+
+def _select_exec_error_tail(outdir: pathlib.Path, exec_id: Optional[str], max_chars: int = 4000) -> Optional[str]:
+    log_dir = outdir / "logs"
+    tail = _block_tail(log_dir / "runtime.err.log", exec_id, max_chars=max_chars, filter_info=True)
+    if tail:
+        return tail
+    return errors_log_tail(log_dir / "errors.log", exec_id=exec_id, max_chars=max_chars)
+
+def _build_sources_used_hint(
+        *,
+        context: ReactContext,
+        artifact_name: Optional[str] = None,
+        filename: Optional[str] = None,
+) -> str:
+    try:
+        store = SourcesUsedStore()
+        store.load()
+        sids = store.get_sids(artifact_name=artifact_name, filename=filename)
+    except Exception:
+        sids = []
+    if not sids:
+        return ""
+    rows = []
+    for src in (context.sources_pool or []):
+        if not isinstance(src, dict):
+            continue
+        sid = src.get("sid")
+        if isinstance(sid, int) and sid in sids:
+            title = (src.get("title") or "").strip()
+            url = (src.get("url") or src.get("local_path") or "").strip()
+            text = (src.get("text") or "").strip()
+            parts = [f"S{sid}"]
+            if title:
+                parts.append(title)
+            if url:
+                parts.append(url)
+            if text:
+                parts.append(text[:160])
+            rows.append(" - " + " | ".join(parts))
+    if not rows:
+        return ""
+    return "[Sources used]\n" + "\n".join(rows) + "\n"
+
+def _build_sources_used_hint_from_sids(
+        *,
+        context: ReactContext,
+        sids: List[int],
+) -> str:
+    if not sids:
+        return ""
+    rows = []
+    for src in (context.sources_pool or []):
+        if not isinstance(src, dict):
+            continue
+        sid = src.get("sid")
+        if isinstance(sid, int) and sid in sids:
+            title = (src.get("title") or "").strip()
+            url = (src.get("url") or src.get("local_path") or "").strip()
+            text = (src.get("text") or "").strip()
+            parts = [f"S{sid}"]
+            if title:
+                parts.append(title)
+            if url:
+                parts.append(url)
+            if text:
+                parts.append(text[:160])
+            rows.append(" - " + " | ".join(parts))
+    if not rows:
+        return ""
+    return "[Sources used]\n" + "\n".join(rows) + "\n"
+
+def _sids_from_llm_artifact_name(
+        *,
+        artifact_name: Any,
+        context: ReactContext,
+) -> List[int]:
+    try:
+        store = SourcesUsedStore()
+        store.load()
+    except Exception:
+        return []
+    names: List[str] = []
+    if isinstance(artifact_name, dict):
+        names.extend([str(k).strip() for k in artifact_name.keys() if str(k).strip()])
+    elif isinstance(artifact_name, str) and artifact_name.strip():
+        parsed = None
+        try:
+            parsed = json.loads(artifact_name)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            names.extend([str(k).strip() for k in parsed.keys() if str(k).strip()])
+        else:
+            names.append(artifact_name.strip())
+    sids: List[int] = []
+    seen: set[int] = set()
+    for name in names:
+        for sid in store.get_sids(artifact_name=name) or []:
+            if isinstance(sid, int) and sid not in seen:
+                seen.add(sid)
+                sids.append(sid)
+    return sids
+
 
 async def _build_program_run_items(
     *,
@@ -80,7 +221,7 @@ async def _build_program_run_items(
 ) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
     contract = contract or {}
     envelope_error = envelope.get("error")
-    artifacts = envelope.get("artifacts") or []
+    artifacts = envelope.get("out_artifacts_spec") or envelope.get("artifacts") or []
     items: List[Dict[str, Any]] = []
 
     run_outdir = pathlib.Path(envelope.get("outdir") or "")
@@ -158,28 +299,60 @@ async def _build_program_run_items(
             "Do NOT assess, compare, or mention other artifacts; "
             "do NOT claim missing siblings. They are summarized separately.\n"
             + (("[Sibling artifacts (context only)]\n" + "\n".join(sibling_lines) + "\n") if sibling_lines else "")
+            + _build_sources_used_hint(context=context, artifact_name=artifact_id, filename=contract_entry.get("filename"))
             + f"[In contract]\n{contract_entry}\n"
             f"[Code file]\n```python\n{codefile or ''}\n```\n[]"
         )
-        t0 = time.perf_counter()
-        summary_obj, summary_txt = await build_summary_for_tool_output(
-            tool_id=tool_id,
-            output=value,
-            summary_artifact=summary_artifact,
-            use_llm_summary=use_llm_summary,
-            llm_service=llm_service,
-            call_reason=ctx,
-            tool_inputs=params,
-            call_signature=call_signature,
-            param_bindings_for_summary=param_bindings_for_summary,
-            tool_doc_for_summary=tool_doc_for_summary,
-            bundle_id=context.bundle_id,
-            timezone=context.timezone,
-            structured=False,
-        )
-        summary_timing_ms = int((time.perf_counter() - t0) * 1000)
+        artifact_stats = None
+        if isinstance(value, dict):
+            rel_path = value.get("path") or value.get("filename") or ""
+            mime_hint = value.get("mime") or ""
+            if rel_path:
+                artifact_stats = analyze_write_tool_output(
+                    file_path=str(rel_path),
+                    mime=mime_hint,
+                    output_dir=run_outdir if run_outdir.exists() else None,
+                    artifact_id=artifact_id,
+                )
+                logger.log(
+                    f"[react.exec-inline] artifact={artifact_id} path={rel_path} stats={artifact_stats}",
+                    level="INFO",
+                )
+                ctx += f"[Artifact stats]\n{artifact_stats}\n"
 
-        item_status = "error" if envelope_error or a.get("error") else "success"
+        summary_txt = ""
+        summary_obj = None
+        summary_timing_ms = None
+        if not (artifact_stats or {}).get("write_error"):
+            t0 = time.perf_counter()
+            summary_obj, summary_txt = await build_summary_for_tool_output(
+                tool_id=tool_id,
+                output=value,
+                summary_artifact=summary_artifact,
+                use_llm_summary=use_llm_summary,
+                llm_service=llm_service,
+                call_reason=ctx,
+                tool_inputs=params,
+                call_signature=call_signature,
+                param_bindings_for_summary=param_bindings_for_summary,
+                tool_doc_for_summary=tool_doc_for_summary,
+                bundle_id=context.bundle_id,
+                timezone=context.timezone,
+                structured=False,
+            )
+            summary_timing_ms = int((time.perf_counter() - t0) * 1000)
+        else:
+            summary_txt = f"ERROR: {artifact_stats.get('write_error')}"
+
+        item_error = a.get("error") if a.get("error") else None
+        if artifact_stats and artifact_stats.get("write_error"):
+            item_error = item_error or {
+                "code": "artifact_invalid",
+                "message": artifact_stats.get("write_error"),
+                "where": "artifact_analysis",
+                "managed": True,
+            }
+        item_status = "error" if item_error or value is None else "success"
         item = {
             "artifact_id": artifact_id,
             "artifact_type": contract_entry.get("format"),
@@ -192,10 +365,12 @@ async def _build_program_run_items(
             "inputs": params,
             "call_record_rel": call_record_rel,
             "call_record_abs": call_record_abs,
-            "error": a.get("error") if a.get("error") else None,
+            "error": item_error,
             "tool_call_id": tool_call_id,
             "tool_call_item_index": i,
         }
+        if artifact_stats:
+            item["artifact_stats"] = artifact_stats
         items.append(item)
 
     from kdcube_ai_app.apps.chat.sdk.runtime.solution.contracts import SERVICE_LOG_SLOT
@@ -221,6 +396,10 @@ async def _build_program_run_items(
         }
         if errors_log_tail:
             missing_error["details"]["errors_log_tail"] = errors_log_tail
+            err_tail = _format_error_tail(errors_log_tail)
+            if err_tail:
+                base_msg = (missing_error.get("message") or "").strip()
+                missing_error["message"] = f"{base_msg}\n{err_tail}" if base_msg else err_tail
         items.append({
             "artifact_id": artifact_id,
             "artifact_type": contract_entry.get("format"),
@@ -274,68 +453,80 @@ async def _execute_tool_in_memory(
 
     if tools_insights.is_exec_tool(tool_id=tool_id):
         from kdcube_ai_app.apps.chat.sdk.tools.exec_tools import run_exec_tool, build_exec_output_contract
-        artifacts_spec = params.get("artifacts")
+        artifacts_spec = params.get("out_artifacts_spec")
         code = params.get("code") or ""
         timeout_s = params.get("timeout_s") or 600
-        contract, normalized_artifacts, err = build_exec_output_contract(artifacts_spec)
-        if err:
-            return {
-                "status": "error",
-                "output": None,
-                "summary": f"Exec tool requires valid artifacts spec: {err.get('message')}",
-                "inputs": params,
-                "call_record_rel": None,
-                "call_record_abs": None,
-                "items": [],
-                "tool_call_id": tool_call_id,
-                "error": {
-                    "code": err.get("code", "invalid_artifacts"),
-                    "message": err.get("message", "Invalid artifacts spec"),
-                    "where": "exec_execution",
-                    "managed": True,
-                },
-            }
-        if not code:
-            return {
-                "status": "error",
-                "output": None,
-                "summary": "Exec tool requires non-empty 'code' parameter",
-                "inputs": params,
-                "call_record_rel": None,
-                "call_record_abs": None,
-                "items": [],
-                "tool_call_id": tool_call_id,
-                "error": {
-                    "code": "missing_parameters",
-                    "message": "Parameter 'code' is required for exec tool",
-                    "where": "exec_execution",
-                    "managed": True,
-                },
-            }
         exec_id = _safe_exec_id(tool_execution_context.get("exec_id") or tool_call_id)
         if exec_streamer:
             try:
                 exec_streamer.set_execution_id(exec_id)
             except Exception:
-                pass
+                logger.log("[react.exec] Failed to set execution_id for exec tool widget" + traceback.format_exc(), level="WARNING")
+        base_error = {
+            "status": "error",
+            "output": None,
+            "inputs": params,
+            "call_record_rel": None,
+            "call_record_abs": None,
+            "items": [],
+            "tool_call_id": tool_call_id,
+        }
+
+        async def _emit_exec_error(summary: str, error_obj: Dict[str, Any]) -> Dict[str, Any]:
+            if exec_streamer:
+                try:
+                    await exec_streamer.emit_status(status="error", error=error_obj)
+                except Exception:
+                    logger.log("[react.exec] Failed to emit execution status", level="WARNING")
+            payload = dict(base_error)
+            payload["summary"] = summary
+            payload["error"] = error_obj
+            return payload
+
         prog_name = (params.get("prog_name") or "").strip()
         if exec_streamer and prog_name:
             try:
                 await exec_streamer.emit_program_name(prog_name)
             except Exception:
                 logger.log("[react.exec] Failed to emit program name", level="WARNING")
-        if exec_streamer:
+
+        contract, normalized_artifacts, err = build_exec_output_contract(artifacts_spec)
+        if exec_streamer and contract:
             try:
                 await exec_streamer.emit_contract(contract)
             except Exception:
                 logger.log("[react.exec] Failed to emit execution contract", level="WARNING")
+        if err:
+            error_obj = {
+                "code": err.get("code", "invalid_artifacts"),
+                "message": err.get("message", "Invalid artifacts spec"),
+                "where": "exec_execution",
+                "managed": True,
+            }
+            summary = f"Exec tool requires valid artifacts spec: {error_obj.get('message')}"
+            return await _emit_exec_error(summary, error_obj)
+        if not code:
+            error_obj = {
+                "code": "missing_parameters",
+                "message": "Parameter 'code' is required for exec tool",
+                "where": "exec_execution",
+                "managed": True,
+            }
+            summary = "Exec tool requires non-empty 'code' parameter"
+            return await _emit_exec_error(summary, error_obj)
+        # exec_id = _safe_exec_id(tool_execution_context.get("exec_id") or tool_call_id)
+        # if exec_streamer:
+        #     try:
+        #         exec_streamer.set_execution_id(exec_id)
+        #     except Exception:
+        #         logger.log("[react.exec] Failed to set execution_id for exec tool widget" + traceback.format_exc(), level="WARNING")
         exec_t0 = time.perf_counter()
         envelope = await run_exec_tool(
             tool_manager=tool_manager,
             logger=logger,
             output_contract=contract,
             code=code,
-            artifacts=normalized_artifacts or [],
+            out_artifacts_spec=normalized_artifacts or [],
             timeout_s=int(timeout_s),
             outdir=outdir,
             workdir=workdir,
@@ -351,7 +542,7 @@ async def _execute_tool_in_memory(
                 )
             except Exception:
                 logger.log("[react.exec] Failed to emit execution status", level="WARNING")
-        err_tail = errors_log_tail(outdir / "logs" / "errors.log", exec_id=exec_id)
+        err_tail = _select_exec_error_tail(outdir, exec_id)
         project_log = envelope.get("project_log")
         if isinstance(project_log, dict) and project_log:
             context.add_event(
@@ -387,8 +578,10 @@ async def _execute_tool_in_memory(
                 err_obj.setdefault("details", {})
                 if isinstance(err_obj["details"], dict):
                     err_obj["details"]["errors_log_tail"] = err_tail
+
+                err_tail_msg = _format_error_tail(err_tail)
                 base_msg = (err_obj.get("message") or err_obj.get("description") or "").strip()
-                err_obj["message"] = f"{base_msg}\n{err_tail}" if base_msg else err_tail
+                err_obj["message"] = f"{base_msg}\n{err_tail_msg}" if base_msg else err_tail_msg
             items, call_record_abs, call_record_rel = await _build_program_run_items(
                 envelope=envelope,
                 contract=contract or {},
@@ -418,7 +611,7 @@ async def _execute_tool_in_memory(
                 "error": err_obj,
             }
 
-        artifacts = envelope.get("artifacts") or []
+        artifacts = envelope.get("out_artifacts_spec") or envelope.get("artifacts") or []
         items = []
         items, call_record_abs, call_record_rel = await _build_program_run_items(
             envelope=envelope,
@@ -460,8 +653,8 @@ async def _execute_tool_in_memory(
         if codegen_streamer:
             try:
                 codegen_streamer.set_execution_id(exec_id)
-            except Exception:
-                pass
+            except Exception as ex:
+                logger.log("Failed to set execution_id for codegen tool widget" + traceback.format_exc(), level="WARNING")
             prog_name = (params.get("prog_name") or "").strip()
             if prog_name:
                 try:
@@ -524,7 +717,7 @@ async def _execute_tool_in_memory(
                 )
             except Exception:
                 logger.log("[react.codegen] Failed to emit codegen status", level="WARNING")
-        err_tail = errors_log_tail(outdir / "logs" / "errors.log", exec_id=exec_id)
+        err_tail = _select_exec_error_tail(outdir, exec_id)
         project_log = envelope.get("project_log")
         if isinstance(project_log, dict) and project_log:
             context.add_event(
@@ -555,8 +748,9 @@ async def _execute_tool_in_memory(
                 err.setdefault("details", {})
                 if isinstance(err["details"], dict):
                     err["details"]["errors_log_tail"] = err_tail
+                err_tail_msg = _format_error_tail(err_tail)
                 base_msg = (err.get("message") or err.get("description") or "").strip()
-                err["message"] = f"{base_msg}\n{err_tail}" if base_msg else err_tail
+                err["message"] = f"{base_msg}\n{err_tail_msg}" if base_msg else err_tail_msg
             items, call_record_abs, call_record_rel = await _build_program_run_items(
                 envelope=envelope,
                 contract=contract,
@@ -586,7 +780,7 @@ async def _execute_tool_in_memory(
                 "error": err,
             }
 
-        artifacts = envelope.get("artifacts") or []
+        artifacts = envelope.get("out_artifacts_spec") or envelope.get("artifacts") or []
         items = []
         items, call_record_abs, call_record_rel = await _build_program_run_items(
             envelope=envelope,
@@ -808,13 +1002,18 @@ async def _execute_tool_in_memory(
             mime_hint=mime_hint,
         )
         t0 = time.perf_counter()
+        call_reason_with_sources = call_reason + _build_sources_used_hint(
+            context=context,
+            artifact_name=artifacts_contract[0].get("name") if artifacts_contract else None,
+            filename=pathlib.Path(params.get("path") or "").name if isinstance(params.get("path"), str) else None,
+        )
         summary_obj, summary = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=output,
             summary_artifact=summary_artifact,
             use_llm_summary=use_llm_summary,
             llm_service=llm_service,
-            call_reason=call_reason,
+            call_reason=call_reason_with_sources,
             tool_inputs=params,
             call_signature=call_signature,
             param_bindings_for_summary=param_bindings_for_summary,
@@ -851,6 +1050,7 @@ async def _execute_tool_in_memory(
             file_path=file_path,
             mime=mime_hint or tools_insights.default_mime_for_write_tool(tool_id),
             output_dir=outdir,
+            artifact_id=artifacts_contract[0].get("name") if artifacts_contract else None,
         )
 
     item = {
@@ -1093,13 +1293,26 @@ async def execute_tool_in_isolation(
             mime_hint=mime_hint,
         )
         t0 = time.perf_counter()
+        call_reason_with_sources = call_reason
+        if tools_insights.is_write_tool(tool_id):
+            call_reason_with_sources += _build_sources_used_hint(
+                context=context,
+                artifact_name=artifacts_contract[0].get("name") if artifacts_contract else None,
+                filename=pathlib.Path(params.get("path") or "").name if isinstance(params.get("path"), str) else None,
+            )
+        elif tool_id == "llm_tools.generate_content_llm":
+            sids = _sids_from_llm_artifact_name(
+                artifact_name=params.get("artifact_name"),
+                context=context,
+            )
+            call_reason_with_sources += _build_sources_used_hint_from_sids(context=context, sids=sids)
         summary_obj, summary = await build_summary_for_tool_output(
             tool_id=tool_id,
             output=output,
             summary_artifact=summary_artifact,
             use_llm_summary=use_llm_summary,
             llm_service=llm_service,
-            call_reason=call_reason,
+            call_reason=call_reason_with_sources,
             tool_inputs=params,
             call_signature=call_signature,
             param_bindings_for_summary=param_bindings_for_summary,
@@ -1164,6 +1377,7 @@ async def execute_tool_in_isolation(
             file_path=file_path,
             mime=mime_hint or tools_insights.default_mime_for_write_tool(tool_id),
             output_dir=outdir,
+            artifact_id=artifacts_contract[0].get("name") if artifacts_contract else None,
         )
 
     item = {

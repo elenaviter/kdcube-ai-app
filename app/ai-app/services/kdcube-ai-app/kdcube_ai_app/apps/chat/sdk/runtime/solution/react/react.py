@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-import datetime
+
 # kdcube_ai_app/apps/chat/sdk/runtime/solution/react/react.py
 
+import datetime
 import json
 import pathlib
 import re
 import traceback
 import random
-import time
 import asyncio
 
 import time
@@ -62,6 +62,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
     unwrap_llm_content_payload,
 )
 from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any
+from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import OUTDIR_CV, WORKDIR_CV
 
 
 @dataclass
@@ -157,6 +158,8 @@ class ReactSolver:
         self.solution_gen_stream = solution_gen_stream
         self.hosting_service = hosting_service
         self._timeline_text_idx = {}
+        self._outdir_cv_token = None
+        self._workdir_cv_token = None
 
         self.codegen_runner = CodegenRunner(
             service=self.svc,
@@ -210,6 +213,11 @@ class ReactSolver:
         outdir = tmp / "out"
         workdir.mkdir(parents=True, exist_ok=True)
         outdir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._outdir_cv_token = OUTDIR_CV.set(str(outdir))
+            self._workdir_cv_token = WORKDIR_CV.set(str(workdir))
+        except Exception as e:
+            self.log.log(f"[react-subsystem] Failed to set CVs: {e}", level="ERROR")
 
         session_id = f"react-{uuid.uuid4().hex[:8]}"
         turn_id = runtime_ctx.get("turn_id") or "current_turn"
@@ -364,6 +372,19 @@ class ReactSolver:
             sd["exit_reason"] = "error"
             sd["error"] = {"where": "react", "error": "graph_error", "message": str(e), "managed": True}
             final_state = sd
+        finally:
+            if self._outdir_cv_token is not None:
+                try:
+                    OUTDIR_CV.reset(self._outdir_cv_token)
+                except Exception:
+                    pass
+                self._outdir_cv_token = None
+            if self._workdir_cv_token is not None:
+                try:
+                    WORKDIR_CV.reset(self._workdir_cv_token)
+                except Exception:
+                    pass
+                self._workdir_cv_token = None
 
         try:
             final_state["total_runtime_sec"] = float(time.time() - start_ts)
@@ -424,13 +445,14 @@ class ReactSolver:
         idx: int,
         execution_id: Optional[str] = None,
     ) -> tuple[Callable[[str], Awaitable[None]], DecisionExecCodeStreamer]:
+        artifact_suffix = execution_id or str(idx)
         streamer = DecisionExecCodeStreamer(
             emit_delta=self.comm.delta,
             agent=f"{self.MODULE_AGENT_NAME}.{phase}",
-            # marker="canvas",
-            artifact_name=f"react.{idx}.exec_code",
+            artifact_name=f"react.exec.{artifact_suffix}",
             execution_id=execution_id,
         )
+        self.log.log(f"[react] Created exec code streamer artifact_name=[react.exec.{artifact_suffix}]")
 
         async def emit_json_delta(text: str, completed: bool = False, **kwargs):
             if completed:
@@ -875,7 +897,7 @@ class ReactSolver:
                     "tool_id": tool_id,
                 })
 
-        tras = tc.get("tool_res_artifacts", None)
+        tras = tc.get("out_artifacts_spec", None)
         artifact_specs: List[Dict[str, Any]] = []
         if isinstance(tras, list):
             for a in tras:
@@ -884,13 +906,30 @@ class ReactSolver:
                 nm = (a.get("name") or "").strip()
                 if nm:
                     artifact_specs.append(a)
+        if not artifact_specs and tools_insights.is_exec_tool(tool_id):
+            alt = params.get("out_artifacts_spec") if isinstance(params, dict) else None
+            if isinstance(alt, list):
+                for a in alt:
+                    if not isinstance(a, dict):
+                        continue
+                    nm = (a.get("name") or a.get("artifact_name") or a.get("filename") or "").strip()
+                    if not nm:
+                        continue
+                    rec = {"name": nm, "kind": "file"}
+                    if a.get("filename"):
+                        rec["filename"] = a.get("filename")
+                    if a.get("mime"):
+                        rec["mime"] = a.get("mime")
+                    if a.get("description"):
+                        rec["description"] = a.get("description")
+                    artifact_specs.append(rec)
         if not artifact_specs:
             is_codegen = tools_insights.is_codegen_tool(tool_id)
             has_contract = isinstance(params.get("output_contract"), (dict, str))
             if not (is_codegen and has_contract):
                 violations.append({
-                    "code": "missing_tool_res_artifacts",
-                    "message": "call_tool requires non-empty tool_res_artifacts[] with dicts having non-empty name",
+                    "code": "missing_out_artifacts_spec",
+                    "message": "call_tool requires non-empty out_artifacts_spec[] with dicts having non-empty name",
                     "tool_id": tool_id,
                 })
 
@@ -914,11 +953,46 @@ class ReactSolver:
             self.log.log("[react.decision] exit_reason already set; skipping decision", level="WARNING")
             return state
         if state.get("pending_exit_reason") and not state.get("is_wrapup_round", False):
-            if not state.get("exit_reason"):
-                state["exit_reason"] = state.get("pending_exit_reason")
-                state["pending_exit_reason"] = None
-            self.log.log("[react.decision] pending exit set; skipping decision", level="WARNING")
-            return state
+            # If we can still map pending slots, force a wrapup round instead of skipping.
+            try:
+                declared = list((state.get("output_contract") or {}).keys())
+                filled = list((getattr(context, "current_slots", {}) or {}).keys()) if context else []
+                pending = [s for s in declared if s not in set(filled)]
+                artifacts_map = (getattr(context, "artifacts", {}) or {}) if context else {}
+                mapped_artifacts = set()
+                if context and getattr(context, "current_slots", None):
+                    for slot in (context.current_slots or {}).values():
+                        if isinstance(slot, dict):
+                            aid = (slot.get("mapped_artifact_id") or "").strip()
+                            if aid:
+                                mapped_artifacts.add(aid)
+                mappable_artifacts = [
+                    aid for aid, art in artifacts_map.items()
+                    if not isinstance(art, dict)
+                    or (
+                        art.get("artifact_kind") != "search"
+                        and not art.get("error")
+                        and art.get("value") is not None
+                    )
+                ]
+                has_unmapped = any(aid not in mapped_artifacts for aid in mappable_artifacts)
+                if pending and has_unmapped and not state.get("wrapup_round_used", False):
+                    state["wrapup_round_used"] = True
+                    state["is_wrapup_round"] = True
+                    state["exit_reason"] = None
+                    state["pending_exit_reason"] = None
+                else:
+                    if not state.get("exit_reason"):
+                        state["exit_reason"] = state.get("pending_exit_reason")
+                        state["pending_exit_reason"] = None
+                    self.log.log("[react.decision] pending exit set; skipping decision", level="WARNING")
+                    return state
+            except Exception:
+                if not state.get("exit_reason"):
+                    state["exit_reason"] = state.get("pending_exit_reason")
+                    state["pending_exit_reason"] = None
+                self.log.log("[react.decision] pending exit set; skipping decision", level="WARNING")
+                return state
         # === DEBUG: Check context state ===
         self.log.log(
             f"[react.decision.{it}] Context check: "
@@ -1049,10 +1123,9 @@ class ReactSolver:
             context=context,
             output_contract=state["output_contract"],
             turn_view_class=self.turn_view_class,
-            show_artifacts=show_artifacts_for_journal,
-            show_skills=show_skills_for_journal,
             is_codegen_agent=False,
             coordinator_turn_line=state.get("coordinator_turn_line"),
+            model_label=state.get("next_decision_model") or "strong",
         )
         if not state.get("show_artifacts"):
             context.show_artifact_attachments = []
@@ -1088,7 +1161,8 @@ class ReactSolver:
         ):
             is_wrapup = state.get("is_wrapup_round", False)
             thinking_streamer = self._mk_thinking_streamer(f"decision ({it})")
-            exec_id = f"exec_{uuid.uuid4().hex[:12]}"
+            pending_tool_call_id = uuid.uuid4().hex[:12]
+            exec_id = f"exec_{pending_tool_call_id}"
             exec_streamer_idx = self._next_tool_streamer_idx(
                 pathlib.Path(state["outdir"]),
                 "exec_tools.execute_code_python",
@@ -1130,6 +1204,7 @@ class ReactSolver:
         tool_call = agent_response.get("tool_call") if isinstance(agent_response, dict) else None
         state["exec_code_streamer"] = exec_streamer_widget
         state["pending_exec_id"] = exec_id
+        state["pending_tool_call_id"] = pending_tool_call_id
         tool_id = tool_call.get("tool_id") if isinstance(tool_call, dict) else ""
         if tools_insights.is_codegen_tool(tool_id):
             if not state.get("pending_codegen_exec_id"):
@@ -1167,7 +1242,7 @@ class ReactSolver:
                 )
         focus_slot = agent_response.get("focus_slot") or ""
         action = agent_response.get("action") or "complete"
-        next_decision_step = agent_response.get("next_decision_step") or ""
+        decision_notes = agent_response.get("decision_notes") or ""
         completion_summary = (agent_response.get("completion_summary") or "").strip()
         raw_strategy = agent_response.get("strategy")
         allowed_strategies = {"explore", "exploit", "render", "exit"}
@@ -1205,7 +1280,7 @@ class ReactSolver:
         if not agent_response.get("action"):
             agent_response["action"] = action
         self.scratchpad.tlog.solver(
-            f"[react.decision] action={action} next_decision_step={next_decision_step} "
+            f"[react.decision] action={action} decision_notes={decision_notes} "
             f"reason={agent_response.get('reasoning','')[:120]} focus_slot={focus_slot}"
         )
         await emit_event(
@@ -1246,20 +1321,12 @@ class ReactSolver:
             except Exception:
                 pass
 
-        if show_skills_norm and action != "decision":
-            self.log.log(
-                "[react.decision] show_skills ignored unless action=decision",
-                level="WARNING",
-            )
-            show_skills_norm = []
         if show_skills_norm:
-            target_label = "agent:react.decision" if action == "decision" else "target:unknown"
             context.add_event(
                 kind="show_skills",
                 data={
                     "iteration": it + 1,
                     "action": action,
-                    "target": target_label,
                     "skills": list(show_skills_norm),
                 },
             )
@@ -1269,18 +1336,15 @@ class ReactSolver:
                 "timestamp": time.time(),
                 "details": {
                     "action": action,
-                    "target": target_label,
                     "skills": list(show_skills_norm),
                 },
             })
         if show_paths:
-            target_label = "agent:react.decision" if action == "decision" else "target:unknown"
             context.add_event(
                 kind="show_artifacts",
                 data={
                     "iteration": it + 1,
                     "action": action,
-                    "target": target_label,
                     "paths": list(show_paths),
                 },
             )
@@ -1290,53 +1354,49 @@ class ReactSolver:
                 "timestamp": time.time(),
                 "details": {
                     "action": action,
-                    "target": target_label,
                     "paths": list(show_paths),
                 },
             })
 
         if isinstance(show_paths, list) and show_paths or show_skills_norm:
-            if action == "decision":
-                bs = getattr(context, "budget_state", None)
-                if (show_paths or show_skills_norm) and bs is not None and bs.global_budget.remaining_context_reads() <= 0:
-                    self.log.log(
-                        "[react.journal] context_reads budget exhausted; skipping show_artifacts/show_skills",
-                        level="WARNING",
-                    )
-                    if action == "decision":
-                        agent_response["action"] = "exit"
-                        action = "exit"
-                        state["pending_exit_reason"] = "context_reads_exhausted"
-                    show_paths = []
-                    show_skills_norm = []
-                else:
-                    if (show_paths or show_skills_norm) and bs is not None:
-                        bs.note_context_read()
-                if show_paths or show_skills_norm:
-                    self.log.log(
-                        f"[react.journal] rebuilding with show_artifacts={len(show_paths)} show_skills={len(show_skills_norm)}",
-                        level="INFO",
-                    )
-                    show_items = context.materialize_show_artifacts(show_paths)
-                    state["show_artifacts"] = show_items or []
-                    state["show_skills"] = show_skills_norm or []
-                    turn_session_journal = build_turn_session_journal(
-                        context=context,
-                        output_contract=state["output_contract"],
-                        turn_view_class=self.turn_view_class,
-                        show_artifacts=show_items or None,
-                        show_skills=show_skills_norm or None,
-                        is_codegen_agent=tool_call_id == "codegen_tools.codegen_python",
-                        coordinator_turn_line=state.get("coordinator_turn_line"),
-                    )
-                    operational_digest = build_operational_digest(
-                        turn_session_journal=turn_session_journal,
-                        session_log=state["session_log"],
-                        slot_specs=contract_for_agent,
-                        adapters=announced_adapters,
-                        show_artifacts=show_items or None,
-                    )
-                    context.operational_digest = operational_digest
+            bs = getattr(context, "budget_state", None)
+            if (show_paths or show_skills_norm) and bs is not None and bs.global_budget.remaining_context_reads() <= 0:
+                self.log.log(
+                    "[react.journal] context_reads budget exhausted; skipping show_artifacts/show_skills",
+                    level="WARNING",
+                )
+                if action == "decision":
+                    agent_response["action"] = "exit"
+                    action = "exit"
+                    state["pending_exit_reason"] = "context_reads_exhausted"
+                show_paths = []
+                show_skills_norm = []
+            else:
+                if (show_paths or show_skills_norm) and bs is not None:
+                    bs.note_context_read()
+            if show_paths or show_skills_norm:
+                self.log.log(
+                    f"[react.journal] rebuilding with show_artifacts={len(show_paths)} show_skills={len(show_skills_norm)}",
+                    level="INFO",
+                )
+                show_items = context.materialize_show_artifacts(show_paths)
+                state["show_artifacts"] = show_items or []
+                state["show_skills"] = show_skills_norm or []
+                turn_session_journal = build_turn_session_journal(
+                    context=context,
+                    output_contract=state["output_contract"],
+                    turn_view_class=self.turn_view_class,
+                    is_codegen_agent=tool_call_id == "codegen_tools.codegen_python",
+                    coordinator_turn_line=state.get("coordinator_turn_line"),
+                )
+                operational_digest = build_operational_digest(
+                    turn_session_journal=turn_session_journal,
+                    session_log=state["session_log"],
+                    slot_specs=contract_for_agent,
+                    adapters=announced_adapters,
+                    show_artifacts=show_items or None,
+                )
+                context.operational_digest = operational_digest
 
         # Update current stage if focus_slot is a known contract slot
         bs = getattr(context, "budget_state", None)
@@ -1350,7 +1410,7 @@ class ReactSolver:
 
         # Filter out invalid / unsafe map_slots (no future-artifact mapping).
         requested_maps = [m for m in (agent_response.get("map_slots") or []) if isinstance(m, dict)]
-        tras = tool_call.get("tool_res_artifacts") if isinstance(tool_call, dict) else None
+        tras = tool_call.get("out_artifacts_spec") if isinstance(tool_call, dict) else None
         planned_names: List[str] = []
         if isinstance(tras, list):
             for a in tras:
@@ -1387,7 +1447,7 @@ class ReactSolver:
         context.add_event(kind="decision", data={
             "iteration": it + 1,
             "action": action,
-            "next_decision_step": agent_response.get("next_decision_step"),
+            "decision_notes": agent_response.get("decision_notes"),
             "reasoning": agent_response.get("reasoning"),
             "tool_call": agent_response.get("tool_call") or {},
             "map_slots": filtered_maps,
@@ -1632,7 +1692,7 @@ class ReactSolver:
         tool_call = decision.get("tool_call") or {}
         focus_slot = decision.get("focus_slot") or "Unknown"
         tool_id = (tool_call.get("tool_id") or "").strip()
-        tool_call_id = uuid.uuid4().hex[:12]
+        tool_call_id = state.pop("pending_tool_call_id", None) or uuid.uuid4().hex[:12]
 
         def _derive_codegen_specs(params: Dict[str, Any]) -> List[Dict[str, Any]]:
             oc = params.get("output_contract")
@@ -1669,17 +1729,34 @@ class ReactSolver:
             self._finalize_round_timing(state, end_reason="invalid_tool_call")
             return state
 
-        tras = tool_call.get("tool_res_artifacts") or []
+        tras = tool_call.get("out_artifacts_spec") or []
         declared_specs = [a for a in (tras or []) if isinstance(a, dict) and (a.get("name") or "").strip()]
         if not declared_specs and tool_id == "codegen_tools.codegen_python":
             declared_specs = _derive_codegen_specs(tool_call.get("params") or {})
+        if not declared_specs and tools_insights.is_exec_tool(tool_id):
+            alt = (tool_call.get("params") or {}).get("out_artifacts_spec")
+            if isinstance(alt, list):
+                for a in alt:
+                    if not isinstance(a, dict):
+                        continue
+                    nm = (a.get("name") or a.get("artifact_name") or a.get("filename") or "").strip()
+                    if not nm:
+                        continue
+                    rec = {"name": nm, "kind": "file"}
+                    if a.get("filename"):
+                        rec["filename"] = a.get("filename")
+                    if a.get("mime"):
+                        rec["mime"] = a.get("mime")
+                    if a.get("description"):
+                        rec["description"] = a.get("description")
+                    declared_specs.append(rec)
 
         if not declared_specs:
             # Defensive: should have been blocked in protocol_verify.
             context.add_event(kind="tool_call_invalid", data={
                 "iteration": int(state.get("iteration") or 0),
                 "tool_id": tool_id,
-                "violations": [{"code": "missing_tool_res_artifacts", "message": "tool_execution reached without artifacts spec"}],
+                "violations": [{"code": "missing_out_artifacts_spec", "message": "tool_execution reached without artifacts todo spec"}],
                 "action": "return_to_decision",
             })
             self._finalize_round_timing(state, end_reason="invalid_tool_call")
@@ -1699,7 +1776,7 @@ class ReactSolver:
                 extra = [n for n in declared_names_now if n not in contract_names]
                 if missing or extra:
                     self.log.log(
-                        f"[react.codegen] tool_res_artifacts mismatch: "
+                        f"[react.codegen] out_artifacts_spec mismatch: "
                         f"missing={missing} extra={extra}",
                         level="WARNING",
                     )
@@ -1779,7 +1856,9 @@ class ReactSolver:
         # that relayed these results to the common tool call
         t0 = time.perf_counter()
         exec_streamer = state.get("exec_code_streamer") if tools_insights.is_exec_tool(tool_id) else None
-        exec_id = state.get("pending_exec_id") if tools_insights.is_exec_tool(tool_id) else None
+        exec_id = state.pop("pending_exec_id", None) if tools_insights.is_exec_tool(tool_id) else None
+        if tools_insights.is_exec_tool(tool_id) and not exec_id:
+            exec_id = f"exec_{tool_call_id}"
         codegen_streamer = state.get("codegen_streamer") if tools_insights.is_codegen_tool(tool_id) else None
         codegen_exec_id = state.get("pending_codegen_exec_id") if tools_insights.is_codegen_tool(tool_id) else None
         if tools_insights.is_codegen_tool(tool_id):
@@ -1799,6 +1878,60 @@ class ReactSolver:
                     execution_id=codegen_exec_id,
                 )
                 state["codegen_streamer"] = codegen_streamer
+        try:
+            from kdcube_ai_app.apps.chat.sdk.tools.ctx_tools import SourcesUsedStore
+
+            records: List[Dict[str, Any]] = []
+            declared_name_set = {n for n in declared_names if n}
+            for name in declared_name_set:
+                records.append({"artifact_name": name})
+
+            if tools_insights.is_write_tool(tool_id):
+                raw_path = final_params.get("path")
+                filename = pathlib.Path(raw_path).name if isinstance(raw_path, str) and raw_path.strip() else ""
+                if filename:
+                    if declared_name_set:
+                        for name in declared_name_set:
+                            records.append({"artifact_name": name, "filename": filename})
+                    else:
+                        records.append({"filename": filename})
+
+            if tools_insights.is_exec_tool(tool_id):
+                for art in final_params.get("out_artifacts_spec") or []:
+                    if not isinstance(art, dict):
+                        continue
+                    name = (art.get("name") or "").strip()
+                    filename = (art.get("filename") or "").strip()
+                    if name or filename:
+                        records.append({"artifact_name": name or None, "filename": filename or None})
+
+            if tool_id == "llm_tools.generate_content_llm":
+                an = final_params.get("artifact_name")
+                if isinstance(an, dict):
+                    for key in an.keys():
+                        key_str = str(key).strip()
+                        if key_str:
+                            records.append({"artifact_name": key_str})
+                elif isinstance(an, str) and an.strip():
+                    parsed = None
+                    try:
+                        parsed = json.loads(an)
+                    except Exception:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        for key in parsed.keys():
+                            key_str = str(key).strip()
+                            if key_str:
+                                records.append({"artifact_name": key_str})
+                    else:
+                        records.append({"artifact_name": an.strip()})
+
+            if records:
+                store = SourcesUsedStore()
+                store.load()
+                store.upsert(records)
+        except Exception:
+            pass
         tool_response = await execute_tool(
             tool_execution_context={
                 **tool_call,
@@ -1837,7 +1970,14 @@ class ReactSolver:
         artifact = None
         tool_exec_error = None
 
-        actual_artifact_ids = [tr.get("artifact_id") for tr in items if tr.get("artifact_id")]
+        actual_artifact_ids = [
+            tr.get("artifact_id")
+            for tr in items
+            if tr.get("artifact_id")
+            and tr.get("status") == "success"
+            and tr.get("output") is not None
+            and not tr.get("error")
+        ]
         if tool_call_id and tool_call_id in context.tool_call_index:
             context.tool_call_index[tool_call_id]["produced_artifact_ids"] = actual_artifact_ids or []
 
@@ -2247,7 +2387,7 @@ class ReactSolver:
                 log_entry["error"] = tool_exec_error
                 details = tool_exec_error.get("details") if isinstance(tool_exec_error, dict) else None
                 if isinstance(details, dict):
-                    tail = details.get("stderr_tail")
+                    tail = details.get("stderr_tail") or details.get("errors_log_tail")
                     if isinstance(tail, str) and tail.strip():
                         log_entry["stderr_tail"] = tail[-1000:]
             if call_error:
@@ -2278,12 +2418,12 @@ class ReactSolver:
         if tool_exec_error:
             finish_data["error"] = {
                 "code": tool_exec_error.get("code"),
-                "message": tool_exec_error.get("message")[:200],
+                "message": tool_exec_error.get("message"),
             }
         elif isinstance(call_error, dict):
             finish_data["error"] = {
                 "code": call_error.get("code") or call_error.get("error") or "tool_failed",
-                "message": (call_error.get("message") or call_error.get("description") or "")[:200],
+                "message": (call_error.get("message") or call_error.get("description") or ""),
             }
         context.add_event(kind="tool_finished", data=finish_data)
 
@@ -2547,6 +2687,28 @@ class ReactSolver:
             for s in sources_pool
             if isinstance(s.get("sid"), (int, float))
         }
+        try:
+            from kdcube_ai_app.apps.chat.sdk.tools.ctx_tools import SourcesUsedStore
+
+            store = SourcesUsedStore()
+            store.load()
+            used_sids = set()
+            for entry in store.entries:
+                if not isinstance(entry, dict):
+                    continue
+                for sid in entry.get("sids") or []:
+                    if isinstance(sid, int):
+                        used_sids.add(sid)
+            for row in sources_pool:
+                if not isinstance(row, dict):
+                    continue
+                sid = row.get("sid")
+                if isinstance(sid, (int, float)):
+                    row["used"] = int(sid) in used_sids
+            context._sources_pool = sources_pool
+            context.persist()
+        except Exception:
+            pass
 
         # -------- 4) Normalize slots with canonical SIDs, then merge with promoted tool artifacts --------
         normalized_slots = normalize_contract_deliverables(out_dyn, canonical_by_sid=canonical_by_sid)

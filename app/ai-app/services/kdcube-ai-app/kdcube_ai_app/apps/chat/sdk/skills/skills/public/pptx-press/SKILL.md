@@ -290,7 +290,7 @@ th { background-color: var(--primary); color: white; }
 ```html
 <p>
   Global EV sales grew ~35% YoY in 2024
-  <sup class="cite" data-sids="1,3">[S:1,3]</sup>.
+  <sup class="cite" data-sids="1,3">[[S:1,3]]</sup>.
 </p>
 ```
 
@@ -401,9 +401,9 @@ auto-generated with:
   <h2>Electric Vehicle Adoption</h2>
   <p>
     Global EV sales reached 14M units in 2024, representing ~18% of total 
-    auto sales <sup class="cite" data-sids="1">[S:1]</sup>. Growth is 
+    auto sales <sup class="cite" data-sids="1">[[S:1]]</sup>. Growth is 
     accelerated by policy incentives and falling battery costs 
-    <sup class="cite" data-sids="2,3">[S:2,3]</sup>.
+    <sup class="cite" data-sids="2,3">[[S:2,3]]</sup>.
   </p>
 </section>
 ```

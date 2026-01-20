@@ -10,6 +10,7 @@ from typing import Callable
 from fastapi import FastAPI
 
 from .control_plane import router as control_plane_router
+from .conversations_browser import router as conversations_browser_router
 
 
 def mount_control_plane_router(app: FastAPI):
@@ -23,10 +24,16 @@ def mount_control_plane_router(app: FastAPI):
 
     # Mount content rebuild router
     control_plane_router.state = app.state
+    conversations_browser_router.state = app.state
     app.include_router(
         control_plane_router,
         prefix="/api/admin/control-plane",
         tags=["CP admin"],
+    )
+    app.include_router(
+        conversations_browser_router,
+        prefix="/api/admin/control-plane/conversations",
+        tags=["CP admin conversations"],
     )
     return app
 

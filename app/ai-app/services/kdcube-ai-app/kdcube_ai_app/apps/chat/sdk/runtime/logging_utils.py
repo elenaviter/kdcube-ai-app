@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Optional, Dict, List
 
-_HEADER_RE = re.compile(r"^===== EXECUTION (?P<id>\\S+) START (?P<ts>.+) =====$")
+_HEADER_RE = re.compile(r"^===== EXECUTION (?P<id>\S+) START (?P<ts>.+?) =====$")
 
 
 def _read_blocks(text: str) -> List[Dict[str, str]]:

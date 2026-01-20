@@ -14,7 +14,8 @@ from kdcube_ai_app.apps.chat.sdk.streaming.artifacts_channeled_streaming import 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import split_safe_citation_prefix, replace_citation_tokens_streaming, \
     extract_sids, build_citation_map_from_sources, citations_present_inline, adapt_source_for_llm, \
     find_unmapped_citation_sids, USAGE_TAG_RE, _split_safe_usage_prefix, _expand_ids, \
-    strip_only_suspicious_citation_like_tokens, split_safe_stream_prefix, _normalize_citation_chars
+    strip_only_suspicious_citation_like_tokens, split_safe_stream_prefix, _normalize_citation_chars, \
+    replace_html_citations
 from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove_end_marker_everywhere, \
     _split_safe_marker_prefix, _remove_marker, _unwrap_fenced_blocks_concat, _strip_bom_zwsp, _parse_json, \
     _extract_json_object, _strip_code_fences, _format_ok, _validate_json_schema, _parse_yaml, _validate_sidecar, \
@@ -22,6 +23,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove
 from kdcube_ai_app.apps.chat.sdk.util import _today_str, _now_up_to_minutes
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import create_cached_human_message, create_cached_system_message
+from kdcube_ai_app.apps.custom_apps.codegen.models.shared_instructions import CITATION_TOKENS
 from kdcube_ai_app.infra.service_hub.multimodality import (
     MODALITY_IMAGE_MIME,
     MODALITY_DOC_MIME,
@@ -372,7 +374,7 @@ async def generate_content_llm(
         "- If the user asks for a different unit or currency than what is available, answer in the original unit/currency and clearly name it, and/or explicitly state that you are not converting it.",
         "- If you cannot find a requested numeric fact in any source or context, say so instead of guessing.",
         ])
-    basic_sys_instruction += "\n" + time_evidence
+    basic_sys_instruction += "\n" + CITATION_TOKENS + "\n" + time_evidence
     target_format_sys_instruction = f"[TARGET GENERATION FORMAT]: {tgt}"
 
     sys_lines = []
@@ -611,7 +613,7 @@ async def generate_content_llm(
             sys_lines += [
                 "",
                 "[CITATION REQUIREMENTS (HTML)]:",
-                '- Insert <sup class="cite" data-sids="1,3">[S:1,3]</sup> immediately after the sentence/phrase introducing NEW or materially CHANGED facts.',
+                '- Insert <sup class="cite" data-sids="1,3">[[S:1,3]]</sup> immediately after the sentence/phrase introducing NEW or materially CHANGED facts.',
                 "- Use only provided sid values. Never invent.",
             ]
             sys_lines += strict_source_boundary
@@ -844,7 +846,10 @@ async def generate_content_llm(
             if not text:
                 return
             clean = _scrub_emit_once(text)
-            out = replace_citation_tokens_streaming(clean, citation_map) if replace_in_stream else clean
+            if replace_in_stream and tgt == "html":
+                out = replace_html_citations(clean, citation_map, keep_unresolved=True, first_only=False)
+            else:
+                out = replace_citation_tokens_streaming(clean, citation_map) if replace_in_stream else clean
             # 🔸 Do NOT stream raw JSON for composite artifacts to canvas
             idx = start_index + emitted_local
             if is_managed_json and composite_cfg and channel_to_stream == "canvas":
@@ -1096,7 +1101,6 @@ async def generate_content_llm(
         human_msg = create_cached_human_message(user_blocks, cache_last=False)
 
         author_for_chunks = agent_name or "Content Generator LLM"
-
         chunk, emitted_inc, svc_error = await _stream_round(
             messages=[system_msg, human_msg],
             role_name=role,
@@ -1310,7 +1314,7 @@ async def generate_content_llm(
             if tgt in ("markdown", "text"):
                 repair_instruction.append("Add inline tokens [[S:n]] at claim boundaries. Use only provided sids.")
             elif tgt == "html":
-                repair_instruction.append('Add <sup class="cite" data-sids="...">[S:...]</sup> after each claim.')
+                repair_instruction.append('Add <sup class="cite" data-sids="...">[[S:...]]</sup> after each claim.')
             elif is_json_like:
                 repair_instruction.append(
                     f'Populate sidecar at {citation_container_path} with items {{ "path": "<ptr>", "sids": [..] }} (use only provided sids).'
@@ -1524,6 +1528,24 @@ async def generate_content_llm(
             if sid in by_sid:
                 sources_used.append(int(sid))
 
+    try:
+        from kdcube_ai_app.apps.chat.sdk.tools.ctx_tools import SourcesUsedStore
+        records: List[Dict[str, Any]] = []
+        if composite_cfg:
+            for key in composite_cfg.keys():
+                key_str = str(key).strip()
+                if key_str:
+                    records.append({"artifact_name": key_str, "sids": sources_used})
+        else:
+            if isinstance(artifact_name, str) and artifact_name.strip():
+                records.append({"artifact_name": artifact_name.strip(), "sids": sources_used})
+        if records:
+            store = SourcesUsedStore()
+            store.load()
+            store.upsert(records)
+    except Exception:
+        pass
+
     logger.info(
         "generate_content_llm completed: agent=%s artifact=%s finished=%s ok=%s",
         agent_name, artifact_name, finished, ok,
@@ -1549,6 +1571,8 @@ async def generate_content_llm(
     from kdcube_ai_app.apps.chat.sdk.tools.citations import debug_only_suspicious_tokens, CITE_TOKEN_RE
 
     # 1) Log any suspicious tokens (for future debugging)
+    if tgt == "html" and citation_map:
+        content_clean = replace_html_citations(content_clean, citation_map, keep_unresolved=True, first_only=False)
     suspicious = debug_only_suspicious_tokens(content_clean)
     if suspicious:
         logger.warning("Final artifact still contains suspicious [[...]] tokens: %s", suspicious)

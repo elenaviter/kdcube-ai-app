@@ -109,15 +109,17 @@ class ExecTools:
             "- The executor wraps your snippet into an async main() and runs it.\n"
             "- After execution, the executor checks for the requested output files.\n"
             "- For each requested file that exists and is non-empty, an artifact is produced.\n"
+            "- Expected as a result of this snippet artifacts are described in out_artifacts_spec.\n"
             "\n"
             "INPUTS\n"
-            "1) `code` (string, required): Python code snippet to run (inserted into async main()).\n"
-            "2) `artifacts` (list or JSON string, required): list of artifact specs with fields:\n"
+            "1) `out_artifacts_spec` (list or JSON string, REQUIRED): list of artifact specs with fields:\n"
             "   - name (artifact id)\n"
             "   - filename (relative path in OUTPUT_DIR)\n"
             "   - mime\n"
             "   - description (text surrogate / promise of content)\n"
             "   Each artifact is ALWAYS a file.\n"
+            "   These are outputs of this program that it promises to produce.\n"
+            "2) `code` (string, REQUIRED): Python code snippet to run (inserted into async main()).\n"
             "3) `prog_name` (string, optional): short name of the program for UI labeling.\n"
             "\n"
             "FETCH_CTX (ADVANCED)\n"
@@ -154,7 +156,7 @@ class ExecTools:
     async def execute_code_python(
         self,
         code: Annotated[str, "Python code snippet (string). Inserted into async main()."],
-        artifacts: Annotated[Any, "List or JSON string of artifact specs (name, filename, mime, description)."],
+        out_artifacts_spec: Annotated[Any, "List or JSON string of artifact specs (name, filename, mime, description)."],
         prog_name: Annotated[Optional[str], "Short name of the program for UI labeling."] = None,
         timeout_s: Annotated[Optional[int], "Execution timeout seconds (default: 600)."] = None,
     ) -> Annotated[dict, "Envelope: ok/out_dyn/out/error/summary."]:
@@ -166,7 +168,7 @@ async def run_exec_tool(
     tool_manager: Any,
     output_contract: Dict[str, Any],
     code: str,
-    artifacts: List[Dict[str, Any]],
+    out_artifacts_spec: List[Dict[str, Any]],
     timeout_s: int,
     workdir: pathlib.Path,
     outdir: pathlib.Path,
@@ -255,7 +257,7 @@ async def run_exec_tool(
     # 4) build artifacts by checking requested files
     out_dyn: Dict[str, Any] = {}
     missing: List[str] = []
-    for a in artifacts or []:
+    for a in out_artifacts_spec or []:
         rel = a["filename"]
         p = outdir / rel
         if not p.exists() or p.stat().st_size <= 0:

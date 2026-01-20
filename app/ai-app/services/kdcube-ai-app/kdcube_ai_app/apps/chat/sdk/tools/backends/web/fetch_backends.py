@@ -12,6 +12,8 @@ from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import filter_fetch_results
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.fetch_url_contents import (
     FetchWebResourceWidget,
 )
+from kdcube_ai_app.apps.chat.sdk.tools.backends.web.inventory import _normalize_url
+from kdcube_ai_app.apps.chat.sdk.tools.citations import enrich_sources_pool_with_favicons
 from kdcube_ai_app.tools.content_type import fetch_url_with_content_type, guess_mime_from_url
 from kdcube_ai_app.tools.scrap_utils import build_content_blocks_from_html
 from kdcube_ai_app.infra.service_hub.multimodality import (
@@ -74,6 +76,9 @@ async def _fetch_urls_core(
     emit_delta_fn: Optional[Callable[..., Awaitable[None]]] = None,
     comm: Optional[object] = None,
     widget_agent: Optional[str] = None,
+    widget_artifact_name: Optional[str] = None,
+    widget_title: Optional[str] = None,
+    namespaced_kv_cache: Any | None = None,
 ) -> Dict[str, Dict[str, Any]]:
     if not urls:
         return {}
@@ -88,17 +93,50 @@ async def _fetch_urls_core(
 
     widget = None
     widget_payload = None
+    favicon_by_url: Dict[str, Dict[str, Any]] = {}
     url_items: Dict[str, Dict[str, Any]] = {}
-    if emit_delta_fn and comm:
+    if emit_delta_fn and comm and widget_agent:
         widget = FetchWebResourceWidget(
             emit_delta=emit_delta_fn,
-            agent=widget_agent or "fetch.url_contents",
+            agent=widget_agent,
+            artifact_name=widget_artifact_name or "fetch_url_contents.results",
+            title=widget_title or "Fetch Results",
         )
         widget_payload = {}
         if objective:
             widget_payload["objective"] = objective
         widget_payload["urls"] = [{"url": u} for u in urls]
         url_items = {item["url"]: item for item in widget_payload["urls"]}
+        favicon_rows = [
+            {
+                "url": u,
+                "title": (content_block_titles or {}).get(u) or "",
+            }
+            for u in urls
+        ]
+        await enrich_sources_pool_with_favicons(
+            favicon_rows,
+            log=logger,
+            cache=namespaced_kv_cache,
+        )
+        for row in favicon_rows:
+            url = row.get("url") or ""
+            key = _normalize_url(url)
+            if not key:
+                continue
+            if "favicon" in row or "favicon_status" in row:
+                favicon_by_url[key] = {
+                    "favicon": row.get("favicon"),
+                    "favicon_status": row.get("favicon_status"),
+                    "title": row.get("title"),
+                }
+        if favicon_by_url:
+            for url, item in url_items.items():
+                key = _normalize_url(url)
+                cached = favicon_by_url.get(key)
+                if cached:
+                    item["favicon"] = cached.get("favicon")
+                    item["favicon_status"] = cached.get("favicon_status")
         await widget.send(widget_payload)
 
     async with WebContentFetcher(
@@ -184,12 +222,34 @@ async def _fetch_urls_core(
                     )
                     entry["content_blocks"] = blocks
 
+            if favicon_by_url:
+                key = _normalize_url(url)
+                cached = favicon_by_url.get(key)
+                if cached:
+                    entry["favicon"] = cached.get("favicon")
+                    entry["favicon_status"] = cached.get("favicon_status")
+
             results[url] = entry
+
+        if favicon_by_url:
+            key = _normalize_url(url)
+            cached = favicon_by_url.get(key)
+            if cached:
+                result_entry = results.get(url)
+                if isinstance(result_entry, dict):
+                    result_entry.setdefault("favicon", cached.get("favicon"))
+                    result_entry.setdefault("favicon_status", cached.get("favicon_status"))
 
         if widget and widget_payload:
             item = url_items.get(url)
             if item is not None:
                 entry = results.get(url) or {}
+                if favicon_by_url:
+                    key = _normalize_url(url)
+                    cached = favicon_by_url.get(key)
+                    if cached and "favicon" not in item and "favicon_status" not in item:
+                        item["favicon"] = cached.get("favicon")
+                        item["favicon_status"] = cached.get("favicon_status")
                 if entry.get("status"):
                     item["status_orig"] = entry.get("status")
                 item["status"] = _normalize_widget_status(entry.get("status"))
@@ -216,6 +276,10 @@ async def fetch_search_results_content(
         MAX_CONCURRENT_WEB_FETCHES: int = 5,
         include_binary_base64: bool = True,
         include_content_blocks: bool = True,
+        namespaced_kv_cache: Any | None = None,
+        widget_agent: Optional[str] = None,
+        widget_artifact_name: Optional[str] = None,
+        widget_title: Optional[str] = None,
 ) -> list[dict]:
     """
     Best-effort content materialization for search results.
@@ -242,6 +306,10 @@ async def fetch_search_results_content(
         include_content_blocks=include_content_blocks,
         objective=None,
         content_block_titles={row.get("url", ""): (row.get("title") or "") for row in search_results},
+        namespaced_kv_cache=namespaced_kv_cache,
+        widget_agent=widget_agent,
+        widget_artifact_name=widget_artifact_name,
+        widget_title=widget_title,
     )
 
     success_count = 0
@@ -342,6 +410,7 @@ async def fetch_url_contents(
         extraction_mode: str = "custom",
         refinement="none",
         objective: Optional[str] = None,
+        namespaced_kv_cache: Any | None = None,
 ) -> Annotated[dict, (
         "JSON object mapping each input URL to a result object, for example:\n"
         "{\n"
@@ -439,6 +508,9 @@ async def fetch_url_contents(
         emit_delta_fn=emit_delta_fn,
         comm=comm,
         widget_agent=agent_name,
+        widget_artifact_name=f"Fetch URL Contents [{agent_suffix}]",
+        widget_title=agent_label,
+        namespaced_kv_cache=namespaced_kv_cache,
     )
 
     # ---------- Optional: objective-aware segmentation on fetched pages ----------

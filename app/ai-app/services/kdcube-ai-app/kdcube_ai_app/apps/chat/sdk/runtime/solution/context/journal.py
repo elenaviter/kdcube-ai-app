@@ -11,6 +11,10 @@ from kdcube_ai_app.apps.chat.sdk.context.memory.turn_fingerprint import TurnFing
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import BaseTurnView, CompressedTurn, turn_to_pair
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.context import ReactContext
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.artifact_analysis import (
+    format_tool_error_message,
+    format_tool_error_for_journal,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.strategy_and_budget import format_budget_for_llm
 from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import build_skills_instruction_block
 from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import skills_gallery_text
@@ -112,6 +116,9 @@ def _render_full_artifact_for_journal(item: Dict[str, Any]) -> List[str]:
         )
 
     value = art.get("value")
+    if value in (None, "") and (art.get("kind") == "inline"):
+        if isinstance(art.get("text"), str) and art.get("text").strip():
+            value = art.get("text")
     if isinstance(value, dict):
         # Avoid leaking base64 into the journal
         value = dict(value)
@@ -152,9 +159,8 @@ def build_turn_session_journal(*,
                                max_sources_per_turn: int = 20,
                                turn_view_class: Type[BaseTurnView] = BaseTurnView,
                                is_codegen_agent: bool = False, # False for decision, True for codegen
+                               model_label: Optional[str] = None,
                                # fetch_context_tool_retrieval_example: Optional[str] = "ctx_tools.fetch_turn_artifacts([turn_id])",
-                               show_artifacts: Optional[List[Dict[str, Any]]] = None,
-                               show_skills: Optional[List[str]] = None,
                                coordinator_turn_line: Optional[str] = None) -> str:
     """
     Unified, LLM-friendly Turn Session Journal used by the Decision node.
@@ -479,6 +485,7 @@ def build_turn_session_journal(*,
     if not context.events:
         lines.append("(no events yet)")
     else:
+        seen_tool_errors: Dict[tuple, str] = {}
         for e in context.events:
             ts = time.strftime("%H:%M:%S", time.localtime(e.get("ts", 0)))
             kind = e.get("kind")
@@ -545,13 +552,13 @@ def build_turn_session_journal(*,
                 nxt = e.get("action")
                 strat = e.get("strategy")
                 focus = e.get("focus_slot")
-                next_plan = (e.get("next_decision_step") or "").strip()
+                next_plan = (e.get("decision_notes") or "").strip()
 
                 tc = e.get("tool_call") or {}
                 tool_id = (tc.get("tool_id") or "").strip() if isinstance(tc, dict) else ""
 
                 # declared artifacts for this tool call (protocol: list of dicts with "name")
-                art_specs = tc.get("tool_res_artifacts") or []
+                art_specs = tc.get("out_artifacts_spec") or []
                 art_labels: list[str] = []
 
                 for spec in art_specs:
@@ -632,7 +639,7 @@ def build_turn_session_journal(*,
                     f"action={nxt}",
                     f"strategy={strat}" if strat else None,
                     f"focus={focus}" if focus else None,
-                    f"next_plan={next_plan}" if next_plan else None,
+                    f"notes={next_plan}" if next_plan else None,
                     tool_piece,
                     f"map={maps_s}" if maps_s else None,
                     show_piece,
@@ -646,13 +653,10 @@ def build_turn_session_journal(*,
             if kind == "show_skills":
                 skills = e.get("skills") or []
                 action = (e.get("action") or "").strip()
-                target = (e.get("target") or "").strip()
                 skills_s = ", ".join([str(s) for s in skills]) if isinstance(skills, list) else str(skills)
                 parts = []
                 if action:
                     parts.append(f"action={action}")
-                if target:
-                    parts.append(f"target={target}")
                 if skills_s:
                     parts.append(f"skills={skills_s}")
                 lines.append(f"- {ts} — show_skills: " + " — ".join(parts))
@@ -661,13 +665,10 @@ def build_turn_session_journal(*,
             if kind == "show_artifacts":
                 paths = e.get("paths") or []
                 action = (e.get("action") or "").strip()
-                target = (e.get("target") or "").strip()
                 paths_s = ", ".join([str(p) for p in paths]) if isinstance(paths, list) else str(paths)
                 parts = []
                 if action:
                     parts.append(f"action={action}")
-                if target:
-                    parts.append(f"target={target}")
                 if paths_s:
                     parts.append(f"paths={paths_s}")
                 lines.append(f"- {ts} — show_artifacts: " + " — ".join(parts))
@@ -683,6 +684,37 @@ def build_turn_session_journal(*,
                     lines.append(f"- {ts} — tool_started: tool={e.get('tool_id')} → {art_ids_s}")
                 continue
 
+            if kind == "tool_error":
+                err = e.get("error")
+                tool_id = e.get("tool_id")
+                artifact_id = e.get("artifact_id")
+                tool_call_id = e.get("tool_call_id")
+                err_code = ""
+                err_msg = ""
+                if isinstance(err, dict):
+                    err_code = err.get("code") or err.get("error") or "error"
+                    if err_code == "missing_artifact":
+                        err_msg = "see tool_finished for error details"
+                    else:
+                        raw_msg = format_tool_error_message(err.get("message") or err.get("description") or "")
+                        err_msg = format_tool_error_for_journal(raw_msg)
+                if tool_call_id and err_code and err_msg:
+                    key = (str(tool_call_id), err_code, err_msg)
+                    if key in seen_tool_errors and artifact_id:
+                        err_msg = f"same error as {seen_tool_errors[key]}"
+                    elif artifact_id:
+                        seen_tool_errors[key] = str(artifact_id)
+                head = f"- {ts} — artifact_error: tool={tool_id}"
+                if artifact_id:
+                    head += f" → {artifact_id}"
+                if err_code:
+                    head += f" — {err_code}"
+                if err_msg:
+                    lines.append(f"{head}: {err_msg}")
+                else:
+                    lines.append(head)
+                continue
+
             if kind == "tool_finished":
                 art_ids = e.get("artifact_ids") or []
                 planned_ids = e.get("planned_artifact_ids") or []
@@ -696,7 +728,8 @@ def build_turn_session_journal(*,
                     call_rec = (context.tool_call_index or {}).get(tool_call_id) or {}
                     produced_ids = call_rec.get("produced_artifact_ids") or []
                 if not produced_ids:
-                    produced_ids = art_ids
+                    if not isinstance(e.get("error"), dict):
+                        produced_ids = art_ids
                 if not planned_ids:
                     planned_ids = art_ids
 
@@ -722,7 +755,8 @@ def build_turn_session_journal(*,
                 err = e.get("error")
                 if isinstance(err, dict):
                     err_code = err.get("code") or err.get("error") or "error"
-                    err_msg = (err.get("message") or err.get("description") or "").strip()
+                    raw_msg = format_tool_error_message(err.get("message") or err.get("description") or "")
+                    err_msg = format_tool_error_for_journal(raw_msg)
                     if err_msg:
                         lines.append(f"  ---tool error: {err_code}: {err_msg}")
                     else:
@@ -848,6 +882,9 @@ def build_turn_session_journal(*,
                         if size_bytes is not None:
                             parts.append(f"size={size_bytes}")
                         lines.append("    !! " + "; ".join(parts))
+                art_stats = art.get("artifact_stats")
+                if isinstance(art_stats, dict) and art_stats:
+                    lines.append("    stats: " + json.dumps(art_stats, ensure_ascii=False))
 
                 if tools_insights.is_search_tool(tid):
                     q_prev, obj_prev = _search_context_from_inputs(art)
@@ -1021,6 +1058,8 @@ def build_turn_session_journal(*,
 
     # 2) Live snapshot (current contract/slots/tool results)
     lines.append("[SOLVER.CURRENT TURN PROGRESS SNAPSHOT]")
+    if model_label:
+        lines.append(f"- Active model: {model_label}")
     declared = list((output_contract or {}).keys())
     filled = list((context.current_slots or {}).keys())
     filled_set = set(filled)
@@ -1106,10 +1145,10 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
         # Most non-writer tools produce inline content (e.g., LLM gen, web search digests)
         return "inline"
 
-    def _norm_tool_res_artifacts(tc: Any) -> List[Dict[str, Any]]:
+    def _norm_out_artifacts_spec(tc: Any) -> List[Dict[str, Any]]:
         if not isinstance(tc, dict):
             return []
-        tras = tc.get("tool_res_artifacts")
+        tras = tc.get("out_artifacts_spec")
 
         # accept dict -> list
         if isinstance(tras, dict):
@@ -1207,7 +1246,7 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
                 tc = dec.get("tool_call") or {}
                 tool_id = tc.get("tool_id")
 
-                tras = _norm_tool_res_artifacts(tc)
+                tras = _norm_out_artifacts_spec(tc)
                 tras_s = _fmt_res_artifacts(tras)
 
                 call_reason = tc.get("reasoning") or dec.get("reasoning") or ""
@@ -1260,26 +1299,16 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
             if t == "show_skills":
                 details = (entry.get("details") or {})
                 skills = details.get("skills") or []
-                action = details.get("action") or ""
-                target = details.get("target") or ""
                 sk_txt = ", ".join(skills) if skills else "-"
-                tgt = f"action={action}" if action else "action=?"
-                if target:
-                    tgt += f"; target={target}"
-                log_summary.append(f"[{it or '?'}] show_skills — {tgt} — {sk_txt}")
+                log_summary.append(f"[{it or '?'}] show_skills requested: {sk_txt}")
                 i += 1
                 continue
 
             if t == "show_artifacts":
                 details = (entry.get("details") or {})
                 paths = details.get("paths") or []
-                action = details.get("action") or ""
-                target = details.get("target") or ""
                 p_txt = ", ".join(paths) if paths else "-"
-                tgt = f"action={action}" if action else "action=?"
-                if target:
-                    tgt += f"; target={target}"
-                log_summary.append(f"[{it or '?'}] show_artifacts — {tgt} — {p_txt}")
+                log_summary.append(f"[{it or '?'}] show_artifacts requested: {p_txt}")
                 i += 1
                 continue
 

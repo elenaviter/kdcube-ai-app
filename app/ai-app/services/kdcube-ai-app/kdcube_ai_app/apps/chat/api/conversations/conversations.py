@@ -19,6 +19,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 )
 from kdcube_ai_app.auth.sessions import UserSession
 from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+from kdcube_ai_app.apps.chat.sdk.tools.citations import strip_base64_from_citables_artifact
 
 """
 Conversations API
@@ -241,6 +242,9 @@ async def fetch_conversation(
         materialize=bool(req.materialize),
         days=int(req.days),
     )
+    for turn in (data or {}).get("turns", []):
+        for artifact in turn.get("artifacts", []):
+            strip_base64_from_citables_artifact(artifact)
 
     # Shape is:
     # {

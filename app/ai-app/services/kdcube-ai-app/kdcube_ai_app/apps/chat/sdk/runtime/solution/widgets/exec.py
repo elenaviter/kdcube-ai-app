@@ -123,7 +123,7 @@ class CodegenChanneledStreamingWidget:
         name = (name or "").strip()
         if not name or name == self.program_name:
             return
-        self._log_event("emit_program_name", name=name)
+        self._log_event("emit_program_name", program_name=name)
         self.program_name = name
         await self._emit_subsystem_delta(
             text=name,
@@ -421,16 +421,16 @@ class CodegenChanneledStreamingWidget:
             language="json",
         )
         self.contract_index += 1
-        await self._emit_subsystem_delta(
-            text="",
-            index=self.contract_index,
-            sub_type="code_exec.contract",
-            fmt="json",
-            title="Execution Contract",
-            completed=True,
-            language="json",
-        )
-        self.contract_index += 1
+        # await self._emit_subsystem_delta(
+        #     text="",
+        #     index=self.contract_index,
+        #     sub_type="code_exec.contract",
+        #     fmt="json",
+        #     title="Execution Contract",
+        #     completed=True,
+        #     language="json",
+        # )
+        # self.contract_index += 1
         await self.send_status(status="exec")
 
     async def emit_status(self, *, status: str, error: Optional[dict] = None) -> None:
