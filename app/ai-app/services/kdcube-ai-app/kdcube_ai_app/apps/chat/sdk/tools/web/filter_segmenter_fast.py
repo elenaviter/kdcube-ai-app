@@ -14,7 +14,7 @@ from kdcube_ai_app.apps.chat.sdk.util import _today_str, _now_up_to_minutes, _js
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase, create_cached_system_message
 from kdcube_ai_app.apps.chat.sdk.streaming.streaming import stream_agent_to_json
-import kdcube_ai_app.apps.chat.sdk.tools.web.content_filters as content_filters
+import kdcube_ai_app.apps.chat.sdk.tools.web.content_filters_fast as content_filters
 
 
 def _strip_thinking_guidance(text: str) -> str:
@@ -65,8 +65,11 @@ def _get_single_channel_protocol_filter_segmenter(json_shape_hint: str) -> str:
         f"{json_shape_hint}\n\n"
         "STRICT RULES:\n"
         "1. Output ONLY JSON (no markdown, no prose, no prefixes).\n"
-        "2. Structure: {\"<sid>\": [{\"s\": \"...\", \"e\": \"...\"}], ...}\n"
-        "3. Use {} if all pages are dropped.\n"
+        "2. Structure:\n"
+        "   {\"phase1\": [<sid>, ...], \"phase2\": {\"<sid>\": [{\"s\": \"...\", \"e\": \"...\"}], ...}}\n"
+        "3. If all pages are dropped: {\"phase1\": [], \"phase2\": {}}.\n"
+        "4. If multiple pages are near-duplicates (≥90% overlap), keep ONLY the single best SID.\n"
+        "5. In balanced and recall mode, prefer keep most information on the page in the spans you made.\n"
     )
 
 
@@ -89,21 +92,25 @@ async def filter_and_segment_stream(
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    input_definition_mode = "free" # "json"
     if mode == "precision":
-        core_instruction = content_filters.FILTER_AND_SEGMENT_HIGH_PRECISION(now_iso)
+        core_instruction = content_filters.FILTER_AND_SEGMENT_HIGH_PRECISION(now_iso, input_mode=input_definition_mode)
     elif mode == "recall":
-        core_instruction = content_filters.FILTER_AND_SEGMENT_HIGH_RECALL(now_iso)
+        core_instruction = content_filters.FILTER_AND_SEGMENT_HIGH_RECALL(now_iso, input_mode=input_definition_mode)
     else:
-        core_instruction = content_filters.FILTER_AND_SEGMENT_BALANCED(now_iso)
+        core_instruction = content_filters.FILTER_AND_SEGMENT_BALANCED(now_iso, input_mode=input_definition_mode)
 
     core_instruction = _strip_thinking_guidance(core_instruction)
 
     schema = (
         "{\n"
-        "  \"<sid_1>\": [{\"s\": \"start anchor text\", \"e\": \"end anchor text or empty\"}],\n"
-        "  \"<sid_2>\": [{\"s\": \"...\", \"e\": \"...\"}]\n"
+        "  \"phase1\": [12, 8],\n"
+        "  \"phase2\": {\n"
+        "    \"12\": [{\"s\": \"start anchor text for first segment\", \"e\": \"end anchor text or empty for first segment\"}],\n"
+        "    \"8\": [{\"s\": \"...\", \"e\": \"...\"}, {\"s\": \"...\", \"e\": \"...\"}]\n"
+        "  }\n"
         "}\n"
-        "or {} if all pages dropped"
+        "or {\"phase1\": [], \"phase2\": {}} if all pages dropped"
     )
 
     protocol = _get_single_channel_protocol_filter_segmenter(schema)
@@ -117,7 +124,7 @@ async def filter_and_segment_stream(
     now = _now_up_to_minutes()
 
     time_evidence = (
-        "AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)\n"
+        "[AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)]\n"
         f"Current UTC date: {today}\n"
         "All relative dates (today/yesterday/last year/next month) MUST be "
         "interpreted against this context. Freshness must be estimated based on this context.\n"
@@ -134,6 +141,14 @@ async def filter_and_segment_stream(
         "referencing relative dates like 'today', 'tomorrow', 'yesterday', etc -- if the user "
         "seems mistaken in these cases, you should make sure to use absolute/exact dates like "
         "'January 1, 2010' in your response.\n"
+
+        "[CRITICAL. CLEAN AND USEFUL OUTPUT]\n"
+        "Your output gives us the instructions that we will use to locate, in original pages, snippets of data. We use the boundaries you produce to outline these snippets.\n"
+        "The rest of the page outside the selected spans will be dropped. The information outside the boundaries won't be included in retrieval snippets.  If, on the page, the useful information is located outside of your 's'/'e' spans, we loose that information which is unacceptable.\n"
+        # "Make sure your output follows the requirements, outlines the snippets that retain recall but DO NOT contain duplicated information. Boundaries that outline the snippets that contain duplicated information or lack valuable information are wrong.\n"
+        "For BOUNDARIES 's' and 'e' you choose only short but distinctive phrases in the page text! Do not produce the book! \n"
+        "You must read through all sources you see and solve both phases in the mind and only then generate the response. Duplicate or no you decide based on content of the source, the text snippet. Not based on the url!\n"
+        # "Please choose, for your boundary, the line w/o the link or text with the special symbols or symbols that can ruin the json. It's better to provide the wider boundary using the closest clean distinctive text"
     )
 
     system_msg = create_cached_system_message([
@@ -168,11 +183,87 @@ async def filter_and_segment_stream(
     if not prepared_sources:
         return {"agent_response": {}}
 
-    user_msg = (
-        "INPUT CONTEXT:\n" + json.dumps(input_ctx, ensure_ascii=False) + "\n\n"
-        "SOURCES:\n" + json.dumps(prepared_sources, ensure_ascii=False) + "\n\n"
-        "Return ONLY the JSON object."
-    )
+    def _format_user_message(input_ctx: dict, prepared_sources: list) -> str:
+        """Format input in a clear, structured way that aligns with instruction references."""
+
+        # Header
+        msg_parts = ["=" * 70]
+        msg_parts.append("TASK SPECIFICATION")
+        msg_parts.append("=" * 70)
+        msg_parts.append("")
+
+        # Search objective section
+        msg_parts.append("📋 SEARCH OBJECTIVE:")
+        msg_parts.append(f"   {input_ctx.get('objective', 'N/A')}")
+        msg_parts.append("")
+
+        # Search queries section (if present)
+        queries = input_ctx.get('queries', [])
+        if queries:
+            msg_parts.append("🔍 SEARCH QUERIES USED:")
+            for i, q in enumerate(queries, 1):
+                msg_parts.append(f"   {i}. {q}")
+            msg_parts.append("")
+
+        # Sources section header
+        msg_parts.append("=" * 70)
+        msg_parts.append(f"SOURCE PAGES ({len(prepared_sources)} pages)")
+        msg_parts.append("=" * 70)
+        msg_parts.append("")
+
+        # Format each source with clear structure
+        for idx, src in enumerate(prepared_sources, 1):
+            msg_parts.append(f"┌─ SOURCE #{idx} (SID: {src['sid']}) {'─' * 50}")
+            msg_parts.append(f"│ URL: {src.get('url', 'N/A')}")
+
+            if src.get('published_time_iso'):
+                msg_parts.append(f"│ Published: {src['published_time_iso']}")
+            if src.get('modified_time_iso'):
+                msg_parts.append(f"│ Modified: {src['modified_time_iso']}")
+
+            msg_parts.append("│")
+            msg_parts.append("│ CONTENT:")
+
+            # Add content with clear visual separation
+            content = src.get('content', '').strip()
+            if content:
+                # Indent content for readability
+                content_lines = content.split('\n')
+                for line in content_lines[:3]:  # Show first few lines in summary
+                    msg_parts.append(f"│ {line[:100]}")
+                msg_parts.append(f"│")
+                msg_parts.append(f"│ [Full content: {len(content)} characters]")
+                msg_parts.append(f"│")
+                # Add full content after visual break
+                msg_parts.append(content)
+
+            msg_parts.append(f"└{'─' * 65}")
+            msg_parts.append("")
+
+        # Closing instruction
+        msg_parts.append("=" * 70)
+        msg_parts.append("YOUR OUTPUT")
+        msg_parts.append("=" * 70)
+        msg_parts.append("Return ONLY the JSON object with the following structure:")
+        msg_parts.append('{"phase1": [<sid>, ...], "phase2": {"<sid>": [{"s": "...", "e": "..."}], ...}}')
+        msg_parts.append("")
+
+        return "\n".join(msg_parts)
+
+    def _format_user_message_json(input_ctx, prepared_sources):
+        user_msg = (
+                "INPUT CONTEXT:\n" + json.dumps(input_ctx, ensure_ascii=False) + "\n\n"
+                "SOURCES:\n" + json.dumps(prepared_sources, ensure_ascii=False) + "\n\n"
+                "Return ONLY the JSON object with phase1 + phase2."
+        )
+        return user_msg
+
+    # Usage in your code:
+    if input_definition_mode == "json":
+        user_msg = _format_user_message_json(input_ctx, prepared_sources)
+    else:
+        user_msg = _format_user_message(input_ctx, prepared_sources)
+
     role = role or "tool.sources.filter.by.content.and.segment"
 
     context = _get_context()
@@ -207,7 +298,18 @@ async def filter_and_segment_stream(
     try:
         raw_text = (out.get("agent_response") or "").strip()
         parsed = _json_loads_loose(raw_text) if raw_text else {}
-        out["agent_response"] = parsed if isinstance(parsed, dict) else {}
+        if isinstance(parsed, dict):
+            phase2 = parsed.get("phase2")
+            if isinstance(phase2, dict):
+                phase1 = parsed.get("phase1")
+                if isinstance(phase1, list):
+                    keep = {str(int(s)) for s in phase1 if isinstance(s, (int, str)) and str(s).strip()}
+                    phase2 = {k: v for k, v in phase2.items() if str(k) in keep}
+                out["agent_response"] = phase2
+            else:
+                out["agent_response"] = {}
+        else:
+            out["agent_response"] = {}
         return out
     except Exception:
         return {"agent_response": {}}

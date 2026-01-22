@@ -65,7 +65,7 @@ def _get_2section_protocol_filter_segmenter(json_shape_hint: str) -> str:
         "4. DO NOT write anything after the closing ``` (no prose, no markers).\n"
         "5. DO NOT write any other code fences.\n"
         "6. The JSON must be valid and match the expected structure.\n"
-        "7. Structure: {\"<sid>\": [{\"s\": \"...\", \"e\": \"...\"}], ...}\n"
+        "7. Structure: {\"<sid>\": [{\"s\": \"...\", \"e\": \"...\"}, {\"s\": \"...\", \"e\": \"...\"}], ...}\n"
         "8. Empty dict {} if all pages were dropped.\n\n"
     )
 

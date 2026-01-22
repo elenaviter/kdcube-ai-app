@@ -97,11 +97,13 @@ async def generate_content_llm(
         schema_json: Annotated[str, "Optional JSON Schema (for json/yaml validation)."] = "",
         sources_list: Annotated[list[dict], "Sources list with SIDs and URLs."] = None,
         cite_sources: Annotated[bool, "Whether to require and render citations."] = True,
+        citation_embed: Annotated[str, "auto|inline|sidecar|none"] = "auto",
         max_tokens: Annotated[int, "Max tokens for this generation."] = 3000,
         model_strength: Annotated[str, "regular|strong"] = "regular",
         channel_to_stream: Annotated[str, "Stream channel marker"] = "answer",
         attachments: Annotated[Optional[List[Dict[str, Any]]], "Optional multimodal attachments."] = None,
         composite_cfg: Annotated[Optional[Dict[str, str]], "Managed JSON artifacts config"] = None,
+        infra_call: Annotated[bool, "Internal tools call (relaxes global instructions)."] = False,
 ) -> Dict[str, Any]:
     """
     Channel-tag streaming generator using <channel:name> blocks.
@@ -147,26 +149,47 @@ async def generate_content_llm(
 
     have_sources = bool(citations_module.extract_sids(sources_list))
 
-    require_citations = bool(cite_sources and have_sources)
+    # citation embed policy (mirrors with_llm_backends)
+    eff_embed = citation_embed
+    if citation_embed == "auto":
+        if tgt in ("markdown", "text", "html"):
+            eff_embed = "inline"
+        elif tgt in ("json", "yaml", "managed_json_artifact"):
+            eff_embed = "sidecar"
+        elif tgt == "xml":
+            eff_embed = "none"
+        else:
+            eff_embed = "none"
 
-    basic_sys_instruction = "\n".join([
-        "You are a precise generator. Produce ONLY the requested artifact in the requested format.",
-        "If [ACTIVE SKILLS] are present, they are dominant. Follow them over any general guidance here.",
-        "NEVER include meta-explanations. Do not apologize. No prefaces. No trailing notes.",
-        "You must produce content exactly of format stated in [TARGET GENERATION FORMAT]. No any deviations!",
-        "",
-        "GENERAL OUTPUT RULES:",
-        "- Keep the output self-contained.",
-        "- Avoid placeholders like 'TBD' unless explicitly requested.",
-        "",
-        "NUMERIC & FACTUAL PRECISION RULES:",
-        "- When answering with facts, numbers, prices, dates, thresholds, metrics or other quantitative values, copy them EXACTLY as they appear in the input context or sources when possible.",
-        "- Do NOT invent new numeric values (e.g. sums, averages, percentage changes, growth rates, exchange-rate based values) that do not explicitly appear in a source.",
-        "- Do NOT perform unit or currency conversions or any other arithmetic transformation (e.g. hours→minutes, EUR→USD, monthly→yearly, GB→MB) unless the user EXPLICITLY says that an approximate conversion is acceptable.",
-        "- If the user asks for a different unit or currency than what is available, answer in the original unit/currency and clearly name it, and/or explicitly state that you are not converting it.",
-        "- If you cannot find a requested numeric fact in any source or context, say so instead of guessing.",
-    ])
-    basic_sys_instruction += "\n" + CITATION_TOKENS + "\n" + time_evidence
+    require_citations = bool(cite_sources and have_sources and eff_embed != "none")
+
+    if infra_call:
+        basic_sys_instruction = (
+            "You are a focused JSON generator for internal tools. "
+            "Return only JSON in the requested schema; no explanations."
+        )
+        require_citations = False
+        cite_sources = False
+        eff_embed = "none"
+    else:
+        basic_sys_instruction = "\n".join([
+            "You are a precise generator. Produce ONLY the requested artifact in the requested format.",
+            "If [ACTIVE SKILLS] are present, they are dominant. Follow them over any general guidance here.",
+            "NEVER include meta-explanations. Do not apologize. No prefaces. No trailing notes.",
+            "You must produce content exactly of format stated in [TARGET GENERATION FORMAT]. No any deviations!",
+            "",
+            "GENERAL OUTPUT RULES:",
+            "- Keep the output self-contained.",
+            "- Avoid placeholders like 'TBD' unless explicitly requested.",
+            "",
+            "NUMERIC & FACTUAL PRECISION RULES:",
+            "- When answering with facts, numbers, prices, dates, thresholds, metrics or other quantitative values, copy them EXACTLY as they appear in the input context or sources when possible.",
+            "- Do NOT invent new numeric values (e.g. sums, averages, percentage changes, growth rates, exchange-rate based values) that do not explicitly appear in a source.",
+            "- Do NOT perform unit or currency conversions or any other arithmetic transformation (e.g. hours→minutes, EUR→USD, monthly→yearly, GB→MB) unless the user EXPLICITLY says that an approximate conversion is acceptable.",
+            "- If the user asks for a different unit or currency than what is available, answer in the original unit/currency and clearly name it, and/or explicitly state that you are not converting it.",
+            "- If you cannot find a requested numeric fact in any source or context, say so instead of guessing.",
+        ])
+        basic_sys_instruction += "\n" + CITATION_TOKENS + "\n" + time_evidence
     target_format_sys_instruction = f"[TARGET GENERATION FORMAT]: {tgt}"
 
     sys_lines: List[str] = []
@@ -377,7 +400,7 @@ async def generate_content_llm(
         ChannelSpec(
             name="answer",
             format=tgt if tgt != "managed_json_artifact" else "json",
-            replace_citations=bool(cite_sources),
+            replace_citations=bool(cite_sources and eff_embed == "inline"),
             strip_usage=True,
             emit_marker=channel_to_stream,
         ),
@@ -430,11 +453,11 @@ async def generate_content_llm(
 
     # Final clean + validation
     content_clean = content_raw
-    if cite_sources and tgt in ("markdown", "text"):
+    if cite_sources and eff_embed == "inline" and tgt in ("markdown", "text"):
         content_clean = citations_module.replace_citation_tokens_batch(
             content_clean, citation_map, citations_module.CitationRenderOptions()
         )
-    if cite_sources and tgt == "html":
+    if cite_sources and eff_embed == "inline" and tgt == "html":
         content_clean = citations_module.replace_html_citations(
             content_clean, citation_map, keep_unresolved=False, first_only=False
         )

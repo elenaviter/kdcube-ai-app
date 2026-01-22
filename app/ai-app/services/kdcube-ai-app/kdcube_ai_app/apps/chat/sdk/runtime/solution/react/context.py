@@ -1770,6 +1770,10 @@ class ReactContext:
         """
         if not path or not isinstance(path, str):
             return None, None
+        if self.turn_id and path == self.turn_id:
+            path = "current_turn"
+        elif self.turn_id and path.startswith(f"{self.turn_id}."):
+            path = "current_turn." + path[len(self.turn_id) + 1:]
 
         if path.startswith("sources_pool[") and path.endswith("]"):
             sids_raw = path[len("sources_pool["):-1]

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# skills_registry.py
+# chat/sdk/skills/skills_registry.py
 
 from __future__ import annotations
 

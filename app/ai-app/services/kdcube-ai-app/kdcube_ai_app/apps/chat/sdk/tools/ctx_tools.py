@@ -187,9 +187,12 @@ def _read_context() -> Dict[str, Any]:
     else:
         p = _outdir() / "context.json"
     if not p.exists():
+        log.error("Context file not found: %s", str(p))
         return {}
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
+        log.info("Context file read: %s", str(p))
+        return data
     except Exception:
         return {}
 
@@ -1088,6 +1091,8 @@ class ContextTools:
             prior = (ctx.get("prior_turns") or {})
             cur = (ctx.get("current_turn") or {})
             cur_id = (cur.get("turn_id") or "").strip()  # canonical id of current turn (may be "")
+
+            log.info(f"[fetch_ctx]. requested path: {path}; current_turn id: '{cur_id}'")
             top_cur_id = (ctx.get("current_turn_id") or ctx.get("turn_id") or "").strip()
 
             def normalize_tid(seg0: str) -> Optional[str]:
@@ -1117,6 +1122,7 @@ class ContextTools:
             if tid is None:
                 return {"ret": None, "err": _err("unknown_turn_id", f"Unknown turn_id '{parts[0]}'")}
 
+            log.info(f"[fetch_ctx]. tid normalized: {tid}")
             is_current = (tid == "current_turn")
             turn_blob = cur if is_current else (prior.get(tid) or {})
             turn_view = _build_turn_view(tid, turn_blob, include_artifacts=is_current)
@@ -1226,6 +1232,7 @@ class ContextTools:
                     parts = parts[:4]
 
             normalized_path = ".".join(parts)
+            log.info(f"[fetch_ctx]. normalized path: {normalized_path}")
 
             # ---- Resolve leaf via ReactContext.resolve_path (full, no truncation) ----
             from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.context import ReactContext

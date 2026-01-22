@@ -399,7 +399,25 @@ async def _async_main() -> int:
     )
 
     # 🔹 1. Bootstrap the *supervisor* runtime before doing anything else
+    logger.log(
+        f"[supervisor.bootstrap] pre OUTDIR_CV={OUTDIR_CV.get('')}; WORKDIR_CV={WORKDIR_CV.get('')}; "
+        f"ENV OUTPUT_DIR={os.environ.get('OUTPUT_DIR','')}; WORKDIR={os.environ.get('WORKDIR','')}",
+        level="INFO",
+    )
     _bootstrap_supervisor_runtime(runtime_globals, tool_module_names, logger, outdir)
+    try:
+        logger.log(
+            f"[supervisor.bootstrap] post-bootstrap OUTDIR_CV={OUTDIR_CV.get('')}; WORKDIR_CV={WORKDIR_CV.get('')}",
+            level="INFO",
+        )
+        OUTDIR_CV.set(os.environ.get("OUTPUT_DIR", "") or "")
+        WORKDIR_CV.set(os.environ.get("WORKDIR", "") or "")
+        logger.log(
+            f"[supervisor.bootstrap] OUTDIR_CV={OUTDIR_CV.get('')}; WORKDIR_CV={WORKDIR_CV.get('')}",
+            level="INFO",
+        )
+    except Exception as e:
+        logger.log(f"[supervisor.bootstrap] Failed to set OUTDIR/WORKDIR CVs: {e}", level="WARNING")
 
     # 🔹 2. Prepare supervisor object & Unix server
     socket_path = os.environ.get("SUPERVISOR_SOCKET_PATH", "/tmp/supervisor.sock")
