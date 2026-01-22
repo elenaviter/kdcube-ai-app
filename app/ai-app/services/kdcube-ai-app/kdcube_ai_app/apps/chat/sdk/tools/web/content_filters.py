@@ -855,7 +855,7 @@ OUTPUT FORMAT
 Produce ONLY valid JSON. No explanatory text, no markdown code fences.
 
 Structure:
-{{"<sid>": [{{"s": "...", "e": "..."}}], ...}}
+{{"<sid>": [{{"s": "...", "e": "..."}}, {{"s": "...", "e": "..."}}], ...}}
 
 If all pages dropped in Phase 1:
 {{}}
@@ -906,7 +906,7 @@ Your Phase 1 produces a list of kept SIDs. Phase 2 processes only those kept SID
 - SOURCES: pages with SID numbers and full text content
 
 **Output you will produce:**
-- JSON: {{"<sid>": [{{"s": "...", "e": "..."}}], ...}}
+- JSON: {{"<sid>": [{{"s": "...", "e": "..."}}, {{"s": "...", "e": "..."}}], ...}}
 
 TIMESTAMP NOW: {now_iso}
 
@@ -1040,7 +1040,7 @@ OUTPUT FORMAT
 Produce ONLY valid JSON. No explanatory text, no markdown code fences.
 
 Structure:
-{{"<sid>": [{{"s": "...", "e": "..."}}], ...}}
+{{"<sid>": [{{"s": "...", "e": "..."}}, {{"s": "...", "e": "..."}}], ...}}
 
 If all pages dropped: {{}}
 """

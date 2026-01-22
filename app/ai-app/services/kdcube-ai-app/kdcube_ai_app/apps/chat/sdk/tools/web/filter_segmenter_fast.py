@@ -100,8 +100,8 @@ async def filter_and_segment_stream(
 
     schema = (
         "{\n"
-        "  \"<sid>\": [{\"s\": \"start anchor text\", \"e\": \"end anchor text or empty\"}],\n"
-        "  \"<sid>\": [{\"s\": \"...\", \"e\": \"...\"}]\n"
+        "  \"<sid_1>\": [{\"s\": \"start anchor text\", \"e\": \"end anchor text or empty\"}],\n"
+        "  \"<sid_2>\": [{\"s\": \"...\", \"e\": \"...\"}]\n"
         "}\n"
         "or {} if all pages dropped"
     )
