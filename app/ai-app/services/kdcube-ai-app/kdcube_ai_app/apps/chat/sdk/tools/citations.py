@@ -809,6 +809,35 @@ def split_safe_stream_prefix(chunk: str) -> tuple[str, int]:
     return split_safe_usage_prefix(chunk)
 
 
+def split_safe_stream_prefix_with_holdback(chunk: str, holdback: int = 12) -> tuple[str, str, bool]:
+    """
+    Streaming-safe splitter with a small tail holdback.
+    Returns (emit_now, tail, needs_more).
+    - emit_now: safe prefix to emit now
+    - tail: buffered suffix to keep for next chunk
+    - needs_more: True if we intentionally held back content
+    """
+    if not chunk:
+        return "", "", False
+    if holdback <= 0:
+        safe, dangling = split_safe_stream_prefix(chunk)
+        if dangling:
+            return safe, chunk[len(safe):], True
+        return safe, "", False
+    if len(chunk) <= holdback:
+        return "", chunk, True
+
+    emit_now = chunk[:-holdback]
+    tail = chunk[-holdback:]
+    emit_safe, dangling = split_safe_stream_prefix(emit_now)
+    if dangling:
+        tail = emit_now[len(emit_safe):] + tail
+        emit_now = emit_safe
+    if not emit_now:
+        return "", tail, True
+    return emit_now, tail, bool(tail)
+
+
 # def split_safe_stream_prefix(chunk: str) -> tuple[str, int]:
 #     if not chunk:
 #         return "", 0
@@ -1125,14 +1154,13 @@ _CITE_START_RE = re.compile(r"\[\[\s*S\b", re.I)
 _USAGE_START_RE = re.compile(r"\[\[\s*USAGE\b", re.I)
 # Optional: length-preserving invisible "mask"
 # This avoids index mismatch if you worry about ZWSP/BOM-like chars.
-_INVIS_RE = re.compile(r"[\u200b\ufeff\u200c\u200d\u2060]")
+# Include common invisible format chars (ZW*, WORD JOINER, CGJ, bidi controls)
+_INVIS_RE = re.compile(r"[\u200b\ufeff\u200c\u200d\u2060\u2061\u2062\u2063\u034f\u061c\u200e\u200f\u202a-\u202e]")
 
 def _strip_invisible(text: str) -> str:
     if not isinstance(text, str):
         return text
-    for ch in INVISIBLES:
-        text = text.replace(ch, "")
-    return text
+    return _INVIS_RE.sub("", text)
 
 def strip_only_suspicious_citation_like_tokens(text: str) -> str:
     if not isinstance(text, str) or not text:

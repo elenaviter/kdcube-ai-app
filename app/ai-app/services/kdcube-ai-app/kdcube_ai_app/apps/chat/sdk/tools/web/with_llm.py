@@ -423,10 +423,16 @@ async def sources_filter_and_segment(
     import json
     from datetime import datetime, timezone
     import logging
+    import os
     logger = logging.getLogger(__name__)
 
     import kdcube_ai_app.apps.chat.sdk.tools.web.content_filters as content_filters
-    from kdcube_ai_app.apps.chat.sdk.tools.web.filter_segmenter import filter_and_segment_stream
+    if (os.getenv("WEB_SEARCH_SEGMENTER") or "").strip().lower() == "fast":
+        from kdcube_ai_app.apps.chat.sdk.tools.web.filter_segmenter_fast import (
+            filter_and_segment_stream,
+        )
+    else:
+        from kdcube_ai_app.apps.chat.sdk.tools.web.filter_segmenter import filter_and_segment_stream
 
     now_iso = datetime.now(timezone.utc).isoformat()
     mode = (mode or "balanced").lower()
@@ -480,9 +486,8 @@ async def sources_filter_and_segment(
             logger.info(f"sources_filter_and_segment: using model {model} from provider {provider} for role {role}")
 
             if provider == "anthropic":
-                # ===== ANTHROPIC: Use 2-fold streaming =====
-                logger.info("sources_filter_and_segment: using 2-fold streaming for Anthropic")
-
+                # ===== ANTHROPIC: Use segmenter backend (2-fold or fast) =====
+                logger.info("sources_filter_and_segment: using segmenter backend for Anthropic")
                 result = await filter_and_segment_stream(
                     _SERVICE,
                     objective=objective,

@@ -23,7 +23,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.files_and_attachments import (
     MODALITY_IMAGE_MIME,
     MODALITY_DOC_MIME,
 )
-from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any, strip_citation_tokens
+from kdcube_ai_app.apps.chat.sdk.tools.citations import extract_citation_sids_any, strip_citation_tokens, CITE_TOKEN_RE
 
 
 def _attachment_summary_system_prompt() -> str:

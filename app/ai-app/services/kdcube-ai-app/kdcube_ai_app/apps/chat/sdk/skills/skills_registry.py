@@ -6,29 +6,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
-from functools import lru_cache
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional, Iterable, Tuple, Set, Literal
 import pathlib
 import logging
 import textwrap
-import json
-import os
 
 import yaml  # PyYAML; if you don't want this dependency, we can switch to JSON.
 
 log = logging.getLogger("skills_registry")
 
-# Bundle root = directory containing this file (same pattern as tool_descriptor.py)
-BUNDLE_ROOT: pathlib.Path = pathlib.Path(__file__).resolve().parent
-
-try:
-    from kdcube_ai_app.apps.custom_apps.codegen.skills_descriptor import (  # type: ignore
-        CUSTOM_SKILLS_ROOT,
-        AGENTS_CONFIG,
-    )
-except Exception:
-    CUSTOM_SKILLS_ROOT = None
-    AGENTS_CONFIG = {}
+BUILTIN_SKILLS_ROOT: pathlib.Path = pathlib.Path(__file__).resolve().parent
 try:
     from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import estimate_tokens  # type: ignore
 except Exception:
@@ -37,26 +25,12 @@ except Exception:
 SkillConsumer = str
 
 
-def _apply_runtime_skills_descriptor() -> None:
-    global CUSTOM_SKILLS_ROOT, AGENTS_CONFIG
-    raw = os.environ.get("SKILLS_DESCRIPTOR_JSON") or os.environ.get("SKILLS_DESCRIPTOR")
-    if not raw:
-        return
-    try:
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            return
-    except Exception:
-        return
-    root_val = data.get("custom_skills_root") or data.get("CUSTOM_SKILLS_ROOT")
-    if isinstance(root_val, str) and root_val.strip():
-        CUSTOM_SKILLS_ROOT = pathlib.Path(root_val.strip())
-    cfg = data.get("agents_config") or data.get("AGENTS_CONFIG")
-    if isinstance(cfg, dict):
-        AGENTS_CONFIG = cfg
-
-
-_apply_runtime_skills_descriptor()
+SKILLS_DESCRIPTOR_CV: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "SKILLS_DESCRIPTOR_CV", default=None
+)
+SKILLS_SUBSYSTEM_CV: ContextVar[Optional["SkillsSubsystem"]] = ContextVar(
+    "SKILLS_SUBSYSTEM_CV", default=None
+)
 
 
 @dataclass
@@ -71,7 +45,6 @@ class SkillToolRef:
     """Reference to a tool that belongs to this skill."""
     id: str
     role: Optional[str] = None  # e.g. "search", "fetch", "writer", "reconcile"
-    why: Optional[str] = None
     why: Optional[str] = None
 
 
@@ -143,11 +116,11 @@ class SkillSpec:
 # -------------------- YAML loading --------------------
 
 
-def _resolve_rel(path_str: str) -> pathlib.Path:
-    """Resolve a path relative to BUNDLE_ROOT."""
+def _resolve_rel(path_str: str, base: pathlib.Path) -> pathlib.Path:
+    """Resolve a path relative to base."""
     p = pathlib.Path(path_str)
     if not p.is_absolute():
-        p = (BUNDLE_ROOT / p).resolve()
+        p = (base / p).resolve()
     return p
 
 
@@ -236,14 +209,14 @@ def _load_skill_yaml(path: pathlib.Path) -> SkillSpec:
 
     if isinstance(instr_conf, str):
         # single path used as "full"
-        full_path = _resolve_rel(instr_conf)
+        full_path = _resolve_rel(instr_conf, base=path.parent)
     elif isinstance(instr_conf, dict):
         full_str = instr_conf.get("full")
         compact_str = instr_conf.get("compact")
         if full_str:
-            full_path = _resolve_rel(str(full_str))
+            full_path = _resolve_rel(str(full_str), base=path.parent)
         if compact_str:
-            compact_path = _resolve_rel(str(compact_str))
+            compact_path = _resolve_rel(str(compact_str), base=path.parent)
 
     instr_paths = SkillInstructionPaths(full=full_path, compact=compact_path)
 
@@ -400,70 +373,132 @@ def _load_skill_tools_yaml(path: pathlib.Path, *, sid: str) -> List[SkillToolRef
     return _normalize_tools(tools_raw, sid=sid, path=path)
 
 
-def _iter_skill_files(skills_dir: Optional[pathlib.Path] = None) -> Iterable[pathlib.Path]:
-    """Yield all skill files under skills/."""
-    roots: List[pathlib.Path] = []
-    if skills_dir:
-        roots.append(skills_dir)
+def _normalize_descriptor(
+        desc: Optional[Dict[str, Any]],
+        *,
+        bundle_root: Optional[pathlib.Path] = None,
+) -> Dict[str, Any]:
+    data = dict(desc or {})
+    if not isinstance(data, dict):
+        data = {}
+    root_val = data.get("custom_skills_root") or data.get("CUSTOM_SKILLS_ROOT")
+    if isinstance(root_val, str) and root_val.strip():
+        root = pathlib.Path(root_val.strip())
+        if not root.is_absolute() and bundle_root is not None:
+            root = (bundle_root / root).resolve()
+        data["custom_skills_root"] = str(root)
     else:
-        roots.append(BUNDLE_ROOT / "skills")
-        if CUSTOM_SKILLS_ROOT:
+        data["custom_skills_root"] = None
+    cfg = data.get("agents_config") or data.get("AGENTS_CONFIG")
+    if isinstance(cfg, dict):
+        data["agents_config"] = cfg
+    else:
+        data["agents_config"] = {}
+    if bundle_root is not None:
+        data["bundle_root"] = str(bundle_root)
+    return data
+
+
+class SkillsSubsystem:
+    """
+    Single place to resolve skill descriptors, load skill files, and provide
+    consumer-facing helpers for prompts and instruction injection.
+    """
+
+    def __init__(
+            self,
+            *,
+            descriptor: Optional[Dict[str, Any]] = None,
+            bundle_root: Optional[pathlib.Path] = None,
+    ):
+        self.bundle_root = bundle_root
+        self.descriptor = _normalize_descriptor(descriptor, bundle_root=bundle_root)
+        custom_root = self.descriptor.get("custom_skills_root")
+        self.custom_skills_root = pathlib.Path(custom_root) if isinstance(custom_root, str) and custom_root else None
+        self.agents_config = self.descriptor.get("agents_config") or {}
+        self._registry_cache: Optional[Dict[str, SkillSpec]] = None
+
+    def export_runtime_globals(self) -> Dict[str, Any]:
+        return {"SKILLS_DESCRIPTOR": self.descriptor}
+
+    def clear_cache(self) -> None:
+        self._registry_cache = None
+
+    def _iter_skill_files(self) -> Iterable[pathlib.Path]:
+        roots: List[pathlib.Path] = [BUILTIN_SKILLS_ROOT / "skills"]
+        if self.custom_skills_root:
+            roots.append(self.custom_skills_root)
+        files: List[pathlib.Path] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            files.extend([p for p in root.glob("*/*/SKILL.md") if p.is_file()])
+            files.extend([p for p in root.glob("*.y*ml") if p.is_file()])
+            files.extend([p for p in root.glob("*.md") if p.is_file()])
+        if not files:
+            log.warning("Skills directories not found; no skills loaded")
+        return sorted(set(files))
+
+    def get_skill_registry(self) -> Dict[str, SkillSpec]:
+        if self._registry_cache is not None:
+            return self._registry_cache
+        registry: Dict[str, SkillSpec] = {}
+        for path in self._iter_skill_files():
             try:
-                roots.append(pathlib.Path(CUSTOM_SKILLS_ROOT))
-            except Exception:
-                pass
+                if path.suffix.lower() == ".md":
+                    s = _load_skill_markdown(path)
+                    tools_path = path.parent / "tools.yaml"
+                    extra_tools = _load_skill_tools_yaml(tools_path, sid=s.id)
+                    if extra_tools:
+                        s.tools = extra_tools
+                else:
+                    s = _load_skill_yaml(path)
+            except Exception as e:
+                log.error("Failed to load skill from %s: %s", path, e)
+                continue
 
-    files: List[pathlib.Path] = []
-    for root in roots:
-        if not root.exists():
-            continue
-        files.extend([p for p in root.glob("*/*/SKILL.md") if p.is_file()])
-        files.extend([p for p in root.glob("*.y*ml") if p.is_file()])
-        files.extend([p for p in root.glob("*.md") if p.is_file()])
-    if not files:
-        log.warning("Skills directories not found; no skills loaded")
-    return sorted(set(files))
+            key = f"{s.namespace}.{s.id}" if s.namespace else s.id
+            if key in registry:
+                log.warning(
+                    "Duplicate skill id %s from %s (existing from %s) – overriding",
+                    key,
+                    path,
+                    registry[key],
+                )
+            registry[key] = s
+
+        log.info("Loaded %d skills: %s", len(registry), ", ".join(sorted(registry.keys())))
+        self._registry_cache = registry
+        return registry
 
 
-@lru_cache(maxsize=1)
-def get_skill_registry() -> Dict[str, SkillSpec]:
-    """
-    Load all skills from skills/*.yaml under bundle root.
+def set_active_skills_subsystem(subsystem: SkillsSubsystem) -> None:
+    SKILLS_SUBSYSTEM_CV.set(subsystem)
+    SKILLS_DESCRIPTOR_CV.set(subsystem.descriptor)
 
-    The result is cached; call clear_skill_registry_cache() to reload.
-    """
-    registry: Dict[str, SkillSpec] = {}
-    for path in _iter_skill_files():
-        try:
-            if path.suffix.lower() == ".md":
-                s = _load_skill_markdown(path)
-                tools_path = path.parent / "tools.yaml"
-                extra_tools = _load_skill_tools_yaml(tools_path, sid=s.id)
-                if extra_tools:
-                    s.tools = extra_tools
-            else:
-                s = _load_skill_yaml(path)
-        except Exception as e:
-            log.error("Failed to load skill from %s: %s", path, e)
-            continue
 
-        key = f"{s.namespace}.{s.id}" if s.namespace else s.id
-        if key in registry:
-            log.warning(
-                "Duplicate skill id %s from %s (existing from %s) – overriding",
-                key,
-                path,
-                registry[key],
-            )
-        registry[key] = s
+def set_skills_descriptor(
+        descriptor: Optional[Dict[str, Any]],
+        *,
+        bundle_root: Optional[pathlib.Path] = None,
+) -> SkillsSubsystem:
+    subsystem = SkillsSubsystem(descriptor=descriptor, bundle_root=bundle_root)
+    set_active_skills_subsystem(subsystem)
+    return subsystem
 
-    log.info("Loaded %d skills: %s", len(registry), ", ".join(sorted(registry.keys())))
-    return registry
+
+def get_active_skills_subsystem() -> SkillsSubsystem:
+    existing = SKILLS_SUBSYSTEM_CV.get()
+    if existing is not None:
+        return existing
+    desc = SKILLS_DESCRIPTOR_CV.get()
+    subsystem = SkillsSubsystem(descriptor=desc)
+    set_active_skills_subsystem(subsystem)
+    return subsystem
 
 
 def clear_skill_registry_cache() -> None:
-    """Force reload of skills on next get_skill_registry() call."""
-    get_skill_registry.cache_clear()  # type: ignore[attr-defined]
+    get_active_skills_subsystem().clear_cache()
 
 
 # -------------------- Public helpers --------------------
@@ -473,7 +508,7 @@ def get_skill(skill_id: str) -> Optional[SkillSpec]:
     sid = str(skill_id or "").strip()
     if not sid:
         return None
-    reg = get_skill_registry()
+    reg = get_active_skills_subsystem().get_skill_registry()
     if sid in reg:
         return reg.get(sid)
     if "." not in sid:
@@ -493,14 +528,16 @@ def skills_for_consumer(
     """
     Return skills relevant for a given consumer type.
 
-    - consumer: arbitrary string id (only enforced if present in AGENTS_CONFIG)
+    - consumer: arbitrary string id (only enforced if present in agents_config)
     - include_builtins: include skills with built_in=True
     - include_non_builtins: include skills with built_in=False
     """
     enabled = None
     disabled = None
-    if isinstance(AGENTS_CONFIG, dict):
-        cfg = AGENTS_CONFIG.get(consumer) or {}
+    subsystem = get_active_skills_subsystem()
+    agents_config = subsystem.agents_config or {}
+    if isinstance(agents_config, dict):
+        cfg = agents_config.get(consumer) or {}
         enabled = cfg.get("enabled")
         disabled = cfg.get("disabled")
     enabled_set: Optional[Set[str]] = None
@@ -519,14 +556,14 @@ def skills_for_consumer(
                 disabled_set.add(resolved)
 
     out: List[SkillSpec] = []
-    for s in get_skill_registry().values():
+    for s in subsystem.get_skill_registry().values():
         if s.namespace == "internal" and not include_internal:
             continue
         if s.namespace == "public" and not include_public:
             continue
         if s.namespace == "custom" and not include_custom:
             continue
-        if isinstance(AGENTS_CONFIG, dict) and consumer in AGENTS_CONFIG:
+        if isinstance(agents_config, dict) and consumer in agents_config:
             if s.include_for and consumer not in s.include_for:
                 continue
         if s.built_in and not include_builtins:
@@ -723,7 +760,7 @@ def validate_skill_tools(known_tool_ids: Iterable[str]) -> List[str]:
     known = set(known_tool_ids)
     warnings: List[str] = []
 
-    for skill in get_skill_registry().values():
+    for skill in get_active_skills_subsystem().get_skill_registry().values():
         for t in skill.tools:
             if t.id not in known:
                 msg = f"Skill '{skill.id}' references unknown tool id '{t.id}'"
@@ -812,11 +849,12 @@ def resolve_skill_ref(
         s = s[len("skills."):]
         if s.startswith("skills."):
             s = s[len("skills."):]
-    if s in get_skill_registry():
+    reg = get_active_skills_subsystem().get_skill_registry()
+    if s in reg:
         return s
     if "." not in s:
         s = f"public.{s}"
-    return s if s in get_skill_registry() else None
+    return s if s in reg else None
 
 
 def _read_instruction_text(path: Optional[pathlib.Path]) -> str:

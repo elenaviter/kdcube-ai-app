@@ -512,26 +512,12 @@ class ToolSubsystem:
                     "description": self.bundle_spec.description,
                 }
 
-        skills_descriptor = {}
-        try:
-            from kdcube_ai_app.apps.custom_apps.codegen.skills_descriptor import (  # type: ignore
-                CUSTOM_SKILLS_ROOT,
-                AGENTS_CONFIG,
-            )
-            skills_descriptor = {
-                "custom_skills_root": str(CUSTOM_SKILLS_ROOT) if CUSTOM_SKILLS_ROOT else None,
-                "agents_config": AGENTS_CONFIG or {},
-            }
-        except Exception:
-            skills_descriptor = {}
-
         return {
             "TOOL_ALIAS_MAP": alias_to_dyn,
             "TOOL_MODULE_FILES": alias_to_file,
             "BUNDLE_SPEC": bundle_dict,
             "BUNDLE_ROOT_HOST": str(self.bundle_root) if self.bundle_root else None,
             "RAW_TOOL_SPECS": self.raw_tool_specs or [],
-            "SKILLS_DESCRIPTOR": skills_descriptor,
         }
 
 def resolve_codegen_tools_specs(tool_specs: List[Dict[str, Any]],

@@ -215,6 +215,14 @@ async def run_exec_tool(
     # 3) execute in sandbox (same as codegen)
     runtime = _InProcessRuntime(log)
     runtime_globals = tool_manager.export_runtime_globals()
+    try:
+        from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import get_active_skills_subsystem
+        runtime_globals = {
+            **runtime_globals,
+            **get_active_skills_subsystem().export_runtime_globals(),
+        }
+    except Exception:
+        pass
     spec = build_portable_spec(svc=tool_manager.svc, chat_comm=tool_manager.comm)
     comm_spec = getattr(tool_manager.comm, "_export_comm_spec_for_runtime", lambda: {})()
 

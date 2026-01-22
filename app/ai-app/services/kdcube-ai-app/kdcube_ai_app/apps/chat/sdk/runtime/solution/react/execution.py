@@ -1123,6 +1123,14 @@ async def execute_tool_in_isolation(
 
     # alias maps (must match main program executor)
     runtime_globals = tool_manager.export_runtime_globals()
+    try:
+        from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import get_active_skills_subsystem
+        runtime_globals = {
+            **runtime_globals,
+            **get_active_skills_subsystem().export_runtime_globals(),
+        }
+    except Exception:
+        pass
     alias_to_dyn, alias_to_file = tool_manager.get_alias_maps()
 
     # portable spec for child to rebind services

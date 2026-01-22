@@ -5,7 +5,7 @@
 
 import json
 import re
-from typing import Annotated, Optional, List, Dict, Any, Tuple, Set, Callable, Awaitable
+from typing import Annotated, Optional, List, Dict, Any, Set
 import logging
 
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import delta as emit_delta, get_comm
@@ -14,8 +14,8 @@ from kdcube_ai_app.apps.chat.sdk.streaming.artifacts_channeled_streaming import 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import split_safe_citation_prefix, replace_citation_tokens_streaming, \
     extract_sids, build_citation_map_from_sources, citations_present_inline, adapt_source_for_llm, \
     find_unmapped_citation_sids, USAGE_TAG_RE, _split_safe_usage_prefix, _expand_ids, \
-    strip_only_suspicious_citation_like_tokens, split_safe_stream_prefix, _normalize_citation_chars, \
-    replace_html_citations
+    strip_only_suspicious_citation_like_tokens, split_safe_stream_prefix, split_safe_stream_prefix_with_holdback, \
+    _normalize_citation_chars, replace_html_citations, _strip_invisible, CITE_TOKEN_RE
 from kdcube_ai_app.apps.chat.sdk.tools.text_proc_utils import _rm_invis, _remove_end_marker_everywhere, \
     _split_safe_marker_prefix, _remove_marker, _unwrap_fenced_blocks_concat, _strip_bom_zwsp, _parse_json, \
     _extract_json_object, _strip_code_fences, _format_ok, _validate_json_schema, _parse_yaml, _validate_sidecar, \
@@ -295,7 +295,7 @@ async def generate_content_llm(
             return s
 
         # Normalize invisibles first so regexes see a cleaner pattern
-        s = _rm_invis(s)
+        s = _strip_invisible(s)
         # Normalize full-width brackets/colons so USAGE tokens match
         s = _normalize_citation_chars(s)
 
@@ -846,10 +846,26 @@ async def generate_content_llm(
             if not text:
                 return
             clean = _scrub_emit_once(text)
+            if get_comm():
+                if not replace_in_stream:
+                    logger.warning(
+                        "Streaming citations disabled: replace_in_stream=False (tgt=%s is_json_like=%s allow_inline=%s)",
+                        tgt,
+                        is_json_like,
+                        allow_inline_citations_in_strings,
+                    )
+                elif not citation_map:
+                    logger.warning("Streaming citations disabled: citation_map empty")
+                if replace_in_stream and citation_map and "[[S:" in clean:
+                    logger.warning("Pre-replace stream chunk contains citation token; head=%r tail=%r", clean[:120], clean[-120:])
+                if "[[USAGE" in clean.upper():
+                    logger.warning("Pre-replace stream chunk still contains USAGE token; tail=%r", clean[-160:])
             if replace_in_stream and tgt == "html":
                 out = replace_html_citations(clean, citation_map, keep_unresolved=True, first_only=False)
             else:
                 out = replace_citation_tokens_streaming(clean, citation_map) if replace_in_stream else clean
+            if replace_in_stream and citation_map and "[[S:" in clean and out == clean:
+                logger.warning("Citation replacement no-op for chunk with token; head=%r tail=%r", clean[:120], clean[-120:])
             # 🔸 Do NOT stream raw JSON for composite artifacts to canvas
             idx = start_index + emitted_local
             if is_managed_json and composite_cfg and channel_to_stream == "canvas":
@@ -869,7 +885,15 @@ async def generate_content_llm(
                 suspicious = debug_only_suspicious_tokens(out)
                 if suspicious:
                     logger.warning("Unreplaced citation-like tokens in emitted chunk: %s", suspicious)
-                if re.search(r"\[\[\s*S\s*$", _rm_invis(out), re.I):
+                if replace_in_stream and citation_map and CITE_TOKEN_RE.search(out):
+                    tokens = [m.group(0) for m in CITE_TOKEN_RE.finditer(out)]
+                    logger.warning("Streaming citations not replaced (post-render): %s", tokens)
+                    if tokens:
+                        codepoints = [f"U+{ord(c):04X}" for c in tokens[0]]
+                        logger.warning("Streaming citation codepoints: %s", codepoints)
+                elif replace_in_stream and citation_map and "[[S:" in out:
+                    logger.warning("Streaming citation token present but regex did not match; raw tail=%r", out[-120:])
+                if re.search(r"\[\[\s*S\s*$", _strip_invisible(out), re.I):
                     logger.warning("About to emit a dangling citation prefix: %r", out[-80:])
                 await emit_delta(out, index=idx, marker=channel_to_stream,
                                  agent=author_for_chunks, format=tgt or "markdown",
@@ -907,8 +931,10 @@ async def generate_content_llm(
             if not safe_chunk:
                 return
 
-            await _emit_visible(safe_chunk)
-            pending = pending[len(safe_chunk):]
+            emit_now, keep_tail, _ = split_safe_stream_prefix_with_holdback(safe_chunk, holdback=12)
+            if emit_now:
+                await _emit_visible(emit_now)
+            pending = keep_tail + pending[len(safe_chunk):]
 
         async def on_delta(piece: str):
             nonlocal pending
@@ -1293,7 +1319,8 @@ async def generate_content_llm(
     # --------- Repair phase (kept) but now:
     # - uses shared streaming helper
     # - is skipped entirely when there is nothing to repair (payload_for_repair == "")
-    if strict and not ok and max_rounds > 1:
+    allow_repair = max_rounds > 1 and (tgt not in ("json", "yaml", "html", "xml")) and (not is_managed_json)
+    if strict and not ok and allow_repair:
         repair_reasons = []
         if not fmt_ok:
             repair_reasons.append(f"format_invalid: {fmt_reason}")
@@ -1568,7 +1595,7 @@ async def generate_content_llm(
             "generate_content_llm: unmapped citation SIDs in artifact: %s (map has %s)",
             unmapped, sorted(citation_map.keys())
         )
-    from kdcube_ai_app.apps.chat.sdk.tools.citations import debug_only_suspicious_tokens, CITE_TOKEN_RE
+    from kdcube_ai_app.apps.chat.sdk.tools.citations import debug_only_suspicious_tokens
 
     # 1) Log any suspicious tokens (for future debugging)
     if tgt == "html" and citation_map:

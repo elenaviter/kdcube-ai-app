@@ -754,6 +754,14 @@ class CodegenRunner:
     ) -> Dict[str, Any]:
 
         runtime_globals = self.tool_manager.export_runtime_globals()
+        try:
+            from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import get_active_skills_subsystem
+            runtime_globals = {
+                **runtime_globals,
+                **get_active_skills_subsystem().export_runtime_globals(),
+            }
+        except Exception:
+            pass
 
         self._write_runtime_inputs(
             output_dir=output_dir,

@@ -6,6 +6,7 @@
 from dataclasses import dataclass
 from typing import Optional
 import asyncio
+import os
 import sys
 
 import logging
@@ -111,9 +112,19 @@ class SharedBrowserService:
                 raise RuntimeError(f"Failed to start Playwright: {e}") from e
 
         if self._browser is None:
+            launch_args = []
+            if os.getenv("PLAYWRIGHT_DOCKER_ARGS", "1") != "0":
+                launch_args = [
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--no-zygote",
+                ]
             try:
                 self._browser = await self._playwright.chromium.launch(
-                    headless=self.headless
+                    headless=self.headless,
+                    args=launch_args,
                 )
             except Exception as e:
                 if self.auto_install_browser:

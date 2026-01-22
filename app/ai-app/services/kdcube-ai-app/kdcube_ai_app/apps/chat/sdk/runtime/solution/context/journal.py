@@ -1069,6 +1069,30 @@ def build_turn_session_journal(*,
     lines.append(f"- Declared slots: {len(declared)}")
     lines.append(f"- Filled slots  : {len(filled)}  ({', '.join(filled) if filled else '-'})")
     lines.append(f"- Pending slots : {len(pending)}  ({', '.join(pending) if pending else '-'})")
+    try:
+        artifacts_map = (context.artifacts or {}) if context else {}
+        mapped_artifacts = set()
+        if context and getattr(context, "current_slots", None):
+            for slot in (context.current_slots or {}).values():
+                if isinstance(slot, dict):
+                    aid = (slot.get("mapped_artifact_id") or "").strip()
+                    if aid:
+                        mapped_artifacts.add(aid)
+        mappable_artifacts = [
+            aid for aid, art in artifacts_map.items()
+            if not isinstance(art, dict)
+            or (
+                art.get("artifact_kind") != "search"
+                and not art.get("error")
+                and art.get("value") is not None
+            )
+        ]
+        unmapped = [aid for aid in mappable_artifacts if aid not in mapped_artifacts]
+        lines.append(f"- Unmapped artifacts: {len(unmapped)}  ({', '.join(unmapped) if unmapped else '-'})")
+        if getattr(getattr(context, "budget_state", None), "wrapup_active", False):
+            lines.append(f"- Wrap-up active: yes (pending slots: {', '.join(pending) if pending else '-'}; unmapped artifacts: {', '.join(unmapped) if unmapped else '-'})")
+    except Exception:
+        pass
     lines.append("")
 
     if context.current_slots:
@@ -1309,6 +1333,16 @@ def build_session_log_summary(session_log: List[Dict[str, Any]],
                 paths = details.get("paths") or []
                 p_txt = ", ".join(paths) if paths else "-"
                 log_summary.append(f"[{it or '?'}] show_artifacts requested: {p_txt}")
+                i += 1
+                continue
+
+            if t == "wrapup_activated":
+                details = (entry.get("data") or {})
+                pending = details.get("pending_slots") or []
+                unmapped = details.get("unmapped_artifacts") or []
+                p_txt = ", ".join(pending) if pending else "-"
+                u_txt = ", ".join(unmapped) if unmapped else "-"
+                log_summary.append(f"[{it or '?'}] WRAP-UP activated: pending_slots={p_txt}; unmapped_artifacts={u_txt}")
                 i += 1
                 continue
 

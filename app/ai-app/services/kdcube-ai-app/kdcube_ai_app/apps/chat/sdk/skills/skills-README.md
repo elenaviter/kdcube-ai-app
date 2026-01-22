@@ -107,7 +107,7 @@ tools:
 Namespaces control discoverability:
 - public: visible in skill catalogs
 - internal: not discoverable (used for internal behaviors)
-- custom: loaded from a bundle-defined root (see skills_descriptor)
+- custom: loaded from a bundle-defined root (see SkillsSubsystem descriptor)
 
 Skills are referenced by fully qualified id:
   <namespace>.<skill_id>
@@ -119,20 +119,18 @@ For convenience, callers may also use:
 - short ids (SK1, SK2, ...) from the skill catalog
 
 
-## skills_descriptor (bundle plugin)
+## Skills descriptor (bundle plugin)
 
-Each bundle can provide:
-  kdcube_ai_app/apps/custom_apps/codegen/skills_descriptor.py
-
-This is analogous to tools_descriptor for tools. It defines:
-- CUSTOM_SKILLS_ROOT: optional path for custom namespace skills
-- AGENTS_CONFIG: per-consumer filtering (enabled/disabled lists)
+Each bundle can provide a skills descriptor (analogous to tools_descriptor for tools).
+It defines:
+- custom_skills_root: optional path for custom namespace skills
+- agents_config: per-consumer filtering (enabled/disabled lists)
 
 Example:
 
-CUSTOM_SKILLS_ROOT = pathlib.Path("/opt/custom_skills")
+custom_skills_root = "/opt/custom_skills"
 
-AGENTS_CONFIG = {
+agents_config = {
   "solver.coordinator": {
     "enabled": ["public.url-gen"]
   },
@@ -147,6 +145,9 @@ Filtering logic:
   - otherwise, disabled list removes those skills.
 - If a consumer is not present in AGENTS_CONFIG:
   - all skills are visible (no include_for enforcement).
+
+For infrastructure details and how descriptors are wired into runtime, see:
+  skills-infra-README.md
 
 
 ## Skill discovery and selection
@@ -200,8 +201,8 @@ Callers should use:
                     |
                     v
           +---------------------+        +--------------------+
-          |  Skill Catalogs     |        |  skills_descriptor |
-          |  (system prompt)    |        |  AGENTS_CONFIG     |
+          |  Skill Catalogs     |        |  skills descriptor |
+          |  (system prompt)    |        |  agents_config     |
           +----------+----------+        +---------+----------+
                      \                          /
                       \                        /

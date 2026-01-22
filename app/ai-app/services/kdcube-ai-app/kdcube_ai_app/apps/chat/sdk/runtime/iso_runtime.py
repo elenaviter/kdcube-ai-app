@@ -1219,6 +1219,18 @@ result_filename = (
 )
 print(f"Effective result filename: {result_filename}")
 
+# --- Skills descriptor (if provided)
+# Harmless no-op guard: executor doesn't use skills directly, but some tool modules
+# import skills registry at load time. Pre-setting avoids any dependency on
+# missing runtime context.
+try:
+    _skills_desc = globals().get("SKILLS_DESCRIPTOR") or {}
+    if isinstance(_skills_desc, dict) and _skills_desc:
+        from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import set_skills_descriptor
+        set_skills_descriptor(_skills_desc)
+except Exception:
+    pass
+
 # --- Dyn tool modules pre-registration (by file path) ---
 # CRITICAL: Load dynamic modules before import statements try to use them
 _ALIAS_TO_DYN  = globals().get("TOOL_ALIAS_MAP", {}) or {}

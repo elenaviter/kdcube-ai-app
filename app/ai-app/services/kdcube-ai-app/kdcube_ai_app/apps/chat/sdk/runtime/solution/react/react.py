@@ -138,6 +138,7 @@ class ReactSolver:
             service: ModelServiceBase,
             logger: AgentLogger,
             tool_manager: Any,
+            skills_subsystem: Any,
             scratchpad: TurnScratchpad,
             comm: ChatCommunicator,
             comm_context: ChatTaskPayload,
@@ -149,6 +150,7 @@ class ReactSolver:
         self.svc = service
         self.log = logger
         self.tool_manager = tool_manager
+        self.skills_subsystem = skills_subsystem
         self.scratchpad = scratchpad
         self.comm = comm
         self.comm_context = comm_context
@@ -218,6 +220,18 @@ class ReactSolver:
             self._workdir_cv_token = WORKDIR_CV.set(str(workdir))
         except Exception as e:
             self.log.log(f"[react-subsystem] Failed to set CVs: {e}", level="ERROR")
+        try:
+            from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import set_active_skills_subsystem
+            if self.skills_subsystem:
+                set_active_skills_subsystem(self.skills_subsystem)
+        except Exception:
+            pass
+        try:
+            from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import set_active_skills_subsystem
+            if self.skills_subsystem:
+                set_active_skills_subsystem(self.skills_subsystem)
+        except Exception:
+            pass
 
         session_id = f"react-{uuid.uuid4().hex[:8]}"
         turn_id = runtime_ctx.get("turn_id") or "current_turn"
@@ -547,6 +561,8 @@ class ReactSolver:
             if wrapup_possible:
                 state["wrapup_round_used"] = True
                 state["is_wrapup_round"] = True
+                if context:
+                    self._emit_wrapup_event(state, context)
                 state["exit_reason"] = None
                 state["pending_exit_reason"] = None
                 return "decision"
@@ -981,6 +997,8 @@ class ReactSolver:
                     state["is_wrapup_round"] = True
                     state["exit_reason"] = None
                     state["pending_exit_reason"] = None
+                    if context:
+                        self._emit_wrapup_event(state, context)
                 else:
                     if not state.get("exit_reason"):
                         state["exit_reason"] = state.get("pending_exit_reason")
@@ -1072,6 +1090,8 @@ class ReactSolver:
             if pending and has_unmapped and not state.get("wrapup_round_used", False):
                 state["wrapup_round_used"] = True
                 state["is_wrapup_round"] = True
+                if context:
+                    self._emit_wrapup_event(state, context)
             elif not allow_exploit_overdraft:
                 state["pending_exit_reason"] = "max_iterations"
                 state["error"] = {
@@ -1932,6 +1952,7 @@ class ReactSolver:
                 store.upsert(records)
         except Exception:
             pass
+
         tool_response = await execute_tool(
             tool_execution_context={
                 **tool_call,
@@ -2459,6 +2480,39 @@ class ReactSolver:
         self._finalize_round_timing(state, end_reason="call_tool")
 
         return state
+
+    def _emit_wrapup_event(self, state: Dict[str, Any], context: ReactContext) -> None:
+        if state.get("wrapup_event_emitted"):
+            return
+        try:
+            declared = list((state.get("output_contract") or {}).keys())
+            filled = list((getattr(context, "current_slots", {}) or {}).keys()) if context else []
+            pending = [s for s in declared if s not in set(filled)]
+            artifacts_map = (getattr(context, "artifacts", {}) or {}) if context else {}
+            mapped_artifacts = set()
+            if context and getattr(context, "current_slots", None):
+                for slot in (context.current_slots or {}).values():
+                    if isinstance(slot, dict):
+                        aid = (slot.get("mapped_artifact_id") or "").strip()
+                        if aid:
+                            mapped_artifacts.add(aid)
+            mappable_artifacts = [
+                aid for aid, art in artifacts_map.items()
+                if not isinstance(art, dict)
+                or (
+                    art.get("artifact_kind") != "search"
+                    and not art.get("error")
+                    and art.get("value") is not None
+                )
+            ]
+            unmapped = [aid for aid in mappable_artifacts if aid not in mapped_artifacts]
+            context.add_event(kind="wrapup_activated", data={
+                "pending_slots": pending,
+                "unmapped_artifacts": unmapped,
+            })
+            state["wrapup_event_emitted"] = True
+        except Exception:
+            state["wrapup_event_emitted"] = True
 
     async def _exit_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
         reason = state.get("exit_reason", "complete")

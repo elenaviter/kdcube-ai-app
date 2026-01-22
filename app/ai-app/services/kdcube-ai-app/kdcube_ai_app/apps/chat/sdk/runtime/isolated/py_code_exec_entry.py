@@ -84,6 +84,11 @@ def _load_runtime_globals() -> Dict[str, Any]:
             os.environ["SKILLS_DESCRIPTOR_JSON"] = json.dumps(skills_desc, ensure_ascii=False)
         except Exception:
             pass
+        try:
+            from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import set_skills_descriptor
+            set_skills_descriptor(skills_desc)
+        except Exception:
+            pass
     return data
 
 

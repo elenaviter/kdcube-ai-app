@@ -874,14 +874,21 @@ async def web_search(
     filtered_rows = reconciled_rows
     new_rows = filtered_rows
     if refinement != "none" and fetch_content and reconciled_rows and use_external_refinement:
+        fetch_agent_label = (
+            f"Reading through web search results for {objective.strip()}"
+            if objective and objective.strip()
+            else "Reading through web search results"
+        )
+        fetch_agent_id = f"Web fetch for {objective.strip()}" if objective and objective.strip() else "Web fetch"
+        fetch_agent_id = f"{fetch_agent_id} [{agent_suffix}]"
         fetched_rows = await fetch_search_results_content(
             search_results=reconciled_rows,
             max_content_length=-1,
             extraction_mode="custom",
             include_binary_base64=include_binary_base64,
-            widget_agent=agent_id,
-            widget_artifact_name=f"Fetch URL Contents [{agent_suffix}]",
-            widget_title=agent_label,
+            widget_agent=fetch_agent_id,
+            widget_artifact_name=f"Web Fetch [{agent_suffix}]",
+            widget_title=fetch_agent_label,
             namespaced_kv_cache=namespaced_kv_cache,
         )
         new_rows = fetched_rows
