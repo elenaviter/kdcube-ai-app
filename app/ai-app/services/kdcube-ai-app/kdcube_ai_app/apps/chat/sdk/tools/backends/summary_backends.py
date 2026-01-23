@@ -3,8 +3,6 @@
 
 # apps/chat/sdk/tools/backends/summary_backends.py
 
-# sdk/codegen/summary/summary.py
-
 from typing import Any, Dict, Optional, List, Union, Tuple, Set
 from datetime import datetime
 import json, logging

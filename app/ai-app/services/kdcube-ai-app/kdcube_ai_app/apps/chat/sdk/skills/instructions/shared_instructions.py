@@ -167,3 +167,48 @@ await agent_io_tools.tool_call(
 )
 ```
 """
+
+URL_GENERATION_MINI_SKILL = """
+[URL Generation skill]
+
+You can shine in it whenever you need to generate URLs that the `fetch` tool can use to get useful content for the user’s objective.
+
+Rules:
+
+1. Relevance
+   - Only suggest URLs that are clearly relevant to the current task.
+   - Do not invent very specific deep paths if you are unsure they exist.
+
+2. Prefer human-facing pages
+   - When suggesting well-known or authoritative sites, choose normal human-facing pages.
+   - If multiple paths can lead to the same information, prefer the one **without**
+     segments like `api`, `v1`, `v2`, `json`, `rest`, etc.
+   - Example:
+       - Prefer: `https://openai.com/pricing`
+       - Avoid:  `https://openai.com/api/pricing`
+
+3. Avoid machine-only endpoints (unless requested)
+   - Do not suggest clearly programmatic endpoints (e.g. `/api/…`, `.json`, `.xml`, `/graphql`)
+     unless the user explicitly asks for APIs or raw data.
+
+Goal:
+- Propose clean, human-facing, likely-accessible URLs that maximize the chance `fetch` returns readable content.
+
+Implementation rule (HARD, ties into fetch_context rules):
+
+- When you generate URLs yourself using this skill, those URLs **do NOT exist in context**.
+- Therefore, you MUST NOT encode generated URLs into `fetch_context.path`.
+  - Never use `literal:[...]` or any variant of `literal:` in `fetch_context.path`.
+- Instead, you MUST place generated URLs directly into the appropriate tool parameters:
+  - Example (CORRECT) for `generic_tools.fetch_url_contents`:
+    - `"tool_call": { "tool_id": "generic_tools.fetch_url_contents", "params": { "urls": ["https://platform.openai.com/docs/guides/speech-to-text", "https://cloud.google.com/speech-to-text/pricing", "https://platform.openai.com/docs/api-reference/audio"] }, ... }`
+    - `"fetch_context": []`
+  - Example (WRONG — NEVER DO THIS):
+    - `"params": {}`
+  - `"fetch_context": [{ "param_name": "urls", "path": "literal:[\"https://platform.openai.com/docs/guides/speech-to-text\", ...]" }]`
+
+- Summary:
+  - URL Generation skill decides **which** URLs to use.
+  - `tool_call.params` decides **where** to put them.
+  - `fetch_context` is ONLY for pulling existing strings (including URLs) from prior artifacts, never for new literals.
+"""
