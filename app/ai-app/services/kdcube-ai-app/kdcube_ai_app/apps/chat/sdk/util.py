@@ -343,9 +343,39 @@ def _now_str() -> str:
     # UTC; full timestamp with microseconds
     return datetime.now(timezone.utc).isoformat()
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
 def _now_up_to_minutes() -> str:
     # UTC; full timestamp with microseconds
     return datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
+
+_ISO_MINUTE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})')
+def _to_iso_minute(ts: str) -> str:
+    if not ts:
+        return ts
+    s = str(ts).strip()
+    m = _ISO_MINUTE_RE.match(s)
+    if m:
+        # normalize trailing Z consistently
+        return m.group(1) + "Z"
+    try:
+        s2 = s.rstrip('Z').replace(' ', 'T')
+        d = _dt.datetime.fromisoformat(s2)
+        d = d.replace(second=0, microsecond=0)
+        return d.isoformat(timespec='minutes') + "Z"
+    except Exception:
+        return s
+
+def _tstart() -> tuple[float, int]:
+    """perf counter and wall ms."""
+    return time.perf_counter(), _now_ms()
+
+def _tend(t0: float, started_ms: int) -> Dict[str, int]:
+    """elapsed + stamps for event payloads."""
+    ended_ms = _now_ms()
+    elapsed_ms = int((time.perf_counter() - t0) * 1000)
+    return {"started_ms": started_ms, "ended_ms": ended_ms, "elapsed_ms": elapsed_ms}
 
 def _shorten(s: str, n: int) -> str:
     s = (s or "").strip()
