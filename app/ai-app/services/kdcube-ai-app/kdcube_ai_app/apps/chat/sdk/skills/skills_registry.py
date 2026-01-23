@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from contextvars import ContextVar
 from typing import Any, Dict, List, Optional, Iterable, Tuple, Set, Literal
+import fnmatch
 import pathlib
 import logging
 import textwrap
@@ -433,8 +434,8 @@ class SkillsSubsystem:
             if not root.exists():
                 continue
             files.extend([p for p in root.glob("*/*/SKILL.md") if p.is_file()])
-            files.extend([p for p in root.glob("*.y*ml") if p.is_file()])
-            files.extend([p for p in root.glob("*.md") if p.is_file()])
+            files.extend([p for p in root.glob("*/*/skill.y*ml") if p.is_file()])
+            files.extend([p for p in root.glob("*/*/*.y*ml") if p.is_file() and p.name.lower() not in ("tools.yaml", "tools.yml")])
         if not files:
             log.warning("Skills directories not found; no skills loaded")
         return sorted(set(files))
@@ -542,14 +543,34 @@ def skills_for_consumer(
         disabled = cfg.get("disabled")
     enabled_set: Optional[Set[str]] = None
     disabled_set: Optional[Set[str]] = None
+    enabled_ns: Optional[Set[str]] = None
+    disabled_ns: Optional[Set[str]] = None
+    enabled_glob: Optional[List[str]] = None
+    disabled_glob: Optional[List[str]] = None
+
+    def _normalize_ns_patterns(items: Iterable[str]) -> Set[str]:
+        out: Set[str] = set()
+        for raw in items:
+            s = str(raw or "").strip()
+            if not s or not s.endswith(".*"):
+                continue
+            ns = s[:-2].strip()
+            if ns:
+                out.add(ns)
+        return out
+
     if enabled:
         enabled_set = set()
+        enabled_ns = _normalize_ns_patterns(enabled)
+        enabled_glob = [str(r).strip() for r in enabled if isinstance(r, str) and "*" in r and not r.endswith(".*")]
         for ref in enabled:
             resolved = resolve_skill_ref(ref)
             if resolved:
                 enabled_set.add(resolved)
     elif disabled:
         disabled_set = set()
+        disabled_ns = _normalize_ns_patterns(disabled)
+        disabled_glob = [str(r).strip() for r in disabled if isinstance(r, str) and "*" in r and not r.endswith(".*")]
         for ref in disabled:
             resolved = resolve_skill_ref(ref)
             if resolved:
@@ -572,10 +593,23 @@ def skills_for_consumer(
             continue
         if enabled_set is not None:
             full_id = f"{s.namespace}.{s.id}" if s.namespace else s.id
-            if full_id not in enabled_set:
+            if enabled_ns and s.namespace not in enabled_ns and full_id not in enabled_set:
+                if not enabled_glob or not any(fnmatch.fnmatchcase(full_id, pat) for pat in enabled_glob):
+                    continue
+            if enabled_glob and any(fnmatch.fnmatchcase(full_id, pat) for pat in enabled_glob):
+                pass
+            elif enabled_ns and s.namespace in enabled_ns:
+                pass
+            elif full_id in enabled_set:
+                pass
+            else:
                 continue
         if disabled_set is not None:
             full_id = f"{s.namespace}.{s.id}" if s.namespace else s.id
+            if disabled_ns and s.namespace in disabled_ns:
+                continue
+            if disabled_glob and any(fnmatch.fnmatchcase(full_id, pat) for pat in disabled_glob):
+                continue
             if full_id in disabled_set:
                 continue
         out.append(s)
@@ -906,3 +940,22 @@ def build_skills_instruction_block(
         f"[{header}]",
         *blocks,
     ])
+
+
+def top_level_skill_ids_for_consumer(consumer: SkillConsumer) -> List[str]:
+    skills = skills_for_consumer(consumer=consumer)
+    imported: set[str] = set()
+    for s in skills:
+        for dep in getattr(s, "imports", []) or []:
+            resolved = resolve_skill_ref(dep)
+            if resolved:
+                imported.add(resolved)
+    out: List[str] = []
+    seen: set[str] = set()
+    for s in skills:
+        full_id = f"{s.namespace}.{s.id}" if s.namespace else s.id
+        if full_id in imported or full_id in seen:
+            continue
+        out.append(full_id)
+        seen.add(full_id)
+    return out

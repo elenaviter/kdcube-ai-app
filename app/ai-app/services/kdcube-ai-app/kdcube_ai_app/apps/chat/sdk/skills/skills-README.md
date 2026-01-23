@@ -135,7 +135,7 @@ agents_config = {
     "enabled": ["public.url-gen"]
   },
   "tool.generator.strong": {
-    "disabled": ["public.pdf-press"]
+    "disabled": ["public.pdf-press", "public.*-press"]
   }
 }
 
@@ -143,6 +143,7 @@ Filtering logic:
 - If a consumer is present in AGENTS_CONFIG:
   - enabled list means only those skills are visible.
   - otherwise, disabled list removes those skills.
+- You can use wildcard patterns like `public.*` or `public.*-press`.
 - If a consumer is not present in AGENTS_CONFIG:
   - all skills are visible (no include_for enforcement).
 

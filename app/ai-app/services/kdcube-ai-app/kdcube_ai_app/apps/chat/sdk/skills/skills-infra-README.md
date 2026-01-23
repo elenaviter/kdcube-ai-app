@@ -27,6 +27,7 @@ The descriptor is a JSON-serializable dict with:
 ```
 
 If `custom_skills_root` is relative, it is resolved against the bundle root.
+If omitted and the bundle has `skills/` under its root, the bundle can pass that path.
 
 ## How it is wired
 
