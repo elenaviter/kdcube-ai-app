@@ -145,7 +145,7 @@ class ReactSolver:
             hosting_service: Optional[Any] = None,
             turn_view_class: Type[BaseTurnView] = BaseTurnView,
             react_decision_stream: Callable[..., Awaitable[Dict[str, Any]]],
-            solution_gen_stream: Callable[..., Awaitable[Dict[str, Any]]],
+            solution_gen_stream: Optional[Callable[..., Awaitable[Dict[str, Any]]]],
     ):
         self.svc = service
         self.log = logger
