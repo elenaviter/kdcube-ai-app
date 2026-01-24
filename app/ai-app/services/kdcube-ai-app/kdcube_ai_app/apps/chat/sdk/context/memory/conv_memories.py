@@ -121,6 +121,8 @@ class ConvMemoriesStore:
         track_id: Optional[str] = None,
         bundle_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if "new" in active_set:
+            del active_set["new"]
         active_set["version"] = "v1"
         active_set["updated_at"] = _now_iso()
         wrote_ctx = await self._put_to_ctx(

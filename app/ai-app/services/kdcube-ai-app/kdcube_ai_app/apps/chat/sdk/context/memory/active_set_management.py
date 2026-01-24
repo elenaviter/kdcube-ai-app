@@ -83,7 +83,8 @@ def _merge_fps_by_tid(newest_first_a: list[dict], newest_first_b: list[dict]) ->
 async def _preload_active_anchor_and_delta_fps(_ctx,
                                                scratchpad: TurnScratchpad,
                                                active_store: ConvMemoriesStore,
-                                               ctx_client: ContextRAGClient):
+                                               ctx_client: ContextRAGClient,
+                                               bundle_id: Optional[str] = None):
     """
     Loads current ACTIVE SET (once), extracts its anchor timestamp & turn id,
     then fetches ALL turn fingerprints strictly after that ts.
@@ -100,12 +101,6 @@ async def _preload_active_anchor_and_delta_fps(_ctx,
     scratchpad.is_new_conversation = active_set is None or (active_set.get("new") or False)
     if "new" in active_set:
         del active_set["new"]
-        await active_store.put_active_set(
-            tenant=tenant, project=project, user=user, conversation=conversation_id,
-            turn_id=_ctx["conversation"]["turn_id"],
-            active_set=active_set, user_type=_ctx["service"]["user_type"],
-            track_id=_ctx["conversation"]["track_id"]
-        )
 
     scratchpad.active_set = active_set or {"version":"v1", "assertions":[], "exceptions":[], "facts":[],
                                            "objective_hint":"", "topics":[], "active_bucket_id": None,
@@ -266,6 +261,7 @@ async def _reconcile_objectives_if_due(
         _emit_fn: Optional[Any] = None,
         example_input: Optional[dict] = None,
         example_output: Optional[dict] = None,
+        persist_active_set: bool = True,
 ) -> Dict[str, Any]:
     """
     Execute LLM reconciler over the recent window of FSP aggregates.
@@ -377,10 +373,14 @@ async def _reconcile_objectives_if_due(
     ) or {}
     as_ptr["last_reconciled_ts"] = last_ts
     as_ptr["since_last_reconcile"] = 0
-    await active_store.put_active_set(
-        tenant=tenant, project=project, user=user, conversation=conversation_id,
-        turn_id=turn_id,
-        active_set=as_ptr, user_type=user_type, track_id=track_id, bundle_id=bundle_id
-    )
+    if persist_active_set:
+        await active_store.put_active_set(
+            tenant=tenant, project=project, user=user, conversation=conversation_id,
+            turn_id=turn_id,
+            active_set=as_ptr, user_type=user_type, track_id=track_id, bundle_id=bundle_id
+        )
+        return res
 
+    res = dict(res)
+    res["active_set"] = as_ptr
     return res
