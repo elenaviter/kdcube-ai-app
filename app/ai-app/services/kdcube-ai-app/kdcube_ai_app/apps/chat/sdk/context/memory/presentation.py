@@ -40,6 +40,14 @@ def format_assistant_signals_block(
     order_label: str = "newest→oldest",
     scope_label: str = "user_cross_conversation",
 ) -> str:
+    """
+    Render assistant-originated promo/mention signals.
+
+    Example:
+    [ASSISTANT SIGNALS — CHRONOLOGICAL (newest→oldest; scope=user_cross_conversation)]
+    - turn_id=turn_123 | 2026-01-26T15:03Z | time_since=2h15m
+      - signal: product.capability = {...} (recommend, scope=conversation)
+    """
     if not turn_memories:
         return ""
     lines = [f"[ASSISTANT SIGNALS — CHRONOLOGICAL ({order_label}; scope={scope_label})]"]
@@ -114,6 +122,17 @@ def format_turn_memories_block(
     scope_label: str = "conversation",
     current_turn_id: Optional[str] = None,
 ) -> str:
+    """
+    Render per-turn memories (preferences/facts) in chronological order.
+
+    Example:
+    [TURN MEMORIES — CHRONOLOGICAL (newest→oldest; scope=conversation)]
+    Legend: A=assertions, E=exceptions, F=facts
+    - turn_123 (current turn) (2026-01-26T15:03Z) obj="Fix diagram" topics=[mermaid, diagram]
+      A: format=mermaid (must, scope=objective) | E: (none) | F: (none)
+    - turn_122 (2026-01-26T14:50Z) obj="..." topics=[...]
+      A: ... | E: ... | F: ...
+    """
     if not turn_memories:
         return ""
     lines = [
@@ -252,6 +271,14 @@ def format_feedback_block(
     order_label: str = "newest→oldest",
     scope_label: str = "conversation",
 ) -> str:
+    """
+    Render feedback entries (reaction artifacts).
+
+    Example:
+    [USER FEEDBACK — CHRONOLOGICAL (newest→oldest; scope=conversation)]
+    - turn_id=turn_123 | 2026-01-26T15:05Z | time_since=10m | origin=user | reaction=ok
+      text: "Looks good"
+    """
     if not feedback_items:
         return ""
     lines = [f"[USER FEEDBACK — CHRONOLOGICAL ({order_label}; scope={scope_label})]"]
