@@ -289,14 +289,11 @@ def _messages_with_context(
             assistant_parts.append(turn_ctx)
             assistant_parts.append("")
 
-        # B) Internal artifacts (program presentation, project log)
-        if internal_artifacts:
-            block = _format_assistant_internal_block(
-                "Internal Working Materials",
-                internal_artifacts
-            )
-            if block:
-                assistant_parts.append(block)
+        # B) Turn presentation (derived from turn log)
+        turn_prez = (p.get("turn_presentation") or "").strip()
+        if turn_prez:
+            assistant_parts.append("### Turn Presentation (internal)")
+            assistant_parts.append(turn_prez)
 
         # C) User-facing deliverables (what was actually shown to user)
         if user_facing_deliverables:

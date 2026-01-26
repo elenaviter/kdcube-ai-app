@@ -38,15 +38,18 @@ class KeyPolicy:
 class PrefAssertion(BaseModel):
     key: str
     value: Any = None
-    desired: bool = True
+    severity: str = "prefer"
     scope: str = "conversation"
+    applies_to: Optional[str] = None
     confidence: float = Field(0.6, ge=0.0, le=1.0)
     reason: str = "nl-extracted"
 
 class PrefException(BaseModel):
-    rule_key: str
+    key: str
     value: Any = True
+    severity: str = "avoid"
     scope: str = "conversation"
+    applies_to: Optional[str] = None
     confidence: float = Field(0.7, ge=0.0, le=1.0)
     reason: str = "nl-extracted"
 

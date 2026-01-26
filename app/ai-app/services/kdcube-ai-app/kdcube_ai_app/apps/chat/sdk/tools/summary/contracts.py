@@ -205,3 +205,4 @@ class TurnSummaryOut(BaseModel):
     domain: Optional[str] = None                 # "domain1;domain2"
     inquiry_type: Optional[str] = None           # "type1;type2"
     prefs: Dict[str, Any] = Field(default_factory=dict)
+    assistant_signals: List[Dict[str, Any]] = Field(default_factory=list)

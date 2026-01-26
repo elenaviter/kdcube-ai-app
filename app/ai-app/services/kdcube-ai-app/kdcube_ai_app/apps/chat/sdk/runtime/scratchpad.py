@@ -191,7 +191,7 @@ class TurnScratchpad:
 
         # Welcome here
         # Shortened preview of user text (used in logging / streaming headers)
-        self.short_text = _shorten(text or "", 220)
+        self.short_text = _shorten(text or "", 1000)
 
         # Routing & gate-related, but not tied to GateOut type itself
         self.route: Optional[str] = None
@@ -216,10 +216,15 @@ class TurnScratchpad:
 
         # Long-lived objective memories (reconciled every N turns)
         self.objective_memories: Optional[dict] = None
-        self.objective_memory_logs: Optional[dict] = None
 
         # Current turn fingerprint object (TurnFingerprintV1)
         self.turn_fp = None
+
+        # Assistant-originated signals across this conversation
+        self.assistant_signals_user_level: Optional[List[dict]] = None
+
+        # Feedback (user + machine) across this conversation
+        self.feedback_conversation_level: Optional[List[dict]] = None
 
         # Subset of local memories selected as relevant for this turn
         self.selected_turns_local_mem_entries: List[dict] = []
@@ -620,6 +625,14 @@ class BaseTurnView(ABC):
     ) -> str:
         ...
 
+    @abstractmethod
+    def to_final_answer_presentation(
+            self,
+            *,
+            assistant_answer_limit: int = 1600,
+    ) -> str:
+        ...
+
     @classmethod
     @abstractmethod
     def from_saved_payload(
@@ -749,9 +762,13 @@ class TurnLog(BaseModel):
         try:
             compact_prefs = []
             for a in (prefs.get("assertions") or [])[:6]:
-                compact_prefs.append(f"{a.get('key')}={a.get('value')} {'(avoid)' if not a.get('desired', True) else ''}")
+                sev = (a.get("severity") or "").strip()
+                suffix = f" ({sev})" if sev else ""
+                compact_prefs.append(f"{a.get('key')}={a.get('value')}{suffix}")
             for e in (prefs.get("exceptions") or [])[:3]:
-                compact_prefs.append(f"EXC[{e.get('rule_key')}]: {e.get('value')}")
+                sev = (e.get("severity") or "").strip()
+                suffix = f" ({sev})" if sev else ""
+                compact_prefs.append(f"EXC[{e.get('key')}]: {e.get('value')}{suffix}")
             if compact_prefs:
                 self.note("extracted prefs: " + "; ".join(compact_prefs))
         except Exception:

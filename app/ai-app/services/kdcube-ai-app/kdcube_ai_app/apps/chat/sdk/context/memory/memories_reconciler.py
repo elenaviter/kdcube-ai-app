@@ -36,8 +36,8 @@ class ThinSliceIn(BaseModel):
     made_at: str
     objective: str = ""
     topics: List[str] = Field(default_factory=list)
-    assertions: List[Dict[str, Any]] = Field(default_factory=list)   # [{key,value,desired?}]
-    exceptions: List[Dict[str, Any]] = Field(default_factory=list)   # [{rule_key,value}]
+    assertions: List[Dict[str, Any]] = Field(default_factory=list)   # [{key,value,severity?,scope?,applies_to?}]
+    exceptions: List[Dict[str, Any]] = Field(default_factory=list)   # [{key,value,severity?,scope?,applies_to?}]
     facts: List[Dict[str, Any]] = Field(default_factory=list)        # [{key,value}]
     support_turn_id: Optional[str] = None
 
@@ -76,7 +76,7 @@ DEFAULT_EXAMPLE_INPUT = {
         ]}
     ],
     "window_newest_first": [
-        {"made_at":"2025-09-23T11:59:00Z","objective":"Revision: raise forecast; offset churn via renewals+upsell","topics":["revenue","forecast"],"facts":[{"key":"forecast.revenue.total","value":1320000}],"assertions":[{"key":"churn.offset.plan","value":"renewals+upsell"}]}
+        {"made_at":"2025-09-23T11:59:00Z","objective":"Revision: raise forecast; offset churn via renewals+upsell","topics":["revenue","forecast"],"facts":[{"key":"forecast.revenue.total","value":1320000}],"assertions":[{"key":"churn.offset.plan","value":{"choice":"renewals+upsell","severity":"prefer"}}]}
     ]
 }
 DEFAULT_EXAMPLE_OUTPUT = {
@@ -146,6 +146,8 @@ async def objective_reconciler_stream(
         "   - Build a THIN, ORDERED (oldest->newest) timeline per changed/added bucket.\n"
         "   - A timeline is a list of SLICES. Each slice summarizes a time window (can be a single turn window) with:\n"
         "     {ts_from, ts_to, objective_hint, assertions[], exceptions[], facts[]}, where each list contains unique keys with consolidated values and weights.\n"
+        "   - Each assertion/exception item should preserve optional fields when present: severity, scope, applies_to.\n"
+        "   - Merge rule: treat (key,value,scope,applies_to) as the identity. If duplicates appear, keep the newest and increase weight; if conflicting values exist for the same key+scope+applies_to, keep both but reduce weights.\n"
         "   - Weights are relative importance [0.05..1.0]. Use 0.10 weak, 0.20 moderate, 0.30 strong signal increments; decay older/conflicting cues by decreasing weights.\n"
         "   - Deduplicate keys, squash synonyms, avoid ephemeral one-offs. Keep only durable items.\n"
         "   - Keep the bucket thin. Prefer ≤3 signals per kind per newest slice, and truncate older slices if needed.\n"
@@ -168,8 +170,8 @@ async def objective_reconciler_stream(
         "                          \"topic_centroid\": [str], \"objective_text\": str,\n"
         "                          \"timeline\": [ {\"ts_from\": str, \"ts_to\": str, \"objective_hint\": str,\n"
         "                                         \"facts\": [ {\"key\": str, \"value\": any, \"weight\": number, \"last_seen_ts\": str?, \"support_turn_ids\": [str]? } ],\n"
-        "                                         \"assertions\": [ {\"key\": str, \"value\": any, \"weight\": number, \"last_seen_ts\": str?, \"support_turn_ids\": [str]? } ],\n"
-        "                                         \"exceptions\": [ {\"key\": str, \"value\": any, \"weight\": number, \"last_seen_ts\": str?, \"support_turn_ids\": [str]? } ] } ] } ],\n"
+        "                                         \"assertions\": [ {\"key\": str, \"value\": any, \"severity\"?: str, \"scope\"?: str, \"applies_to\"?: str, \"weight\": number, \"last_seen_ts\": str?, \"support_turn_ids\": [str]? } ],\n"
+        "                                         \"exceptions\": [ {\"key\": str, \"value\": any, \"severity\"?: str, \"scope\"?: str, \"applies_to\"?: str, \"weight\": number, \"last_seen_ts\": str?, \"support_turn_ids\": [str]? } ] } ] } ],\n"
         "  \"added_buckets\":   [ {\"bucket_id\": \"\"|str, ... same shape as above ... } ],\n"
         "  \"disabled_bucket_ids\": [str],\n"
         "  \"last_covered_ts\": str,\n"

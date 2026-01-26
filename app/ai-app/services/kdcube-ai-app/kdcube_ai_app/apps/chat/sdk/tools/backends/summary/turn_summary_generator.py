@@ -14,7 +14,7 @@ from kdcube_ai_app.infra.service_hub.inventory import ModelServiceBase
 import kdcube_ai_app.apps.chat.sdk.viz.logging_helpers as logging_helpers
 
 
-def _turn_summary_system_prompt(timezone: str) -> str:
+def _turn_summary_system_prompt(timezone: str, assistant_signal_spec: str | None = None) -> str:
     now = _now_str()
     today = _today_str()
 
@@ -78,6 +78,7 @@ def _turn_summary_system_prompt(timezone: str) -> str:
         "This MUST be an inventorization-style summary with semantic + structural signals "
         "(what it is about, what artifacts/data structures exist, and how it's formatted: tables, "
         "code blocks, lists, schemas, snippets, mixed content). "
+        "Be terse and distinctive: capture only the most representative signals; avoid headings, section labels, or exhaustive enumeration. "
         "Inventorization breakdown = telegraphic semantic + structural + inventory summary "
         "of the assistant answer artifact (topics/domains/intent; structure like tables/schemas/snippets/code blocks/lists/mixed content and what's it about; "
         "key items/sections/artifacts).\n"
@@ -86,8 +87,20 @@ def _turn_summary_system_prompt(timezone: str) -> str:
         "Critical for downstream agents to know if transformation/extraction needed before tool consumption.\n\n"
         "OUTPUT RULES:\n"
         "- Output MUST be valid JSON with ALL keys shown in the template (use empty strings or [] when unknown).\n"
+        "- Output MUST start with '{' and end with '}'. No headings, no prose, no markdown, no code fences.\n"
         "- Keep arrays compact (0-6 items).\n"
     )
+    assistant_signal_block = ""
+    if assistant_signal_spec:
+        assistant_signal_block = (
+            "\nASSISTANT SIGNALS (assistant_signals):\n"
+            "- Extract ONLY from the assistant's final answer in this turn.\n"
+            "- Use ASSISTANT_SIGNAL_SPEC below to decide what to extract.\n"
+            "- If no applicable signal, return an empty list.\n"
+            "\nASSISTANT_SIGNAL_SPEC:\n"
+            f"{assistant_signal_spec.strip()}\n"
+        )
+    guidance = guidance + assistant_signal_block
 
     json_shape_hint = (
         "{\n"
@@ -104,14 +117,9 @@ def _turn_summary_system_prompt(timezone: str) -> str:
         '  "complexity": {"level": "simple|moderate|complex|very_complex", "factors": []},\n'
         '  "domain": "domain1;domain2",\n'
         '  "inquiry_type": "type1;type2",\n'
-        '  "prefs": {\n'
-        '    "assertions": [\n'
-        '      {"key":"", "value":null, "desired":true, "scope":"conversation", "confidence":0.7, "reason":"nl-or-summary"}\n'
-        '    ],\n'
-        '    "exceptions": [\n'
-        '      {"rule_key":"", "value":{}, "scope":"conversation", "confidence":0.7, "reason":"nl-or-summary"}\n'
-        '    ]\n'
-        "  }\n"
+        '  "assistant_signals": [\n'
+        '    {"key":"signal_type", "value":"string|number|boolean|object", "severity":"mention|recommend|strong_promote", "scope":"conversation|objective|artifact|thread", "applies_to":"label"}\n'
+        "  ]\n"
         "}"
     )
 
@@ -142,12 +150,13 @@ async def stream_turn_summary(
         assistant_answer: str,
         timezone: str,
         max_tokens: int = 1500,
+        assistant_signal_spec: str | None = None,
 ) -> Tuple[Dict[str, Any], str]:
     """
     Generate a structured turn summary using a single-channel JSON stream.
     Returns (summary_dict, internal_thinking).
     """
-    sys_prompt = _turn_summary_system_prompt(timezone)
+    sys_prompt = _turn_summary_system_prompt(timezone, assistant_signal_spec)
     role = "turn.summary"
 
     messages = _summary_messages_with_answer(

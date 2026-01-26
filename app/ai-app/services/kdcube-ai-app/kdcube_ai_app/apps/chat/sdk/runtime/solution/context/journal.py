@@ -7,6 +7,10 @@ import json, re, time
 import datetime as _dt
 from typing import Dict, Any, Optional, List, Literal, Tuple, Protocol, Type
 
+from kdcube_ai_app.apps.chat.sdk.context.memory.presentation import (
+    format_feedback_block,
+    format_turn_memories_block,
+)
 from kdcube_ai_app.apps.chat.sdk.context.memory.turn_fingerprint import TurnFingerprintV1, render_fingerprint_one_liner
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import BaseTurnView, CompressedTurn, turn_to_pair
@@ -23,12 +27,6 @@ import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.context.retrieval as ctx_retrieval_module
 from kdcube_ai_app.apps.chat.sdk.util import _truncate, _turn_id_from_tags_safe, _to_jsonable, ts_key, _shorten, estimate_b64_size
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.ranking import estimate_tokens
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.gate.gate_contract import (
-    gate_topics,
-    expand_gate_assertions,
-    expand_gate_exceptions,
-    expand_gate_facts,
-)
 
 
 def _format_full_value_for_journal(val: Any) -> str:
@@ -150,6 +148,15 @@ def render_full_context_artifacts_for_journal(show_artifacts: Optional[List[Dict
             continue
         lines.extend(_render_full_artifact_for_journal(item))
     return "\n".join(lines)
+
+def _payload_unwrap(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Unwrap ctx store payloads where payload.payload holds the actual turn log."""
+    if not isinstance(rec, dict):
+        return {}
+    pay = rec.get("payload") or {}
+    if isinstance(pay, dict) and isinstance(pay.get("payload"), dict):
+        return pay["payload"]
+    return pay if isinstance(pay, dict) else {}
 
 
 def build_turn_session_journal(*,
@@ -342,13 +349,14 @@ def build_turn_session_journal(*,
     lines: list[str] = []
     lines.append("# The Turn Session Journal / Operational Digest (Current turn). **Strictly ordered from oldest → newest** for prior turns.")
     lines.append("Events are chronological. Do NOT reinterpret later user feedback or decisions as if they occurred before earlier steps.")
+    lines.append("Memory sections below follow the same oldest→newest ordering as the prior turns above.")
     lines.append("")
     if is_codegen_agent:
         fetch_context_tool_retrieval_example = f"Use ctx_tools.fetch_turn_artifacts([turn_id]) to pull artifact"
     else:
         fetch_context_tool_retrieval_example = f"Use 'show_artifacts' to see any artifact in full on next round"
     # lines.append("Previews are truncated. Use ctx_tools.fetch_turn_artifacts([turn_ids]) for full content.")
-    lines.append(f"Within turn, User message, assistant final answer can be truncated. Solver artifacts (slots) content is not shown. If available, only their content summary is shown. {fetch_context_tool_retrieval_example}")
+    lines.append(f"Within turn, user message and assistant answer are shown from turn log. Solver artifacts (slots) content is not shown. If available, only their content summary is shown. {fetch_context_tool_retrieval_example}")
     lines.append("For show_artifacts: text artifacts show full content; unsupported binaries show best-effort surrogate; multimodal-supported artifacts show definition only and are attached as multimodal blocks.")
     lines.append("Slots define the turn contract (what must be delivered). Some slots are file slots, but the turn may produce additional files on the way.")
     lines.append("All produced files are tracked and can be reused later (e.g., images, spreadsheets). These files also have surrogates and summaries.")
@@ -470,6 +478,35 @@ def build_turn_session_journal(*,
         print(f"Failed to build TurnView for current_turn: {ex}")
         print(traceback.format_exc())
         lines.append("(failed to render current turn view)")
+
+    try:
+        turn_memories = (getattr(context.scratchpad, "guess_ctx", None) or {}).get("turn_memories") or []
+        ordered_turn_memories = list(reversed(turn_memories))
+        mem_block = format_turn_memories_block(
+            ordered_turn_memories,
+            max_items=16,
+            order_label="oldest→newest",
+            scope_label="conversation",
+            current_turn_id=turn_id,
+        )
+        if mem_block:
+            lines.append("")
+            lines.append(mem_block)
+    except Exception:
+        pass
+
+    try:
+        feedback_items = getattr(context.scratchpad, "feedback_conversation_level", None)
+        feedback_block = format_feedback_block(
+            list(reversed(feedback_items or [])),
+            order_label="oldest→newest",
+            scope_label="conversation",
+        )
+        if feedback_block:
+            lines.append("")
+            lines.append(feedback_block)
+    except Exception:
+        pass
 
     lines.append("")
     if coordinator_turn_line:
@@ -1787,75 +1824,6 @@ def _extract_entries_and_summary(saved_payload: Dict[str, Any]) -> Tuple[List[Di
     gate = saved_payload.get("gate") or {}
     return entries, turn_summary, gate
 
-def _memories_artifact_from_gate(
-    gate: Dict[str, Any],
-    *,
-    turn_id: str,
-    objective: Optional[str] = None,
-) -> Optional[dict]:
-    """
-    Build a compact memories artifact from GateOut fields for the turn.
-    Surfaces assertions / exceptions / facts so callers have `turn_log.memories`.
-    """
-    if not isinstance(gate, dict) or not gate:
-        return None
-
-    assertions = expand_gate_assertions(gate)
-    exceptions = expand_gate_exceptions(gate)
-    facts = expand_gate_facts(gate)
-
-    lines: List[str] = ["# Memories (Gate extraction)"]
-    obj = (objective or gate.get("current_objective_short") or "").strip()
-    if obj:
-        lines.append(f"- Objective: {obj}")
-    if gate.get("topics"):
-        try:
-            tnames = gate_topics(gate)
-            if tnames:
-                lines.append(f"- Topics: {', '.join(tnames[:8])}")
-        except Exception:
-            pass
-
-    if assertions:
-        lines.append("\n## Assertions")
-        for a in assertions[:12]:
-            key = a.get("key")
-            val = a.get("value")
-            desired = a.get("desired", True)
-            scope = a.get("scope", "conversation")
-            conf = a.get("confidence", 0.0)
-            mark = "" if desired else " (avoid)"
-            lines.append(f"- {key} = {val}{mark}  — scope={scope}, conf={conf:.2f}")
-
-    if exceptions:
-        lines.append("\n## Exceptions")
-        for e in exceptions[:8]:
-            rk = e.get("rule_key")
-            val = e.get("value")
-            scope = e.get("scope", "conversation")
-            conf = e.get("confidence", 0.0)
-            lines.append(f"- EXC[{rk}] = {val}  — scope={scope}, conf={conf:.2f}")
-
-    if facts:
-        lines.append("\n## Facts")
-        for f in facts[:12]:
-            key = f.get("key")
-            val = f.get("value")
-            scope = f.get("scope", "conversation")
-            conf = f.get("confidence", 0.0)
-            lines.append(f"- {key} = {val}  — scope={scope}, conf={conf:.2f}")
-
-    body = "\n".join(lines).strip()
-    if not body:
-        return None
-
-    return {
-        "type": "text",
-        "title": f"Memories (turn {turn_id})",
-        "content": body,
-        "turn_id": turn_id,
-        "kind": "turn_log.memories",
-    }
 
 # ---------------------------------------------------------------------------
 # Pairs building from guess_ctx (already-fetched turn logs)
@@ -1937,20 +1905,18 @@ def extract_turn_ids_from_guess_package(guess_package: Dict[str, Any]) -> set:
     Extract all valid turn IDs from the structured guess_package.
 
     Sources:
-    - earlier_turns_insights[].turn_id
+    - turn_memories[].turn_id
     - last_turns_details[].turn_id
     - current_turn_details.turn_id
-    - objective_memory[].timeline[].turn_id (if present)
-    - active_memory_insights[].source_turn_ids[] (if present)
 
     Returns:
         Set of all unique turn IDs found in the package.
     """
     turn_ids = set()
 
-    # From earlier_turns_insights
-    for insight in (guess_package.get("earlier_turns_insights") or []):
-        if tid := insight.get("turn_id"):
+    # From turn_memories
+    for mem in (guess_package.get("turn_memories") or []):
+        if tid := mem.get("turn_id"):
             turn_ids.add(tid)
 
     # From last_turns_details
@@ -1963,24 +1929,6 @@ def extract_turn_ids_from_guess_package(guess_package: Dict[str, Any]) -> set:
         if tid := current.get("turn_id"):
             turn_ids.add(tid)
 
-    # From objective_memory timelines (if they have turn_id references)
-    for mem in (guess_package.get("objective_memory") or []):
-        for timeline_entry in (mem.get("timeline") or []):
-            if tid := timeline_entry.get("turn_id"):
-                turn_ids.add(tid)
-            # Also check source_turn_ids if present
-            if source_ids := timeline_entry.get("source_turn_ids"):
-                if isinstance(source_ids, list):
-                    turn_ids.update(tid for tid in source_ids if tid)
-
-    # From active_memory_insights (may have source_turn_ids arrays)
-    for mem in (guess_package.get("active_memory_insights") or []):
-        if source_ids := mem.get("source_turn_ids"):
-            if isinstance(source_ids, list):
-                turn_ids.update(tid for tid in source_ids if tid)
-        # Some insights might have turn_id directly
-        if tid := mem.get("turn_id"):
-            turn_ids.add(tid)
 
     return turn_ids
 
@@ -1993,17 +1941,15 @@ async def retrospective_context_view(
         last_turns: int = 3,
         recommended_turn_ids: Optional[List[str]] = None,
         context_hit_queries: Optional[Dict[str, List[str]]] = None,
-        memory_log_entries: Optional[List[Dict[str, Any]]] = None,
         delta_fps: Optional[List[Dict[str, Any]]] = None,
         scratchpad: Optional[Any] = None,
         current_turn_log: Optional[str] = None,
         current_turn_fp: Optional[TurnFingerprintV1] = None,
         current_turn_payload: Optional[Dict[str, Any]] = None,
         context_bundle: Optional[Any] = None,
-        selected_bucket_cards: Optional[List[dict]] = None,
-        objective_memory_timelines: Optional[Dict[str, List[dict]]] = None,
         filter_turn_ids: Optional[List[str]] = None,
         selected_local_memories_turn_ids: Optional[List[str]] = None,
+        feedback_items: Optional[List[Dict[str, Any]]] = None,
         turn_view_class: Type[BaseTurnView] = BaseTurnView,
 ) -> Tuple[str, Dict[str, Any]]:
     """
@@ -2031,10 +1977,13 @@ async def retrospective_context_view(
     Returns: (guess_ctx_str, guess_package)
 
     Layout (freshest → oldest):
-      - [OBJECTIVE MEMORY — SELECTED BUCKETS]    — compact, contextual, not chronological
       - [CURRENT TURN]                           — ts, turn id, insights (from current_turn_fp), full current_turn_log
       - [PRIOR TURNS (newest→oldest) - COMPRESSED VIEWS]         — newest→oldest, using TurnView.to_compressed_search_view()
-      - [EARLIER TURNS — NON-RECONCILED INSIGHTS]— newest→oldest, from delta_fps (filtered & deduped)
+      - [TURNS CANDIDATES TABLE]                 — turn ids + objective hints
+      - [USER FEEDBACK — CHRONOLOGICAL (newest→oldest; scope=conversation)]          — conversation-level feedback
+      - [TURN MEMORIES — CHRONOLOGICAL (newest→oldest; scope=conversation)]          — local per-turn memories (for ctx reconciler selection)
+    Notes:
+      - delta_fps = recent local fingerprints window (newest→oldest), used as memory hints.
     """
 
     # ---------- 1) Fetch recent turn logs + include pinned ones ----------
@@ -2146,27 +2095,32 @@ async def retrospective_context_view(
     # ---------- 2) Build text blocks ----------
     text_blocks: List[str] = []
     items_struct: List[Dict[str, Any]] = []
+    memory_block = ""
+    turn_memories_sorted: List[Dict[str, Any]] = []
 
-    def _selected_memories_block() -> str:
-        if not selected_bucket_cards:
+    def _fp_from_saved_payload(saved_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        tlog = saved_payload.get("turn_log") or {}
+        state = tlog.get("state") or {}
+        fp = state.get("fingerprint")
+        return fp if isinstance(fp, dict) else None
+
+    def _fp_one_liner(fp_doc: Dict[str, Any]) -> str:
+        try:
+            fp_obj = TurnFingerprintV1(
+                version=(fp_doc.get("version") or "v1"),
+                turn_id=(fp_doc.get("turn_id") or ""),
+                objective=(fp_doc.get("objective") or ""),
+                topics=(fp_doc.get("topics") or []),
+                assertions=(fp_doc.get("assertions") or []),
+                exceptions=(fp_doc.get("exceptions") or []),
+                facts=(fp_doc.get("facts") or []),
+                assistant_signals=[],
+                ctx_retrieval_queries=(fp_doc.get("ctx_retrieval_queries") or []),
+                made_at=(fp_doc.get("made_at") or fp_doc.get("ts") or ""),
+            )
+            return render_fingerprint_one_liner(fp_obj) or ""
+        except Exception:
             return ""
-        lines = ["[selected.memories]"]
-        for card in selected_bucket_cards or []:
-            if not isinstance(card, dict):
-                continue
-            bid = (card.get("bucket_id") or "").strip()
-            name = (card.get("name") or "").strip()
-            desc = (card.get("short_desc") or "").strip()
-            parts: list[str] = []
-            if bid:
-                parts.append(f"id={bid}")
-            if name:
-                parts.append(f"name={name}")
-            if desc:
-                parts.append(f"desc={desc}")
-            if parts:
-                lines.append("- " + " | ".join(parts))
-        return "\n".join(lines) if len(lines) > 1 else ""
 
     # 2.a Current turn (insights from provided current_turn_fp; no loading)
     if scratchpad is not None:
@@ -2206,13 +2160,6 @@ async def retrospective_context_view(
         log_block = (current_turn_log or "").strip()
         if not log_block and one_line:
             log_block = "[turn insights]\n" + one_line
-        mem_block = _selected_memories_block()
-        if mem_block:
-            if log_block:
-                log_block = f"{log_block}\n{mem_block}"
-            else:
-                log_block = mem_block
-
         text_blocks.append("\n".join([
             f"[CURRENT TURN turn_id={turn_id}]",
             _fmt_ts_for_humans(ts_now_iso),
@@ -2228,17 +2175,7 @@ async def retrospective_context_view(
             "log": current_turn_log,
         })
 
-    # 2.b Active memory insights
-    text_blocks.append("[ACTIVE MEMORY INSIGHTS]")
-    if memory_log_entries:
-        for entry in (memory_log_entries or []):
-            try:
-                text_blocks.append(json.dumps(entry, ensure_ascii=False))
-            except Exception:
-                text_blocks.append(str(entry))
-    else:
-        text_blocks.append("(none)")
-    text_blocks.append("")
+    # 2.b Active memory insights removed (long memories disabled)
 
     # 2.c Prior turns — COMPRESSED VIEWS using TurnView (newest→oldest)
     last_turns_details: List[dict] = []
@@ -2307,56 +2244,66 @@ async def retrospective_context_view(
             print(traceback.format_exc())
             continue
 
-    # 2.d Earlier (non-reconciled) insights from delta_fps — filtered/deduped
-    earlier_turns_insights: List[dict] = []
-    orphan_insights: List[dict] = []
+    # 2.d Turn memories (chronological; local memories only)
+    fp_map: Dict[str, Dict[str, Any]] = {}
+    for item in raw_items:
+        tid = _turn_id_from_tags_safe(list(item.get("tags") or [])) or ""
+        saved_payload = _payload_unwrap(item)
+        fp = _fp_from_saved_payload(saved_payload)
+        if fp and tid:
+            fp_map[tid] = fp
+
     if delta_fps:
-        ub = ts_key(oldest_included_ts) if oldest_included_ts else float("inf")
         sel = set(selected_local_memories_turn_ids or [])
-        for fp_doc in delta_fps:
+        for fp_doc in (delta_fps or []):
             tid = (fp_doc or {}).get("turn_id")
+            if not tid or tid in fp_map:
+                continue
             if sel and tid not in sel:
                 continue
-            made_at = (fp_doc or {}).get("made_at") or (fp_doc or {}).get("ts") or ""
-            one = ""
-            try:
-                fp = TurnFingerprintV1(
-                    version=(fp_doc or {}).get("version") or "v1",
-                    turn_id=tid or "",
-                    objective=(fp_doc or {}).get("objective") or "",
-                    topics=(fp_doc or {}).get("topics") or [],
-                    assertions=(fp_doc or {}).get("assertions") or [],
-                    exceptions=(fp_doc or {}).get("exceptions") or [],
-                    facts=(fp_doc or {}).get("facts") or [],
-                    made_at=made_at
-                )
-                one = render_fingerprint_one_liner(fp) or ""
-            except Exception:
-                one = ""
-            if not one:
-                continue
+            if isinstance(fp_doc, dict):
+                fp_map[tid] = fp_doc
 
-            rec = {
-                "ts": made_at,
-                "turn_id": tid or None,
-                "kind": "delta_fp",
-                "insights_one_liner": one,
-                "insights_json": fp_doc,
-                "log": "",
-            }
-            earlier_turns_insights.append(rec)
+    if current_turn_fp and turn_id and turn_id not in fp_map:
+        try:
+            fp_map[turn_id] = current_turn_fp.to_json()
+        except Exception:
+            pass
 
-            if not oldest_included_ts or ts_key(made_at) < ub:
-                orphan_insights.append(rec)
+    def _fp_ts(fp: Dict[str, Any]) -> float:
+        ts = (fp.get("made_at") or fp.get("ts") or "").strip()
+        if not ts:
+            return float("-inf")
+        try:
+            s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+            return _dt.datetime.fromisoformat(s).timestamp()
+        except Exception:
+            return float("-inf")
 
-        if orphan_insights:
-            orphan_sorted = sorted(orphan_insights, key=lambda x: x.get("ts") or "", reverse=True)
-            lines = ["[EARLIER TURNS — SUMMARY]"]
-            for it in orphan_sorted[:16]:
-                lines.append(
-                    f"[TURN turn_id={it.get('turn_id')}]\n{_fmt_ts_for_humans(it.get('ts') or '')}\n{it.get('insights_one_liner')}\n"
-                )
-            text_blocks.append("\n".join(lines).strip() + "\n")
+    if filter_turn_ids is None and selected_local_memories_turn_ids is None:
+        filtered_fp_map = fp_map
+    else:
+        target_ids = {t for t in (set(filter_turn_ids or []) | set(selected_local_memories_turn_ids or [])) if t}
+        if turn_id:
+            target_ids.add(turn_id)
+        filtered_fp_map = {tid: fp for tid, fp in fp_map.items() if tid in target_ids}
+
+    fps_sorted = sorted(filtered_fp_map.values(), key=_fp_ts, reverse=True)
+    if fps_sorted:
+        lines = ["[TURN MEMORIES — CHRONOLOGICAL (newest→oldest; scope=conversation)]"]
+        turn_memories_sorted = []
+        for fp_doc in fps_sorted:
+            tid = (fp_doc.get("turn_id") or "").strip()
+            ts = (fp_doc.get("made_at") or fp_doc.get("ts") or "").strip()
+            one = _fp_one_liner(fp_doc)
+            ts_disp = _fmt_ts_for_humans(ts)
+            cur_label = " (current turn)" if tid and tid == turn_id else ""
+            if one:
+                lines.append(f"- {tid}{cur_label} ({ts_disp}) {one}")
+            else:
+                lines.append(f"- {tid}{cur_label} ({ts_disp})")
+            turn_memories_sorted.append(fp_doc)
+        memory_block = "\n".join(lines) + "\n"
 
     # 2.e Turn candidates table (oldest -> newest)
     if items_sorted:
@@ -2384,24 +2331,32 @@ async def retrospective_context_view(
             table_lines.append(f"- {tid} ({ts_str}) | {reason_str}{obj_str}")
         text_blocks.append("\n".join(table_lines) + "\n")
 
+    # 2.f Feedback (bottom) + local memories
+    feedback_block = format_feedback_block(
+        feedback_items or [],
+        order_label="newest→oldest",
+        scope_label="conversation",
+    )
+    if feedback_block:
+        text_blocks.append(feedback_block)
+        text_blocks.append("")
+
+    if memory_block:
+        text_blocks.append(memory_block)
+        text_blocks.append("")
+
     # ---------- 3) Assemble outputs ----------
     guess_ctx_str = ("\n".join(text_blocks)).strip()
     guess_package = {
         "items": (
-                earlier_turns_insights
-                + last_turns_details
+                last_turns_details
                 + [i for i in items_struct if i.get("kind") == "turn_current"]
         ),
-        "active_memory_insights": list(memory_log_entries or []),
-        "earlier_turns_insights": earlier_turns_insights,
         "last_turns_details": last_turns_details,
         "last_turns_mate": last_turns_mate,
         "current_turn_details": next((it for it in items_struct if it.get("kind") == "turn_current"), None),
-        "objective_memory": (
-            [{"bucket_card": c, "timeline": (objective_memory_timelines or {}).get(c.get("bucket_id"), [])}
-             for c in (selected_bucket_cards or [])]
-            if selected_bucket_cards else []
-        ),
+        "turn_memories": turn_memories_sorted,
+        "feedback_items": list(feedback_items or []),
     }
 
     return guess_ctx_str, guess_package
@@ -2546,33 +2501,13 @@ async def materialize_prior_pairs(
     except Exception:
         history_by_tid = {}
 
-    newest_prior_nonclar_idx = -1
-    for idx, tid in enumerate(materialize_ids):
-        if tid in history_by_tid:
-            saved_payload = history_by_tid[tid].get("turn_log") or {}
-            if newest_prior_nonclar_idx == -1 and not _is_clarification_turn(saved_payload or {}):
-                newest_prior_nonclar_idx = idx
-            continue
-        try:
-            mat_meta = await ctx_client.materialize_turn(
-                turn_id=tid,
-                user_id=user,
-                conversation_id=conversation_id,
-                track_id=track_id,
-                with_payload=True
-            )
-        except Exception:
-            continue
-        turn_log_payload = unwrap_payload((mat_meta.get("turn_log") or {}).get("payload") or {})
-        if newest_prior_nonclar_idx == -1:
-            if not _is_clarification_turn(turn_log_payload or {}):
-                newest_prior_nonclar_idx = idx
-
+    records: list[dict] = []
     for idx, tid in enumerate(materialize_ids):
         mat = None
         saved_payload = {}
-        if tid in history_by_tid:
-            saved_payload = history_by_tid[tid].get("turn_log") or {}
+        history_meta = history_by_tid.get(tid)
+        if history_meta:
+            saved_payload = history_meta.get("turn_log") or {}
         else:
             try:
                 mat = await ctx_client.materialize_turn(
@@ -2585,65 +2520,76 @@ async def materialize_prior_pairs(
             except Exception:
                 continue
 
-        artifacts: list[dict] = []
-
         if not saved_payload:
             saved_payload = unwrap_payload((mat.get("turn_log") or {}).get("payload") or {}) or {}
+
         entries, turn_summary, gate = _extract_entries_and_summary(saved_payload)
         deliverables_map = _solver_deliverables(saved_payload)
         is_clar = _is_clarification_turn(saved_payload)
 
-        # compressed turn
         compressed_turn = None
         if entries and turn_summary:
             try:
                 compressed_turn = CompressedTurn.from_structured(entries, turn_summary)
-                # inject objective into insights (to surface in user context)
                 g_obj = (turn_summary.get("objective") or gate.get("current_objective_short") or "").strip()
                 if g_obj:
-                    compressed_turn.insights = (compressed_turn.insights + ("; " if compressed_turn.insights and g_obj else "") + g_obj) if compressed_turn.insights or g_obj else g_obj
+                    compressed_turn.insights = (
+                        compressed_turn.insights
+                        + ("; " if compressed_turn.insights and g_obj else "")
+                        + g_obj
+                    ) if compressed_turn.insights or g_obj else g_obj
             except Exception:
                 compressed_turn = None
 
-        # INTERNAL: Program Presentation
-        prez_md = _solver_program_presentation(saved_payload)
-        if isinstance(prez_md, str) and prez_md.strip():
-            artifacts.append({
-                "type": "text",
-                "title": f"Program Presentation (turn {tid})",
-                "content": prez_md,
-                "turn_id": tid,
-                "kind": "solver.program.presentation",
-            })
+        records.append({
+            "idx": idx,
+            "turn_id": tid,
+            "mat": mat,
+            "saved_payload": saved_payload,
+            "history_meta": history_meta,
+            "entries": entries,
+            "turn_summary": turn_summary,
+            "gate": gate,
+            "deliverables_map": deliverables_map,
+            "is_clar": is_clar,
+            "compressed_turn": compressed_turn,
+        })
 
-        # INTERNAL: Solver Failure
-        solver_failure_art = _solver_failure_artifact(saved_payload, turn_id=tid)
-        if solver_failure_art:
-            artifacts.append(solver_failure_art)
+    newest_prior_nonclar_idx = -1
+    for rec in records:
+        if not rec["is_clar"]:
+            newest_prior_nonclar_idx = rec["idx"]
 
-        # INTERNAL: Project Log
-        project_log_spec = (deliverables_map or {}).get("project_log") or {}
-        log_art = project_log_spec.get("value") or {}
-        log_text = (log_art.get("text")
-                    or (log_art.get("output") or {}).get("text")
-                    or "")
-        if isinstance(log_text, str) and log_text.strip():
-            artifacts.append({
-                "type": "text",
-                "title": f"Project Log (turn {tid}) — internal working draft",
-                "content": log_text,
-                "turn_id": tid,
-                "kind": "project.log",
-            })
+    for rec in records:
+        idx = rec["idx"]
+        tid = rec["turn_id"]
+        mat = rec["mat"]
+        saved_payload = rec["saved_payload"] or {}
+        history_meta = rec["history_meta"]
 
-        # MEMORIES: GateOut (added)
-        mem_art = _memories_artifact_from_gate(
-            gate,
-            turn_id=tid,
-            objective=(turn_summary.get("objective") or ""),
-        )
-        if mem_art:
-            artifacts.append(mem_art)
+        artifacts: list[dict] = []
+        turn_presentation = ""
+
+        entries = rec["entries"]
+        turn_summary = rec["turn_summary"]
+        gate = rec["gate"]
+        deliverables_map = rec["deliverables_map"]
+        is_clar = rec["is_clar"]
+        compressed_turn = rec["compressed_turn"]
+
+        # Turn presentation for final answer generator (derived from turn log)
+        try:
+            tv = turn_view_class.from_saved_payload(
+                turn_id=tid,
+                user_id=user,
+                conversation_id=conversation_id,
+                payload={"payload": saved_payload},
+            )
+            prez = tv.to_final_answer_presentation(assistant_answer_limit=trunc_assistant)
+            if isinstance(prez, str) and prez.strip():
+                turn_presentation = prez.strip()
+        except Exception:
+            turn_presentation = ""
 
         # USER-FACING: Deliverables (full vs summary)
         full_for_this_turn = False
@@ -2710,10 +2656,10 @@ async def materialize_prior_pairs(
             asst_obj = unwrap_payload((mat.get("assistant") or {}).get("payload") or {})
             asst_ts = (mat.get("assistant") or {}).get("ts")
         else:
-            user_obj = history_by_tid[tid].get("user") or {}
-            asst_obj = history_by_tid[tid].get("assistant") or {}
-            user_ts = history_by_tid[tid].get("ts")
-            asst_ts = history_by_tid[tid].get("ts")
+            user_obj = (history_meta or {}).get("user") or {}
+            asst_obj = (history_meta or {}).get("assistant") or {}
+            user_ts = (history_meta or {}).get("ts")
+            asst_ts = (history_meta or {}).get("ts")
 
         user_text = _extract_text_field(user_obj, "prompt").strip()
         asst_text = _extract_text_field(asst_obj, "completion").strip()
@@ -2739,6 +2685,7 @@ async def materialize_prior_pairs(
             "user": {"text": user_text, "ts": user_ts, "attachments": attachments},
             "assistant": {"text": asst_text, "ts": asst_ts},
             "artifacts": artifacts,
+            "turn_presentation": turn_presentation,
             "compressed_turn": compressed_turn,
         })
 

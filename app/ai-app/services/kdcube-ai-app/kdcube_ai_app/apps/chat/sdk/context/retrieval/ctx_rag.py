@@ -36,6 +36,8 @@ SOURCES_POOL_ARTIFACT_TAG = "artifact:conv:sources_pool"
 
 FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
 CONV_START_FPS_TAG = "conv.start"
+ACTIVE_SET_KIND = "conversation.active_set.v1"
+ACTIVE_SET_TAG = "conv.state:conversation_state_v1"
 
 async def persist_single_artifact_message(
         *,
@@ -1706,6 +1708,7 @@ class ContextRAGClient:
             content_str: Optional[str] = None,
             extra_tags: Optional[List[str]] = None,
             bundle_id: Optional[str] = None,
+            index_only: bool = False,
     ) -> Dict[str, Any]:
         """Writes markdown to store (assistant artifact) + indexes it."""
 
@@ -1715,17 +1718,23 @@ class ContextRAGClient:
             content_str = json.dumps(content, ensure_ascii=False) if isinstance(content, dict) else str(content)
         if extra_tags:
             tags.extend([t for t in extra_tags if isinstance(t, str) and t.strip()])
-        hosted_uri, message_id, rn = await self.store.put_message(
-            tenant=tenant, project=project, user=user_id, fingerprint=None,
-            conversation_id=conversation_id,
-            bundle_id=bundle_id,
-            role="artifact",
-            text=content_str,
-            id=kind,
-            payload=content,
-            meta={"kind": kind, "turn_id": turn_id, "track_id": track_id},
-            embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
-        )
+        hosted_uri = None
+        message_id = None
+        rn = None
+        if not index_only:
+            hosted_uri, message_id, rn = await self.store.put_message(
+                tenant=tenant, project=project, user=user_id, fingerprint=None,
+                conversation_id=conversation_id,
+                bundle_id=bundle_id,
+                role="artifact",
+                text=content_str,
+                id=kind,
+                payload=content,
+                meta={"kind": kind, "turn_id": turn_id, "track_id": track_id},
+                embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
+            )
+        else:
+            hosted_uri = "index_only"
         await self.idx.add_message(
             user_id=user_id, conversation_id=conversation_id, turn_id=turn_id,
             bundle_id=bundle_id, role="artifact",
@@ -1768,6 +1777,7 @@ class ContextRAGClient:
             unique_tags: List[str],
             preserve_ts: bool = False,
             original_ts: Optional[str] = None,
+            index_only: bool = False,
     ) -> Dict[str, Any]:
         """
         Idempotent write of a single logical artifact (e.g., a memory bucket) identified
@@ -1794,19 +1804,26 @@ class ContextRAGClient:
                 tenant=tenant, project=project, user_id=user_id, conversation_id=conversation_id,
                 user_type=user_type, turn_id=turn_id, track_id=track_id, bundle_id=bundle_id,
                 content=content, content_str=content_str, extra_tags=unique_tags,
+                index_only=index_only,
             )
             return {"mode": "insert", **saved}
 
         # 2) Write a new message blob and then point the index row at it
-        hosted_uri, message_id, rn = await self.store.put_message(
-            tenant=tenant, project=project, user=user_id, fingerprint=None,
-            conversation_id=conversation_id, bundle_id=bundle_id,
-            role="artifact", text=content_str,
-            id=kind,
-            payload=content,
-            meta={"kind": kind, "turn_id": turn_id, "track_id": track_id},
-            embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
-        )
+        hosted_uri = None
+        message_id = existing.get("message_id")
+        rn = None
+        if not index_only:
+            hosted_uri, message_id, rn = await self.store.put_message(
+                tenant=tenant, project=project, user=user_id, fingerprint=None,
+                conversation_id=conversation_id, bundle_id=bundle_id,
+                role="artifact", text=content_str,
+                id=kind,
+                payload=content,
+                meta={"kind": kind, "turn_id": turn_id, "track_id": track_id},
+                embedding=None, user_type=user_type, turn_id=turn_id, track_id=track_id,
+            )
+        else:
+            hosted_uri = "index_only"
 
         # 3) update the existing index row in place
         # Determine timestamp: preserve original or update to now
@@ -1831,7 +1848,7 @@ class ContextRAGClient:
             hosted_uri=hosted_uri,
             ts=update_ts,  # Use preserved or new timestamp
         )
-        return {"mode": "update", "id": int(existing["id"]), "message_id": existing.get("message_id"), "hosted_uri": hosted_uri}
+        return {"mode": "update", "id": int(existing["id"]), "message_id": message_id, "hosted_uri": hosted_uri}
 
     async def list_conversations_(self, user_id: str):
 
@@ -2063,8 +2080,63 @@ class ContextRAGClient:
             turn_ids=turn_ids or None,
         )
 
+        conversation_title = None
+        try:
+            active_set_res = await self.recent(
+                kinds=[f"artifact:{ACTIVE_SET_KIND}"],
+                scope="conversation",
+                user_id=user_id,
+                conversation_id=conversation_id,
+                limit=1,
+                days=days,
+                with_payload=False,
+                all_tags=[ACTIVE_SET_TAG],
+                ctx={"bundle_id": bundle_id},
+            )
+            it = next(iter(active_set_res.get("items") or []), None)
+            if it:
+                text = (it.get("text") or "").strip()
+                if text:
+                    payload = json.loads(text)
+                    if isinstance(payload, dict):
+                        title = payload.get("conversation_title")
+                        if isinstance(title, str) and title.strip():
+                            conversation_title = title.strip()
+        except Exception:
+            conversation_title = None
+
+        if not conversation_title:
+            try:
+                conv_start_res = await self.recent(
+                    kinds=[FINGERPRINT_KIND],
+                    scope="conversation",
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    limit=1,
+                    days=days,
+                    with_payload=False,
+                    all_tags=[CONV_START_FPS_TAG],
+                    ctx={"bundle_id": bundle_id},
+                )
+                it = next(iter(conv_start_res.get("items") or []), None)
+                if it:
+                    text = (it.get("text") or "").strip()
+                    if text:
+                        payload = json.loads(text)
+                        if isinstance(payload, dict):
+                            title = payload.get("conversation_title")
+                            if isinstance(title, str) and title.strip():
+                                conversation_title = title.strip()
+            except Exception:
+                conversation_title = None
+
         if not occ and not (turn_ids or []):
-            return {"user_id": user_id, "conversation_id": conversation_id, "turns": []}
+            return {
+                "user_id": user_id,
+                "conversation_id": conversation_id,
+                "conversation_title": conversation_title,
+                "turns": []
+            }
 
         turns_map: Dict[str, Dict[str, Any]] = {}
         order: List[str] = []
@@ -2107,7 +2179,7 @@ class ContextRAGClient:
 
             turns_map[tid]["artifacts"].append(item)
 
-            if materialize and item.get("hosted_uri"):
+            if materialize and item.get("hosted_uri") and item.get("hosted_uri") != "index_only":
                 # Keep a reference so we can materialize later
                 to_materialize.append(item)
 
@@ -2303,6 +2375,7 @@ class ContextRAGClient:
         return {
             "user_id": user_id,
             "conversation_id": conversation_id,
+            "conversation_title": conversation_title,
             "turns": [turns_map[tid] for tid in order],
         }
 

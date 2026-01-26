@@ -48,11 +48,6 @@ class GateOut(BaseModel):
 
     conversation_title: Optional[str] = Field("", description="Conversation title")
 
-    # prefs - only include if arrays not empty
-    assertions: Dict[str, str] = Field(default_factory=dict, description="key => 'value;desired' (semicolon separated)")
-    exceptions: Dict[str, str] = Field(default_factory=dict, description="key => value")
-    facts: Dict[str, Any] = Field(default_factory=dict, description="key => value")
-
     # context retrieval hints - only include if not empty
     ctx_retrieval_queries: List[ContextRefTarget] = Field(default_factory=list, description="Context search queries (max 2).")
 
@@ -102,57 +97,4 @@ def gate_ctx_queries(raw: Any) -> List[Dict[str, Any]]:
                     **({"reason": q.get("reason")} if q.get("reason") else {}),
                 })
         return out
-    return []
-
-
-def expand_gate_assertions(raw: Any) -> List[Dict[str, Any]]:
-    src = raw
-    if isinstance(raw, GateOut):
-        src = raw.assertions
-    if isinstance(src, dict):
-        out: List[Dict[str, Any]] = []
-        for k, v in src.items():
-            if not k:
-                continue
-            val = str(v) if v is not None else ""
-            value_part, desired_part = (val.split(";", 1) + [""])[:2]
-            desired = True
-            if desired_part.strip().lower() in ("false", "no", "0"):
-                desired = False
-            out.append({"key": k, "value": value_part.strip(), "desired": desired})
-        return out
-    if isinstance(src, list):
-        return [x for x in src if isinstance(x, dict)]
-    return []
-
-
-def expand_gate_exceptions(raw: Any) -> List[Dict[str, Any]]:
-    src = raw
-    if isinstance(raw, GateOut):
-        src = raw.exceptions
-    if isinstance(src, dict):
-        out: List[Dict[str, Any]] = []
-        for k, v in src.items():
-            if not k:
-                continue
-            out.append({"rule_key": k, "value": v})
-        return out
-    if isinstance(src, list):
-        return [x for x in src if isinstance(x, dict)]
-    return []
-
-
-def expand_gate_facts(raw: Any) -> List[Dict[str, Any]]:
-    src = raw
-    if isinstance(raw, GateOut):
-        src = raw.facts
-    if isinstance(src, dict):
-        out: List[Dict[str, Any]] = []
-        for k, v in src.items():
-            if not k:
-                continue
-            out.append({"key": k, "value": v})
-        return out
-    if isinstance(src, list):
-        return [x for x in src if isinstance(x, dict)]
     return []

@@ -4,8 +4,8 @@
 # sdk/context/memory/fingerprint.py
 
 from __future__ import annotations
-from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from typing import List, Dict, Any
 import datetime
 import json
 
@@ -23,7 +23,7 @@ class FPAssertion:
 
 @dataclass
 class FPException:
-    rule_key: str
+    key: str
     value: Any = None
     scope: str = "conversation"
     since_ts: str = ""
@@ -49,8 +49,10 @@ class TurnFingerprintV1:
     assertions: List[Dict[str, Any]]
     exceptions: List[Dict[str, Any]]
     facts: List[Dict[str, Any]]
+    assistant_signals: List[Dict[str, Any]]
+    ctx_retrieval_queries: List[Dict[str, Any]]
     made_at: str
-    conversation_title: Optional[str] = None
+    conversation_title: str = ""
 
     def to_json(self) -> Dict[str, Any]:
         return {
@@ -61,8 +63,10 @@ class TurnFingerprintV1:
             "assertions": list(self.assertions or []),
             "exceptions": list(self.exceptions or []),
             "facts": list(self.facts or []),
+            "assistant_signals": list(self.assistant_signals or []),
+            "ctx_retrieval_queries": list(self.ctx_retrieval_queries or []),
             "made_at": self.made_at,
-            **{"conversation_title": self.conversation_title if self.conversation_title else {}},
+            "conversation_title": self.conversation_title,
         }
 
 
@@ -77,6 +81,8 @@ def make_early_guess_fingerprint(
         topics: List[str],
         guess_prefs: Dict[str, List[Dict[str, Any]]] | None = None,
         guess_facts: List[Dict[str, Any]] | None = None,
+        ctx_retrieval_queries: List[Dict[str, Any]] | None = None,
+        assistant_signals: List[Dict[str, Any]] | None = None,
 ) -> TurnFingerprintV1:
     gp = guess_prefs or {}
     return TurnFingerprintV1(
@@ -87,7 +93,10 @@ def make_early_guess_fingerprint(
         assertions=list(gp.get("assertions") or []),
         exceptions=list(gp.get("exceptions") or []),
         facts=list(guess_facts or []),
+        assistant_signals=list(assistant_signals or []),
+        ctx_retrieval_queries=list(ctx_retrieval_queries or []),
         made_at=_now_iso(),
+        conversation_title="",
     )
 
 
@@ -102,56 +111,43 @@ def _short(v: Any, max_len: int = 80) -> str:
 
 def render_fingerprint_one_liner(fp: TurnFingerprintV1) -> str:
     obj = (fp.objective or "").strip()
-    obj_short = obj[:160] + ("…" if len(obj) > 160 else "")
-    a_keys = [a.get("key") for a in (fp.assertions or []) if a.get("key")]
-    e_keys = [e.get("rule_key") for e in (fp.exceptions or []) if e.get("rule_key")]
-    f_keys = [f.get("key") for f in (fp.facts or []) if f.get("key")]
+    def _kv(items):
+        out = []
+        for it in items or []:
+            key = it.get("key")
+            if not key:
+                continue
+            val = _short(it.get("value"))
+            sev = (it.get("severity") or "").strip()
+            scope = (it.get("scope") or "").strip()
+            applies = (it.get("applies_to") or "").strip()
+            meta = []
+            if sev:
+                meta.append(sev)
+            if scope:
+                meta.append(f"scope={scope}")
+            if applies:
+                meta.append(f"applies_to={applies}")
+            meta_txt = f" ({', '.join(meta)})" if meta else ""
+            out.append(f"{key}={val}{meta_txt}")
+        return out
+    a_vals = _kv(fp.assertions or [])
+    e_vals = _kv(fp.exceptions or [])
+    f_vals = _kv(fp.facts or [])
     parts = [
-        f"objective={obj_short}",
-        f"A={a_keys[:6]}",
-        f"E={e_keys[:6]}",
-        f"F={f_keys[:6]}",
+        f"objective={obj}",
+        f"A={a_vals[:6]}",
+        f"E={e_vals[:6]}",
+        f"F={f_vals[:6]}",
     ]
     if fp.topics:
         parts.append(f"topics={list(fp.topics)[:4]}")
+    if fp.assistant_signals:
+        keys = []
+        for s in fp.assistant_signals or []:
+            k = (s.get("key") or "").strip()
+            if k and k not in keys:
+                keys.append(k)
+        if keys:
+            parts.append(f"assistant_signals={keys[:3]}")
     return "; ".join(parts)
-
-def _render_local_memories_block(earlier_turns_insights: list[dict], # namely, fingerprints
-                                 max_items: int = 16) -> str:
-    """
-    earlier_turns_insights item shape (from build_gate_context_hints):
-      { "ts": "...", "insights_one_liner": "...", "insights_json": {...}, "turn_id": "tid", "kind": "delta_fp" }
-    We output oldest -> newest to preserve natural order.
-    """
-    if not earlier_turns_insights:
-        return ""
-    # sort by ts ascending
-    def _ts_key(x):
-        ts = (x or {}).get("ts") or ""
-        try:
-            s = ts.strip()
-            if s.endswith("Z"): s = s[:-1] + "+00:00"
-            import datetime as _dt
-            return _dt.datetime.fromisoformat(s).timestamp()
-        except Exception:
-            return float("-inf")
-    arr = sorted(list(earlier_turns_insights), key=_ts_key)[:max_items]
-
-    def _fmt_ts(ts: str) -> str:
-        try:
-            s = ts.strip()
-            if s.endswith("Z"): s = s[:-1] + "+00:00"
-            import datetime as _dt
-            dt = _dt.datetime.fromisoformat(s)
-            if dt.tzinfo: dt = dt.astimezone(_dt.timezone.utc).replace(tzinfo=None)
-            return dt.strftime("%H:%M %b %d %Y")
-        except Exception:
-            return ts or "(time)"
-
-    lines = ["[EARLIER TURNS — NON-RECONCILED INSIGHTS (FILTERED)]"]
-    for it in arr:
-        ts_h = _fmt_ts(it.get("ts") or "")
-        tid  = it.get("turn_id") or ""
-        one  = (it.get("insights_one_liner") or "").strip()
-        lines.append(f"{ts_h}[turn id]\n{tid}\n[insights]\n{one}\n")
-    return "\n".join(lines).strip()

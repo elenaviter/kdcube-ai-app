@@ -114,6 +114,17 @@ def _get_2section_protocol_ctx(json_shape_hint: str) -> str:
         "  \"turn_ids\": [\"turn_abc\"],\n"
         "  \"memory_bucket_ids\": [],\n"
         "  \"local_memories_turn_ids\": [],\n"
+        "  \"assertions\": [\n"
+        "    {\"key\":\"format|source|topic|delivery|safety\", \"value\":\"string|number|boolean|{min,max}|{options:[...]}\", \"severity\":\"must|prefer|allow\", \"scope\":\"conversation|objective|artifact|thread\", \"applies_to\":\"label\"}\n"
+        "  ],\n"
+        "  \"exceptions\": [\n"
+        "    {\"key\":\"format|source|topic|delivery|safety\", \"value\":\"string|number|boolean|{exclude:[...]}|{rule:...}\", \"severity\":\"avoid|do_not\", \"scope\":\"conversation|objective|artifact|thread\", \"applies_to\":\"label\"}\n"
+        "  ],\n"
+        "  \"facts\": [\n"
+        "    {\"key\":\"domain|constraint|fact\", \"value\":\"string|number|boolean|{...}\", \"severity\":\"high|medium|low\", \"scope\":\"conversation|objective|artifact|thread\", \"applies_to\":\"label\"}\n"
+        "  ],\n"
+        "  \"user_input_summary\": \"...\",\n"
+        "  \"objective\": \"...\",\n"
         "  \"clarification_questions\": [],\n"
         "}\n"
         "```\n\n"
@@ -139,6 +150,9 @@ class CtxRerankOut(BaseModel):
     turn_ids: List[str] = Field(default_factory=list, description="Ordered, unique, ≤ limit_ctx (turns to materialize)")
     memory_bucket_ids: List[str] = Field(default_factory=list)
     local_memories_turn_ids: List[str] = Field(default_factory=list)
+    assertions: List[Dict[str, Any]] = Field(default_factory=list)
+    exceptions: List[Dict[str, Any]] = Field(default_factory=list)
+    facts: List[Dict[str, Any]] = Field(default_factory=list)
     user_input_summary: str = ""
     objective: str = ""
     clarification_questions: List[str] = Field(default_factory=list)
@@ -158,7 +172,7 @@ async def ctx_reconciler_stream(
         max_buckets: int = 3,
         max_delta_keep: int = 5,
         on_thinking_delta: Optional[Any] = None,
-        max_tokens: Optional[int] = 1600
+        max_tokens: Optional[int] = 2000
 ) -> Dict[str, Any]:
     """
     Responsibilities:
@@ -171,7 +185,7 @@ async def ctx_reconciler_stream(
     Selection pools:
       - turn_ids: ONLY from [CURRENT_CONTEXT] prior turns + [SEARCH_HITS].
       - memory_bucket_ids: ONLY from [CANDIDATE_MEMORY_BUCKET_CARDS] (already cosine-ranked upstream).
-      - local_memories_turn_ids: ONLY from earlier_turns_insights.
+    - local_memories_turn_ids: ONLY from [TURN MEMORIES — CHRONOLOGICAL].
 
     Route-aware behavior:
       - If route ∈ tools_* → Solver will run. Prefer not to ask clarifications. If user refers
@@ -200,6 +214,7 @@ async def ctx_reconciler_stream(
         "[HARD LIMITS]\n"
         "• THINKING soft budget ≤ {thinking_budget_tokens} tokens. If near budget, output a single '…' and proceed to JSON.\n"
         "• THINKING is user-visible and must be plain, non-technical language.\n"
+        "• THINKING must be telegraphic, concise, and sharp.\n"
         "  - Do NOT mention JSON, field names, schemas, or internal keys (like `turn_ids`).\n"
         "  - Briefly describe how you are using prior conversation/memories to help the user.\n"
         "• JSON MUST be complete & valid; never truncate JSON; never output text after JSON.\n"
@@ -209,17 +224,22 @@ async def ctx_reconciler_stream(
         "- Select turn_ids: the minimal set of materialized prior turns needed to complete the task (origin + governing specs).\n"
         "- Select memory_bucket_ids: long-lived thematic memory buckets to activate (few, high-fit).\n"
         "- Select local_memories_turn_ids: earlier turn insights (facts/assertions/preferences) relevant without loading full turns.\n"
+        "- Extract CURRENT turn preferences (assertions/exceptions) using visible context.\n"
+        "- Extract CURRENT turn facts (facts) using visible context.\n"
         "- Produce objective and user_input_summary for downstream routing/embedding.\n"
         "- Emit clarification questions only when context selection is ambiguous (not task-level gaps).\n"
+        "- All extracted fields (assertions/exceptions/facts/objective/summary) must be telegraphic, concise, and sharp.\n"
         "- HARD BAN: Do NOT ask how the work should be done. This agent is recall-only.\n"
         "\n"
         "[INPUTS]\n"
         "• [CURRENT_CONTEXT]: includes current turn log plus recent/earlier turns.\n"
         "  The current turn log already includes the user message and attachments summaries.\n"
         "  Use the [TURNS CANDIDATES TABLE] to see why each turn is included (recent_turn vs context_hit + queries).\n"
-        "  [ACTIVE MEMORY INSIGHTS] are long-lived memory summaries already computed upstream.\n"
-        "  If present, [EARLIER TURNS — SUMMARY] lists short insights extracted from specific turns (facts/assertions/preferences).\n"
-        "  These local memories can be useful without loading the full turn; include their turn_ids in local_memories_turn_ids when relevant.\n"
+        "  If present, [USER FEEDBACK — CHRONOLOGICAL] (near bottom) summarizes feedback for nearby turns.\n"
+        "  [TURN MEMORIES — CHRONOLOGICAL] (near bottom) lists memories captured from recent turns (newest→oldest).\n"
+        "  These include user preferences and assistant-originated signals that may matter for downstream agents.\n"
+        "  Include ALL turn_ids whose memories are relevant to the current task in local_memories_turn_ids so those memories are preserved.\n"
+        "  If preferences conflict, prioritize the most recent turn that states the preference (newer overrides older).\n"
         "• [CONTEXT_QUERIES]: the semantic queries that were run against history (from gate ctx_retrieval_queries).\n"
         "• [SEARCH_HITS]: semantic/keyword search results with turn_ids and scores (primary source for turn_ids).\n"
         "  Each hit includes source_query that links it back to a context query.\n"
@@ -231,7 +251,11 @@ async def ctx_reconciler_stream(
         f"- turn_ids (≤ {limit_ctx}) — chosen from [SEARCH_HITS] + prior turns in [CURRENT_CONTEXT] (ordered by relevance, not just recency). These are the turns to materialize.\n"
         f"- memory_bucket_ids (≤ {max_buckets}) — subset of [CANDIDATE_MEMORY_BUCKET_CARDS] bucket_id that are relevant to activate for the current turn.\n"
         "- clarification_questions (≤4) — ONLY if [CLARIFICATION POLICY] allows this and user intent is still under-specified OR key constraints are missing and cannot be inferred from the selected turns/buckets.\n"
-        f"- local_memories_turn_ids (≤ {max_delta_keep}) — subset of earlier_turns_insights turn_ids that are relevant to the current turn.\n"
+        f"- local_memories_turn_ids (≤ {max_delta_keep}) — subset of turn ids listed under [TURN MEMORIES — CHRONOLOGICAL] that are relevant to the current turn.\n"
+        "- assertions — CURRENT turn preferences to include (see [PREFS SPEC]).\n"
+        "- exceptions — CURRENT turn preferences to avoid/exclude (see [PREFS SPEC]).\n"
+        "- facts — CURRENT turn facts to remember (see [FACTS SPEC]).\n"
+        "- facts — CURRENT turn facts to remember (see [FACTS SPEC]).\n"
         "- user_input_summary — contextual, embedding-friendly summary of the current user input (see [USER_INPUT_SUMMARY SPEC]).\n"
         "- objective — one short sentence describing the current turn objective.\n"
         "• Apply the **Context Completeness** principle: select turn_ids that jointly cover origin + unique, non-derivable constraints (e.g., output format/schema, scope, audience, routing hints).\n"
@@ -250,7 +274,7 @@ async def ctx_reconciler_stream(
         "     • the current turn log (user message)\n"
         "     • the dominant theme across the turns you select on turn_ids\n"
         "   • Identify missing dimensions of the objective (content origin, format/schema, scope/filters). Ensure at least one relevant turn covers each dimension. Don’t drop the only turn that specifies format/schema.\n"
-        "2) Use the active_memory_insights and earlier_turns_insights to better understand the current context and improve your choice\n"        
+        "2) Use [TURN MEMORIES — CHRONOLOGICAL] to better understand the current context and improve your choice\n"
         "3) Choose memory buckets from [CANDIDATE_MEMORY_BUCKET_CARDS] (quality > quantity) that best support the working objective:\n"
         "   - Compare the working objective and [CURRENT_CONTEXT] themes against each bucket card's:\n"
         "     name, short_desc, objective_text, topic_centroid, and top_signals (facts/assertions/exceptions).\n"
@@ -298,8 +322,8 @@ async def ctx_reconciler_stream(
         "   \n"
         "   • Note: Format/clarification/specification turns are usually NOT selected unless they are the only source of required constraints or they contain original artifact content.\n"
         "   \n"
-        "5) Choose turns (from earlier_turns_insights):\n"
-        f"  - Select up to {max_delta_keep} turn ids from earlier_turns_insights which memories directly support the working objective; otherwise, leave empty. "
+        "5) Choose turns (from [TURN MEMORIES — CHRONOLOGICAL]):\n"
+        f"  - Select up to {max_delta_keep} turn ids from [TURN MEMORIES — CHRONOLOGICAL] which directly support the working objective; otherwise, leave empty. "
         "   - Store the turn ids of the picked relevant local memories in local_memories_turn_ids\n"
         "   - If a turn is already in turn_ids, only include it in local_memories_turn_ids when its insight is still useful without loading the full turn\n"
         f"  - Treat them as hints if unsure\n"
@@ -312,6 +336,45 @@ async def ctx_reconciler_stream(
         f"{URGENCY_SIGNALS}\n"
         f"{CLARIFICATION_QUALITY}\n"
         f"{USER_GENDER_ASSUMPTIONS}\n"
+        "\n"
+        "[PREFS SPEC]\n"
+        "- Extract only from CURRENT user turn, but interpret with visible context.\n"
+        "- Use this schema:\n"
+        "  assertions: [{\"key\": str, \"value\": any, \"severity\": \"must|prefer|allow\", \"scope\"?: str, \"applies_to\"?: str}]\n"
+        "  exceptions: [{\"key\": str, \"value\": any, \"severity\": \"avoid|do_not\", \"scope\"?: str, \"applies_to\"?: str}]\n"
+        "- Assertions are user-stated stable preferences or constraints.\n"
+        "  key is a stable identifier (format, source, topic, delivery, safety).\n"
+        "  severity: must|prefer|allow.\n"
+        "  value: concrete preference (string/number/boolean) or a small object for ranges/options.\n"
+        "  Examples: value=\"email\" | value=true | value={\"min\": 10, \"max\": 20} | value={\"options\": [\"a\",\"b\"]}.\n"
+        "  scope (optional): conversation|objective|artifact|thread.\n"
+        "  applies_to (optional): short label, not an ID (e.g., \"compliance report\", \"budget spreadsheet\").\n"
+        "- Exceptions are explicit exclusions or corrections.\n"
+        "  key is the same dimension as assertions (format, source, topic, delivery, safety).\n"
+        "  severity: avoid|do_not.\n"
+        "  value: excluded value or rule detail (string/number/boolean), or a small object if needed.\n"
+        "  Examples: value=\"no_pii\" | value=\"exclude_pdf\" | value={\"exclude\": [\"csv\",\"pdf\"]}.\n"
+        "- Scope: conversation|objective|artifact|thread (omit if unclear).\n"
+        "- applies_to: short label when the preference is bound to a specific objective/artifact/thread.\n"
+        "- Keep it short and concrete; omit if no clear preference is stated.\n"
+        "\n"
+        "[FACTS SPEC]\n"
+        "- Extract only from CURRENT user turn, but interpret with visible context.\n"
+        "- Facts describe stable context; Assertions describe user preferences/constraints.\n"
+        "  If it changes how we should act → assertion. If it describes the world/context → fact.\n"
+        "- Use this schema:\n"
+        "  facts: [{\"key\": str, \"value\": any, \"severity\"?: str, \"scope\"?: str, \"applies_to\"?: str}]\n"
+        "- Facts are stable, memorable statements or constraints (not preferences).\n"
+        "  key is a stable identifier (domain-specific concept or constraint).\n"
+        "  value: concrete fact (string/number/boolean) or a small object.\n"
+        "  scope (optional): conversation|objective|artifact|thread.\n"
+        "  applies_to (optional): short label when the fact is bound to a specific objective/artifact/thread.\n"
+        "- Keep it short and concrete; omit if no clear fact is stated.\n"
+        "\n"
+        "[EXAMPLES]\n"
+        "- Assertions: \"Use framework X\", \"Prefer short output\".\n"
+        "- Exceptions: \"No PDFs\", \"Avoid personal data\".\n"
+        "- Facts: \"Company is in healthcare\", \"They already use a named framework\", \"Budget cap is $400k\".\n"
         "\n"
         "[USER_INPUT_SUMMARY SPEC]\n"
         f"{user_input_summary_instruction()}\n"
@@ -329,6 +392,7 @@ async def ctx_reconciler_stream(
         "CLARIFICATION POLICY - you may use clarification ONLY IF YOU HAVE CONTEXT SELECTION PROBLEMS OR PROBLEMS RESOLVING THE entity/artifact targeted by user in their message\n"
         "═══════════════════════════════════════════════════════════════\n"
         "You may ask ONLY if its not clear how to choose the turns where relevant data is located.\n"
+        "If the user complains about a problem, do NOT diagnose it and do NOT ask for details.\n"
         "Your deal is to resolve the relevant turns and resolve any unknowns in the user input in terms of the turns they refer to and the artifacts within those turns."
         "This is not your deal to resolve HOW these data is intended to be used. Also you DO NOT resolve an ambiguity of intention in relation to a certain artifact (user input, document, either provided by user or produced by assistant, or assistant response). "
         "For instance, when the user said 'this excel' and you see 2 different excel in the visible turns, this is your deal to ask which exactly, otherwise you cannot resolve the 'this/that' in the user input and you cannot materialize the user input summary by pinning it to some specific objects in the context."
@@ -392,6 +456,9 @@ async def ctx_reconciler_stream(
         "  \"turn_ids\": [str] = [],"
         "  \"memory_bucket_ids\": [str] = [],"
         "  \"local_memories_turn_ids\": [str] = [],"
+        "  \"assertions\": [object] = [],"
+        "  \"exceptions\": [object] = [],"
+        "  \"facts\": [object] = [],"
         "  \"user_input_summary\": str,"
         "  \"objective\": str,"
         "  \"clarification_questions\": [str] = []"
@@ -493,8 +560,8 @@ async def ctx_reconciler_stream(
                 picked_buckets.append(resolved)
         picked_buckets = list(dict.fromkeys(picked_buckets))[:max_buckets]
 
-        # 3) Local memories pool: earlier_turns_insights (by turn_id)
-        local_pool = {it.get("turn_id") for it in (gp.get("earlier_turns_insights") or []) if it.get("turn_id")}
+        # 3) Local memories pool: turn_memories (by turn_id)
+        local_pool = {it.get("turn_id") for it in (gp.get("turn_memories") or []) if it.get("turn_id")}
 
         # Resolve local memory turn IDs with prefix matching
         picked_local = []

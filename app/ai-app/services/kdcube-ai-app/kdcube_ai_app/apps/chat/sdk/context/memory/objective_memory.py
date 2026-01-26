@@ -14,7 +14,7 @@ def render_log_for_prompt(entries: List[dict], *, per_bucket_limit: int = 6) -> 
         lines = [f"objective: {e.get('objective','').strip()}"]
         if e.get("facts"):       lines.append("facts: " + ", ".join([f"{f['key']}=" + (str(f.get('value')) if f.get('value') is not None else "true") for f in e["facts"]]))
         if e.get("assertions"):  lines.append("assertions: " + ", ".join([f"{a['key']}=" + (str(a.get('value')) if a.get('value') is not None else "true") for a in e["assertions"]]))
-        if e.get("exceptions"):  lines.append("exceptions: " + ", ".join([e1["rule_key"] for e1 in e["exceptions"]]))
+        if e.get("exceptions"):  lines.append("exceptions: " + ", ".join([e1.get("key","") for e1 in e["exceptions"] if e1.get("key")]))
         parts.append("\n".join(lines))
         parts.append("")  # blank line
     return "\n".join(parts).strip()
@@ -67,5 +67,4 @@ def _render_selected_memory_buckets_block(objective_memory_section: list[dict],
                 lines.append(f"     · [{tf}..{tt}] {oh}")
 
     return "\n".join(lines).strip()
-
 

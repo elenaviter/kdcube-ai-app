@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any, Dict, Optional
 
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
@@ -40,11 +41,18 @@ class ConvMemoriesStore:
                 roles=("artifact",),
                 limit=1,
                 days=365,
-                with_payload=True,
+                with_payload=False,
                 all_tags=[self.UNIQUE_TAG],
+                ctx={"bundle_id": None},
             )
             for it in (res.get("items") or []):
-                payload = it.get("payload")
+                text = (it.get("text") or "").strip()
+                if not text:
+                    continue
+                try:
+                    payload = json.loads(text)
+                except Exception:
+                    continue
                 if isinstance(payload, dict):
                     return payload
         except Exception:
@@ -79,6 +87,7 @@ class ConvMemoriesStore:
                 content=active_set,
                 unique_tags=[self.UNIQUE_TAG],
                 bundle_id=bundle_id or "",
+                index_only=True,
             )
             return True
         except Exception:

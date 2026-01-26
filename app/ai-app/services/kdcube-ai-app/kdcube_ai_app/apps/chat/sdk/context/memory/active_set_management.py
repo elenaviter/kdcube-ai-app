@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-
+import datetime
 # sdk/context/memory/active_set_management.py
 from typing import Any, Dict, List, Optional, Tuple
+import json
+import ast
+import datetime
 
-from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
+from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient, FINGERPRINT_KIND
 import kdcube_ai_app.apps.chat.sdk.viz.logging_helpers as logging_helpers
 from kdcube_ai_app.apps.chat.sdk.context.memory.conv_memories import ConvMemoriesStore
 from kdcube_ai_app.apps.chat.sdk.context.memory.memories_reconciler import ThinBucketIn, ThinSliceIn, objective_reconciler_stream, materialize_bucket, \
@@ -12,8 +15,6 @@ from kdcube_ai_app.apps.chat.sdk.context.memory.memories_reconciler import ThinB
 from .buckets import BucketStore, MemoryBucket, to_store_dict
 from kdcube_ai_app.apps.chat.sdk.util import _tstart, _tend, _to_iso_minute
 from ...runtime.scratchpad import TurnScratchpad
-
-FINGERPRINT_KIND = "artifact:turn.fingerprint.v1"
 
 def _sanitize_timeline_sample(sample: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
@@ -32,34 +33,6 @@ def _sanitize_timeline_sample(sample: List[Dict[str, Any]]) -> List[Dict[str, An
             s2[fld] = arr
         out.append(s2)
     return out
-
-
-async def _fetch_one_fp_by_tid(*, ctx_client, user: str, conversation_id: str, turn_id: str) -> dict | None:
-
-    if not turn_id:
-        return None
-    try:
-        res = await ctx_client.search(
-            query=None,
-            roles=("artifact",),
-            kinds=(FINGERPRINT_KIND,),
-            scope="track",
-            user_id=user,
-            conversation_id=conversation_id,
-            turn_id=turn_id,              # <-- single turn filter
-            days=365,
-            top_k=1,
-            include_deps=False,
-            sort="recency",
-            with_payload=True
-        )
-        for it in (res.get("items") or []):
-            entry = (it.get("payload") or {}).get("payload")
-            if entry:
-                return entry
-    except Exception:
-        pass
-    return None
 
 def _merge_fps_by_tid(newest_first_a: list[dict], newest_first_b: list[dict]) -> list[dict]:
     by_tid = {}
@@ -80,15 +53,18 @@ def _merge_fps_by_tid(newest_first_a: list[dict], newest_first_b: list[dict]) ->
     out.sort(key=_ts, reverse=True)  # newest -> oldest
     return out
 
-async def _preload_active_anchor_and_delta_fps(_ctx,
-                                               scratchpad: TurnScratchpad,
-                                               active_store: ConvMemoriesStore,
-                                               ctx_client: ContextRAGClient,
-                                               bundle_id: Optional[str] = None):
+async def _preload_conversation_memory_state(_ctx,
+                                             scratchpad: TurnScratchpad,
+                                             active_store: ConvMemoriesStore,
+                                             ctx_client: ContextRAGClient,
+                                             bundle_id: Optional[str] = None,
+                                             assistant_signal_scope: str = "user"):
     """
     Loads current ACTIVE SET (once), extracts its anchor timestamp & turn id,
     then fetches ALL turn fingerprints strictly after that ts.
-    Caches both on scratchpad: .active_anchor, .delta_fps
+    Also loads assistant-originated promo signals (scope configurable).
+    Caches results on scratchpad: active_set, delta_turns_local_mem_entries,
+    selected memory buckets, assistant_signals_user_level, feedback_conversation_level.
     """
     tenant, project, user = _ctx["service"]["tenant"], _ctx["service"]["project"], _ctx["service"]["user"]
     conversation_id = _ctx["conversation"]["conversation_id"]
@@ -102,45 +78,134 @@ async def _preload_active_anchor_and_delta_fps(_ctx,
     if "new" in active_set:
         del active_set["new"]
 
-    scratchpad.active_set = active_set or {"version":"v1", "assertions":[], "exceptions":[], "facts":[],
-                                           "objective_hint":"", "topics":[], "active_bucket_id": None,
-                                           "last_reconciled_ts": ""}
+    scratchpad.active_set = active_set or {
+        "version": "v1",
+        "objective_hint": "",
+        "topics": [],
+        "active_bucket_id": None,
+        "picked_bucket_ids": [],
+        "selected_local_memories_turn_ids": [],
+        "last_reconciled_ts": "",
+    }
     if not scratchpad.is_new_conversation:
         scratchpad.conversation_title = scratchpad.active_set.get("conversation_title")
 
-    # Load objective memory logs per bucket (freshest artifacts)
-    logs_hit = await ctx_client.search(
-        query=None,
-        kinds=("artifact:conversation.objective.memory.log.v1",),
-        roles=("artifact",),
-        scope="conversation",
-        user_id=user, conversation_id=conversation_id,
-        days=365, top_k=64, include_deps=False, sort="recency",
-        with_payload=True
-    )
-    # Keep headers (what you already had) AND a separate map of log entries
-    scratchpad.objective_memories = {}       # bucket_id -> {header fields}
-    scratchpad.objective_memory_logs = {}    # bucket_id -> [entries newest->oldest]
+    scratchpad.objective_memories = {}
+    scratchpad.assistant_signals_user_level = []
 
-    for it in (logs_hit.get("items") or []):
-        doc = (it.get("doc") or {})
-        j = doc.get("json") or {}
-        bid = (j.get("bucket_id") or "").strip()
-        if not bid:
-            continue
-        # Header (idempotent)
-        scratchpad.objective_memories.setdefault(bid, {
-            "bucket_id": bid,
-            "objective_text": j.get("objective_text", ""),
-            "objective_embedding": j.get("objective_embedding") or [],
-            "topics_centroid": j.get("topics_centroid") or [],
-        })
-        # Entries (freshest-first if writer saved them that way; otherwise we'll trust order given)
-        entries = list(j.get("entries") or j.get("log_entries") or [])
-        if entries:
-            scratchpad.objective_memory_logs.setdefault(bid, [])
-            # append preserving newest->oldest invariant (no heavy dedupe here)
-            scratchpad.objective_memory_logs[bid].extend(entries)
+    def _parse_index_text(text: str) -> Optional[Dict[str, Any]]:
+        if not text:
+            return None
+        raw = text.strip()
+        if raw.startswith("[turn.log.reaction]"):
+            raw = raw.split("]", 1)[-1].strip()
+        try:
+            return json.loads(raw)
+        except Exception:
+            pass
+        try:
+            return ast.literal_eval(raw)
+        except Exception:
+            return None
+
+    # Assistant-originated signals (server-side tag filter)
+    try:
+        hit = await ctx_client.search(
+            query=None,
+            roles=("artifact",),
+            kinds=(FINGERPRINT_KIND,),
+            scope=assistant_signal_scope or "conversation",
+            user_id=user,
+            conversation_id=conversation_id,
+            all_tags=["assistant_signal"],
+            days=365,
+            top_k=512,
+            include_deps=False,
+            sort="recency",
+            with_payload=False,
+        )
+        items = []
+        for it in (hit.get("items") or []):
+            entry = _parse_index_text((it.get("text") or "").strip())
+            if isinstance(entry, dict):
+                items.append(entry)
+        def _as_ts(fp: Dict[str, Any]) -> float:
+            ts = (fp.get("made_at") or fp.get("ts") or "").strip()
+            if not ts:
+                return float("-inf")
+            try:
+                s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+                return datetime.datetime.fromisoformat(s).timestamp()
+            except Exception:
+                return float("-inf")
+        scratchpad.assistant_signals_user_level = sorted(items, key=_as_ts, reverse=True)
+    except Exception:
+        scratchpad.assistant_signals_user_level = []
+
+    # Feedback reactions (server-side tag filter; index-only)
+    scratchpad.feedback_conversation_level = []
+    try:
+        feedback_hit = await ctx_client.search(
+            query=None,
+            roles=("artifact",),
+            kinds=("artifact:turn.log.reaction",),
+            scope="conversation",
+            user_id=user,
+            conversation_id=conversation_id,
+            days=365,
+            top_k=128,
+            include_deps=False,
+            sort="recency",
+            with_payload=False,
+        )
+        feedback_items = []
+        for it in (feedback_hit.get("items") or []):
+            entry = _parse_index_text((it.get("text") or "").strip())
+            if not isinstance(entry, dict):
+                continue
+            if not entry.get("turn_id") and it.get("turn_id"):
+                entry["turn_id"] = it.get("turn_id")
+            feedback_items.append(entry)
+
+        turn_ids = list({(f.get("turn_id") or "").strip() for f in feedback_items if f.get("turn_id")})
+        objective_by_turn: Dict[str, str] = {}
+        if turn_ids:
+            fp_hit = await ctx_client.search(
+                query=None,
+                roles=("artifact",),
+                kinds=(FINGERPRINT_KIND,),
+                scope="conversation",
+                user_id=user,
+                conversation_id=conversation_id,
+                days=365,
+                top_k=min(256, max(32, len(turn_ids) * 2)),
+                include_deps=False,
+                sort="recency",
+                any_tags=[f"turn:{tid}" for tid in turn_ids],
+                with_payload=False,
+            )
+            for it in (fp_hit.get("items") or []):
+                fp = _parse_index_text((it.get("text") or "").strip())
+                if isinstance(fp, dict) and fp.get("turn_id"):
+                    objective_by_turn[fp["turn_id"]] = (fp.get("objective") or "")
+
+        def _fb_ts(fb: Dict[str, Any]) -> float:
+            ts = (fb.get("ts") or "").strip()
+            if not ts:
+                return float("-inf")
+            try:
+                s = ts[:-1] + "+00:00" if ts.endswith("Z") else ts
+                return datetime.datetime.fromisoformat(s).timestamp()
+            except Exception:
+                return float("-inf")
+
+        for fb in feedback_items:
+            tid = (fb.get("turn_id") or "").strip()
+            if tid and tid in objective_by_turn:
+                fb["objective"] = objective_by_turn.get(tid) or ""
+        scratchpad.feedback_conversation_level = sorted(feedback_items, key=_fb_ts, reverse=True)
+    except Exception:
+        scratchpad.feedback_conversation_level = []
 
     # 3) Hydrate previously picked buckets (conversation_state → cards + timelines)
     try:
@@ -205,7 +270,7 @@ async def _preload_active_anchor_and_delta_fps(_ctx,
         # never fail the turn because of hydration
         pass
 
-    # 4) Delta FPS since last_reconciled_ts (server-side filter)
+    # 4) Delta FPS since last_reconciled_ts (server-side filter, index-only)
     last_ts = scratchpad.active_set.get("last_reconciled_ts") or ""
     delta = await ctx_client.search(
         roles=("artifact",),
@@ -214,26 +279,36 @@ async def _preload_active_anchor_and_delta_fps(_ctx,
         user_id=user, conversation_id=conversation_id,
         include_deps=False, sort="recency",
         timestamp_filters=([{"op": ">", "value": last_ts}] if last_ts else None),
-        with_payload=True
+        with_payload=False
     )
     window_docs: list[dict] = []
     for it in (delta.get("items") or []):
-        entry = (it.get("payload") or {}).get("payload")
-        if entry:
+        entry = _parse_index_text((it.get("text") or "").strip())
+        if isinstance(entry, dict):
             window_docs.append(entry)  # newest->oldest
 
-    # Fetch explicit selections by TID and union with the window
+    # Fetch explicit selections by TID (batch) and union with the window
     selected_docs: list[dict] = []
-    seen_tid: set[str] = set()
-    for tid in list(dict.fromkeys(scratchpad.selected_local_memories_turn_ids or [])):
-        doc = await _fetch_one_fp_by_tid(
-            ctx_client=ctx_client, user=user, conversation_id=conversation_id, turn_id=tid
+    selected_tids = list(dict.fromkeys(scratchpad.selected_local_memories_turn_ids or []))
+    if selected_tids:
+        selected_hit = await ctx_client.search(
+            query=None,
+            roles=("artifact",),
+            kinds=(FINGERPRINT_KIND,),
+            scope="conversation",
+            user_id=user,
+            conversation_id=conversation_id,
+            days=365,
+            top_k=min(256, max(32, len(selected_tids) * 2)),
+            include_deps=False,
+            sort="recency",
+            any_tags=[f"turn:{tid}" for tid in selected_tids],
+            with_payload=False,
         )
-        if doc:
-            t = doc.get("turn_id") or (doc.get("source") or {}).get("turn_id")
-            if t and t not in seen_tid:
-                selected_docs.append(doc)
-                seen_tid.add(t)
+        for it in (selected_hit.get("items") or []):
+            entry = _parse_index_text((it.get("text") or "").strip())
+            if isinstance(entry, dict):
+                selected_docs.append(entry)
 
     # Merge: explicit picks win on collisions; newest->oldest
     scratchpad.delta_turns_local_mem_entries = _merge_fps_by_tid(
@@ -306,10 +381,22 @@ async def _reconcile_objectives_if_due(
             made_at=_to_iso_minute(w.get("made_at","")),
             objective=w.get("objective","") or "",
             topics=list(w.get("topics") or []),
-            assertions=[{"key":a.get("key"), "value":a.get("value"), "desired":bool(a.get("desired",True))} for a in (w.get("assertions") or []) if a.get("key")],
-            exceptions=[{"rule_key":e.get("rule_key"), "value":e.get("value")} for e in (w.get("exceptions") or []) if e.get("rule_key")],
-            facts=[{"key":f.get("key"), "value":f.get("value")} for f in (w.get("facts") or []) if f.get("key")],
-            support_turn_id=(w.get("source") or {}).get("turn_id")
+            assertions=[{
+                "key": a.get("key"),
+                "value": a.get("value"),
+                **({"severity": a.get("severity")} if a.get("severity") else {}),
+                **({"scope": a.get("scope")} if a.get("scope") else {}),
+                **({"applies_to": a.get("applies_to")} if a.get("applies_to") else {}),
+            } for a in (w.get("assertions") or []) if a.get("key")],
+            exceptions=[{
+                "key": e.get("key"),
+                "value": e.get("value"),
+                **({"severity": e.get("severity")} if e.get("severity") else {}),
+                **({"scope": e.get("scope")} if e.get("scope") else {}),
+                **({"applies_to": e.get("applies_to")} if e.get("applies_to") else {}),
+            } for e in (w.get("exceptions") or []) if e.get("key")],
+            facts=[{"key": f.get("key"), "value": f.get("value")} for f in (w.get("facts") or []) if f.get("key")],
+            support_turn_id=w.get("turn_id")
         ))
 
     # 3) call reconciler LLM
