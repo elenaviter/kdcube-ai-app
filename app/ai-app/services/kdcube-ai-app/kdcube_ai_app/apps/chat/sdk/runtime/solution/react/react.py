@@ -1644,6 +1644,15 @@ class ReactSolver:
         tool_id = verdict.get("tool_id")
         violations = verdict.get("violations") or []
         ok = bool(verdict.get("ok"))
+        warnings: List[Dict[str, Any]] = []
+        params = tool_call.get("params")
+        if isinstance(params, dict) and "skills" in params and tool_id and tool_id != "llm_tools.generate_content_llm":
+            warnings.append({
+                "code": "skills_param_ignored",
+                "message": "skills param is only accepted by llm_tools.generate_content_llm; it will be stripped.",
+                "tool_id": tool_id,
+                "iteration": it,
+            })
 
         context.add_event(kind="protocol_verify", data={
             "iteration": it,
@@ -1660,6 +1669,16 @@ class ReactSolver:
             "ok": ok,
             "violations": violations,
         })
+        for w in warnings:
+            context.add_event(kind="protocol_warning", data=w)
+            state["session_log"].append({
+                "type": "protocol_warning",
+                "iteration": it,
+                "timestamp": time.time(),
+                "tool_id": tool_id,
+                "code": w.get("code"),
+                "message": w.get("message"),
+            })
 
         self.scratchpad.tlog.solver(
             f"[react.protocol_verify] ok={ok} tool_id={tool_id or '?'} violations={[v.get('code') for v in violations]}"
@@ -1812,6 +1831,17 @@ class ReactSolver:
                 base_params = dict(base_params)
                 base_params["skills"] = pending_skills
             state["pending_tool_skills"] = None
+        if tool_id != "llm_tools.generate_content_llm" and pending_skills:
+            state["pending_tool_skills"] = None
+        if tool_id != "llm_tools.generate_content_llm" and isinstance(base_params, dict) and "skills" in base_params:
+            base_params = dict(base_params)
+            base_params.pop("skills", None)
+            context.add_event(kind="protocol_warning", data={
+                "code": "skills_param_stripped",
+                "message": "Stripped skills param for non-llm tool.",
+                "tool_id": tool_id,
+                "iteration": int(state.get("iteration") or 0),
+            })
         fetch_ctx = decision.get("fetch_context") or []
 
         final_params, content_lineage = context.bind_params_with_sources(
