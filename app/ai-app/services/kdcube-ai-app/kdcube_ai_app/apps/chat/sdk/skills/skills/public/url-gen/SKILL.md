@@ -13,6 +13,7 @@ when_to_use:
   - You are forming a list of sources to retrieve with fetch_url_contents
 author: kdcube
 created: 2026-01-16
+namespace: public
 ---
 
 # URL Generation

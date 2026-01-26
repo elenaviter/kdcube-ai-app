@@ -474,6 +474,10 @@ class StyledHTMLParser(HTMLParser):
                                'phase-box', 'comparison-item'}
             is_callout = any(cls in callout_classes for cls in classes) or bool(elem_style.border_left_color)
 
+            # Check for paragraph-like divs that should hold text
+            paragraph_like_classes = {'reference-link', 'note', 'description'}
+            is_paragraph_like = any(cls in paragraph_like_classes for cls in classes)
+
             if is_callout:
                 self.current_element = {
                     'type': 'callout',
@@ -484,6 +488,18 @@ class StyledHTMLParser(HTMLParser):
                 }
                 self.in_callout = True
                 self.div_stack.append('callout')
+                return
+
+            # Handle paragraph-like divs (reference-link, etc.)
+            if is_paragraph_like:
+                self.current_element = {
+                    'type': 'paragraph',
+                    'text': '',
+                    'runs': [],
+                    'classes': classes,
+                    'style': elem_style
+                }
+                self.div_stack.append('paragraph-like')
                 return
 
             # 4) Plain div (no-op container)
@@ -581,6 +597,14 @@ class StyledHTMLParser(HTMLParser):
                     self.current_section['elements'].append(self.current_element)
                 self.current_element = None
                 self.in_callout = False
+                return
+
+            # Handle paragraph-like divs
+            if kind == 'paragraph-like':
+                target = (self.current_column['elements'] if (self.in_columns and self.current_column is not None)
+                          else self.current_section['elements'])
+                target.append(self.current_element)
+                self.current_element = None
                 return
 
             if kind == 'column':

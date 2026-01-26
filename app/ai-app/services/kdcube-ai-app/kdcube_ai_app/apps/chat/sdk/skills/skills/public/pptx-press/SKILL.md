@@ -4,7 +4,7 @@ description: |
   Teaches agents how to author slide-structured HTML that renders professionally to PPTX
   with proper sizing, styling, color schemes, and citation handling for business presentations,
   technical decks, and executive briefings.
-version: 1.0.0
+version: 1.1.0
 category: presentation-creation
 tags:
   - pptx
@@ -21,11 +21,8 @@ when_to_use:
   - Making technical presentations with data
 author: kdcube
 created: 2026-01-16
+updated: 2026-01-24
 namespace: public
-tools:
-  - id: agent_tools.write_pptx
-    role: presentation-generation
-    purpose: Renders slide-structured HTML to PPTX using python-pptx
 ---
 
 # PPTX Authoring for Professional Slide Decks
@@ -88,6 +85,15 @@ disruptive to slide flow.
   <li><strong>Another:</strong> Keep bullets concise</li>
 </ul>
 ```
+
+**Reference Links (for inline citations/sources):**
+```html
+<div class="reference-link">
+  <strong>Climate Action Tracker</strong>
+  <a href="https://climateactiontracker.org">Global Emissions Analysis</a>
+</div>
+```
+Use for inline references, documentation links, or resource lists. Each reference-link renders as a separate paragraph with the title in bold followed by the clickable URL.
 
 **Callout Boxes:**
 ```html
@@ -180,6 +186,23 @@ th {
 }
 tr:nth-child(even) { 
   background-color: #f0f4f8; 
+}
+```
+
+### Reference Link Styling
+```css
+.reference-link {
+  font-size: 14pt;
+  margin-bottom: 0.1in;
+  line-height: 1.4;
+}
+.reference-link strong {
+  display: block;
+  margin-bottom: 0.03in;
+}
+.reference-link a {
+  color: var(--accent);
+  text-decoration: none;
 }
 ```
 
@@ -408,6 +431,40 @@ auto-generated with:
 </section>
 ```
 
+### Template 5: Reference Links in Columns
+```html
+<section id="slide-5">
+  <h1>Research Methodology</h1>
+  <p class="subtitle">Data sources and analysis framework</p>
+  
+  <div class="two-column">
+    <div class="column">
+      <h3>Primary Data Sources</h3>
+      <div class="reference-link">
+        <strong>World Bank Open Data</strong>
+        <a href="https://data.worldbank.org">Economic Indicators Database</a>
+      </div>
+      <div class="reference-link">
+        <strong>OECD Statistics</strong>
+        <a href="https://stats.oecd.org">International Comparisons</a>
+      </div>
+      <div class="reference-link">
+        <strong>UN Population Division</strong>
+        <a href="https://population.un.org/wpp">Demographic Projections</a>
+      </div>
+    </div>
+    <div class="column">
+      <h3>Analysis Timeline</h3>
+      <ul>
+        <li><strong>Data Collection (Weeks 1-3):</strong> Gather datasets, validate sources</li>
+        <li><strong>Processing (Weeks 4-6):</strong> Clean data, run initial models</li>
+        <li><strong>Validation (Weeks 7-9):</strong> Peer review, sensitivity analysis</li>
+      </ul>
+    </div>
+  </div>
+</section>
+```
+
 ## Common Mistakes to Avoid
 
 ### ❌ Content Overload
@@ -496,6 +553,17 @@ Avoid:
 - Use accent sparingly for emphasis
 - Keep backgrounds light for readability
 
+### 5. Reference Links vs Citations
+**Use `<div class="reference-link">` when:**
+- Listing authoritative sources/standards (data sources, documentation, reports)
+- Building a resource/bibliography section
+- Links are the primary content
+
+**Use `<sup class="cite">` when:**
+- Citing specific facts inline
+- Supporting claims with evidence
+- Links are secondary to narrative flow
+
 ## Image Guidelines
 
 ### File Paths (Required)
@@ -531,3 +599,4 @@ Avoid:
 - Citations render as `[n]` inline - keep factual claims concise
 - Sources slide is auto-generated - don't create manually
 - Two-column backgrounds/borders are per-column - style individually
+- Reference links create clickable paragraph elements - use for resource lists

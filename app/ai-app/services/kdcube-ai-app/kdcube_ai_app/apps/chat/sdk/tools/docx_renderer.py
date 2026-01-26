@@ -22,6 +22,7 @@ from docx.oxml import OxmlElement
 
 _LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")  # ![alt](url)
+_URL_RE = re.compile(r"https?://[^\s<>\"]+|www\.[^\s<>\"]+")  # Plain URLs
 _CIT_RE  = re.compile(r"\[\[S:(\d+)\]\]")  # [[S:3]]
 _CODE_FENCE_RE = re.compile(r"^```(\w+)?\s*$")
 _TABLE_ROW_RE  = re.compile(r"^\s*\|.+\|\s*$")
@@ -164,23 +165,46 @@ def _emit_link_or_text(p, text: str, sources_map: Dict[int, Dict[str, str]] = No
     sources_map = sources_map or {}
     while text:
         m_link = _LINK_RE.search(text)
+        m_url = _URL_RE.search(text)
         m_cit = _CIT_RE.search(text) if resolve_citations else None
-        cands = [(m_link, "link"), (m_cit, "cit")]
+
+        # Build candidates list: prefer markdown links over plain URLs
+        cands = [(m_link, "link"), (m_url, "url"), (m_cit, "cit")]
         cands = [(m, t) for m, t in cands if m]
+
         if not cands:
             r = p.add_run(text)
             return
+
         m, kind = min(cands, key=lambda t: t[0].start())
+
+        # Add text before the match
         if m.start() > 0:
             r = p.add_run(text[:m.start()])
+
         if kind == "link":
+            # Markdown link: [text](url)
             r = p.add_run(m.group(1))
             _add_char_style(r, size=TYPE["body"], color=PALETTE["accent"])
             try:
                 r.hyperlink.address = m.group(2)
             except Exception:
                 pass
-        else:
+        elif kind == "url":
+            # Plain URL: https://example.com
+            url = m.group(0)
+            # Add www. prefix for www URLs without protocol
+            if url.startswith("www."):
+                hyperlink_url = "http://" + url
+            else:
+                hyperlink_url = url
+            r = p.add_run(url)
+            _add_char_style(r, size=TYPE["body"], color=PALETTE["accent"])
+            try:
+                r.hyperlink.address = hyperlink_url
+            except Exception:
+                pass
+        else:  # citation
             sid = int(m.group(1))
             rec = sources_map.get(sid, {})
             label = rec.get("title") or f"[{sid}]"
@@ -439,7 +463,7 @@ def render_docx(
     - Lists: bullet (-,*) and numbered (1.)
     - Bold: **text**
     - Italic: *text*
-    - Links: [text](url)
+    - Links: [text](url) or plain URLs (https://example.com, www.example.com)
     - Images: ![alt text](path/to/image.png)
     - Code blocks: ```language
     - Tables: | header | header |
@@ -720,10 +744,18 @@ Areas where habitat loss exceeds 60% of historical extent.
 - Establish conservation easements on private lands
 - Enforce stream buffer regulations
 
+More information available at https://www.conservation.gov/habitat-protection and 
+www.wildlifecoridors.org for corridor planning resources.
+
 #### Species-Specific Interventions
 - Augment Fisher population through translocation
 - Protect all known Spotted Owl nesting sites
 - Restore Marbled Murrelet nesting habitat
+
+**Research Links:**
+- Fisher translocation protocols: https://wildlife.org/fisher-translocation
+- Spotted Owl conservation: http://www.owlconservation.org/spotted-owl
+- Marbled Murrelet habitat requirements: www.seabirdhabitat.net/murrelet
 
 ### Long-Term Strategic Goals
 

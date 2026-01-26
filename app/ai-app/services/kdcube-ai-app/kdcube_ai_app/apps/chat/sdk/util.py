@@ -351,6 +351,7 @@ def _now_up_to_minutes() -> str:
     return datetime.now(timezone.utc).replace(second=0, microsecond=0).isoformat()
 
 _ISO_MINUTE_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})')
+
 def _to_iso_minute(ts: str) -> str:
     if not ts:
         return ts
@@ -366,6 +367,11 @@ def _to_iso_minute(ts: str) -> str:
         return d.isoformat(timespec='minutes') + "Z"
     except Exception:
         return s
+
+def _utc_now_iso_minute() -> str:
+    dt = _dt.datetime.utcnow().replace(second=0, microsecond=0)
+    # 'timespec="minutes"' yields 'YYYY-MM-DDTHH:MM'
+    return dt.isoformat(timespec='minutes') + "Z"
 
 def _tstart() -> tuple[float, int]:
     """perf counter and wall ms."""

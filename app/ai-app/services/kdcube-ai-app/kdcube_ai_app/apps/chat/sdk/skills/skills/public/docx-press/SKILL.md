@@ -40,6 +40,8 @@ and embedded images for professional documents.
 - Use pipe tables with a header row; keep column counts modest
 - Avoid nested tables or complex HTML; keep to Markdown primitives
 - Images use standard markdown syntax: ![alt text](path/to/image.png)
+- URLs are auto-linked: just write https://example.com or www.example.com
+- Use markdown links for custom text: [click here](https://example.com)
 
 ## Heading Hierarchy
 The renderer supports 6 heading levels with automatic styling:
@@ -73,6 +75,35 @@ Include images using standard markdown syntax:
 - Use descriptive alt text for accessibility
 - Images should be local files accessible during rendering
 - Supported formats: PNG, JPEG, GIF, BMP
+
+## Links and URLs
+
+### Plain URLs
+URLs are automatically converted to clickable hyperlinks - just write them directly:
+
+```markdown
+Visit https://www.example.com for more information.
+Additional resources at www.documentation.org and http://api.example.com/docs
+```
+
+All three formats are supported:
+- `https://example.com` - Full URL with protocol
+- `http://example.com` - HTTP protocol
+- `www.example.com` - www prefix (automatically converted to http://)
+
+### Markdown Links
+For custom link text, use standard markdown syntax:
+
+```markdown
+[Read our documentation](https://docs.example.com)
+[Download the report](https://example.com/report.pdf)
+```
+
+**Best Practices:**
+- Use plain URLs when the URL itself is informative
+- Use markdown links for more readable text
+- Ensure URLs don't contain spaces or special characters
+- Test URLs are accessible before including in documents
 
 ## Citations
 - Use [[S:n]] tokens inline after factual claims
