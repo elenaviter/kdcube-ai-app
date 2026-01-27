@@ -306,9 +306,10 @@ def _get_2section_protocol_v2(json_shape_hint: str) -> str:
 WRAPUP_INSTRUCTION = "\n".join((
     "[⚠️ WRAP-UP ROUND]",
     "Budget exhausted. 'Save work' is the strongest signal now.",
+    "Treat all remaining budgets as ZERO in wrap-up (explore/exploit/render/rerun/ctx); do NOT plan new work.",
     "Map every useful artifact you produced to appropriate slots that are still unmapped, using draft + gaps when incomplete.",
     "For file slots, if no compatible file artifact exists but you have an inline artifact that was meant to be the material for that file (for example, markdown for a PDF), you MUST still map that inline artifact to the file slot as a draft, treating the missing binary file as a gap.",
-    "NO tool calls allowed."
+    "NO tool calls allowed. Output ONLY mapping + exit/complete; any tool_call will be ignored."
 ))
 
 class ToolResultSpec(BaseModel):

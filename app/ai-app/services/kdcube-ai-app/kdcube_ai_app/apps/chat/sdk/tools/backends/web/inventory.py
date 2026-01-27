@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# apps/chat/sdk/tools/backends/web/presentation.py
+# apps/chat/sdk/tools/backends/web/inventory.py
 
 from typing import Dict, Optional, Iterable, Any, List
 from dataclasses import dataclass

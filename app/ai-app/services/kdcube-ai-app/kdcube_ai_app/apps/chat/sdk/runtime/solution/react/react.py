@@ -561,6 +561,9 @@ class ReactSolver:
             if wrapup_possible:
                 state["wrapup_round_used"] = True
                 state["is_wrapup_round"] = True
+                state["allow_exploit_overdraft"] = False
+                state["exploit_overdraft_used"] = 0
+                state["exploit_overdraft_total"] = 0
                 if context:
                     self._emit_wrapup_event(state, context)
                 state["exit_reason"] = None
@@ -995,6 +998,9 @@ class ReactSolver:
                 if pending and has_unmapped and not state.get("wrapup_round_used", False):
                     state["wrapup_round_used"] = True
                     state["is_wrapup_round"] = True
+                    state["allow_exploit_overdraft"] = False
+                    state["exploit_overdraft_used"] = 0
+                    state["exploit_overdraft_total"] = 0
                     state["exit_reason"] = None
                     state["pending_exit_reason"] = None
                     if context:
@@ -1090,6 +1096,9 @@ class ReactSolver:
             if pending and has_unmapped and not state.get("wrapup_round_used", False):
                 state["wrapup_round_used"] = True
                 state["is_wrapup_round"] = True
+                state["allow_exploit_overdraft"] = False
+                state["exploit_overdraft_used"] = 0
+                state["exploit_overdraft_total"] = 0
                 if context:
                     self._emit_wrapup_event(state, context)
             elif not allow_exploit_overdraft:

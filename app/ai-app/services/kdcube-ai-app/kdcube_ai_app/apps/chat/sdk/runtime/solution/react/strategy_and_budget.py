@@ -359,6 +359,9 @@ def format_budget_for_llm(budget: BudgetState) -> str:
 
     dec_left = max_dec - used_dec
     tools_left = max_tools - used_tools
+    if budget.wrapup_active:
+        dec_left = 0
+        tools_left = 0
 
     global_parts = [
         f"decisions left { _rem(dec_left, max_dec) }",
@@ -370,34 +373,44 @@ def format_budget_for_llm(budget: BudgetState) -> str:
     used_explore_g = getattr(gb, "explore_rounds_used", 0) or 0
     if max_explore_g > 0:
         explore_left_g = max_explore_g - used_explore_g
+        if budget.wrapup_active:
+            explore_left_g = 0
         global_parts.append(f"explore left { _rem(explore_left_g, max_explore_g) }")
 
     max_exploit_g = getattr(gb, "max_exploit_rounds", 0) or 0
     used_exploit_g = getattr(gb, "exploit_rounds_used", 0) or 0
     if max_exploit_g > 0:
         exploit_left_g = max_exploit_g - used_exploit_g
+        if budget.wrapup_active:
+            exploit_left_g = 0
         global_parts.append(f"exploit left { _rem(exploit_left_g, max_exploit_g) }")
 
     max_render_g = getattr(gb, "max_render_rounds", 0) or 0
     used_render_g = getattr(gb, "render_rounds_used", 0) or 0
     if max_render_g > 0:
         render_left_g = max_render_g - used_render_g
+        if budget.wrapup_active:
+            render_left_g = 0
         global_parts.append(f"render left { _rem(render_left_g, max_render_g) }")
 
     max_rerun = getattr(gb, "max_decision_reruns", 0) or 0
     used_rerun = getattr(gb, "decision_reruns_used", 0) or 0
     if max_rerun > 0:
         rerun_left = max_rerun - used_rerun
+        if budget.wrapup_active:
+            rerun_left = 0
         global_parts.append(f"decision_reruns left { _rem(rerun_left, max_rerun) }")
 
     max_ctx = getattr(gb, "ctx_reads", 0) or 0
     used_ctx = getattr(gb, "context_reads_used", 0) or 0
     if max_ctx > 0:
         ctx_left = max_ctx - used_ctx
+        if budget.wrapup_active:
+            ctx_left = 0
         global_parts.append(f"context_reads left { _rem(ctx_left, max_ctx) }")
     if budget.wrapup_active:
         global_parts.append("wrapup active")
-    if budget.exploit_overdraft_total:
+    if budget.exploit_overdraft_total and not budget.wrapup_active:
         used = int(budget.exploit_overdraft_used or 0)
         total = int(budget.exploit_overdraft_total or 0)
         global_parts.append(f"exploit_overdraft { _rem(used, total) }")
@@ -432,6 +445,11 @@ def format_budget_for_llm(budget: BudgetState) -> str:
         render_left = max(0, (render or 0) - getattr(usage, "render_used", 0))
         max_ctx = getattr(caps, "ctx_reads", 0) or 0
         ctx_left = max(0, max_ctx - getattr(usage, "context_reads_used", 0))
+        if budget.wrapup_active:
+            explore_left = 0
+            exploit_left = 0
+            render_left = 0
+            ctx_left = 0
 
         stage_parts: list[str] = []
         if max_explore:
