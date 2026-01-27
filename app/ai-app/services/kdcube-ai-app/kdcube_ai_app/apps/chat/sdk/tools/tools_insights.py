@@ -115,8 +115,8 @@ def is_generative_tool(tool_id: str) -> bool|None:
     return tool_id in GENERATIVE_TOOL_IDS if tool_id in BUILTIN_TOOLS else None
 
 def should_isolate_tool_execution(tool_id: str) -> bool:
-    # For now, only write tools are isolated
-    return should_isolate_in_docker(tool_id) or is_write_tool(tool_id)
+    # Isolate write + web tools to protect main process from native crashes.
+    return should_isolate_in_docker(tool_id) or is_write_tool(tool_id) or is_search_tool(tool_id) or is_fetch_uri_content_tool(tool_id)
 
 def should_isolate_in_docker(tool_id: str) -> bool:
     # return tool_id == "generic_tools.write_file" or is_codegen_tool(tool_id)
