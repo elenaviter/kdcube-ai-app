@@ -58,12 +58,31 @@ disruptive to slide flow.
 </section>
 ```
 
-**Rules:**
+**CRITICAL REQUIREMENT:**
+- **Every slide MUST be wrapped in `<section>` tags** - content outside sections will be silently ignored and won't render
 - One `<section>` per slide
 - `id` can be any unique identifier
 - `<h1>` is the slide title (required for most slides)
 - `<p class="subtitle">` for optional subtitle
 - All body content goes after title/subtitle
+
+**❌ This will NOT render:**
+```html
+<body>
+  <h1>Title</h1>
+  <p>Content...</p>
+</body>
+```
+
+**✅ This will render:**
+```html
+<body>
+  <section id="slide-1">
+    <h1>Title</h1>
+    <p>Content...</p>
+  </section>
+</body>
+```
 
 ### Supported Body Elements
 
@@ -467,6 +486,27 @@ auto-generated with:
 
 ## Common Mistakes to Avoid
 
+### ❌ Missing Section Tags (CRITICAL)
+```html
+<!-- BAD: Content will be silently ignored -->
+<body>
+  <h1>My Presentation</h1>
+  <h2>Section 1</h2>
+  <p>Content here...</p>
+</body>
+```
+**Fix:** Wrap ALL content in `<section>` tags. Each section = one slide.
+```html
+<!-- GOOD: Content will render -->
+<body>
+  <section id="slide-1">
+    <h1>My Presentation</h1>
+    <h2>Section 1</h2>
+    <p>Content here...</p>
+  </section>
+</body>
+```
+
 ### ❌ Content Overload
 ```html
 <!-- BAD: 12 bullets won't fit -->
@@ -594,6 +634,7 @@ Avoid:
 4. **Test content density** - If unsure, err on less content per slide
 
 ## Remember
+- **CRITICAL: Wrap all content in `<section>` tags** - one section per slide, content outside sections won't render
 - Content auto-scales down (min 70%) if too large - avoid this by budgeting properly
 - Renderer measures text to determine fit - longer text = more scaling
 - Citations render as `[n]` inline - keep factual claims concise
