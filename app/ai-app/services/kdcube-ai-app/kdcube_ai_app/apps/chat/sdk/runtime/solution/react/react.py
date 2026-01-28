@@ -1833,6 +1833,35 @@ class ReactSolver:
 
         base_params = tool_call.get("params") or {}
         pending_skills = state.get("pending_tool_skills") or []
+        if tool_id == "llm_tools.generate_content_llm":
+            try:
+                from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (
+                    build_skill_short_id_map,
+                    resolve_skill_ref,
+                )
+                short_map = build_skill_short_id_map(consumer="solver.react.decision")
+
+                def _normalize_skills(items: list[str]) -> list[str]:
+                    out: list[str] = []
+                    seen: set[str] = set()
+                    for ref in items or []:
+                        sid = resolve_skill_ref(str(ref or ""), short_id_map=short_map)
+                        if not sid or sid in seen:
+                            continue
+                        out.append(sid)
+                        seen.add(sid)
+                    return out
+
+                if isinstance(base_params, dict) and base_params.get("skills"):
+                    norm = _normalize_skills(base_params.get("skills") or [])
+                    if norm:
+                        base_params = dict(base_params)
+                        base_params["skills"] = norm
+                if pending_skills:
+                    pending_skills = _normalize_skills(pending_skills)
+            except Exception:
+                pass
+
         if pending_skills and tool_id == "llm_tools.generate_content_llm":
             if "skills" not in base_params:
                 base_params = dict(base_params)
