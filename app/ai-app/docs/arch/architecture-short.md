@@ -129,9 +129,9 @@ sequenceDiagram
 
 ## 7) Key docs
 
-- Comm integrations: [README-comm.md](../comm/README-comm.md)
-- Comm architecture: [comm-system.md](../comm-system.md)
-- Gateway: [gateway-README.md](../../../infra/gateway/gateway-README.md)
-- Economics: [economics-usage.md](../../sdk/infra/economics/economics-usage.md)
-- Control plane: [control-plane-management.md](../../sdk/infra/control_plane/control-plane-management.md)
-- Monitoring: [README-monitoring-observability.md](../../api/monitoring/README-monitoring-observability.md)
+- Comm integrations: [README-comm.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/README-comm.md)
+- Comm architecture: [comm-system.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
+- Gateway: [gateway-README.md](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md)
+- Economics: [economics-usage.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md)
+- Control plane: [control-plane-management.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md)
+- Monitoring: [README-monitoring-observability.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)

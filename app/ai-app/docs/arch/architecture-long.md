@@ -125,7 +125,7 @@ The gateway enforces **authentication**, **rate limits**, and **backpressure** b
 
 Key modules:
 - [gateway.py](../../../apps/middleware/gateway.py)
-- [infra/gateway](../../../infra/gateway/gateway-README.md)
+- [infra/gateway](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md)
 
 ---
 
@@ -151,8 +151,8 @@ Design goals:
 - Transport symmetry (SSE + Socket.IO)
 
 References:
-- [comm-system.md](../comm-system.md)
-- [README-comm.md](../comm/README-comm.md)
+- [comm-system.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
+- [README-comm.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/README-comm.md)
 - [SSE relay deep dive](../../api/sse/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
 
 ---
@@ -231,8 +231,8 @@ Key points:
 - Quotas can be enforced **per user across projects** (control‑plane scope).
 
 References:
-- [economics-usage.md](../../sdk/infra/economics/economics-usage.md)
-- [control-plane-management.md](../../sdk/infra/control_plane/control-plane-management.md)
+- [economics-usage.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md)
+- [control-plane-management.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md)
 
 ---
 
@@ -267,7 +267,7 @@ References:
 
 ## 13) Observability & reporting
 
-- **Monitoring/observability**: [README-monitoring-observability.md](../../api/monitoring/README-monitoring-observability.md)
+- **Monitoring/observability**: [README-monitoring-observability.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)
 - **Accounting & spending**: usage envelopes + spend reporting (per tenant/project/user)
 
 ---
@@ -295,5 +295,5 @@ References:
 - SSE transport: [sse/chat.py](../../api/sse/chat.py)
 - Socket.IO transport: [socketio/chat.py](../../api/socketio/chat.py)
 - Processor: [apps/chat/processor.py](../../processor.py)
-- Comm subsystem: [comm-system.md](../comm-system.md)
-- Comm integrations: [README-comm.md](../comm/README-comm.md)
+- Comm subsystem: [comm-system.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
+- Comm integrations: [README-comm.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/README-comm.md)
