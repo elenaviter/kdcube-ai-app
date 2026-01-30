@@ -394,7 +394,7 @@ async def gateway_middleware(request: Request, call_next):
         headers = getattr(e, "headers", {})
         return JSONResponse(
             status_code=e.status_code,
-            content=e.detail if isinstance(e.detail, dict) else {"detail": e.detail},
+            content=e.detail if isinstance(e.detail, dict) else {" detail": e.detail},
             headers=headers
         )
 

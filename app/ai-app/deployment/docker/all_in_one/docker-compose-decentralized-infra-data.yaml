@@ -1,22 +1,4 @@
 services:
-  postgres-db:
-    container_name: kdcube-postgres
-    image: pgvector/pgvector:pg16
-    env_file:
-      - path: ./.env.backend
-        required: false
-    restart: unless-stopped
-    volumes:
-      - ./data/postgres:/var/lib/postgresql/data
-    networks:
-      - kdcube-internal
-    ports:
-      - "127.0.0.1:5432:5444"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
 
   postgres-setup:
     image: kdcube-postgres-setup:latest
@@ -27,66 +9,9 @@ services:
     env_file:
       - path: ./.env.backend
         required: false
-    environment:
-      - POSTGRES_HOST=postgres-db
-    depends_on:
-      postgres-db:
-        condition: service_healthy
     networks:
       - kdcube-internal
     restart: "no"
-
-  redis:
-    container_name: kdcube-redis
-    image: redis:latest
-    env_file:
-      - path: ./.env.backend
-        required: false
-    command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
-    restart: unless-stopped
-    volumes:
-      - ./data/redis:/data
-    networks:
-      - kdcube-internal
-    ports:
-      - "127.0.0.1:6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  neo4j:
-    image: neo4j:5
-    container_name: kdcube-neo4j
-    env_file:
-      - path: ./.env.backend
-        required: false
-    environment:
-      NEO4J_AUTH: "${N4J_USER:-neo4j}/${N4J_PASSWORD:-neo4jpassword}"
-      NEO4J_server_memory_pagecache_size: ${N4J_PAGECACHE:-1G}
-      NEO4J_server_memory_heap_initial__size: ${N4J_HEAP_INITIAL:-512m}
-      NEO4J_server_memory_heap_max__size: ${N4J_HEAP_MAX:-1G}
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
-      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
-    volumes:
-      - ./data/neo4j/data:/data
-      - ./data/neo4j/logs:/logs
-      - ./data/neo4j/plugins:/plugins
-      - ./data/neo4j/import:/var/lib/neo4j/import
-    healthcheck:
-      # Uses container env (note the $$ for compose escaping)
-      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u $$N4J_USER -p $$N4J_PASSWORD 'RETURN 1' || exit 1"]
-      interval: 15s
-      timeout: 10s
-      retries: 20
-    networks:
-      - kdcube-internal
-    # Expose if you want to use Neo4j Browser locallly
-    ports:
-      - "127.0.0.1:7474:7474" # HTTP (Neo4j Browser)
-      - "127.0.0.1:7687:7687" # Bolt
 
   clamav:
     image: clamav/clamav:stable
@@ -99,7 +24,7 @@ services:
       - CLAMD_START=1
       - FRESHCLAM_CHECKS=24
     healthcheck:
-      test: ["CMD-SHELL", "clamdscan --version || exit 1"]
+      test: [ "CMD-SHELL", "clamdscan --version || exit 1" ]
       interval: 30s
       timeout: 10s
       retries: 10
@@ -174,7 +99,6 @@ services:
         required: false
     environment:
       - REDIS_HOST=redis
-      - POSTGRES_HOST=postgres-db
       - APP_NEO4J_URI=bolt://neo4j:7687
       - CLAMAV_HOST=clamav
       - CLAMAV_PORT=3310
@@ -230,6 +154,23 @@ services:
     networks:
       - kdcube-internal
 
+  proxylogin:
+    image: proxylogin:latest
+    build:
+      no_cache: true
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_ProxyLogin
+    env_file:
+      - path: ./.env.proxylogin
+        required: false
+    networks:
+      - kdcube-internal
+    volumes:
+      - type: bind
+        source: ${HOME}/.aws
+        target: /home/proxylogin/.aws
+        read_only: true
+
   web-proxy:
     image: kdcube-web-proxy:latest
     container_name: kdcube-web-proxy
@@ -246,6 +187,8 @@ services:
       chat:
         condition: service_started
       web-ui:
+        condition: service_started
+      proxylogin:
         condition: service_started
     networks:
       - kdcube-external

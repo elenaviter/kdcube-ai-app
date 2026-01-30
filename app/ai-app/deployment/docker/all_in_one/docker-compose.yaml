@@ -1,22 +1,22 @@
 services:
-#  postgres-db:
-#    container_name: kdcube-postgres
-#    image: pgvector/pgvector:pg16
-#    env_file:
-#      - path: ./.env.backend
-#        required: false
-#    restart: unless-stopped
-#    volumes:
-#      - ./data/postgres:/var/lib/postgresql/data
-#    networks:
-#      - kdcube-internal
-#    ports:
-#      - "127.0.0.1:5432:5432"
-#    healthcheck:
-#      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER" ]
-#      interval: 5s
-#      timeout: 5s
-#      retries: 5
+  postgres-db:
+    container_name: kdcube-postgres
+    image: pgvector/pgvector:pg16
+    env_file:
+      - path: ./.env.backend
+        required: false
+    restart: unless-stopped
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    networks:
+      - kdcube-internal
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   postgres-setup:
     image: kdcube-postgres-setup:latest
@@ -36,25 +36,25 @@ services:
       - kdcube-internal
     restart: "no"
 
-#  redis:
-#    container_name: kdcube-redis
-#    image: redis:latest
-#    env_file:
-#      - path: ./.env.backend
-#        required: false
-#    command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
-#    restart: unless-stopped
-#    volumes:
-#      - ./data/redis:/data
-#    networks:
-#      - kdcube-internal
-#    ports:
-#      - "127.0.0.1:6379:6379"
-#    healthcheck:
-#      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
-#      interval: 5s
-#      timeout: 3s
-#      retries: 5
+  redis:
+    container_name: kdcube-redis
+    image: redis:latest
+    env_file:
+      - path: ./.env.backend
+        required: false
+    command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
+    restart: unless-stopped
+    volumes:
+      - ./data/redis:/data
+    networks:
+      - kdcube-internal
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "--raw", "incr", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 #  neo4j:
 #    image: neo4j:5
@@ -174,7 +174,7 @@ services:
         required: false
     environment:
       - REDIS_HOST=redis
-#      - POSTGRES_HOST=postgres-db
+      - POSTGRES_HOST=postgres-db
       - APP_NEO4J_URI=bolt://neo4j:7687
       - CLAMAV_HOST=clamav
       - CLAMAV_PORT=3310
@@ -195,10 +195,10 @@ services:
         target: /home/appuser/.aws
         read_only: true
     depends_on:
-#      postgres-setup:
-#        condition: service_completed_successfully
-#      redis:
-#        condition: service_healthy
+      postgres-setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
       neo4j:
         condition: service_healthy
       clamav:
