@@ -450,9 +450,10 @@ class OrchestratorFactory:
 def example_usage():
     """Example of how to use the generic orchestrator interface"""
     import os
+    from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
     # Configuration
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    redis_url = get_settings().REDIS_URL
     orchestrator_type = os.environ.get("ORCHESTRATOR_TYPE", "dramatiq")
 
     # Create orchestrator - completely generic!

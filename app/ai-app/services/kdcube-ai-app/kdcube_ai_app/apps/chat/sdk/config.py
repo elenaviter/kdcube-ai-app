@@ -3,6 +3,7 @@
 
 # chatbot/sdk/config.py
 from __future__ import annotations
+import os
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
@@ -46,6 +47,10 @@ class Settings(BaseSettings):
 
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0")
+    REDIS_HOST: str = Field(default="localhost")
+    REDIS_PORT: int = Field(default=6379)
+    REDIS_PASSWORD: str | None = Field(default=None)
+    REDIS_DB: int = Field(default=0)
 
     STORAGE_PATH: str | None = Field(default=None, alias="KDCUBE_STORAGE_PATH")
 
@@ -64,6 +69,12 @@ class Settings(BaseSettings):
         if isinstance(cors, str):
             v["CORS_ORIGINS"] = [o.strip() for o in cors.split(",") if o.strip()]
         return v
+
+    def model_post_init(self, __context) -> None:
+        # If REDIS_URL is not explicitly set, build it from host/port/password/db.
+        if not os.getenv("REDIS_URL"):
+            auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""
+            self.REDIS_URL = f"redis://{auth}{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
 @lru_cache()
 def get_settings() -> Settings:

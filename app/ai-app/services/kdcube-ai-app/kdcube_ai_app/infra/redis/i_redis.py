@@ -4,21 +4,13 @@
 import os
 import redis
 from dotenv import load_dotenv, find_dotenv
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 load_dotenv(find_dotenv())
 
 # ── CONFIGURE ──────────────────────────────────────────────────────────────────
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-REDIS_DB   = int(os.getenv("REDIS_DB",   0))
-REDIS_PASS = os.getenv("REDIS_PASSWORD", None)
-
-r = redis.Redis(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    db=REDIS_DB,
-    password=REDIS_PASS,
-)
+REDIS_URL = get_settings().REDIS_URL
+r = redis.Redis.from_url(REDIS_URL)
 
 # ── INSPECTION FUNCTIONS ───────────────────────────────────────────────────────
 def inspect_keys():
@@ -61,11 +53,7 @@ import json
 from redis import Redis
 
 # Copy these from your dramatiq_simple_multiprocess.py
-REDIS_URL = (
-    f"redis://:{os.environ.get('REDIS_PASSWORD','')}"
-    f"@{os.environ.get('REDIS_HOST','localhost')}:"
-    f"{os.environ.get('REDIS_PORT','6379')}/0"
-)
+REDIS_URL = get_settings().REDIS_URL
 
 
 def delete_keys_by_pattern(pattern: str):

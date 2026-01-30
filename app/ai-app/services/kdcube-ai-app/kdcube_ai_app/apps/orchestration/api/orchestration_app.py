@@ -17,6 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from kdcube_ai_app.auth.AuthManager import RequirementBase, RequireUser
 from kdcube_ai_app.infra.orchestration.orchestration import IOrchestrator, \
     OrchestratorFactory
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 load_dotenv(find_dotenv())
 
@@ -25,10 +26,7 @@ DEFAULT_ORCHESTRATOR_IDENTITY = f"kdcube_orchestrator_{ORCHESTRATOR_TYPE}"
 ORCHESTRATOR_IDENTITY = os.environ.get("ORCHESTRATOR_IDENTITY", DEFAULT_ORCHESTRATOR_IDENTITY)
 
 # .env
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
-REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0"
+REDIS_URL = get_settings().REDIS_URL
 
 logger = logging.getLogger("Orchestrator.API")
 
@@ -101,6 +99,6 @@ async def get_orchestrator_info():
     return {
         "orchestrator_type": ORCHESTRATOR_TYPE,
         "orchestrator_identity": ORCHESTRATOR_IDENTITY,
-        "redis_url": REDIS_URL.replace(REDIS_PASSWORD, "***") if REDIS_PASSWORD else REDIS_URL,
+        "redis_url": REDIS_URL,
         "timestamp": datetime.utcnow().isoformat()
     }

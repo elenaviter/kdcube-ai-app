@@ -303,7 +303,7 @@ class GatewayConfigFactory:
                 cfg = _config_from_dict(data)
                 settings = get_settings()
                 if not cfg.redis_url:
-                    cfg.redis_url = os.getenv("REDIS_URL") or settings.REDIS_URL or ""
+                    cfg.redis_url = settings.REDIS_URL or ""
                 if not cfg.tenant_id:
                     cfg.tenant_id = os.getenv("TENANT_ID", "default-tenant")
                 if not cfg.project_id:
@@ -321,7 +321,7 @@ class GatewayConfigFactory:
 
         # Environment variables with defaults
         settings = get_settings()
-        redis_url = os.getenv("REDIS_URL") or settings.REDIS_URL or ""
+        redis_url = settings.REDIS_URL or ""
 
         instance_id = os.getenv("INSTANCE_ID", "default-instance")
         tenant_id = os.getenv("TENANT_ID", "default-tenant")
@@ -736,7 +736,7 @@ PRESET_CONFIGURATIONS = {
         circuit_breakers=CircuitBreakerSettings(),
         monitoring=MonitoringSettings(),
         redis=RedisSettings(),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        redis_url=get_settings().REDIS_URL,
         instance_id=os.getenv("INSTANCE_ID", "chat-prod"),
         tenant_id=os.getenv("TENANT_ID", "production"),
         project_id=os.getenv("DEFAULT_PROJECT_NAME", "demo"),
@@ -755,7 +755,7 @@ PRESET_CONFIGURATIONS = {
         circuit_breakers=CircuitBreakerSettings(),
         monitoring=MonitoringSettings(),
         redis=RedisSettings(),
-        redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+        redis_url=get_settings().REDIS_URL,
         instance_id=os.getenv("INSTANCE_ID", "load-test"),
         tenant_id=os.getenv("TENANT_ID", "testing"),
         project_id=os.getenv("DEFAULT_PROJECT_NAME", "demo"),
@@ -863,7 +863,7 @@ def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
         circuit_breakers=circuit_breakers,
         monitoring=monitoring,
         redis=redis,
-        redis_url=str(data.get("redis_url") or os.getenv("REDIS_URL", "")),
+        redis_url=str(data.get("redis_url") or get_settings().REDIS_URL),
         guarded_rest_patterns=guarded_rest_patterns,
     )
 

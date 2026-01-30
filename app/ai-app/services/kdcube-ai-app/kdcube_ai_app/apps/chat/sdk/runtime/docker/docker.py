@@ -16,6 +16,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.docker.service_discovery import CONTAIN
     _translate_container_path_to_host, _is_running_in_docker, _resolve_redis_url_for_container
 from kdcube_ai_app.apps.chat.sdk.runtime.isolated.environment import filter_host_environment
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 _DEFAULT_IMAGE = os.environ.get("PY_CODE_EXEC_IMAGE", "py-code-exec:latest")
 _DEFAULT_TIMEOUT_S = int(os.environ.get("PY_CODE_EXEC_TIMEOUT", "600"))  # 10min default
@@ -132,7 +133,7 @@ async def run_py_in_docker(
     if extra_env:
         base_env.update(extra_env)
 
-    redis_url = base_env.get("REDIS_URL") or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    redis_url = base_env.get("REDIS_URL") or get_settings().REDIS_URL
     resolved_redis_url = _resolve_redis_url_for_container(redis_url, logger=log)
     base_env["REDIS_URL"] = resolved_redis_url
 

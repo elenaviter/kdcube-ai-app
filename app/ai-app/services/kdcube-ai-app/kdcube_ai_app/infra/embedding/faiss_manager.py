@@ -13,6 +13,7 @@ import faiss
 import redis
 
 from kdcube_ai_app.storage.storage import IStorageBackend, create_storage_backend
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 
 class FaissProjectCache:
@@ -25,8 +26,10 @@ class FaissProjectCache:
             self,
             storage: IStorageBackend,
             max_loaded: int = 3,
-            redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0"),
+            redis_url: str | None = None,
     ):
+        if not redis_url:
+            redis_url = get_settings().REDIS_URL
         self._lock       = threading.RLock()
         self._cond       = threading.Condition(self._lock)
         self._cache      = OrderedDict()   # project → { idx, ref_count, lock_fd }

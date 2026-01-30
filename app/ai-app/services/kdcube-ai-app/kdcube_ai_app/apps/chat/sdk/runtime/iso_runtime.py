@@ -785,20 +785,13 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
     ChatEnvelope, ServiceCtx, ConversationCtx
 )
 from kdcube_ai_app.apps.chat.emitters import (ChatRelayCommunicator, ChatCommunicator)
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import set_comm, get_comm
 
 def _rebuild_communicator_from_spec(spec: dict) -> ChatCommunicator:
-    REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-    REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-    REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
-    REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0"
-    # redis_url = (spec or {}).get("redis_url") or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-    redis_url = REDIS_URL
+    redis_url = get_settings().REDIS_URL
     if redis_url.startswith('"') and redis_url.endswith('"'):
         redis_url = redis_url[1:-1]
-    redis_url_safe = redis_url.replace(REDIS_PASSWORD, "REDIS_PASSWORD") if REDIS_PASSWORD else redis_url 
-    logger.info(f"Redis url: {redis_url_safe}")
-    print(f"Redis url: {redis_url_safe}")
     channel   = (spec or {}).get("channel")   or "chat.events"
     relay = ChatRelayCommunicator(redis_url=redis_url, channel=channel)
     svc = ServiceCtx(**(spec.get("service") or {}))

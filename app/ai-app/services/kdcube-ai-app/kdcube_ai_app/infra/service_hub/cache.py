@@ -300,7 +300,7 @@ def create_kv_cache_from_env(*, ttl_env_var: str = "KV_CACHE_TTL_SECONDS") -> Op
     """
     Build a raw KV cache from environment variables.
     """
-    redis_url = os.environ.get("REDIS_URL")
+    redis_url = get_settings().REDIS_URL
     if not redis_url:
         return None
     ttl = int(os.environ.get(ttl_env_var, DEFAULT_KV_TTL_SECONDS))

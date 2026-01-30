@@ -34,13 +34,6 @@ from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, ModelServic
 
 logger = logging.getLogger(__name__)
 
-# Environment configuration
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
-REDIS_URL__ = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0"
-# os.environ["REDIS_URL"] = REDIS_URL
-
 # TENANT_ID = os.environ.get("TENANT_ID", "home")
 # INSTANCE_ID = os.environ.get("INSTANCE_ID", "home-instance-1")
 CHAT_APP_PORT = int(os.environ.get("CHAT_APP_PORT", 8010))

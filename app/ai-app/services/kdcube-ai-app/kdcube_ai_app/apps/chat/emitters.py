@@ -85,7 +85,7 @@ class ChatRelayCommunicator:
             orchestrator_identity: Optional[str] = None,
             comm: Optional[ServiceCommunicator] = None,
     ):
-        redis_url = redis_url or os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+        redis_url = redis_url or get_settings().REDIS_URL
         self._comm = comm or ServiceCommunicator(
             redis_url=redis_url,
             orchestrator_identity=orchestrator_identity

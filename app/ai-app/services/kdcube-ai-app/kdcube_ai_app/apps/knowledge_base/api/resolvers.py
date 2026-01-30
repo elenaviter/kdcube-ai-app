@@ -16,6 +16,7 @@ from kdcube_ai_app.auth.AuthManager import AuthManager, RequirementBase, Require
 from kdcube_ai_app.apps.knowledge_base.db.providers.tenant_db import TenantDB
 from kdcube_ai_app.apps.knowledge_base.tenant import TenantProjects
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.auth.sessions import SessionManager
 
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, \
@@ -44,10 +45,7 @@ def get_tenant_dep(request: Request) -> str:
 # Environment configuration
 KDCUBE_STORAGE_PATH = os.environ.get("KDCUBE_STORAGE_PATH")
 
-REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
-REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
-REDIS_PORT = os.environ.get("REDIS_PORT", "6379")
-REDIS_URL = f"redis://:{REDIS_PASSWORD}@{REDIS_HOST}:{REDIS_PORT}/0"
+REDIS_URL = get_settings().REDIS_URL
 
 STORAGE_KWARGS = {}  # or AWS creds for S3
 storage_backend = create_storage_backend(f"{KDCUBE_STORAGE_PATH}/kb", **STORAGE_KWARGS)
