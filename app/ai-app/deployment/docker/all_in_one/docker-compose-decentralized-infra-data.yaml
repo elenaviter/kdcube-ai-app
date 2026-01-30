@@ -190,8 +190,3 @@ networks:
     driver: bridge
   kdcube-internal:
     driver: bridge
-
-#volumes:
-#  redis-data:
-#  postgres-data:
-#  clamav-db:
