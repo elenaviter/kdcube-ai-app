@@ -46,6 +46,21 @@ ON <SCHEMA>.conv_messages USING gin (text gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_conv_embedding
   ON <SCHEMA>.conv_messages USING ivfflat (embedding vector_cosine_ops) WITH (lists=100);
 
+-- Handle historical rename of view column s3_uri -> hosted_uri
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = '<SCHEMA>'
+      AND table_name = 'conv_messages_expired'
+      AND column_name = 's3_uri'
+  ) THEN
+    ALTER VIEW <SCHEMA>.conv_messages_expired
+      RENAME COLUMN s3_uri TO hosted_uri;
+  END IF;
+END $$;
+
 CREATE OR REPLACE VIEW <SCHEMA>.conv_messages_expired AS
 SELECT * FROM <SCHEMA>.conv_messages
 WHERE ts + (ttl_days || ' days')::interval < now();
