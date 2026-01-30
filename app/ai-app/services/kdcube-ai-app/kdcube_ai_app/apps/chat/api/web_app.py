@@ -22,11 +22,11 @@ from dotenv import load_dotenv, find_dotenv
 
 load_dotenv(find_dotenv())
 
-from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
-from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec
-
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
+
+from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
+from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec
 
 from kdcube_ai_app.infra.rendering.link_preview import close_shared_link_preview
 from kdcube_ai_app.infra.rendering.shared_browser import close_shared_browser
