@@ -119,35 +119,35 @@ graph TD
 
 ## Quickstart
 
-- CLI installer: [app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/README.md](app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/README.md)
-- All‑in‑one Docker Compose: [app/ai-app/deployment/docker/all_in_one/README.md](app/ai-app/deployment/docker/all_in_one/README.md)
+- CLI installer: [KDCube Apps CLI](app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/README.md)
+- All‑in‑one Docker Compose: [Docker Compose Guide](app/ai-app/deployment/docker/all_in_one/README.md)
 
 ---
 
 ## Documentation (direct links)
 
 ### Architecture
-- System architecture (short): [app/ai-app/docs/arch/architecture-short.md](app/ai-app/docs/arch/architecture-short.md)
-- System architecture (long): [app/ai-app/docs/arch/architecture-long.md](app/ai-app/docs/arch/architecture-long.md)
+- System architecture (short): [Architecture — Short](app/ai-app/docs/arch/architecture-short.md)
+- System architecture (long): [Architecture — Long](app/ai-app/docs/arch/architecture-long.md)
 
 ### Platform & Operations
-- Gateway: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md)
-- Auth: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/auth/auth-README.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/auth/auth-README.md)
-- Monitoring & observability: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)
-- Chat comms (REST/SSE/Socket.IO): [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
+- Gateway: [Gateway Architecture & Config](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md)
+- Auth: [Auth Overview](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/auth/auth-README.md)
+- Monitoring & observability: [Monitoring & Observability](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)
+- Chat comms (REST/SSE/Socket.IO): [Comm System](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
 
 ### SDK & Runtime
-- SDK index: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/SDK-index.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/SDK-index.md)
-- Tool subsystem: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/tool-subsystem-README.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/tool-subsystem-README.md)
-- Execution runtime (ops): [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/execution/operations.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/execution/operations.md)
-- Isolated runtime: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/isolated/README-iso-runtime.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/isolated/README-iso-runtime.md)
-- Economics & usage: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md)
-- Control plane management: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md)
+- SDK index: [SDK Index](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/SDK-index.md)
+- Tool subsystem: [Tool Subsystem](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/tool-subsystem-README.md)
+- Execution runtime (ops): [Execution Runtime Ops](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/execution/operations.md)
+- Isolated runtime: [Isolated Runtime](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/isolated/README-iso-runtime.md)
+- Economics & usage: [Economics & Usage](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md)
+- Control plane management: [Control Plane Management](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md)
 
 ### Bundles & Plugin System
-- Agentic bundles: [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/plugin/README.md](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/plugin/README.md)
+- Agentic bundles: [Bundle System](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/plugin/README.md)
 
 ### Knowledge Base
 - KB clients (REST & Socket.IO):
-  - [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/integrations/kb/rest_client.py](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/integrations/kb/rest_client.py)
-  - [app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/integrations/kb/socket_client.py](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/integrations/kb/socket_client.py)
+  - [KB REST Client](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/integrations/kb/rest_client.py)
+  - [KB Socket.IO Client](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/integrations/kb/socket_client.py)
