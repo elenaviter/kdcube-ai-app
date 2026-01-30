@@ -23,6 +23,27 @@ CREATE TABLE IF NOT EXISTS <SCHEMA>.conv_messages (
     track_id         TEXT
     );
 
+-- Handle historical rename of table column s3_uri -> hosted_uri
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = '<SCHEMA>'
+      AND table_name = 'conv_messages'
+      AND column_name = 's3_uri'
+  ) AND NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = '<SCHEMA>'
+      AND table_name = 'conv_messages'
+      AND column_name = 'hosted_uri'
+  ) THEN
+    ALTER TABLE <SCHEMA>.conv_messages
+      RENAME COLUMN s3_uri TO hosted_uri;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_<SCHEMA>_conv_user_conversation_ts
   ON <SCHEMA>.conv_messages (user_id, conversation_id, ts DESC);
 
