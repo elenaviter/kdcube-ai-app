@@ -45,7 +45,6 @@ services:
 #      - path: ./.env.backend
 #        required: false
 #    environment:
-#      - REDIS_HOST=redis
 #      - POSTGRES_HOST=postgres-db
 #      - LOG_FILE_PREFIX=kb
 #    volumes:
@@ -55,8 +54,6 @@ services:
 #    depends_on:
 #      postgres-setup:
 #        condition: service_completed_successfully
-#      redis:
-#        condition: service_healthy
 #    networks:
 #      - kdcube-internal
 #
@@ -72,7 +69,6 @@ services:
 #      - path: ./.env.backend
 #        required: false
 #    environment:
-#      - REDIS_HOST=redis
 #      - POSTGRES_HOST=postgres-db
 #      - LOG_FILE_PREFIX=dramatiq
 #    volumes:
@@ -81,8 +77,6 @@ services:
 #    depends_on:
 #      postgres-setup:
 #        condition: service_completed_successfully
-#      redis:
-#        condition: service_healthy
 #      kb:
 #        condition: service_started
 #    networks:
@@ -98,8 +92,6 @@ services:
       - path: ./.env.backend
         required: false
     environment:
-      - REDIS_HOST=redis
-      - APP_NEO4J_URI=bolt://neo4j:7687
       - CLAMAV_HOST=clamav
       - CLAMAV_PORT=3310
       - LOG_FILE_PREFIX=chat
@@ -121,8 +113,6 @@ services:
     depends_on:
       postgres-setup:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
       clamav:
         condition: service_healthy
     networks:
@@ -204,8 +194,4 @@ networks:
 #volumes:
 #  redis-data:
 #  postgres-data:
-#  neo4j-data:
-#  neo4j-logs:
-#  neo4j-plugins:
-#  neo4j-import:
 #  clamav-db:
