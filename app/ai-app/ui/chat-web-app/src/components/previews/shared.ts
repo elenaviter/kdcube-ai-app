@@ -4,7 +4,7 @@
  */
 
 import {useEffect, useState} from "react";
-import {useAuthManagerContext} from "../auth/AuthManager.tsx";
+import {appendDefaultCredentialsHeader} from "../../app/api/utils.ts";
 
 
 export const handleDownload = (url: string) => {
@@ -45,7 +45,6 @@ export const useFileContent = (file: FileRef | null) => {
     const [content, setContent] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const authContext = useAuthManagerContext()
 
     useEffect(() => {
         const fetchFileContent = async () => {
@@ -59,11 +58,10 @@ export const useFileContent = (file: FileRef | null) => {
 
 
             try {
-                const headers: HeadersInit = [
+                const headers = appendDefaultCredentialsHeader([
                     ['Content-Type', 'application/json']
-                ];
+                ]);
 
-                authContext.appendAuthHeader(headers);
                 const response = await fetch(file.url, {
                     headers,
                 });

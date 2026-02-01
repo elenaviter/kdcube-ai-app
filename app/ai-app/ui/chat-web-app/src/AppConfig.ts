@@ -3,11 +3,12 @@
  * Copyright (c) 2025 Elena Viter
  */
 
-import {AuthType} from "./components/auth/AuthManager.tsx";
-
 /*
     We may want to have an empty base for some values to make API calls relative to UI's base url
  */
+
+import {AuthType} from "./features/auth/authTypes.ts";
+
 function selectValue<T>(...args: T[]) {
     for (const arg of args) {
         if (arg === undefined || arg === null)
@@ -105,6 +106,10 @@ export const getWorkingScope = () => {
 
 export const getDefaultRoutePrefix = (): string =>
     (import.meta.env.CHAT_WEB_APP_DEFAULT_ROUTE_PREFIX || "").replace(/\/+$/, ""); // no trailing slash
+
+export function getChatPagePath() {
+    return getDefaultRoutePrefix() + "/chat";
+}
 
 
 export function getCognitoHostedDomain(): string {

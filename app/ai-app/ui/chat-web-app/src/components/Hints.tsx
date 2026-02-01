@@ -1,5 +1,5 @@
-import React, {useState, useRef, useEffect} from 'react';
-import {HelpCircle, Info, AlertCircle, CheckCircle, X, Lightbulb, Book, Zap, Eye, EyeOff} from 'lucide-react';
+import React, {useEffect, useRef, useState} from 'react';
+import {AlertCircle, CheckCircle, HelpCircle, Info, Lightbulb, X} from 'lucide-react';
 
 // Main Hint Component
 function Hint({

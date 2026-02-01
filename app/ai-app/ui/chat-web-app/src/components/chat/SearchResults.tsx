@@ -3,25 +3,22 @@
  * Copyright (c) 2025 Elena Viter
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
 import {
-    X,
-    Eye,
-    Copy,
+    Check,
     ChevronDown,
     ChevronUp,
+    Copy,
+    Database,
+    ExternalLink,
+    Eye,
+    File,
     FileText,
     Globe,
-    Database,
     Search,
-    Zap,
-    Check,
-    AlertCircle,
-    BookOpen,
-    File,
-    ExternalLink
+    X,
+    Zap
 } from 'lucide-react';
-import {useAuthManagerContext} from "../auth/AuthManager.tsx";
 import {getKBAPIBaseAddress} from "../../AppConfig.ts";
 
 // FilePreview component (same as your KB panel)
@@ -369,7 +366,6 @@ const PreviewModal = ({ isOpen, onClose, previewContent, apiService }) => {
     const [highlightedContent, setHighlightedContent] = useState('');
     const { copy, copied } = useCopyToClipboard();
     const contentRef = useRef(null);
-    const authContext = useAuthManagerContext()
 
     useEffect(() => {
         if (isOpen && previewContent) {
@@ -392,8 +388,7 @@ const PreviewModal = ({ isOpen, onClose, previewContent, apiService }) => {
             // Use your existing API service method
             const enhancedPreview = await apiService.getEnhancedPreview(
                 previewContent.result,
-                type,
-                authContext.getUserAuthToken()
+                type
             );
 
             setCurrentContent(enhancedPreview.content);

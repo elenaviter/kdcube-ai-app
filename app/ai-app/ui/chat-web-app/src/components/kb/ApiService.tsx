@@ -3,20 +3,11 @@
  * Copyright (c) 2025 Elena Viter
  */
 
-// api/apiService.ts - Uses authContext.appendAuthHeader(headers) everywhere
+// features/apiService.ts
 import {io, Socket} from "socket.io-client";
-import {
-    BacktrackNavigation,
-    EnhancedSearchResult,
-    SearchPreviewContent,
-} from "../search/SearchInterfaces";
-import {AuthContextValue} from "../auth/AuthManager.tsx";
-import {
-    getKBAPIBaseAddress,
-    getKBSocketAddress,
-    getKBSocketSocketIOPath,
-    getExtraIdTokenHeaderName, getChatBaseAddress,
-} from "../../AppConfig.ts";
+import {BacktrackNavigation, EnhancedSearchResult, SearchPreviewContent,} from "../search/SearchInterfaces";
+import {getKBAPIBaseAddress, getKBSocketAddress, getKBSocketSocketIOPath,} from "../../AppConfig.ts";
+import {appendDefaultCredentialsHeader} from "../../app/api/utils.ts";
 
 // ------------ Types matching the backend models ------------
 export interface ChatMessage {
@@ -27,29 +18,6 @@ export interface ChatMessage {
     buttons?: Array<{ actionCaption: string; id: string }>;
 }
 
-export interface FileUploadResponse {
-    success: boolean;
-    file_info: {
-        filename: string;
-        saved_filename: string;
-        path: string;
-        size: number;
-        size_formatted: string;
-        mime_type: string;
-        upload_time: string;
-    };
-}
-
-export interface FileListResponse {
-    files: Array<{
-        filename: string;
-        path: string;
-        size: number;
-        size_formatted: string;
-        modified: string;
-        mime_type?: string;
-    }>;
-}
 
 export interface DataElement {
     type: "url" | "file" | "raw_text";
@@ -61,12 +29,6 @@ export interface DataElement {
     metadata?: Record<string, any>;
     text?: string;
     name?: string;
-}
-
-export interface DataSummary {
-    metadata: any[];
-    summary: string;
-    last_updated: string;
 }
 
 export interface KBResource {
@@ -94,12 +56,6 @@ export interface KBResource {
         segmentation: string;
     };
     extraction_info?: any;
-}
-
-export interface KBSearchRequest {
-    query: string;
-    resource_id?: string;
-    top_k?: number;
 }
 
 export interface EnhancedKBSearchRequest {
@@ -171,38 +127,6 @@ class ApiService {
 
     // -------------------- helpers --------------------
 
-    /** Make a Headers object and apply auth via context */
-    private makeHeaders(
-        authContext?: AuthContextValue,
-        base?: HeadersInit
-    ): Headers {
-        const h = new Headers(base as any);
-        if (authContext) authContext.appendAuthHeader(h);
-        return h;
-    }
-
-    /** Derive access + id tokens by calling appendAuthHeader into a temp list */
-    private getTokensFromContext(
-        authContext: AuthContextValue
-    ): { accessToken?: string; idToken?: string } {
-        const pairs: [string, string][] = [];
-        authContext.appendAuthHeader(pairs);
-        const idHdr = getExtraIdTokenHeaderName();
-
-        let accessToken: string | undefined;
-        let idToken: string | undefined;
-
-        for (const [k, v] of pairs) {
-            if (k.toLowerCase() === "authorization") {
-                const m = /^Bearer\s+(.+)$/i.exec(v);
-                if (m) accessToken = m[1];
-            } else if (k === idHdr) {
-                idToken = v;
-            }
-        }
-        return {accessToken, idToken};
-    }
-
     /** Escape special regex characters */
     private escapeRegex(str: string): string {
         return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -210,28 +134,21 @@ class ApiService {
 
     // -------------------- CHAT --------------------
 
-    async getChatMessages(authContext: AuthContextValue): Promise<ChatMessage[]> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+    async getChatMessages(): Promise<ChatMessage[]> {
+        const headers = appendDefaultCredentialsHeader([
+            ['Content-Type', 'application/json']
+        ]);
         const res = await fetch(`${this.baseUrl}/api/chat/messages`, {headers});
         if (!res.ok) throw new Error("Failed to fetch chat messages");
         return res.json();
     }
 
-    async postChatMessage(text: string, authContext: AuthContextValue): Promise<ChatMessage> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
-        const res = await fetch(`${this.baseUrl}/api/{project}/chat/messages`, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({text}),
-        });
-        if (!res.ok) throw new Error("Failed to post chat message");
-        return res.json();
-    }
-
     // -------------------- DATA / KB (HTTP) --------------------
 
-    async addDataElement(element: DataElement, authContext: AuthContextValue): Promise<any> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+    async addDataElement(element: DataElement): Promise<any> {
+        const headers = appendDefaultCredentialsHeader([
+            ['Content-Type', 'application/json']
+        ]);
         const res = await fetch(`${this.baseUrl}/api/data/elements`, {
             method: "POST",
             headers,
@@ -260,15 +177,15 @@ class ApiService {
         };
     }
 
-    async getSpendingReport(authContext: AuthContextValue): Promise<any> {
-        const headers = this.makeHeaders(authContext);
+    async getSpendingReport(): Promise<any> {
+        const headers = appendDefaultCredentialsHeader();
         const res = await fetch(`${this.baseUrl}/api/spending`, {headers});
         if (!res.ok) throw new Error("Failed to fetch spending report");
         return res.json();
     }
 
-    async getEventLog(authContext: AuthContextValue): Promise<{ events: any[] }> {
-        const headers = this.makeHeaders(authContext);
+    async getEventLog(): Promise<{ events: any[] }> {
+        const headers = appendDefaultCredentialsHeader();
         const res = await fetch(`${this.baseUrl}/api/events`, {headers});
         if (!res.ok) throw new Error("Failed to fetch event log");
         return res.json();
@@ -277,7 +194,8 @@ class ApiService {
     // -------------------- SOCKET.IO (KB) --------------------
 
     ensureKBSocket(
-        authContext: AuthContextValue,
+        accessToken: string | null | undefined,
+        idToken: string | null | undefined,
         project?: string,
         tenant?: string,
         userSessionId?: string
@@ -289,8 +207,6 @@ class ApiService {
             this.kbSocket.disconnect();
             this.kbSocket = undefined;
         }
-
-        const {accessToken, idToken} = this.getTokensFromContext(authContext);
 
         this.kbSocket = io(getKBSocketAddress(), {
             path: getKBSocketSocketIOPath(),
@@ -364,7 +280,6 @@ class ApiService {
         project: string,
         tenant: string,
         file: File,
-        authContext: AuthContextValue,
         onProgress?: (progress: number) => void
     ): Promise<KBUploadResponse> {
         const formData = new FormData();
@@ -404,16 +319,15 @@ class ApiService {
             xhr.open("POST", `${this.baseUrl}/api/kb/${project}/upload`);
 
             // apply Authorization + X-ID-Token with the same helper
-            const tmpPairs: [string, string][] = [];
-            authContext.appendAuthHeader(tmpPairs);
+            const tmpPairs = appendDefaultCredentialsHeader( []) as [string, string][];
             for (const [k, v] of tmpPairs) xhr.setRequestHeader(k, v);
 
             xhr.send(formData);
         });
     }
 
-    async addURLToKB(project: string, tenant: string, request: KBAddURLRequest, authContext: AuthContextValue): Promise<KBUploadResponse> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+    async addURLToKB(project: string, tenant: string, request: KBAddURLRequest): Promise<KBUploadResponse> {
+        const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
         const res = await fetch(`${this.baseUrl}/api/kb/${project}/add-url`, {
             method: "POST",
             headers,
@@ -426,12 +340,11 @@ class ApiService {
     async processKBURLWithSocket(
         project: string,
         tenant: string,
-        authContext: AuthContextValue,
         resourceMetadata: any,
         socketId: string,
         processingMode?: string
     ): Promise<any> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+        const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
         const res = await fetch(`${this.baseUrl}/api/kb/${project}/add-url/process`, {
             method: "POST",
             headers,
@@ -448,11 +361,10 @@ class ApiService {
     async processKBFileWithSocket(
         project: string,
         tenant: string,
-        authContext: AuthContextValue,
         resource_metadata: any,
-        socketId: string
+        socketId: string,
     ): Promise<any> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+        const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
         const res = await fetch(`${this.baseUrl}/api/kb/${project}/upload/process`, {
             method: "POST",
             headers,
@@ -465,10 +377,9 @@ class ApiService {
     async listKBResources(
         project: string,
         tenant: string,
-        authContext: AuthContextValue,
         resourceType?: string
     ): Promise<{ resources: KBResource[]; total_count: number; kb_stats: any }> {
-        const headers = this.makeHeaders(authContext);
+        const headers = appendDefaultCredentialsHeader();
         const res = await fetch(`${this.baseUrl}/api/kb/${project}/resources`, {headers});
         if (!res.ok) throw new Error("Failed to list KB resources");
         const result = await res.json();
@@ -481,12 +392,11 @@ class ApiService {
     async getKBResourceContent(
         project: string,
         tenant: string,
-        authContext: AuthContextValue,
         resourceId: string,
         version?: string,
         contentType: "raw" | "extraction" | "segments" = "raw"
     ): Promise<KBResourceContent> {
-        const headers = this.makeHeaders(authContext);
+        const headers = appendDefaultCredentialsHeader();
         const params = new URLSearchParams({content_type: contentType});
         if (version) params.append("version", version);
 
@@ -497,8 +407,8 @@ class ApiService {
         return res.json();
     }
 
-    async deleteKBResource(project: string, tenant: string, authContext: AuthContextValue, resourceId: string): Promise<any> {
-        const headers = this.makeHeaders(authContext);
+    async deleteKBResource(project: string, tenant: string, resourceId: string): Promise<any> {
+        const headers = appendDefaultCredentialsHeader();
         const res = await fetch(`${this.baseUrl}/api/kb/${project}/resource/${resourceId}`, {
             method: "DELETE",
             headers,
@@ -519,8 +429,8 @@ class ApiService {
 
     // -------------------- RN content helpers --------------------
 
-    async getContentByRN(request: RNContentRequest, authContext: AuthContextValue): Promise<RNContentResponse> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+    async getContentByRN(request: RNContentRequest): Promise<RNContentResponse> {
+        const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
         const res = await fetch(`${this.baseUrl}/api/kb/content/by-rn`, {
             method: "POST",
             headers,
@@ -539,11 +449,10 @@ class ApiService {
     // -------------------- KB search --------------------
 
     async searchKBEnhanced(
-        request: EnhancedKBSearchRequest,
-        authContext: AuthContextValue
+        request: EnhancedKBSearchRequest
     ): Promise<EnhancedKBSearchResponse> {
         const project = request.project || "default-project";
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+        const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
         const res = await fetch(`${this.baseUrl}/api/kb/${project}/search/enhanced`, {
             method: "POST",
             headers,
@@ -600,11 +509,10 @@ class ApiService {
     async getContentWithHighlighting(
         rn: string,
         citations: string[],
-        authContext: AuthContextValue,
         navigation?: BacktrackNavigation[]
     ): Promise<{ content: string; highlighted_content: string; navigation_applied: boolean }> {
         try {
-            const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+            const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
             const res = await fetch(`${this.baseUrl}/api/kb/content/highlighted`, {
                 method: "POST",
                 headers,
@@ -619,7 +527,7 @@ class ApiService {
             if (res.ok) return res.json();
 
             // Fallback: fetch content and highlight locally
-            const contentResp = await this.getContentByRN({rn, content_type: "auto"}, authContext);
+            const contentResp = await this.getContentByRN({rn, content_type: "auto"});
             const content = contentResp.content;
             let highlighted = content;
 
@@ -639,7 +547,6 @@ class ApiService {
     }
 
     async getSegmentContent(
-        authContext: AuthContextValue,
         rn: string,
         segment_index: number,
         highlight_citations?: string[]
@@ -650,7 +557,7 @@ class ApiService {
         context_before?: string;
         context_after?: string;
     }> {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
+        const headers = appendDefaultCredentialsHeader( [["Content-Type", "application/json"]]);
         const res = await fetch(`${this.baseUrl}/api/kb/content/segment`, {
             method: "POST",
             headers,
@@ -668,21 +575,18 @@ class ApiService {
 
     async getEnhancedPreview(
         result: EnhancedSearchResult,
-        view_type: "original" | "extraction",
-        authContext: AuthContextValue
+        view_type: "original" | "extraction"
     ): Promise<SearchPreviewContent> {
         const targetRN = view_type === "original" ? result.backtrack.raw.rn : result.backtrack.extraction.rn;
         if (!targetRN) throw new Error(`No ${view_type} RN available for this result`);
 
         const contentResp = await this.getContentByRN(
-            {rn: targetRN, content_type: view_type === "original" ? "raw" : "extraction"},
-            authContext
+            {rn: targetRN, content_type: view_type === "original" ? "raw" : "extraction"}
         );
 
         const highlightedResp = await this.getContentWithHighlighting(
             targetRN,
             result.backtrack.raw.citations,
-            authContext,
             view_type === "extraction" ? result.backtrack.segmentation.navigation : undefined
         );
 
@@ -704,47 +608,7 @@ class ApiService {
             citations: result.backtrack.raw.citations,
         };
     }
-
-    async getSuggestedQuestions(tenant: string, project: string, authContext: AuthContextValue) {
-        const headers = this.makeHeaders(authContext, {"Content-Type": "application/json"});
-        const res = await fetch(`${getChatBaseAddress()}/integrations/bundles/${tenant}/${project}/operations/suggestions`,
-            {method: 'POST', headers: headers, body: JSON.stringify({})})
-        if (!res.ok) {
-            throw new Error("Failed to get suggested questions");
-        }
-        const data = await res.json();
-        return data.suggestions;
-    }
 }
 
 // Singleton
 export const apiService = new ApiService();
-
-// Named exports (keep surface area explicit)
-export const {
-    getChatMessages,
-    postChatMessage,
-    addDataElement,
-    getSpendingReport,
-    getEventLog,
-    ensureKBSocket,
-    waitForKBConnected,
-    subscribeResourceProgress,
-    disconnectKBSocket,
-    uploadFileToKB,
-    addURLToKB,
-    processKBURLWithSocket,
-    processKBFileWithSocket,
-    listKBResources,
-    getKBResourceContent,
-    deleteKBResource,
-    getKBResourceDownloadUrl,
-    extractResourceMetadata,
-    getContentByRN,
-    getKBHealth,
-    searchKBEnhanced,
-    getContentWithHighlighting,
-    getSegmentContent,
-    getEnhancedPreview,
-    getSuggestedQuestions
-} = apiService;

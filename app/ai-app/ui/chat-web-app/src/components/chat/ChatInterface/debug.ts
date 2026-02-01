@@ -1,7 +1,5 @@
-import {
-    ChatMessageData,
-    StepUpdate
-} from "../types/chat.ts";
+
+import {ChatMessageData, StepUpdate} from "../../../features/chat/chatTypes.ts";
 
 function getExampleAssistantMessage(id = 10): ChatMessageData {
     return {

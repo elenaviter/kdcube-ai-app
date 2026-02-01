@@ -3,29 +3,28 @@
  * Copyright (c) 2025 Elena Viter
  */
 
-import React, { useState, useEffect } from 'react';
+import React, {useEffect, useState} from 'react';
 import {
-    Search,
-    MessageSquare,
-    ChevronDown,
-    ChevronUp,
-    ExternalLink,
-    Eye,
-    FileText,
-    Navigation,
-    Highlighter,
+    AlertCircle,
     ArrowLeft,
     ArrowRight,
+    ChevronDown,
+    ChevronUp,
+    Eye,
+    File,
+    FileText,
+    Hash,
+    Highlighter,
+    MapPin,
+    MessageSquare,
+    Search,
+    Target,
     X,
-    Download, Hash, Target, MapPin, Zap, File, AlertCircle
+    Zap
 } from 'lucide-react';
-import { apiService } from '../kb/ApiService';
-import {
-    EnhancedSearchResult,
-    SearchPreviewContent,
-} from './SearchInterfaces';
+import {apiService} from '../kb/ApiService';
+import {EnhancedSearchResult, SearchPreviewContent,} from './SearchInterfaces';
 import {BinaryFilePreviewModal, RegularPreviewModal} from "../previews/BinaryAndRegularFilePreview";
-import {useAuthManagerContext} from "../auth/AuthManager.tsx";
 import {getWorkingScope} from "../../AppConfig.ts";
 
 // Enhanced Search Result Component
@@ -371,7 +370,6 @@ const IntegratedEnhancedSearchPanel: React.FC = () => {
         avgRelevance: number;
         processingTime: number
     } | null>(null);
-    const authContext = useAuthManagerContext()
 
     const handleSearch = async () => {
         if (!searchQuery.trim()) return;
@@ -386,7 +384,7 @@ const IntegratedEnhancedSearchPanel: React.FC = () => {
                 top_k: 10,
                 project: workingScope.project,
                 tenant: workingScope.tenant,
-            }, authContext);
+            });
 
             setSearchResults(response.results);
 
@@ -417,7 +415,7 @@ const IntegratedEnhancedSearchPanel: React.FC = () => {
             const response = await apiService.getContentByRN({
                 rn: result.backtrack.raw.rn,
                 content_type: "raw"
-            }, authContext);
+            });
             const isBinary = response.metadata?.is_binary || false;
 
             setPreviewContent({
@@ -444,7 +442,7 @@ const IntegratedEnhancedSearchPanel: React.FC = () => {
             const response = await apiService.getContentByRN({
                 rn: result.backtrack.extraction.rn,
                 content_type: "extraction"
-            }, authContext);
+            });
 
             setPreviewContent({
                 type: 'extraction',

@@ -5,11 +5,12 @@
 
 import {useEffect, useState} from "react";
 
-export function useWordStreamEffect(text: string, delay = 100, maxDelta = 3) {
+export function useWordStreamEffect(text: string, enabled = true, delay = 100, maxDelta = 3) {
     const [displayedText, setDisplayedText] = useState('');
     const [wordIndex, setWordIndex] = useState(0);
 
     useEffect(() => {
+        if (!enabled) return;
         const words = text.split(' ');
         if (wordIndex < words.length) {
             const delta = Math.min(words.length - wordIndex - 1, maxDelta);
@@ -18,11 +19,13 @@ export function useWordStreamEffect(text: string, delay = 100, maxDelta = 3) {
                 setWordIndex(prev => prev + delta);
             }, delay);
 
-            return () => clearTimeout(timeout);
+            return () => {
+                clearTimeout(timeout)
+            };
         }
-    }, [text, wordIndex, delay, maxDelta]);
+    }, [text, wordIndex, delay, maxDelta, enabled]);
 
-    return displayedText;
+    return enabled ? displayedText : text;
 }
 
 function closeUpCodeBlocks(text: string, onlyFull = ['mermaid']) {

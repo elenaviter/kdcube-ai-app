@@ -10,26 +10,6 @@ export const handleContentDownload = (fileName: string, content: string | Blob |
     URL.revokeObjectURL(url);
 }
 
-function groupBy<T>(array: T[], predicate: (item: T) => string): Record<string, T[]> {
-    return array.reduce((groups, item) => {
-        const key = predicate(item);
-        if (!groups[key]) {
-            groups[key] = [];
-        }
-        groups[key].push(item);
-        return groups;
-    }, {} as Record<string, T[]>);
-}
-
-function getUniqueKeys(array: unknown[], keyExtractor: (item: T) => string): string[] {
-    return array.reduce((keys: string[], item) => {
-        const key = keyExtractor(item);
-        if (!keys.includes(key))
-            keys.push(key)
-        return keys;
-    }, []);
-}
-
 // Simple word-aware truncation
 function truncateWords(str: string, length: number, ellipsis: string = '...'): string {
     if (str.length <= length) return str;
@@ -156,4 +136,4 @@ async function selectFileAdvanced(options: FileSelectionOptions = {}): Promise<F
     return fileArray;
 }
 
-export {groupBy, getUniqueKeys, truncateWords, truncateByWords, smartTruncate, openUrlSafely, selectFile, selectFileAdvanced};
+export {truncateWords, truncateByWords, smartTruncate, openUrlSafely, selectFile, selectFileAdvanced};

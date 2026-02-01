@@ -4,39 +4,39 @@
  */
 
 import {
-    CloudDownload,
-    Link,
-    Plus,
-    Eye,
-    Trash2,
-    Upload,
-    Check,
-    X,
-    Search,
-    Filter,
-    File as FileIcon,
-    FileText,
-    FileImage,
-    FileSpreadsheet,
-    FileVideo,
-    FileAudio,
     Archive,
-    Code,
+    Check,
     ChevronDown,
     ChevronUp,
+    CloudDownload,
+    Code,
+    Download,
+    Eye,
+    File as FileIcon,
+    FileAudio,
+    FileImage,
+    FileSpreadsheet,
+    FileText,
+    FileVideo,
+    Filter,
     Globe,
-    Download
+    Link,
+    Plus,
+    Search,
+    Trash2,
+    Upload,
+    X
 } from "lucide-react";
-import React, {Fragment, useState, useEffect, useRef} from "react";
+import React, {Fragment, useEffect, useRef, useState} from "react";
 import {useApiDataContext as useDemoDataContext} from "./ApiDataProvider";
 import FilePreview from "../previews/files/FilePreview.tsx";
 import SimpleHTMLPreview from "../previews/SimpleHTMLPreview";
 
 import {apiService, KBResource} from "./ApiService";
 import IntegratedEnhancedSearchPanel from "../search/EnhancedKBSearchPanel";
-
-import {useAuthManagerContext} from "../auth/AuthManager.tsx";
 import {getWorkingScope} from "../../AppConfig.ts";
+import {useAppSelector} from "../../app/store.ts";
+import {selectAuthToken, selectIdToken} from "../../features/auth/authSlice.ts";
 
 
 // ================================================================================
@@ -158,8 +158,6 @@ const FilesPanel = () => {
     const project = workingScope.project;
     const tenant = workingScope.tenant;
 
-    // const auth = useAuth();
-
     useEffect(() => {
         loadFileResources();
         return () => {
@@ -175,7 +173,7 @@ const FilesPanel = () => {
     const loadFileResources = async () => {
         try {
             // const filesResources = await apiService.listKBResources('file', auth.user?.access_token);
-            const filesResources = await apiService.listKBResources(project, tenant, authContext,'file');
+            const filesResources = await apiService.listKBResources(project, tenant, 'file');
             const files = filesResources.resources;
             // Filter to only show file resources, not URL resources
             // const files = response.resources.filter(resource => resource.source_type === 'file');
@@ -207,7 +205,8 @@ const FilesPanel = () => {
         return matchesQuery && matchesType && matchesProcessed;
     });
 
-    const authContext = useAuthManagerContext()
+    const authToken = useAppSelector(selectAuthToken)
+    const idToken = useAppSelector(selectIdToken)
 
     const handleFileUpload = () => {
         const input = document.createElement("input");
@@ -225,10 +224,10 @@ const FilesPanel = () => {
                 const fileId = `file_${file.name}_${Date.now()}`;
 
                 // --- initialize UI state ---
-                setUploadProgress(p => ({ ...p, [fileId]: 0 }));
-                setUploadStages(s => ({ ...s, [fileId]: "Uploading file..." }));
+                setUploadProgress(p => ({...p, [fileId]: 0}));
+                setUploadStages(s => ({...s, [fileId]: "Uploading file..."}));
                 setUploadErrors(errs => {
-                    const nxt = { ...errs };
+                    const nxt = {...errs};
                     delete nxt[fileId];
                     return nxt;
                 });
@@ -255,8 +254,7 @@ const FilesPanel = () => {
                         project,
                         tenant,
                         file,
-                        authContext,
-                        pct => setUploadProgress(p => ({ ...p, [fileId]: Math.round(pct * 0.2) })),
+                        pct => setUploadProgress(p => ({...p, [fileId]: Math.round(pct * 0.2)})),
                     );
                     if (!uploadResp.success) {
                         throw new Error(uploadResp.message || "Upload failed");
@@ -266,11 +264,11 @@ const FilesPanel = () => {
                     const meta = uploadResp.resource_metadata as KBResource;
                     resourceId = meta.id;
 
-                    setUploadProgress(p => ({ ...p, [fileId]: 20 }));
-                    setUploadStages(s => ({ ...s, [fileId]: "File uploaded. Preparing processing…" }));
+                    setUploadProgress(p => ({...p, [fileId]: 20}));
+                    setUploadStages(s => ({...s, [fileId]: "File uploaded. Preparing processing…"}));
 
                     // 2) ensure ONE shared socket and wait for it
-                    apiService.ensureKBSocket(authContext, project, tenant, userSessionId);
+                    apiService.ensureKBSocket(authToken, idToken, project, tenant, userSessionId);
                     await apiService.waitForKBConnected();
 
                     // 3) subscribe to this resource’s channel
@@ -285,8 +283,8 @@ const FilesPanel = () => {
                     }) => {
                         switch (msg.event) {
                             case "processing_started":
-                                setUploadStages(s => ({ ...s, [fileId]: msg.message || "Processing started…" }));
-                                setUploadProgress(p => ({ ...p, [fileId]: 20 }));
+                                setUploadStages(s => ({...s, [fileId]: msg.message || "Processing started…"}));
+                                setUploadProgress(p => ({...p, [fileId]: 20}));
                                 break;
 
                             case "processing_extraction":
@@ -298,20 +296,20 @@ const FilesPanel = () => {
                             default: {
                                 if (typeof msg.progress === "number") {
                                     const percent = 20 + Math.round((msg.progress ?? 0) * 80);
-                                    setUploadProgress(p => ({ ...p, [fileId]: percent }));
+                                    setUploadProgress(p => ({...p, [fileId]: percent}));
                                 }
                                 if (msg.message) {
-                                    setUploadStages(s => ({ ...s, [fileId]: msg.message || "Processing..." }));
+                                    setUploadStages(s => ({...s, [fileId]: msg.message || "Processing..."}));
                                 }
                                 if (msg.error) {
-                                    setUploadErrors(e => ({ ...e, [fileId]: msg.error }));
+                                    setUploadErrors(e => ({...e, [fileId]: msg.error}));
                                 }
                                 break;
                             }
 
                             case "processing_completed":
-                                setUploadStages(s => ({ ...s, [fileId]: msg.message || "Completed" }));
-                                setUploadProgress(p => ({ ...p, [fileId]: 100 }));
+                                setUploadStages(s => ({...s, [fileId]: msg.message || "Completed"}));
+                                setUploadProgress(p => ({...p, [fileId]: 100}));
                                 loadFileResources();
 
                                 cleanup();
@@ -319,12 +317,12 @@ const FilesPanel = () => {
                                 // optional: remove progress UI a bit later
                                 setTimeout(() => {
                                     setUploadProgress(prev => {
-                                        const next = { ...prev };
+                                        const next = {...prev};
                                         delete next[fileId];
                                         return next;
                                     });
                                     setUploadStages(prev => {
-                                        const next = { ...prev };
+                                        const next = {...prev};
                                         delete next[fileId];
                                         return next;
                                     });
@@ -332,7 +330,7 @@ const FilesPanel = () => {
                                 return;
 
                             case "processing_failed":
-                                setUploadErrors(e => ({ ...e, [fileId]: msg.error || "Processing failed" }));
+                                setUploadErrors(e => ({...e, [fileId]: msg.error || "Processing failed"}));
                                 cleanup();
                                 return;
                         }
@@ -340,18 +338,26 @@ const FilesPanel = () => {
 
                     // 4) start processing using the shared socket id
                     const sharedSocketId = (apiService as any)["kbSocket"]?.id;
-                    setUploadStages(s => ({ ...s, [fileId]: "Starting processing…" }));
-                    await apiService.processKBFileWithSocket(project, tenant, authContext, meta, sharedSocketId);
+                    setUploadStages(s => ({...s, [fileId]: "Starting processing…"}));
+                    await apiService.processKBFileWithSocket(project, tenant, meta, sharedSocketId);
 
                 } catch (err: any) {
                     console.error("Upload/processing error:", err);
-                    setUploadErrors(e => ({ ...e, [fileId]: err?.message || "Failed" }));
+                    setUploadErrors(e => ({...e, [fileId]: err?.message || "Failed"}));
 
                     cleanup();
 
                     setTimeout(() => {
-                        setUploadProgress(prev => { const next = { ...prev }; delete next[fileId]; return next; });
-                        setUploadStages(prev => { const next = { ...prev }; delete next[fileId]; return next; });
+                        setUploadProgress(prev => {
+                            const next = {...prev};
+                            delete next[fileId];
+                            return next;
+                        });
+                        setUploadStages(prev => {
+                            const next = {...prev};
+                            delete next[fileId];
+                            return next;
+                        });
                     }, 5000);
                 }
             }
@@ -364,7 +370,7 @@ const FilesPanel = () => {
 
     const handleDeleteResource = async (resourceId: string) => {
         try {
-            await apiService.deleteKBResource(project, tenant, authContext, resourceId);
+            await apiService.deleteKBResource(project, tenant, resourceId);
             await loadFileResources();
         } catch (err) {
             console.error("Error deleting resource:", err);
@@ -755,12 +761,13 @@ const LinksPanel = () => {
         };
     }, []);
 
-    const authContext = useAuthManagerContext()
+    const authToken = useAppSelector(selectAuthToken)
+    const idToken = useAppSelector(selectIdToken)
 
     const loadLinkResources = async () => {
         try {
             // const linksResources = await apiService.listKBResources('url', auth.user?.access_token);
-            const linksResources = await apiService.listKBResources(project, tenant, authContext, 'url');
+            const linksResources = await apiService.listKBResources(project, tenant, 'url');
             const links = linksResources.resources;
             setLinkResources(links);
         } catch (error) {
@@ -844,10 +851,10 @@ const LinksPanel = () => {
         const linkId = `link_${Date.now()}`;
 
         // --- initialize UI state ---
-        setUploadProgress(prev => ({ ...prev, [linkId]: 0 }));
-        setUploadStages(prev => ({ ...prev, [linkId]: "Adding URL to knowledge base..." }));
+        setUploadProgress(prev => ({...prev, [linkId]: 0}));
+        setUploadStages(prev => ({...prev, [linkId]: "Adding URL to knowledge base..."}));
         setUploadErrors(prev => {
-            const nxt = { ...prev };
+            const nxt = {...prev};
             delete nxt[linkId];
             return nxt;
         });
@@ -861,7 +868,7 @@ const LinksPanel = () => {
                 unsubRefs.current[resourceId]();
                 delete unsubRefs.current[resourceId];
             }
-            if (resourceId){
+            if (resourceId) {
                 activeResourcesRef.current.delete(resourceId);
             }
             // if no resources left, close the shared socket
@@ -875,8 +882,7 @@ const LinksPanel = () => {
             const addResp = await apiService.addURLToKB(
                 project,
                 tenant,
-                { url, name: new URL(url).hostname },
-                authContext
+                {url, name: new URL(url).hostname}
             );
             if (!addResp?.success) {
                 throw new Error(addResp?.message || "Failed to add URL");
@@ -886,11 +892,11 @@ const LinksPanel = () => {
             resourceId = resourceMeta.id;
             const userSessionId = addResp.user_session_id;
 
-            setUploadProgress(prev => ({ ...prev, [linkId]: 20 }));
-            setUploadStages(prev => ({ ...prev, [linkId]: "URL added. Preparing processing…" }));
+            setUploadProgress(prev => ({...prev, [linkId]: 20}));
+            setUploadStages(prev => ({...prev, [linkId]: "URL added. Preparing processing…"}));
 
             // STEP 2: ensure ONE shared socket and wait for connection
-            apiService.ensureKBSocket(authContext, project, tenant, userSessionId);
+            apiService.ensureKBSocket(authToken, idToken, project, tenant, userSessionId);
             await apiService.waitForKBConnected();
 
             // Mark this resource as active
@@ -907,8 +913,8 @@ const LinksPanel = () => {
             }) => {
                 switch (msg.event) {
                     case "processing_started":
-                        setUploadStages(s => ({ ...s, [linkId]: msg.message || "Processing started…" }));
-                        setUploadProgress(p => ({ ...p, [linkId]: 20 }));
+                        setUploadStages(s => ({...s, [linkId]: msg.message || "Processing started…"}));
+                        setUploadProgress(p => ({...p, [linkId]: 20}));
                         break;
 
                     case "processing_extraction":
@@ -920,20 +926,20 @@ const LinksPanel = () => {
                     default: {
                         if (typeof msg.progress === "number") {
                             const processProgress = 20 + Math.round((msg.progress ?? 0) * 80);
-                            setUploadProgress(p => ({ ...p, [linkId]: processProgress }));
+                            setUploadProgress(p => ({...p, [linkId]: processProgress}));
                         }
                         if (msg.message) {
-                            setUploadStages(s => ({ ...s, [linkId]: msg.message || "Processing..." }));
+                            setUploadStages(s => ({...s, [linkId]: msg.message || "Processing..."}));
                         }
                         if (msg.error) {
-                            setUploadErrors(e => ({ ...e, [linkId]: msg.error }));
+                            setUploadErrors(e => ({...e, [linkId]: msg.error}));
                         }
                         break;
                     }
 
                     case "processing_completed":
-                        setUploadStages(s => ({ ...s, [linkId]: msg.message || "Completed" }));
-                        setUploadProgress(p => ({ ...p, [linkId]: 100 }));
+                        setUploadStages(s => ({...s, [linkId]: msg.message || "Completed"}));
+                        setUploadProgress(p => ({...p, [linkId]: 100}));
                         loadLinkResources();
 
                         cleanup();
@@ -941,12 +947,12 @@ const LinksPanel = () => {
                         // clear progress UI a bit later (optional)
                         setTimeout(() => {
                             setUploadProgress(prev => {
-                                const next = { ...prev };
+                                const next = {...prev};
                                 delete next[linkId];
                                 return next;
                             });
                             setUploadStages(prev => {
-                                const next = { ...prev };
+                                const next = {...prev};
                                 delete next[linkId];
                                 return next;
                             });
@@ -954,20 +960,19 @@ const LinksPanel = () => {
                         return;
 
                     case "processing_failed":
-                        setUploadErrors(e => ({ ...e, [linkId]: msg.error || "Processing failed" }));
+                        setUploadErrors(e => ({...e, [linkId]: msg.error || "Processing failed"}));
                         cleanup();
                         return;
                 }
             });
 
-            setUploadStages(prev => ({ ...prev, [linkId]: "Starting URL processing…" }));
+            setUploadStages(prev => ({...prev, [linkId]: "Starting URL processing…"}));
 
             // STEP 4: start processing (shared socket id is fine)
             const sharedSocketId = (apiService as any)["kbSocket"]?.id;
             await apiService.processKBURLWithSocket(
                 project,
                 tenant,
-                authContext,
                 resourceMeta,
                 sharedSocketId,
                 "retrieval_only"
@@ -987,8 +992,16 @@ const LinksPanel = () => {
             cleanup();
 
             setTimeout(() => {
-                setUploadProgress(prev => { const next = { ...prev }; delete next[linkId]; return next; });
-                setUploadStages(prev => { const next = { ...prev }; delete next[linkId]; return next; });
+                setUploadProgress(prev => {
+                    const next = {...prev};
+                    delete next[linkId];
+                    return next;
+                });
+                setUploadStages(prev => {
+                    const next = {...prev};
+                    delete next[linkId];
+                    return next;
+                });
             }, 5000);
         } finally {
             setIsAdding(false);
@@ -1003,7 +1016,7 @@ const LinksPanel = () => {
 
     const handleDeleteResource = async (resourceId: string) => {
         try {
-            await apiService.deleteKBResource(project, tenant, authContext, resourceId);
+            await apiService.deleteKBResource(project, tenant, resourceId);
             await loadLinkResources();
         } catch (err) {
             console.error("Error deleting link:", err);

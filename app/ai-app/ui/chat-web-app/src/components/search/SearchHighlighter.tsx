@@ -5,10 +5,9 @@
 
 // Search utilities and highlighting functions
 
-import { BacktrackNavigation, EnhancedSearchResult } from './SearchInterfaces';
+import {BacktrackNavigation, EnhancedSearchResult} from './SearchInterfaces';
 import {useEffect, useState} from "react";
 import {apiService} from "../ApiService";
-import {useAuthManagerContext} from "../auth/AuthManager.tsx";
 
 export class SearchHighlighter {
     private static highlightClass = 'search-highlight';
@@ -392,8 +391,6 @@ export const useSearchResults = (query: string, options?: {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    const authContext = useAuthManagerContext();
-
     useEffect(() => {
         if (!query.trim()) {
             setResults([]);
@@ -422,8 +419,7 @@ export const useSearchResults = (query: string, options?: {
                     top_k: 10,
                     include_backtrack: true,
                     include_navigation: true
-                },
-                    authContext);
+                });
 
                 // Cache results
                 SearchCache.set(cacheKey, searchResponse.results, options?.cacheMinutes || 30);
@@ -453,7 +449,6 @@ export const useContentHighlighting = (rn: string, citations: string[]) => {
     const [highlightedContent, setHighlightedContent] = useState<string>('');
     const [loading, setLoading] = useState(false);
 
-    const authContext = useAuthManagerContext();
     useEffect(() => {
         if (!rn || !citations.length) return;
 
@@ -461,7 +456,7 @@ export const useContentHighlighting = (rn: string, citations: string[]) => {
             setLoading(true);
 
             try {
-                const result = await apiService.getContentWithHighlighting(rn, citations, authContext);
+                const result = await apiService.getContentWithHighlighting(rn, citations);
                 setHighlightedContent(result.highlighted_content);
             } catch (error) {
                 console.error('Failed to load highlighted content:', error);

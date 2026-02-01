@@ -30,8 +30,11 @@ async function copyMarkdownToClipboard(mdContent?: string, htmlContent?: string)
         }
     }
 
-    // Fallback for older browsers
-    return fallbackCopy(mdContent.toString());
+    if (mdContent) {
+        return fallbackCopy(mdContent.toString());
+    } else {
+        return false
+    }
 }
 
 export {copyMarkdownToClipboard}
