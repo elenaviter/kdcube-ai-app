@@ -81,12 +81,6 @@ SYSTEM MESSAGE
 
 - **[ACTIVE SKILLS]** appears only when `show_skills` was requested in the previous round and is resolved/loaded by [`react.py`](react.py) before calling `react_decision_stream`.
 - **Wrap-up** only appears when the wrap-up gate is active (`is_wrapup_round`).
-
-Reference example (real prompt snapshots):
-- [`kdcube_ai_app/apps/chat/sdk/runtime/solution/react/agents/ctx/1/sys1`](agents/ctx/1/sys1)
-- [`kdcube_ai_app/apps/chat/sdk/runtime/solution/react/agents/ctx/1/sys2`](agents/ctx/1/sys2)
-- [`kdcube_ai_app/apps/chat/sdk/runtime/solution/react/agents/ctx/1/sys3`](agents/ctx/1/sys3)
-
 ---
 
 ## 3) Human Message Layout (Decision Agent)
