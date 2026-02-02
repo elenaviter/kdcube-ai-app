@@ -158,8 +158,10 @@ graph TD
 - Attachments: [Attachments System](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/attachments-system.md)
 - Feedback: [Feedback System](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/feedback-system.md)
 - Citations: [Citations System](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/citations-system.md)
+- ReAct context (decision view): [ReAct Context](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/solution/react/react-context-README.md)
 - Memories (overview): [Memory Subsystem](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/context/memory/memories-README.md)
-- Conversation memories: [Conversation Memories](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/context/memory/conv-memories-README.md)
+- Conversation memories: [Conversation Memories](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/context/memory/memories-README.md)
+- Conversation artifacts: [Conversation Artifacts](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/solution/context/conversation-artifacts-README.md)
 - OPEX aggregations: [OPEX Aggregations](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/opex/README-AGGREGATIONS.md)
 - Code exec widget: [Code Exec Widget](app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/solution/widgets/code-exec-widget-README.md)
 
