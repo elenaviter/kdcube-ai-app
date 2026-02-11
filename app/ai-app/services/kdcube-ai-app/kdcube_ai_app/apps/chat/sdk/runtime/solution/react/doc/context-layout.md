@@ -4,7 +4,7 @@ This describes the block stream that agents receive.
 
 ## Block Stream (per agent call)
 1) **History blocks**  
-   Built once per turn by `ContextBrowser.load_context()`.  
+   Built once per turn by `ContextBrowser.load_timeline()`.  
    Includes prior turns (user → contributions → assistant) plus any stored `conv.range.summary` blocks.
 
 2) **Current turn user blocks**  
@@ -12,13 +12,13 @@ This describes the block stream that agents receive.
    Includes current user prompt + attachments.
 
 3) **Turn progress blocks**  
-   Any downstream agent can append progress contributions (e.g., gate/coordinator/react notes).  
+   Any downstream agent can append progress contributions (e.g., gate/react notes).  
    These are appended via `ContextBrowser.contribute(...)` and appear in the same stream.  
    By default they are persisted into the turn log for reconstruction next turn.
 
-4) **Sources pool block** (uncached; optional via `timeline(include_sources=True)`).
+4) **Sources pool block** (uncached; optional via `timeline.render(include_sources=True)`).
 
-5) **Announce block** (uncached; optional via `timeline(include_announce=True)`; active until explicitly cleared).
+5) **Announce block** (uncached; optional via `timeline.render(include_announce=True)`; active until explicitly cleared).
 
 Caching: two cache checkpoints are applied inside the stable stream (history + current + contributions).  
 Tail blocks (sources/announce) are never cached.
@@ -43,7 +43,7 @@ Tail blocks (sources/announce) are never cached.
 └──────────────────────────┘
 ┌──────────────────────────┐
 │ TURN PROGRESS LOG        │
-│  - gate/coordinator/react  │
+│  - gate/react            │
 └──────────────────────────┘
 ┌──────────────────────────┐
 │ SOURCES POOL (optional)  │  ← uncached tail
@@ -76,6 +76,10 @@ Tail blocks (sources/announce) are never cached.
       □ [2] draft report
   - plan_status: done=1 failed=0 pending=1
   - plan_complete: false
+
+[SYSTEM MESSAGE]
+  Context was pruned because the session TTL (300s) was exceeded.
+  Use react.read(path) to restore a logical path (fi:/ar:/so:/sk:).
 ```
 
 Caching: tail blocks are always uncached. Cache checkpoints are placed by the browser (see context-caching.md).
@@ -132,7 +136,7 @@ id=plan_abc
 {
   "tool_id": "web_tools.web_search",
   "tool_call_id": "18f62649fb3b",
-  "reasoning": "...",
+  "notes": "...",
   "params": { ... }
 }
 
@@ -162,21 +166,19 @@ id=plan_abc
 ```
 
 ## Agent Contribution Example
-An agent can append blocks using a formatter and choose whether to persist:
+An agent can append blocks using a formatter:
 
 ```python
 block = {
-    "type": "agent.coordinator",
-    "author": "coordinator",
+    "type": "agent.react",
+    "author": "react",
     "turn_id": scratchpad.turn_id,
     "ts": scratchpad.started_at,
     "mime": "text/markdown",
-    "text": "[STAGE: COORDINATOR]\nplan_steps=2 | budgets: explore=2, exploit=2",
+    "text": "[STAGE: REACT]\nnotes=...",
 }
 ctx_browser.contribute(
-    scratchpad=scratchpad,
     blocks=[block],
-    persist=True,  # store in turn log for next turn reconstruction
 )
 ```
 
@@ -191,18 +193,18 @@ Filtering applies to both:
 
 Example: use timeline context with retry-on-limit
 ```python
-blocks = await ctx_browser.timeline(
-    conversation_id=scratchpad.conversation_id,
-    turn_id=scratchpad.turn_id,
+blocks = ctx_browser.timeline.render(
+    include_sources=True,
+    include_announce=True,
     cache_last=True,
 )
 try:
     await agent_call(blocks=blocks)
 except ServiceException as exc:
     if is_context_limit_error(exc.err):
-        blocks = await ctx_browser.timeline(
-            conversation_id=scratchpad.conversation_id,
-            turn_id=scratchpad.turn_id,
+        blocks = ctx_browser.timeline.render(
+            include_sources=True,
+            include_announce=True,
             cache_last=True,
             force_sanitize=True,
         )
