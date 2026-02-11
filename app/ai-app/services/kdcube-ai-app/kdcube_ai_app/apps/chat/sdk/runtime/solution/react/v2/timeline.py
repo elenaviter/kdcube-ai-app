@@ -1148,6 +1148,27 @@ class Timeline:
             self.update_timestamp()
         return {"status": status, "blocks_hidden": replaced, "tokens_hidden": tokens_hidden}
 
+    def tail_tokens_from_path(self, path: str) -> Optional[int]:
+        """
+        Return the estimated token count from the target path to the end of the
+        static timeline (post-compaction, pre-tail). Used to enforce editable tail
+        windows for react.hide.
+        """
+        if not isinstance(path, str) or not path.strip():
+            return None
+        blocks = self._slice_after_compaction_summary(self._collect_blocks())
+        target_idx = -1
+        for idx in range(len(blocks) - 1, -1, -1):
+            blk = blocks[idx]
+            if not isinstance(blk, dict):
+                continue
+            if (blk.get("path") or "").strip() == path.strip():
+                target_idx = idx
+                break
+        if target_idx == -1:
+            return None
+        return self._estimate_blocks_tokens(blocks[target_idx:])
+
     def unhide_paths(self, paths: List[str]) -> int:
         if not paths:
             return 0
@@ -1452,6 +1473,10 @@ class Timeline:
         self._cache_ttl_bootstrap = False
         buffer_seconds = getattr(session, "cache_ttl_prune_buffer_seconds", 0) if session is not None else 0
         if not ttl_seconds:
+            try:
+                self.cache_last_touch_at = int(time.time())
+            except Exception:
+                pass
             return {"status": "disabled"}
         try:
             from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.tools.session import (

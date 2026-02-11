@@ -338,7 +338,7 @@ def build_compaction_digest(blocks: List[dict]) -> Dict[str, Any]:
     written: List[Dict[str, Any]] = []
     patched: List[Dict[str, Any]] = []
     exec_outputs: List[Dict[str, Any]] = []
-    memory_reads: List[Dict[str, Any]] = []
+    memsearches: List[Dict[str, Any]] = []
     hidden_blocks: List[Dict[str, Any]] = []
     seen_artifacts: set[str] = set()
 
@@ -425,7 +425,7 @@ def build_compaction_digest(blocks: List[dict]) -> Dict[str, Any]:
                     exec_outputs.append(artifact)
                 continue
 
-            if tool_id == "react.memory_read":
+            if tool_id == "react.memsearch":
                 hits = payload.get("hits") if isinstance(payload, dict) else None
                 hit_paths: List[str] = []
                 hit_turns: List[str] = []
@@ -443,7 +443,7 @@ def build_compaction_digest(blocks: List[dict]) -> Dict[str, Any]:
                             if path and path not in hit_paths:
                                 hit_paths.append(path)
                 params = tool_meta.get("params") if isinstance(tool_meta, dict) else None
-                memory_reads.append({
+                memsearches.append({
                     "tool_call_id": call_id,
                     "tool_id": tool_id,
                     "turn_id": turn_id,
@@ -463,7 +463,7 @@ def build_compaction_digest(blocks: List[dict]) -> Dict[str, Any]:
         "written_files": written,
         "patched_files": patched,
         "exec_outputs": exec_outputs,
-        "memory_read": memory_reads,
+        "memsearches": memsearches,
         "hidden_blocks": hidden_blocks,
     }
 

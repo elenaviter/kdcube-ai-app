@@ -28,14 +28,14 @@ The loop exits when `exit_reason` is set or the iteration/budget is exhausted.
 stateDiagram-v2
     [*] --> decision
     decision --> tool_execution: action=call_tool & validated
-    decision --> decision: action=call_tool & infra-only (react.read/memory_read/memory_hide)
+    decision --> decision: action=call_tool & infra-only (react.read/memsearch/hide)
     decision --> exit: action=complete/clarify OR exit_reason
     tool_execution --> decision: done
     exit --> [*]
 ```
 
 Notes:
-- Infra tools (`react.read`, `react.memory_read`, `react.memory_hide`) are handled in‑loop and return to `decision` without a tool_execution pass.
+- Infra tools (`react.read`, `react.memsearch`, `react.hide`) are handled in‑loop and return to `decision` without a tool_execution pass (react.hide uses logical paths, not queries).
 - Tool call protocol validation happens inside the decision node (no separate protocol state).
 
 ---

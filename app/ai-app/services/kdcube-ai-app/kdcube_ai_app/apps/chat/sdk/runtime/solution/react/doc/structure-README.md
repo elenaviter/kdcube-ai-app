@@ -11,7 +11,7 @@ All v2 runtime code lives under `react/v2/`.
   - `react.stream`
   - `react.file`
   - `react.patch`
-  - `react.memory_read`
+  - `react.memsearch`
 - `artifacts.py` — ArtifactView helpers (paths, visibility, kind, rendering).
 - `layout.py` — block builders for history/current turn/stage blocks + sources catalog.
 

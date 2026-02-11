@@ -5,12 +5,15 @@ from __future__ import annotations
 
 import json
 import time
+import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import ToolCallView
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.apps.chat.sdk.util import token_count
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_MAX_TEXT_CHARS = 4000
@@ -539,6 +542,45 @@ def apply_cache_ttl_pruning(
         timeline.cache_last_touch_at = now
         return {"status": "empty"}
 
+    all_turns = _recent_turn_ids(blocks, len(blocks) or 0)
+    turn_count = len(all_turns)
+    if ttl_seconds and keep_recent_turns and turn_count and keep_recent_turns >= turn_count:
+        timeline.cache_last_touch_at = now
+        try:
+            logger.info(
+                "[cache_ttl_prune] ttl=%ss buffer=%ss last_touch=%s now=%s "
+                "blocks=%s turns=%s keep_recent_turns=%s >= turns, skipping prune",
+                int(ttl_seconds or 0),
+                int(buffer_seconds or 0),
+                last_touch_val,
+                now,
+                len(blocks),
+                turn_count,
+                int(keep_recent_turns or 0),
+            )
+        except Exception:
+            pass
+        return {"status": "skipped"}
+
+    def _estimate_blocks_tokens_safe(b: List[Dict[str, Any]]) -> int:
+        try:
+            return int(getattr(timeline, "_estimate_blocks_tokens")(b))
+        except Exception:
+            total = 0
+            for blk in b or []:
+                if not isinstance(blk, dict):
+                    continue
+                txt = blk.get("text")
+                if isinstance(txt, str):
+                    total += len(txt)
+                base64 = blk.get("base64")
+                if isinstance(base64, str):
+                    total += len(base64)
+            return max(1, int(total / 4))
+
+    before_blocks = len(blocks)
+    before_tokens = _estimate_blocks_tokens_safe(blocks)
+
     recent_turns = _recent_turn_ids(blocks, keep_recent_turns)
     intact_turns = _recent_turn_ids(blocks, keep_recent_intact_turns)
     if intact_turns:
@@ -686,6 +728,8 @@ def apply_cache_ttl_pruning(
         pass
 
     timeline.cache_last_touch_at = now
+    after_blocks = len(blocks)
+    after_tokens = _estimate_blocks_tokens_safe(blocks)
     try:
         ttl_msg = _build_prune_message_text(ttl_seconds)
         # One-time announce message (after budget in announce stack).
@@ -718,6 +762,24 @@ def apply_cache_ttl_pruning(
             })
             timeline.blocks = list(blocks)
             timeline.update_timestamp()
+    except Exception:
+        pass
+    try:
+        logger.info(
+            "[cache_ttl_prune] ttl=%ss buffer=%ss last_touch=%s now=%s "
+            "blocks=%s->%s tokens=%s->%s hidden_paths=%s keep_recent_turns=%s keep_intact=%s",
+            int(ttl_seconds or 0),
+            int(buffer_seconds or 0),
+            last_touch_val,
+            now,
+            before_blocks,
+            after_blocks,
+            before_tokens,
+            after_tokens,
+            len(hidden_paths),
+            int(keep_recent_turns or 0),
+            int(keep_recent_intact_turns or 0),
+        )
     except Exception:
         pass
     return {

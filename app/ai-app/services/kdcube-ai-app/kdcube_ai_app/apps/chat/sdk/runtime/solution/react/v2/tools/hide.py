@@ -10,14 +10,16 @@ import json
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.tools.common import tool_call_block, notice_block, add_block
 
 TOOL_SPEC = {
-    "id": "react.memory_hide",
+    "id": "react.hide",
     "purpose": (
         "Hide a specific timeline path by replacing it with a short placeholder. "
         "Use to reduce visible context size; can be restored via react.read(path)."
-        "Use only when the snippet is near the tail of your visible timeline of events."
+        "Use only when the snippet is near the tail of your visible timeline of events. "
+        "Enforced by RuntimeCtx.cache.editable_tail_size_in_tokens. "
+        "This tool accepts a logical path (ar: fi: tc: so:), not a search query."
     ),
     "args": {
-        "path": "str (FIRST FIELD). The block path to hide (e.g., tc:<turn_id>.tool_calls.<id>.out.json or fi:<turn_id>.files/<...>).",
+        "path": "str (FIRST FIELD). Logical block path to hide (ar: fi: tc: so:).",
         "replacement": "str (SECOND FIELD). Short replacement text; will auto-append 'retrieve back with react.read(path)'.",
     },
     "returns": "hide result (path + replaced count)",
@@ -28,11 +30,11 @@ TOOL_SPEC = {
 }
 
 
-async def handle_react_memory_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
+async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
     root_notes = (last_decision.get("notes") or "").strip()
-    tool_id = "react.memory_hide"
+    tool_id = "react.hide"
     params = tool_call.get("params") or {}
     path = (params.get("path") or "").strip()
     replacement = (params.get("replacement") or "").strip()
@@ -62,6 +64,49 @@ async def handle_react_memory_hide(*, ctx_browser: Any, state: Dict[str, Any], t
     replaced = 0
     tokens_hidden = 0
     status = "not_found"
+    tail_tokens = None
+    tail_limit = None
+    cache_cfg = getattr(ctx_browser.runtime_ctx, "cache", None)
+    if cache_cfg is not None:
+        try:
+            tail_limit = int(getattr(cache_cfg, "editable_tail_size_in_tokens", 0) or 0)
+        except Exception:
+            tail_limit = None
+    if tail_limit is not None:
+        try:
+            tail_tokens = ctx_browser.timeline.tail_tokens_from_path(path)
+        except Exception:
+            tail_tokens = None
+        if tail_tokens is not None and tail_tokens > tail_limit:
+            status = "too_old"
+            notice_block(
+                ctx_browser=ctx_browser,
+                tool_call_id=tool_call_id,
+                code="hide_too_old",
+                message=(
+                    "hide only supports paths near the tail "
+                    f"(tail_tokens={tail_tokens}, limit={tail_limit})."
+                ),
+                extra={"path": path, "tail_tokens": tail_tokens, "tail_limit": tail_limit},
+            )
+            payload = {
+                "path": path,
+                "status": status,
+                "blocks_hidden": replaced,
+                "tokens_hidden": tokens_hidden,
+                "tail_tokens": tail_tokens,
+                "tail_limit": tail_limit,
+            }
+            add_block(ctx_browser, {
+                "turn": turn_id,
+                "type": "react.tool.result",
+                "call_id": tool_call_id,
+                "mime": "application/json",
+                "path": f"tc:{turn_id}.tool_calls.{tool_call_id}.out.json" if turn_id else "",
+                "text": json.dumps(payload, ensure_ascii=False, indent=2),
+            })
+            state["last_tool_result"] = payload
+            return state
     try:
         res = ctx_browser.hide_paths(
             paths=[path],
@@ -75,8 +120,8 @@ async def handle_react_memory_hide(*, ctx_browser: Any, state: Dict[str, Any], t
         notice_block(
             ctx_browser=ctx_browser,
             tool_call_id=tool_call_id,
-            code="memory_hide_failed",
-            message=f"memory_hide failed: {exc}",
+            code="hide_failed",
+            message=f"hide failed: {exc}",
             extra={"path": path},
         )
 
@@ -85,6 +130,8 @@ async def handle_react_memory_hide(*, ctx_browser: Any, state: Dict[str, Any], t
         "status": status,
         "blocks_hidden": replaced,
         "tokens_hidden": tokens_hidden,
+        "tail_tokens": tail_tokens,
+        "tail_limit": tail_limit,
     }
     add_block(ctx_browser, {
         "turn": turn_id,

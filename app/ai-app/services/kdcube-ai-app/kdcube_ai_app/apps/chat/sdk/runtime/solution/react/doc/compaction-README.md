@@ -77,7 +77,7 @@ merged into the main summary as a “Turn Context (split turn)” section.
 The summary block includes `meta.compaction_digest` with details about:
 - streamed artifacts (path, mime, visibility, sources_used)
 - file writes / patches / exec outputs (via tool classification)
-- memory_read hits (query + paths + turn_ids)
+- memsearch hits (query + paths + turn_ids)
 - hidden blocks and their replacement text
 
 ## Hooks

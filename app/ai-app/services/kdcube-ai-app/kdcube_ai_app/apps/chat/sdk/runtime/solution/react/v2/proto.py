@@ -11,8 +11,8 @@ from typing import Any, Dict, Optional, List, Callable, Awaitable
 @dataclass
 class RuntimeSessionConfig:
     # Cache TTL pruning (prompt cache)
-    cache_ttl_seconds: Optional[int] = None
-    cache_ttl_prune_buffer_seconds: int = 0
+    cache_ttl_seconds: Optional[int] = 300
+    cache_ttl_prune_buffer_seconds: int = 10
     cache_truncation_max_text_chars: int = 4000
     cache_truncation_max_field_chars: int = 1000
     cache_truncation_max_list_items: int = 50
@@ -40,6 +40,17 @@ class RuntimeSessionConfig:
 
 
 @dataclass
+class RuntimeCacheConfig:
+    # Limits for react.hide (editable tail window).
+    editable_tail_size_in_tokens: int = 2000
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "editable_tail_size_in_tokens": self.editable_tail_size_in_tokens,
+        }
+
+
+@dataclass
 class RuntimeCtx:
     tenant: Optional[str] = None
     project: Optional[str] = None
@@ -61,6 +72,7 @@ class RuntimeCtx:
     debug_log_announce: bool = True
     debug_log_sources_pool: bool = False
     session: RuntimeSessionConfig = field(default_factory=RuntimeSessionConfig)
+    cache: RuntimeCacheConfig = field(default_factory=RuntimeCacheConfig)
     # Legacy cache fields (prefer RuntimeCtx.session).
     cache_ttl_seconds: Optional[int] = None
     cache_truncation_max_text_chars: Optional[int] = None
@@ -89,6 +101,7 @@ class RuntimeCtx:
             "debug_log_announce": bool(self.debug_log_announce),
             "debug_log_sources_pool": bool(self.debug_log_sources_pool),
             "session": self.session.to_dict() if self.session else {},
+            "cache": self.cache.to_dict() if self.cache else {},
             "cache_ttl_seconds": self.cache_ttl_seconds,
             "cache_truncation_max_text_chars": self.cache_truncation_max_text_chars,
             "cache_truncation_max_field_chars": self.cache_truncation_max_field_chars,

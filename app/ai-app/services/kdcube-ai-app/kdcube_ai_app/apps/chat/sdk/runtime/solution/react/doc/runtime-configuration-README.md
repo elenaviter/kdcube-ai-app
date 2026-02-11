@@ -24,26 +24,37 @@ This document summarizes runtime configuration fields for the React runtime (`Ru
 - `debug_log_announce`: emit announce blocks in debug logs.
 - `debug_log_sources_pool`: emit sources pool in debug logs.
 - `session`: session-level configuration (see below).
+- `cache`: cache-related limits (see below).
 
 ## RuntimeSessionConfig (RuntimeCtx.session)
 
 Cache TTL pruning and truncation settings used by the session view:
 
-- `cache_ttl_seconds`: TTL in seconds for prompt cache pruning.
-- `cache_ttl_prune_buffer_seconds`: seconds subtracted from TTL to prune early before the next model call.
-- `cache_truncation_max_text_chars`: max chars for text blocks in TTL truncation.
-- `cache_truncation_max_field_chars`: max chars per field in tool params/results.
-- `cache_truncation_max_list_items`: max list items retained during truncation.
-- `cache_truncation_max_dict_keys`: max dict keys retained during truncation.
-- `cache_truncation_max_base64_chars`: max base64 length before hiding.
-- `cache_truncation_keep_recent_images`: number of image/PDF base64 artifacts to keep.
-- `cache_truncation_max_image_pdf_b64_sum`: total base64 budget for kept image/PDF artifacts.
-- `keep_recent_turns`: number of most recent turns to keep visible.
-- `keep_recent_intact_turns`: number of most recent turns to keep intact (no pruning).
+| Setting                                  | Description                                                            | Default     |
+|------------------------------------------|------------------------------------------------------------------------|-------------|
+| `cache_ttl_seconds`                      | TTL in seconds for prompt cache pruning.                               | `300`       |
+| `cache_ttl_prune_buffer_seconds`         | Seconds subtracted from TTL to prune early before the next model call. | `10`        |
+| `cache_truncation_max_text_chars`        | Max chars for text blocks in TTL pruning replacement text.             | `4000`      |
+| `cache_truncation_max_field_chars`       | Max chars per field in tool params/results summaries.                  | `1000`      |
+| `cache_truncation_max_list_items`        | Max list items retained during summaries.                              | `50`        |
+| `cache_truncation_max_dict_keys`         | Max dict keys retained during summaries.                               | `80`        |
+| `cache_truncation_max_base64_chars`      | Max base64 length before hiding.                                       | `4000`      |
+| `cache_truncation_keep_recent_images`    | Number of image/PDF base64 artifacts to keep (within recent turns).    | `2`         |
+| `cache_truncation_max_image_pdf_b64_sum` | Total base64 budget for kept image/PDF artifacts.                      | `1_000_000` |
+| `keep_recent_turns`                      | Number of most recent turns to keep visible.                           | `10`        |
+| `keep_recent_intact_turns`               | Number of most recent turns to keep intact (no pruning).               | `2`         |
 
 When TTL pruning runs, a system notice is emitted:
 - Announce stack: `[SYSTEM MESSAGE] Context was pruned...`
 - Timeline block: `type=system.message`, `meta.kind=cache_ttl_pruned`
+
+## RuntimeCacheConfig (RuntimeCtx.cache)
+
+Limits for cache-related operations outside TTL pruning.
+
+| Setting                         | Description                                                                 | Default |
+|---------------------------------|-----------------------------------------------------------------------------|---------|
+| `editable_tail_size_in_tokens`  | Max token distance from static tail allowed for `react.hide`.        | `2000`  |
 
 ## Legacy Cache Fields
 

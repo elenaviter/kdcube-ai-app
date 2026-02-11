@@ -64,8 +64,8 @@ Example result (simplified):
 { "type": "react.tool.result", "path": "fi:turn_123.files/report.md", "mime": "text/markdown", "text": "<patch>..." }
 ```
 
-react.memory_read
-- Purpose: search past turns and surface relevant snippets into context.
+react.memsearch
+- Purpose: semantic search in past turns and surface relevant snippets into context.
 - Effect: emits a tool.result block with compact snippets and metadata (turn_id, timestamps, scores).
 - Use when you suspect missing details exist in prior turns but are not visible.
 Params:
@@ -85,10 +85,12 @@ Example result block (simplified):
 }
 ```
 
-react.memory_hide
+react.hide
 - Purpose: replace a large snippet in the visible timeline with a short placeholder.
 - Use only when the snippet is near the tail and clearly no longer needed.
 - The original content remains retrievable via react.read(path).
+- Enforced tail window: only paths within `RuntimeCtx.cache.editable_tail_size_in_tokens` from the static tail are allowed.
+- Uses a logical path (ar: fi: tc: so:), not a search query.
 Params:
 - path: str (FIRST FIELD). Block path to hide.
 - replacement: str (SECOND FIELD). Replacement text.
@@ -98,7 +100,7 @@ Example result (simplified):
 ```
 
 react.search_files
-- Purpose: safely search files under the current workdir without shell execution.
+- Purpose: safely search files under the current workspace without shell execution.
 - Returns: list of matching file paths.
 Params:
 - name_regex: str (FIRST FIELD). Regex for filenames (optional).
@@ -111,4 +113,4 @@ Example result (simplified):
 
 Notes
 - react.* tools are only valid inside the react loop.
-- The decision agent must order params exactly as specified in each tool signature.
+- The React agent must order params exactly as specified in each tool signature.

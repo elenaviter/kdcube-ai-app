@@ -15,7 +15,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.timeline import (
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.tools.common import tool_call_block, notice_block, add_block
 
 TOOL_SPEC = {
-    "id": "react.memory_read",
+    "id": "react.memsearch",
     "purpose": (
         "Search conversation memory (semantic index) and return top matching turn snippets. "
         "Use when visible context is missing needed info. "
@@ -35,11 +35,11 @@ TOOL_SPEC = {
 }
 
 
-async def handle_react_memory_read(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
+async def handle_react_memsearch(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
     root_notes = (last_decision.get("notes") or "").strip()
-    tool_id = "react.memory_read"
+    tool_id = "react.memsearch"
     params = tool_call.get("params") or {}
     query = (params.get("query") or "").strip()
     raw_targets = params.get("targets")
@@ -164,7 +164,7 @@ async def handle_react_memory_read(*, ctx_browser: Any, state: Dict[str, Any], t
             })
     except Exception as exc:
         state["exit_reason"] = "error"
-        state["error"] = {"where": "tool_execution", "error": f"memory_read_failed:{exc}", "managed": True}
+        state["error"] = {"where": "tool_execution", "error": f"memsearch_failed:{exc}", "managed": True}
         return state
 
     artifact_path = f"tc:{turn_id}.tool_calls.{tool_call_id}.out.json" if turn_id else ""

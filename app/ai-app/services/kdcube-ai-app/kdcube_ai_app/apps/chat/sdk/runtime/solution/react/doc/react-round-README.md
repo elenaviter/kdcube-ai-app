@@ -30,7 +30,7 @@ Tool result blocks are emitted per artifact or per result type:
 - `react.stream`: Stream text content to a display block (`kind=display`).
 - `react.file`: Persist text content to disk (`kind=file`) + emit result block.
 - `react.patch`: Update an existing file. If `patch` starts with `---/+++/@@`, treat as unified diff; otherwise replace full file content.
-- `react.memory_read`: Query conversation index for prior turns; returns snippets.
+- `react.memsearch`: Query conversation index for prior turns; returns snippets.
 
 ## Storage
 - Tool results are **not** persisted as files by default.

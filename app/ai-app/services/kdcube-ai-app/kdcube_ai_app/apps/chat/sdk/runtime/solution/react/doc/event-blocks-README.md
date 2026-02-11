@@ -99,8 +99,8 @@ Example:
 }
 ```
 
-## Hidden blocks (memory_hide)
-Blocks can be hidden with `react.memory_hide(path, replacement_text)`:
+## Hidden blocks (hide)
+Blocks can be hidden with `react.hide(path, replacement_text)` (path is a logical path, not a query):
 - Original blocks remain in the timeline with `meta.hidden=true`.
 - One block in the group stores `meta.replacement_text`.
 - Rendering replaces hidden blocks with a single text block:

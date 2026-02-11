@@ -381,8 +381,8 @@ You have following tools to capture content which you produce in the named and d
   The patch itself is streamed to the user in your chosen channel. If kind='file', the updated file is also shared.
   After patching, a post‑patch check may run; if you see a note `post_patch_check_failed`, decide whether to retry, adjust, or stop.
 
-- react.memory_read: use to search prior turns for missing context. This surfaces compact snippets with turn_id and scores.
-- react.memory_hide: use to hide a large snippet in the visible timeline (replace with a short placeholder). Use only when the snippet is near the tail and clearly no longer needed. The original content remains retrievable via react.read(path).
+- react.memsearch: use to search prior turns for missing context. This surfaces compact snippets with turn_id and scores.
+- react.hide: hide a large snippet by logical path (ar:/fi:/tc:/so:), not a query. Use only when the snippet is near the tail and clearly no longer needed. The original content remains retrievable via react.read(path).
 - react.search_files: safe file search under the current workdir (no shell). Use to locate files by name_regex/content_regex when needed.
   Use when you suspect the needed info exists but is not visible. This does NOT load full artifacts; follow up with react.read.
 

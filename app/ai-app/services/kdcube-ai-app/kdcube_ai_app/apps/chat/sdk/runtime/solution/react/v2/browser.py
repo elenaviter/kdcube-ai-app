@@ -9,6 +9,7 @@ import logging
 import json
 import pathlib
 import time
+from datetime import datetime, timezone
 import tempfile
 import os
 
@@ -22,6 +23,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.timeline import (
     TIMELINE_KIND,
     parse_timeline_payload,
     Timeline,
+    extract_turn_ids_from_blocks,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import RuntimeCtx
 
@@ -98,6 +100,73 @@ class ContextBrowser:
                 turn_id=self._runtime_ctx.turn_id or "",
                 ts=self._runtime_ctx.started_at,
             )
+        except Exception:
+            pass
+        if self._timeline.cache_last_touch_at is None and self._timeline.cache_last_ttl_seconds is None:
+            try:
+                blocks = list(self._timeline.blocks or [])
+                last_idx = None
+                for idx in range(len(blocks) - 1, -1, -1):
+                    if (blocks[idx].get("type") or "") == "assistant.completion":
+                        last_idx = idx
+                        break
+                candidate_indices: List[int] = []
+                if last_idx is not None:
+                    if last_idx - 1 >= 0:
+                        candidate_indices.append(last_idx - 1)
+                    candidate_indices.append(last_idx)
+
+                inferred_ts: Optional[int] = None
+                for idx in candidate_indices:
+                    blk = blocks[idx]
+                    ts_val = blk.get("ts")
+                    if isinstance(ts_val, (int, float)):
+                        inferred_ts = int(ts_val)
+                        break
+                    if isinstance(ts_val, str):
+                        s = ts_val.strip()
+                        if not s:
+                            continue
+                        try:
+                            if s.endswith("Z"):
+                                s = s[:-1] + "+00:00"
+                            dt = datetime.fromisoformat(s)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            inferred_ts = int(dt.timestamp())
+                            break
+                        except Exception:
+                            try:
+                                inferred_ts = int(float(s))
+                                break
+                            except Exception:
+                                continue
+                if inferred_ts is not None:
+                    self._timeline.cache_last_touch_at = inferred_ts
+            except Exception:
+                pass
+        try:
+            session = getattr(self._runtime_ctx, "session", None)
+            runtime_ttl = getattr(session, "cache_ttl_seconds", None) if session is not None else None
+            if runtime_ttl is None:
+                runtime_ttl = getattr(self._runtime_ctx, "cache_ttl_seconds", None)
+            info = {
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "blocks": len(self._timeline.blocks or []),
+                "sources_pool": len(self._timeline.sources_pool or []),
+                "turn_ids": len(extract_turn_ids_from_blocks(self._timeline.blocks or [])),
+                "conversation_title": self._timeline.conversation_title,
+                "conversation_started_at": self._timeline.conversation_started_at,
+                "timeline_ts": self._timeline.ts,
+                "cache_last_touch_at": self._timeline.cache_last_touch_at,
+                "cache_last_ttl_seconds": self._timeline.cache_last_ttl_seconds,
+                "runtime_cache_ttl_seconds": runtime_ttl,
+                "runtime_keep_recent_turns": getattr(session, "keep_recent_turns", None) if session is not None else None,
+                "runtime_keep_recent_intact_turns": getattr(session, "keep_recent_intact_turns", None) if session is not None else None,
+                "cache_ttl_bootstrap": getattr(self._timeline, "_cache_ttl_bootstrap", None),
+            }
+            self.log.log("[timeline.load] " + json.dumps(info, ensure_ascii=False, default=str))
         except Exception:
             pass
 

@@ -1,7 +1,8 @@
 # End‑to‑end flow (react v2)
 
-This document provides a high‑level view of the turn lifecycle and how agents interact
-with the timeline.
+This document provides a high‑level view of the turn lifecycle and how the React runtime
+interacts with the timeline. We currently support a **single agent loop** on the shared
+timeline (React). Gate is optional and only runs on new conversations to set the title.
 
 ## ASCII diagram
 
@@ -15,16 +16,9 @@ with the timeline.
                 │
                 ▼
 ┌────────────────────────────────────────────────────────────────────────────┐
-│ Gate agent                                                                  │
+│ Gate agent (optional; new conversation only)                                 │
 │  - timeline.render(include_sources=false, include_announce=false)            │
 │  - emits gate block (+ clarifications) into timeline                         │
-└───────────────┬────────────────────────────────────────────────────────────┘
-                │
-                ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ Coordinator                                                                 │
-│  - timeline.render(include_sources=true, include_announce=true)              │
-│  - emits plan (react.plan JSON block)                                        │
 └───────────────┬────────────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -38,13 +32,7 @@ with the timeline.
 │  - plan acknowledgements add:                                                │
 │      • react.plan.ack (text)                                                 │
 │      • updated react.plan (JSON snapshot)                                    │
-└───────────────┬────────────────────────────────────────────────────────────┘
-                │
-                ▼
-┌────────────────────────────────────────────────────────────────────────────┐
-│ Final answer generation                                                      │
-│  - timeline.render(include_sources=true, include_announce=false)             │
-│  - assistant completion contributed into timeline                            │
+│  - final answer produced by React and stored as assistant.completion          │
 └───────────────┬────────────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -59,14 +47,20 @@ with the timeline.
 
 ```mermaid
 flowchart TD
-    A[Turn start: load_timeline + user prompt/attachments] --> B[Gate agent]
-    B --> C[Coordinator]
-    C --> D[ReAct runtime]
-    D --> E[Final answer generator]
-    E --> F[Persist timeline + turn_log]
+    A[Turn start: load_timeline + user prompt/attachments] --> B[Gate agent optional]
+    B --> C[ReAct runtime single agent loop]
+    C --> D[Persist timeline + turn_log]
 
     B -->|contribute gate/clarifications| T1[(Timeline)]
-    C -->|contribute react.plan| T1
-    D -->|tool call/result blocks + plan ack| T1
-    E -->|assistant completion block| T1
+    C -->|tool call/result blocks + plans + assistant completion| T1
 ```
+
+## Referent flow (current)
+
+The reference implementation is:
+`kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44/orchestrator/workflow.py`
+
+Key points:
+- Gate runs only for new conversations (title extraction).
+- React is the sole agent loop.
+- No coordinator or separate final‑answer generator.
