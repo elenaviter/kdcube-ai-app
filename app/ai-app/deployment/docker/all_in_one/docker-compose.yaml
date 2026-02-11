@@ -181,7 +181,8 @@ services:
     image: kdcube-chat:latest
     container_name: kdcube-chat
     build:
-      dockerfile: Dockerfile_Chat
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
     env_file:
       - path: ./.env.backend
         required: false
