@@ -186,7 +186,6 @@ const EconomicsPanel = ({visible, className}: WidgetPanelProps) => {
         if (isError) {
             return null //todo: show error panel
         }
-        console.debug(data)
         return <IFrameSrcDocPanel visible={visible} className={className} srcDoc={data as string}/>
     }, [className, data, isError, isFetching, visible])
 }

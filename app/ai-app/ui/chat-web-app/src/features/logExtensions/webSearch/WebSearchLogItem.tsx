@@ -51,6 +51,7 @@ const WebSearchLogItem = ({item, maxVisibleLinks}: WebSearchItemProps) => {
 
     return useMemo(() => {
         return <div
+            id={`webSearch_${item.content.searchId}`}
             className={`relative w-full text-left p-2 min-w-0 flex flex-row rounded-lg mb-2 border ${selected ? "border-gray-400" : "border-gray-200"}`}>
             <div className={"flex flex-row w-full duration-200 transition-all"}>
                 <IconContainer icon={Globe} size={1.5} className={"mr-0.5"}/>

@@ -10,12 +10,14 @@ import {
     setConversationLoading
 } from "./conversationsSlice.ts";
 import {
-    ArtifactStreamData, ArtifactStreamReducer,
+    ArtifactStreamData,
+    ArtifactStreamReducer,
     AssistantFileData,
     CitationsData,
     ConversationDescriptor,
     FollowUpsData,
-    ThinkingStreamData
+    ThinkingStreamData,
+    TimelineTextStreamData
 } from "./conversationsTypes.ts";
 import {
     AgentTiming,
@@ -32,6 +34,7 @@ import {CodeExecArtifactStreamReducer} from "../logExtensions/codeExec/CodeExecA
 import {WebSearchArtifactStreamReducer} from "../logExtensions/webSearch/WebSearchArtifactStreamReducer.ts";
 import {CanvasArtifactStreamReducer} from "../logExtensions/canvas/CanvasArtifactStreamReducer.ts";
 import {IgnoredArtifactStreamReducer} from "../logExtensions/ignored/IgnoredArtifactStreamReducer.ts";
+import {TimelineTextArtifact, TimelineTextArtifactType} from "../logExtensions/timelineText/types.ts";
 
 const LOAD_CONVERSATION_LIST = "conversations/loadConversationList"
 
@@ -218,8 +221,22 @@ const conversationsMiddleware = (): Middleware => {
                                                 followUpQuestions.push(...dto.payload.items);
                                                 break
                                             }
-                                            // case "artifact:conv.timeline_text.stream":
-                                            //     break
+                                            case "artifact:conv.timeline_text.stream": {
+                                                const dto = it.data as TimelineTextStreamData;
+                                                const artifacts = dto.payload.items.map(it => {
+                                                    const item: TimelineTextArtifact = {
+                                                        artifactType: TimelineTextArtifactType,
+                                                        timestamp: it.ts_first,
+                                                        content: {
+                                                            name: it.artifact_name,
+                                                            text: it.text
+                                                        }
+                                                    }
+                                                    return item
+                                                });
+                                                turnArtifacts.push(...artifacts)
+                                                break
+                                            }
                                             default:
                                                 console.warn("unknown artifact type", it);
                                         }

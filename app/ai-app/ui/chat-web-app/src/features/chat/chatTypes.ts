@@ -82,6 +82,7 @@ export interface CanvasEvent extends TurnEvent<CanvasEventData> {
 
 export interface TimelineTextEventData {
     text: string;
+    name: string;
 }
 
 export interface TimelineTextEvent extends TurnEvent<TimelineTextEventData> {
@@ -190,10 +191,6 @@ export interface TurnCitation extends Artifact<RichLink> {
 
 export interface TurnFile extends Artifact<RNFile> {
     artifactType: "file";
-}
-
-export interface TimelineTextItem extends Artifact<string> {
-    artifactType: "timeline_text";
 }
 
 export interface UserMessageRequest {

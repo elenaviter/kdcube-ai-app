@@ -42,6 +42,8 @@ import WebSearchLogItem from "../../../../features/logExtensions/webSearch/WebSe
 import {CodeExecArtifact, CodeExecArtifactType} from "../../../../features/logExtensions/codeExec/types.ts";
 import {WebSearchArtifact, WebSearchArtifactType} from "../../../../features/logExtensions/webSearch/types.ts";
 import {CanvasArtifact, CanvasArtifactType} from "../../../../features/logExtensions/canvas/types.ts";
+import TimelineTextLogItem from "../../../../features/logExtensions/timelineText/TimelineTextLogItem.tsx";
+import {TimelineTextArtifact, TimelineTextArtifactType} from "../../../../features/logExtensions/timelineText/types.ts";
 
 const getStepName = (step: TurnStep): string =>
     step.title || step.step.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase());
@@ -333,13 +335,14 @@ export const AssistantMessageComponent = ({
                         return <CodeExecLogItem item={item as CodeExecArtifact} key={i}/>
                     case WebSearchArtifactType:
                         return <WebSearchLogItem item={item as WebSearchArtifact} key={i} maxVisibleLinks={3}/>
+                    case TimelineTextArtifactType:
+                        return <TimelineTextLogItem item={item as TimelineTextArtifact} key={i} historical={!!isHistorical}/>
                 }
-                return <div key={i}>
-                    {String(item.content)}
-                </div>
+                console.warn("unknown artifact type")
+                return null
             })}
         </div>
-    }, [other])
+    }, [isHistorical, other])
 
     return (
         <div className="flex justify-start">

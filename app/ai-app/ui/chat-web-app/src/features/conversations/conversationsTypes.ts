@@ -66,7 +66,8 @@ export interface ArtifactStreamData {
 }
 
 export interface ArtifactStreamReducer {
-    process(artifactData: ArtifactStreamDataItem):boolean
+    process(artifactData: ArtifactStreamDataItem): boolean
+
     flush(): UnknownArtifact[]
 }
 
@@ -86,6 +87,20 @@ export interface ThinkingStreamItem {
 export interface ThinkingStreamData {
     payload: {
         items: ThinkingStreamItem[]
+    },
+}
+
+export interface TimelineTextStreamItem {
+    agent: string
+    artifact_name: string
+    text: string
+    ts_first: number
+    ts_last: number
+}
+
+export interface TimelineTextStreamData {
+    payload: {
+        items: TimelineTextStreamItem[]
     },
 }
 
