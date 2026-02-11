@@ -6,15 +6,19 @@ FROM node:22-alpine AS builder
 # Set working directory
 WORKDIR /app
 
+# Build-time paths (relative to build context)
+ARG UI_SOURCE_PATH="app/ai-app/ui/chat-web-app"
+ARG UI_ENV_BUILD_RELATIVE="app/ai-app/deployment/docker/all_in_one/.env.ui.build"
+
 # Copy package files first (for better caching)
-COPY ui/chat-web-app/package*.json ./
+COPY ${UI_SOURCE_PATH}/package*.json ./
 
 # Install dependencies
 RUN npm ci --only=production=false
 
 # Copy source code
-COPY ui/chat-web-app .
-COPY deployment/docker/all_in_one/.env.ui.build .env
+COPY ${UI_SOURCE_PATH} .
+COPY ${UI_ENV_BUILD_RELATIVE} .env
 
 # Build the application with Vite
 RUN npm run build_no_lint
