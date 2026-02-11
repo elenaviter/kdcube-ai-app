@@ -181,8 +181,7 @@ services:
     image: kdcube-chat:latest
     container_name: kdcube-chat
     build:
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
+      dockerfile: Dockerfile_Chat
     env_file:
       - path: ./.env.backend
         required: false
@@ -248,8 +247,7 @@ services:
     image: proxylogin:latest
     build:
       no_cache: true
-      context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_ProxyLogin
+      dockerfile: Dockerfile_ProxyLogin
     env_file:
       - path: ./.env.proxylogin
         required: false
@@ -292,12 +290,3 @@ networks:
     driver: bridge
   kdcube-internal:
     driver: bridge
-
-#volumes:
-#  redis-data:
-#  postgres-data:
-#  neo4j-data:
-#  neo4j-logs:
-#  neo4j-plugins:
-#  neo4j-import:
-#  clamav-db:
