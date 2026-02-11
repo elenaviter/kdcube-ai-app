@@ -238,7 +238,7 @@ function makeAuthHeaders(base?: HeadersInit): Headers {
 // =============================================================================
 
 class IntegrationsAPI {
-    constructor(private basePath: string = '/api/admin/integrations') {}
+    constructor(private basePath: string = '/admin/integrations') {}
 
     private buildUrl(path: string): string {
         return `${settings.getBaseUrl()}${this.basePath}${path}`;
