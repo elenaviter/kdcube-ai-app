@@ -5,7 +5,8 @@ import {
     ChatDeltaEnvelope,
     ChatStartEnvelope,
     ChatStepEnvelope,
-    CitationsStepEnvelope, ConvStatusEnvelope,
+    CitationsStepEnvelope,
+    ConvStatusEnvelope,
     FilesStepEnvelope
 } from "../chatController/chatBase.ts";
 import {getWorkingScope} from "../../AppConfig.ts";
@@ -15,8 +16,13 @@ import {
     AnswerEvent,
     CanvasEvent,
     ChatState,
-    CodeExecCodeSubsystemEventData,
+    CodeExecCodeSubsystemEventData, CodeExecCodeSubsystemEventDataSubtype,
+    CodeExecContractSubsystemEventData, CodeExecContractSubsystemEventDataSubtype,
+    CodeExecEvent, CodeExecEventSubtypes,
     CodeExecMetaEventData,
+    CodeExecObjectiveSubsystemEventData, CodeExecObjectiveSubsystemEventDataSubtype,
+    CodeExecProgramNameSubsystemEventData, CodeExecProgramNameSubsystemEventDataSubtype,
+    CodeExecStatusSubsystemEventDataSubtype,
     ConversationState,
     NewChatTurnRequest,
     SubsystemEvent,
@@ -24,14 +30,17 @@ import {
     ThinkingEvent,
     TimelineTextEvent,
     TimelineTextItem,
-    TurnCanvasItem,
     TurnCitation,
     TurnError,
     TurnFile,
     TurnThinkingItem,
-    WebSearchSubsystemEventData,
+    UnknownArtifact, WebSearchEvent, WebSearchEventSubtypes, WebSearchFilteredResultsSubsystemEventDataSubtype,
+    WebSearchHTMLViewSubsystemEventDataSubtype, WebSearchSubsystemEventData,
     WorkingScope
 } from "./chatTypes.ts";
+import {CodeExecArtifact, CodeExecArtifactType, CodeExecData} from "../logExtensions/codeExec/types.ts";
+import {WebSearchArtifact, WebSearchData, WebSearchArtifactType} from "../logExtensions/webSearch/types.ts";
+import {CanvasArtifact, CanvasArtifactType} from "../logExtensions/canvas/types.ts";
 
 const userAttachmentMapping = new Map<string, File>();
 
@@ -67,6 +76,7 @@ const reduceThinkingEvents = (events: ThinkingEvent[], prev?: TurnThinkingItem |
 
     return {
         artifactType: "thinking",
+        timestamp: events[0].timestamp,
         content: {
             agents,
             agentTimes,
@@ -97,7 +107,7 @@ const cleanUpCanvasItemContent = (content: string | null | undefined, contentTyp
     return result;
 }
 
-const reduceCanvasEvents = (events: CanvasEvent[], name: string): TurnCanvasItem => {
+const reduceCanvasEvents = (events: CanvasEvent[], name: string): CanvasArtifact => {
     const itemEvents = events.filter(val => val.data.name === name);
     if (itemEvents.length === 0) {
         throw new Error(`Can't find event with name "${name}"`);
@@ -111,16 +121,128 @@ const reduceCanvasEvents = (events: CanvasEvent[], name: string): TurnCanvasItem
     const title = firstEvent.data.title
 
     return {
-        artifactType: "canvas",
+        artifactType: CanvasArtifactType,
+        timestamp: firstEvent.timestamp,
+        complete,
         content: {
             name,
             content: cleanUpCanvasItemContent(content, contentType),
             title,
             contentType,
             subType,
-            complete,
-            timestamp: firstEvent.timestamp,
         }
+    }
+}
+
+const reduceWebSearchEvents = (events: SubsystemEvent[], searchId: string): WebSearchArtifact => {
+    const itemEvents = events.filter(val => WebSearchEventSubtypes.includes(val.data.subtype) && (val as WebSearchEvent).data.searchId === searchId);
+    if (itemEvents.length === 0) {
+        throw new Error(`Can't find event with searchId "${searchId}"`);
+    }
+
+    const filteredEvent = itemEvents.find(val => val.data.subtype === WebSearchFilteredResultsSubsystemEventDataSubtype)
+    const reportEvent = itemEvents.find(val => val.data.subtype === WebSearchHTMLViewSubsystemEventDataSubtype)
+
+    const timestamp = itemEvents.reduce((previousValue, currentValue) => {
+        if (previousValue === null || currentValue.timestamp < previousValue) {
+            return currentValue.timestamp
+        }
+        return previousValue
+    }, null as number | null) ?? Date.now()
+
+    const content: WebSearchData = {
+        name: "Web Search",
+        items: [],
+        searchId
+    };
+
+    if (filteredEvent) {
+        const d = JSON.parse(filteredEvent.data.text)
+        content.name = filteredEvent.data.name
+        content.title = filteredEvent.data.title
+        content.items = d.results
+        content.objective = d.objective
+        content.queries = d.queries
+    }
+
+    if (reportEvent) {
+        content.reportContent = reportEvent.data.text
+    }
+
+    return {
+        artifactType: WebSearchArtifactType,
+        timestamp,
+        content
+    }
+}
+
+const reduceCodeExecEvents = (events: SubsystemEvent[], executionId: string): CodeExecArtifact => {
+    const itemEvents = events.filter(val => CodeExecEventSubtypes.includes(val.data.subtype) && (val as CodeExecEvent).data.executionId === executionId);
+    if (itemEvents.length === 0) {
+        throw new Error(`Can't find event with executionId "${executionId}"`);
+    }
+
+    const timestamp = itemEvents.reduce((previousValue, currentValue) => {
+        if (previousValue === null || currentValue.timestamp < previousValue) {
+            return currentValue.timestamp
+        }
+        return previousValue
+    }, null as number | null) ?? Date.now()
+
+    const content: CodeExecData = {
+        executionId: executionId
+    };
+
+    itemEvents.forEach(event => {
+        switch (event.data.subtype) {
+            case CodeExecCodeSubsystemEventDataSubtype:
+                content.program = {
+                    name: event.data.name,
+                    title: event.data.title,
+                    timestamp: event.timestamp,
+                    language: (event.data as CodeExecCodeSubsystemEventData).language,
+                    content: (event.data as CodeExecCodeSubsystemEventData).text,
+                }
+                break
+            case CodeExecProgramNameSubsystemEventDataSubtype:
+                content.name = {
+                    name: event.data.name,
+                    title: event.data.title,
+                    timestamp: event.timestamp,
+                    content: (event.data as CodeExecProgramNameSubsystemEventData).text,
+                }
+                break
+            case CodeExecObjectiveSubsystemEventDataSubtype:
+                content.objective = {
+                    name: event.data.name,
+                    title: event.data.title,
+                    timestamp: event.timestamp,
+                    content: (event.data as CodeExecObjectiveSubsystemEventData).text,
+                }
+                break
+            case CodeExecContractSubsystemEventDataSubtype:
+                content.contract = {
+                    name: event.data.name,
+                    title: event.data.title,
+                    timestamp: event.timestamp,
+                    content: JSON.parse((event.data as CodeExecContractSubsystemEventData).text).contract,
+                }
+                break
+            case CodeExecStatusSubsystemEventDataSubtype:
+                content.status = {
+                    name: event.data.name,
+                    title: event.data.title,
+                    timestamp: event.timestamp,
+                    content: JSON.parse((event.data as CodeExecContractSubsystemEventData).text).contract,
+                }
+                break
+        }
+    })
+
+    return {
+        artifactType: CodeExecArtifactType,
+        timestamp,
+        content
     }
 }
 
@@ -291,11 +413,13 @@ const chatStateSlice = createSlice({
 
             const existing = Object.hasOwn(state.turns[turnId].steps, stepId) ? state.turns[turnId].steps[stepId] : null;
 
+            const ts = existing ? existing.timestamp : (Date.parse(env.timestamp) || new Date().getTime())
+
             turn.steps[stepId] = {
                 step: stepId,
                 status: stepStatus,
                 title: env.event?.title,
-                timestamp: existing ? existing.timestamp : (Date.parse(env.timestamp) || new Date().getTime()),
+                timestamp: ts,
                 error: env.data?.error as string,
                 data: env.data,
                 markdown: env.event.markdown,
@@ -310,9 +434,9 @@ const chatStateSlice = createSlice({
                             filesEnv.data.items.forEach(item => {
                                 const i = turn.artifacts.findIndex(f => f.artifactType === "file" && (f as TurnFile).content.rn === item.rn)
                                 if (i > -1) {
-                                    turn.artifacts.splice(i, 1, {content: item, artifactType: "file"})
+                                    turn.artifacts.splice(i, 1, {content: item, artifactType: "file", timestamp: ts})
                                 } else {
-                                    turn.artifacts.push({content: item, artifactType: "file"})
+                                    turn.artifacts.push({content: item, artifactType: "file", timestamp: ts})
                                 }
                             })
 
@@ -325,9 +449,13 @@ const chatStateSlice = createSlice({
                             citationsEnv.data.items.forEach(item => {
                                 const i = turn.artifacts.findIndex(c => c.artifactType === "citation" && (c as TurnCitation).content.url === item.url)
                                 if (i > -1) {
-                                    turn.artifacts.splice(i, 1, {content: item, artifactType: "citation"})
+                                    turn.artifacts.splice(i, 1, {
+                                        content: item,
+                                        artifactType: "citation",
+                                        timestamp: ts
+                                    })
                                 } else {
-                                    turn.artifacts.push({content: item, artifactType: "citation"})
+                                    turn.artifacts.push({content: item, artifactType: "citation", timestamp: ts})
                                 }
                             })
                         }
@@ -419,7 +547,7 @@ const chatStateSlice = createSlice({
                     turn.events.push(event)
                     const turnEvents = turn.events.filter(ev => ev.eventType === "canvas") as CanvasEvent[]
                     const item = reduceCanvasEvents(turnEvents, env.extra.artifact_name as string)
-                    const prevIdx = turn.artifacts.findIndex(c => c.artifactType === "canvas" && (c as TurnCanvasItem).content.name === env.extra.artifact_name)
+                    const prevIdx = turn.artifacts.findIndex(c => c.artifactType === CanvasArtifactType && (c as CanvasArtifact).content.name === env.extra.artifact_name)
                     if (prevIdx > -1) {
                         turn.artifacts.splice(prevIdx, 1, item)
                     } else {
@@ -443,34 +571,51 @@ const chatStateSlice = createSlice({
                     break
                 }
                 case "subsystem": {
+                    type reducerFunc = (events: SubsystemEvent[]) => UnknownArtifact
+                    let reducer: reducerFunc | null = null
+
                     const subtype = env.extra.sub_type as string;
                     const name = env.extra.artifact_name as string;
+                    const title = env.extra.title as string;
                     let data: SubsystemEventData
                     switch (subtype) {
-                        case "web_search.filtered_results":
-                        case "web_search.html_view":
+                        case WebSearchFilteredResultsSubsystemEventDataSubtype:
+                        case WebSearchHTMLViewSubsystemEventDataSubtype:
+                            reducer = (events: SubsystemEvent[]) => {
+                                return reduceWebSearchEvents(events, env.extra.search_id as string)
+                            }
                             data = {
                                 name,
                                 subtype,
-                                searchId: env.extra.search_id as string
+                                title,
+                                searchId: env.extra.search_id as string,
+                                text: textDelta,
                             } as WebSearchSubsystemEventData
                             break
-                        case "code_exec.code":
+                        case CodeExecCodeSubsystemEventDataSubtype:
+                            reducer = (events: SubsystemEvent[]) => {
+                                return reduceCodeExecEvents(events, env.extra.execution_id as string)
+                            }
                             data = {
                                 name,
                                 subtype,
+                                title,
                                 language: env.extra.language as string,
                                 executionId: env.extra.execution_id as string,
                                 text: textDelta
                             } as CodeExecCodeSubsystemEventData
                             break
-                        case "code_exec.program.name":
-                        case "code_exec.objective":
-                        case "code_exec.contract":
-                        case "code_exec.status":
+                        case CodeExecProgramNameSubsystemEventDataSubtype:
+                        case CodeExecObjectiveSubsystemEventDataSubtype:
+                        case CodeExecContractSubsystemEventDataSubtype:
+                        case CodeExecStatusSubsystemEventDataSubtype:
+                            reducer = (events: SubsystemEvent[]) => {
+                                return reduceCodeExecEvents(events, env.extra.execution_id as string)
+                            }
                             data = {
                                 name,
                                 subtype,
+                                title,
                                 executionId: env.extra.execution_id as string,
                                 text: textDelta
                             } as CodeExecMetaEventData
@@ -480,6 +625,7 @@ const chatStateSlice = createSlice({
                             data = {
                                 name,
                                 subtype,
+                                title,
                                 text: textDelta
                             } as SubsystemEventData
                             break
@@ -495,11 +641,16 @@ const chatStateSlice = createSlice({
                     }
 
                     if (index === 0) {
-                        turn.events = turn.events.filter(ev => ev.eventType !== "canvas" || (ev as CanvasEvent).data.name !== event.data.name)
+                        turn.events = turn.events.filter(ev => ev.eventType !== "subsystem" || (ev as SubsystemEvent).data.name !== event.data.name)
                     }
 
                     turn.events.push(event)
                     // turn.artifacts.push(reduceTimelineTextEvent(event)) //todo: reduce subsystem event
+
+                    if (reducer) {
+                        const turnEvents = turn.events.filter(ev => ev.eventType === "subsystem") as SubsystemEvent[]
+                        reducer(turnEvents)
+                    }
                     break
                 }
             }

@@ -1,5 +1,6 @@
 import {ExoticComponent, useMemo} from "react";
 import {LucideProps} from "lucide-react";
+import {emSize} from "./shared.ts";
 
 type IconType = ExoticComponent<LucideProps>
 
@@ -7,24 +8,16 @@ interface IconContainerProps {
     icon: IconType
     size?: number
     className?: string
+    containerClassName?: string
 }
 
-const emSize = parseFloat(getComputedStyle(document.body).fontSize);
-
-const IconContainer = ({icon, className, size = 4}: IconContainerProps) => {
-    // const IconComponent = icon;
-    // const sizePX = `${size * emSize}px`;
-    // return <div style={{
-    //     height: sizePX,
-    //     width: sizePX,
-    // }}>
-    //     <IconComponent size={size * emSize} className={className}/>
-    // </div>;
-
+const IconContainer = ({icon, className, containerClassName, size = 4}: IconContainerProps) => {
     return useMemo(() => {
         const IconComponent = icon;
-        return <IconComponent size={size * emSize} className={className}/>
-    }, [className, icon, size]);
+        return <div className={`w-fit h-fit ${containerClassName ?? ""}`}>
+            <IconComponent size={size * emSize} className={className}/>
+        </div>
+    }, [className, containerClassName, icon, size]);
 }
 
 export default IconContainer;

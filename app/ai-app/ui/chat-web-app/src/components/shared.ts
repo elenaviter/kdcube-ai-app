@@ -136,4 +136,6 @@ async function selectFileAdvanced(options: FileSelectionOptions = {}): Promise<F
     return fileArray;
 }
 
+export const emSize = parseFloat(getComputedStyle(document.body).fontSize);
+
 export {truncateWords, truncateByWords, smartTruncate, openUrlSafely, selectFile, selectFileAdvanced};

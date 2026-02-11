@@ -1,12 +1,12 @@
-import {RNFile, TurnStep} from "../../../features/chatController/chatBase.ts";
-import {useAppSelector} from "../../../app/store.ts";
-import {selectCurrentTurn} from "../../../features/chat/chatStateSlice.ts";
-import React, {ReactNode, useCallback, useMemo, useRef, useState} from "react";
-import {closeUpMarkdown, useWordStreamEffect} from "../../WordStreamingEffects.tsx";
+import {RNFile, TurnStep} from "../../../../features/chatController/chatBase.ts";
+import {useAppSelector} from "../../../../app/store.ts";
+import {selectCurrentTurn} from "../../../../features/chat/chatStateSlice.ts";
+import React, {ReactNode, useMemo, useRef, useState} from "react";
+import {closeUpMarkdown, useWordStreamEffect} from "../../../WordStreamingEffects.tsx";
 import ReactMarkdown from "react-markdown";
-import {markdownComponents, markdownComponentsTight, rehypePlugins, remarkPlugins} from "./markdownRenderUtils.tsx";
-import {copyMarkdownToClipboard} from "../../Clipboard.ts";
-import {Hint} from "../../Hints.tsx";
+import {markdownComponents, markdownComponentsTight, rehypePlugins, remarkPlugins} from "../markdownRenderUtils.tsx";
+import {copyMarkdownToClipboard} from "../../../Clipboard.ts";
+import {Hint} from "../../../Hints.tsx";
 import {
     AlertCircle,
     CheckCircle2,
@@ -26,9 +26,22 @@ import {
     Search,
     Zap
 } from "lucide-react";
-import {TurnCitation, TurnFile, TurnThinkingItem} from "../../../features/chat/chatTypes.ts";
-import {downloadResourceByRN} from "../../../app/api/utils.ts";
-import {getFileIcon} from "../../FileIcons.tsx";
+import {
+    TurnCitation,
+    TurnFile,
+    TurnThinkingItem,
+    UnknownArtifact
+} from "../../../../features/chat/chatTypes.ts";
+import {downloadResourceByRN} from "../../../../app/api/utils.ts";
+import {getFileIcon} from "../../../FileIcons.tsx";
+import {sortTimestamped} from "../../../../utils/utils.ts";
+import {Thinking} from "./Thinking.tsx";
+import {CanvasLogItem} from "../../../../features/logExtensions/canvas/CanvasLogItem.tsx";
+import CodeExecLogItem from "../../../../features/logExtensions/codeExec/CodeExecLogItem.tsx";
+import WebSearchLogItem from "../../../../features/logExtensions/webSearch/WebSearchLogItem.tsx";
+import {CodeExecArtifact, CodeExecArtifactType} from "../../../../features/logExtensions/codeExec/types.ts";
+import {WebSearchArtifact, WebSearchArtifactType} from "../../../../features/logExtensions/webSearch/types.ts";
+import {CanvasArtifact, CanvasArtifactType} from "../../../../features/logExtensions/canvas/types.ts";
 
 const getStepName = (step: TurnStep): string =>
     step.title || step.step.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase());
@@ -70,14 +83,6 @@ const getStepColor = (step: TurnStep): string => {
             return "text-gray-800";
     }
 };
-const formatSeconds = (sec: number): string => {
-    if (!isFinite(sec) || sec < 0) sec = 0;
-    if (sec < 60) return `${Math.round(sec * 10) / 10}s`;
-    const m = Math.floor(sec / 60);
-    const s = Math.round((sec % 60) * 10) / 10;
-    const sStr = (s < 10 ? "0" : "") + s.toFixed(1);
-    return `${m}:${sStr}`;
-};
 
 interface DownloadItemsPanelProps {
     items: RNFile[] | null | undefined,
@@ -104,84 +109,6 @@ const DownloadItemsPanel = ({items}: DownloadItemsPanelProps) => {
     )
 }
 
-interface ThinkingItemProps {
-    item: TurnThinkingItem
-}
-
-const Thinking = ({item}: ThinkingItemProps) => {
-    const [expanded, setExpanded] = useState<boolean>(false)
-
-    const active = !!item.content.endedAt;
-    const endedAt = item.content.endedAt;
-    const endMs = active ? Date.now() : endedAt ?? Date.now();
-    const durSec = Math.max(0, Math.round(((endMs - item.content.timestamp) / 1000) * 10) / 10);
-    const agentKeys = Object.keys(item.content.agents || {})
-
-    const getAgentSecondsIfCompleted = useCallback((agent: string): number | null => {
-        const meta = item.content.agentTimes?.[agent];
-        if (!meta?.endedAt || !meta?.startedAt) return null; // ← only show after completed
-        const s = (meta.endedAt - meta.startedAt) / 1000;
-        return Math.max(0, Math.round(s * 10) / 10);
-    }, [item.content.agentTimes]);
-
-    return useMemo(() => {
-        return (
-            <div>
-                <button
-                    className={`flex items-center justify-between px-3 py-2 cursor-pointer select-none`}
-                    onClick={() => {
-                        setExpanded(!expanded)
-                    }}
-                    title={expanded ? "Collapse" : "Expand"}
-                >
-                    <div className="flex items-center gap-2">
-                        <span className={`text-sm font-medium ${active ? "thinking-animated" : "text-gray-700"}`}>
-                            {active ? "Thinking" : `Thought for ${formatSeconds(durSec)}`}
-                        </span>
-                    </div>
-                    <span className="text-gray-500">{expanded ? <ChevronUp size={16}/> :
-                        <ChevronDown size={16}/>}</span>
-                </button>
-                {expanded && (
-                    <div className="px-3 py-2 text-xs text-slate-700">
-                        {agentKeys.length === 0 ? (
-                            <div className="text-gray-500 italic">No thoughts yet…</div>
-                        ) : (
-                            <div className="space-y-3">
-                                {agentKeys.map((agent) => {
-                                    const secs = getAgentSecondsIfCompleted(agent);
-                                    return (
-                                        <div key={agent}>
-                                            <div
-                                                className="px-2 py-1 font-medium uppercase tracking-wide text-gray-600 rounded-t-md flex items-center justify-between">
-                                                <span>{agent || "agent"}</span>
-                                                {/* Only show when completed */}
-                                                {secs != null ? (
-                                                    <span className="text-gray-500">{formatSeconds(secs)}</span>
-                                                ) : null}
-                                            </div>
-                                            <div>
-                                                <ReactMarkdown
-                                                    remarkPlugins={remarkPlugins}
-                                                    rehypePlugins={rehypePlugins}
-                                                    components={markdownComponentsTight}
-                                                    linkTarget="_blank"
-                                                    skipHtml={false}
-                                                >
-                                                    {closeUpMarkdown(item.content.agents[agent] || "")}
-                                                </ReactMarkdown>
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-                )}
-            </div>
-        )
-    }, [active, agentKeys, durSec, expanded, getAgentSecondsIfCompleted, item.content.agents])
-}
 const SunkenButton = (
     {children, onClick, pressed = false, disabled = false, className = ""}:
     { children: ReactNode, onClick?: () => unknown, pressed?: boolean, disabled?: boolean, className?: string }
@@ -207,21 +134,19 @@ type AssistantMessageTab = "message" | "sources" | "steps"
 
 interface AssistantMessageProps {
     message?: string | null;
-    thinkingItems: TurnThinkingItem[] | null | undefined;
     steps: TurnStep[];
-    citations: TurnCitation[];
-    files: TurnFile[];
+    artifacts: UnknownArtifact[];
     isGreeting: boolean;
     isError: boolean;
+    isHistorical: boolean | undefined | null;
 }
 
 export const AssistantMessageComponent = ({
                                               message,
-                                              thinkingItems,
-                                              files,
                                               steps,
-                                              citations,
+                                              artifacts,
                                               isError,
+                                              isHistorical,
                                               isGreeting = false,
                                           }: AssistantMessageProps) => {
     const currentTurn = useAppSelector(selectCurrentTurn)
@@ -231,12 +156,37 @@ export const AssistantMessageComponent = ({
 
     const streamedText = useWordStreamEffect(
         message ?? "",
-        true,
+        !isHistorical && !isGreeting,
         50
     );
 
     const [tab, setTab] = useState<AssistantMessageTab>("message")
     const isPressed = (tabName: AssistantMessageTab) => tab === tabName
+
+    const {thinkingItems, citations, files, other} = useMemo(() => {
+        const thinkingItems: TurnThinkingItem[] = []
+        const citations: TurnCitation[] = []
+        const files: TurnFile[] = []
+        const other: UnknownArtifact[] = []
+
+        artifacts.forEach((artifact) => {
+            switch (artifact.artifactType) {
+                case "thinking":
+                    thinkingItems.push(artifact as TurnThinkingItem);
+                    break;
+                case "citation":
+                    citations.push(artifact as TurnCitation);
+                    break;
+                case "file":
+                    files.push(artifact as TurnFile);
+                    break;
+                default:
+                    other.push(artifact);
+            }
+        })
+        return {thinkingItems, citations, files, other};
+    }, [artifacts])
+
 
     const markdownMemo = useMemo(() => {
         return (
@@ -244,7 +194,6 @@ export const AssistantMessageComponent = ({
                 remarkPlugins={remarkPlugins}
                 rehypePlugins={rehypePlugins}
                 components={markdownComponents}
-                linkTarget="_blank"
                 skipHtml={false}
             >
                 {closeUpMarkdown(streamedText)}
@@ -325,7 +274,6 @@ export const AssistantMessageComponent = ({
                                             remarkPlugins={remarkPlugins}
                                             rehypePlugins={rehypePlugins}
                                             components={markdownComponentsTight}
-                                            linkTarget="_blank"
                                             skipHtml={false}
                                         >
                                             {closeUpMarkdown(markdown)}
@@ -361,19 +309,37 @@ export const AssistantMessageComponent = ({
     }, [citations])
 
     const thinkingItemsMemo = useMemo(() => {
-        if (!thinkingItems) {
+        if (!thinkingItems || thinkingItems.length === 0) {
             return null
         }
         return (
-            <div
-                className="flex flex-col rounded-lg mb-2 border border-gray-200 [&>div:not(:last-child)]:border-b [&>div:not(:last-child)]:border-gray-200">
+            <>
                 {thinkingItems.map((item, i) => {
                     return <Thinking item={item} key={i}/>
                 })}
-
-            </div>
+            </>
         )
     }, [thinkingItems])
+
+    const timelineMemo = useMemo(() => {
+        const items = other.concat()
+        sortTimestamped(items)
+        return <div className={"w-full min-w-0 flex flex-col"}>
+            {items.map((item, i) => {
+                switch (item.artifactType) {
+                    case CanvasArtifactType:
+                        return <CanvasLogItem item={item as CanvasArtifact} key={i}/>
+                    case CodeExecArtifactType:
+                        return <CodeExecLogItem item={item as CodeExecArtifact} key={i}/>
+                    case WebSearchArtifactType:
+                        return <WebSearchLogItem item={item as WebSearchArtifact} key={i} maxVisibleLinks={3}/>
+                }
+                return <div key={i}>
+                    {String(item.content)}
+                </div>
+            })}
+        </div>
+    }, [other])
 
     return (
         <div className="flex justify-start">
@@ -408,6 +374,7 @@ export const AssistantMessageComponent = ({
                     </div>)}
                     {isPressed("message") && <div className={"mt-1.5 w-full"}>
                         {thinkingItemsMemo}
+                        {timelineMemo}
                         {messageMemo}
                     </div>}
                     {isPressed("steps") && stepsMemo}

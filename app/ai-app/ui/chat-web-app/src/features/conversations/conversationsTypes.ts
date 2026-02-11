@@ -1,3 +1,5 @@
+import {UnknownArtifact} from "../chat/chatTypes.ts";
+
 export interface ConversationDescriptorDTO {
     conversation_id: string
     last_activity_at: string | null | undefined
@@ -24,7 +26,54 @@ export interface AssistantFileData {
         mime: string | null | undefined,
         description: string | null | undefined,
     },
+}
+
+interface CitationsItem {
     text: string
+    title: string
+    url: string
+    favicon: string
+}
+
+export interface CitationsData {
+    payload: {
+        items: CitationsItem[];
+    },
+}
+
+export interface ArtifactStreamDataItem {
+    text: string
+    title: string
+    artifact_name: string
+    agent: string
+    marker: string
+    format: string
+    ts_first: number
+    ts_last: number
+    extra?: {
+        [key: string]: unknown
+        artifact_name?: string
+        format?: string
+        sub_type?: string
+        title?: string
+    }
+}
+
+export interface ArtifactStreamData {
+    payload: {
+        items: ArtifactStreamDataItem[];
+    },
+}
+
+export interface ArtifactStreamReducer {
+    process(artifactData: ArtifactStreamDataItem):boolean
+    flush(): UnknownArtifact[]
+}
+
+export interface FollowUpsData {
+    payload: {
+        items: string[];
+    },
 }
 
 export interface ThinkingStreamItem {

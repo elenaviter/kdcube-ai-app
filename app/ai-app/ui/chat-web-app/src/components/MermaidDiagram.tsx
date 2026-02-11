@@ -4,10 +4,9 @@ import {Loader2} from "lucide-react";
 
 mermaid.initialize({
     startOnLoad: false,
-    securityLevel: 'strict',  // safer; change to 'loose' if you need HTML labels
+    securityLevel: 'loose',  // safer; change to 'loose' if you need HTML labels
     theme: "default",
     fontFamily: 'Inter, ui-sans-serif, system-ui',
-    suppressErrorRendering: true
 });
 
 const svgCache = new Map<string, string>();

@@ -3,14 +3,35 @@ import {AppStore} from "../../app/store.ts";
 import {chatConnected, loadConversation, newConversation, setConversationId} from "../chat/chatStateSlice.ts";
 import {fetchConversation, getConversations} from "./conversationsAPI.ts";
 import {
+    conversationStatusUpdateRequired,
     setConversationDescriptors,
     setConversationDescriptorsLoading,
-    setConversationDescriptorsLoadingError, setConversationLoading, conversationStatusUpdateRequired
+    setConversationDescriptorsLoadingError,
+    setConversationLoading
 } from "./conversationsSlice.ts";
-import {AssistantFileData, ConversationDescriptor, ThinkingStreamData} from "./conversationsTypes.ts";
-import {AgentTiming, ChatTurn, TurnArtifact, TurnFile, TurnThinkingItem, UserMessage} from "../chat/chatTypes.ts";
-import {RNFile} from "../chatController/chatBase.ts";
+import {
+    ArtifactStreamData, ArtifactStreamReducer,
+    AssistantFileData,
+    CitationsData,
+    ConversationDescriptor,
+    FollowUpsData,
+    ThinkingStreamData
+} from "./conversationsTypes.ts";
+import {
+    AgentTiming,
+    ChatTurn,
+    TurnCitation,
+    TurnFile,
+    TurnThinkingItem,
+    UnknownArtifact,
+    UserMessage
+} from "../chat/chatTypes.ts";
+import {RichLink, RNFile} from "../chatController/chatBase.ts";
 import {requestConversationStatus} from "../chat/chatServiceMiddleware.ts";
+import {CodeExecArtifactStreamReducer} from "../logExtensions/codeExec/CodeExecArtifactStreamReducer.ts";
+import {WebSearchArtifactStreamReducer} from "../logExtensions/webSearch/WebSearchArtifactStreamReducer.ts";
+import {CanvasArtifactStreamReducer} from "../logExtensions/canvas/CanvasArtifactStreamReducer.ts";
+import {IgnoredArtifactStreamReducer} from "../logExtensions/ignored/IgnoredArtifactStreamReducer.ts";
 
 const LOAD_CONVERSATION_LIST = "conversations/loadConversationList"
 
@@ -44,6 +65,13 @@ type ConversationURLAction = LoadConversationsAction
     | ReturnType<typeof chatConnected>;
 
 const conversationsMiddleware = (): Middleware => {
+    const artifactStreamReducers: ArtifactStreamReducer[] = [
+        new IgnoredArtifactStreamReducer(),
+        new CanvasArtifactStreamReducer(),
+        new CodeExecArtifactStreamReducer(),
+        new WebSearchArtifactStreamReducer()
+    ];
+
     return (store) => (next) => (action) => {
         const actionHandlers = async (store: AppStore, action: ConversationURLAction) => {
             const dispatch = store.dispatch
@@ -84,7 +112,9 @@ const conversationsMiddleware = (): Middleware => {
                                 turns: conversation.turns.reduce((previousValue, currentValue, i, arr) => {
                                     let userMessage: UserMessage | null = null;
                                     let answer: string | null = null;
-                                    const turnArtifacts: TurnArtifact<unknown>[] = []
+                                    const followUpQuestions: string[] = []
+                                    const turnArtifacts: UnknownArtifact[] = []
+
                                     currentValue.artifacts.forEach(it => {
                                         switch (it.type) {
                                             case "chat:user":
@@ -108,6 +138,7 @@ const conversationsMiddleware = (): Middleware => {
                                                 const dto = it.data as AssistantFileData;
                                                 const tf: TurnFile = {
                                                     artifactType: "file",
+                                                    timestamp: Date.now(), //todo: use actual date
                                                     content: {
                                                         filename: dto.payload.filename,
                                                         rn: dto.payload.rn,
@@ -137,6 +168,7 @@ const conversationsMiddleware = (): Middleware => {
                                                 })
                                                 const r: TurnThinkingItem = {
                                                     artifactType: "thinking",
+                                                    timestamp: Date.now(), //todo: use actual date
                                                     content: {
                                                         agentTimes,
                                                         agents,
@@ -147,19 +179,54 @@ const conversationsMiddleware = (): Middleware => {
                                                 turnArtifacts.push(r)
                                                 break
                                             }
-                                            case "artifact:solver.program.citables":
+                                            case "artifact:solver.program.citables": {
+                                                const dto = it.data as CitationsData;
+                                                dto.payload.items.forEach(v => {
+                                                        const t: RichLink = {
+                                                            url: v.url,
+                                                            title: v.title,
+                                                            favicon: v.favicon,
+                                                            body: v.text
+                                                        }
+                                                        const r: TurnCitation = {
+                                                            artifactType: "citation",
+                                                            content: t,
+                                                            timestamp: Date.now(), //todo: use actual date
+                                                        }
+                                                        turnArtifacts.push(r)
+                                                    }
+                                                )
                                                 break
-                                            case "artifact:conv.artifacts.stream":
+                                            }
+                                            case "artifact:conv.artifacts.stream": {
+                                                const dto = it.data as ArtifactStreamData;
+                                                dto.payload.items.forEach(a => {
+                                                    let processed = false
+                                                    artifactStreamReducers.forEach(r => {
+                                                        processed = processed || r.process(a)
+                                                    })
+                                                    if (!processed) {
+                                                        console.warn("unknown artifact stream", a)
+                                                    }
+                                                })
                                                 break
+                                            }
                                             case "artifact:turn.log.reaction":
                                                 break
-                                            case "artifact:conv.user_shortcuts":
+                                            case "artifact:conv.user_shortcuts": {
+                                                const dto = it.data as FollowUpsData;
+                                                followUpQuestions.push(...dto.payload.items);
                                                 break
-                                            case "artifact:conv.timeline_text.stream":
-                                                break
+                                            }
+                                            // case "artifact:conv.timeline_text.stream":
+                                            //     break
                                             default:
                                                 console.warn("unknown artifact type", it);
                                         }
+                                    })
+
+                                    artifactStreamReducers.forEach(r => {
+                                        turnArtifacts.push(...r.flush())
                                     })
 
                                     previousValue[currentValue.turn_id] = {
@@ -169,8 +236,9 @@ const conversationsMiddleware = (): Middleware => {
                                         events: [],
                                         artifacts: turnArtifacts,
                                         steps: {},
-                                        followUpQuestions: [],
-                                        answer
+                                        followUpQuestions,
+                                        answer,
+                                        historical: true
                                     }
                                     return previousValue
                                 }, {} as Record<string, ChatTurn>),

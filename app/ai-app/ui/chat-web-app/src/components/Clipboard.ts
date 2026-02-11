@@ -11,16 +11,16 @@ function fallbackCopy(text: string) {
     return success;
 }
 
-async function copyMarkdownToClipboard(mdContent?: string, htmlContent?: string) {
+async function copyMarkdownToClipboard(text?: string, html?: string) {
     // Try modern API first
     if (navigator.clipboard && window.isSecureContext) {
         try {
             const clipboardItemData:Record<string, string> = {};
-            if (mdContent) {
-                clipboardItemData["text/plain"] = mdContent;
+            if (text) {
+                clipboardItemData["text/plain"] = text;
             }
-            if (htmlContent) {
-                clipboardItemData["text/html"] = htmlContent;
+            if (html) {
+                clipboardItemData["text/html"] = html;
             }
             const clipboardItem = [new ClipboardItem(clipboardItemData)]
             await navigator.clipboard.write(clipboardItem)
@@ -30,8 +30,8 @@ async function copyMarkdownToClipboard(mdContent?: string, htmlContent?: string)
         }
     }
 
-    if (mdContent) {
-        return fallbackCopy(mdContent.toString());
+    if (text) {
+        return fallbackCopy(text.toString());
     } else {
         return false
     }

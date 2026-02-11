@@ -203,3 +203,18 @@ export const getFileIcon = (filename: string, size = 24, mimeType?: string | nul
     // Default icon
     return <File size={size}/>;
 };
+
+export const getFileIconClass = (filename: string, mimeType?: string | null) => {
+    if (mimeType && fileTypeIcons[mimeType]) {
+        return  fileTypeIcons[mimeType];
+    }
+
+    if (filename) {
+        const extension = filename.split('.').pop()?.toLowerCase();
+        if (extension && extensionIcons[extension]) {
+            return  extensionIcons[extension];
+        }
+    }
+
+    return null;
+};

@@ -39,10 +39,6 @@ export interface UserMessage extends Timestamped {
     attachments: UserAttachmentDescription[],
 }
 
-export interface AssistantMessage {
-    content: string
-}
-
 export interface AgentTiming {
     startedAt: number;
     endedAt?: number;  // ← set only when the server sends completed: true
@@ -92,77 +88,91 @@ export interface TimelineTextEvent extends TurnEvent<TimelineTextEventData> {
     eventType: "timeline_text";
 }
 
-// case "web_search.filtered_results":
-// case "web_search.html_view":
-// extra["searchId"] = env.extra.search_id as string;
-// name = name + extra["searchId"]
-// break
-// case "code_exec.code":
-// extra["language"] = env.extra.language as string;
-// // eslint-disable-next-line no-fallthrough
-// case "code_exec.program.name":
-// case "code_exec.objective":
-// case "code_exec.contract":
-// case "code_exec.status":
-// extra["executionId"] = env.extra.execution_id as string;
-// break
-
 export interface SubsystemEventData {
     subtype: string;
     name: string;
     text: string;
+    title?: string | null;
 }
 
 export interface WebSearchSubsystemEventData extends SubsystemEventData {
     searchId: string;
 }
 
+export const WebSearchFilteredResultsSubsystemEventDataSubtype = "web_search.filtered_results"
+
 export interface WebSearchFilteredResultsSubsystemEventData extends WebSearchSubsystemEventData {
-    subtype: "web_search.filtered_results"
+    subtype: typeof WebSearchFilteredResultsSubsystemEventDataSubtype
 }
 
+export const WebSearchHTMLViewSubsystemEventDataSubtype = "web_search.html_view"
+
 export interface WebSearchHTMLViewSubsystemEventData extends WebSearchSubsystemEventData {
-    subtype: "web_search.html_view"
+    subtype: typeof WebSearchHTMLViewSubsystemEventDataSubtype
 }
+
+export const WebSearchEventSubtypes = [WebSearchFilteredResultsSubsystemEventDataSubtype, WebSearchHTMLViewSubsystemEventDataSubtype]
 
 export interface CodeExecSubsystemEventData extends SubsystemEventData {
     executionId: string;
 }
 
+export type WebSearchMetaEventData = WebSearchFilteredResultsSubsystemEventData | WebSearchHTMLViewSubsystemEventData
+
+export type WebSearchEvent = TurnEvent<WebSearchMetaEventData>
+
+export const CodeExecCodeSubsystemEventDataSubtype = "code_exec.code"
+
 export interface CodeExecCodeSubsystemEventData extends CodeExecSubsystemEventData {
-    subtype: "code_exec.code"
+    subtype: typeof CodeExecCodeSubsystemEventDataSubtype
     language: string;
 }
 
+export const CodeExecProgramNameSubsystemEventDataSubtype = "code_exec.program.name"
+
 export interface CodeExecProgramNameSubsystemEventData extends CodeExecSubsystemEventData {
-    subtype: "code_exec.program.name"
+    subtype: typeof CodeExecProgramNameSubsystemEventDataSubtype
 }
+
+export const CodeExecObjectiveSubsystemEventDataSubtype = "code_exec.objective"
 
 export interface CodeExecObjectiveSubsystemEventData extends CodeExecSubsystemEventData {
-    subtype: "code_exec.objective"
+    subtype: typeof CodeExecObjectiveSubsystemEventDataSubtype
 }
+
+export const CodeExecContractSubsystemEventDataSubtype = "code_exec.contract"
 
 export interface CodeExecContractSubsystemEventData extends CodeExecSubsystemEventData {
-    subtype: "code_exec.contract"
+    subtype: typeof CodeExecContractSubsystemEventDataSubtype
 }
+
+export const CodeExecStatusSubsystemEventDataSubtype = "code_exec.status"
 
 export interface CodeExecStatusSubsystemEventData extends CodeExecSubsystemEventData {
-    subtype: "code_exec.status"
+    subtype: typeof CodeExecStatusSubsystemEventDataSubtype
 }
 
-export type CodeExecMetaEventData = CodeExecProgramNameSubsystemEventData
+export const CodeExecEventSubtypes = [CodeExecCodeSubsystemEventDataSubtype, CodeExecProgramNameSubsystemEventDataSubtype,
+    CodeExecObjectiveSubsystemEventDataSubtype, CodeExecContractSubsystemEventDataSubtype, CodeExecStatusSubsystemEventDataSubtype]
+
+export type CodeExecMetaEventData = CodeExecCodeSubsystemEventData
+    | CodeExecProgramNameSubsystemEventData
     | CodeExecObjectiveSubsystemEventData
     | CodeExecStatusSubsystemEventData
     | CodeExecContractSubsystemEventData
+
+export type CodeExecEvent = TurnEvent<CodeExecMetaEventData>
 
 export interface SubsystemEvent extends TurnEvent<SubsystemEventData> {
     eventType: "subsystem";
 }
 
-export interface TurnArtifact<C> {
+export interface Artifact<C> extends Timestamped {
     content: C;
     artifactType: string;
 }
+
+export type UnknownArtifact = Artifact<unknown>;
 
 export interface ThinkingItemData extends Timestamped {
     endedAt?: number;
@@ -170,33 +180,19 @@ export interface ThinkingItemData extends Timestamped {
     agentTimes: Record<string, AgentTiming>;
 }
 
-export interface TurnThinkingItem extends TurnArtifact<ThinkingItemData> {
+export interface TurnThinkingItem extends Artifact<ThinkingItemData> {
     artifactType: "thinking";
 }
 
-export interface TurnCitation extends TurnArtifact<RichLink> {
+export interface TurnCitation extends Artifact<RichLink> {
     artifactType: "citation";
 }
 
-export interface TurnFile extends TurnArtifact<RNFile> {
+export interface TurnFile extends Artifact<RNFile> {
     artifactType: "file";
 }
 
-export interface CanvasItemData extends Timestamped {
-    name: string;
-    description?: string | null;
-    content: unknown;
-    contentType: string;
-    complete?: boolean;
-    subType?: "webSearch" | string | null;
-    title?: string | null;
-}
-
-export interface TurnCanvasItem extends TurnArtifact<CanvasItemData> {
-    artifactType: "canvas";
-}
-
-export interface TimelineTextItem extends TurnArtifact<string> {
+export interface TimelineTextItem extends Artifact<string> {
     artifactType: "timeline_text";
 }
 
@@ -214,9 +210,10 @@ export interface ChatTurn {
     answer?: string | null;
     events: TurnEvent<unknown>[];
     steps: Record<string, TurnStep>;
-    artifacts: TurnArtifact<unknown>[];
+    artifacts: UnknownArtifact[];
     error?: string | null;
     followUpQuestions: string[];
+    historical?: boolean;
 }
 
 export interface NewChatTurnRequest {
@@ -229,38 +226,6 @@ export interface NewChatTurnRequest {
 export interface TurnError {
     id: string;
     error: string | Error;
-}
-
-export interface ModelInfo {
-    id: string;
-    name: string;
-    provider: string;
-    description: string;
-    has_classifier: boolean;
-}
-
-export interface EmbedderInfo {
-    id: string;
-    provider: string;
-    model: string;
-    dimension: number;
-    description: string;
-}
-
-export interface EmbeddingProvider {
-    name: string;
-    description: string;
-    requires_api_key: boolean;
-    requires_endpoint: boolean;
-}
-
-export interface BundleInfo {
-    id: string;
-    name?: string;
-    description?: string;
-    path: string;
-    module?: string;
-    singleton?: boolean;
 }
 
 export interface StepUpdate {

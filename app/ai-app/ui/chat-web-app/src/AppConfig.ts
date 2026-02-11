@@ -38,14 +38,6 @@ export const getChatSocketAddress = (): string => {
     return selectValue(import.meta.env.CHAT_WEB_APP_CHAT_SOCKET, 'http://localhost:8010')
 }
 
-export const getChatSocketSocketIOPath = (): string => {
-    return selectValue(import.meta.env.CHAT_WEB_APP_CHAT_SOCKETIO_PATH, '/socket.io')
-}
-
-export const getMonitoringBaseAddress = (): string => {
-    return selectValue(import.meta.env.CHAT_WEB_APP_MONITORING_BASE, 'http://localhost:8010')
-}
-
 export const getAuthType = (): AuthType =>
     (import.meta.env.CHAT_WEB_APP_AUTH_TYPE || "oauth") as AuthType;
 
@@ -54,10 +46,6 @@ export const getExtraIdTokenHeaderName = (): string =>
 
 export const getHardcodedAuthToken = (): string => {
     return import.meta.env.CHAT_WEB_APP_HARDCODED_AUTH_TOKEN
-}
-
-export const getCustomEmbedingEndpoint = (): string => {
-    return import.meta.env.CHAT_WEB_APP_CUSTOM_EMBEDING_ENDPOINT || 'http://localhost:5005/serving/v1/embeddings'
 }
 
 export function getOAuthConfig() {
@@ -109,12 +97,6 @@ export const getDefaultRoutePrefix = (): string =>
 
 export function getChatPagePath() {
     return getDefaultRoutePrefix() + "/chat";
-}
-
-
-export function getCognitoHostedDomain(): string {
-    // e.g. https://<your-domain>.auth.<region>.amazoncognito.com
-    return "https://eu-west-1rulwzsq6h.auth.eu-west-1.amazoncognito.com";
 }
 
 export function showExampleAssistantMessage(): boolean {
