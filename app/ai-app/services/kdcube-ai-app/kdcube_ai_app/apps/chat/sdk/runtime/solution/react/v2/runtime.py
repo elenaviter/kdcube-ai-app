@@ -785,12 +785,10 @@ class ReactSolverV2:
                 svc=self.svc,
                 adapters=announced_adapters,
                 infra_adapters=extra_adapters_for_decision,
-                active_skills=None,
                 on_progress_delta=thinking_streamer,
                 agent_name=role,
                 timezone=self.comm_context.user.timezone,
                 max_tokens=6000,
-                attachments=None,
                 user_blocks=user_blocks,
             )
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
@@ -1065,14 +1063,6 @@ class ReactSolverV2:
         if notes:
             if tools_insights.is_exec_tool(tool_id) and exec_streamer_widget:
                 await exec_streamer_widget.emit_reasoning(notes)
-            # else:
-            #     turn_id = state.get("turn_id") or ""
-            #     timeline_agent = f"{role}.timeline.{turn_id}.{iteration}"
-            #     await self._emit_timeline_text(
-            #         text=notes,
-            #         agent=timeline_agent,
-            #         artifact_name=f"timeline_text.react.decision.{iteration}",
-            #     )
 
         if not state.get("retry_decision") and action in {"complete", "exit"}:
             state["exit_reason"] = action
@@ -1172,7 +1162,7 @@ class ReactSolverV2:
                 )
         except Exception:
             pass
-        # persist final ℹ️ ANNOUNCE ℹ️ to contrib log, then clear announce
+        # persist final ANNOUNCE to contrib log, then clear announce
         try:
             announce_blocks = self.ctx_browser.timeline.announce_blocks
             if announce_blocks:

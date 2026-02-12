@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-# chat/sdk/reporting/turn_reporting.py
+# chat/sdk/solutions/chatbot/turn_reporting.py
 
 from typing import Tuple, List, Dict, Any
 

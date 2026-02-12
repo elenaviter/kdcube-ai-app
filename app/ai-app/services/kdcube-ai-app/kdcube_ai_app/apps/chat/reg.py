@@ -6,6 +6,20 @@
 import re
 from collections import defaultdict
 
+DEFAULT_MODEL_CONFIG = {
+    "model_name": "claude-sonnet-4-20250514",
+    "provider": "anthropic",
+    "has_classifier": True,
+    "description": "Claude Sonnet 4 Sonnet - Latest Anthropic Model"
+}
+
+DEFAULT_EMBEDDER_CONFIG = {
+    "provider": "openai",
+    "model_name": "text-embedding-3-small",
+    "dim": 1536,
+    "description": "OpenAI Text Embedding 3 Small - High performance, cost-effective"
+}
+
 MODEL_CONFIGS = {
     "o3-mini": {
         "model_name": "o3-mini",

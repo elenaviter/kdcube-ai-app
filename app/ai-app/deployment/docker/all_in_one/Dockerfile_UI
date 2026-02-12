@@ -3,12 +3,12 @@
 # Stage 1: Build stage
 FROM node:22-alpine AS builder
 
+# Build arguments - NO DEFAULTS, must be provided
+ARG UI_SOURCE_PATH
+ARG UI_ENV_BUILD_RELATIVE
+
 # Set working directory
 WORKDIR /app
-
-# Build-time paths (relative to build context)
-ARG UI_SOURCE_PATH="app/ai-app/ui/chat-web-app"
-ARG UI_ENV_BUILD_RELATIVE="app/ai-app/deployment/docker/all_in_one/.env.ui.build"
 
 # Copy package files first (for better caching)
 COPY ${UI_SOURCE_PATH}/package*.json ./
@@ -32,9 +32,9 @@ RUN rm -rf /usr/share/nginx/html/*
 # Copy built assets from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-ARG NGINX_CONFIG_FILE_PATH="deployment/docker/all_in_one/nginx_ui.conf"
-# Copy custom nginx configuration (optional)
-COPY $NGINX_CONFIG_FILE_PATH /etc/nginx/nginx.conf
+# Build argument for nginx config - NO DEFAULT
+ARG NGINX_UI_CONFIG_FILE_PATH
+COPY ${NGINX_UI_CONFIG_FILE_PATH} /etc/nginx/nginx.conf
 
 # Expose port 80
 EXPOSE 80

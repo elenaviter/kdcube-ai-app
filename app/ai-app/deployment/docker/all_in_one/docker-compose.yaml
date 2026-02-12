@@ -1,4 +1,5 @@
 services:
+
   postgres-db:
     container_name: kdcube-postgres
     image: pgvector/pgvector:pg16
@@ -213,8 +214,6 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-#      neo4j:
-#        condition: service_healthy
       clamav:
         condition: service_healthy
     networks:
@@ -231,7 +230,7 @@ services:
       args:
         - UI_SOURCE_PATH=${UI_SOURCE_PATH}
         - UI_ENV_BUILD_RELATIVE=${UI_ENV_BUILD_RELATIVE}
-        - NGINX_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
+        - NGINX_UI_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
     env_file:
       - path: ${UI_ENV_FILE_PATH}
         required: false
@@ -244,21 +243,21 @@ services:
     networks:
       - kdcube-internal
 
-  proxylogin:
-    image: proxylogin:latest
-    build:
-      no_cache: true
-      dockerfile: Dockerfile_ProxyLogin
-    env_file:
-      - path: ./.env.proxylogin
-        required: false
-    networks:
-      - kdcube-internal
-    volumes:
-      - type: bind
-        source: ${HOME}/.aws
-        target: /home/proxylogin/.aws
-        read_only: true
+#  proxylogin:
+#    image: proxylogin:latest
+#    build:
+#      no_cache: true
+#      dockerfile: Dockerfile_ProxyLogin
+#    env_file:
+#      - path: ./.env.proxylogin
+#        required: false
+#    networks:
+#      - kdcube-internal
+#    volumes:
+#      - type: bind
+#        source: ${HOME}/.aws
+#        target: /home/proxylogin/.aws
+#        read_only: true
 
   web-proxy:
     image: kdcube-web-proxy:latest
@@ -277,8 +276,8 @@ services:
         condition: service_started
       web-ui:
         condition: service_started
-      proxylogin:
-        condition: service_started
+#      proxylogin:
+#        condition: service_started
     networks:
       - kdcube-external
       - kdcube-internal

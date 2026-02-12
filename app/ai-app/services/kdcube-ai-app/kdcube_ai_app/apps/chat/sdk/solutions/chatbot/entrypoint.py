@@ -31,8 +31,7 @@ from kdcube_ai_app.infra.service_hub.inventory import (
     _mid,
 )
 from kdcube_ai_app.tools.serialization import json_safe
-from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import subject_id_of
-from kdcube_ai_app.apps.chat.sdk.reporting.turn_reporting import (
+from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.turn_reporting import (
     _format_cost_table_markdown,
     _format_cost_summary_compact,
     _format_agent_breakdown_markdown,

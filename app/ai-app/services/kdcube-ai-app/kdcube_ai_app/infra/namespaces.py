@@ -4,7 +4,8 @@
 # infra/namespaces.py
 import os
 
-from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
+from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS, DEFAULT_MODEL_CONFIG, DEFAULT_EMBEDDER_CONFIG
+
 
 def tp_prefix(tenant: str | None = None, project: str | None = None) -> str:
     from kdcube_ai_app.apps.chat.sdk.config import get_settings
@@ -91,8 +92,8 @@ class CONFIG:
         CURRENT_KEY = "current"
 
     class AGENTIC:
-        DEFAULT_LLM_MODEL_CONFIG = MODEL_CONFIGS.get(os.getenv("DEFAULT_LLM_MODEL_ID"), "gpt-4o-mini")
-        DEFAULT_EMBEDDING_MODEL_CONFIG = EMBEDDERS.get(os.getenv("DEFAULT_EMBEDDING_MODEL_ID"), "openai-text-embedding-3-small")
+        DEFAULT_LLM_MODEL_CONFIG = MODEL_CONFIGS.get(os.getenv("DEFAULT_LLM_MODEL_ID")) or DEFAULT_MODEL_CONFIG
+        DEFAULT_EMBEDDING_MODEL_CONFIG = EMBEDDERS.get(os.getenv("DEFAULT_EMBEDDING_MODEL_ID")) or DEFAULT_EMBEDDER_CONFIG
 
         SUGGESTIONS_PREFIX = "kdcube:agentic:suggestions:{tenant}:{project}:{bundle_id}"
 

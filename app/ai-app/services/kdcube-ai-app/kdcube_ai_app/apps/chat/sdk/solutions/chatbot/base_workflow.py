@@ -21,7 +21,7 @@ from kdcube_ai_app.apps.chat.sdk.context.vector.conv_ticket_store import ConvTic
 from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import subject_id_of
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
-from kdcube_ai_app.apps.chat.sdk.reporting.turn_reporting import _format_ms_table, _format_ms_table_markdown
+from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.turn_reporting import _format_ms_table, _format_ms_table_markdown
 from kdcube_ai_app.apps.chat.sdk.runtime.scratchpad import TurnScratchpad, TurnPhaseError
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import RuntimeCtx
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.gate.gate_contract import GateOut
