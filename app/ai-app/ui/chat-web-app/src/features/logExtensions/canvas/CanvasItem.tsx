@@ -9,7 +9,8 @@ import {
 import {closeUpMarkdown} from "../../../components/WordStreamingEffects.tsx";
 import MermaidDiagram from "../../../components/MermaidDiagram.tsx";
 import {appendCodeMarkdown, cleanupCode} from "../../canvas/utils.ts";
-import {CanvasArtifact} from "./types.ts";
+import {CanvasArtifact, CanvasArtifactType} from "./types.ts";
+import {ArtifactComponentProps} from "../../extensions/canvasExtensions.tsx";
 
 const getCanvasContentType = (format: string | null | undefined) => {
     if (!format) {
@@ -23,32 +24,34 @@ const getCanvasContentType = (format: string | null | undefined) => {
     return null
 }
 
-interface CanvasItemProps {
-    item: CanvasArtifact
-}
+const CanvasItem = ({item}: ArtifactComponentProps) => {
+    if (item.artifactType !== CanvasArtifactType) {
+        throw new Error("not a CanvasArtifactType")
+    }
 
-const CanvasItem = ({item}: CanvasItemProps) => {
+    const canvasItem = item as CanvasArtifact;
+
     const [showItemSource, setShowItemSource] = useState<boolean>(false)
 
     const contentType = useMemo(() => {
-        return item ? getCanvasContentType(item.content.contentType) : null
-    }, [item])
+        return canvasItem ? getCanvasContentType(canvasItem.content.contentType) : null
+    }, [canvasItem])
 
     const itemCompleted = useMemo(() => {
-        return !!item?.complete
-    }, [item])
+        return !!canvasItem?.complete
+    }, [canvasItem])
 
     const showSourceSwitch = useMemo(() => {
         return itemCompleted && contentType && ["srcdoc", "mermaid", "csv"].includes(contentType)
     }, [itemCompleted, contentType])
 
     const itemSource = useMemo(() => {
-        if (!item) return null;
-        return String(item.content.content)
-    }, [item])
+        if (!canvasItem) return null;
+        return String(canvasItem.content.content)
+    }, [canvasItem])
 
     const itemRender = useMemo(() => {
-        if (!item) return null;
+        if (!canvasItem) return null;
         switch (contentType) {
             case "markdown":
                 return <ReactMarkdown
@@ -57,10 +60,10 @@ const CanvasItem = ({item}: CanvasItemProps) => {
                     components={markdownComponentsTight}
                     skipHtml={false}
                 >
-                    {closeUpMarkdown(item.content.content as string)}
+                    {closeUpMarkdown(canvasItem.content.content as string)}
                 </ReactMarkdown>
             case "mermaid":
-                return <MermaidDiagram chart={item.content.content as string}/>
+                return <MermaidDiagram chart={canvasItem.content.content as string}/>
             case "code":
                 return <ReactMarkdown
                     remarkPlugins={remarkPlugins}
@@ -68,13 +71,13 @@ const CanvasItem = ({item}: CanvasItemProps) => {
                     components={markdownComponentsTight}
                     skipHtml={false}
                 >
-                    {appendCodeMarkdown(cleanupCode(item.content.content as string), item.content.contentType)}
+                    {appendCodeMarkdown(cleanupCode(canvasItem.content.content as string), canvasItem.content.contentType)}
                 </ReactMarkdown>
             default:
                 return <div>not supported</div>;
         }
 
-    }, [contentType, item])
+    }, [contentType, canvasItem])
 
     return useMemo(() => {
         return <div className={"p-2 border-gray-200 border-l-1 bg-white h-full w-full overflow-y-auto"}>

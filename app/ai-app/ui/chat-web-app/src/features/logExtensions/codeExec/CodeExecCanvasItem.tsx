@@ -6,13 +6,16 @@ import {
     remarkPlugins
 } from "../../../components/chat/ChatInterface/markdownRenderUtils.tsx";
 import {appendCodeMarkdown, cleanupCode} from "../../canvas/utils.ts";
-import {CodeExecArtifact} from "./types.ts";
+import {CodeExecArtifact, CodeExecArtifactType} from "./types.ts";
+import {ArtifactComponentProps} from "../../extensions/canvasExtensions.tsx";
 
-interface CodeExecItemProps {
-    item: CodeExecArtifact
-}
+const CodeExecCanvasItem = ({item}: ArtifactComponentProps) => {
+    if (item.artifactType !== CodeExecArtifactType) {
+        throw new Error("not a CodeExecArtifactType")
+    }
 
-const CodeExecCanvasItem = ({item}: CodeExecItemProps) => {
+    const codeExecItem = item as CodeExecArtifact;
+
     return useMemo(() => {
         return <div className={"p-2 border-gray-200 border-l-1 bg-white h-full w-full overflow-y-auto"}>
             <ReactMarkdown
@@ -21,10 +24,10 @@ const CodeExecCanvasItem = ({item}: CodeExecItemProps) => {
                 components={markdownComponentsTight}
                 skipHtml={false}
             >
-                {appendCodeMarkdown(cleanupCode(item.content!.program!.content), item.content!.program!.language)}
+                {appendCodeMarkdown(cleanupCode(codeExecItem.content!.program!.content), codeExecItem.content!.program!.language)}
             </ReactMarkdown>
         </div>
-    }, [item])
+    }, [codeExecItem])
 }
 
 export default CodeExecCanvasItem;

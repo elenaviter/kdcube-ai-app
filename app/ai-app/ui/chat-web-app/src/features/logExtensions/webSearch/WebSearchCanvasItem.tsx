@@ -1,20 +1,23 @@
-import {WebSearchArtifact} from "./types.ts";
+import {WebSearchArtifact, WebSearchArtifactType} from "./types.ts";
 import {useMemo} from "react";
+import {ArtifactComponentProps} from "../../extensions/canvasExtensions.tsx";
 
-interface WebSearchCanvasItemProps {
-    item: WebSearchArtifact
-}
+const WebSearchCanvasItem = ({item}: ArtifactComponentProps) => {
+    if (item.artifactType !== WebSearchArtifactType) {
+        throw new Error("not a CodeExecArtifactType")
+    }
 
-const WebSearchCanvasItem = ({item}:WebSearchCanvasItemProps) => {
+    const webSearchItem = item as WebSearchArtifact;
+
     return useMemo(() => {
-        if (!item.content.reportContent) return null;
+        if (!webSearchItem.content.reportContent) return null;
         return <div className={"w-full h-full overflow-hidden"}>
             <iframe
-                srcDoc={item.content.reportContent}
+                srcDoc={webSearchItem.content.reportContent}
                 className={"w-full h-full border-0"}
             />
         </div>
-    }, [item.content.reportContent])
+    }, [webSearchItem.content.reportContent])
 }
 
 export default WebSearchCanvasItem;

@@ -175,21 +175,21 @@ export interface Artifact<C> extends Timestamped {
 
 export type UnknownArtifact = Artifact<unknown>;
 
-export interface ThinkingItemData extends Timestamped {
+export interface ThinkingArtifactData extends Timestamped {
     endedAt?: number;
     agents: Record<string, string>;
     agentTimes: Record<string, AgentTiming>;
 }
 
-export interface TurnThinkingItem extends Artifact<ThinkingItemData> {
+export interface ThinkingArtifact extends Artifact<ThinkingArtifactData> {
     artifactType: "thinking";
 }
 
-export interface TurnCitation extends Artifact<RichLink> {
+export interface CitationArtifact extends Artifact<RichLink> {
     artifactType: "citation";
 }
 
-export interface TurnFile extends Artifact<RNFile> {
+export interface FileArtifact extends Artifact<RNFile> {
     artifactType: "file";
 }
 

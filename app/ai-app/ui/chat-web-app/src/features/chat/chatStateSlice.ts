@@ -29,10 +29,10 @@ import {
     SubsystemEventData,
     ThinkingEvent,
     TimelineTextEvent,
-    TurnCitation,
+    CitationArtifact,
     TurnError,
-    TurnFile,
-    TurnThinkingItem,
+    FileArtifact,
+    ThinkingArtifact,
     UnknownArtifact, WebSearchEvent, WebSearchEventSubtypes, WebSearchFilteredResultsSubsystemEventDataSubtype,
     WebSearchHTMLViewSubsystemEventDataSubtype, WebSearchSubsystemEventData,
     WorkingScope
@@ -48,7 +48,7 @@ export const getUserAttachmentFile = (key: string) => {
     return userAttachmentMapping.get(key)
 }
 
-const reduceThinkingEvents = (events: ThinkingEvent[], prev?: TurnThinkingItem | null): TurnThinkingItem | null => {
+const reduceThinkingEvents = (events: ThinkingEvent[], prev?: ThinkingArtifact | null): ThinkingArtifact | null => {
     if (!events || !events.length)
         return null;
 
@@ -437,7 +437,7 @@ const chatStateSlice = createSlice({
                         const filesEnv = env as FilesStepEnvelope
                         if (filesEnv.data?.items && filesEnv.data?.items?.length > 0) {
                             filesEnv.data.items.forEach(item => {
-                                const i = turn.artifacts.findIndex(f => f.artifactType === "file" && (f as TurnFile).content.rn === item.rn)
+                                const i = turn.artifacts.findIndex(f => f.artifactType === "file" && (f as FileArtifact).content.rn === item.rn)
                                 if (i > -1) {
                                     turn.artifacts.splice(i, 1, {content: item, artifactType: "file", timestamp: ts})
                                 } else {
@@ -452,7 +452,7 @@ const chatStateSlice = createSlice({
                         const citationsEnv = env as CitationsStepEnvelope
                         if (citationsEnv.data?.items && citationsEnv.data?.items?.length > 0) {
                             citationsEnv.data.items.forEach(item => {
-                                const i = turn.artifacts.findIndex(c => c.artifactType === "citation" && (c as TurnCitation).content.url === item.url)
+                                const i = turn.artifacts.findIndex(c => c.artifactType === "citation" && (c as CitationArtifact).content.url === item.url)
                                 if (i > -1) {
                                     turn.artifacts.splice(i, 1, {
                                         content: item,
@@ -500,7 +500,7 @@ const chatStateSlice = createSlice({
                     }
                     turn.events.push(event);
                     const prevIdx = turn.artifacts.findIndex(f => f.artifactType === "thinking");
-                    const prev = prevIdx >= 0 ? turn.artifacts[prevIdx] as TurnThinkingItem : null;
+                    const prev = prevIdx >= 0 ? turn.artifacts[prevIdx] as ThinkingArtifact : null;
                     const turnEvents = turn.events.filter(ev => ev.eventType === "thinking") as ThinkingEvent[]
                     const item = reduceThinkingEvents(turnEvents, prev)
                     if (item) {

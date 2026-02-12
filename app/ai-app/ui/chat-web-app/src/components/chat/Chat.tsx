@@ -4,21 +4,45 @@
  */
 
 // Chat.tsx
-import React, {useEffect, useMemo, useRef, useState} from "react";
+import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {Loader} from "lucide-react";
 
 import ChatInterface from "./ChatInterface/ChatInterface.tsx";
 import {useAppSelector} from "../../app/store.ts";
 import {useGetSuggestedQuestionsQuery} from "../../features/suggestedQuestions/suggestedQuestions.ts";
-import {selectCurrentTurn, selectProject, selectTenant} from "../../features/chat/chatStateSlice.ts";
+import {
+    selectConversationId,
+    selectCurrentTurn,
+    selectProject,
+    selectTenant
+} from "../../features/chat/chatStateSlice.ts";
 import ChatSidePanel from "../../features/chatSidePanel/ChatSidePanel.tsx";
 import ChatHeader from "./ChatHeader.tsx";
 import AnimatedExpander from "../AnimatedExpander.tsx";
 import ChatCanvas from "../../features/canvas/ChatCanvas.tsx";
 import {CanvasItemLink, ChatCanvasContext, ChatCanvasContextValue} from "../../features/canvas/canvasContext.tsx";
 import {getChatBaseAddress, getExtraIdTokenHeaderName} from "../../AppConfig.ts";
-import {selectUserProfile} from "../../features/profile/profile.ts";
 import {selectAuthToken, selectIdToken} from "../../features/auth/authSlice.ts";
+import {
+    addCanvasItemExtension,
+    getCanvasArtifactTypes,
+    getCanvasItemLinkGenerator
+} from "../../features/extensions/canvasExtensions.tsx";
+import {CodeExecArtifactType} from "../../features/logExtensions/codeExec/types.ts";
+import CodeExecCanvasItem from "../../features/logExtensions/codeExec/CodeExecCanvasItem.tsx";
+import {getCodeExecArtifactLink, matchesCodeExecArtifact} from "../../features/logExtensions/codeExec/utils.ts";
+import {CanvasArtifactType} from "../../features/logExtensions/canvas/types.ts";
+import CanvasItem from "../../features/logExtensions/canvas/CanvasItem.tsx";
+import {getCanvasArtifactLink, matchesCanvasArtifact} from "../../features/logExtensions/canvas/utils.ts";
+import {WebSearchArtifactType} from "../../features/logExtensions/webSearch/types.ts";
+import WebSearchCanvasItem from "../../features/logExtensions/webSearch/WebSearchCanvasItem.tsx";
+import {getWebSearchArtifactLink, matchesWebSearchArtifact} from "../../features/logExtensions/webSearch/utils.ts";
+import {addChatLogExtension} from "../../features/extensions/logExtesnions.ts";
+import {CanvasLogItem} from "../../features/logExtensions/canvas/CanvasLogItem.tsx";
+import CodeExecLogItem from "../../features/logExtensions/codeExec/CodeExecLogItem.tsx";
+import WebSearchLogItem from "../../features/logExtensions/webSearch/WebSearchLogItem.tsx";
+import {TimelineTextArtifactType} from "../../features/logExtensions/timelineText/types.ts";
+import TimelineTextLogItem from "../../features/logExtensions/timelineText/TimelineTextLogItem.tsx";
 
 // -----------------------------------------------------------------------------
 // Helper: KB search results wrapper
@@ -37,6 +61,17 @@ import {selectAuthToken, selectIdToken} from "../../features/auth/authSlice.ts";
 //     );
 // };
 
+//chat log extensions
+addChatLogExtension(CanvasArtifactType, CanvasLogItem)
+addChatLogExtension(CodeExecArtifactType, CodeExecLogItem)
+addChatLogExtension(WebSearchArtifactType, WebSearchLogItem)
+addChatLogExtension(TimelineTextArtifactType, TimelineTextLogItem)
+
+// canvas extension
+addCanvasItemExtension(CanvasArtifactType, CanvasItem, getCanvasArtifactLink, matchesCanvasArtifact)
+addCanvasItemExtension(CodeExecArtifactType, CodeExecCanvasItem, getCodeExecArtifactLink, matchesCodeExecArtifact)
+addCanvasItemExtension(WebSearchArtifactType, WebSearchCanvasItem, getWebSearchArtifactLink, matchesWebSearchArtifact)
+
 const SingleChatApp: React.FC = () => {
 
     const tenant = useAppSelector(selectTenant);
@@ -44,6 +79,7 @@ const SingleChatApp: React.FC = () => {
     const currentTurn = useAppSelector(selectCurrentTurn);
     const authToken = useAppSelector(selectAuthToken)
     const idToken = useAppSelector(selectIdToken)
+    const conversationId = useAppSelector(selectConversationId);
 
     //RTK
     const {data: suggestedQuestions, isFetching: updatingQuestions} = useGetSuggestedQuestionsQuery({tenant, project});
@@ -75,20 +111,46 @@ const SingleChatApp: React.FC = () => {
     // const handleCloseKbResults = useCallback(() => setShowKbResults(false), []);
     // const hideKB = () => setShowKB(false);
 
-    const [canvasItem, setCanvasItem] = useState<CanvasItemLink | null>(null);
+    const [canvasItemLink, setCanvasItemLink] = useState<CanvasItemLink | null>(null);
+    const [overrideCanvasItemLink, setOverrideCanvasItemLink] = useState<boolean>(false);
+
+    const lastCanvasItem = useMemo(() => {
+        if (currentTurn == null) return null;
+        const canvasArtifactTypes = getCanvasArtifactTypes()
+        const canvasArtifacts = currentTurn.artifacts.filter(artifact => {
+            return canvasArtifactTypes.includes(artifact.artifactType);
+        })
+        return canvasArtifacts.length > 0 ? canvasArtifacts[0] : null;
+    }, [currentTurn])
 
     useEffect(() => {
-        if (!currentTurn) return;
-        // const canvasItem = lastTurn.artifacts.filter(it => it.artifactType === "canvas");
+        setCanvasItemLink(null);
+    }, [conversationId]);
 
-    }, [currentTurn]);
+    useEffect(() => {
+        if (currentTurn) {
+            if (!overrideCanvasItemLink && lastCanvasItem) {
+                setCanvasItemLink(getCanvasItemLinkGenerator(lastCanvasItem.artifactType)(lastCanvasItem))
+            }
+        } else {
+            setOverrideCanvasItemLink(false)
+        }
+
+    }, [canvasItemLink, currentTurn, lastCanvasItem, overrideCanvasItemLink]);
+
+    const showItem = useCallback((link: CanvasItemLink | null) => {
+        if (currentTurn) {
+            setOverrideCanvasItemLink(true);
+        }
+        setCanvasItemLink(link);
+    }, [currentTurn])
 
     const chatCanvasContextValue = useMemo<ChatCanvasContextValue>(() => {
         return {
-            showItem: setCanvasItem,
-            itemLink: canvasItem
+            showItem,
+            itemLink: canvasItemLink
         }
-    }, [canvasItem])
+    }, [canvasItemLink, showItem])
 
     useEffect(() => {
         const onIFrameRequest = (event: MessageEvent) => {
@@ -169,7 +231,7 @@ const SingleChatApp: React.FC = () => {
                     <div className={`flex flex-row flex-1 min-h-0 min-w-0`}>
                         <ChatCanvasContext value={chatCanvasContextValue}>
                             <ChatInterface/>
-                            <AnimatedExpander contentRef={chatCanvasRef} expanded={!!canvasItem}>
+                            <AnimatedExpander contentRef={chatCanvasRef} expanded={!!canvasItemLink}>
                                 <ChatCanvas ref={chatCanvasRef}/>
                             </AnimatedExpander>
                         </ChatCanvasContext>
@@ -227,7 +289,7 @@ const SingleChatApp: React.FC = () => {
             {/*    </div>*/}
             {/*)}*/}
         </div>
-    }, [canvasItem, chatCanvasContextValue, updatingQuestions])
+    }, [canvasItemLink, chatCanvasContextValue, updatingQuestions])
 };
 
 export default SingleChatApp;

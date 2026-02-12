@@ -6,16 +6,18 @@ import {
 } from "../../../components/chat/ChatInterface/markdownRenderUtils.tsx";
 import {closeUpMarkdown, useWordStreamEffect} from "../../../components/WordStreamingEffects.tsx";
 import ReactMarkdown from "react-markdown";
-import {TimelineTextArtifact} from "./types.ts";
+import {TimelineTextArtifact, TimelineTextArtifactType} from "./types.ts";
+import {ChatLogComponentProps} from "../../extensions/logExtesnions.ts";
 
-interface TimelineTextLogItemProps {
-    item: TimelineTextArtifact,
-    historical: boolean
-}
+const TimelineTextLogItem = ({item, historical}: ChatLogComponentProps) => {
+    if (item.artifactType !== TimelineTextArtifactType) {
+        throw new Error("not a TimelineTextArtifact")
+    }
 
-const TimelineTextLogItem = ({item, historical}: TimelineTextLogItemProps) => {
+    const timelineTextItem = item as TimelineTextArtifact;
+
     const streamedText = useWordStreamEffect(
-        item.content.text ?? "",
+        timelineTextItem.content.text ?? "",
         !historical,
         50
     );

@@ -1,4 +1,4 @@
-import {TurnThinkingItem} from "../../../../features/chat/chatTypes.ts";
+import {ThinkingArtifact} from "../../../../features/chat/chatTypes.ts";
 import {useCallback, useMemo, useState} from "react";
 import {ChevronDown, ChevronUp} from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -15,7 +15,7 @@ const formatSeconds = (sec: number): string => {
 };
 
 interface ThinkingItemProps {
-    item: TurnThinkingItem
+    item: ThinkingArtifact
 }
 
 export const Thinking = ({item}: ThinkingItemProps) => {

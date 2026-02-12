@@ -2,50 +2,54 @@ import {useEffect, useMemo, useState} from "react";
 import {Maximize2, SquareTerminal} from "lucide-react";
 import IconContainer from "../../../components/IconContainer.tsx";
 import useChatCanvasContext from "../../canvas/canvasContext.tsx";
+import {appendCodeMarkdown, cleanupCode} from "../../canvas/utils.ts";
 import {
-    appendCodeMarkdown,
-    cleanupCode
-} from "../../canvas/utils.ts";
-import {markdownComponentsTight, rehypePlugins, remarkPlugins} from "../../../components/chat/ChatInterface/markdownRenderUtils.tsx";
+    markdownComponentsTight,
+    rehypePlugins,
+    remarkPlugins
+} from "../../../components/chat/ChatInterface/markdownRenderUtils.tsx";
 import ReactMarkdown from "react-markdown";
-import {CodeExecArtifact} from "./types.ts";
+import {CodeExecArtifact, CodeExecArtifactType} from "./types.ts";
 import {isCodeExecArtifactLink, matchesCodeExecArtifact} from "./utils.ts";
+import {ChatLogComponentProps} from "../../extensions/logExtesnions.ts";
 
-interface CodeExecItemProps {
-    item: CodeExecArtifact;
-}
+const CodeExecLogItem = ({item}: ChatLogComponentProps) => {
+    if (item.artifactType !== CodeExecArtifactType) {
+        throw new Error("not a CodeExecArtifact");
+    }
 
-const CodeExecLogItem = ({item}: CodeExecItemProps) => {
+    const codeExecItem = item as CodeExecArtifact;
+
     const {itemLink: selectedItem} = useChatCanvasContext()
     const selected = useMemo(() => {
-        return isCodeExecArtifactLink(selectedItem) && matchesCodeExecArtifact(selectedItem, item)
-    }, [item, selectedItem])
+        return isCodeExecArtifactLink(selectedItem) && matchesCodeExecArtifact(selectedItem, codeExecItem)
+    }, [codeExecItem, selectedItem])
 
     const [expanded, setExpanded] = useState<boolean>(false)
 
     const detailsMemo = useMemo(() => {
-        if (!item.content.contract && !item.content.program) return null
+        if (!codeExecItem.content.contract && !codeExecItem.content.program) return null
         return <>
-            {item.content.contract &&
+            {codeExecItem.content.contract &&
                 <div className={"my-1 w-full"}>
-                    {item.content.contract.content.map((a, i: number) => {
+                    {codeExecItem.content.contract.content.map((a, i: number) => {
                         return <div className={"text-xs mb-1"} key={i}><span
                             className={"border bg-gray-50 rounded-sm px-1 py-0.5"}>{a.filename}</span> - {a.description}
                         </div>
                     })}
                 </div>}
-            {item.content.program && <div className={"w-full [&_code]:max-h-[50vh]"}>
+            {codeExecItem.content.program && <div className={"w-full [&_code]:max-h-[50vh]"}>
                 <ReactMarkdown
                     remarkPlugins={remarkPlugins}
                     rehypePlugins={rehypePlugins}
                     components={markdownComponentsTight}
                     skipHtml={false}
                 >
-                    {appendCodeMarkdown(cleanupCode(item.content.program.content), item.content.program.language)}
+                    {appendCodeMarkdown(cleanupCode(codeExecItem.content.program.content), codeExecItem.content.program.language)}
                 </ReactMarkdown>
             </div>}
         </>
-    }, [item.content.contract, item.content.program])
+    }, [codeExecItem.content.contract, codeExecItem.content.program])
 
     const hasDetails = useMemo(() => {
         return detailsMemo !== null
@@ -57,8 +61,8 @@ const CodeExecLogItem = ({item}: CodeExecItemProps) => {
 
     return useMemo(() => {
         let executionStatus = ""
-        if (item.content.status) {
-            switch (item.content.status.content.status) {
+        if (codeExecItem.content.status) {
+            switch (codeExecItem.content.status.content.status) {
                 case "error":
                     executionStatus = " - Error"
                     break;
@@ -84,15 +88,15 @@ const CodeExecLogItem = ({item}: CodeExecItemProps) => {
                 <IconContainer icon={SquareTerminal} size={1.5} className={"mr-0.5"}/>
                 <div className={"flex-1 min-w-0 mr-4 mb-4 [&_*]:cursor-auto"}>
                     <div className={"flex flex-row w-fit"}>
-                        {item.content.name ? item.content.name.content : "Program"}{executionStatus}
+                        {codeExecItem.content.name ? codeExecItem.content.name.content : "Program"}{executionStatus}
                     </div>
-                    {item.content.objective &&
-                        <div className={"text-sm"}>{item.content.objective?.content}</div>}
+                    {codeExecItem.content.objective &&
+                        <div className={"text-sm"}>{codeExecItem.content.objective?.content}</div>}
                     {expanded && detailsMemo}
                 </div>
             </div>
         </div>
-    }, [detailsMemo, expanded, hasDetails, item.content.name, item.content.objective, item.content.status, selected])
+    }, [detailsMemo, expanded, hasDetails, codeExecItem.content.name, codeExecItem.content.objective, codeExecItem.content.status, selected])
 }
 
 export default CodeExecLogItem;

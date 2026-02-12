@@ -202,7 +202,6 @@ const AIBundlesPanel = ({visible, className}: WidgetPanelProps) => {
         if (isError) {
             return null //todo: show error panel
         }
-        console.debug(data)
         return <IFrameSrcDocPanel visible={visible} className={className} srcDoc={data as string}/>
     }, [className, data, isError, isFetching, visible])
 }
@@ -219,7 +218,6 @@ const GatewayPanel = ({visible, className}: WidgetPanelProps) => {
         if (isError) {
             return null //todo: show error panel
         }
-        console.debug(data)
         return <IFrameSrcDocPanel visible={visible} className={className} srcDoc={data as string}/>
     }, [className, data, isError, isFetching, visible])
 }
@@ -236,7 +234,6 @@ const ConvBrowserPanel = ({visible, className}: WidgetPanelProps) => {
         if (isError) {
             return null //todo: show error panel
         }
-        console.debug(data)
         return <IFrameSrcDocPanel visible={visible} className={className} srcDoc={data as string}/>
     }, [className, data, isError, isFetching, visible])
 }
@@ -253,7 +250,6 @@ const RedisBrowserPanel = ({visible, className}: WidgetPanelProps) => {
         if (isError) {
             return null //todo: show error panel
         }
-        console.debug(data)
         return <IFrameSrcDocPanel visible={visible} className={className} srcDoc={data as string}/>
     }, [className, data, isError, isFetching, visible])
 }

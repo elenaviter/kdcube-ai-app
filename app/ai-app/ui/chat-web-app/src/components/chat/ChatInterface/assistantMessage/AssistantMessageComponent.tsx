@@ -27,23 +27,16 @@ import {
     Zap
 } from "lucide-react";
 import {
-    TurnCitation,
-    TurnFile,
-    TurnThinkingItem,
+    CitationArtifact,
+    FileArtifact,
+    ThinkingArtifact,
     UnknownArtifact
 } from "../../../../features/chat/chatTypes.ts";
 import {downloadResourceByRN} from "../../../../app/api/utils.ts";
 import {getFileIcon} from "../../../FileIcons.tsx";
 import {sortTimestamped} from "../../../../utils/utils.ts";
 import {Thinking} from "./Thinking.tsx";
-import {CanvasLogItem} from "../../../../features/logExtensions/canvas/CanvasLogItem.tsx";
-import CodeExecLogItem from "../../../../features/logExtensions/codeExec/CodeExecLogItem.tsx";
-import WebSearchLogItem from "../../../../features/logExtensions/webSearch/WebSearchLogItem.tsx";
-import {CodeExecArtifact, CodeExecArtifactType} from "../../../../features/logExtensions/codeExec/types.ts";
-import {WebSearchArtifact, WebSearchArtifactType} from "../../../../features/logExtensions/webSearch/types.ts";
-import {CanvasArtifact, CanvasArtifactType} from "../../../../features/logExtensions/canvas/types.ts";
-import TimelineTextLogItem from "../../../../features/logExtensions/timelineText/TimelineTextLogItem.tsx";
-import {TimelineTextArtifact, TimelineTextArtifactType} from "../../../../features/logExtensions/timelineText/types.ts";
+import {getChatLogComponent} from "../../../../features/extensions/logExtesnions.ts";
 
 const getStepName = (step: TurnStep): string =>
     step.title || step.step.replace("_", " ").replace(/\b\w/g, (l) => l.toUpperCase());
@@ -166,21 +159,21 @@ export const AssistantMessageComponent = ({
     const isPressed = (tabName: AssistantMessageTab) => tab === tabName
 
     const {thinkingItems, citations, files, other} = useMemo(() => {
-        const thinkingItems: TurnThinkingItem[] = []
-        const citations: TurnCitation[] = []
-        const files: TurnFile[] = []
+        const thinkingItems: ThinkingArtifact[] = []
+        const citations: CitationArtifact[] = []
+        const files: FileArtifact[] = []
         const other: UnknownArtifact[] = []
 
         artifacts.forEach((artifact) => {
             switch (artifact.artifactType) {
                 case "thinking":
-                    thinkingItems.push(artifact as TurnThinkingItem);
+                    thinkingItems.push(artifact as ThinkingArtifact);
                     break;
                 case "citation":
-                    citations.push(artifact as TurnCitation);
+                    citations.push(artifact as CitationArtifact);
                     break;
                 case "file":
-                    files.push(artifact as TurnFile);
+                    files.push(artifact as FileArtifact);
                     break;
                 default:
                     other.push(artifact);
@@ -328,18 +321,12 @@ export const AssistantMessageComponent = ({
         sortTimestamped(items)
         return <div className={"w-full min-w-0 flex flex-col"}>
             {items.map((item, i) => {
-                switch (item.artifactType) {
-                    case CanvasArtifactType:
-                        return <CanvasLogItem item={item as CanvasArtifact} key={i}/>
-                    case CodeExecArtifactType:
-                        return <CodeExecLogItem item={item as CodeExecArtifact} key={i}/>
-                    case WebSearchArtifactType:
-                        return <WebSearchLogItem item={item as WebSearchArtifact} key={i} maxVisibleLinks={3}/>
-                    case TimelineTextArtifactType:
-                        return <TimelineTextLogItem item={item as TimelineTextArtifact} key={i} historical={!!isHistorical}/>
+                const Component = getChatLogComponent(item.artifactType)
+                if (!Component) {
+                    console.warn("unknown artifact type", item)
+                    return null
                 }
-                console.warn("unknown artifact type")
-                return null
+                return <Component key={i} item={item} historical={isHistorical}/>
             })}
         </div>
     }, [isHistorical, other])

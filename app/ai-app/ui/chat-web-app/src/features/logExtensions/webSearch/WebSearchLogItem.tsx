@@ -4,35 +4,39 @@ import IconContainer from "../../../components/IconContainer.tsx";
 import {Ellipsis, Globe} from "lucide-react";
 import IconLoader from "../../../components/IconLoader.tsx";
 import {WebSearchArtifact, WebSearchArtifactType} from "./types.ts";
-import {isWebSearchArtifactLink, matchesWebSearchArtifact} from "./utils.ts";
+import {getWebSearchArtifactLink, isWebSearchArtifactLink, matchesWebSearchArtifact} from "./utils.ts";
+import {ChatLogComponentProps} from "../../extensions/logExtesnions.ts";
 
-interface WebSearchItemProps {
-    item: WebSearchArtifact
-    maxVisibleLinks: number
-}
+const WebSearchLogItem = ({item}: ChatLogComponentProps) => {
+    const maxVisibleLinks = 3;
 
-const WebSearchLogItem = ({item, maxVisibleLinks}: WebSearchItemProps) => {
+    if (item.artifactType !== WebSearchArtifactType) {
+        throw new Error("not a WebSearchArtifact");
+    }
+
+    const webSearchItem = item as WebSearchArtifact;
+
     const {itemLink: selectedItem, showItem} = useChatCanvasContext()
     const selected = useMemo(() => {
-        return isWebSearchArtifactLink(selectedItem) && matchesWebSearchArtifact(selectedItem, item)
-    }, [item, selectedItem])
+        return isWebSearchArtifactLink(selectedItem) && matchesWebSearchArtifact(selectedItem, webSearchItem)
+    }, [webSearchItem, selectedItem])
 
     const [expanded, setExpanded] = useState<boolean>(false)
 
 
     const hasReport = useMemo(() => {
-        return !!item.content.reportContent
-    }, [item.content.reportContent])
+        return !!webSearchItem.content.reportContent
+    }, [webSearchItem.content.reportContent])
 
     const expandable = useMemo(() => {
-        return item.content.items.length > maxVisibleLinks
-    }, [item.content.items, maxVisibleLinks])
+        return webSearchItem.content.items.length > maxVisibleLinks
+    }, [webSearchItem.content.items, maxVisibleLinks])
 
     const sortedLinks = useMemo(() => {
-        return item.content.items.concat().sort((a, b) => {
+        return webSearchItem.content.items.concat().sort((a, b) => {
             return a.weightedScore - b.weightedScore
         })
-    }, [item.content.items])
+    }, [webSearchItem.content.items])
 
     const visibleLinks = useMemo(() => {
         return expanded || !expandable ? sortedLinks : sortedLinks.slice(0, maxVisibleLinks + 1)
@@ -42,32 +46,29 @@ const WebSearchLogItem = ({item, maxVisibleLinks}: WebSearchItemProps) => {
         if (selected) {
             showItem(null)
         } else {
-            showItem({
-                itemType: WebSearchArtifactType,
-                searchId: item.content.searchId,
-            })
+            showItem(getWebSearchArtifactLink(webSearchItem))
         }
-    }, [item, selected, showItem])
+    }, [webSearchItem, selected, showItem])
 
     return useMemo(() => {
         return <div
-            id={`webSearch_${item.content.searchId}`}
+            id={`webSearch_${webSearchItem.content.searchId}`}
             className={`relative w-full text-left p-2 min-w-0 flex flex-row rounded-lg mb-2 border ${selected ? "border-gray-400" : "border-gray-200"}`}>
             <div className={"flex flex-row w-full duration-200 transition-all"}>
                 <IconContainer icon={Globe} size={1.5} className={"mr-0.5"}/>
                 <div className={"flex-1 min-w-0 mb-4 [&_*]:cursor-auto"}>
                     <div className={"flex flex-row w-full"}>
-                        {item.content.title ?? item.content.name}
+                        {webSearchItem.content.title ?? webSearchItem.content.name}
                         {hasReport && <button
                             onClick={onClick}
                             className={"ml-auto border rounded-md text-xs border-gray-200 px-2 py-1 hover:bg-white cursor-pointer"}>Report</button>}
                     </div>
-                    {item.content.objective &&
-                        <div className={"text-sm"}>{item.content.objective}</div>}
-                    {item.content.queries && item.content.queries.length > 0 && <div className={"text-sm"}>
+                    {webSearchItem.content.objective &&
+                        <div className={"text-sm"}>{webSearchItem.content.objective}</div>}
+                    {webSearchItem.content.queries && webSearchItem.content.queries.length > 0 && <div className={"text-sm"}>
                         <h2>Queries:</h2>
                         <ul className={"list-disc pl-5"}>
-                            {item.content.queries.map((q) => {
+                            {webSearchItem.content.queries.map((q) => {
                                 return <li key={q}>{q}</li>
                             })}
                         </ul>
@@ -99,7 +100,7 @@ const WebSearchLogItem = ({item, maxVisibleLinks}: WebSearchItemProps) => {
                 </div>
             </div>
         </div>
-    }, [expandable, expanded, hasReport, item.content.name, item.content.objective, item.content.queries, item.content.title, onClick, selected, sortedLinks.length, visibleLinks])
+    }, [expandable, expanded, hasReport, webSearchItem.content.name, webSearchItem.content.objective, webSearchItem.content.queries, webSearchItem.content.searchId, webSearchItem.content.title, onClick, selected, sortedLinks.length, visibleLinks])
 }
 
 export default WebSearchLogItem;
