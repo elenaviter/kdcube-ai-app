@@ -70,7 +70,7 @@ class WebTools:
         n: Annotated[int, "Max unique results (1-8). Prefer max 5", {"min": 1, "max": 20}] = 8,
         # fetch_content: Annotated[bool, "If true, fetch full page content according to 'refinement' option. Increase tokens as stated in refinement modes. Use False if you need to decide the fetch on your own. If false, return ranked snippets/URLs only (no content attr)."] = True,
         freshness: Annotated[Optional[str], "Canonical freshness: 'day'|'week'|'month'|'year' or null."] = None,
-        country: Annotated[Optional[str], "Canonical country ISO2, e.g. 'DE', 'US'."] = None,
+        country: Annotated[Optional[str], "Canonical country ISO2, e.g. 'DE', 'US'. Supported only: 'AR', 'AU', 'AT', 'BE', 'BR', 'CA', 'CL', 'DK', 'FI', 'FR', 'DE', 'GR', 'HK',"] = None,
         safesearch: Annotated[str, "Canonical safesearch: 'off'|'moderate'|'strict'."] = "moderate",
     ) -> Annotated[list[dict], (
             "Array of results: [{sid,title,url,text,objective_relevance?,query_relevance?,content?,mime?,base64?,size_bytes?,...date/meta...}]. "
