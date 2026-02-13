@@ -69,7 +69,6 @@ addChatLogExtension(TimelineTextArtifactType, TimelineTextLogItem)
 
 // canvas extension
 addCanvasItemExtension(CanvasArtifactType, CanvasItem, getCanvasArtifactLink, matchesCanvasArtifact)
-addCanvasItemExtension(CodeExecArtifactType, CodeExecCanvasItem, getCodeExecArtifactLink, matchesCodeExecArtifact)
 addCanvasItemExtension(WebSearchArtifactType, WebSearchCanvasItem, getWebSearchArtifactLink, matchesWebSearchArtifact)
 
 const SingleChatApp: React.FC = () => {

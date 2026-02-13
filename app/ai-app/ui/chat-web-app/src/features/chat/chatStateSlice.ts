@@ -238,7 +238,7 @@ const reduceCodeExecEvents = (events: SubsystemEvent[], executionId: string): Co
                     name: event.data.name,
                     title: event.data.title,
                     timestamp: event.timestamp,
-                    content: JSON.parse((event.data as CodeExecContractSubsystemEventData).text).contract,
+                    content: JSON.parse((event.data as CodeExecContractSubsystemEventData).text).status,
                 }
                 break
         }
