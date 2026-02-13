@@ -923,6 +923,13 @@ class ReactSolverV2:
                     state["decision_retries"] = retries + 1
                     state["retry_decision"] = True
                     decision = {"action": "call_tool", "notes": f"{validation_error}; retry decision"}
+                    try:
+                        self.log.log(
+                            f"[react.v2] retry decision after validation error (retries={state['decision_retries']})",
+                            level="INFO",
+                        )
+                    except Exception:
+                        pass
                     state["session_log"].append({
                         "type": "decision_invalid",
                         "iteration": iteration,
@@ -994,6 +1001,13 @@ class ReactSolverV2:
                     state["retry_decision"] = True
                     decision["notes"] = "tool_not_allowed_in_react; retry decision"
                     action = "call_tool"
+                    try:
+                        self.log.log(
+                            f"[react.v2] retry decision after tool_not_allowed (retries={state['decision_retries']})",
+                            level="INFO",
+                        )
+                    except Exception:
+                        pass
                 else:
                     decision = {
                         "action": "exit",
@@ -1048,6 +1062,13 @@ class ReactSolverV2:
                         state["decision_retries"] = retries + 1
                         state["retry_decision"] = True
                         decision["notes"] = "tool_call_invalid; retry decision"
+                        try:
+                            self.log.log(
+                                f"[react.v2] retry decision after tool_call_invalid (retries={state['decision_retries']})",
+                                level="INFO",
+                            )
+                        except Exception:
+                            pass
                     else:
                         decision = {
                             "action": "exit",
@@ -1123,6 +1144,13 @@ class ReactSolverV2:
                     state["decision_retries"] = retries + 1
                     state["retry_decision"] = True
                     decision["notes"] = "tool_signature_red; retry decision"
+                    try:
+                        self.log.log(
+                            f"[react.v2] retry decision after tool_signature_red (retries={state['decision_retries']})",
+                            level="INFO",
+                        )
+                    except Exception:
+                        pass
                 else:
                     decision = {
                         "action": "exit",
