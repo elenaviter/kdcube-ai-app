@@ -21,6 +21,7 @@ def tool_call_block(*, ctx_browser, tool_call_id: str, tool_id: str, payload: Di
     turn_id = (getattr(ctx_browser.runtime_ctx, "turn_id", "") or "")
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = dict(payload or {})
+    payload.pop("notes", None)
     payload.setdefault("ts", ts)
     add_block(ctx_browser, {
         "type": "react.tool.call",

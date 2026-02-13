@@ -153,6 +153,20 @@ def _resolve_read_path(path: str, default_name: str = "output.pdf") -> pathlib.P
 def _basename_only(s: str, default_name: str) -> str:
     return _safe_relpath(s, default_name)
 
+def _ok_result() -> dict[str, Any]:
+    return {"ok": True, "error": None}
+
+def _error_result(*, code: str, message: str, where: str, managed: bool) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "where": where,
+            "managed": managed,
+        },
+    }
+
 
 class RenderingTools:
     def __init__(self):
@@ -166,7 +180,8 @@ class RenderingTools:
     @kernel_function(
         name="write_pptx",
         description=(
-            "Render HTML into a PPTX deck using python-pptx. Returns the saved filename.\n\n"
+            "Render HTML into a PPTX deck using python-pptx. "
+            "Returns an envelope: {ok, error}.\n\n"
             "For professional slide authoring (layouts, color schemes, content budgets, citations):\n"
             "→ Use skill 'pptx-press' (skills.public.pptx-press)\n\n"
             "=== QUICK ESSENTIALS ===\n\n"
@@ -216,38 +231,56 @@ class RenderingTools:
         title: Annotated[Optional[str], "Optional deck title (title slide)."] = None,
         include_sources_slide: Annotated[bool, "Append a 'Sources' slide if sources are given."] = False,
         base_dir: Annotated[Optional[str], "Base dir for resolving relative images in HTML. Defaults to OUTPUT_DIR."] = None,
-    ) -> Annotated[str, "Saved PPTX path (absolute)."]:
+    ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
+        try:
+            outdir = resolve_output_dir()
+            fname = _basename_only(path, "deck.pptx")
+            base_dir = base_dir or str(outdir)
+            workdir = str(resolve_workdir())
+            out_path = outdir / fname
+            out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        outdir = resolve_output_dir()
-        fname = _basename_only(path, "deck.pptx")
-        base_dir = base_dir or str(outdir)
-        workdir = str(resolve_workdir())
-        (outdir / fname).parent.mkdir(parents=True, exist_ok=True)
+            content = _defence(content, none_on_failure=False, format="html")
+            content = textwrap.dedent(content).strip()
+            _update_sources_used_for_filename(fname, content)
+            sources = load_sources_pool_from_disk()
+            _warn_on_data_uri(content, "write_pptx")
 
-        content = _defence(content, none_on_failure=False, format="html")
-        content = textwrap.dedent(content).strip()
-        _update_sources_used_for_filename(fname, content)
-        sources = load_sources_pool_from_disk()
-        _warn_on_data_uri(content, "write_pptx")
-
-        resolve_citations: Annotated[bool, "Convert [[S:n]] tokens into hyperlinks."] = True
-        return await asyncio.to_thread(
-            render_pptx,
-            str(outdir / fname),
-            content_html=content,
-            title=title,
-            base_dir=base_dir,
-            workdir=workdir,
-            sources=sources,
-            resolve_citations=resolve_citations,
-            include_sources_slide=include_sources_slide,
-        )
+            resolve_citations: Annotated[bool, "Convert [[S:n]] tokens into hyperlinks."] = True
+            await asyncio.to_thread(
+                render_pptx,
+                str(out_path),
+                content_html=content,
+                title=title,
+                base_dir=base_dir,
+                workdir=workdir,
+                sources=sources,
+                resolve_citations=resolve_citations,
+                include_sources_slide=include_sources_slide,
+            )
+            if not out_path.exists():
+                return _error_result(
+                    code="file_not_produced",
+                    message="PPTX file was not produced.",
+                    where="rendering_tools.write_pptx",
+                    managed=True,
+                )
+            return _ok_result()
+        except Exception as e:
+            msg = str(e).strip() or "Failed to render PPTX."
+            return _error_result(
+                code=type(e).__name__,
+                message=msg,
+                where="rendering_tools.write_pptx",
+                managed=False,
+            )
 
     @kernel_function(
         name="write_png",
         description=(
             "Render Markdown, HTML, or Mermaid diagrams to PNG image using Playwright + Chromium. "
-            "Supports three formats: 'markdown', 'html' (control sizing via CSS), or 'mermaid'. Returns saved path."
+            "Supports three formats: 'markdown', 'html' (control sizing via CSS), or 'mermaid'. "
+            "Returns an envelope: {ok, error}. "
             "Fitting guidance: prefer full_page=True; increase width (e.g., 2200–3200) for wide diagrams; "
             "use render_delay_ms=1000–2000 to allow Mermaid/layout to settle. File is saved under OUTPUT_DIR."
         )
@@ -267,29 +300,30 @@ class RenderingTools:
         full_page: Annotated[bool, "Capture full scrollable page vs viewport only."] = True,
         width: Annotated[Optional[int], "Viewport width in pixels (defaults to 1200)."] = 3000,
         height: Annotated[Optional[int], "Viewport height in pixels (only used if full_page=False)."] = 2000,
-    ) -> Annotated[str, "Absolute path to the written PNG."]:
+    ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
         import html as html_lib
         import urllib.parse
+        html_path: Optional[pathlib.Path] = None
+        try:
+            outdir = resolve_output_dir()
+            fname = _basename_only(path, "output.png")
+            out_path = outdir / fname
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            base_dir = base_dir or str(outdir)
 
-        outdir = resolve_output_dir()
-        fname = _basename_only(path, "output.png")
-        out_path = outdir / fname
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        base_dir = base_dir or str(outdir)
+            print(f"[RenderingTools.write_png]: rendering {format} to {out_path}")
 
-        print(f"[RenderingTools.write_png]: rendering {format} to {out_path}")
+            conv = await self._get_md2pdf()
+            await conv.start()
 
-        conv = await self._get_md2pdf()
-        await conv.start()
+            if format in ("mermaid", "html", "xml", "yaml"):
+                content = _defence(content, none_on_failure=False, format=format)
+                content = textwrap.dedent(content).strip()
 
-        if format in ("mermaid", "html", "xml", "yaml"):
-            content = _defence(content, none_on_failure=False, format=format)
-            content = textwrap.dedent(content).strip()
+            _update_sources_used_for_filename(fname, content)
 
-        _update_sources_used_for_filename(fname, content)
-
-        if format == "mermaid":
-            html_content = f"""<!DOCTYPE html>
+            if format == "mermaid":
+                html_content = f"""<!DOCTYPE html>
     <html>
     <head>
         <meta charset="utf-8">
@@ -341,42 +375,42 @@ class RenderingTools:
     </body>
     </html>"""
 
-        elif format == "html":
-            html_content = content
+            elif format == "html":
+                html_content = content
 
-        else:
-            base_href = conv._base_href_for(pathlib.Path(base_dir) if base_dir else None)
-            html_content = conv.markdown_to_html(content, base_href, title or "Document")
+            else:
+                base_href = conv._base_href_for(pathlib.Path(base_dir) if base_dir else None)
+                html_content = conv.markdown_to_html(content, base_href, title or "Document")
 
-        import time
-        html_filename = f"_render_{int(time.time() * 1000000)}.html"
-        html_path = outdir / html_filename
-        html_path.write_text(html_content, encoding="utf-8")
+            import time
+            html_filename = f"_render_{int(time.time() * 1000000)}.html"
+            html_path = outdir / html_filename
+            html_path.write_text(html_content, encoding="utf-8")
 
-        try:
-            context = await conv._browser.new_context(
-                viewport={"width": width or 1200, "height": height or 800},
-                device_scale_factor=2
-            )
-            page = await context.new_page()
+            try:
+                context = await conv._browser.new_context(
+                    viewport={"width": width or 1200, "height": height or 800},
+                    device_scale_factor=2
+                )
+                page = await context.new_page()
 
-            screenshot_opts = {
-                "path": str(out_path),
-                "full_page": bool(full_page),
-            }
+                screenshot_opts = {
+                    "path": str(out_path),
+                    "full_page": bool(full_page),
+                }
 
-            if format == "mermaid":
-                try:
-                    await page.goto(f"file://{html_path}", wait_until="networkidle")
-                    await page.wait_for_function("window.__RENDER_READY__ === true", timeout=30000)
+                if format == "mermaid":
+                    try:
+                        await page.goto(f"file://{html_path}", wait_until="networkidle")
+                        await page.wait_for_function("window.__RENDER_READY__ === true", timeout=30000)
 
-                    if full_page:
-                        await page.screenshot(**screenshot_opts)
-                    else:
-                        svg_element = await page.query_selector(".mermaid svg")
-                        if svg_element:
-                            svg_content = await svg_element.evaluate("(el) => el.outerHTML")
-                            svg_html = f"""<!DOCTYPE html>
+                        if full_page:
+                            await page.screenshot(**screenshot_opts)
+                        else:
+                            svg_element = await page.query_selector(".mermaid svg")
+                            if svg_element:
+                                svg_content = await svg_element.evaluate("(el) => el.outerHTML")
+                                svg_html = f"""<!DOCTYPE html>
             <html>
             <head>
                 <style>
@@ -392,41 +426,55 @@ class RenderingTools:
                 {svg_content}
             </body>
             </html>"""
-                            png_context = await conv._browser.new_context(
-                                viewport={"width": width or 2400, "height": height or 1600},
-                                device_scale_factor=2
-                            )
-                            png_page = await png_context.new_page()
-                            svg_data_url = f"data:text/html;charset=utf-8,{urllib.parse.quote(svg_html)}"
-                            await png_page.goto(svg_data_url, wait_until="networkidle")
-                            await png_page.screenshot(path=str(out_path), full_page=False)
-                            await png_context.close()
-                        else:
-                            raise Exception("No SVG found")
-                    
-                except Exception as e:
-                    print(f"⚠️ Mermaid SVG extraction failed: {e}")
+                                png_context = await conv._browser.new_context(
+                                    viewport={"width": width or 2400, "height": height or 1600},
+                                    device_scale_factor=2
+                                )
+                                png_page = await png_context.new_page()
+                                svg_data_url = f"data:text/html;charset=utf-8,{urllib.parse.quote(svg_html)}"
+                                await png_page.goto(svg_data_url, wait_until="networkidle")
+                                await png_page.screenshot(path=str(out_path), full_page=False)
+                                await png_context.close()
+                            else:
+                                raise Exception("No SVG found")
+                        
+                    except Exception as e:
+                        print(f"⚠️ Mermaid SVG extraction failed: {e}")
+                        await page.screenshot(**screenshot_opts)
+                else:
+                    await page.goto(f"file://{html_path}", wait_until="networkidle")
                     await page.screenshot(**screenshot_opts)
-            else:
-                await page.goto(f"file://{html_path}", wait_until="networkidle")
-                await page.screenshot(**screenshot_opts)
 
-            await context.close()
-            return str(out_path)
+                await context.close()
+            finally:
+                if html_path is not None:
+                    try:
+                        html_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
-        finally:
-            try:
-                html_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-
-        return str(out_path)
+            if not out_path.exists():
+                return _error_result(
+                    code="file_not_produced",
+                    message="PNG file was not produced.",
+                    where="rendering_tools.write_png",
+                    managed=True,
+                )
+            return _ok_result()
+        except Exception as e:
+            msg = str(e).strip() or "Failed to render PNG."
+            return _error_result(
+                code=type(e).__name__,
+                message=msg,
+                where="rendering_tools.write_png",
+                managed=False,
+            )
 
     @kernel_function(
         name="write_pdf",
         description=(
             "Render Markdown, HTML, or Mermaid diagrams to PDF **using Playwright + headless Chromium** "
-            "(JavaScript is executed; Chart.js/D3/etc. render). Returns saved path.\n\n"
+            "(JavaScript is executed; Chart.js/D3/etc. render). Returns an envelope: {ok, error}.\n\n"
             "For professional PDF layouts (multi-page documents, proper page breaks, compact spacing, "
             "domain-adaptive colors), use skill 'pdf-press' for comprehensive authoring guidance.\n\n"
             "=== QUICK AUTHORING ESSENTIALS ===\n\n"
@@ -482,32 +530,32 @@ class RenderingTools:
         title: Annotated[Optional[str], "Optional document title."] = None,
         include_sources_section: Annotated[bool, "Append a 'Sources' section listing all passed sources. In Markdown mode. Ignored in HTML mode"] = True,
         landscape: Annotated[bool, "Render in landscape orientation"] = False,
-    ) -> Annotated[str, "Absolute path to the written PDF."]:
+    ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
+        try:
+            resolve_citations: Annotated[bool, "Replace [[S:n]] tokens with inline links. In Markdown mode. Ignored in HTML mode"] = True
 
-        resolve_citations: Annotated[bool, "Replace [[S:n]] tokens with inline links. In Markdown mode. Ignored in HTML mode"] = True
+            outdir = resolve_output_dir()
+            fname = _basename_only(path, "output.pdf")
+            out_path = (outdir / fname)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            base_dir = str(outdir)
 
-        outdir = resolve_output_dir()
-        fname = _basename_only(path, "output.pdf")
-        out_path = (outdir / fname)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        base_dir = str(outdir)
+            use_professional_style = True
+            print(f"[RenderingTools.write_pdf]: rendering {format} to {out_path}")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        use_professional_style = True
-        print(f"[RenderingTools.write_pdf]: rendering {format} to {out_path}")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+            conv = await self._get_md2pdf()
 
-        conv = await self._get_md2pdf()
+            if format in ("mermaid", "html", "xml", "yaml", "markdown"):
+                content = _defence(content, none_on_failure=False, format=format)
+                content = textwrap.dedent(content).strip()
+            if format in ("html", "markdown"):
+                _warn_on_data_uri(content, "write_pdf")
+            _update_sources_used_for_filename(fname, content)
 
-        if format in ("mermaid", "html", "xml", "yaml", "markdown"):
-            content = _defence(content, none_on_failure=False, format=format)
-            content = textwrap.dedent(content).strip()
-        if format in ("html", "markdown"):
-            _warn_on_data_uri(content, "write_pdf")
-        _update_sources_used_for_filename(fname, content)
-
-        if format == "mermaid":
-            import html as html_lib
-            mermaid_html = f"""<!DOCTYPE html>
+            if format == "mermaid":
+                import html as html_lib
+                mermaid_html = f"""<!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
@@ -566,106 +614,134 @@ class RenderingTools:
             </script>
         </body>
         </html>"""
-            conv.pdf_options.display_header_footer = False
-            conv.pdf_options.prefer_css_page_size = True
-            conv.pdf_options.landscape = landscape
-            conv.extra_css = []
+                conv.pdf_options.display_header_footer = False
+                conv.pdf_options.prefer_css_page_size = True
+                conv.pdf_options.landscape = landscape
+                conv.extra_css = []
 
-            await conv.convert_html_string(
-                html=mermaid_html,
-                output_pdf=str(out_path),
-                title=title or "Mermaid Diagram",
-                base_dir=base_dir,
-            )
-            return str(out_path)
+                await conv.convert_html_string(
+                    html=mermaid_html,
+                    output_pdf=str(out_path),
+                    title=title or "Mermaid Diagram",
+                    base_dir=base_dir,
+                )
+                if not out_path.exists():
+                    return _error_result(
+                        code="file_not_produced",
+                        message="PDF file was not produced.",
+                        where="rendering_tools.write_pdf",
+                        managed=True,
+                    )
+                return _ok_result()
 
-        if format == "html":
-            conv.enable_mathjax = False
-            conv.pdf_options.prefer_css_page_size = True
-            conv.extra_css = []
-            conv.pdf_options.display_header_footer = False
-            conv.pdf_options.landscape = landscape
-            content = _ensure_html_wrapper(content, title=title or "Document")
+            if format == "html":
+                conv.enable_mathjax = False
+                conv.pdf_options.prefer_css_page_size = True
+                conv.extra_css = []
+                conv.pdf_options.display_header_footer = False
+                conv.pdf_options.landscape = landscape
+                content = _ensure_html_wrapper(content, title=title or "Document")
 
-            await conv.convert_html_string(
-                html=content,
-                output_pdf=str(out_path),
-                title=title or "Document",
-                base_dir=base_dir,
-            )
-            return str(out_path)
+                await conv.convert_html_string(
+                    html=content,
+                    output_pdf=str(out_path),
+                    title=title or "Document",
+                    base_dir=base_dir,
+                )
+                if not out_path.exists():
+                    return _error_result(
+                        code="file_not_produced",
+                        message="PDF file was not produced.",
+                        where="rendering_tools.write_pdf",
+                        managed=True,
+                    )
+                return _ok_result()
 
-        css_files = []
+            css_files = []
 
-        if use_professional_style:
-            css_path = outdir / "clean_professional.css"
-            pdf_opts = PDFOptions(
-                format="A4",
-                margin_top="25mm",
-                margin_right="20mm",
-                margin_bottom="30mm",
-                margin_left="20mm",
-                print_background=True,
-                display_header_footer=False,
-                prefer_css_page_size=True,
-                scale=1.0,
-                landscape=landscape,
-            )
+            if use_professional_style:
+                css_path = outdir / "clean_professional.css"
+                pdf_opts = PDFOptions(
+                    format="A4",
+                    margin_top="25mm",
+                    margin_right="20mm",
+                    margin_bottom="30mm",
+                    margin_left="20mm",
+                    print_background=True,
+                    display_header_footer=False,
+                    prefer_css_page_size=True,
+                    scale=1.0,
+                    landscape=landscape,
+                )
+                conv.pdf_options = pdf_opts
+
+                orient = "landscape" if landscape else "portrait"
+                css_text = PROFESSIONAL_PDF_CSS.replace(
+                    "size: A4;", f"size: {pdf_opts.format} {orient};"
+                )
+                css_path.write_text(css_text, encoding="utf-8")
+                css_files = [str(css_path)]
+            else:
+                pdf_opts = PDFOptions(
+                    format="A4",
+                    margin_top="16mm",
+                    margin_right="16mm",
+                    margin_bottom="16mm",
+                    margin_left="16mm",
+                    print_background=True,
+                    display_header_footer=True,
+                    prefer_css_page_size=False,
+                    scale=1.0,
+                    landscape=landscape,
+                )
+
             conv.pdf_options = pdf_opts
 
-            orient = "landscape" if landscape else "portrait"
-            css_text = PROFESSIONAL_PDF_CSS.replace(
-                "size: A4;", f"size: {pdf_opts.format} {orient};"
+            conv.enable_mathjax = False
+            conv.extra_css = css_files
+
+            sources = load_sources_pool_from_disk()
+            by_id, order = md_utils._normalize_sources(sources)
+            final_md = content
+
+            effective_title = title or "Document"
+            if title and not final_md.strip().startswith('#'):
+                final_md = f"# {title}\n\n{final_md}"
+
+            if resolve_citations and by_id:
+                final_md = md_utils._replace_citation_tokens(final_md, by_id)
+
+            if include_sources_section and by_id:
+                final_md += md_utils._create_clean_sources_section(by_id, order)
+            await conv.convert_string(
+                markdown_text=final_md,
+                output_pdf=str(out_path),
+                title=effective_title,
+                base_dir=base_dir or ".",
             )
-            css_path.write_text(css_text, encoding="utf-8")
-            css_files = [str(css_path)]
-        else:
-            pdf_opts = PDFOptions(
-                format="A4",
-                margin_top="16mm",
-                margin_right="16mm",
-                margin_bottom="16mm",
-                margin_left="16mm",
-                print_background=True,
-                display_header_footer=True,
-                prefer_css_page_size=False,
-                scale=1.0,
-                landscape=landscape,
+            if not out_path.exists():
+                return _error_result(
+                    code="file_not_produced",
+                    message="PDF file was not produced.",
+                    where="rendering_tools.write_pdf",
+                    managed=True,
+                )
+            return _ok_result()
+        except Exception as e:
+            msg = str(e).strip() or "Failed to render PDF."
+            return _error_result(
+                code=type(e).__name__,
+                message=msg,
+                where="rendering_tools.write_pdf",
+                managed=False,
             )
-
-        conv.pdf_options = pdf_opts
-
-        conv.enable_mathjax = False
-        conv.extra_css = css_files
-
-        sources = load_sources_pool_from_disk()
-        by_id, order = md_utils._normalize_sources(sources)
-        final_md = content
-
-        effective_title = title or "Document"
-        if title and not final_md.strip().startswith('#'):
-            final_md = f"# {title}\n\n{final_md}"
-
-        if resolve_citations and by_id:
-            final_md = md_utils._replace_citation_tokens(final_md, by_id)
-
-        if include_sources_section and by_id:
-            final_md += md_utils._create_clean_sources_section(by_id, order)
-        await conv.convert_string(
-            markdown_text=final_md,
-            output_pdf=str(out_path),
-            title=effective_title,
-            base_dir=base_dir or ".",
-        )
-
-        return str(out_path)
 
     @kernel_function(
         name="write_html",
         description=(
             "Write an HTML file. Optionally resolves citations so [[S:n]] tokens and "
             "<sup class=\"cite\" data-sids=\"...\">...</sup> placeholders become clickable links "
-            "(target=_blank). Returns saved path."
+            "(target=_blank). Returns an envelope: {ok, error}."
         )
     )
     async def write_html(
@@ -674,45 +750,60 @@ class RenderingTools:
         content: Annotated[str, "HTML content to write. Can contain [[S:n]] tokens or <sup class='cite' ...> placeholders."],
         title: Annotated[Optional[str], "Optional <title> if you pass raw body; ignored if full HTML."] = None,
         first_only: Annotated[bool, "When multiple SIDs given, keep only the first when rendering inline."] = False,
-    ) -> Annotated[str, "Saved HTML path (absolute)."]:
+    ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
+        try:
+            resolve_citations: Annotated[bool, "Convert [[S:n]] and <sup class='cite'> placeholders into links."] = True
+            from kdcube_ai_app.apps.chat.sdk.tools.citations import (
+                build_citation_map_from_sources as _build_citation_map_from_sources,
+                replace_html_citations as _replace_html_citations,
+            )
 
-        resolve_citations: Annotated[bool, "Convert [[S:n]] and <sup class='cite'> placeholders into links."] = True
-        from kdcube_ai_app.apps.chat.sdk.tools.citations import (
-            build_citation_map_from_sources as _build_citation_map_from_sources,
-            replace_html_citations as _replace_html_citations,
-        )
+            outdir = resolve_output_dir()
+            fname = _basename_only(path, "document.html")
+            out_path = (outdir / fname)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        outdir = resolve_output_dir()
-        fname = _basename_only(path, "document.html")
-        out_path = (outdir / fname)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
+            html = content
+            low = html.strip().lower()
+            if "<html" not in low and "<!doctype" not in low:
+                safe_title = (title or "Document").replace("<", "").replace(">", "")
+                html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{safe_title}</title></head><body>{html}</body></html>"
 
-        html = content
-        low = html.strip().lower()
-        if "<html" not in low and "<!doctype" not in low:
-            safe_title = (title or "Document").replace("<", "").replace(">", "")
-            html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{safe_title}</title></head><body>{html}</body></html>"
+            _update_sources_used_for_filename(fname, html)
 
-        _update_sources_used_for_filename(fname, html)
+            sources = load_sources_pool_from_disk()
+            if resolve_citations and sources:
+                cmap = _build_citation_map_from_sources(sources)
+                if cmap:
+                    html = _replace_html_citations(
+                        html,
+                        cmap,
+                        keep_unresolved=True,
+                        first_only=bool(first_only),
+                    )
 
-        sources = load_sources_pool_from_disk()
-        if resolve_citations and sources:
-            cmap = _build_citation_map_from_sources(sources)
-            if cmap:
-                html = _replace_html_citations(
-                    html,
-                    cmap,
-                    keep_unresolved=True,
-                    first_only=bool(first_only),
+            out_path.write_text(html, encoding="utf-8")
+            if not out_path.exists():
+                return _error_result(
+                    code="file_not_produced",
+                    message="HTML file was not produced.",
+                    where="rendering_tools.write_html",
+                    managed=True,
                 )
-
-        out_path.write_text(html, encoding="utf-8")
-        return str(out_path)
+            return _ok_result()
+        except Exception as e:
+            msg = str(e).strip() or "Failed to write HTML."
+            return _error_result(
+                code=type(e).__name__,
+                message=msg,
+                where="rendering_tools.write_html",
+                managed=False,
+            )
 
     @kernel_function(
         name="write_docx",
         description=(
-            "Render Markdown into a modern, well-styled DOCX. Returns the saved path.\n\n"
+            "Render Markdown into a modern, well-styled DOCX. Returns an envelope: {ok, error}.\n\n"
             "AUTHORING GUIDANCE\n"
             "- Use skills.public.docx-press for Markdown structure, tables, and citation handling.\n"
             "- Load with show_skills when needed: skills.public.docx-press."
@@ -724,37 +815,54 @@ class RenderingTools:
         content: Annotated[str, "Markdown to render. Use headings (#/##/###), bullets (-/*/1.), code fences, blockquotes, pipe tables."],
         title: Annotated[Optional[str], "Optional document title (top of first page)."] = None,
         include_sources_section: Annotated[bool, "Append a References section listing all provided sources."] = True,
-    ) -> Annotated[str, "Saved DOCX path (absolute)."]:
+    ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
+        try:
+            resolve_citations: Annotated[bool, "Resolve [[S:n]] tokens into inline links (title→URL) where possible."] = True
 
-        resolve_citations: Annotated[bool, "Resolve [[S:n]] tokens into inline links (title→URL) where possible."] = True
+            outdir = resolve_output_dir()
+            fname = _basename_only(path, "document.docx")
+            if not fname.lower().endswith(".docx"):
+                fname += ".docx"
+            out_path = outdir / fname
+            out_path.parent.mkdir(parents=True, exist_ok=True)
 
-        outdir = resolve_output_dir()
-        fname = _basename_only(path, "document.docx")
-        if not fname.lower().endswith(".docx"):
-            fname += ".docx"
-        (outdir / fname).parent.mkdir(parents=True, exist_ok=True)
+            final_md = _defence(content, none_on_failure=False, format="markdown")
+            final_md = textwrap.dedent(final_md).strip()
+            _update_sources_used_for_filename(fname, final_md)
+            sources = load_sources_pool_from_disk()
+            if resolve_citations and sources:
+                by_id, order = md_utils._normalize_sources(sources)
+                if by_id:
+                    final_md = md_utils._replace_citation_tokens(
+                        final_md,
+                        {k: {"title": v.get("title", ""), "url": v.get("url", "")} for k, v in by_id.items()},
+                    )
 
-        final_md = _defence(content, none_on_failure=False, format="markdown")
-        final_md = textwrap.dedent(final_md).strip()
-        _update_sources_used_for_filename(fname, final_md)
-        sources = load_sources_pool_from_disk()
-        if resolve_citations and sources:
-            by_id, order = md_utils._normalize_sources(sources)
-            if by_id:
-                final_md = md_utils._replace_citation_tokens(
-                    final_md,
-                    {k: {"title": v.get("title", ""), "url": v.get("url", "")} for k, v in by_id.items()},
+            await asyncio.to_thread(
+                render_docx,
+                str(out_path),
+                final_md,
+                title=title,
+                sources=sources,
+                resolve_citations=resolve_citations,
+                include_sources_section=include_sources_section,
+            )
+            if not out_path.exists():
+                return _error_result(
+                    code="file_not_produced",
+                    message="DOCX file was not produced.",
+                    where="rendering_tools.write_docx",
+                    managed=True,
                 )
-
-        return await asyncio.to_thread(
-            render_docx,
-            str(outdir / fname),
-            final_md,
-            title=title,
-            sources=sources,
-            resolve_citations=resolve_citations,
-            include_sources_section=include_sources_section,
-        )
+            return _ok_result()
+        except Exception as e:
+            msg = str(e).strip() or "Failed to render DOCX."
+            return _error_result(
+                code=type(e).__name__,
+                message=msg,
+                where="rendering_tools.write_docx",
+                managed=False,
+            )
 
 
 kernel = sk.Kernel()

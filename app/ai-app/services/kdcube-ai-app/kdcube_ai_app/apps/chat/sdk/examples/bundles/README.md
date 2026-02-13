@@ -6,5 +6,4 @@ This folder contains versioned, runnable bundle examples.
 - [Bundle Authoring Guide (Chat SDK)](first-ai-bundle-README.md)
 
 ## Examples
-- [Streaming + Storage](streaming_and_storage@2026-02-01-22-53/README.md)
-- [With Context (minimal, no solver)](with_context@2026-02-09-01-02/README.md)
+- [ReAct Agent](react-agent-example.md): General purpose ReAct agent equipped with [react-tools-README.md](../../runtime/solution/react/doc/react-tools-README.md) tools (read/write/memsearch/hide/file_search/patch), web tools (search/fetch) and rendering tools (write_pdf|docx|png|pptx).

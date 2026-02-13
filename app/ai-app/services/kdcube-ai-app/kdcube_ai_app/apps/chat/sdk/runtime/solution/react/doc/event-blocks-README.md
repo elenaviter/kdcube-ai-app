@@ -22,6 +22,7 @@ Blocks are dicts with:
 - `react.plan`
 - `react.tool.call`
 - `react.tool.result`
+- `react.notes` (decision notes emitted before tool calls; user-visible)
 - `react.note` (internal notes written via `react.write(channel="internal")`)
 - `react.completion`
 - `react.plan.ack`
@@ -38,7 +39,7 @@ Blocks are dicts with:
    - `type`: `react.tool.call`
    - `mime`: `application/json`
    - `path`: `tc:<turn_id>.tool_calls.<call_id>.in.json`
-   - `text`: JSON payload `{tool_id, tool_call_id, reasoning, params}`
+   - `text`: JSON payload `{tool_id, tool_call_id, params}`
 
 2) Tool Result
    - `type`: `react.tool.result`
@@ -67,6 +68,17 @@ Blocks are dicts with:
 ```
 
 Search/fetch tools emit only SIDs in the result block; full content lives in `sources_pool`.
+
+### Decision notes (react.notes)
+Decision `notes` are emitted as their own block **before** the tool call:
+- `type`: `react.notes`
+- `mime`: `text/markdown`
+- `path`: `ar:<turn_id>.react.notes.<tool_call_id>`
+- `text`: notes content
+- `meta.channel="timeline_text"`
+
+These notes are user-visible and rendered as:
+`[AI Agent say]: <notes>`
 
 ### Internal notes (react.note)
 `react.write(channel="internal")` emits:
@@ -110,6 +122,7 @@ Blocks can be hidden with `react.hide(path, replacement_text)` (path is a logica
 ## Paths (Stable)
 - `ar:<turn_id>.user.prompt`
 - `ar:<turn_id>.assistant.completion`
+- `ar:<turn_id>.react.notes.<tool_call_id>`
 - `fi:<turn_id>.user.attachments/<name>`
 - `fi:<turn_id>.files/<relative_path>`
 - `tc:<turn_id>.tool_calls.<id>.in.json` / `.out.json`
@@ -142,11 +155,16 @@ id=plan_abc
 □ 2) Cross‑check ratings
 □ 3) Draft ranked list
 
+[AI Agent say]: Searching for top-rated restaurants in Wuppertal
+
 [react.tool.call] (JSON)
 { "tool_id": "web_tools.web_search", "tool_call_id": "18f62649fb3b", "params": { ... } }
 
 [react.tool.result] (JSON meta)
 { "artifact_path": "tc:turn_1770603271112_2yz1lp.tool_calls.18f62649fb3b.out.json", "tool_call_id": "18f62649fb3b" }
+
+[react.tool.result] (JSON content)
+[{ "sid": 1, "title": "...", "url": "https://..." }, { "sid": 2, "title": "...", "url": "https://..." }]
 
 [react.tool.call] (JSON)
 { "tool_id": "react.patch", "tool_call_id": "6a3f1e0d9b21", "params": { "path": "turn_1770603271112_2yz1lp/files/draft.md", "patch": "..." } }

@@ -256,7 +256,7 @@ def strip_base64_from_value(val: Any) -> Any:
 def strip_base64_from_tool_output(tool_id: str, obj: Any) -> Any:
     if tool_id == "generic_tools.web_search" and isinstance(obj, list):
         return strip_base64_from_value(obj)
-    if tool_id == "generic_tools.fetch_url_contents" and isinstance(obj, dict):
+    if tool_id == "generic_tools.web_fetch" and isinstance(obj, dict):
         cleaned_obj: Dict[str, Any] = {}
         for url, entry in obj.items():
             if not isinstance(entry, dict):
@@ -273,13 +273,13 @@ def collect_multimodal_artifacts_from_tool_output(
     *,
     max_items: int = 2,
 ) -> List[Dict[str, Any]]:
-    if tool_id not in ("generic_tools.web_search", "generic_tools.fetch_url_contents"):
+    if tool_id not in ("generic_tools.web_search", "generic_tools.web_fetch"):
         return []
 
     rows: List[Dict[str, Any]] = []
     if tool_id == "generic_tools.web_search" and isinstance(obj, list):
         rows = [r for r in obj if isinstance(r, dict)]
-    elif tool_id == "generic_tools.fetch_url_contents" and isinstance(obj, dict):
+    elif tool_id == "generic_tools.web_fetch" and isinstance(obj, dict):
         for url, entry in obj.items():
             if not isinstance(entry, dict):
                 continue
@@ -431,7 +431,7 @@ def collect_modal_attachments_from_artifact_obj(
         tool_id = (obj.get("tool_id") or "").strip()
         artifact_kind = (obj.get("artifact_kind") or "").strip()
         value = obj.get("value")
-        if tool_id in ("generic_tools.web_search", "generic_tools.fetch_url_contents") or artifact_kind == "search":
+        if tool_id in ("generic_tools.web_search", "generic_tools.web_fetch") or artifact_kind == "search":
             if isinstance(value, list):
                 for row in value:
                     if not isinstance(row, dict):

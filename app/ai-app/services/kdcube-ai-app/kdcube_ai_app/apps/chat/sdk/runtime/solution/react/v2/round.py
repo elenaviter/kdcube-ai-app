@@ -3,17 +3,51 @@
 
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict
 
 import kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.call as react_tools
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.tools.common import add_block
 
 
 @dataclass
 class ReactRound:
     tool_id: str = ""
     tool_call_id: str = ""
+
+    @classmethod
+    def note(
+        cls,
+        *,
+        ctx_browser: Any,
+        notes: str,
+        tool_call_id: str,
+        tool_id: str,
+        action: str,
+        iteration: int,
+    ) -> None:
+        if not ctx_browser or not isinstance(notes, str) or not notes.strip():
+            return
+        turn_id = (ctx_browser.runtime_ctx.turn_id or "")
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        add_block(ctx_browser, {
+            "type": "react.notes",
+            "author": "react",
+            "turn_id": turn_id,
+            "ts": ts,
+            "mime": "text/markdown",
+            "path": f"ar:{turn_id}.react.notes.{tool_call_id}" if turn_id else "",
+            "text": notes.strip(),
+            "meta": {
+                "channel": "timeline_text",
+                "tool_id": tool_id,
+                "tool_call_id": tool_call_id,
+                "action": action,
+                "iteration": iteration,
+            },
+        })
 
     @classmethod
     async def execute(cls,

@@ -251,6 +251,8 @@ class DDGSearchBackend(SearchBackend):
 
         # Track which queries succeeded
         successful_queries: List[str] = []
+        error_records: List[Dict[str, Any]] = []
+        self._last_errors = error_records
 
         async def _one(q: str) -> List[Dict[str, Any]]:
             async with sem:
@@ -271,6 +273,12 @@ class DDGSearchBackend(SearchBackend):
 
                 except Exception as e:
                     logger.warning(f"{self.name} failed for '{q[:50]}...': {e}")
+                    error_records.append({
+                        "query": q,
+                        "error": str(e),
+                        "type": type(e).__name__,
+                        "provider": self.name,
+                    })
                     return []
 
         results = await asyncio.gather(*[_one(q) for q in qs])
@@ -425,6 +433,8 @@ class BraveSearchBackend(SearchBackend):
 
         # Track which queries succeeded (exclude 429s and errors)
         successful_queries: List[str] = []
+        error_records: List[Dict[str, Any]] = []
+        self._last_errors = error_records
 
         async def _one(q: str) -> List[Dict[str, Any]]:
             async with sem:
@@ -449,9 +459,21 @@ class BraveSearchBackend(SearchBackend):
                         logger.warning(f"{self.name} rate limited for '{q[:50]}...'")
                     else:
                         logger.warning(f"{self.name} failed for '{q[:50]}...': {e}")
+                    error_records.append({
+                        "query": q,
+                        "error": str(e),
+                        "type": type(e).__name__,
+                        "provider": self.name,
+                    })
                     return []
                 except Exception as e:
                     logger.error(f"{self.name} unexpected error for '{q[:50]}...': {e}")
+                    error_records.append({
+                        "query": q,
+                        "error": str(e),
+                        "type": type(e).__name__,
+                        "provider": self.name,
+                    })
                     return []
 
         results = await asyncio.gather(*[_one(q) for q in qs])
@@ -682,8 +704,9 @@ async def web_search(
     #     spare_backend="duckduckgo"
     # )
     enable_hybrid = False
+    primary_backend_name = (os.environ.get("WEB_SEARCH_BACKEND") or "brave").strip().lower()
     search_backend = get_search_backend_or_hybrid(
-        backend_name="brave",
+        backend_name=primary_backend_name,
         enable_hybrid=enable_hybrid,
         hybrid_mode=hybrid_mode,
         # spare_backend="duckduckgo"
@@ -711,24 +734,64 @@ async def web_search(
 
     bundle_id = context_snapshot.get("app_bundle_id")
 
+    async def _run_backend(backend_obj, backend_label: str) -> List[List[Dict[str, Any]]]:
+        async with with_accounting(
+                bundle_id,
+                artifact_id=artifact_id,
+                backend=backend_label,
+                metadata={
+                    "backend": backend_label,
+                    "artifact_id": artifact_id,
+                }
+        ):
+            return await backend_obj.search_many(
+                q_list,
+                per_query_max=per_query_max,
+                freshness=freshness,
+                country=country,
+                safesearch=safesearch,
+                concurrency=8,
+            )
+
     # --- Execute search (backend.search_many() is decorated, will emit accounting event) ---
-    async with with_accounting(
-            bundle_id,
-            artifact_id=artifact_id,
-            backend=backend_name,
-            metadata={
-                "backend": backend_name,
-                "artifact_id": artifact_id,
-            }
-    ):
-        per_query_results: List[List[Dict[str, Any]]] = await search_backend.search_many(
-            q_list,
-            per_query_max=per_query_max,
-            freshness=freshness,
-            country=country,
-            safesearch=safesearch,
-            concurrency=8,
+    per_query_results: List[List[Dict[str, Any]]] = await _run_backend(search_backend, backend_name)
+
+    def _should_fail(errors: Any, results: List[List[Dict[str, Any]]]) -> bool:
+        if not isinstance(errors, list) or not errors:
+            return False
+        return (not results) or all(not r for r in results)
+
+    def _format_backend_error(errors: List[Dict[str, Any]], label: str) -> str:
+        sample = errors[:3]
+        parts = []
+        for e in sample:
+            q = (e.get("query") or "")[:80]
+            emsg = (e.get("error") or "")
+            parts.append(f"{q}: {emsg}")
+        suffix = f" (+{len(errors) - 3} more)" if len(errors) > 3 else ""
+        msg = f"{label} search failed for {len(errors)}/{len(q_list)} queries. "
+        msg += "; ".join(parts) + suffix
+        return msg
+
+    backend_errors = getattr(search_backend, "_last_errors", None)
+    if _should_fail(backend_errors, per_query_results) and backend_name not in ("duckduckgo", "ddg"):
+        logger.warning(f"web_search: primary backend failed; falling back to duckduckgo")
+        ddg_backend = get_search_backend("duckduckgo")
+        search_backend = ddg_backend
+        backend_name = (
+                getattr(search_backend, "provider", None)
+                or getattr(search_backend, "name", None)
+                or "duckduckgo"
         )
+        reconciling = bool(getattr(search_backend, "default_use_external_reconciler", True))
+        use_external_refinement = bool(getattr(search_backend, "default_use_external_refinement", True))
+        per_query_results = await _run_backend(search_backend, backend_name)
+        backend_errors = getattr(search_backend, "_last_errors", None)
+
+    if _should_fail(backend_errors, per_query_results):
+        raise SearchBackendError(_format_backend_error(backend_errors, backend_name))
+    if isinstance(backend_errors, list) and backend_errors:
+        logger.warning(f"web_search: partial backend errors: {backend_errors[:1]}...")
 
     if not per_query_results:
         base = _claim_sid_block(0)

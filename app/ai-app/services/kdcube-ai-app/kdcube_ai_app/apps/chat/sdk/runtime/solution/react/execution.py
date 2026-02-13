@@ -10,22 +10,16 @@ import re
 import shutil
 import traceback
 import uuid
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Any, Dict, Optional, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import RuntimeCtx
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 from kdcube_ai_app.apps.chat.sdk.runtime.snapshot import build_portable_spec
-from kdcube_ai_app.apps.chat.sdk.runtime.logging_utils import errors_log_tail, last_error_block
 
 from kdcube_ai_app.apps.chat.sdk.runtime.iso_runtime import _InProcessRuntime
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_index import read_index
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.artifacts import ArtifactView
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.artifact_analysis import (
-    analyze_write_tool_output,
-)
-
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 
 def _safe_label(s: str, *, maxlen: int = 96) -> str:
@@ -66,185 +60,164 @@ def _build_exec_context(
         "codegen_run_id": codegen_run_id,
     }
 
-def _extract_error_from_output(output: Any) -> Optional[Dict[str, Any]]:
+def _normalize_error_dict(err: Any, *, default_where: str) -> Optional[Dict[str, Any]]:
+    if not err:
+        return None
+    if isinstance(err, dict):
+        return {
+            "code": err.get("code", "unknown"),
+            "message": err.get("message", ""),
+            "where": err.get("where", default_where),
+            "managed": err.get("managed", False),
+            **({"details": err.get("details")} if isinstance(err.get("details"), dict) else {}),
+        }
+    return {
+        "code": "unknown",
+        "message": str(err),
+        "where": default_where,
+        "managed": False,
+    }
+
+
+def _unwrap_tool_envelope(output: Any) -> Tuple[Any, Optional[Dict[str, Any]], bool]:
     """
-    Extract error information from tool output if present.
-    Handles the envelope pattern: {"ok": False, "error": {...}}
+    Tools may return {ok, error, ret}. Unwrap to ret and return (ret, error, ok).
+    If no envelope detected, returns (output, None, True).
     """
     if not isinstance(output, dict):
-        return None
+        return output, None, True
+    if not any(k in output for k in ("ok", "error", "ret")):
+        return output, None, True
+    tool_ok = bool(output.get("ok", True))
+    tool_error = output.get("error")
+    tool_ret = output.get("ret")
+    return tool_ret, (tool_error if tool_error is not None else None), tool_ok
 
-    # Check for error envelope
-    if output.get("ok") is False and "error" in output:
-        error = output["error"]
-        if isinstance(error, dict):
-            return {
-                "code": error.get("code", "unknown"),
-                "message": error.get("message", ""),
-                "where": error.get("where", "tool"),
-                "managed": error.get("managed", False),
-            }
 
-    return None
-
-def _format_error_tail(raw_tail: str) -> str:
-    tail = (raw_tail or "").strip()
-    if not tail:
-        return ""
-    if tail.startswith("Error logs tail:"):
-        return tail
-    return f"Error logs tail:\n{tail}"
-
-_INFO_LINE_RE = re.compile(r"^\\d{4}-\\d{2}-\\d{2} .*\\bINFO\\b")
-
-def _extract_non_info_tail(text: str, max_chars: int) -> Optional[str]:
-    if not text:
-        return None
-    lines = []
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        if _INFO_LINE_RE.match(line):
-            continue
-        lines.append(line)
-    if not lines:
-        return None
-    payload = "\n".join(lines).strip()
-    if not payload:
-        return None
-    return payload[-max_chars:] if max_chars and max_chars > 0 else payload
-
-def _block_tail(log_path: pathlib.Path, exec_id: Optional[str], *, max_chars: int, filter_info: bool) -> Optional[str]:
-    blk = last_error_block(log_path, exec_id=exec_id)
-    if not blk:
-        return None
-    text = (blk.get("text") or "").strip()
-    if not text:
-        return None
-    if filter_info:
-        return _extract_non_info_tail(text, max_chars)
-    return text[-max_chars:] if max_chars and max_chars > 0 else text
-
-def _select_exec_error_tail(outdir: pathlib.Path, exec_id: Optional[str], max_chars: int = 4000) -> Optional[str]:
-    log_dir = outdir / "logs"
-    tail = _block_tail(log_dir / "runtime.err.log", exec_id, max_chars=max_chars, filter_info=True)
-    if tail:
-        return tail
-    return errors_log_tail(log_dir / "errors.log", exec_id=exec_id, max_chars=max_chars)
-
-async def _build_program_run_items(
+async def _execute_exec_tool(
     *,
-    envelope: Dict[str, Any],
-    contract: Dict[str, Any],
-    tool_id: str,
-    params: Dict[str, Any],
-    tool_call_id: Optional[str],
+    tool_execution_context: Dict[str, Any],
+    workdir: pathlib.Path,
+    outdir: pathlib.Path,
+    tool_manager: ToolSubsystem,
     logger: AgentLogger,
-    errors_log_tail: Optional[str] = None,
-) -> Tuple[List[Dict[str, Any]], Optional[str], Optional[str]]:
-    contract = contract or {}
-    envelope_error = envelope.get("error")
-    artifacts = envelope.get("artifacts") or envelope.get("contract") or []
-    items: List[Dict[str, Any]] = []
+    tool_call_id: Optional[str] = None,
+    exec_streamer: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Execute exec_tools.* with dedicated handling."""
+    tool_id = tool_execution_context["tool_id"]
+    params = tool_execution_context.get("params") or {}
+    from kdcube_ai_app.apps.chat.sdk.tools.exec_tools import run_exec_tool, build_exec_output_contract
+    artifacts_spec = params.get("contract")
+    code = params.get("code") or ""
+    timeout_s = params.get("timeout_s") or 600
+    exec_id = _safe_exec_id(tool_execution_context.get("exec_id") or tool_call_id)
+    if exec_streamer:
+        try:
+            exec_streamer.set_execution_id(exec_id)
+        except Exception:
+            logger.log("[react.exec] Failed to set execution_id for exec tool widget" + traceback.format_exc(), level="WARNING")
+    base_error = {
+        "status": "error",
+        "output": None,
+        "items": [],
+        "tool_call_id": tool_call_id,
+    }
 
-    run_outdir = pathlib.Path(envelope.get("outdir") or "")
-    result_path = run_outdir / (envelope.get("result_filename") or "")
-    # call_record_* currently unused in v2
+    async def _emit_exec_error(summary: str, error_obj: Dict[str, Any]) -> Dict[str, Any]:
+        if exec_streamer:
+            try:
+                await exec_streamer.emit_status(status="error", error=error_obj)
+            except Exception:
+                logger.log("[react.exec] Failed to emit execution status", level="WARNING")
+        payload = dict(base_error)
+        payload["summary"] = summary
+        payload["error"] = error_obj
+        return payload
 
-    produced_ids: List[str] = []
-    for i, a in enumerate(artifacts):
-        artifact_id = (a.get("resource_id") or "").removeprefix("artifact:")
-        if not artifact_id or artifact_id not in contract:
-            if artifact_id:
-                logger.log(f"[react.exec-inline] Skipping artifact {artifact_id} not in contract", level="WARNING")
-            continue
-        produced_ids.append(artifact_id)
-        artifact_kind = a.get("type")
-        value = a.get("output")
-        contract_entry = contract.get(artifact_id) or {}
-        artifact_stats = None
-        if isinstance(value, dict):
-            view = ArtifactView.from_output(value)
-            rel_path, mime_hint = view.path, (view.mime or "")
-            if rel_path:
-                artifact_stats = analyze_write_tool_output(
-                    file_path=str(rel_path),
-                    mime=mime_hint,
-                    output_dir=run_outdir if run_outdir.exists() else None,
-                    artifact_id=artifact_id,
-                )
-                logger.log(
-                    f"[react.exec-inline] artifact={artifact_id} path={rel_path} stats={artifact_stats}",
-                    level="INFO",
-                )
+    prog_name = (params.get("prog_name") or "").strip()
+    if exec_streamer and prog_name:
+        try:
+            await exec_streamer.emit_program_name(prog_name)
+        except Exception:
+            logger.log("[react.exec] Failed to emit program name", level="WARNING")
 
-        summary_txt = ""
-        summary_timing_ms = None
-        if (artifact_stats or {}).get("write_error"):
-            summary_txt = f"ERROR: {artifact_stats.get('write_error')}"
-
-        item_error = a.get("error") if a.get("error") else None
-        if artifact_stats and artifact_stats.get("write_error"):
-            item_error = item_error or {
-                "code": "artifact_invalid",
-                "message": artifact_stats.get("write_error"),
-                "where": "artifact_analysis",
-                "managed": True,
-            }
-        item_status = "error" if item_error or value is None else "success"
-        item = {
-            "artifact_id": artifact_id,
-            "artifact_kind": artifact_kind,
-            "tool_id": tool_id,
-            "output": value,
-            "summary": summary_txt or "",
-            "status": item_status,
-            "error": item_error,
-            "tool_call_id": tool_call_id,
-            "filepath": contract_entry.get("filename"),
-        }
-        items.append(item)
-
-    missing_ids = [
-        k for k in contract.keys()
-        if k not in set(produced_ids)
-    ]
-    for i, artifact_id in enumerate(missing_ids, len(items)):
-        contract_entry = contract.get(artifact_id) or {}
-        err_code = "missing_artifact"
-        err_msg = f"Artifact '{artifact_id}' not produced"
-        err_where = "execution"
-        if isinstance(envelope_error, dict):
-            err_code = envelope_error.get("error") or envelope_error.get("code") or err_code
-            err_msg = envelope_error.get("description") or envelope_error.get("message") or err_msg
-            err_where = envelope_error.get("where") or err_where
-        missing_error = {
-            "code": err_code,
-            "message": err_msg,
-            "where": err_where,
+    contract, normalized_artifacts, err = build_exec_output_contract(artifacts_spec)
+    if exec_streamer and contract:
+        try:
+            await exec_streamer.emit_contract(contract)
+        except Exception:
+            logger.log("[react.exec] Failed to emit execution contract", level="WARNING")
+    if err:
+        error_obj = {
+            "code": err.get("code", "invalid_artifacts"),
+            "message": err.get("message", "Invalid artifacts spec"),
+            "where": "exec_execution",
             "managed": True,
-            "details": {"missing_artifact": artifact_id},
         }
-        if errors_log_tail:
-            missing_error["details"]["errors_log_tail"] = errors_log_tail
-            err_tail = _format_error_tail(errors_log_tail)
-            if err_tail:
-                base_msg = (missing_error.get("message") or "").strip()
-                missing_error["message"] = f"{base_msg}\n{err_tail}" if base_msg else err_tail
-        items.append({
-            "artifact_id": artifact_id,
-            "artifact_kind": contract_entry.get("type"),
-            "tool_id": tool_id,
-            "output": None,
-            "summary": f"MISSING: {artifact_id}",
-            "status": "error",
-            "error": missing_error,
-            "tool_call_id": tool_call_id,
-            "filepath": contract_entry.get("filename"),
-        })
+        summary = f"Exec tool requires valid artifacts spec: {error_obj.get('message')}"
+        return await _emit_exec_error(summary, error_obj)
+    if not code:
+        error_obj = {
+            "code": "missing_parameters",
+            "message": "Parameter 'code' is required for exec tool",
+            "where": "exec_execution",
+            "managed": True,
+        }
+        summary = "Exec tool requires non-empty 'code' parameter"
+        return await _emit_exec_error(summary, error_obj)
+    exec_t0 = time.perf_counter()
+    envelope = await run_exec_tool(
+        tool_manager=tool_manager,
+        logger=logger,
+        output_contract=contract,
+        code=code,
+        contract=normalized_artifacts or [],
+        timeout_s=int(timeout_s),
+        outdir=outdir,
+        workdir=workdir,
+        exec_id=exec_id,
+    )
+    exec_ms = int((time.perf_counter() - exec_t0) * 1000)
+    if exec_streamer:
+        try:
+            exec_streamer.set_timings(exec_ms=exec_ms)
+            await exec_streamer.emit_status(
+                status="done" if envelope.get("ok", False) else "error",
+                error=envelope.get("error") if not envelope.get("ok", False) else None,
+            )
+        except Exception:
+            logger.log("[react.exec] Failed to emit execution status", level="WARNING")
 
-    return items, None, None
+    exec_workdir = pathlib.Path(envelope.get("workdir") or "")
+    codefile_path = exec_workdir / "main.py"
+    try:
+        if codefile_path.exists():
+            dest_dir = outdir / "executed_programs"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            i = 0
+            while (dest_dir / f"{_safe_label(tool_id)}_{i}_main.py").exists():
+                i += 1
+            dest_main = dest_dir / f"{_safe_label(tool_id)}_{i}_main.py"
+            shutil.copy2(codefile_path, dest_main)
+            logger.log(f"[react.exec] main.py preserved as {dest_main.relative_to(outdir)}")
+    except Exception as e:
+        logger.log(f"[react.exec] Failed to preserve main.py: {e}", level="WARNING")
 
+    err_obj = envelope.get("error")
+    report_text = (envelope.get("report_text") or "").strip()
+    items = envelope.get("items") or []
+    first = items[0] if items else {}
+    status = "success" if envelope.get("ok", True) and not err_obj else "error"
+    return {
+        "status": status,
+        "output": first.get("output"),
+        "summary": report_text,
+        "items": items,
+        "tool_call_id": tool_call_id,
+        "error": err_obj,
+        "report_text": report_text,
+    }
 
 async def _execute_tool_in_memory(
     *,
@@ -253,9 +226,6 @@ async def _execute_tool_in_memory(
     outdir: pathlib.Path,
     tool_manager: ToolSubsystem,
     logger: AgentLogger,
-    tool_call_id: Optional[str] = None,
-    artifacts_contract: list[dict] = None,
-    exec_streamer: Optional[Any] = None,
 
 ) -> Dict[str, Any]:
     """
@@ -268,164 +238,8 @@ async def _execute_tool_in_memory(
 
     params = tool_execution_context.get("params") or {}
     call_reason = tool_execution_context.get("reasoning") or f"ReAct call: {tool_id}"
-    call_signature = tool_execution_context.get("call_signature")
-    param_bindings_for_summary = tool_execution_context.get("param_bindings_for_summary")
-    tool_doc_for_summary = tool_execution_context.get("tool_doc_for_summary")
 
-    if tools_insights.is_exec_tool(tool_id=tool_id):
-        from kdcube_ai_app.apps.chat.sdk.tools.exec_tools import run_exec_tool, build_exec_output_contract
-        artifacts_spec = params.get("contract")
-        code = params.get("code") or ""
-        timeout_s = params.get("timeout_s") or 600
-        exec_id = _safe_exec_id(tool_execution_context.get("exec_id") or tool_call_id)
-        if exec_streamer:
-            try:
-                exec_streamer.set_execution_id(exec_id)
-            except Exception:
-                logger.log("[react.exec] Failed to set execution_id for exec tool widget" + traceback.format_exc(), level="WARNING")
-        base_error = {
-            "status": "error",
-            "output": None,
-            "items": [],
-            "tool_call_id": tool_call_id,
-        }
-
-        async def _emit_exec_error(summary: str, error_obj: Dict[str, Any]) -> Dict[str, Any]:
-            if exec_streamer:
-                try:
-                    await exec_streamer.emit_status(status="error", error=error_obj)
-                except Exception:
-                    logger.log("[react.exec] Failed to emit execution status", level="WARNING")
-            payload = dict(base_error)
-            payload["summary"] = summary
-            payload["error"] = error_obj
-            return payload
-
-        prog_name = (params.get("prog_name") or "").strip()
-        if exec_streamer and prog_name:
-            try:
-                await exec_streamer.emit_program_name(prog_name)
-            except Exception:
-                logger.log("[react.exec] Failed to emit program name", level="WARNING")
-
-        contract, normalized_artifacts, err = build_exec_output_contract(artifacts_spec)
-        if exec_streamer and contract:
-            try:
-                await exec_streamer.emit_contract(contract)
-            except Exception:
-                logger.log("[react.exec] Failed to emit execution contract", level="WARNING")
-        if err:
-            error_obj = {
-                "code": err.get("code", "invalid_artifacts"),
-                "message": err.get("message", "Invalid artifacts spec"),
-                "where": "exec_execution",
-                "managed": True,
-            }
-            summary = f"Exec tool requires valid artifacts spec: {error_obj.get('message')}"
-            return await _emit_exec_error(summary, error_obj)
-        if not code:
-            error_obj = {
-                "code": "missing_parameters",
-                "message": "Parameter 'code' is required for exec tool",
-                "where": "exec_execution",
-                "managed": True,
-            }
-            summary = "Exec tool requires non-empty 'code' parameter"
-            return await _emit_exec_error(summary, error_obj)
-        exec_t0 = time.perf_counter()
-        envelope = await run_exec_tool(
-            tool_manager=tool_manager,
-            logger=logger,
-            output_contract=contract,
-            code=code,
-            contract=normalized_artifacts or [],
-            timeout_s=int(timeout_s),
-            outdir=outdir,
-            workdir=workdir,
-            exec_id=exec_id,
-        )
-        exec_ms = int((time.perf_counter() - exec_t0) * 1000)
-        if exec_streamer:
-            try:
-                exec_streamer.set_timings(exec_ms=exec_ms)
-                await exec_streamer.emit_status(
-                    status="done" if envelope.get("ok", False) else "error",
-                    error=envelope.get("error") if not envelope.get("ok", False) else None,
-                )
-            except Exception:
-                logger.log("[react.exec] Failed to emit execution status", level="WARNING")
-        err_tail = _select_exec_error_tail(outdir, exec_id)
-
-        # we might want to add this to timeline
-        project_log = envelope.get("project_log")
-
-        exec_workdir = pathlib.Path(envelope.get("workdir") or "")
-        codefile_path = exec_workdir / "main.py"
-        codefile = codefile_path.read_text(encoding="utf-8") if codefile_path.exists() else None
-        try:
-            if codefile_path.exists():
-                dest_dir = outdir / "executed_programs"
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                i = 0
-                while (dest_dir / f"{_safe_label(tool_id)}_{i}_main.py").exists():
-                    i += 1
-                dest_main = dest_dir / f"{_safe_label(tool_id)}_{i}_main.py"
-                shutil.copy2(codefile_path, dest_main)
-                logger.log(f"[react.exec] main.py preserved as {dest_main.relative_to(outdir)}")
-        except Exception as e:
-            logger.log(f"[react.exec] Failed to preserve main.py: {e}", level="WARNING")
-
-        if not envelope.get("ok", False):
-            err_obj = envelope.get("error") or {"code": "exec_failed", "message": "unknown", "where": "exec"}
-            msg = (err_obj.get("description") or err_obj.get("message") or "").strip()
-            summary = f"ERROR [{err_obj.get('error') or err_obj.get('code')}] at exec: {msg}"[:300]
-            if err_tail:
-                err_obj = dict(err_obj)
-                err_obj.setdefault("details", {})
-                if isinstance(err_obj["details"], dict):
-                    err_obj["details"]["errors_log_tail"] = err_tail
-
-                err_tail_msg = _format_error_tail(err_tail)
-                base_msg = (err_obj.get("message") or err_obj.get("description") or "").strip()
-                err_obj["message"] = f"{base_msg}\n{err_tail_msg}" if base_msg else err_tail_msg
-            items, _call_record_abs, _call_record_rel = await _build_program_run_items(
-                envelope=envelope,
-                contract=contract or {},
-                tool_id=tool_id,
-                params=params,
-                tool_call_id=tool_call_id,
-                logger=logger,
-                errors_log_tail=err_tail,
-            )
-            return {
-                "status": "error",
-                "output": envelope,
-                "summary": summary,
-                "items": items,
-                "tool_call_id": tool_call_id,
-                "error": err_obj,
-            }
-
-        artifacts = envelope.get("contract") or []
-        items = []
-        items, _call_record_abs, _call_record_rel = await _build_program_run_items(
-            envelope=envelope,
-            contract=contract or {},
-            tool_id=tool_id,
-            params=params,
-            tool_call_id=tool_call_id,
-            logger=logger,
-            errors_log_tail=err_tail,
-        )
-
-        first = items[0] if items else {}
-        return {
-            "status": "success",
-            "output": first.get("output"),
-            "summary": first.get("summary", ""),
-            "items": items,
-            "tool_call_id": tool_call_id,
-        }
+    # exec tools are handled by _execute_exec_tool
 
     # bootstrap once via subsystem (sets OUTDIR/WORKDIR; service bindings; comm)
     await tool_manager.prebind_for_in_memory(workdir=workdir,
@@ -487,7 +301,6 @@ async def _execute_tool_in_memory(
     workdir.mkdir(parents=True, exist_ok=True)
 
     # Call via io_tools (handles its own error capture)
-    exception_occurred = False
     exception_info = None
     try:
         await agent_io_tools.tool_call(
@@ -497,7 +310,6 @@ async def _execute_tool_in_memory(
             tool_id=tool_id,
         )
     except Exception as e:
-        exception_occurred = True
         exception_info = {
             "code": type(e).__name__,
             "message": str(e),
@@ -573,45 +385,41 @@ async def _execute_tool_in_memory(
         }
 
     output = payload.get("ret")
+    output, tool_error, tool_ok = _unwrap_tool_envelope(output)
 
-    # Check for error in output
-    error_info = _extract_error_from_output(output) or exception_info
-    status = "error" if error_info else "success"
+    tool_error_info = None
+    if tool_error is not None or tool_ok is False:
+        tool_error_info = _normalize_error_dict(tool_error, default_where=tool_id)
+        if tool_ok is False and tool_error_info is None:
+            tool_error_info = {
+                "code": "tool_error",
+                "message": "Tool returned ok=false",
+                "where": tool_id,
+                "managed": True,
+            }
+    call_error_info = exception_info
+
+    status = "error" if (tool_error_info or call_error_info) else "success"
 
     # Build summary with centralized logic
-    mime_hint = ""
-    if error_info:
-        # Error-focused summary, short and consistent
-        code = error_info.get("code", "unknown")
-        where = error_info.get("where", "tool")
-        msg = (error_info.get("message") or "").strip()
+    err_for_summary = call_error_info or tool_error_info
+    if err_for_summary:
+        code = err_for_summary.get("code", "unknown")
+        where = err_for_summary.get("where", "tool")
+        msg = (err_for_summary.get("message") or "").strip()
         if len(msg) > 200:
             msg = msg[:197] + "..."
         summary = f"ERROR [{code}] at {where}: {msg}"
     else:
         summary = ""
 
-    # inputs/call_record_* not used in v2
-
-    # write tool artifact_stats not used in v2
-
-    item = {
-        "artifact_id": artifacts_contract[0].get("name") if artifacts_contract else None,
-        "artifact_kind": artifacts_contract[0].get("kind") if artifacts_contract else None,
-        "tool_id": tool_id,
+    return {
+        "status": status,
         "output": output,
-        "summary": summary or "",
-        "status": status,
-        "tool_call_id": tool_call_id,
+        "summary": summary,
+        "error": tool_error_info,
+        "call_error": call_error_info,
     }
-    if error_info:
-        item["error"] = error_info
-
-    result = {
-        "status": status,
-        "items": [item],
-    }
-    return result
 
 
 async def execute_tool_in_isolation(
@@ -621,8 +429,6 @@ async def execute_tool_in_isolation(
         outdir: pathlib.Path,
         tool_manager: ToolSubsystem,
         logger: AgentLogger,
-        tool_call_id: Optional[str] = None,
-        artifacts_contract: Optional[list[dict]] = None,
         isolation_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -787,24 +593,33 @@ async def execute_tool_in_isolation(
         }
 
     output = payload.get("ret")
+    output, tool_error, tool_ok = _unwrap_tool_envelope(output)
 
-    # Check for error in output (envelope pattern)
-    error_info = _extract_error_from_output(output) or subprocess_error
-    status = "error" if error_info else "success"
+    tool_error_info = None
+    if tool_error is not None or tool_ok is False:
+        tool_error_info = _normalize_error_dict(tool_error, default_where=tool_id)
+        if tool_ok is False and tool_error_info is None:
+            tool_error_info = {
+                "code": "tool_error",
+                "message": "Tool returned ok=false",
+                "where": tool_id,
+                "managed": True,
+            }
+    call_error_info = subprocess_error
 
-    mime_hint = ""
+    status = "error" if (tool_error_info or call_error_info) else "success"
+
     # Build summary with centralized logic
-    if error_info:
-        code = error_info.get("code", "unknown")
-        where = error_info.get("where", "subprocess")
-        msg = (error_info.get("message") or "").strip()
+    err_for_summary = call_error_info or tool_error_info
+    if err_for_summary:
+        code = err_for_summary.get("code", "unknown")
+        where = err_for_summary.get("where", "subprocess")
+        msg = (err_for_summary.get("message") or "").strip()
         if len(msg) > 200:
             msg = msg[:197] + "..."
         summary = f"ERROR [{code}] at {where}: {msg}"
-        summary_timing_ms = None
     else:
         summary = ""
-        summary_timing_ms = None
 
     # Preserve executed main.py (existing code)
     try:
@@ -833,37 +648,13 @@ async def execute_tool_in_isolation(
         logger.log(f"[react.exec] Failed to preserve main.py: {e}", level="WARNING")
 
     # inputs/call_record_* not used in v2
-
-    artifact_stats = None
-    if tools_insights.is_write_tool(tool_id):
-        file_path = ""
-        if isinstance(output, dict):
-            file_path = ArtifactView.from_output(output).path
-        elif isinstance(output, str):
-            file_path = output.strip()
-        artifact_stats = analyze_write_tool_output(
-            file_path=file_path,
-            mime=mime_hint or tools_insights.default_mime_for_write_tool(tool_id),
-            output_dir=outdir,
-            artifact_id=artifacts_contract[0].get("name") if artifacts_contract else None,
-        )
-
-    item = {
-        "artifact_id": artifacts_contract[0].get("name") if artifacts_contract else None,
-        "artifact_kind": artifacts_contract[0].get("kind") if artifacts_contract else None,
-        "tool_call_id": tool_call_id,
-        "tool_id": tool_id,
+    return {
+        "status": status,
         "output": output,
         "summary": summary or "",
+        "error": tool_error_info,
+        "call_error": call_error_info,
     }
-    if error_info:
-        item["error"] = error_info
-    result = {
-        "status": status,
-        "items": [item],
-    }
-
-    return result
 
 async def execute_tool(
         runtime_ctx: RuntimeCtx,
@@ -889,6 +680,17 @@ async def execute_tool(
         except Exception:
             runtime_override = None
 
+    if tools_insights.is_exec_tool(tool_id):
+        return await _execute_exec_tool(
+            tool_execution_context=tool_execution_context,
+            workdir=workdir,
+            outdir=outdir,
+            tool_manager=tool_manager,
+            logger=logger,
+            tool_call_id=tool_call_id,
+            exec_streamer=exec_streamer,
+        )
+
     if runtime_override == "none":
         return await _execute_tool_in_memory(
             tool_execution_context=tool_execution_context,
@@ -896,9 +698,6 @@ async def execute_tool(
             outdir=outdir,
             tool_manager=tool_manager,
             logger=logger,
-            tool_call_id=tool_call_id,
-            artifacts_contract=artifacts_contract,
-            exec_streamer=exec_streamer,
         )
 
     if not tools_insights.should_isolate_tool_execution(tool_id) and runtime_override is None:
@@ -908,9 +707,6 @@ async def execute_tool(
             outdir=outdir,
             tool_manager=tool_manager,
             logger=logger,
-            tool_call_id=tool_call_id,
-            artifacts_contract=artifacts_contract,
-            exec_streamer=exec_streamer,
         )
 
     return await execute_tool_in_isolation(runtime_ctx=runtime_ctx,
@@ -919,6 +715,4 @@ async def execute_tool(
                                            outdir=outdir,
                                            tool_manager=tool_manager,
                                            logger=logger,
-                                           artifacts_contract=artifacts_contract,
-                                           tool_call_id=tool_call_id,
                                            isolation_override=runtime_override)

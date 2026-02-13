@@ -99,7 +99,7 @@ async def _fetch_urls_core(
         widget = FetchWebResourceWidget(
             emit_delta=emit_delta_fn,
             agent=widget_agent,
-            artifact_name=widget_artifact_name or "fetch_url_contents.results",
+            artifact_name=widget_artifact_name or "web_fetch.results",
             title=widget_title or "Fetch Results",
         )
         widget_payload = {}
@@ -436,7 +436,7 @@ async def fetch_url_contents(
     # SAFEGUARD: Handle if urls is accidentally passed as a list instead of string
     if isinstance(urls, (list, tuple)):
         logger.warning(
-            f"fetch_url_contents: received {type(urls).__name__} instead of string, converting to list"
+            f"web_fetch: received {type(urls).__name__} instead of string, converting to list"
         )
         url_list = [str(u).strip() for u in urls if str(u).strip()]
     else:
@@ -451,10 +451,10 @@ async def fetch_url_contents(
                 # Single URL string
                 url_list = [urls_str] if urls_str else []
         except json.JSONDecodeError as e:
-            logger.warning(f"fetch_url_contents: JSON parse failed: {e}, treating as single URL")
+            logger.warning(f"web_fetch: JSON parse failed: {e}, treating as single URL")
             url_list = [str(urls or "").strip()]
         except Exception as e:
-            logger.warning(f"fetch_url_contents: unexpected error: {e}, treating as single URL")
+            logger.warning(f"web_fetch: unexpected error: {e}, treating as single URL")
             url_list = [str(urls or "").strip()]
 
     # Deduplicate & keep only http/https
@@ -464,7 +464,7 @@ async def fetch_url_contents(
         if not u:
             continue
         if not (u.startswith("http://") or u.startswith("https://")):
-            logger.debug(f"_fetch_url_contents: skipping non-http(s) URL: {u}")
+            logger.debug(f"_web_fetch: skipping non-http(s) URL: {u}")
             continue
         if u in seen:
             continue

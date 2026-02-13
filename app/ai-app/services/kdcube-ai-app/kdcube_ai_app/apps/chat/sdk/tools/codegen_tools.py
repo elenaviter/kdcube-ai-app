@@ -29,7 +29,7 @@ class CodegenTool:
                 "- Use this tool when the step requires producing one or more concrete deliverables (inline text and/or files)\n"
                 "  and the work may require multiple tool calls, transformations, or rendering.\n"
                 "  This includes the cases when the work must be done using the existing artifacts in context (improve, fix, continue, tarnsform, synthetize, etc.).\n"
-                "- Do NOT use this tool to run web_search or fetch_url_contents; discovery must happen in separate steps.\n"
+                "- Do NOT use this tool to run web_search or web_fetch; discovery must happen in separate steps.\n"
                 " Important note on context this tool will receive: this tool is provided the same journal/context you see now, "
                 "plus any full artifacts explicitly exposed via show_artifacts. "
                 "This allows you to refer, in the instruction, to named context artifacts by turn/artifact path. \n"

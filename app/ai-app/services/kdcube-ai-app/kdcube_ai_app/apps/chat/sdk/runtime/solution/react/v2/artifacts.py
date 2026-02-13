@@ -92,6 +92,7 @@ def build_artifact_meta_block(
     artifact_path: str,
     physical_path: str,
     edited: bool = False,
+    tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     meta = {
@@ -106,11 +107,22 @@ def build_artifact_meta_block(
         "edited": bool(edited),
         "ts": ts,
     }
+    size_bytes = (artifact.get("value") or {}).get("size_bytes") or artifact.get("size_bytes")
+    if size_bytes is not None:
+        meta["size_bytes"] = size_bytes
+    write_warning = (artifact.get("value") or {}).get("write_warning")
+    if write_warning:
+        meta["write_warning"] = write_warning
     sources_used = artifact.get("sources_used") or (artifact.get("value") or {}).get("sources_used")
     if sources_used:
         meta["sources_used"] = sources_used
     if artifact.get("error"):
         meta["error"] = artifact.get("error")
+    if tokens is not None:
+        try:
+            meta["tokens"] = int(tokens)
+        except Exception:
+            meta["tokens"] = tokens
     for key in ("hosted_uri", "rn", "key", "local_path"):
         val = (artifact.get("value") or {}).get(key)
         if val:
@@ -331,6 +343,7 @@ def _artifact_fields_from_dict(
     sources_used = artifact.get("sources_used") or artifact.get("used_sids") or []
     tool_id = (artifact.get("tool_id") or "").strip()
     tool_call_id = (artifact.get("tool_call_id") or "").strip()
+    size_bytes = value.get("size_bytes") if isinstance(value, dict) else None
     return {
         "path": path_val,
         "filename": filename,
@@ -343,6 +356,7 @@ def _artifact_fields_from_dict(
         "sources_used": sources_used if isinstance(sources_used, list) else [],
         "tool_id": tool_id,
         "tool_call_id": tool_call_id,
+        "size_bytes": size_bytes,
         "turn_id": turn_id or "",
         "is_current": is_current,
         "raw": artifact,
@@ -362,6 +376,7 @@ class ArtifactView:
     sources_used: List[Any] = field(default_factory=list)
     tool_id: str = ""
     tool_call_id: str = ""
+    size_bytes: Optional[int] = None
     turn_id: str = ""
     is_current: bool = False
     raw: Dict[str, Any] = field(default_factory=dict)
@@ -610,6 +625,8 @@ class ArtifactView:
             meta.append(f"channel={self.channel}")
         if self.mime:
             meta.append(f"mime={self.mime}")
+        if self.size_bytes is not None:
+            meta.append(f"size={self.size_bytes}B")
         if meta:
             lines.append("    meta: " + "; ".join(meta))
         used_sids: List[str] = []
@@ -661,6 +678,8 @@ class ArtifactView:
             meta.append(f"channel={self.channel}")
         if self.mime:
             meta.append(f"mime={self.mime}")
+        if self.size_bytes is not None:
+            meta.append(f"size={self.size_bytes}B")
         if meta:
             lines.append("    meta: " + "; ".join(meta))
         used_sids: List[str] = []

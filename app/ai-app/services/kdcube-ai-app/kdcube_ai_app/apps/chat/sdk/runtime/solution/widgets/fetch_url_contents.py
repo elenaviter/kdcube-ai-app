@@ -13,8 +13,8 @@ class FetchWebResourceWidget:
         *,
         emit_delta: Callable[..., Awaitable[None]],
         agent: str,
-        artifact_name: str = "fetch_url_contents.results",
-        sub_type: str = "fetch_url_contents.results",
+        artifact_name: str = "web_fetch.results",
+        sub_type: str = "web_fetch.results",
         title: str = "Fetch Results",
         execution_id: Optional[str] = None,
     ):

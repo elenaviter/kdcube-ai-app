@@ -31,7 +31,8 @@ TOOL_SPEC = {
     "purpose": (
         "Author content and stream it to the user. "
         "If kind='display', content is streamed only; if kind='file', content is streamed and also shared as a file. "
-        "Use channel='timeline_text' for short text; channel='canvas' for larger/visual content. "
+        "Use channel='timeline_text' ONLY for short markdown text (status/brief summary); "
+        "use channel='canvas' for LARGE content (even markdown) or any non‑markdown. "
         "Use channel='internal' to write user-invisible notes (they are stored in the timeline as react.note). "
         "When channel='canvas', the file extension MUST match a supported canvas format: "
         ".md/.markdown, .html/.htm, .mermaid/.mmd, .json, .yaml/.yml, .txt, .xml. "
@@ -62,7 +63,6 @@ TOOL_SPEC = {
 async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
-    root_notes = (last_decision.get("notes") or "").strip()
     tool_id = "react.write"
     params = tool_call.get("params") or {}
     artifact_name = str(params.get("path") or "").strip()
@@ -103,6 +103,21 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
             text = str(generated_data)
 
     turn_id = (ctx_browser.runtime_ctx.turn_id or "")
+    artifact_rel = (rel_path or "").strip()
+    artifact_path = f"fi:{turn_id}.files/{artifact_rel}" if (turn_id and artifact_rel) else ""
+    display_params = dict(tool_call.get("params") or {})
+    if "content" in display_params:
+        raw_content = display_params.get("content")
+        if isinstance(raw_content, str):
+            content_str = raw_content
+        else:
+            try:
+                content_str = json.dumps(raw_content, ensure_ascii=False)
+            except Exception:
+                content_str = str(raw_content)
+        snippet = content_str[:100]
+        suffix = f"[truncated.. see {artifact_path}]" if artifact_path else "[truncated.. see output artifact]"
+        display_params["content"] = f"{snippet} {suffix}".strip()
     tool_call_block(
         ctx_browser=ctx_browser,
         tool_call_id=tool_call_id,
@@ -110,8 +125,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         payload={
             "tool_id": tool_id,
             "tool_call_id": tool_call_id,
-            "notes": root_notes,
-            "params": tool_call.get("params") or {},
+            "params": display_params,
         },
     )
 
@@ -158,7 +172,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         summary="",
         artifact_kind="display" if kind == "display" else "file",
         visibility=visibility,
-        description=root_notes,
+        description="",
         channel=channel,
         sources_used=sources_used,
         inputs=tool_call.get("params") or {},
@@ -229,6 +243,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         artifact_path=artifact_path,
         physical_path=physical_path,
         edited=edited,
+        tokens=tokens_written,
     )
     add_block(ctx_browser, meta_block)
     if isinstance(text, str) and text.strip():
@@ -248,13 +263,5 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
             "text": text,
             "meta": {"channel": channel} if channel == "internal" else None,
         })
-    add_block(ctx_browser, {
-        "turn": turn_id,
-        "type": "react.tool.result",
-        "call_id": tool_call_id,
-        "mime": "application/json",
-        "path": f"tc:{turn_id}.tool_calls.{tool_call_id}.out.json" if turn_id else "",
-        "text": json.dumps({"path": artifact_path, "tokens": tokens_written}, ensure_ascii=False),
-    })
     state["last_tool_result"] = []
     return state

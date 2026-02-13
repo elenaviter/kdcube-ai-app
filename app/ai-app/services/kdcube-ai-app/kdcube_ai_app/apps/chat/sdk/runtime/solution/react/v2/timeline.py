@@ -16,6 +16,7 @@ from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conv_progressive_summary
     summarize_turn_prefix_progressive,
     build_compaction_digest,
 )
+from kdcube_ai_app.apps.chat.sdk.tools import citations as citations_module
 from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     dedupe_sources_by_url,
     normalize_sources_any,
@@ -177,6 +178,13 @@ def extract_sources_used_from_blocks(blocks: List[Dict[str, Any]]) -> List[int]:
     for b in blocks or []:
         if not isinstance(b, dict):
             continue
+        if (b.get("type") or "") == "assistant.completion":
+            text_val = b.get("text")
+            if isinstance(text_val, str) and text_val.strip():
+                for sid in citations_module.extract_citation_sids_any(text_val):
+                    if sid not in seen:
+                        seen.add(sid)
+                        used.append(sid)
         meta = b.get("meta")
         if isinstance(meta, dict):
             for sid in extract_source_sids(meta.get("sources_used")):
@@ -1479,7 +1487,7 @@ class Timeline:
                 pass
             return {"status": "disabled"}
         try:
-            from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.tools.session import (
+            from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.session import (
                 apply_cache_ttl_pruning,
             )
             keep_recent_turns = getattr(session, "keep_recent_turns", 10) if session is not None else 10
@@ -1676,6 +1684,9 @@ class Timeline:
                 if path:
                     prefix += f"\n[path: {path}]"
                 text = (prefix + "\n" + (text or "")).strip()
+            elif btype == "react.notes":
+                if isinstance(text, str):
+                    text = f"[AI Agent say]: {text}".strip()
             elif btype == "system.message":
                 prefix = f"[SYSTEM MESSAGE]"
                 if ts:

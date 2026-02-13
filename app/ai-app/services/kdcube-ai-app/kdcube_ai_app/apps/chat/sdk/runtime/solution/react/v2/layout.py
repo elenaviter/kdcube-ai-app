@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from langchain_core.messages import SystemMessage
 
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import RuntimeCtx
+from kdcube_ai_app.apps.chat.sdk.tools import citations as citations_module
 from kdcube_ai_app.infra.service_hub.inventory import create_cached_system_message
 
 from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import build_skills_instruction_block, skills_gallery_text
@@ -111,6 +112,8 @@ def build_assistant_completion_blocks(
     asst_text = (answer_text or "").strip()
     if not asst_text:
         return []
+    sources_used = citations_module.extract_citation_sids_any(asst_text)
+    meta = {"sources_used": sources_used} if sources_used else None
     return [block_factory(
         type="assistant.completion",
         author="assistant",
@@ -118,6 +121,7 @@ def build_assistant_completion_blocks(
         ts=ts,
         path=f"ar:{tid}.assistant.completion",
         text=asst_text,
+        meta=meta,
     )]
 
 

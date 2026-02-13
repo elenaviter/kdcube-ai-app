@@ -8,7 +8,7 @@ from typing import Literal
 BUILTIN_TOOLS = {
     "llm_tools.generate_content_llm",
     "web_tools.web_search",
-    "web_tools.fetch_url_contents",
+    "web_tools.web_fetch",
     "rendering_tools.write_pdf",
     "rendering_tools.write_pptx",
     "rendering_tools.write_docx",
@@ -66,7 +66,7 @@ SEARCH_TOOL_IDS = {
 }
 
 FETCH_URI_TOOL_IDS = {
-    "web_tools.fetch_url_contents",
+    "web_tools.web_fetch",
 }
 GENERATIVE_TOOL_IDS = {
     "llm_tools.generate_content_llm",
@@ -74,7 +74,7 @@ GENERATIVE_TOOL_IDS = {
 
 CITABLE_TOOL_IDS = {
     "web_tools.web_search",
-    "web_tools.fetch_url_contents",
+    "web_tools.web_fetch",
     "sdk_tools.kb_search",
     "ctx_tools.merge_sources",
 }
@@ -111,6 +111,9 @@ def is_exploration_tool(tool_id: str) -> bool:
 def is_generative_tool(tool_id: str) -> bool|None:
     # None means "we do not know"
     return tool_id in GENERATIVE_TOOL_IDS if tool_id in BUILTIN_TOOLS else None
+
+def is_builtin_tool(tool_id: str) -> bool:
+    return tool_id in BUILTIN_TOOLS
 
 def should_isolate_tool_execution(tool_id: str) -> bool:
     # Isolate write + web tools to protect main process from native crashes.

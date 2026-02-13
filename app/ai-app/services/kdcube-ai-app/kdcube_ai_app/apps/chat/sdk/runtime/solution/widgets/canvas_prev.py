@@ -10,30 +10,28 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.artifacts import norm
 from kdcube_ai_app.apps.chat.sdk.tools import citations as citations_module
 
 
-class ToolContentStreamerBase:
+class ToolContentStreamer:
     """
     Stream tool_call.params.content from decision JSON into UI.
-    - Streams react.write only when action == call_tool.
+    - Always streams react.write.
     - Streams rendering_tools.write_* only when content is literal (not ref:).
     """
 
     def __init__(
-        self,
-        *,
-        emit_delta: Callable[..., Awaitable[None]],
-        agent: str,
-        artifact_name: str,
-        sources_list: Optional[List[Dict[str, object]]] = None,
-        sources_getter: Optional[Callable[[], List[Dict[str, object]]]] = None,
-        turn_id: Optional[str] = None,
-        stream_tool_id: str = "react.write",
-        write_tool_prefix: str = "rendering_tools.write_",
+            self,
+            *,
+            emit_delta: Callable[..., Awaitable[None]],
+            agent: str,
+            artifact_name: str,
+            sources_list: Optional[List[Dict[str, object]]] = None,
+            turn_id: Optional[str] = None,
+            stream_tool_id: str = "react.write",
+            write_tool_prefix: str = "rendering_tools.write_",
     ) -> None:
         self.emit_delta = emit_delta
         self.agent = agent
         self.default_artifact_name = artifact_name
         self.record_artifact_name: Optional[str] = None
-        self.sources_getter = sources_getter
         self.turn_id = turn_id or ""
         self.stream_tool_id = stream_tool_id
         self.write_tool_prefix = write_tool_prefix
@@ -43,17 +41,14 @@ class ToolContentStreamerBase:
         self.channel_xpath = "tool_call.params.channel"
         self.kind_xpath = "tool_call.params.kind"
         self.tool_id_xpath = "tool_call.tool_id"
-        self.action_xpath = "action"
 
         self.stream_parent, self.stream_key = self._split_path(self.stream_xpath)
         self.path_parent, self.path_key = self._split_path(self.path_xpath)
         self.channel_parent, self.channel_key = self._split_path(self.channel_xpath)
         self.kind_parent, self.kind_key = self._split_path(self.kind_xpath)
         self.tool_id_parent, self.tool_id_key = self._split_path(self.tool_id_xpath)
-        self.action_parent, self.action_key = self._split_path(self.action_xpath)
 
         self.current_tool_id: Optional[str] = None
-        self.action_value: Optional[str] = None
         self.current_format: str = "markdown"
         self.current_channel: str = "canvas"
         self.current_kind: str = "display"
@@ -70,14 +65,6 @@ class ToolContentStreamerBase:
         self.expecting_value = False
         self.active_key: Optional[str] = None
         self.active_value_buf = ""
-        self.stream_value_active = False
-        self.pending_ref_check = False
-        self.ref_check_buf = ""
-        self.skip_stream_value = False
-        self.channel_pending = False
-        self.channel_seen = False
-        self.pending_channel_stream = False
-        self.pending_channel_buf = ""
 
         self.capturing_tool_id = False
         self.tool_value_buf = ""
@@ -90,58 +77,11 @@ class ToolContentStreamerBase:
         self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
         self.citation_state = citations_module.CitationStreamState()
 
-    def _maybe_refresh_sources(self) -> None:
-        if self.citation_map or not self.sources_getter:
-            return
-        try:
-            sources = self.sources_getter() or []
-        except Exception:
-            sources = []
-        if sources:
-            self.update_sources(sources)
-
-    def _channel_allowed(self) -> bool:
-        if not self.current_channel:
-            return True
-        ch = self.current_channel.strip().lower()
-        return ch in {"canvas", "timeline", "timeline_text"}
-
-    def _requires_channel(self) -> bool:
-        return False
-
-    def _start_tool_call(self) -> None:
-        self.channel_seen = False
-        self.channel_pending = False
-        self.pending_channel_stream = False
-        self.pending_channel_buf = ""
-        self.current_tool_id = None
-        self.tool_value_buf = ""
-        self.capturing_tool_id = False
-        self.current_channel = "canvas"
-        self.current_kind = "display"
-        self.current_format = "markdown"
-        self.current_path = None
-        self.record_artifact_name = None
-
-    async def _flush_pending_channel_stream(self, *, force_default: bool = False) -> None:
-        if not self.pending_channel_stream:
-            return
-        if not self.channel_seen:
-            if not force_default:
-                return
-            if not self.current_channel:
-                self.current_channel = "canvas"
-        if self._channel_allowed() and self.pending_channel_buf:
-            await self._emit_chunk(self.pending_channel_buf)
-        self.pending_channel_stream = False
-        self.pending_channel_buf = ""
-
     def update_sources(self, sources_list: Optional[List[Dict[str, object]]] = None) -> None:
         """Refresh citation map for streaming outputs."""
         try:
             self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
-            if self.citation_state is None:
-                self.citation_state = citations_module.CitationStreamState()
+            self.citation_state = citations_module.CitationStreamState()
         except Exception:
             pass
 
@@ -163,13 +103,10 @@ class ToolContentStreamerBase:
             return False
         if self.stream_parent and not self._path_has(self.stream_parent):
             return False
-        if not self._tool_allows_stream():
-            return False
-        if self.action_value is not None and (self.action_value or "").strip() != "call_tool":
-            return False
-        return True
-
-    def _tool_allows_stream(self) -> bool:
+        if self.current_tool_id == self.stream_tool_id:
+            return True
+        if self.current_tool_id and self.current_tool_id.startswith(self.write_tool_prefix):
+            return True
         return False
 
     def _matches_path_path(self) -> bool:
@@ -200,26 +137,14 @@ class ToolContentStreamerBase:
             return False
         return True
 
-    def _matches_action_path(self) -> bool:
-        if not self.action_key or self.last_key != self.action_key:
-            return False
-        if self.action_parent and not self._path_has(self.action_parent):
-            return False
-        return True
-
     def _emit_artifact_name(self) -> str:
         return self.record_artifact_name or self.default_artifact_name
-
-    def _is_timeline_channel(self) -> bool:
-        ch = (self.current_channel or "").strip().lower()
-        return ch in {"timeline", "timeline_text"}
 
     async def _emit_chunk(self, text: str) -> None:
         if not text:
             return
         if self.current_channel == "internal":
             return
-        self._maybe_refresh_sources()
         rendered = citations_module.replace_citation_tokens_streaming_stateful(
             text,
             self.citation_map,
@@ -228,7 +153,7 @@ class ToolContentStreamerBase:
         )
         if not rendered:
             return
-        marker = "timeline_text" if self.current_tool_id == self.stream_tool_id and self._is_timeline_channel() else "canvas"
+        marker = "timeline_text" if self.current_tool_id == self.stream_tool_id and self.current_channel == "timeline_text" else "canvas"
         await self.emit_delta(
             text=rendered,
             index=self.index,
@@ -278,28 +203,8 @@ class ToolContentStreamerBase:
                         elif self.active_key:
                             if self.capturing_tool_id:
                                 self.tool_value_buf += decoded
-                            if self.skip_stream_value and self.stream_value_active:
-                                continue
                             self.active_value_buf += decoded
-                            if self.pending_ref_check and self.stream_value_active:
-                                if len(self.ref_check_buf) < 4:
-                                    self.ref_check_buf += decoded
-                                    if len(self.ref_check_buf) >= 4:
-                                        if self.ref_check_buf.lower().startswith("ref:"):
-                                            self.skip_stream_value = True
-                                            self.pending_ref_check = False
-                                            self.streaming_content = False
-                                            self.active_value_buf = ""
-                                        else:
-                                            self.pending_ref_check = False
-                                            if self.channel_pending and not self.channel_seen:
-                                                self.streaming_content = False
-                                            else:
-                                                self.streaming_content = True
-                                                if self.active_value_buf:
-                                                    await self._emit_chunk(self.active_value_buf)
-                                                    self.active_value_buf = ""
-                            elif self.streaming_content and len(self.active_value_buf) >= 256:
+                            if self.streaming_content and len(self.active_value_buf) >= 256:
                                 await self._emit_chunk(self.active_value_buf)
                                 self.active_value_buf = ""
                         self.unicode_mode = False
@@ -316,28 +221,8 @@ class ToolContentStreamerBase:
                     elif self.active_key:
                         if self.capturing_tool_id:
                             self.tool_value_buf += decoded
-                        if self.skip_stream_value and self.stream_value_active:
-                            continue
                         self.active_value_buf += decoded
-                        if self.pending_ref_check and self.stream_value_active:
-                            if len(self.ref_check_buf) < 4:
-                                self.ref_check_buf += decoded
-                                if len(self.ref_check_buf) >= 4:
-                                    if self.ref_check_buf.lower().startswith("ref:"):
-                                        self.skip_stream_value = True
-                                        self.pending_ref_check = False
-                                        self.streaming_content = False
-                                        self.active_value_buf = ""
-                                    else:
-                                        self.pending_ref_check = False
-                                        if self.channel_pending and not self.channel_seen:
-                                            self.streaming_content = False
-                                        else:
-                                            self.streaming_content = True
-                                            if self.active_value_buf:
-                                                await self._emit_chunk(self.active_value_buf)
-                                                self.active_value_buf = ""
-                        elif self.streaming_content and len(self.active_value_buf) >= 256:
+                        if self.streaming_content and len(self.active_value_buf) >= 256:
                             await self._emit_chunk(self.active_value_buf)
                             self.active_value_buf = ""
                     continue
@@ -357,8 +242,6 @@ class ToolContentStreamerBase:
                             self.current_tool_id = self.tool_value_buf
                             self.tool_value_buf = ""
                             self.capturing_tool_id = False
-                        if self._matches_action_path():
-                            self.action_value = self.active_value_buf.strip()
                         if self._matches_path_path():
                             path_val = self.active_value_buf.strip()
                             if path_val:
@@ -366,44 +249,19 @@ class ToolContentStreamerBase:
                                 self.current_path = norm_path
                                 self.record_artifact_name = norm_path
                                 self.current_format = infer_format_from_path(norm_path)
-                                print(f"ContentStreamer: Inferred format {self.current_format} from path {norm_path}")
+                                print(f"ToolContentStreamer: Inferred format {self.current_format} from path {norm_path}")
                         if self._matches_channel_path():
                             channel_val = self.active_value_buf.strip().lower()
                             if channel_val:
-                                if channel_val == "timeline":
-                                    channel_val = "timeline_text"
                                 self.current_channel = channel_val
-                                self.channel_seen = True
-                                await self._flush_pending_channel_stream()
                         if self._matches_kind_path():
                             kind_val = self.active_value_buf.strip().lower()
                             if kind_val:
                                 self.current_kind = kind_val
-                        if self.stream_value_active:
-                            if self.pending_ref_check:
-                                if self.active_value_buf.lower().startswith("ref:"):
-                                    self.skip_stream_value = True
-                                    self.streaming_content = False
-                                else:
-                                    if self.channel_pending and not self.channel_seen:
-                                        self.streaming_content = False
-                                    else:
-                                        self.streaming_content = True
-                                self.pending_ref_check = False
-                            if self.channel_pending and not self.channel_seen:
-                                if not self.skip_stream_value and self.active_value_buf:
-                                    self.pending_channel_buf = self.active_value_buf
-                                    self.pending_channel_stream = True
-                                self.channel_pending = False
-                                self.streaming_content = False
-                            if self.streaming_content and self.active_value_buf:
-                                await self._emit_chunk(self.active_value_buf)
+                        if self.streaming_content and self.active_value_buf:
+                            await self._emit_chunk(self.active_value_buf)
                         self.active_value_buf = ""
                         self.streaming_content = False
-                        self.stream_value_active = False
-                        self.pending_ref_check = False
-                        self.ref_check_buf = ""
-                        self.skip_stream_value = False
                         self.active_key = None
                     continue
 
@@ -412,30 +270,16 @@ class ToolContentStreamerBase:
                 elif self.active_key:
                     if self.capturing_tool_id:
                         self.tool_value_buf += ch
-                    if self.skip_stream_value and self.stream_value_active:
-                        continue
                     self.active_value_buf += ch
-                    if self.pending_ref_check and self.stream_value_active:
-                        if len(self.ref_check_buf) < 4:
-                            self.ref_check_buf += ch
-                            if len(self.ref_check_buf) >= 4:
-                                if self.ref_check_buf.lower().startswith("ref:"):
-                                    self.skip_stream_value = True
-                                    self.pending_ref_check = False
-                                    self.streaming_content = False
-                                    self.active_value_buf = ""
-                                    continue
-                                self.pending_ref_check = False
-                                if self.channel_pending and not self.channel_seen:
-                                    self.streaming_content = False
-                                else:
-                                    self.streaming_content = True
-                                    if self.active_value_buf:
-                                        await self._emit_chunk(self.active_value_buf)
-                                        self.active_value_buf = ""
-                    if self.streaming_content and len(self.active_value_buf) >= 256:
-                        await self._emit_chunk(self.active_value_buf)
-                        self.active_value_buf = ""
+                    if self.streaming_content:
+                        if self.current_tool_id and self.current_tool_id.startswith(self.write_tool_prefix):
+                            if self.active_value_buf.startswith("ref:"):
+                                self.streaming_content = False
+                                self.active_value_buf = ""
+                                continue
+                        if len(self.active_value_buf) >= 256:
+                            await self._emit_chunk(self.active_value_buf)
+                            self.active_value_buf = ""
                 continue
 
             if ch == '"':
@@ -444,16 +288,12 @@ class ToolContentStreamerBase:
                     self.active_key = self.last_key
                     self.active_value_buf = ""
                     self.expecting_value = False
-                    self.stream_value_active = False
-                    self.streaming_content = False
-                    self.pending_ref_check = False
-                    self.ref_check_buf = ""
-                    self.skip_stream_value = False
-                    if self._matches_stream_path() and (not self._requires_channel() or self._channel_allowed()):
-                        self.stream_value_active = True
-                        self.pending_ref_check = True
-                        if self._requires_channel() and not self.channel_seen:
-                            self.channel_pending = True
+                    self.streaming_content = self._matches_stream_path()
+                    if self.streaming_content:
+                        if self.current_tool_id and self.current_tool_id.startswith(self.write_tool_prefix):
+                            if self.active_value_buf.startswith("ref:"):
+                                self.streaming_content = False
+                                self.active_value_buf = ""
                     self.capturing_tool_id = self._matches_tool_id_path()
                 else:
                     self.reading_key = True
@@ -462,17 +302,13 @@ class ToolContentStreamerBase:
 
             if ch in "{[":
                 self.path_stack.append(self.last_key)
-                if self.last_key == "tool_call":
-                    self._start_tool_call()
                 self.last_key = None
                 self.expecting_value = False
                 continue
 
             if ch in "}]":
                 if self.path_stack:
-                    popped = self.path_stack.pop()
-                    if popped == "tool_call":
-                        await self._flush_pending_channel_stream(force_default=True)
+                    self.path_stack.pop()
                 self.last_key = None
                 self.expecting_value = False
                 continue
@@ -494,13 +330,10 @@ class ToolContentStreamerBase:
         if self.streaming_content and self.active_value_buf:
             await self._emit_chunk(self.active_value_buf)
             self.active_value_buf = ""
-        if self.pending_channel_stream:
-            await self._flush_pending_channel_stream(force_default=True)
         if not self.started:
             return
         if self.current_channel == "internal":
             return
-        self._maybe_refresh_sources()
         flushed = citations_module.replace_citation_tokens_streaming_stateful(
             "",
             self.citation_map,
@@ -519,7 +352,7 @@ class ToolContentStreamerBase:
                 completed=False,
             )
             self.index += 1
-        marker = "timeline_text" if self.current_tool_id == self.stream_tool_id and self._is_timeline_channel() else "canvas"
+        marker = "timeline_text" if self.current_tool_id == self.stream_tool_id and self.current_channel == "timeline_text" else "canvas"
         await self.emit_delta(
             text="",
             index=self.index,
@@ -531,24 +364,11 @@ class ToolContentStreamerBase:
         )
 
 
-class ReactWriteContentStreamer(ToolContentStreamerBase):
-    def _tool_allows_stream(self) -> bool:
-        return self.current_tool_id == self.stream_tool_id
-
-    def _requires_channel(self) -> bool:
-        return True
-
-
-class RenderingWriteContentStreamer(ToolContentStreamerBase):
-    def _tool_allows_stream(self) -> bool:
-        return bool(self.current_tool_id and self.current_tool_id.startswith(self.write_tool_prefix))
-
-
 class TimelineStreamer:
     """
     Stream selected JSON string fields into timeline-related UI channels.
     - Streams root-level notes into timeline_text.
-    - Streams final_answer into answer.
+    - Streams final_answer into timeline_text.
     """
 
     def __init__(
@@ -557,21 +377,19 @@ class TimelineStreamer:
             emit_delta: Callable[..., Awaitable[None]],
             agent: str,
             sources_list: Optional[List[Dict[str, object]]] = None,
-            sources_getter: Optional[Callable[[], List[Dict[str, object]]]] = None,
             stream_notes: bool = True,
             stream_final_answer: bool = True,
-        notes_xpath: str = "notes",
-        final_answer_xpath: str = "final_answer",
-        notes_marker: str = "timeline_text",
-        final_answer_marker: str = "answer",
-        notes_format: str = "markdown",
-        final_answer_format: str = "markdown",
-        notes_artifact_name: str = "timeline_text.react.decision",
-        final_answer_artifact_name: str = "react.final_answer",
+            notes_xpath: str = "notes",
+            final_answer_xpath: str = "final_answer",
+            notes_marker: str = "timeline_text",
+            final_answer_marker: str = "timeline_text",
+            notes_format: str = "markdown",
+            final_answer_format: str = "markdown",
+            notes_artifact_name: str = "timeline_text.react.decision",
+            final_answer_artifact_name: str = "react.final_answer",
     ) -> None:
         self.emit_delta = emit_delta
         self.agent = agent
-        self.sources_getter = sources_getter
 
         self.targets: List[Dict[str, Any]] = []
         if stream_notes:
@@ -601,9 +419,6 @@ class TimelineStreamer:
             parent, key = self._split_path(t["xpath"])
             t["parent"] = parent
             t["key"] = key
-            t["buffer"] = ""
-            t["pending"] = False
-            t["deferred"] = False
 
         self.in_string = False
         self.escaping = False
@@ -620,35 +435,19 @@ class TimelineStreamer:
         self.path_stack: List[Optional[str]] = []
         self.streaming_target: Optional[Dict[str, Any]] = None
 
-        self.action_xpath = "action"
-        self.tool_id_xpath = "tool_call.tool_id"
-        self.action_parent, self.action_key = self._split_path(self.action_xpath)
-        self.tool_id_parent, self.tool_id_key = self._split_path(self.tool_id_xpath)
-        self.action_value: Optional[str] = None
-        self.tool_id_value: Optional[str] = None
-
         self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
         self.citation_states: Dict[str, citations_module.CitationStreamState] = {}
         for t in self.targets:
             if t.get("use_citations"):
                 self.citation_states[t["name"]] = citations_module.CitationStreamState()
 
-    def _maybe_refresh_sources(self) -> None:
-        if self.citation_map or not self.sources_getter:
-            return
-        try:
-            sources = self.sources_getter() or []
-        except Exception:
-            sources = []
-        if sources:
-            self.update_sources(sources)
-
     def update_sources(self, sources_list: Optional[List[Dict[str, object]]] = None) -> None:
         """Refresh citation map for streaming outputs."""
         try:
             self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
+            self.citation_states = {}
             for t in self.targets:
-                if t.get("use_citations") and t.get("name") not in self.citation_states:
+                if t.get("use_citations"):
                     self.citation_states[t["name"]] = citations_module.CitationStreamState()
         except Exception:
             pass
@@ -715,40 +514,8 @@ class TimelineStreamer:
             return False
         return stack[-len(keys):] == list(keys)
 
-    def _matches_action_path(self) -> bool:
-        if not self.action_key or self.last_key != self.action_key:
-            return False
-        if self.action_parent and not self._path_has(self.action_parent):
-            return False
-        return True
-
-    def _matches_tool_id_path(self) -> bool:
-        if not self.tool_id_key or self.last_key != self.tool_id_key:
-            return False
-        if self.tool_id_parent and not self._path_has(self.tool_id_parent):
-            return False
-        return True
-
-    def _allow_target(self, target: Dict[str, Any]) -> Optional[bool]:
-        name = target.get("name")
-        if name == "notes":
-            if self.action_value is None:
-                return None
-            if (self.action_value or "").strip() != "call_tool":
-                return False
-            if self.tool_id_value is None:
-                return None
-            return bool(str(self.tool_id_value).strip())
-        if name == "final_answer":
-            if self.action_value is None:
-                return None
-            return (self.action_value or "").strip() in {"complete", "exit"}
-        return True
-
     def _match_target(self) -> Optional[Dict[str, Any]]:
         for t in self.targets:
-            if t.get("started"):
-                continue
             if not t.get("key") or self.last_key != t.get("key"):
                 continue
             parent = t.get("parent") or []
@@ -761,10 +528,6 @@ class TimelineStreamer:
         if not text or not self.streaming_target:
             return
         t = self.streaming_target
-        if t.get("deferred"):
-            t["buffer"] = (t.get("buffer") or "") + text
-            return
-        self._maybe_refresh_sources()
         rendered = text
         if t.get("use_citations"):
             state = self.citation_states.get(t["name"])
@@ -787,26 +550,6 @@ class TimelineStreamer:
         )
         t["index"] = int(t.get("index") or 0) + 1
         t["started"] = True
-
-    async def _flush_pending_targets(self, *, force: bool = False) -> None:
-        for t in self.targets:
-            if not t.get("pending"):
-                continue
-            allow = self._allow_target(t)
-            if allow is None:
-                if force:
-                    allow = False
-                else:
-                    continue
-            buf = t.get("buffer") or ""
-            t["pending"] = False
-            t["deferred"] = False
-            t["buffer"] = ""
-            if not allow or not buf:
-                continue
-            self.streaming_target = t
-            await self._emit_chunk(buf)
-            self.streaming_target = None
 
     def _decode_escape(self, ch: str) -> Optional[str]:
         if ch == "n":
@@ -876,16 +619,11 @@ class TimelineStreamer:
                         self.current_key = ""
                         self.reading_key = False
                     elif self.active_key:
-                        if self._matches_action_path():
-                            self.action_value = self.active_value_buf.strip()
-                        if self._matches_tool_id_path():
-                            self.tool_id_value = self.active_value_buf.strip()
                         if self.streaming_target and self.active_value_buf:
                             await self._emit_chunk(self.active_value_buf)
                         self.active_value_buf = ""
                         self.streaming_target = None
                         self.active_key = None
-                        await self._flush_pending_targets()
                     continue
 
                 if self.reading_key:
@@ -903,23 +641,7 @@ class TimelineStreamer:
                     self.active_key = self.last_key
                     self.active_value_buf = ""
                     self.expecting_value = False
-                    self.streaming_target = None
-                    target = self._match_target()
-                    if target:
-                        target["buffer"] = ""
-                        allow = self._allow_target(target)
-                        if allow is True:
-                            target["deferred"] = False
-                            target["pending"] = False
-                            self.streaming_target = target
-                        elif allow is False:
-                            target["deferred"] = False
-                            target["pending"] = False
-                            self.streaming_target = None
-                        else:
-                            target["deferred"] = True
-                            target["pending"] = True
-                            self.streaming_target = target
+                    self.streaming_target = self._match_target()
                 else:
                     self.reading_key = True
                     self.current_key = ""
@@ -955,8 +677,6 @@ class TimelineStreamer:
         if self.streaming_target and self.active_value_buf:
             await self._emit_chunk(self.active_value_buf)
             self.active_value_buf = ""
-        await self._flush_pending_targets(force=True)
-        self._maybe_refresh_sources()
         for t in self.targets:
             if not t.get("started"):
                 continue

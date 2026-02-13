@@ -7,7 +7,6 @@ from typing import Any, Dict, List
 
 import json
 import pathlib
-import time
 
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.artifacts import (
     build_artifact_meta_block,
@@ -15,6 +14,9 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.artifacts import (
     build_artifact_view,
     normalize_physical_path,
     detect_edit,
+)
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.artifact_analysis import (
+    analyze_write_tool_output,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.execution import execute_tool
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.tools.common import (
@@ -71,7 +73,6 @@ async def handle_external_tool(*,
         payload={
             "tool_id": tool_id,
             "tool_call_id": tool_call_id,
-            "notes": root_notes,
             "params": tool_call.get("params") or {},
         },
     )
@@ -197,6 +198,7 @@ async def handle_external_tool(*,
         tool_execution_context={
             "tool_id": tool_id,
             "params": final_params,
+            "reasoning": root_notes,
         },
         workdir=pathlib.Path(state["workdir"]),
         outdir=pathlib.Path(state["outdir"]),
@@ -206,9 +208,38 @@ async def handle_external_tool(*,
         exec_streamer=exec_streamer,
     )
 
-    items = tool_response.get("items") or []
-    call_error = tool_response.get("error") if isinstance(tool_response, dict) else None
-    if call_error:
+    is_exec = tools_insights.is_exec_tool(tool_id)
+    items = tool_response.get("items") if (isinstance(tool_response, dict) and is_exec) else None
+    call_error = tool_response.get("call_error") if isinstance(tool_response, dict) else None
+    def _strip_managed(err: Any) -> Any:
+        if not isinstance(err, dict):
+            return err
+        cleaned = {k: v for k, v in err.items() if k != "managed"}
+        details = cleaned.get("details")
+        if isinstance(details, dict):
+            if "managed" in details:
+                details = {k: v for k, v in details.items() if k != "managed"}
+            tool_err = details.get("tool_error")
+            if isinstance(tool_err, dict) and "managed" in tool_err:
+                tool_err = {k: v for k, v in tool_err.items() if k != "managed"}
+                details["tool_error"] = tool_err
+            cleaned["details"] = details
+        return cleaned
+    call_error = _strip_managed(call_error) if call_error else call_error
+    report_text = (tool_response.get("report_text") or tool_response.get("summary") or "").strip()
+    output = tool_response.get("output") if isinstance(tool_response, dict) else None
+    summary = tool_response.get("summary") if isinstance(tool_response, dict) else ""
+    tool_err = tool_response.get("error") if isinstance(tool_response, dict) else None
+    if not is_exec:
+        items = [
+            {
+                "artifact_id": tool_id,
+                "output": output,
+                "summary": summary or "",
+                "error": tool_err,
+            }
+        ]
+    if call_error and not is_exec:
         notice_block(
             ctx_browser=ctx_browser,
             tool_call_id=tool_call_id,
@@ -216,7 +247,15 @@ async def handle_external_tool(*,
             message=(call_error.get("message") if isinstance(call_error, dict) else str(call_error)) or "tool call failed",
             extra={"tool_id": tool_id, "error": call_error},
         )
-    produced_ids: List[str] = []
+    if is_exec and report_text:
+        add_block(ctx_browser, {
+            "turn": ctx_browser.runtime_ctx.turn_id or "",
+            "type": "react.tool.result",
+            "call_id": tool_call_id,
+            "mime": "text/markdown",
+            "path": f"tc:{ctx_browser.runtime_ctx.turn_id}.tool_calls.{tool_call_id}.out.json" if ctx_browser.runtime_ctx.turn_id else "",
+            "text": report_text,
+        })
     for idx, tr in enumerate(items):
         if not isinstance(tr, dict):
             continue
@@ -227,6 +266,22 @@ async def handle_external_tool(*,
             artifact_kind = "file"
         visibility = "external" if (tools_insights.is_write_tool(tool_id) or tools_insights.is_exec_tool(tool_id)) else "internal"
         summary = tr.get("summary") or ""
+        tr_error = _strip_managed(tr.get("error")) if tr.get("error") else None
+
+        # If a write tool returns the {ok,error} envelope, use params.path for artifacts.
+        if tools_insights.is_write_tool(tool_id):
+            if isinstance(output, dict) and "ok" in output and "error" in output:
+                if output.get("ok") is True and output.get("error") is None:
+                    candidate = final_params.get("path")
+                    if isinstance(candidate, str) and candidate.strip():
+                        output = candidate.strip()
+                elif output.get("ok") is False:
+                    # Failed write: keep as internal to avoid emitting a bogus external file artifact.
+                    visibility = "internal"
+            elif output is None and tr_error is None:
+                candidate = final_params.get("path")
+                if isinstance(candidate, str) and candidate.strip():
+                    output = candidate.strip()
 
         turn_id = (ctx_browser.runtime_ctx.turn_id or "")
         rel_path_override = ""
@@ -255,12 +310,44 @@ async def handle_external_tool(*,
                 rewrite_original = candidate
             else:
                 value = candidate
+        elif tools_insights.is_write_tool(tool_id):
+            path_hint = final_params.get("path")
+            if isinstance(path_hint, str) and path_hint.strip():
+                value = {"type": "file", "path": path_hint.strip()}
         elif isinstance(output, (dict, list)):
             value = {"text": json.dumps(output, ensure_ascii=False, indent=2), "mime": "application/json"}
         elif isinstance(output, str):
             value = {"text": output, "mime": "text/plain"}
         else:
             value = {"text": "" if output is None else str(output), "mime": "text/plain"}
+
+        artifact_stats = None
+        if tools_insights.is_write_tool(tool_id):
+            file_hint = ""
+            if isinstance(output, dict) and isinstance(output.get("path"), str):
+                file_hint = output.get("path") or ""
+            elif isinstance(output, str):
+                file_hint = output
+            elif isinstance(final_params.get("path"), str):
+                file_hint = final_params.get("path") or ""
+            if file_hint:
+                phys_hint, _, _ = normalize_physical_path(file_hint, turn_id=turn_id)
+                file_for_stats = phys_hint or file_hint
+                try:
+                    artifact_stats = analyze_write_tool_output(
+                        file_path=file_for_stats,
+                        mime=tools_insights.default_mime_for_write_tool(tool_id),
+                        output_dir=pathlib.Path(state["outdir"]),
+                        artifact_id=artifact_id,
+                    )
+                except Exception:
+                    artifact_stats = None
+                if isinstance(artifact_stats, dict) and artifact_stats.get("write_error") and not tr_error:
+                    tr_error = {
+                        "code": "artifact_invalid",
+                        "message": artifact_stats.get("write_error"),
+                        "where": "artifact_analysis",
+                    }
         artifact_view = build_artifact_view(
             turn_id=turn_id,
             is_current=True,
@@ -270,25 +357,25 @@ async def handle_external_tool(*,
             summary=summary,
             artifact_kind=artifact_kind,
             visibility=visibility,
-        description=root_notes,
+            description="",
             channel=None,
             sources_used=[],
             inputs=final_params,
             call_record_rel=tool_response.get("call_record_rel"),
             call_record_abs=tool_response.get("call_record_abs"),
-            error=tr.get("error"),
+            error=tr_error,
             content_lineage=content_lineage,
             tool_call_id=tool_call_id,
             tool_call_item_index=None,
-            artifact_stats=None,
+            artifact_stats=artifact_stats,
         )
-        if tr.get("error"):
+        if tr_error and not is_exec:
             notice_block(
                 ctx_browser=ctx_browser,
                 tool_call_id=tool_call_id,
                 code="tool_result_error",
-                message=(tr.get("error") or {}).get("message") if isinstance(tr.get("error"), dict) else str(tr.get("error")),
-                extra={"tool_id": tool_id, "artifact_id": artifact_id, "error": tr.get("error")},
+                message=(tr_error or {}).get("message") if isinstance(tr_error, dict) else str(tr_error),
+                extra={"tool_id": tool_id, "artifact_id": artifact_id, "error": tr_error},
             )
         hosted = []
         if visibility == "external":
@@ -305,7 +392,6 @@ async def handle_external_tool(*,
                 hosted=hosted,
                 should_emit=should_emit,
             )
-        produced_ids.append(artifact_id)
 
         phys_path = ""
         rel_path = ""
@@ -376,11 +462,15 @@ async def handle_external_tool(*,
                 "text": value.get("text"),
             })
 
-        if tools_insights.is_search_tool(tool_id) and isinstance(output, list):
-            srcs = [r for r in output if isinstance(r, dict) and r.get("url")]
-            if srcs:
-                pending = state.setdefault("pending_sources", [])
-                pending.extend(srcs)
+        if tools_insights.is_search_tool(tool_id):
+            data = output
+            if isinstance(data, dict) and "ret" in data:
+                data = data.get("ret")
+            if isinstance(data, list):
+                srcs = [r for r in data if isinstance(r, dict) and r.get("url")]
+                if srcs:
+                    pending = state.setdefault("pending_sources", [])
+                    pending.extend(srcs)
         elif tools_insights.is_fetch_uri_content_tool(tool_id):
             rows: List[Dict[str, Any]] = []
             data = output
@@ -389,6 +479,9 @@ async def handle_external_tool(*,
                     data = json.loads(data)
                 except Exception:
                     data = None
+            if isinstance(data, dict):
+                if "ret" in data:
+                    data = data.get("ret")
             if isinstance(data, dict):
                 for url, payload in data.items():
                     if not isinstance(url, str) or not url.strip() or not isinstance(payload, dict):

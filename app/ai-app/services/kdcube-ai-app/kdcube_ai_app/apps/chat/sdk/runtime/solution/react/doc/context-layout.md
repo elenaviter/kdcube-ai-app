@@ -12,7 +12,7 @@ This describes the block stream that agents receive.
    Includes current user prompt + attachments.
 
 3) **Turn progress blocks**  
-   Any downstream agent can append progress contributions (e.g., gate/react notes).  
+   Any downstream agent can append progress contributions (e.g., gate blocks, `react.notes`).  
    These are appended via `ContextBrowser.contribute(...)` and appear in the same stream.  
    By default they are persisted into the turn log for reconstruction next turn.
 
@@ -44,6 +44,7 @@ Tail blocks (sources/announce) are never cached.
 ┌──────────────────────────┐
 │ TURN PROGRESS LOG        │
 │  - gate/react            │
+│  - react.notes           │
 └──────────────────────────┘
 ┌──────────────────────────┐
 │ SOURCES POOL (optional)  │  ← uncached tail
@@ -93,6 +94,7 @@ Summaries are stored in the index (not in the turn log).
 ## Stable Paths
 All paths use concrete `turn_id` (no `current_turn` namespace):
 - `ar:<turn_id>.user.prompt` / `ar:<turn_id>.assistant.completion`
+- `ar:<turn_id>.react.notes.<tool_call_id>`
 - `fi:<turn_id>.user.attachments/<name>`
 - `fi:<turn_id>.files/<relative_path>`
 - `tc:<turn_id>.tool_calls.<id>.in.json` / `.out.json`
@@ -132,11 +134,12 @@ id=plan_abc
 □ 2) Cross‑check ratings
 □ 3) Draft ranked list
 
+[AI Agent say]: searching for top-rated restaurants in Wuppertal
+
 [react.tool.call] (JSON)
 {
   "tool_id": "web_tools.web_search",
   "tool_call_id": "18f62649fb3b",
-  "notes": "...",
   "params": { ... }
 }
 
@@ -170,12 +173,13 @@ An agent can append blocks using a formatter:
 
 ```python
 block = {
-    "type": "agent.react",
+    "type": "react.notes",
     "author": "react",
     "turn_id": scratchpad.turn_id,
     "ts": scratchpad.started_at,
     "mime": "text/markdown",
-    "text": "[STAGE: REACT]\nnotes=...",
+    "text": "short progress note",
+    "meta": {"channel": "timeline_text"},
 }
 ctx_browser.contribute(
     blocks=[block],

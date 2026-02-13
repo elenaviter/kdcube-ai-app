@@ -33,7 +33,6 @@ TOOL_SPEC = {
 async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
-    root_notes = (last_decision.get("notes") or "").strip()
     tool_id = "react.hide"
     params = tool_call.get("params") or {}
     path = (params.get("path") or "").strip()
@@ -56,7 +55,6 @@ async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         payload={
             "tool_id": tool_id,
             "tool_call_id": tool_call_id,
-            "notes": root_notes,
             "params": tool_call.get("params") or {},
         },
     )

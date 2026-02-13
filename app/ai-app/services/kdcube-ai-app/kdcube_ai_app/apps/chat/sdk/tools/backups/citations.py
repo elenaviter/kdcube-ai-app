@@ -204,8 +204,6 @@ CITATION_SUFFIX_PATS = [
     re.compile(r"［\s*$"),
     # "[<ZWSP>" at end (ZWSP between brackets can split tokens)
     re.compile(r"\[\u200b\s*$"),
-    # "[S" at end (single-bracket partial; be conservative)
-    re.compile(r"(?:\u200b|\s)?\[\s*S\s*$", re.I),
 
     # "[[" at end
     re.compile(r"(?:\u200b|\s)?\[\[$"),
@@ -827,24 +825,9 @@ def _split_by_suffix_pats(chunk: str, suffix_pats: list[re.Pattern]) -> tuple[st
         m = pat.search(probe)
         if not m:
             continue
-        start = m.start()
-        matched = m.group(0) or ""
-        bracket_idx = matched.find("[")
-        if bracket_idx == -1:
-            bracket_idx = matched.find("［")
-        if bracket_idx >= 0:
-            bracket_start = start + bracket_idx
-        else:
-            bracket_start = start
-
-        prefix = probe[:bracket_start]
-        if prefix.strip() == "":
-            candidate = 0
-        else:
-            candidate = bracket_start
-
-        if best_i is None or candidate < best_i:
-            best_i = candidate
+        i = m.start()
+        if best_i is None or i < best_i:
+            best_i = i
 
     if best_i is not None:
         return chunk[:best_i], len(chunk) - best_i

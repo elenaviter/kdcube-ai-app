@@ -6,7 +6,8 @@ via react.tool.call / react.tool.result blocks.
 
 Common behaviors
 - All react tools are invoked as a call_tool action.
-- All tool calls append a react.tool.call block (reasoning + params) and one or more react.tool.result blocks.
+- If decision `notes` are present, a `react.notes` block is emitted **before** the tool call.
+- All tool calls append a react.tool.call block (params only) and one or more react.tool.result blocks.
 - Artifacts created by tools are referenced by stable paths (use turn_id, never current_turn):
   - fi:<turn_id>.files/<relative_path>
   - ar:<turn_id>.artifacts.<artifact_path>

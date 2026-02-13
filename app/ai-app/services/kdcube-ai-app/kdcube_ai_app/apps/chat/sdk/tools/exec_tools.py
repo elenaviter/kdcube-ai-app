@@ -34,6 +34,24 @@ def _safe_relpath(path: str) -> Optional[str]:
         return None
     return str(p)
 
+EXEC_TEXT_PREVIEW_MAX_BYTES = 20000
+TEXT_MIME_TYPES = {
+    "application/json",
+    "application/xml",
+    "application/x-yaml",
+    "application/yaml",
+    "application/csv",
+    "text/csv",
+}
+
+
+def _is_text_mime(mime: str) -> bool:
+    if not mime:
+        return False
+    if mime.startswith("text/"):
+        return True
+    return mime in TEXT_MIME_TYPES
+
 
 def _normalize_artifacts_spec(artifacts: Any) -> Tuple[Optional[List[Dict[str, Any]]], Optional[Dict[str, Any]]]:
     if artifacts is None:
@@ -398,20 +416,75 @@ async def run_exec_tool(
     # 4) build artifacts by checking requested files
     out_dyn: Dict[str, Any] = {}
     missing: List[str] = []
+    errors: List[Dict[str, Any]] = []
+    succeeded: List[Dict[str, Any]] = []
     for a in contract or []:
         rel = a["filename"]
         p = outdir / rel
         if not p.exists() or p.stat().st_size <= 0:
             missing.append(rel)
+            errors.append({
+                "artifact_id": a["name"],
+                "filename": rel,
+                "code": "missing_file" if not p.exists() else "empty_file",
+                "message": "file not produced" if not p.exists() else "file is empty",
+            })
             continue
+        # Validate produced file with heuristics
+        try:
+            from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.artifact_analysis import analyze_write_tool_output
+            stats = analyze_write_tool_output(
+                file_path=str(rel),
+                mime=a.get("mime") or "",
+                output_dir=outdir,
+                artifact_id=a.get("name"),
+            )
+        except Exception:
+            stats = {}
+        write_error = (stats or {}).get("write_error")
+        if write_error:
+            errors.append({
+                "artifact_id": a["name"],
+                "filename": rel,
+                "code": "artifact_invalid",
+                "message": write_error,
+            })
+            continue
+        if (stats or {}).get("write_warning") == "file_unusually_small":
+            errors.append({
+                "artifact_id": a["name"],
+                "filename": rel,
+                "code": "file_unusually_small",
+                "message": "file unusually small",
+            })
+            continue
+        text_content = ""
+        if _is_text_mime(a.get("mime") or ""):
+            try:
+                with p.open("rb") as fh:
+                    data = fh.read(EXEC_TEXT_PREVIEW_MAX_BYTES + 1)
+                truncated = len(data) > EXEC_TEXT_PREVIEW_MAX_BYTES
+                if truncated:
+                    data = data[:EXEC_TEXT_PREVIEW_MAX_BYTES]
+                text_content = data.decode("utf-8", errors="ignore")
+                if truncated:
+                    text_content = (text_content.rstrip() + "\n...[truncated]").strip()
+            except Exception:
+                text_content = ""
         out_dyn[a["name"]] = {
             "type": "file",
             "path": rel,
             "filename": pathlib.Path(rel).name,
             "mime": a["mime"],
-            "text": a["description"],
+            "text": text_content or a["description"],
             "description": a["description"],
+            "size_bytes": stats.get("size_bytes") if isinstance(stats, dict) else None,
+            "write_warning": stats.get("write_warning") if isinstance(stats, dict) else None,
         }
+        succeeded.append({
+            "artifact_id": a["name"],
+            "filename": rel,
+        })
 
     stderr_tail = ""
     try:
@@ -423,7 +496,7 @@ async def run_exec_tool(
         pass
 
     runtime_ok = bool(run_res.get("ok", True))
-    ok = len(missing) == 0 and runtime_ok
+    ok = len(missing) == 0 and len(errors) == 0 and runtime_ok
     error = None
     if not ok:
         err_code = "missing_output_files" if missing else "execution_failed"
@@ -439,12 +512,59 @@ async def run_exec_tool(
             "details": {"missing": missing, "run": run_res, "stderr_tail": stderr_tail},
         }
 
+    # Build human-readable report text
+    lines: List[str] = []
+    has_file_errors = bool(errors)
+    if (not runtime_ok) or has_file_errors:
+        if runtime_ok:
+            lines.append("Runtime error: none")
+        else:
+            err_msg = (error.get("description") or error.get("message") or "").strip() if error else ""
+            err_code = (error.get("error") or error.get("code") or "exec_error") if error else "exec_error"
+            lines.append(f"Runtime error: {err_code} — {err_msg}".strip())
+        if errors:
+            lines.append("File errors:")
+            for e in errors:
+                fname = e.get("filename") or e.get("artifact_id") or "unknown"
+                msg = e.get("message") or e.get("code") or "error"
+                lines.append(f"- {fname}: {msg}")
+        if succeeded:
+            lines.append("Succeeded:")
+            for s in succeeded:
+                fname = s.get("filename") or s.get("artifact_id") or "unknown"
+                lines.append(f"- {fname}")
+    else:
+        lines.append("Produced files:")
+        for s in succeeded:
+            fname = s.get("filename") or s.get("artifact_id") or "unknown"
+            lines.append(f"- {fname}")
+    report_text = "\n".join(lines).strip()
+
+    items_list = []
+    try:
+        for name, artifact in out_dyn.items():
+            if not isinstance(artifact, dict):
+                continue
+            items_list.append({
+                "artifact_id": name,
+                "output": artifact,
+                "artifact_kind": artifact.get("type") or "file",
+                "summary": "",
+                "filepath": artifact.get("path") or "",
+            })
+    except Exception:
+        items_list = []
+
     payload = {
         "ok": ok,
         "objective": "",
         "contract": output_contract,
         "out_dyn": out_dyn,
         "error": error,
+        "report_text": report_text,
+        "items": items_list,
+        "errors": errors,
+        "succeeded": succeeded,
     }
     result_path = outdir / result_filename
     try:
@@ -476,6 +596,10 @@ async def run_exec_tool(
         "artifacts": artifacts_list,
         "sources_pool": [],
         "error": error,
+        "report_text": report_text,
+        "items": items_list,
+        "errors": errors,
+        "succeeded": succeeded,
         "project_log": None,
     }
 

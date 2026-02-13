@@ -23,7 +23,11 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.agents.decision impor
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import ReactResult
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.solution_workspace import ApplicationHostingService
 from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.exec import DecisionExecCodeStreamer
-from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.canvas import ToolContentStreamer, TimelineStreamer
+from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.canvas import (
+    ReactWriteContentStreamer,
+    RenderingWriteContentStreamer,
+    TimelineStreamer,
+)
 from kdcube_ai_app.apps.chat.sdk.runtime.tool_subsystem import ToolSubsystem
 from kdcube_ai_app.infra.accounting import with_accounting
 from kdcube_ai_app.apps.chat.sdk.viz import logging_helpers
@@ -36,6 +40,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.solution.widgets.conversation_turn_work
     ConversationTurnWorkStatus,
 )
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
+from kdcube_ai_app.apps.chat.sdk.tools import citations as citations_module
 
 
 @dataclass
@@ -195,24 +200,38 @@ class ReactSolverV2:
         )
         return self._wrap_json_streamer(streamer), streamer
 
-    def _mk_content_streamer(
+    def _mk_content_streamers(
         self,
         phase: str,
         *,
         sources_list: Optional[List[Dict[str, object]]] = None,
         artifact_name: Optional[str] = None,
-    ) -> tuple[Callable[[str], Awaitable[None]], ToolContentStreamer]:
+    ) -> tuple[List[Callable[[str], Awaitable[None]]], List[Any]]:
         safe_name = artifact_name or f"react.record.{uuid.uuid4().hex[:8]}"
-        streamer = ToolContentStreamer(
-            emit_delta=self.comm.delta,
-            agent=f"{self.MODULE_AGENT_NAME}.{phase}",
-            artifact_name=safe_name,
-            sources_list=sources_list or [],
-            turn_id=(self.ctx_browser.runtime_ctx.turn_id if self.ctx_browser and self.ctx_browser.runtime_ctx else ""),
+        sources_getter = None
+        if self.ctx_browser:
+            sources_getter = lambda: list(self.ctx_browser.sources_pool or [])
+        base_args = {
+            "emit_delta": self.comm.delta,
+            "agent": f"{self.MODULE_AGENT_NAME}.{phase}",
+            "artifact_name": safe_name,
+            "sources_list": sources_list or [],
+            "sources_getter": sources_getter,
+            "turn_id": (self.ctx_browser.runtime_ctx.turn_id if self.ctx_browser and self.ctx_browser.runtime_ctx else ""),
+        }
+        react_streamer = ReactWriteContentStreamer(
+            **base_args,
             stream_tool_id="react.write",
+        )
+        rendering_streamer = RenderingWriteContentStreamer(
+            **base_args,
             write_tool_prefix="rendering_tools.write_",
         )
-        return self._wrap_json_streamer(streamer, sources_list=sources_list), streamer
+        fns = [
+            self._wrap_json_streamer(react_streamer, sources_list=sources_list),
+            self._wrap_json_streamer(rendering_streamer, sources_list=sources_list),
+        ]
+        return fns, [react_streamer, rendering_streamer]
 
     def _wrap_json_streamer(
         self,
@@ -243,10 +262,14 @@ class ReactSolverV2:
         notes_artifact_name: Optional[str] = None,
         final_answer_artifact_name: Optional[str] = None,
     ) -> tuple[Callable[[str], Awaitable[None]], TimelineStreamer]:
+        sources_getter = None
+        if self.ctx_browser:
+            sources_getter = lambda: list(self.ctx_browser.sources_pool or [])
         streamer = TimelineStreamer(
             emit_delta=self.comm.delta,
             agent=agent or f"{self.MODULE_AGENT_NAME}.{phase}",
             sources_list=sources_list or [],
+            sources_getter=sources_getter,
             notes_artifact_name=notes_artifact_name or "timeline_text.react.decision",
             final_answer_artifact_name=final_answer_artifact_name or "react.final_answer",
         )
@@ -740,7 +763,7 @@ class ReactSolverV2:
                     sources_list = list(self.ctx_browser.sources_pool or [])
             except Exception:
                 sources_list = []
-        record_streamer_fn, record_streamer_widget = self._mk_content_streamer(
+        record_streamer_fns, record_streamers = self._mk_content_streamers(
             f"decision.record ({iteration})",
             sources_list=sources_list,
             artifact_name=f"react.record.{pending_tool_call_id}",
@@ -757,7 +780,8 @@ class ReactSolverV2:
 
         async def _hub_on_json(text: str, completed: bool = False, **_kwargs):
             await exec_streamer_fn(text, completed=completed)
-            await record_streamer_fn(text, completed=completed)
+            for fn in record_streamer_fns:
+                await fn(text, completed=completed)
             await timeline_streamer_fn(text, completed=completed)
 
         thinking_streamer._on_json = _hub_on_json
@@ -1070,20 +1094,15 @@ class ReactSolverV2:
             state["suggested_followups"] = decision.get("suggested_followups") or []
 
         try:
-            if self.ctx_browser and self.scratchpad:
-                self.ctx_browser.contribute(
-                    blocks=[{
-                        "type": "react.decision",
-                        "author": "react",
-                        "turn_id": state.get("turn_id") or "",
-                        "ts": time.time(),
-                        "mime": "text/markdown",
-                        "path": f"ar:{state.get('turn_id')}.react.decision.{iteration}",
-                        "text": "\n".join([l for l in [
-                            f"action={action}",
-                            f"notes={notes}" if notes else None,
-                        ] if l]).strip(),
-                    }],
+            if self.ctx_browser and notes:
+                from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.round import ReactRound
+                ReactRound.note(
+                    ctx_browser=self.ctx_browser,
+                    notes=notes,
+                    tool_call_id=pending_tool_call_id,
+                    tool_id=tool_id,
+                    action=action,
+                    iteration=iteration,
                 )
         except Exception:
             pass
@@ -1107,7 +1126,7 @@ class ReactSolverV2:
                 pass
 
         state["exec_code_streamer"] = exec_streamer_widget
-        state["record_streamer"] = record_streamer_widget
+        state["record_streamers"] = record_streamers
         state["timeline_streamer"] = timeline_streamer
         state["pending_exec_id"] = exec_id
         state["pending_tool_call_id"] = pending_tool_call_id
@@ -1127,11 +1146,18 @@ class ReactSolverV2:
         pending_sources = state.pop("pending_sources", None)
         if pending_sources:
             try:
+                try:
+                    self.log.log(
+                        f"[react.v2] merge_sources: pending_sources={len(pending_sources or [])}",
+                        level="INFO",
+                    )
+                except Exception:
+                    pass
                 await self._merge_with_pool(
                     collections=[pending_sources],
                     workdir=pathlib.Path(state["workdir"]),
                     outdir=pathlib.Path(state["outdir"]),
-                    record_streamer=state.get("record_streamer"),
+                    record_streamers=state.get("record_streamers"),
                     timeline_streamer=state.get("timeline_streamer"),
                 )
             except Exception:
@@ -1145,30 +1171,29 @@ class ReactSolverV2:
             "timestamp": time.time(),
             "reason": reason,
         })
+        pre_blocks = []
+        post_blocks = []
+        exit_block = None
         try:
             if self.ctx_browser and self.scratchpad:
-                self.ctx_browser.contribute(
-                    blocks=[{
-                        "type": "react.exit",
-                        "author": "react",
-                        "turn_id": self.scratchpad.turn_id or "",
-                        "ts": time.time(),
-                        "mime": "application/json",
-                        "path": f"ar:{self.scratchpad.turn_id}.react.exit",
-                        "text": json.dumps({
-                            "reason": reason,
-                        }, ensure_ascii=False, indent=2),
-                    }],
-                )
+                exit_block = {
+                    "type": "react.exit",
+                    "author": "react",
+                    "turn_id": self.scratchpad.turn_id or "",
+                    "ts": time.time(),
+                    "mime": "application/json",
+                    "path": f"ar:{self.scratchpad.turn_id}.react.exit",
+                    "text": json.dumps({
+                        "reason": reason,
+                    }, ensure_ascii=False, indent=2),
+                }
         except Exception:
-            pass
+            exit_block = None
         # persist final ANNOUNCE to contrib log, then clear announce
         try:
             announce_blocks = self.ctx_browser.timeline.announce_blocks
             if announce_blocks:
-                self.ctx_browser.contribute(
-                    blocks=announce_blocks,
-                )
+                pre_blocks.extend(announce_blocks)
             self.ctx_browser.announce(blocks=None)
         except Exception:
             pass
@@ -1177,19 +1202,35 @@ class ReactSolverV2:
             if self.ctx_browser:
                 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.proto import ReactStateSnapshot
                 react_state = ReactStateSnapshot.from_state(state)
-                self.ctx_browser.contribute(
-                    blocks=[{
-                        "type": "react.state",
-                        "author": "react",
-                        "turn_id": self.ctx_browser.runtime_ctx.turn_id or "",
-                        "ts": time.time(),
-                        "mime": "application/json",
-                        "path": f"ar:{self.ctx_browser.runtime_ctx.turn_id}.react.state",
-                        "text": json.dumps(react_state.to_dict(), ensure_ascii=False, indent=2),
-                    }],
-                )
+                post_blocks.append({
+                    "type": "react.state",
+                    "author": "react",
+                    "turn_id": self.ctx_browser.runtime_ctx.turn_id or "",
+                    "ts": time.time(),
+                    "mime": "application/json",
+                    "path": f"ar:{self.ctx_browser.runtime_ctx.turn_id}.react.state",
+                    "text": json.dumps(react_state.to_dict(), ensure_ascii=False, indent=2),
+                })
         except Exception:
             pass
+        if exit_block:
+            post_blocks.append(exit_block)
+        try:
+            if self.scratchpad is not None:
+                if pre_blocks:
+                    existing = getattr(self.scratchpad, "pre_answer_blocks", None)
+                    if isinstance(existing, list):
+                        existing.extend(pre_blocks)
+                    else:
+                        self.scratchpad.pre_answer_blocks = list(pre_blocks)
+                if post_blocks:
+                    existing = getattr(self.scratchpad, "post_answer_blocks", None)
+                    if isinstance(existing, list):
+                        existing.extend(post_blocks)
+                    else:
+                        self.scratchpad.post_answer_blocks = list(post_blocks)
+        except Exception as ex:
+            self.log.log(f"[react.v2] post_answer_blocks: {ex}", level="ERROR")
 
         # Emit citations used in this turn (files already emitted on host)
         try:
@@ -1197,21 +1238,51 @@ class ReactSolverV2:
                 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.timeline import extract_sources_used_from_blocks
                 blocks = self.ctx_browser.timeline.get_turn_blocks()
                 used_sids = extract_sources_used_from_blocks(blocks)
+                try:
+                    answer_sids = citations_module.extract_citation_sids_any(state.get("final_answer") or "")
+                except Exception:
+                    answer_sids = []
+                if answer_sids:
+                    for sid in answer_sids:
+                        if sid not in used_sids:
+                            used_sids.append(sid)
                 if used_sids:
                     sid_set = set(used_sids)
                     citations = []
-                    for row in (self.ctx_browser.timeline.sources_pool or []):
+                    pool = list(self.ctx_browser.timeline.sources_pool or [])
+                    pool_updated = False
+                    for row in pool:
                         if not isinstance(row, dict):
                             continue
                         if row.get("sid") in sid_set:
+                            if row.get("used") is not True:
+                                row["used"] = True
+                                pool_updated = True
                             # strip heavy fields
                             clean = {k: v for k, v in row.items() if k not in ("content", "base64")}
                             citations.append(clean)
+                    if pool_updated:
+                        try:
+                            self.ctx_browser.set_sources_pool(sources_pool=pool)
+                        except Exception:
+                            pass
+                    try:
+                        self.log.log(
+                            f"[react.v2] emit_citations: used_sids={sorted(sid_set)} "
+                            f"pool={len(pool)} citations={len(citations)}",
+                            level="INFO",
+                        )
+                    except Exception:
+                        pass
                     await self.hosting_service.emit_solver_artifacts(files=[], citations=citations)
+                else:
+                    try:
+                        self.log.log("[react.v2] emit_citations: no used_sids detected", level="INFO")
+                    except Exception:
+                        pass
         except Exception:
             pass
         return state
-
     def _adapters_index(self, adapters: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         idx: Dict[str, Dict[str, Any]] = {}
         for a in adapters or []:
@@ -1221,13 +1292,13 @@ class ReactSolverV2:
         return idx
 
     def _append_react_timing(
-        self,
-        *,
-        round_idx: int,
-        stage: str,
-        elapsed_ms: Optional[int],
-        tool_id: Optional[str] = None,
-        artifact_id: Optional[str] = None,
+            self,
+            *,
+            round_idx: int,
+            stage: str,
+            elapsed_ms: Optional[int],
+            tool_id: Optional[str] = None,
+            artifact_id: Optional[str] = None,
     ) -> None:
         if elapsed_ms is None:
             return
@@ -1249,13 +1320,21 @@ class ReactSolverV2:
         collections: List[List[Dict[str, Any]]],
         workdir: pathlib.Path,
         outdir: pathlib.Path,
-        record_streamer: Optional[Any] = None,
+        record_streamers: Optional[List[Any]] = None,
         timeline_streamer: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
 
         params = {
             "source_collections": [list(self.ctx_browser.sources_pool or [])] + [c or [] for c in collections]
         }
+        try:
+            self.log.log(
+                f"[react.v2] merge_sources: existing={len(self.ctx_browser.sources_pool or [])} "
+                f"collections={[len(c or []) for c in collections]}",
+                level="INFO",
+            )
+        except Exception:
+            pass
         tr = await execute_tool(
             runtime_ctx=self.ctx_browser.runtime_ctx,
             tool_execution_context={"tool_id": "ctx_tools.merge_sources", "params": params},
@@ -1264,9 +1343,11 @@ class ReactSolverV2:
             tool_manager=self.tools_subsystem,
             logger=self.log,
         )
-        items = tr.get("items") or []
-        first_item = next(iter(items), None)
-        merged = first_item.get("output") if isinstance(first_item, dict) else None
+        merged = tr.get("output")
+        if not isinstance(merged, list):
+            items = tr.get("items") or []
+            first_item = next(iter(items), None)
+            merged = first_item.get("output") if isinstance(first_item, dict) else None
         if not isinstance(merged, list):
             merged = []
         if merged:
@@ -1285,6 +1366,13 @@ class ReactSolverV2:
             )
         else:
             self.ctx_browser.set_sources_pool(sources_pool=merged)
+            try:
+                self.log.log(
+                    f"[react.v2] merge_sources: merged={len(merged)}",
+                    level="INFO",
+                )
+            except Exception:
+                pass
         if merged:
             try:
                 mx = max(int(s.get("sid") or 0) for s in merged if isinstance(s, dict))
@@ -1298,8 +1386,9 @@ class ReactSolverV2:
                 except Exception:
                     pass
                 try:
-                    if record_streamer and hasattr(record_streamer, "update_sources"):
-                        record_streamer.update_sources(self.ctx_browser.sources_pool if self.ctx_browser else [])
+                    for rs in (record_streamers or []):
+                        if rs and hasattr(rs, "update_sources"):
+                            rs.update_sources(self.ctx_browser.sources_pool if self.ctx_browser else [])
                 except Exception:
                     pass
                 try:

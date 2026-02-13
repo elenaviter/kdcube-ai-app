@@ -104,11 +104,6 @@ class WithReactWorkflow(BaseWorkflow):
 
                 # Uses BaseWorkflow to persist + emit conversation title on first turn.
                 await self.handle_conversation_title(scratchpad=scratchpad, pre_out=gate_payload)
-                # Persist timeline early so fetch can read conversation_title immediately.
-                try:
-                    await self.ctx_browser.persist_timeline()
-                except Exception:
-                    pass
 
                 timing_gate = _tend(t2, ms2)
                 scratchpad.timings.append({"title": "gate", "elapsed_ms": timing_gate["elapsed_ms"]})
@@ -200,11 +195,11 @@ class WithReactWorkflow(BaseWorkflow):
                         await self.finish_turn(scratchpad, ok=True)
                     except Exception:
                         pass
-                    if suggested_followups:
-                        try:
-                            await self._comm.followups(suggested_followups, agent="solver.react.v2")
-                        except Exception:
-                            pass
+                    # if suggested_followups:
+                    #     try:
+                    #         await self._comm.followups(suggested_followups, agent="solver.react.v2")
+                    #     except Exception:
+                    #         pass
                     state["result"] = {"answer": answer_text, "suggested_followups": suggested_followups}
                     state["short_circuit"] = True
                 else:

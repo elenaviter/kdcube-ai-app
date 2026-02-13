@@ -283,8 +283,8 @@ Implementation rule (HARD):
 - When you generate URLs yourself using this skill, those URLs **do NOT exist in context**.
 - Therefore, you MUST NOT encode generated URLs into binding refs.
 - Instead, you MUST place generated URLs directly into the appropriate tool parameters:
-  - Example (CORRECT) for `web_tools.fetch_url_contents`:
-    - `"tool_call": { "tool_id": "web_tools.fetch_url_contents", "params": { "urls": ["https://platform.openai.com/docs/guides/speech-to-text", "https://cloud.google.com/speech-to-text/pricing", "https://platform.openai.com/docs/api-reference/audio"] }, ... }`
+  - Example (CORRECT) for `web_tools.web_fetch`:
+    - `"tool_call": { "tool_id": "web_tools.web_fetch", "params": { "urls": ["https://platform.openai.com/docs/guides/speech-to-text", "https://cloud.google.com/speech-to-text/pricing", "https://platform.openai.com/docs/api-reference/audio"] }, ... }`
     - (no refs)
   - Example (WRONG — NEVER DO THIS):
     - (No ref binding for generated URLs)

@@ -53,7 +53,7 @@ By default, built‑in tools use SDK policy (`tools_insights`). For custom tools
 ```python
 TOOL_RUNTIME = {
     "generic_tools.web_search": "local",
-    "generic_tools.fetch_url_contents": "local",
+    "generic_tools.web_fetch": "local",
 }
 ```
 

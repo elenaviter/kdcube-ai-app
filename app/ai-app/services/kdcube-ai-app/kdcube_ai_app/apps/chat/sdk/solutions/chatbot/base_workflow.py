@@ -1106,6 +1106,13 @@ class BaseWorkflow():
         t_turn0, ms0u = self._ctx["turn"]["t_turn0"], self._ctx["turn"]["ms0u"]
 
         if scratchpad.answer:
+            # Contribute pre-answer blocks (e.g., final ANNOUNCE)
+            try:
+                pre_blocks = getattr(scratchpad, "pre_answer_blocks", None)
+                if pre_blocks:
+                    self.ctx_browser.contribute(blocks=list(pre_blocks))
+            except Exception:
+                pass
             # Contribute assistant completion to current turn log
             try:
                 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.layout import build_assistant_completion_blocks
@@ -1125,7 +1132,27 @@ class BaseWorkflow():
             except Exception:
                 pass
             await self.persist_assistant(scratchpad)
-
+            # Post-answer blocks (react.state / react.exit)
+            try:
+                post_blocks = getattr(scratchpad, "post_answer_blocks", None)
+                if post_blocks:
+                    self.ctx_browser.contribute(blocks=list(post_blocks))
+            except Exception:
+                pass
+        else:
+            # No assistant answer; still emit pre/post blocks if present
+            try:
+                pre_blocks = getattr(scratchpad, "pre_answer_blocks", None)
+                if pre_blocks:
+                    self.ctx_browser.contribute(blocks=list(pre_blocks))
+            except Exception:
+                pass
+            try:
+                post_blocks = getattr(scratchpad, "post_answer_blocks", None)
+                if post_blocks:
+                    self.ctx_browser.contribute(blocks=list(post_blocks))
+            except Exception:
+                pass
         # Save turn log (always) - v2
         try:
             contrib_log = []

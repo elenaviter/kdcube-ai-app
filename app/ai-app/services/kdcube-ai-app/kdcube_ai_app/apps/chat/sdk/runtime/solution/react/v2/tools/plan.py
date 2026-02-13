@@ -30,7 +30,6 @@ TOOL_SPEC = {
 async def handle_react_plan(*, react: Any, ctx_browser: Any, state: Dict[str, Any], tool_call_id: str) -> Dict[str, Any]:
     last_decision = state.get("last_decision") or {}
     tool_call = last_decision.get("tool_call") or {}
-    root_notes = (last_decision.get("notes") or "").strip()
     params = tool_call.get("params") or {}
     mode = str(params.get("mode") or "new").strip().lower()
     steps = params.get("steps") or []
@@ -43,7 +42,6 @@ async def handle_react_plan(*, react: Any, ctx_browser: Any, state: Dict[str, An
         payload={
             "tool_id": "react.plan",
             "tool_call_id": tool_call_id,
-            "notes": root_notes,
             "params": params,
         },
     )
