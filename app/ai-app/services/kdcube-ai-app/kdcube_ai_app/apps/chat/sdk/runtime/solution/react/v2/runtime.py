@@ -7,6 +7,8 @@ import asyncio
 import json
 import pathlib
 import random
+import traceback
+
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -825,6 +827,9 @@ class ReactSolverV2:
 
         notes = None
         action = None
+        tool_id = ""
+        protocol_entry = None
+
         if error:
             try:
                 self.ctx_browser.contribute_notice(
@@ -1047,9 +1052,6 @@ class ReactSolverV2:
                         tool_call = {}
                         tool_id = ""
 
-            # else:
-            #     pass
-
             # ---- tool signature validation (filter params + classify issues) ----
             sig_status = None
             sig_issues: List[Dict[str, Any]] = []
@@ -1142,7 +1144,7 @@ class ReactSolverV2:
                 pass
 
         try:
-            if self.ctx_browser and notes:
+            if notes:
                 from kdcube_ai_app.apps.chat.sdk.runtime.solution.react.v2.round import ReactRound
                 ReactRound.note(
                     ctx_browser=self.ctx_browser,
@@ -1168,10 +1170,7 @@ class ReactSolverV2:
                 decision,
             )
         except Exception as exc:
-            try:
-                self.log.log(f"[react.v2] register_agentic_response failed: {exc}", level="ERROR")
-            except Exception:
-                pass
+            self.log.log(f"[react.v2] register_agentic_response failed: {exc}", level="ERROR")
 
         state["exec_code_streamer"] = exec_streamer_widget
         state["record_streamers"] = record_streamers
@@ -1185,7 +1184,7 @@ class ReactSolverV2:
             try:
                 bs.decision_rounds_used = int(state.get("iteration") or 0)
             except Exception:
-                pass
+                self.log.log(traceback.format_exc())
         return state
 
     async def _tool_execution_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1194,13 +1193,11 @@ class ReactSolverV2:
         pending_sources = state.pop("pending_sources", None)
         if pending_sources:
             try:
-                try:
-                    self.log.log(
-                        f"[react.v2] merge_sources: pending_sources={len(pending_sources or [])}",
-                        level="INFO",
-                    )
-                except Exception:
-                    pass
+                self.log.log(
+                    f"[react.v2] merge_sources: pending_sources={len(pending_sources or [])}",
+                    level="INFO",
+                )
+
                 await self._merge_with_pool(
                     collections=[pending_sources],
                     workdir=pathlib.Path(state["workdir"]),
@@ -1209,7 +1206,7 @@ class ReactSolverV2:
                     timeline_streamer=state.get("timeline_streamer"),
                 )
             except Exception:
-                pass
+                self.log.log(traceback.format_exc())
         return state
 
     async def _exit_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1221,22 +1218,19 @@ class ReactSolverV2:
         })
         pre_blocks = []
         post_blocks = []
-        exit_block = None
-        try:
-            if self.ctx_browser and self.scratchpad:
-                exit_block = {
-                    "type": "react.exit",
-                    "author": "react",
-                    "turn_id": self.scratchpad.turn_id or "",
-                    "ts": time.time(),
-                    "mime": "application/json",
-                    "path": f"ar:{self.scratchpad.turn_id}.react.exit",
-                    "text": json.dumps({
-                        "reason": reason,
-                    }, ensure_ascii=False, indent=2),
-                }
-        except Exception:
-            exit_block = None
+
+        exit_block = {
+            "type": "react.exit",
+            "author": "react",
+            "turn_id": self.scratchpad.turn_id or "",
+            "ts": time.time(),
+            "mime": "application/json",
+            "path": f"ar:{self.scratchpad.turn_id}.react.exit",
+            "text": json.dumps({
+                "reason": reason,
+            }, ensure_ascii=False, indent=2),
+        }
+
         # persist final ANNOUNCE to contrib log, then clear announce
         try:
             announce_blocks = self.ctx_browser.timeline.announce_blocks
@@ -1244,7 +1238,7 @@ class ReactSolverV2:
                 pre_blocks.extend(announce_blocks)
             self.ctx_browser.announce(blocks=None)
         except Exception:
-            pass
+            self.log.log(traceback.format_exc())
         # persist react_state snapshot as a contribution block
         try:
             if self.ctx_browser:
@@ -1260,7 +1254,7 @@ class ReactSolverV2:
                     "text": json.dumps(react_state.to_dict(), ensure_ascii=False, indent=2),
                 })
         except Exception:
-            pass
+            self.log.log(traceback.format_exc())
         if exit_block:
             post_blocks.append(exit_block)
         try:
@@ -1274,7 +1268,7 @@ class ReactSolverV2:
                             try:
                                 out.extend(prior() or [])
                             except Exception:
-                                pass
+                                self.log.log(traceback.format_exc())
                         out.extend(list(blocks))
                         blocks.clear()
                         return out
@@ -1287,7 +1281,7 @@ class ReactSolverV2:
                             try:
                                 out.extend(prior() or [])
                             except Exception:
-                                pass
+                                self.log.log(traceback.format_exc())
                         out.extend(list(blocks))
                         blocks.clear()
                         return out
@@ -1328,23 +1322,17 @@ class ReactSolverV2:
                         try:
                             self.ctx_browser.set_sources_pool(sources_pool=pool)
                         except Exception:
-                            pass
-                    try:
-                        self.log.log(
-                            f"[react.v2] emit_citations: used_sids={sorted(sid_set)} "
-                            f"pool={len(pool)} citations={len(citations)}",
-                            level="INFO",
-                        )
-                    except Exception:
-                        pass
+                            self.log.log(traceback.format_exc())
+                    self.log.log(
+                        f"[react.v2] emit_citations: used_sids={sorted(sid_set)} "
+                        f"pool={len(pool)} citations={len(citations)}",
+                        level="INFO",
+                    )
                     await self.hosting_service.emit_solver_artifacts(files=[], citations=citations)
                 else:
-                    try:
-                        self.log.log("[react.v2] emit_citations: no used_sids detected", level="INFO")
-                    except Exception:
-                        pass
+                    self.log.log("[react.v2] emit_citations: no used_sids detected", level="INFO")
         except Exception:
-            pass
+            self.log.log(traceback.format_exc())
         return state
     def _adapters_index(self, adapters: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         idx: Dict[str, Dict[str, Any]] = {}

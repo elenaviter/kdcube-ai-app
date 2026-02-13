@@ -52,6 +52,9 @@ Both artifacts are indexed in `conv_messages` with:
 `text` contains:
 ```json
 {
+  "sources_pool": [
+    { "sid": 1, "title": "...", "url": "...", "text": "short snippet", "published_time_iso": "...", "favicon": "..." }
+  ],
   "sources_pool_count": 2,
   "turn_ids": ["turn_..."],
   "last_activity_at": "..."

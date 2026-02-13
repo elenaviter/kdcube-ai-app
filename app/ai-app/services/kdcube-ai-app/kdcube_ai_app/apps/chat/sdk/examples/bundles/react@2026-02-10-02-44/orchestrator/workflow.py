@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
-
+import traceback
 # examples/bundles/react@YYYY-MM-DD-hh-mm/orchestrator/workflow.py
 
 from typing import Dict, Any
@@ -166,8 +166,8 @@ class WithReactWorkflow(BaseWorkflow):
                 )
                 try:
                     await react.persist_workspace()
-                except Exception:
-                    pass
+                except Exception as ex:
+                    self.logger.log(traceback.format_exc())
                 await self._emit_turn_work_status(
                     [
                         "closing the loop",

@@ -129,6 +129,14 @@ SOURCES_AND_CITATIONS_V2 = """
   - json/yaml: include a sidecar field "citations": [{"path": "<json pointer>", "sids": [1,3]}]
     pointing to the string field containing the claim.
 - If a claim cannot be supported by available sources, omit it or clearly label it as unsupported.
+
+- Tools web.web_search and web.web_fetch automatically add the retrieved sources to the sources_pool.
+  The sids in such tools results are the sids those sources have in the source pool.
+  When such tool is called, all items it brings are visible in the context so you do not need to read them additionally 
+  and can cite the sources which you see with the sid they have.
+  Whenever you need to retrieve certain source snippet with some sid because you do not se in it in visible context anymore, 
+  you must read it with react.read(paths=[so:sid]).  
+  
 """
 
 class ToolCallDecisionV2(BaseModel):
@@ -188,21 +196,6 @@ async def react_decision_stream_v2(
     user_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     thinking_budget = min(240, max(80, int(0.12 * max_tokens)))
-
-    now = _now_up_to_minutes()
-    today = _today_str()
-    TIMEZONE = timezone
-
-    time_evidence = (
-        "[AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)]\n"
-        f"Current UTC date: {today}\n"
-        "All relative dates MUST be interpreted against this context.\n"
-    )
-
-    time_evidence_reminder = (
-        f"Very important: The user's timezone is {TIMEZONE}. Current UTC timestamp: {now}. "
-        f"Current UTC date: {today}. Any dates before this are in the past, and any dates after this are in the future.\n"
-    )
 
     json_hint = (
         "{\n"
@@ -453,10 +446,11 @@ You never use them with react.* tools.
    First create content with react.write, then call write_* by binding that artifact content via setting value of the `content` param to 'ref:<artifact path>'.
    Motivation: you won't have a chance to review the content you generate and semi-working file will be shared to a user. It's better if you first generate the content, review it in the visible context, then call rendering_tools.write_* to render it to a user.
 7) Example of tool call:
-   {{"action":"call_tool","notes":"search recent city transit updates","tool_call":{{"tool_id":"web_tools.web_search","params":{{"queries":["city transit update timetable","public transport service changes"],"objective":"Collect recent official updates and sources","refinement":"balanced","n":6,"fetch_content":true,"country":"DE","safesearch":"moderate"}}}}}}
+   {{"action":"call_tool","notes":"search recent city transit updates","tool_call":{{"tool_id":"web_tools.web_search","params":{{"queries":["city transit update timetable","public transport service changes"],"objective":"Collect recent official updates and sources","n":6,"country":"DE"}}}}}}
 
 [react.read (CRITICAL)]
 - Use react.read([...]) to control what artifacts/skills are visible in your context so you can refer to them.
+  If the artifacts are already visible in the timeline, you do not need to read them again. This is for artifacts which content is not visible. 
 - Example tool_call (load sources + artifact + skill):
   {{"tool_id":"react.read","params":["so:sources_pool[2,3]","fi:<turn_id>.files/some_art.md","sk:<skill id or num>"]}}
 

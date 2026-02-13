@@ -1844,6 +1844,7 @@ class ContextRAGClient:
         # 1) Load the latest timeline artifact and extract conversation details.
         conversation_title = None
         conversation_started_at = None
+        sources_pool = []
         try:
             res_ws = await self.recent(
                 kinds=[f"artifact:{TIMELINE_KIND}"],
@@ -1851,40 +1852,22 @@ class ContextRAGClient:
                 limit=1,
                 user_id=user_id,
                 conversation_id=conversation_id,
-                with_payload=False,
+                with_payload=True,
             )
             ws_items = list(res_ws.get("items") or [])
             if ws_items:
-                timeline_metadata = ws_items[0]
-                timeline_metadata = json.parse(timeline_metadata.get("text")) or ""
-                title = (timeline_metadata.get("conversation_title") or "").strip()
+                payload = unwrap_payload(ws_items[0]) or {}
+                parsed = parse_timeline_payload(payload)
+                title = (parsed.get("conversation_title") or "").strip()
                 if title:
                     conversation_title = title
-                conversation_started_at = (timeline_metadata.get("conversation_started_at") or "").strip() or None
+                conversation_started_at = (parsed.get("conversation_started_at") or "").strip() or None
+                if isinstance(parsed.get("sources_pool"), list):
+                    sources_pool = parsed.get("sources_pool") or []
         except Exception:
             conversation_title = None
             conversation_started_at = None
         ui_artifacts_tags = UI_ARTIFACT_TAGS
-        # sources_pool is stored separately as artifact:conv:sources_pool
-        sources_pool = []
-        try:
-            res_sp = await self.recent(
-                kinds=[f"artifact:{SOURCES_POOL_KIND}"],
-                roles=("artifact",),
-                limit=1,
-                user_id=user_id,
-                conversation_id=conversation_id,
-                with_payload=True,
-            )
-            sp_items = list(res_sp.get("items") or [])
-            if sp_items:
-                sp_payload = unwrap_payload(sp_items[0]) or {}
-                if isinstance(sp_payload, dict) and isinstance(sp_payload.get("sources_pool"), list):
-                    sources_pool = sp_payload.get("sources_pool") or []
-                elif isinstance(sp_payload, list):
-                    sources_pool = sp_payload
-        except Exception:
-            sources_pool = []
         # 3) Get raw turn-tag occurrences (chronological, duplicates preserved)
         occurrences = await self.idx.get_conversation_turn_ids_from_tags(
             user_id=user_id,
@@ -2011,6 +1994,7 @@ class ContextRAGClient:
         )
 
         conversation_title = None
+        timeline_sources_pool: List[Dict[str, Any]] = []
         try:
             # Fetch timeline artifact and read conversation_title from its payload
             res_ws = await self.recent(
@@ -2029,6 +2013,8 @@ class ContextRAGClient:
                 title = (parsed.get("conversation_title") or "").strip()
                 if title:
                     conversation_title = title
+                if isinstance(parsed.get("sources_pool"), list):
+                    timeline_sources_pool = parsed.get("sources_pool") or []
                 logger.info(
                     "fetch_conversation_artifacts: timeline title=%s conversation_id=%s items=%d",
                     "set" if conversation_title else "missing",
@@ -2040,27 +2026,6 @@ class ContextRAGClient:
                     "fetch_conversation_artifacts: no timeline items conversation_id=%s",
                     conversation_id,
                 )
-            # Load sources pool from separate artifact
-            timeline_sources_pool = []
-            try:
-                res_sp = await self.recent(
-                    kinds=(f"artifact:{SOURCES_POOL_KIND}",),
-                    roles=("artifact",),
-                    limit=1,
-                    days=days,
-                    user_id=user_id,
-                    conversation_id=conversation_id,
-                    with_payload=True,
-                )
-                sp_items = list(res_sp.get("items") or [])
-                if sp_items:
-                    sp_payload = unwrap_payload(sp_items[0]) or {}
-                    if isinstance(sp_payload, dict) and isinstance(sp_payload.get("sources_pool"), list):
-                        timeline_sources_pool = sp_payload.get("sources_pool") or []
-                    elif isinstance(sp_payload, list):
-                        timeline_sources_pool = sp_payload
-            except Exception:
-                timeline_sources_pool = []
         except Exception:
             timeline_sources_pool = []
             conversation_title = None

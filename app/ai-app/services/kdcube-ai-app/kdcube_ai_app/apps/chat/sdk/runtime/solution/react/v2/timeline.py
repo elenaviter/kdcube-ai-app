@@ -137,6 +137,44 @@ def _tail_ts(blocks: List[Dict[str, Any]]) -> str:
     return ""
 
 
+def _compact_source_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not isinstance(row, dict):
+        return None
+    sid = row.get("sid")
+    try:
+        sid = int(sid)
+    except Exception:
+        return None
+    title = (row.get("title") or "").strip()
+    url = (row.get("url") or row.get("href") or "").strip()
+    text = (row.get("text") or "").strip()
+    if text and len(text) > 500:
+        text = text[:500] + "...(truncated)"
+    out = {"sid": sid}
+    if title:
+        out["title"] = title
+    if url:
+        out["url"] = url
+    if text:
+        out["text"] = text
+    published = row.get("published_time_iso")
+    if published:
+        out["published_time_iso"] = published
+    favicon = row.get("favicon")
+    if favicon:
+        out["favicon"] = favicon
+    return out
+
+
+def _compact_sources_pool_for_index(sources_pool: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    compact: List[Dict[str, Any]] = []
+    for row in (sources_pool or []):
+        item = _compact_source_row(row)
+        if item:
+            compact.append(item)
+    return compact
+
+
 def _collect_blocks(timeline: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(timeline, dict):
         return []
@@ -614,12 +652,12 @@ class Timeline:
             out_path = pathlib.Path(outdir) / TIMELINE_FILENAME
             payload = build_timeline_payload(
                 blocks=self._blocks_for_persist(),
-                sources_pool=list(self.sources_pool or []),
+                sources_pool=_compact_sources_pool_for_index(self.sources_pool or []),
                 conversation_title=self.conversation_title,
                 conversation_started_at=self.conversation_started_at,
                 cache_last_touch_at=self.cache_last_touch_at,
                 cache_last_ttl_seconds=self.cache_last_ttl_seconds,
-                include_sources_pool=False,
+                include_sources_pool=True,
             )
             out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
@@ -1811,12 +1849,12 @@ class Timeline:
             return
         payload = build_timeline_payload(
             blocks=self._blocks_for_persist(),
-            sources_pool=list(self.sources_pool or []),
+            sources_pool=_compact_sources_pool_for_index(self.sources_pool or []),
             conversation_title=self.conversation_title,
             conversation_started_at=self.conversation_started_at,
             cache_last_touch_at=self.cache_last_touch_at,
             cache_last_ttl_seconds=self.cache_last_ttl_seconds,
-            include_sources_pool=False,
+            include_sources_pool=True,
         )
         turn_ids = payload.get("turn_ids") or []
         extra_tags = [f"turn:{tid}" for tid in turn_ids if isinstance(tid, str) and tid]
@@ -1849,6 +1887,7 @@ class Timeline:
             sources_payload = {"sources_pool": list(self.sources_pool or [])}
             sources_text = json.dumps(
                 {
+                    "sources_pool": _compact_sources_pool_for_index(self.sources_pool or []),
                     "sources_pool_count": len(self.sources_pool or []),
                     "turn_ids": turn_ids,
                     "last_activity_at": payload.get("last_activity_at") or "",
