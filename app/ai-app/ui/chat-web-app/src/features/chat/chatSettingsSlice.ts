@@ -1,10 +1,10 @@
 import {createAsyncThunk, createSlice} from "@reduxjs/toolkit";
 import {ChatSettings, ChatSettingsState} from "./chatTypes.ts";
 import {RootState} from "../../app/store.ts";
+import {configPath} from "../../BuildConfig.ts";
 
 export const loadChatSettings = createAsyncThunk("chatSettings/load", async () => {
-    const path = (import.meta.env.CHAT_WEB_APP_CONFIG_FILE_PATH || "/config.json") as string
-    const response = await fetch(path)
+    const response = await fetch(configPath)
     if (response.ok) {
         return await response.json() as ChatSettings;
     }

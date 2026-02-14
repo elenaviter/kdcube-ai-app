@@ -13,5 +13,4 @@ function selectValue<T>(...args: T[]) {
 }
 
 export const chatAPIBasePath = selectValue(import.meta.env.CHAT_WEB_APP_CHAT_API_BASE_PATH, '') as string
-
-
+export const configPath = selectValue(import.meta.env.CHAT_WEB_APP_CONFIG_FILE_PATH, "/config.json") as string
