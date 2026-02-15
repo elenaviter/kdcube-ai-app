@@ -8,6 +8,14 @@ It focuses on tenant/project/bundle settings, instance identity, and parallelism
 - Compose/env wiring: `deployment/docker/all_in_one/sample_env/.env`
 - Service runtime env: `deployment/docker/all_in_one/sample_env/.env.backend`
 
+**Short pitch (capacity + limits)**  
+The chat service is **rate‑limited and capacity‑limited** by design:
+
+- Requests are admitted only if the system has capacity (gateway + queue backpressure).
+- Excess load is **rejected early** with `queue.enqueue_rejected`.
+- Concurrency limits keep each processor stable under load.
+
+For gateway‑level rate limits and backpressure configuration, see `docs/gateway-README.md`.
 ## Tenant / Project / Bundles
 
 These values scope **Redis keys**, **bundle registries**, and **control‑plane events**.

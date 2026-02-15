@@ -2,6 +2,13 @@
 
 This document describes what an **AI Bundle** is in KDCube, how bundles are loaded, and how to register them.
 
+**Why this matters (short pitch)**  
+Git‑defined AI bundles enable **safe hot reloads** across replicas:
+
+- **Only new requests** are routed to the updated bundle path
+- **In‑flight requests** finish on the previously loaded version
+- **Old bundle dirs** are cleaned up periodically (best‑effort, ref‑aware)
+
 ## What is an AI Bundle?
 
 An AI bundle is a **self‑contained Python package** that defines a workflow (agent) and optional tools/skills.

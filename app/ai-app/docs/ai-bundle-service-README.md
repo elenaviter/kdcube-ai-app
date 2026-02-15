@@ -1,9 +1,8 @@
-# AI Bundles in KDCube (Registry + Runtime)
+This document has moved.
 
-This document describes how AI bundles (dynamic plugins) are configured, stored, loaded, and executed in this service.
+**Canonical bundle management guide:**
 
-It is written for the chat service located at:
-- [kdcube_ai_app/apps/chat](../..)
+- `docs/ai-bundle-mgmt-README.md`
 
 ## What is a bundle
 

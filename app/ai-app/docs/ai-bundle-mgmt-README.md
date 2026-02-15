@@ -1,4 +1,4 @@
-# Agentic App Bundles — Developer Guide (multi-bundle, channel-agnostic runtime)
+# Agentic App Bundles — Developer Guide (canonical)
 
 This repo is the platform + Chat SDK for building **AI agents and chatbots** with streaming, tools, memory, and artifact storage.  
 You package logic as a **bundle** and run it inside the chat runtime with **live streaming**, **step timelines**, and **follow-ups** — without touching infra or UI plumbing.
@@ -10,6 +10,28 @@ You package logic as a **bundle** and run it inside the chat runtime with **live
 * **Accounting:** SDK LLM/Embedding calls are auto-tracked per tenant/project/user/service type; add your own breakdown with `with_accounting(...)`.
 
 > **Transport:** There is **no blocking REST** response path. All answers stream **asynchronously over the active channel** (Socket.IO, SSE, or integration relay). Workers may run on a different process/host and route results back to your client channel via Redis relay. The channel is negotiated by the client; it can be an intermediate relay feeding external integrations (Telegram, Slack, etc.).
+
+---
+
+## Bundle registry + runtime flow (visual)
+
+```mermaid
+graph TD
+  ENV[AGENTIC_BUNDLES_JSON] --> REG[Redis bundle registry<br/>per tenant/project]
+  API[Admin Integrations API] -->|update/merge| REG
+  REG -->|pubsub update| PROC[Processor config listener]
+  PROC -->|apply + clear caches| REGMEM[In‑process registry]
+
+  INGRESS[Ingress SSE/WS] -->|bundle_id| RESOLVE[resolve_bundle]
+  RESOLVE --> LOADER[agentic_loader<br/>load + instantiate]
+  LOADER --> WF[Workflow.run/execute_core]
+  WF --> STREAM[ChatCommunicator streams]
+```
+
+**Notes**
+- Registry is tenant/project scoped.
+- Updates are published to a tenant/project channel; each processor listens only to its own channel.
+- Only **new requests** are routed to a newly resolved bundle path.
 
 ---
 
@@ -396,6 +418,29 @@ with with_accounting("my.bundle.phase", metadata={"phase":"rerank","k":50}):
 ## Multi-bundle Registry (how the runtime finds you)
 
 Provide bundles via `AGENTIC_BUNDLES_JSON`. Two accepted shapes:
+
+### Registry storage & control plane
+
+The registry is stored per tenant/project:
+
+- key: `kdcube:config:bundles:mapping:{tenant}:{project}`
+- channel: `kdcube:config:bundles:update:{tenant}:{project}`
+
+Admin APIs:
+
+- `GET /admin/integrations/bundles`
+- `POST /admin/integrations/bundles` (merge/replace)
+- `POST /admin/integrations/bundles/reset-env`
+- `POST /admin/integrations/bundles/cleanup`
+
+### Bundle props (runtime overrides)
+
+Per bundle overrides are stored in Redis:
+
+- key: `kdcube:config:bundles:props:{tenant}:{project}:{bundle_id}`
+- channel: `kdcube:config:bundles:props:update:{tenant}:{project}`
+
+Bundles read props via `refresh_bundle_props(...)` and access them as `self.bundle_props`.
 
 ```bash
 # flat
