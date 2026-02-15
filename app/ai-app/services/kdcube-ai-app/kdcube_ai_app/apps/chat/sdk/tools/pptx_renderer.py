@@ -2146,4 +2146,4 @@ def render_pptx(
             _add_sources_slide(prs, sources_map, order)
 
     prs.save(str(outfile))
-    return filename
+    return str(outfile)
