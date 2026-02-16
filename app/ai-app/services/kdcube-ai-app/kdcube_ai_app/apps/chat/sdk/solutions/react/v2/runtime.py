@@ -1037,6 +1037,8 @@ class ReactSolverV2:
             notes = (decision.get("notes") or "").strip()
             tool_call = decision.get("tool_call") or {}
             tool_id = (tool_call.get("tool_id") or "").strip()
+            if action == "complete" and (decision.get("final_answer") or "").strip():
+                state["retry_decision"] = False
 
             plan_steps = state.get("plan_steps") or []
             if not plan_steps and self.ctx_browser:
