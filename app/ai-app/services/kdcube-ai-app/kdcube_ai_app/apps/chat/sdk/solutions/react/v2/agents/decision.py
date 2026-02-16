@@ -158,10 +158,7 @@ def build_decision_system_text(
     *,
     adapters: List[Dict[str, Any]],
     infra_adapters: Optional[List[Dict[str, Any]]] = None,
-    max_tokens: int = 2200,
 ) -> str:
-    thinking_budget = min(240, max(80, int(0.12 * max_tokens)))
-
     json_hint = (
         "{\n"
         "  \"action\": \"call_tool | complete | exit\",\n"
@@ -482,13 +479,12 @@ async def react_decision_stream_v2(
     infra_adapters: Optional[List[Dict[str, Any]]] = None,
     on_progress_delta=None,
     subscribers: Optional[Dict[str, List[Any]]] = None,
-    max_tokens: int = 2200,
+    max_tokens: int = 6000,
     user_blocks: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     system_text = build_decision_system_text(
         adapters=adapters,
         infra_adapters=infra_adapters,
-        max_tokens=max_tokens,
     )
     system_msg = create_cached_system_message([
         {"text": system_text, "cache": True},

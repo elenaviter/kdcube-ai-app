@@ -103,7 +103,8 @@ def round_key_for_block(blk: Dict[str, object]) -> Optional[str]:
         return None
     btype = (blk.get("type") or "").strip()
     if btype in FINAL_ROUND_TYPES:
-        return FINAL_ROUND_KEY
+        turn_id = (blk.get("turn_id") or "").strip()
+        return f"{FINAL_ROUND_KEY}:{turn_id}" if turn_id else FINAL_ROUND_KEY
     return None
 
 
@@ -155,6 +156,57 @@ def cache_points_for_blocks(
     )
 
 
+def previous_turn_tail_index(
+    blocks: List[Dict[str, object]],
+    *,
+    current_turn_id: Optional[str],
+) -> Optional[int]:
+    if not blocks or not current_turn_id:
+        return None
+    first_idx = None
+    for idx, blk in enumerate(blocks):
+        if not isinstance(blk, dict):
+            continue
+        btype = (blk.get("type") or "").strip()
+        if btype != "turn.header":
+            continue
+        if (blk.get("turn_id") or "").strip() == current_turn_id:
+            first_idx = idx
+            break
+    if first_idx is None:
+        return None
+    prev_idx = first_idx - 1
+    if prev_idx < 0:
+        return None
+    return prev_idx
+
+
+def cache_point_indices(
+    blocks: List[Dict[str, object]],
+    *,
+    current_turn_id: Optional[str],
+    min_rounds: int = 2,
+    offset: int = 2,
+    prefer_pre_tail_for_prev_turn: bool = False,
+) -> List[int]:
+    pts = cache_points_for_blocks(blocks, min_rounds=min_rounds, offset=offset)
+    prev_idx = previous_turn_tail_index(blocks, current_turn_id=current_turn_id)
+    if (
+        prefer_pre_tail_for_prev_turn
+        and prev_idx is not None
+        and pts.additional_idx is not None
+        and prev_idx < pts.additional_idx
+    ):
+        prev_idx = pts.additional_idx
+    indices: List[int] = []
+    for idx in (prev_idx, pts.additional_idx, pts.tail_idx):
+        if idx is None:
+            continue
+        if idx not in indices:
+            indices.append(idx)
+    return indices
+
+
 def compute_cache_points_rounds(
     blocks: List[Dict[str, object]],
     *,
@@ -198,6 +250,30 @@ def apply_cache_points_rounds(
         blocks[add_idx]["cache"] = True
     if tail_idx is not None:
         blocks[tail_idx]["cache"] = True
+
+
+def apply_cache_points_with_prev_turn(
+    blocks: List[Dict[str, object]],
+    *,
+    current_turn_id: Optional[str],
+    min_rounds: int = 2,
+    offset: int = 2,
+    prefer_pre_tail_for_prev_turn: bool = False,
+) -> None:
+    if not blocks:
+        return
+    for blk in blocks:
+        if isinstance(blk, dict):
+            blk.pop("cache", None)
+    indices = cache_point_indices(
+        blocks,
+        current_turn_id=current_turn_id,
+        min_rounds=min_rounds,
+        offset=offset,
+        prefer_pre_tail_for_prev_turn=prefer_pre_tail_for_prev_turn,
+    )
+    for idx in indices:
+        blocks[idx]["cache"] = True
 
 
 def block_index_for_path(blocks: List[Dict[str, object]], path: str) -> Optional[int]:

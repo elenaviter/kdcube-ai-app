@@ -206,6 +206,20 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
             artifact=artifact,
             outdir=pathlib.Path(state["outdir"]),
         )
+        if (not hosted) and artifact_rel and artifact_rel != artifact_name:
+            # Fallback: some deployments set outdir per-turn; try relpath lookup.
+            try:
+                if isinstance(artifact.get("value"), dict):
+                    artifact["value"]["path"] = artifact_rel
+                hosted = await host_artifact_file(
+                    hosting_service=react.hosting_service,
+                    comm=react.comm,
+                    runtime_ctx=ctx_browser.runtime_ctx,
+                    artifact=artifact,
+                    outdir=pathlib.Path(state["outdir"]),
+                )
+            except Exception:
+                pass
         await emit_hosted_files(
             hosting_service=react.hosting_service,
             hosted=hosted,

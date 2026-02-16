@@ -152,8 +152,6 @@ async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 "tokens_hidden": tokens_hidden,
                 "tail_tokens": tail_tokens,
                 "tail_limit": tail_limit,
-                "tail_rounds": tail_rounds,
-                "tail_rounds_limit": tail_rounds_limit,
             }
             add_block(ctx_browser, {
                 "turn": turn_id,

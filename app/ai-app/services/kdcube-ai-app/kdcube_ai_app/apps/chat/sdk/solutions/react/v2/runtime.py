@@ -861,7 +861,6 @@ class ReactSolverV2:
             system_text_fn=lambda: build_decision_system_text(
                 adapters=announced_adapters,
                 infra_adapters=extra_adapters_for_decision,
-                max_tokens=6000,
             ),
             render_params={
                 "cache_last": True,

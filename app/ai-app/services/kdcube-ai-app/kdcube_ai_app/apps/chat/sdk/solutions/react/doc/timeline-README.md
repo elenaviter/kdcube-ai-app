@@ -58,9 +58,10 @@ When the visible window exceeds the model budget, the timeline compacts earlier 
 ```
 
 ## Cache points (round‑based)
-Timeline uses two cache checkpoints (see `context-caching-README.md`):
-- **checkpoint 1**: intermediate (pre‑tail)
-- **checkpoint 2**: tail
+Timeline uses cache checkpoints (see `context-caching-README.md`):
+- **checkpoint 1**: last block of the previous turn (if any)
+- **checkpoint 2**: intermediate (pre‑tail)
+- **checkpoint 3**: tail
 
 Cache points are computed by **rounds** (tool_call_id plus the final completion round):
 - `RuntimeCtx.cache.cache_point_min_rounds`

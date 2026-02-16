@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.caching import (
-    apply_cache_points_rounds,
+    apply_cache_points_with_prev_turn,
     tail_rounds_from_path as cache_tail_rounds_from_path,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.proto import RuntimeCtx
@@ -710,6 +710,7 @@ class Timeline:
     _lock: Optional["asyncio.Lock"] = field(default=None, init=False, repr=False)
     _cache_trace_prev: Optional[Dict[str, Any]] = field(default=None, init=False, repr=False)
     _cache_ttl_bootstrap: bool = field(default=False, init=False, repr=False)
+    _suppress_prev_turn_cache: bool = field(default=False, init=False, repr=False)
     version: int = 1
     ts: str = ""
     blocks: List[Dict[str, Any]] = None
@@ -928,6 +929,8 @@ class Timeline:
         last = self.blocks[-1] if self.blocks else None
         if isinstance(last, dict) and last.get("type") == "turn.header" and last.get("turn_id") == turn_id:
             return
+        # New turn: reset hide-driven cache suppression.
+        self._suppress_prev_turn_cache = False
         self.blocks.append(self._block(
             type="turn.header",
             author="system",
@@ -1336,6 +1339,7 @@ class Timeline:
         status = "ok" if replaced else "not_found"
         if replaced:
             self.update_timestamp()
+            self._suppress_prev_turn_cache = True
         return {"status": status, "blocks_hidden": replaced, "tokens_hidden": tokens_hidden}
 
     def tail_tokens_from_path(self, path: str) -> Optional[int]:
@@ -1765,8 +1769,14 @@ class Timeline:
                 offset = int(getattr(cache_cfg, "cache_point_offset_rounds", 2) or 2)
             except Exception:
                 offset = 2
-        # Prefer two cache points when possible (intermediate + last stable round).
-        apply_cache_points_rounds(blocks, min_rounds=min_rounds, offset=offset)
+        # Cache points: last block of previous turn (if any), pre-tail, and tail.
+        apply_cache_points_with_prev_turn(
+            blocks,
+            current_turn_id=getattr(self.runtime, "turn_id", None),
+            min_rounds=min_rounds,
+            offset=offset,
+            prefer_pre_tail_for_prev_turn=bool(self._suppress_prev_turn_cache),
+        )
         if cache_last and blocks:
             blocks[-1]["cache"] = True
 
