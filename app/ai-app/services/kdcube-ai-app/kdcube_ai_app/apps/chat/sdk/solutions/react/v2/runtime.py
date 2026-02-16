@@ -1031,6 +1031,8 @@ class ReactSolverV2:
             else:
                 state["invalid_action_retries"] = 0
                 state["force_compaction_next_decision"] = False
+                # Clear any pending retry flags on a valid decision.
+                state["retry_decision"] = False
             action = (decision.get("action") or "").strip()
             notes = (decision.get("notes") or "").strip()
             tool_call = decision.get("tool_call") or {}
