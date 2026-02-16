@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.caching import (
-    apply_cache_points_with_prev_turn,
+    cache_point_indices,
     tail_rounds_from_path as cache_tail_rounds_from_path,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.proto import RuntimeCtx
@@ -1757,6 +1757,9 @@ class Timeline:
     def _apply_cache_markers(self, blocks: List[Dict[str, Any]], *, cache_last: bool) -> None:
         if not blocks:
             return
+        for b in blocks:
+            if isinstance(b, dict):
+                b.pop("cache", None)
         cache_cfg = getattr(self.runtime, "cache", None)
         min_rounds = 2
         offset = 2
@@ -1769,15 +1772,18 @@ class Timeline:
                 offset = int(getattr(cache_cfg, "cache_point_offset_rounds", 2) or 2)
             except Exception:
                 offset = 2
-        # Cache points: last block of previous turn (if any), pre-tail, and tail.
-        apply_cache_points_with_prev_turn(
+        # Cache points: previous-turn tail, pre-tail, tail (max 3).
+        indices = cache_point_indices(
             blocks,
             current_turn_id=getattr(self.runtime, "turn_id", None),
             min_rounds=min_rounds,
             offset=offset,
             prefer_pre_tail_for_prev_turn=bool(self._suppress_prev_turn_cache),
         )
-        if cache_last and blocks:
+        for idx in indices:
+            if 0 <= idx < len(blocks):
+                blocks[idx]["cache"] = True
+        if cache_last and blocks and not indices:
             blocks[-1]["cache"] = True
 
     def _block_trace_sig(self, blk: Dict[str, Any]) -> Dict[str, Any]:

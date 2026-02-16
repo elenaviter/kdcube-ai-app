@@ -10,6 +10,7 @@ from kdcube_ai_app.infra.service_hub.inventory import (
     create_cached_system_message,
     create_cached_human_message,
 )
+from kdcube_ai_app.infra.service_hub.errors import ServiceException, ServiceError, ServiceKind
 from kdcube_ai_app.apps.chat.sdk.streaming.versatile_streamer import (
     ChannelSpec,
     stream_with_channels,
@@ -526,6 +527,20 @@ async def react_decision_stream_v2(
     )
 
     service_error = (meta or {}).get("service_error") if isinstance(meta, dict) else None
+    if service_error:
+        try:
+            if isinstance(service_error, ServiceError):
+                raise ServiceException(service_error)
+            if isinstance(service_error, dict):
+                raise ServiceException(ServiceError.model_validate(service_error))
+            raise ServiceException(ServiceError(
+                kind=ServiceKind.llm,
+                service_name="react.decision",
+                error_type=type(service_error).__name__,
+                message=str(service_error),
+            ))
+        except ServiceException:
+            raise
 
     res_thinking = results.get("thinking")
     res_json = results.get("ReactDecisionOutV2")
