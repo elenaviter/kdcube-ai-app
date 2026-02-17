@@ -641,6 +641,19 @@ class RenderingTools:
                 conv.pdf_options.display_header_footer = False
                 conv.pdf_options.landscape = landscape
                 content = _ensure_html_wrapper(content, title=title or "Document")
+                if resolve_citations:
+                    try:
+                        from kdcube_ai_app.apps.chat.sdk.tools.citations import (
+                            build_citation_map_from_sources as _build_citation_map_from_sources,
+                            replace_html_citations as _replace_html_citations,
+                        )
+                        sources = load_sources_pool_from_disk()
+                        if sources:
+                            cmap = _build_citation_map_from_sources(sources)
+                            if cmap:
+                                content = _replace_html_citations(content, cmap)
+                    except Exception:
+                        pass
 
                 await conv.convert_html_string(
                     html=content,
