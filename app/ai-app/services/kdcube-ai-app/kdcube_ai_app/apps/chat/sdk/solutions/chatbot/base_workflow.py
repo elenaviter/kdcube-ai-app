@@ -1204,6 +1204,11 @@ class BaseWorkflow():
             # sources_pool is stored in timeline artifact, not in turn log
         except Exception:
             payload = {"turn_id": turn_id, "ts": (scratchpad.started_at or ""), "blocks": []}
+        blocks_count = len(payload.get("blocks") or []) if isinstance(payload, dict) else 0
+        self.logger.log(
+            f"[workflow] persist turn_log start: turn_id={turn_id} blocks={blocks_count}",
+            level="INFO",
+        )
         await self.ctx_client.save_turn_log_as_artifact(
             tenant=tenant, project=project, user=user,
             conversation_id=conversation_id, user_type=user_type,
@@ -1212,15 +1217,39 @@ class BaseWorkflow():
             payload=payload,
             extra_tags=[],
         )
+        self.logger.log(
+            f"[workflow] persist turn_log done: turn_id={turn_id}",
+            level="INFO",
+        )
 
         # MEMORY management. post-answer reconciliation (cadenced). Only if turn finished w/ service error.
         if ok:
             if on_flush_completed_hook:
                 await on_flush_completed_hook(scratchpad)
+        tl_blocks = 0
+        sp_len = 0
+        if self.ctx_browser and self.ctx_browser.timeline:
+            try:
+                tl_blocks = len(list(self.ctx_browser.timeline.blocks or []))
+            except Exception:
+                tl_blocks = 0
+        if self.ctx_browser:
+            try:
+                sp_len = len(list(self.ctx_browser.sources_pool or []))
+            except Exception:
+                sp_len = 0
+        self.logger.log(
+            f"[workflow] persist timeline start: turn_id={turn_id} blocks={tl_blocks} sources_pool={sp_len}",
+            level="INFO",
+        )
         try:
             await self.ctx_browser.persist_timeline()
+            self.logger.log(
+                f"[workflow] persist timeline done: turn_id={turn_id}",
+                level="INFO",
+            )
         except Exception:
-            pass
+            self.logger.log(traceback.format_exc(), "ERROR")
         # (19) done
 
         total_ms = int((time.perf_counter() - t_turn0) * 1000)
