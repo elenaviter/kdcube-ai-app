@@ -1044,16 +1044,16 @@ class BaseWorkflow():
                     filename = (att.get("filename") or att.get("name") or "").strip()
                     if not filename or not turn_id:
                         continue
-                    local_path = f"{turn_id}/attachments/{filename}"
+                    physical_path = f"{turn_id}/attachments/{filename}"
                     hosted_uri = (att.get("hosted_uri") or att.get("source_path") or att.get("path") or att.get("key") or "").strip()
                     row = {
-                        "url": hosted_uri or local_path,
+                        "url": hosted_uri or physical_path,
                         "title": filename,
                         "text": "",
                         "source_type": "attachment",
                         "mime": (att.get("mime") or att.get("mime_type") or "").strip(),
                         "size_bytes": att.get("size") or att.get("size_bytes"),
-                        "local_path": local_path,
+                        "physical_path": physical_path,
                         "artifact_path": f"fi:{turn_id}.user.attachments/{filename}",
                         "turn_id": turn_id,
                     }

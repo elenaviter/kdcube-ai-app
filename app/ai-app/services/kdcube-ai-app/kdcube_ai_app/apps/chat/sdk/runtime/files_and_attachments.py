@@ -91,7 +91,7 @@ def collect_local_file_sources_from_content(
             "title": path.name,
             "source_type": "file",
         }
-        row["local_path"] = str(rel_path)
+        row["physical_path"] = str(rel_path)
         if mime:
             row["mime"] = mime
         if isinstance(size_bytes, int):
@@ -220,7 +220,7 @@ def resolve_cited_file_sources_from_content(
             "url": hosted_uri or str(rel_path),
             "title": filename,
             "source_type": "file",
-            "local_path": str(rel_path),
+            "physical_path": str(rel_path),
         }
         if artifact_path:
             row["artifact_path"] = artifact_path

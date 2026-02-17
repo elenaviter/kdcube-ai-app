@@ -23,6 +23,19 @@ def _bump_sources_pool_next_sid(pool: List[Dict[str, Any]]) -> None:
         pass
 
 
+def _is_sources_pool_allowed_mime(mime: str) -> bool:
+    if not mime:
+        return True
+    mime = mime.strip().lower()
+    if mime.startswith("text/"):
+        return True
+    if mime.startswith("image/"):
+        return True
+    if mime == "application/pdf":
+        return True
+    return False
+
+
 def merge_sources_pool_for_attachment_rows(
     *,
     ctx_browser: Any,
@@ -30,8 +43,18 @@ def merge_sources_pool_for_attachment_rows(
 ) -> None:
     if not rows:
         return
+    allowed = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        mime = (r.get("mime") or "").strip()
+        if not _is_sources_pool_allowed_mime(mime):
+            continue
+        allowed.append(r)
+    if not allowed:
+        return
     existing = list(ctx_browser.sources_pool or [])
-    merged = dedupe_sources_by_url(existing, rows)
+    merged = dedupe_sources_by_url(existing, allowed)
     ctx_browser.set_sources_pool(sources_pool=merged)
     _bump_sources_pool_next_sid(merged)
 
@@ -50,6 +73,9 @@ def merge_sources_pool_for_file_rows(
         physical_path = (r.get("physical_path") or "").strip()
         if not physical_path:
             continue
+        mime = (r.get("mime") or "").strip()
+        if not _is_sources_pool_allowed_mime(mime):
+            continue
         raw = r.get("raw") or {}
         url_val = (raw.get("hosted_uri") or raw.get("rn") or raw.get("key") or physical_path).strip()
         filename = (r.get("filename") or pathlib.Path(physical_path).name).strip()
@@ -58,9 +84,9 @@ def merge_sources_pool_for_file_rows(
             "title": filename,
             "text": "",
             "source_type": "file",
-            "mime": (r.get("mime") or "").strip(),
+            "mime": mime,
             "size_bytes": r.get("size_bytes"),
-            "local_path": physical_path,
+            "physical_path": physical_path,
             "artifact_path": (r.get("artifact_path") or "").strip(),
             "turn_id": (r.get("turn_id") or "").strip(),
         }
@@ -117,17 +143,17 @@ async def ensure_rendering_assets(
                 row = by_sid.get(int(sid) if sid is not None else 0)
                 if not isinstance(row, dict):
                     continue
-                local_path = (row.get("local_path") or "").strip()
-                if not local_path:
+                physical_path = (row.get("physical_path") or row.get("local_path") or "").strip()
+                if not physical_path:
                     ap = (row.get("artifact_path") or "").strip()
                     if ap.startswith("fi:") and ".files/" in ap:
                         tid, rel = ap.split(".files/", 1)
-                        local_path = f"{tid[3:]}/files/{rel}" if tid.startswith("fi:") else ""
+                        physical_path = f"{tid[3:]}/files/{rel}" if tid.startswith("fi:") else ""
                     elif ap.startswith("fi:") and ".user.attachments/" in ap:
                         tid, rel = ap.split(".user.attachments/", 1)
-                        local_path = f"{tid[3:]}/attachments/{rel}" if tid.startswith("fi:") else ""
-                if local_path and local_path.startswith("turn_") and ("/files/" in local_path or "/attachments/" in local_path):
-                    sid_rehost.append(local_path)
+                        physical_path = f"{tid[3:]}/attachments/{rel}" if tid.startswith("fi:") else ""
+                if physical_path and physical_path.startswith("turn_") and ("/files/" in physical_path or "/attachments/" in physical_path):
+                    sid_rehost.append(physical_path)
             if sid_rehost:
                 rehost = await rehost_files_from_timeline(
                     ctx_browser=ctx_browser,

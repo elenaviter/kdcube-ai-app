@@ -22,24 +22,37 @@ Always normalized to:
 - `<turn_id>/attachments/<name>` (attachments)
 
 **Block metadata**  
-All artifact‑bearing blocks include a `meta` object with at least:
-- `artifact_path` (logical path)
-- `physical_path` (OUT_DIR‑relative, when applicable)
-- `tool_call_id`
-- `mime`, `kind`, `visibility`, `channel` (when applicable)
-- `sources_used` (if known)
-- `edited` (boolean if a prior version exists)
+Artifacts are described by a **metadata JSON result block** plus one or more **content blocks**:
+- **Metadata block** is a `react.tool.result` JSON block whose **text** is a **safe digest** of artifact
+  metadata (no hosted_uri/rn/key/physical_path).
+  - `artifact_path` (logical path)
+  - `physical_path` (OUT_DIR‑relative, when applicable)
+  - `tool_call_id`
+  - `mime`, `kind`, `visibility`, `channel` (when applicable)
+  - `sources_used` (if known)
+  - `edited` (boolean if a prior version exists)
+- **Content block(s)** carry the same logical path in `path` and include the payload:
+  - `text` for textual artifacts
+  - `base64` for binary artifacts (image/pdf)
+  - `meta.tool_call_id` is present.
+- **File blocks** also include **hosting metadata** in `meta` (`hosted_uri`, `rn`, `key`, `physical_path`)
+    and the safe digest in `meta.digest`.
+
+For **user attachments**, `user.attachment.meta` stores the safe digest in `text`, while the
+attachment file block stores hosting metadata + `meta.digest`.
 
 ## Discovery Rules
 
 Artifacts are reconstructed from **timeline blocks**, not from the turn log directly.
 
 1) **Find by logical path**
-   - Group blocks by `meta.artifact_path`.
-   - Within a group, the **latest** block (by timeline order) is the current version.
+   - Match blocks by `path == logical_path`.
+   - If a metadata JSON block exists with `artifact_path == logical_path`, it supplies the canonical
+     `mime/kind/visibility/physical_path` metadata.
 
 2) **Group by tool call**
    - Blocks for the same artifact in one tool call share `meta.tool_call_id`.
+   - `tool_id` is derived via the call map (`tool_call_id → tool_id`) from the tool call block.
    - Grouping key: `(tool_call_id, artifact_path)`.
 
 3) **Edits**
@@ -69,6 +82,10 @@ The rewrite is recorded as a **protocol notice** in the timeline so the agent ca
 **react.read / fetch_ctx**
 - Accept logical path (fi:/ar:/so:/su:/tc:).
 - Resolve artifact by logical path; return canonical artifact payload.
+- For `fi:` paths, `react.read` **rehosts** the file into OUT_DIR and reconstructs the
+  metadata block from `meta.digest` (if present). It then emits:
+  - metadata digest block (text only)
+  - file content block (text or base64) when readable; binary files emit **metadata only**
 
 **react.patch**
 - Accepts physical path (OUT_DIR‑relative).
@@ -83,8 +100,9 @@ The rewrite is recorded as a **protocol notice** in the timeline so the agent ca
 ## Compaction Notes
 
 Compaction summarizes **blocks**, not artifacts. Artifact metadata must remain visible:
-- Compaction serializer includes `artifact_path`, `physical_path`, `mime`, and `tool_call_id`.
-- This preserves discovery even if older blocks are summarized.
+- Compaction serializer includes the **metadata JSON block** (`artifact_path`, `physical_path`, `mime`,
+  `tool_call_id`, etc.).
+- This preserves discovery even if older content blocks are summarized.
 
 ## Artifact Mentions Cache Misses → Pull
 
@@ -103,7 +121,7 @@ the required assets before rendering.
 2) **SID mentions**
    - The content is scanned for citation tokens (`[[S:n]]`).
    - Each SID is resolved against `sources_pool`.
-   - If a SID maps to a file/attachment source (via `local_path` or `artifact_path`),
+   - If a SID maps to a file/attachment source (via `physical_path` or `artifact_path`),
      that file is rehosted into OUT_DIR.
    - If a SID is missing in sources_pool, a warning notice is emitted
      (`tool_call_warning.missing_sources`).
@@ -111,9 +129,10 @@ the required assets before rendering.
 ### Required sources_pool metadata
 
 To enable SID→file resolution, file/attachment sources MUST carry:
-- `local_path` (e.g., `turn_123/attachments/photo.png`)
+- `physical_path` (e.g., `turn_123/attachments/photo.png`)
 - `artifact_path` (e.g., `fi:turn_123.user.attachments/photo.png`)
 - `source_type` = `attachment` or `file`
+- `mime` (used for read/render and announce)
 
 These fields are populated automatically for:
 - **User attachments** at turn start (source_type=`attachment`)

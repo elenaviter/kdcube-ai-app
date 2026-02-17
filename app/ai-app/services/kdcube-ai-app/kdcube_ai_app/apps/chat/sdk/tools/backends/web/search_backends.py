@@ -1047,4 +1047,17 @@ async def web_search(
         r.pop("provider", None)
         r["authority"] = "web"  # Tag for downstream
 
+    # Guard against huge base64 blobs in search results.
+    try:
+        max_b64 = int(os.getenv("WEB_SEARCH_MAX_BASE64_CHARS") or os.getenv("SOURCES_POOL_MAX_BASE64_CHARS") or 4000)
+    except Exception:
+        max_b64 = 4000
+    if max_b64 and max_b64 > 0:
+        for r in final_rows:
+            if not isinstance(r, dict):
+                continue
+            b64 = r.get("base64")
+            if isinstance(b64, str) and len(b64) > max_b64:
+                r.pop("base64", None)
+
     return final_rows

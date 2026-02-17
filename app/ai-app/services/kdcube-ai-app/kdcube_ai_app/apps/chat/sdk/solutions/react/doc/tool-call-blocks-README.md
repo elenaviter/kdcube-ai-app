@@ -55,10 +55,16 @@ When a decision uses `action=call_tool`, the timeline receives blocks in this or
 
 4. **Tool results**
    - One or more `react.tool.result` blocks:
-     - **Meta block** (JSON) with `artifact_path`, `physical_path`, `mime`, `kind`, `visibility`, `tool_id`, `tool_call_id`, etc.
+     - **Meta block** (JSON) with a **safe digest**:
+       `artifact_path`, `physical_path`, `mime`, `kind`, `visibility`, `tool_call_id`, `sources_used`, etc.
      - **Content block** (text or base64) when applicable.
    - The tool result path (`tc:<turn_id>.<tool_call_id>.result`) is a **rendered view** (status/errors + metadata).
      It does **not** contain full file contents. Read the `artifact_path` shown there to access full content.
+
+Notes:
+- File content blocks (`path=fi:...`) store hosting info in `meta` (`hosted_uri`, `rn`, `key`, `physical_path`)
+  plus `meta.digest`. Hosted fields are never rendered to the model.
+- Exec tools emit `react.tool.code` **before** the tool call block.
 
 ---
 
@@ -70,6 +76,29 @@ When a decision uses `action=call_tool`, the timeline receives blocks in this or
 
 If the target path is **before** the pre‑tail cache point, the tool returns
 `code=hide_before_cache` and does not hide anything.
+
+---
+
+## react.read
+
+`react.read` brings existing artifacts into the visible timeline.
+
+Behavior
+- Emits a **status block first** at `tc:<turn_id>.<tool_call_id>.result` with:
+  `paths`, `missing`, `missing_skills`, `exists_in_visible_context`, `total_tokens`.
+- Emits result blocks **after** the status block.
+- Re-exposes hidden artifacts (output blocks always have `hidden=false`).
+- Dedup: if the reconstructed block already exists in visible context (same path + hash),
+  it is not re-emitted and the status block records `exists_in_visible_context`.
+
+Path handling
+- `fi:` rehosts the file locally and emits:
+  - metadata digest block (JSON text)
+  - file content block when readable (text or base64 for pdf/image); binary files emit metadata only
+- `so:sources_pool[...]`:
+  - file/attachment rows resolve as `fi:`
+  - non-file rows render as sources_pool text
+- `sk:` emits ACTIVE skill blocks
 
 ---
 
@@ -219,6 +248,53 @@ Blocks:
   "mime": "text/markdown",
   "text": "Runtime error: execution_failed — Missing output files: turn_1/files/report.xlsx\nFile errors:\n- turn_1/files/report.xlsx: file not produced\nSucceeded:\n- turn_1/files/summary.pdf"
 }
+```
+
+---
+
+## Examples (schematic)
+
+### 1) Exec produces PDF + text + Excel
+```
+react.notes (optional)
+react.tool.code            # emitted before tool call
+react.tool.call
+react.tool.result          # exec report at tc:<turn>.<tc>.result (status/errors + produced files)
+react.tool.result          # meta digest for fi:<turn>.files/report.pdf
+react.tool.result          # file block (base64 pdf) at fi:<turn>.files/report.pdf
+react.tool.result          # meta digest for fi:<turn>.files/notes.txt
+react.tool.result          # file block (text) at fi:<turn>.files/notes.txt
+react.tool.result          # meta digest for fi:<turn>.files/data.xlsx
+react.tool.result          # file block (no text/base64; binary) at fi:<turn>.files/data.xlsx
+```
+
+### 2) Web search call
+```
+react.notes (optional)
+react.tool.call            # tool_id=web_tools.web_search
+react.tool.result          # meta digest for so:sources_pool[1-5]
+react.tool.result          # sources_pool content (text, truncated policy)
+```
+
+### 3) react.read mixed inputs
+Paths:
+- so:sources_pool[1,2] (row 1 = file, row 2 = web result)
+- fi:<turnA>.user.attachments/notes.txt
+- fi:<turnA>.user.attachments/image.png
+- fi:<turnB>.files/board.pptx
+
+```
+react.tool.call
+react.tool.result          # STATUS block first at tc:<turn>.<tc>.result (paths/missing/exists)
+react.tool.result          # meta digest for fi:<turnX>.files/report.pdf
+react.tool.result          # file block (base64) for fi:<turnX>.files/report.pdf
+react.tool.result          # sources_pool text for non-file rows
+react.tool.result          # meta digest for fi:<turnA>.user.attachments/notes.txt
+react.tool.result          # file block (text) for fi:<turnA>.user.attachments/notes.txt
+react.tool.result          # meta digest for fi:<turnA>.user.attachments/image.png
+react.tool.result          # file block (base64) for fi:<turnA>.user.attachments/image.png
+react.tool.result          # meta digest for fi:<turnB>.files/board.pptx
+react.tool.result          # file block (binary, no base64) for fi:<turnB>.files/board.pptx
 ```
 
 ---

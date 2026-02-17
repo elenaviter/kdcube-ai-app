@@ -219,6 +219,24 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
         edited=edited,
     )
     add_block(react, meta_block)
+    meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id, "tool_id": tool_id}
+    try:
+        meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
+        if isinstance(meta_text, str) and meta_text.strip():
+            meta_extra["digest"] = meta_text
+    except Exception:
+        pass
+    for key in ("hosted_uri", "rn", "key", "physical_path"):
+        try:
+            val = (artifact.get("value") or {}).get(key) or artifact.get(key)
+        except Exception:
+            val = None
+        if val:
+            meta_extra[key] = val
+    if not meta_extra.get("physical_path"):
+        legacy = (artifact.get("value") or {}).get("local_path") or artifact.get("local_path")
+        if legacy:
+            meta_extra["physical_path"] = legacy
     add_block(react, {
         "turn": turn_id,
         "type": "react.tool.result",
@@ -226,6 +244,9 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
         "mime": "text/markdown",
         "path": artifact_path,
         "text": patch_text,
+        "meta": {
+            **meta_extra,
+        },
     })
     add_block(react, {
         "turn": turn_id,
@@ -234,6 +255,9 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
         "mime": "application/json",
         "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
         "text": json.dumps({"path": artifact_path, "ok": True}, ensure_ascii=False),
+        "meta": {
+            "tool_call_id": tool_call_id,
+        },
     })
 
     state["last_tool_result"] = []

@@ -280,7 +280,7 @@ def _normalize_citation_chars(text: str) -> str:
 # ---- shared optional attributes carried through citations ----
 CITATION_OPTIONAL_ATTRS = (
     "provider", "published_time_iso", "modified_time_iso", "fetched_time_iso", "expiration",
-    "mime", "base64", "size_bytes", "source_type", "rn", "local_path", "artifact_path", "author",
+    "mime", "base64", "size_bytes", "source_type", "rn", "physical_path", "artifact_path", "author",
     "turn_id",
     "content", "content_length", "fetch_status",
     "objective_relevance", "query_relevance", "authority", "favicon_url",
@@ -300,7 +300,7 @@ canonical_source_shape_reference = {
     "mime": str,                 # optional
     "base64": str,               # optional (multimodal payloads)
     "size_bytes": int,           # optional (multimodal payload size)
-    "local_path": str,           # optional (local file path for file sources)
+    "physical_path": str,        # optional (OUT_DIR-relative file path for file sources)
     "artifact_path": str,        # optional (turn_id.files.<artifact_name>)
     "turn_id": str,              # optional (turn where source first appeared)
 
@@ -490,6 +490,11 @@ def normalize_citation_item(it: Dict[str, Any], allow_missing_url: bool = False)
     for k in CITATION_OPTIONAL_ATTRS:
         if it.get(k) not in (None, ""):
             out[k] = it[k]
+    # Normalize legacy local_path -> physical_path and drop local_path
+    phys = (out.get("physical_path") or it.get("local_path") or "").strip()
+    if phys:
+        out["physical_path"] = phys
+    out.pop("local_path", None)
     return out
 
 def normalize_sources_any(val: Any) -> List[Dict[str, Any]]:
@@ -564,9 +569,9 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
 
     def _key_for(row: Dict[str, Any]) -> str:
         url = normalize_url(row.get("url",""))
-        local_path = (row.get("local_path") or "").strip()
-        if local_path:
-            return f"local:{local_path}"
+        physical_path = (row.get("physical_path") or row.get("local_path") or "").strip()
+        if physical_path:
+            return f"local:{physical_path}"
         return url
 
     def _touch(row: Dict[str, Any]):

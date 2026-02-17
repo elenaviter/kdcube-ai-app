@@ -31,6 +31,7 @@ import json
 import re, unicodedata
 from urllib.parse import urlsplit
 from dataclasses import dataclass
+import os
 from typing import Dict, List, Tuple, Optional, Iterable, Any, Set
 
 from kdcube_ai_app.apps.chat.sdk.tools.web.favicon_cache import enrich_sources_pool_with_favicons
@@ -282,13 +283,32 @@ def _normalize_citation_chars(text: str) -> str:
 # ---- shared optional attributes carried through citations ----
 CITATION_OPTIONAL_ATTRS = (
     "provider", "published_time_iso", "modified_time_iso", "fetched_time_iso", "expiration",
-    "mime", "base64", "size_bytes", "source_type", "rn", "local_path", "artifact_path", "author",
+    "mime", "base64", "size_bytes", "source_type", "rn", "physical_path", "artifact_path", "author",
     "turn_id",
     "content", "content_length", "fetch_status",
     "objective_relevance", "query_relevance", "authority", "favicon_url",
     "favicon", "favicon_status",
     "provider_rank", "weighted_rank"
 )
+
+# Guard against huge base64 blobs in sources_pool.
+_MAX_SOURCES_POOL_BASE64_CHARS = int(os.getenv("SOURCES_POOL_MAX_BASE64_CHARS") or 4000)
+_MAX_SOURCES_POOL_BASE64_CHARS_ATTACHMENTS = int(
+    os.getenv("SOURCES_POOL_MAX_BASE64_CHARS_ATTACHMENTS") or _MAX_SOURCES_POOL_BASE64_CHARS
+)
+
+
+def _is_attachment_like_source(item: dict) -> bool:
+    try:
+        if (item.get("source_type") or "").strip().lower() in ("attachment", "file"):
+            return True
+        for key in ("artifact_path", "physical_path", "rn"):
+            val = item.get(key)
+            if isinstance(val, str) and ("attachments/" in val or ":attachment:" in val):
+                return True
+    except Exception:
+        return False
+    return False
 
 canonical_source_shape_reference = {
     "sid": int,
@@ -302,7 +322,7 @@ canonical_source_shape_reference = {
     "mime": str,                 # optional
     "base64": str,               # optional (multimodal payloads)
     "size_bytes": int,           # optional (multimodal payload size)
-    "local_path": str,           # optional (local file path for file sources)
+    "physical_path": str,        # optional (OUT_DIR-relative file path for file sources)
     "artifact_path": str,        # optional (turn_id.files.<artifact_name>)
     "turn_id": str,              # optional (turn where source first appeared)
 
@@ -346,6 +366,14 @@ def normalize_url(u: str) -> str:
         return urlunsplit((scheme, netloc, path, query, fragment))
     except Exception:
         return (u or "").strip()
+
+def _get_physical_path(row: Dict[str, Any]) -> str:
+    """
+    Back-compat: prefer physical_path, fall back to legacy local_path.
+    """
+    if not isinstance(row, dict):
+        return ""
+    return (row.get("physical_path") or row.get("local_path") or "").strip()
 
 # ---- item and collection normalizers ----
 def debug_citation_tokens(text: str) -> list[dict]:
@@ -492,6 +520,19 @@ def normalize_citation_item(it: Dict[str, Any], allow_missing_url: bool = False)
     for k in CITATION_OPTIONAL_ATTRS:
         if it.get(k) not in (None, ""):
             out[k] = it[k]
+    # Normalize legacy local_path -> physical_path and drop local_path
+    phys = (out.get("physical_path") or it.get("local_path") or "").strip()
+    if phys:
+        out["physical_path"] = phys
+    out.pop("local_path", None)
+    # Strip overly large base64 to avoid prompt blowups.
+    b64 = out.get("base64")
+    if isinstance(b64, str):
+        limit = _MAX_SOURCES_POOL_BASE64_CHARS
+        if _is_attachment_like_source(out):
+            limit = _MAX_SOURCES_POOL_BASE64_CHARS_ATTACHMENTS
+        if limit > 0 and len(b64) > limit:
+            out.pop("base64", None)
     return out
 
 def normalize_sources_any(val: Any) -> List[Dict[str, Any]]:
@@ -566,14 +607,18 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
 
     def _key_for(row: Dict[str, Any]) -> str:
         url = normalize_url(row.get("url",""))
-        local_path = (row.get("local_path") or "").strip()
-        if local_path:
-            return f"local:{local_path}"
+        physical_path = _get_physical_path(row)
+        if physical_path:
+            return f"local:{physical_path}"
         return url
 
     def _touch(row: Dict[str, Any]):
         nonlocal max_sid
         url = normalize_url(row.get("url",""))
+        physical_path = _get_physical_path(row)
+        if physical_path and not row.get("physical_path"):
+            row["physical_path"] = physical_path
+        row.pop("local_path", None)
         key = _key_for(row)
         if not key:
             return

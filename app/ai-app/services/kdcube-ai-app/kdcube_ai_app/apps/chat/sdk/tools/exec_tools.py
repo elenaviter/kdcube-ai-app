@@ -457,7 +457,8 @@ async def run_exec_tool(
             })
             continue
         text_content = ""
-        if _is_text_mime(a.get("mime") or ""):
+        is_text = _is_text_mime(a.get("mime") or "")
+        if is_text:
             try:
                 with p.open("rb") as fh:
                     data = fh.read(EXEC_TEXT_PREVIEW_MAX_BYTES + 1)
@@ -474,7 +475,7 @@ async def run_exec_tool(
             "path": rel,
             "filename": pathlib.Path(rel).name,
             "mime": a["mime"],
-            "text": text_content or a["description"],
+            "text": text_content if is_text else "",
             "description": a["description"],
             "size_bytes": stats.get("size_bytes") if isinstance(stats, dict) else None,
             "write_warning": stats.get("write_warning") if isinstance(stats, dict) else None,

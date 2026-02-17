@@ -38,6 +38,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.sources import (
     merge_sources_pool_for_file_rows,
 )
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
+from kdcube_ai_app.tools.content_type import is_text_mime_type
 
 TOOL_SPEC = None  # external tools are dynamic
 
@@ -222,7 +223,6 @@ async def handle_external_tool(*,
                     add_block(ctx_browser, build_tool_result_error_block(
                         turn_id=ctx_browser.runtime_ctx.turn_id,
                         tool_call_id=tool_call_id,
-                        tool_id=tool_id,
                         code="pre_exec_missing_paths",
                         message="Exec code referenced files that were not found in timeline.",
                         details={"missing": rehost.get("missing")},
@@ -341,6 +341,9 @@ async def handle_external_tool(*,
             "mime": "text/markdown",
             "path": tc_result_path(turn_id=ctx_browser.runtime_ctx.turn_id or "", call_id=tool_call_id),
             "text": report_text,
+            "meta": {
+                "tool_call_id": tool_call_id,
+            },
         })
     for idx, tr in enumerate(items):
         if not isinstance(tr, dict):
@@ -554,6 +557,24 @@ async def handle_external_tool(*,
         )
         add_block(ctx_browser, meta_block)
 
+        raw_val = artifact_view.raw or {}
+        raw_value = raw_val.get("value") if isinstance(raw_val.get("value"), dict) else {}
+        meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id}
+        try:
+            meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
+            if isinstance(meta_text, str) and meta_text.strip():
+                meta_extra["digest"] = meta_text
+        except Exception:
+            pass
+        for key in ("hosted_uri", "rn", "key", "physical_path"):
+            val = raw_value.get(key) or raw_val.get(key)
+            if val:
+                meta_extra[key] = val
+        if not meta_extra.get("physical_path"):
+            legacy = raw_value.get("local_path") or raw_val.get("local_path")
+            if legacy:
+                meta_extra["physical_path"] = legacy
+
         mime = (artifact_view.mime or (artifact_view.raw.get("value") or {}).get("mime") or "").strip().lower()
         if visibility == "external" and (mime.startswith("image/") or mime == "application/pdf") and physical_path:
             abs_path = pathlib.Path(state["outdir"]) / physical_path
@@ -563,18 +584,31 @@ async def handle_external_tool(*,
                 artifact_path=artifact_path,
                 abs_path=abs_path,
                 mime=mime,
+                meta_extra=meta_extra,
             )
             if bin_block:
                 add_block(ctx_browser, bin_block)
         if isinstance(value, dict) and isinstance(value.get("text"), str) and value.get("text").strip():
-            mime_out = value.get("mime") or "text/plain"
+            mime_out = (value.get("mime") or "").strip() or "text/plain"
+            if is_text_mime_type(mime_out):
+                add_block(ctx_browser, {
+                    "turn": turn_id,
+                    "type": "react.tool.result",
+                    "call_id": tool_call_id,
+                    "mime": mime_out,
+                    "path": artifact_path,
+                    "text": value.get("text"),
+                    "meta": meta_extra,
+                })
+        elif visibility == "external" and meta_extra and artifact_path:
+            # Emit a metadata-only file block so hosting info is attached to the file path.
             add_block(ctx_browser, {
                 "turn": turn_id,
                 "type": "react.tool.result",
                 "call_id": tool_call_id,
-                "mime": mime_out,
+                "mime": mime or "",
                 "path": artifact_path,
-                "text": value.get("text"),
+                "meta": meta_extra,
             })
 
         if tools_insights.is_search_tool(tool_id):

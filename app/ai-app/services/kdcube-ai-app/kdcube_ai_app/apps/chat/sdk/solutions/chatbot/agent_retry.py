@@ -84,6 +84,10 @@ async def retry_with_compaction(
     except ServiceException as exc:
         if not sanitize_on_fail or not is_context_limit_error(exc.err):
             raise
+        try:
+            print(f"[compaction] context-limit detected; forcing sanitize (error={exc.err.error_type}, message={exc.err.message})")
+        except Exception:
+            pass
         if emit_status:
             await emit_status(["compacting", "organizing the thread"])
         blocks = await ctx_browser.timeline.render(

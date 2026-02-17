@@ -119,6 +119,12 @@ Use react.read(path) to restore a logical path (fi:/ar:/so:/sk:).
 - inserts cache checkpoints (see `context-caching-README.md`)
 - optionally appends sources/announce blocks at the tail
 
+Assistant completion blocks (`assistant.completion`) are rendered with an extra line when
+`meta.sources_used` is present:
+```
+[sources_used: [1,2,3]]
+```
+
 Debugging:
 - `timeline.render(..., debug_print=True)` prints the rendered message stream,
   with cache points marked (e.g., `=>[1]`).

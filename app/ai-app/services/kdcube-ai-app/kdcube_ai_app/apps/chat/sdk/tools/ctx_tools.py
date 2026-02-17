@@ -365,7 +365,7 @@ class ContextTools:
                         "title": title,
                         "text": "Embedded media",
                         "source_type": source_type,
-                        "local_path": path,
+                        "physical_path": path,
                     })
 
         by_url: dict[str, dict] = {}
@@ -408,9 +408,12 @@ class ContextTools:
                 pass
 
         for src in all_sources:
-            local_path = (src.get("local_path") or "").strip()
-            url = normalize_url(src.get("url", "")) if not local_path else ""
-            key = f"local:{local_path}" if local_path else url
+            physical_path = (src.get("physical_path") or src.get("local_path") or "").strip()
+            if physical_path and not src.get("physical_path"):
+                src["physical_path"] = physical_path
+                src.pop("local_path", None)
+            url = normalize_url(src.get("url", "")) if not physical_path else ""
+            key = f"local:{physical_path}" if physical_path else url
             if not key:
                 continue
 
@@ -441,14 +444,14 @@ class ContextTools:
 
             row = {
                 "sid": sid,
-                "url": local_path or url,
+                "url": physical_path or url,
                 "title": src.get("title", ""),
                 "text": src.get("text") or src.get("body") or src.get("content") or "",
             }
             if src.get("content"):
                 row["content"] = src["content"]
-            if local_path:
-                row["local_path"] = local_path
+            if physical_path:
+                row["physical_path"] = physical_path
             for k in CITATION_OPTIONAL_ATTRS:
                 if src.get(k):
                     row[k] = src[k]
@@ -513,7 +516,7 @@ class ContextTools:
             "\n"
             "NOT SUPPORTED in fetch_ctx (use physical paths instead):\n"
             "• fi:<turn_id>.* (attachments/files) — use OUT_DIR/<turn_id>/attachments/... or OUT_DIR/<turn_id>/files/...\n"
-            "• sk:<skill id> — read skills via react.read (not from exec)\n"
+            "• sk:<skill id> — skills cannot be read from code. Only with react.read (NOT FROM EXEC)\n"
             "\n"
             "CANONICAL ARTIFACT SHAPE\n"
             "{\n"
@@ -522,8 +525,14 @@ class ContextTools:
             "  \"mime\": \"text/plain\"|\"application/pdf\"|...,\n"
             "  \"sources_used\": [sid, sid, ...],\n"
             "  \"filepath\": \"...\"   # only for kind=file, relative to outdir\n"
-            "  \"text\" or \"base64\" payload depending on mime/kind\n"
+            "  \"text\" payload (base64 only if the underlying artifact stores base64)\n"
             "}\n"
+            "\n"
+            "NOTE: For so:sources_pool[...] fetch_ctx returns the raw list of source rows (not the\n"
+            "canonical artifact shape). If a row includes base64, it will be returned as-is.\n"
+            "File/attachment rows use physical_path (OUT_DIR-relative) for file access.\n"
+            "Common row fields: sid, source_type, title, text, url, mime, size_bytes,\n"
+            "artifact_path, physical_path, hosted_uri/rn/key, base64 (rare).\n"
         ),
     )
     async def fetch_ctx(
@@ -549,9 +558,36 @@ class ContextTools:
             if p.startswith("sk:"):
                 return {"ret": None, "err": _err("invalid_path_skill", "fetch_ctx does not support sk: paths. Use react.read for skills before exec.")}
 
-            from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.timeline import resolve_artifact_from_timeline
+            from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.timeline import resolve_artifact_from_timeline, _collect_blocks
 
             timeline = _read_timeline() or {}
+            # Strict path gating for exec use: only allow user/assistant or sources_pool or tc: call/result.
+            if p.startswith("ar:"):
+                if not (p.endswith(".user.prompt") or p.endswith(".assistant.completion")):
+                    return {"ret": None, "err": _err("invalid_path_ar", "fetch_ctx supports only ar:<turn>.user.prompt or ar:<turn>.assistant.completion")}
+            elif p.startswith("tc:"):
+                if not (p.endswith(".call") or p.endswith(".result")):
+                    return {"ret": None, "err": _err("invalid_path_tc", "fetch_ctx supports only tc:<turn>.<call>.call or tc:<turn>.<call>.result")}
+                # Merge all text blocks for this tc path (status + meta + notices).
+                blocks = _collect_blocks(timeline) or []
+                matching = [b for b in blocks if isinstance(b, dict) and (b.get("path") or "") == p]
+                if not matching:
+                    return {"ret": None, "err": _err("not_found", "Path not found", {"path": p})}
+                texts: List[str] = []
+                mime = ""
+                for b in matching:
+                    txt = b.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        texts.append(txt)
+                        if not mime:
+                            mime = (b.get("mime") or "").strip()
+                combined = "\n\n".join(texts)
+                return {"ret": {"path": p, "kind": "display", "mime": mime or "text/markdown", "text": combined}, "err": None}
+            elif p.startswith("so:") or p.startswith("sources_pool["):
+                pass
+            else:
+                return {"ret": None, "err": _err("invalid_path_kind", "fetch_ctx supports only ar: user/assistant, so:sources_pool, or tc: call/result")}
+
             art = resolve_artifact_from_timeline(timeline, p)
             if art is None:
                 return {"ret": None, "err": _err("not_found", "Path not found", {"path": p})}

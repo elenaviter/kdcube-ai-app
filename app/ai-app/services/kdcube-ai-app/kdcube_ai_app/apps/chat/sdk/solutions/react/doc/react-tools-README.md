@@ -9,7 +9,7 @@ Common behaviors
 - If decision `notes` are present, a `react.notes` block is emitted **before** the tool call.
 - All tool calls append a react.tool.call block (params only) and one or more react.tool.result blocks.
 - Tool result blocks are **rendered views** (status/errors + artifact metadata; inline output only for non‑file tools).
-  They do **not** contain full file contents; use the `artifact_path` shown there to read the artifact.
+  File artifacts are referenced by `artifact_path`; use `react.read(...)` to load content.
 - Artifacts created by tools are referenced by stable paths (use turn_id, never current_turn):
   - fi:<turn_id>.files/<relative_path>
   - ar:<turn_id>.artifacts.<artifact_path>
@@ -17,10 +17,20 @@ Common behaviors
 
 react.read
 - Purpose: load an existing artifact into the timeline for inspection.
-- Effect: emits a tool.result block with the artifact content (text or multimodal) and metadata.
-- Visibility: does not change artifact visibility; it only makes content visible in the timeline.
+- Effect:
+  - Emits a **status block first** (at `tc:<turn>.<call>.result`) with `paths`, `missing`,
+    and `exists_in_visible_context` (dedup).
+  - Emits artifact blocks **after** the status block.
+- Visibility: re‑exposes hidden artifacts; output blocks always clear `hidden`.
+- Dedup: if the reconstructed block already exists in visible context (same path + hash),
+  it is **not** re‑emitted and the status block reports `exists_in_visible_context`.
 Params:
 - paths: list[str] (FIRST FIELD). One or more artifact/context paths to load.
+Behavior by path:
+- `fi:` → rehost file locally, emit metadata digest block + file content (text or base64 if pdf/image;
+  binary files emit metadata only).
+- `so:sources_pool[...]` → if rows contain file/attachment sources, they are resolved as `fi:`; other rows
+  are rendered as sources_pool text.
 Example result (simplified):
 ```json
 { "type": "react.tool.result", "path": "ar:turn_123.artifacts.notes", "mime": "text/markdown", "text": "..." }

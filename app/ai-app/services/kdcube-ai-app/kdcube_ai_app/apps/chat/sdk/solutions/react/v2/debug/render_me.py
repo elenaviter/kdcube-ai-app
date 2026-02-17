@@ -13,6 +13,9 @@ timeline = "/private/tmp/ctx_v2_ojv3mr3q/out/timeline.json"
 timeline_path = "/private/tmp/ctx_v2_td4ndbki/out/timeline.json"
 timeline_path = "/private/tmp/ctx_v2_n7r_dhdj/out/timeline.json"
 timeline_path = "/private/tmp/ctx_v2_17a75_a8/out/timeline.json"
+timeline_path = "/private/tmp/ctx_v2_ewsnudac/out/timeline.json"
+timeline_path = "/private/tmp/ctx_v2_rjygn3gq/out/timeline.json"
+timeline_path = "/private/tmp/ctx_v2_tktimeaj/out/timeline.json"
 with open(timeline_path, "r") as f:
     timeline_dict = json.loads(f.read())
 
@@ -25,7 +28,9 @@ async def render():
         if b.get("type") == "text":
             txts.append(b.get("text"))
         else:
-            txts.append(f"Block type: {b.get('type')}, content: {b.get('content')}")
+            content = b.get('content')
+            data = b.get('data') or ''
+            txts.append(f"Block type: {b.get('type')}, media_type: {b.get('media_type')}, data_len: {len(data)}")
     txts = "\n".join(txts)
     print(txts)
     with open("rendered.txt", "w") as f:

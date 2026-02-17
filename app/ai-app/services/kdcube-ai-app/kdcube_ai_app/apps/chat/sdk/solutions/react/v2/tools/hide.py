@@ -123,6 +123,9 @@ async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 "mime": "application/json",
                 "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
                 "text": json.dumps(payload, ensure_ascii=False, indent=2),
+                "meta": {
+                    "tool_call_id": tool_call_id,
+                },
             },
         )
         state["last_tool_result"] = payload
@@ -160,6 +163,9 @@ async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 "mime": "application/json",
                 "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
                 "text": json.dumps(payload, ensure_ascii=False, indent=2),
+                "meta": {
+                    "tool_call_id": tool_call_id,
+                },
             })
             state["last_tool_result"] = payload
             return state
@@ -197,6 +203,9 @@ async def handle_react_hide(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         "mime": "application/json",
         "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
         "text": json.dumps(payload, ensure_ascii=False, indent=2),
+        "meta": {
+            "tool_call_id": tool_call_id,
+        },
     })
     state["last_tool_result"] = payload
     return state

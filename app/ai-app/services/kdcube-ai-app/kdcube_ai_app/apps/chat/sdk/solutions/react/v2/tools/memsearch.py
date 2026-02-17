@@ -190,6 +190,9 @@ async def handle_react_memsearch(*, ctx_browser: Any, state: Dict[str, Any], too
         "mime": "application/json",
         "path": artifact_path,
         "text": json.dumps(payload, ensure_ascii=False, indent=2),
+        "meta": {
+            "tool_call_id": tool_call_id,
+        },
     })
     state["last_tool_result"] = search_hits_formatted
     return state

@@ -530,19 +530,17 @@ async def react_decision_stream_v2(
 
     service_error = (meta or {}).get("service_error") if isinstance(meta, dict) else None
     if service_error:
-        try:
-            if isinstance(service_error, ServiceError):
-                raise ServiceException(service_error)
-            if isinstance(service_error, dict):
-                raise ServiceException(ServiceError.model_validate(service_error))
-            raise ServiceException(ServiceError(
-                kind=ServiceKind.llm,
-                service_name="react.decision",
-                error_type=type(service_error).__name__,
-                message=str(service_error),
-            ))
-        except ServiceException:
-            raise
+        # Infra constructs ServiceError; decision only propagates it.
+        if isinstance(service_error, ServiceError):
+            raise ServiceException(service_error)
+        if isinstance(service_error, dict):
+            raise ServiceException(ServiceError.model_validate(service_error))
+        raise ServiceException(ServiceError(
+            kind=ServiceKind.llm,
+            service_name="react.decision",
+            error_type=type(service_error).__name__,
+            message=str(service_error),
+        ))
 
     res_thinking = results.get("thinking")
     res_json = results.get("ReactDecisionOutV2")

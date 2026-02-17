@@ -43,6 +43,9 @@ def tool_call_block(*, ctx_browser, tool_call_id: str, tool_id: str, payload: Di
         "path": tc_call_path(turn_id=turn_id, call_id=tool_call_id),
         "text": json.dumps(payload, ensure_ascii=False, indent=2),
         "ts": ts,
+        "meta": {
+            "tool_call_id": tool_call_id,
+        },
     })
 
 
@@ -185,7 +188,7 @@ async def host_artifact_file(
     outdir: pathlib.Path,
 ) -> List[Dict[str, Any]]:
     """
-    Best-effort hosting for file artifacts. Mutates artifact in-place with hosted_uri/rn/key/local_path.
+    Best-effort hosting for file artifacts. Mutates artifact in-place with hosted_uri/rn/key/physical_path.
     Returns hosted file records (possibly empty).
     """
     try:
@@ -207,14 +210,22 @@ async def host_artifact_file(
             return []
         h0 = hosted[0]
         hosted_uri = (h0.get("hosted_uri") or "").strip()
-        if isinstance(artifact.get("value"), dict) and hosted_uri:
-            artifact["value"]["hosted_uri"] = hosted_uri
-            artifact["value"]["key"] = h0.get("key")
-            artifact["value"]["rn"] = h0.get("rn")
-            artifact["value"]["local_path"] = h0.get("local_path")
+        hosted_key = (h0.get("key") or "").strip()
+        hosted_rn = (h0.get("rn") or "").strip()
+        hosted_physical = (h0.get("physical_path") or h0.get("local_path") or "").strip()
+        if isinstance(artifact.get("value"), dict):
+            if hosted_uri:
+                artifact["value"]["hosted_uri"] = hosted_uri
+            if hosted_key:
+                artifact["value"]["key"] = hosted_key
+            if hosted_rn:
+                artifact["value"]["rn"] = hosted_rn
+            if hosted_physical:
+                artifact["value"]["physical_path"] = hosted_physical
         if hosted_uri:
             artifact["hosted_uri"] = hosted_uri
-            artifact["rn"] = h0.get("rn")
+        if hosted_rn:
+            artifact["rn"] = hosted_rn
         return hosted
     except Exception:
         return []

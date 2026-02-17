@@ -198,7 +198,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
     if isinstance(artifact.get("value"), dict):
         artifact["value"]["path"] = artifact_name
     hosted = []
-    if kind == "file" and visibility != "internal":
+    if visibility != "internal":
         hosted = await host_artifact_file(
             hosting_service=react.hosting_service,
             comm=react.comm,
@@ -223,7 +223,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         await emit_hosted_files(
             hosting_service=react.hosting_service,
             hosted=hosted,
-            should_emit=(channel != "internal"),
+            should_emit=(kind == "file" and channel != "internal"),
         )
         abs_path = pathlib.Path(state["outdir"]) / artifact_name
         if not abs_path.exists():
@@ -262,6 +262,24 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         tokens=tokens_written,
     )
     add_block(ctx_browser, meta_block)
+    meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id}
+    try:
+        meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
+        if isinstance(meta_text, str) and meta_text.strip():
+            meta_extra["digest"] = meta_text
+    except Exception:
+        pass
+    for key in ("hosted_uri", "rn", "key", "physical_path"):
+        try:
+            val = (artifact.get("value") or {}).get(key) or artifact.get(key)
+        except Exception:
+            val = None
+        if val:
+            meta_extra[key] = val
+    if not meta_extra.get("physical_path"):
+        legacy = (artifact.get("value") or {}).get("local_path") or artifact.get("local_path")
+        if legacy:
+            meta_extra["physical_path"] = legacy
     if isinstance(text, str) and text.strip():
         fmt_norm = (fmt or "").strip().lower()
         if fmt_norm in {"json"}:
@@ -277,7 +295,10 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
             "mime": mime,
             "path": artifact_path,
             "text": text,
-            "meta": {"channel": channel} if channel == "internal" else None,
+            "meta": {
+                **meta_extra,
+                **({"channel": channel} if channel == "internal" else {}),
+            },
         })
     state["last_tool_result"] = []
     return state

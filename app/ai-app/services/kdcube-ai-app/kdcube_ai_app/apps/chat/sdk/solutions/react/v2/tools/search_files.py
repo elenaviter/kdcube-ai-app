@@ -82,6 +82,9 @@ async def handle_react_search_files(*, ctx_browser: Any, state: Dict[str, Any], 
         "mime": "application/json",
         "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
         "text": json.dumps({"hits": hits}, ensure_ascii=False, indent=2),
+        "meta": {
+            "tool_call_id": tool_call_id,
+        },
     })
     state["last_tool_result"] = hits
     return state

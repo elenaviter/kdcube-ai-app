@@ -49,15 +49,17 @@ Blocks are dicts with:
    - `mime`: based on output (`application/json`, `text/markdown`, `image/png`, `application/pdf`, ...)
    - `path`: `tc:<turn_id>.<call_id>.result`
    - `text` or `base64` content
-   - Metadata is encoded inside the JSON `text` payload for meta blocks:
+   - Metadata JSON block text contains a **safe digest** (no hosted_uri/rn/key/physical_path):
      - `artifact_path`
      - `physical_path` (OUT_DIR‑relative)
      - `mime`
      - `kind` (`file` | `display`)
      - `visibility` (`external` | `internal`)
-     - `tool_id`, `tool_call_id`
+     - `tool_call_id` (tool_id is derived via the tool call map)
      - `sources_used` (list of SIDs, if any)
-    - Hosting metadata is **not** rendered in the timeline block.
+   - File content blocks (path `fi:...`) store hosting info in `meta`:
+     `hosted_uri`, `rn`, `key`, `physical_path`, plus `meta.digest`.
+   - Hosting metadata is **not** rendered in the timeline text.
 
 3) Exec Code (react.tool.code)
    - `type`: `react.tool.code`
@@ -66,6 +68,7 @@ Blocks are dicts with:
    - `text`: code content
    - Rendered as:
      `[AI Agent wrote code] fi:<turn_id>.code.<call_id>:\n<code>`
+   - For exec tools, `react.tool.code` is emitted **before** the tool call block.
 
 ### Example: exec with missing output file
 ```json
@@ -80,6 +83,10 @@ Blocks are dicts with:
 
 Search/fetch tools emit only SIDs in the result block; full content lives in `sources_pool`.
 
+### react.read status block
+`react.read` always emits a **status JSON block first** at `tc:<turn_id>.<call_id>.result` with
+`paths`, `missing`, and `exists_in_visible_context`. Result blocks follow after the status block.
+
 ### Decision notes (react.notes)
 Decision `notes` are emitted as their own block **before** the tool call:
 - `type`: `react.notes`
@@ -90,6 +97,13 @@ Decision `notes` are emitted as their own block **before** the tool call:
 
 These notes are user-visible and rendered as:
 `[AI Agent say]: <notes>`
+
+### Assistant completion (assistant.completion)
+Assistant completions can include `meta.sources_used` (SIDs). When rendered for the model,
+this is injected as a separate line:
+```
+[sources_used: [1,2,3]]
+```
 
 ### Internal notes (react.note)
 `react.write(channel="internal")` emits:
@@ -199,6 +213,10 @@ id=plan_abc
 
 [react.tool.result] (JSON content)
 [{ "sid": 1, "title": "...", "url": "https://..." }, { "sid": 2, "title": "...", "url": "https://..." }]
+
+[ASSISTANT MESSAGE]
+[sources_used: [1,2]]
+Here are the top three places...
 
 [react.tool.call] (JSON)
 { "tool_id": "react.patch", "tool_call_id": "tc_6a3f1e0d9b21", "params": { "path": "turn_1770603271112_2yz1lp/files/draft.md", "patch": "..." } }

@@ -95,55 +95,54 @@ def build_artifact_meta_block(
     tokens: Optional[int] = None,
 ) -> Dict[str, Any]:
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    meta = {
+    meta_json = {
         "artifact_path": artifact_path,
         "physical_path": physical_path,
         "mime": (artifact.get("value") or {}).get("mime") or artifact.get("mime"),
         "kind": artifact.get("artifact_kind") or artifact.get("kind"),
         "visibility": artifact.get("visibility"),
         "channel": artifact.get("channel"),
-        "tool_id": artifact.get("tool_id"),
         "tool_call_id": tool_call_id,
         "edited": bool(edited),
         "ts": ts,
     }
     size_bytes = (artifact.get("value") or {}).get("size_bytes") or artifact.get("size_bytes")
     if size_bytes is not None:
-        meta["size_bytes"] = size_bytes
+        meta_json["size_bytes"] = size_bytes
     description = (artifact.get("value") or {}).get("description") or artifact.get("description")
     if description:
-        meta["description"] = description
+        meta_json["description"] = description
     write_warning = (artifact.get("value") or {}).get("write_warning")
     if write_warning:
-        meta["write_warning"] = write_warning
+        meta_json["write_warning"] = write_warning
     sources_used = artifact.get("sources_used") or (artifact.get("value") or {}).get("sources_used")
     if sources_used:
-        meta["sources_used"] = sources_used
+        meta_json["sources_used"] = sources_used
     if artifact.get("error"):
-        meta["error"] = artifact.get("error")
+        meta_json["error"] = artifact.get("error")
     if tokens is not None:
         try:
-            meta["tokens"] = int(tokens)
+            meta_json["tokens"] = int(tokens)
         except Exception:
-            meta["tokens"] = tokens
-    for key in ("hosted_uri", "rn", "key", "local_path"):
-        val = (artifact.get("value") or {}).get(key)
-        if val:
-            meta[key] = val
+            meta_json["tokens"] = tokens
     # Drop empty or None attributes to avoid confusing metadata.
-    meta = {
+    meta_json = {
         k: v
-        for k, v in meta.items()
+        for k, v in meta_json.items()
         if v is not None and (not isinstance(v, str) or v.strip() != "")
+    }
+    block_meta = {
+        "tool_call_id": tool_call_id,
     }
     return {
         "turn": turn_id,
         "type": "react.tool.result",
         "call_id": tool_call_id,
         "mime": "application/json",
-        "path": artifact_path if (artifact_path or "").startswith("so:") else tc_result_path(turn_id=turn_id, call_id=tool_call_id),
-        "text": json.dumps(meta, ensure_ascii=False, indent=2),
+        "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
+        "text": json.dumps(meta_json, ensure_ascii=False, indent=2),
         "ts": ts,
+        "meta": block_meta,
     }
 
 
@@ -154,6 +153,7 @@ def build_artifact_binary_block(
     artifact_path: str,
     abs_path: pathlib.Path,
     mime: str,
+    meta_extra: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     try:
         if not abs_path.exists() or not abs_path.is_file():
@@ -162,6 +162,14 @@ def build_artifact_binary_block(
         b64 = base64.b64encode(data).decode("utf-8")
     except Exception:
         return None
+    meta = {
+        "artifact_path": artifact_path,
+        "tool_call_id": tool_call_id,
+    }
+    if isinstance(meta_extra, dict):
+        for k, v in meta_extra.items():
+            if v is not None:
+                meta[k] = v
     return {
         "turn": turn_id,
         "type": "react.tool.result",
@@ -169,10 +177,7 @@ def build_artifact_binary_block(
         "mime": mime,
         "path": artifact_path,
         "base64": b64,
-        "meta": {
-            "artifact_path": artifact_path,
-            "tool_call_id": tool_call_id,
-        },
+        "meta": meta,
     }
 
 
@@ -180,14 +185,12 @@ def build_tool_result_error_block(
     *,
     turn_id: str,
     tool_call_id: str,
-    tool_id: str,
     code: str,
     message: str,
     details: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     payload = {
-        "tool_id": tool_id,
         "tool_call_id": tool_call_id,
         "error": {
             "code": code,
@@ -204,6 +207,9 @@ def build_tool_result_error_block(
         "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
         "text": json.dumps(payload, ensure_ascii=False, indent=2),
         "ts": ts,
+        "meta": {
+            "tool_call_id": tool_call_id,
+        },
     }
 
 
@@ -450,13 +456,13 @@ class ArtifactView:
                 continue
             if (meta.get("kind") or "").strip() != "file":
                 continue
-            if not (meta.get("hosted_uri") or meta.get("rn") or meta.get("key") or meta.get("local_path")):
+            if not (meta.get("hosted_uri") or meta.get("rn") or meta.get("key") or meta.get("physical_path") or meta.get("local_path")):
                 continue
             artifact_path = (meta.get("artifact_path") or "").strip()
             if not artifact_path or artifact_path in seen:
                 continue
             seen.add(artifact_path)
-            physical_path = (meta.get("physical_path") or "").strip()
+            physical_path = (meta.get("physical_path") or meta.get("local_path") or "").strip()
             rec = {
                 "artifact_path": artifact_path,
                 "filename": physical_path.split("/")[-1] if physical_path else "",
@@ -730,4 +736,3 @@ def normalize_file_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(filename, str) and filename.strip():
         out["filename"] = filename.strip().split("/")[-1]
     return out
-

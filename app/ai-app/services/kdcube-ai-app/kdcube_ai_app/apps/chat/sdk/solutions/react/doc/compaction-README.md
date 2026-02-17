@@ -1,141 +1,198 @@
 # Context Compaction (v2)
 
-Compaction is triggered by `Timeline.render(...)` when the estimated size of
-the block stream would exceed limits. It inserts `conv.range.summary` at a cut point
-and hides older blocks from render. The timeline is **persisted from the last summary onward**,
-so blocks before the summary are evicted at persistence time.
+Compaction is the **hard ceiling** protection for context length. It inserts a
+`conv.range.summary` block and drops older blocks from the **visible** stream.
+It is separate from TTL pruning (which hides blocks with replacement text).
 
-## When it happens
-1) **Before sending** (normal path)
-   - `timeline(...)` estimates size.
-   - If too large, it compacts immediately and inserts `conv.range.summary` before history.
-2) **Retry on context-limit error**
-   - Agent call fails with a context-length error.
-   - Caller retries with `force_sanitize=True`, which forces compaction.
+---
 
-## What it does
-- Selects a cut point based on a token budget (keeps recent tokens, never cuts on tool results).
-- Creates a `conv.range.summary` block that inventories the compacted window.
-- Stores that summary in the index (not in the turn log).
-- Inserts the summary block in-place at the cut point.
-- `timeline.render(...)` slices the visible stream from the latest summary onward.
-  Older blocks are retained **in memory** for the current turn, but are **evicted** on persist.
+## When Compaction Runs
+Compaction runs in two situations:
 
-## Cut-point heuristic (details)
-1) **Find recent window**
-   - Estimate tokens for visible blocks.
-   - Keep roughly 70% of the budget for the most recent content.
-   - Optionally protect the last *N* turns (default `keep_recent_turns=6`).
+1) **Normal render path (pre‑send)**
+   - `Timeline.render(...)` estimates total tokens.
+   - If `system + blocks > 0.9 * max_tokens`, it compacts immediately.
 
-2) **Pick a safe cut point**
-   - Candidate cut points are blocks that are *not* tool results (never cut inside a tool result).
-   - Prefer a cut point that aligns with a turn boundary or a message boundary.
-     - *Turn boundary*: `turn.header` or `user.prompt`.
-     - *Message boundary*: `user.prompt`, `assistant.completion`, `react.tool.call`,
-       or any block authored by `user`/`assistant`.
+2) **Retry after context‑limit error**
+   - If the decision call fails with a context‑limit error, `retry_with_compaction`
+     forces compaction and retries.
 
-3) **Split-turn handling**
-   - If the cut falls inside a turn, summarize the prefix of that turn separately and append it to the main summary
-     under **"Turn Context (split turn)"**.
-   - The **cut point block itself remains** in the retained (post‑summary) window.
-   - Only the prefix blocks before the cut are summarized.
+In both cases, compaction is executed inside `Timeline.render()` via
+`sanitize_context_blocks(...)`.
 
-## Pseudo‑code (exact heuristics)
-```
-blocks = timeline.blocks
-sys_est = len(system_text)/4
-block_est = estimate_tokens(blocks)
-if sys_est + block_est <= max_tokens*0.9: return blocks
+---
 
-boundary_start = last_summary_index + 1
-context_budget = max_tokens - sys_est
-keep_recent_tokens = 0.7 * context_budget
+## Render Pipeline Order (Important)
+During `render()`:
 
-if keep_recent_turns:
-  recent_start = find_recent_turn_start(keep_recent_turns)
-  recent_tokens = estimate_tokens(blocks[recent_start:])
-  keep_recent_tokens = max(keep_recent_tokens, recent_tokens)
+1. **TTL pruning** (`apply_session_cache_ttl_pruning`) runs first.
+2. **Compaction** (`sanitize_context_blocks`) runs next if needed or forced.
+3. The visible stream is sliced **after the latest summary**.
+4. Hidden blocks are replaced with their `replacement_text`.
+5. Cache points are recomputed for the visible stream.
 
-cut_index = find_cut_point(keep_recent_tokens)
-if cut falls inside a turn:
-  prefix_blocks = turn_prefix
-  prefix_summary = summarize_turn_prefix(prefix_blocks)
+This ordering ensures compaction works on the already‑pruned timeline and that
+cache points remain valid after compaction.
 
-history_blocks = blocks[boundary_start:cut_index] (excluding summaries)
-summary = summarize(history_blocks, previous_summary)
-summary += prefix_summary (if any)
+---
 
-insert summary block at cut_index
-return updated blocks
-```
+## Exact Cut‑Point Rules (Authoritative)
+Cut points are chosen by `_find_compaction_cut_point` using these exact rules:
 
-### Split turns
-If compaction cuts inside a turn, the prefix of that turn is summarized separately and
-merged into the main summary as a “Turn Context (split turn)” section.
+### 1) Candidate cut points
+A block is a **cut‑point candidate** if `_is_cut_point_block(block)` returns true:
 
-### Compaction digest
-The summary block includes `meta.compaction_digest` with details about:
-- streamed artifacts (path, mime, visibility, sources_used)
-- file writes / patches / exec outputs (via tool classification)
-- memsearch hits (query + paths + turn_ids)
-- hidden blocks and their replacement text
+- **Reject**: `react.tool.result`, `conv.range.summary`
+- **Accept**: `user.prompt`, `assistant.completion`, `react.tool.call`, `turn.header`
+- **Accept**: any block with `author` in `{user, assistant}`
+- **Accept**: any block with `author` present and **not** in `{system, tool}`
 
-## Hooks
-If provided in `ContextBrowser.set_runtime_context(...)`:
-- `on_before_compaction(stats)` — emits a “compacting” status
-- `on_after_compaction(stats)` — emits a “back to work” status
+This prevents cutting inside tool results and prefers user/assistant or tool call boundaries.
 
-`stats` includes:
-- `tokens_before`
-- `tokens_after`
-- `compacted_blocks`
-- `summary_block_count`
+### 2) Message blocks for token accounting
+Token accounting uses `_is_message_block`:
 
-## Important
-- Compaction can happen **mid-turn**, inserting a summary inside the current turn.
-- Summary blocks are **not stored** in the turn log; they are index-only.
-- On persist, the timeline is truncated to **only the post‑summary window**.
-  Next turn starts with that compacted prefix (summary + following blocks).
+- `react.tool.result` counts as a message block
+- Otherwise, same as `_is_cut_point_block`
 
-## Timeline before/after compaction (schematic)
+This ensures tool results contribute to the “recent tokens” budget, but they
+are **not valid cut‑points**.
+
+### 3) Cut index selection
+- Walk backward accumulating tokens from message blocks until
+  `accumulated >= keep_recent_tokens`.
+- Choose the **first candidate cut point at or after** that index.
+- Then **backtrack** until the cut is on a message boundary or just after a
+  summary block.
+
+### 4) Turn boundary and split turns
+A **turn start block** is:
+- `turn.header` or `user.prompt`, or
+- any block with `author == user`
+
+If the cut does **not** land on a turn start, it is a split‑turn cut and the
+prefix of that turn is summarized separately under:
+
+`"Turn Context (split turn)"`
+
+The cut block itself remains in the retained window.
+
+---
+
+## What Compaction Produces
+Compaction inserts a **summary block**:
+
+- `type = conv.range.summary`
+- `path = su:<turn_id>.conv.range.summary`
+- `meta.compaction_digest` describes compacted artifacts
+- `meta.covered_turn_ids` lists turns compacted into the summary
+- `meta.split_turn_id` exists if compaction cut a turn in half
+
+**Summary content** is generated by:
+- `summarize_context_blocks_progressive(..., max_tokens=800)`
+- plus `summarize_turn_prefix_progressive(..., max_tokens=400)` if the cut splits a turn
+
+---
+
+## What Exactly Gets Summarized
+Compaction summarizes **everything between the last summary (if any) and the cut point**.
+The retained window starts **at the cut point**.
+
+If the cut falls **inside a turn**, only the **prefix** of that turn is summarized
+(and included under “Turn Context (split turn)”). The cut block itself stays visible.
+
+---
+
+## Persistence Rule
+After compaction, the timeline is **persisted from the last summary onward**:
+
+- In‑memory for the current turn: pre‑summary blocks still exist but are no
+  longer visible.
+- On persistence / next turn load: only blocks **from the latest summary onward**
+  are kept.
+
+This keeps the prefix small while allowing the summary to represent old turns.
+
+---
+
+## Cache Points After Compaction
+Cache points are **recomputed** after compaction and hidden‑replacement.
+The rules are the same as normal rendering:
+
+1. **Previous‑turn cache point** (last block before current turn, if available)
+2. **Pre‑tail cache point** (last block of round `N‑4`, based on
+   `cache_point_offset_rounds=4`)
+3. **Tail cache point** (last block in visible stream)
+
+This ensures caching stays valid even after summary insertion.
+
+---
+
+## Reference Diagram (with cache points)
+The cache points are placed on **specific blocks**, not “between” turns:
+
+1) **Prev‑turn cache point** → the *last block* immediately before the current turn header.  
+2) **Pre‑tail cache point** → the *last block* of round `N‑4` from the tail (if enough rounds).  
+3) **Tail cache point** → the *last block* in the visible stream.
+
+### Example (enough rounds for pre‑tail)
+Current turn is **TURN E**; tail = last block of TURN E; offset = 4 rounds.
+
 ```
 Before:
-  [TURN A ... blocks ...] [TURN B ... blocks ...] [TURN C ... blocks ...]
-                 ^ cache checkpoint 1      ^ cache checkpoint 2 (tail)
-
-After compaction (in-memory):
-  [TURN A ... blocks ...] [SUMMARY] [TURN B tail ...] [TURN C ...]
-                 ^ cache checkpoint 1      ^ cache checkpoint 2 (tail)
-
-After persistence (next turn load):
-  [SUMMARY] [TURN B tail ...] [TURN C ...]
-           ^ cache checkpoint 1      ^ cache checkpoint 2 (tail)
+  [TURN A] [TURN B] [TURN C] [TURN D] [TURN E]
+         ^ pre‑tail cache (end of TURN A, N‑4)
+                                    ^ prev‑turn cache (end of TURN D)
+                                             ^ tail cache (end of TURN E)
 ```
 
-See also:
-- `context-layout.md`
-- `context-progression.md`
+After compaction (summary covers A..C; visible D..E):
 
-## Test cases (coverage)
-Each case has a matching test in `test_timeline_compaction.py`.
+```
+After compaction (in memory):
+  [SUMMARY(A..C)] [TURN D] [TURN E]
+                         ^ prev‑turn cache (end of TURN D)
+                                  ^ tail cache (end of TURN E)
+  (pre‑tail cache is omitted if visible rounds < min_rounds)
+```
 
-1) **Insert summary and keep cut‑point**  
-   Ensures a `conv.range.summary` is inserted and the cut‑point block remains visible.
+If the cut lands inside TURN C:
 
-2) **Split‑turn prefix summary**  
-   If a cut falls inside a turn, the prefix is summarized under “Turn Context (split turn)”.
+```
+Before:
+  [TURN A] [TURN B] [TURN C (prefix)] [TURN C (tail)] [TURN D] [TURN E]
 
-3) **No compaction under limit**  
-   When estimated tokens are below the threshold (and `force=False`), blocks are unchanged.
+After compaction (in memory):
+  [SUMMARY(A..B + C‑prefix)] [TURN C (tail)] [TURN D] [TURN E]
+```
 
-4) **Compaction after existing summary**  
-   If a prior summary exists, new summary insertion occurs after the last summary.
+---
 
-5) **Hidden blocks surfaced in digest**  
-   Hidden blocks (meta.hidden) contribute to `compaction_digest.hidden_blocks`.
+## Compaction Digest
+`meta.compaction_digest` includes structured summaries of compacted blocks:
+- produced artifacts (path, mime, visibility, sources_used)
+- tool outputs (by tool type)
+- memsearch hits and paths
+- hidden blocks and replacement text
 
-6) **Tool-call boundary preserved**  
-   Compaction avoids cutting inside tool call/result sequences; the first retained block is never a `react.tool.result`.
+It is used to recover context if later needed via `react.read`.
 
-7) **Cache points retained after render**  
-   After compaction + render, cache checkpoints still exist in the output stream.
+---
+
+## Hooks
+If provided in `RuntimeCtx`:
+
+- `on_before_compaction({before_tokens})`
+- `on_after_compaction({before_tokens, after_tokens, compacted_tokens})`
+
+---
+
+## Test Coverage
+Tests live in `test_timeline_compaction.py` and cover:
+- summary insertion
+- split‑turn handling
+- no compaction under limit
+- compaction after existing summary
+- digest includes hidden blocks
+- tool boundary preservation
+- cache points after render

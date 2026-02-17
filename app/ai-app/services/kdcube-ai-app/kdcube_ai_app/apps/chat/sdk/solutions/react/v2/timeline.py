@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import hashlib
+import traceback
+
 import time
 import datetime as _dt
 import pathlib
@@ -34,6 +37,14 @@ TIMELINE_KIND = "conv.timeline.v1"
 SOURCES_POOL_KIND = "conv:sources_pool"
 
 TIMELINE_FILENAME = "timeline.json"
+
+logger = logging.getLogger(__name__)
+
+def _maybe_parse_json(val: str) -> Optional[Any]:
+    try:
+        return json.loads(val)
+    except Exception:
+        return None
 
 class TimelineView:
     def __init__(self, payload: Dict[str, Any]):
@@ -210,6 +221,20 @@ def resolve_sources_pool_selector(timeline: Dict[str, Any], selector: str) -> Li
         tok = tok.strip()
         if not tok:
             continue
+        # Support ranges like "1-5"
+        if "-" in tok:
+            parts = [p.strip() for p in tok.split("-", 1)]
+            if len(parts) == 2:
+                try:
+                    start = int(parts[0])
+                    end = int(parts[1])
+                    if start <= end:
+                        sids.extend(list(range(start, end + 1)))
+                    else:
+                        sids.extend(list(range(end, start + 1)))
+                    continue
+                except Exception:
+                    pass
         try:
             sids.append(int(tok))
         except Exception:
@@ -350,9 +375,11 @@ def extract_user_attachments_from_blocks(blocks: List[Dict[str, Any]]) -> List[D
             "filename": filename,
             "mime": mime,
         }
-        for key in ("rn", "hosted_uri", "key", "physical_path", "local_path"):
+        for key in ("rn", "hosted_uri", "key", "physical_path"):
             if meta.get(key):
                 payload[key] = meta.get(key)
+        if not payload.get("physical_path") and meta.get("local_path"):
+            payload["physical_path"] = meta.get("local_path")
         if meta.get("summary") or meta.get("description"):
             payload["summary"] = meta.get("summary") or meta.get("description")
         out.append(payload)
@@ -379,7 +406,7 @@ def extract_assistant_files_from_blocks(blocks: List[Dict[str, Any]]) -> List[Di
             continue
         if (meta.get("kind") or "").strip() != "file":
             continue
-        if not (meta.get("hosted_uri") or meta.get("rn") or meta.get("key") or meta.get("local_path")):
+        if not (meta.get("hosted_uri") or meta.get("rn") or meta.get("key") or meta.get("physical_path") or meta.get("local_path")):
             continue
         p = (meta.get("artifact_path") or "").strip()
         if not p or p in seen:
@@ -404,9 +431,11 @@ def extract_assistant_files_from_blocks(blocks: List[Dict[str, Any]]) -> List[Di
             "filename": filename,
             "mime": art.get("mime") or "application/octet-stream",
         }
-        for key in ("rn", "hosted_uri", "key", "physical_path", "local_path"):
+        for key in ("rn", "hosted_uri", "key", "physical_path"):
             if art.get(key):
                 payload[key] = art.get(key)
+        if not payload.get("physical_path") and art.get("local_path"):
+            payload["physical_path"] = art.get("local_path")
         if art.get("summary") or art.get("description"):
             payload["summary"] = art.get("summary") or art.get("description")
         out.append(payload)
@@ -596,6 +625,7 @@ def resolve_artifact_from_timeline(timeline: Dict[str, Any], path: str) -> Optio
     blocks = _collect_blocks(timeline)
     meta: Dict[str, Any] = {}
     # meta may be encoded in react.tool.result json blocks
+    meta_block_meta: Dict[str, Any] = {}
     for b in reversed(blocks):
         if (b.get("type") or "") != "react.tool.result":
             continue
@@ -607,6 +637,9 @@ def resolve_artifact_from_timeline(timeline: Dict[str, Any], path: str) -> Optio
         meta_obj = _parse_meta_json(txt)
         if meta_obj.get("artifact_path") == p:
             meta = meta_obj
+            bmeta = b.get("meta")
+            if isinstance(bmeta, dict) and bmeta:
+                meta_block_meta = dict(bmeta)
             break
 
     matching = [b for b in blocks if (b.get("path") or "") == p]
@@ -651,10 +684,27 @@ def resolve_artifact_from_timeline(timeline: Dict[str, Any], path: str) -> Optio
         if key in art:
             continue
         art[key] = val
+    if meta_block_meta:
+        for key, val in meta_block_meta.items():
+            if key in art:
+                continue
+            art[key] = val
+    # Merge any block-level meta (e.g., hosting info on content blocks)
+    for b in matching:
+        bmeta = b.get("meta")
+        if not isinstance(bmeta, dict):
+            continue
+        for key, val in bmeta.items():
+            if key in art or val is None:
+                continue
+            art[key] = val
     if text_block and isinstance(text_block.get("text"), str):
         art["text"] = text_block.get("text")
     if bin_block and bin_block.get("base64"):
         art["base64"] = bin_block.get("base64")
+    if not art.get("physical_path") and art.get("local_path"):
+        art["physical_path"] = art.get("local_path")
+    art.pop("local_path", None)
     return art
 
 
@@ -664,6 +714,27 @@ def materialize_show_artifacts(timeline: Dict[str, Any], show_paths: List[str]) 
         if not isinstance(raw_path, str) or not raw_path.strip():
             continue
         path = raw_path.strip()
+        if path.startswith("tc:"):
+            blocks = _collect_blocks(timeline)
+            matching = [b for b in blocks if (b.get("path") or "") == path]
+            if matching:
+                texts: List[str] = []
+                for b in matching:
+                    txt = b.get("text")
+                    if isinstance(txt, str) and txt.strip():
+                        texts.append(txt)
+                if texts:
+                    combined = "\n\n".join(texts)
+                    artifact = {
+                        "format": "text",
+                        "mime": "text/markdown",
+                        "text": combined,
+                    }
+                    items.append({
+                        "context_path": path,
+                        "artifact": artifact,
+                    })
+                    continue
         if path.startswith("so:"):
             path = path[len("so:"):]
         if path.startswith("sources_pool["):
@@ -692,6 +763,8 @@ def materialize_show_artifacts(timeline: Dict[str, Any], show_paths: List[str]) 
         elif mime == "text/html":
             fmt = "html"
         artifact: Dict[str, Any] = {"format": fmt}
+        if mime:
+            artifact["mime"] = mime
         if isinstance(text, str) and text.strip():
             artifact["text"] = text
         if base64:
@@ -822,7 +895,16 @@ class Timeline:
         )
 
     def set_sources_pool(self, sources_pool: List[Dict[str, Any]]) -> None:
-        self.sources_pool = list(sources_pool or [])
+        normalized: List[Dict[str, Any]] = []
+        for row in (sources_pool or []):
+            if not isinstance(row, dict):
+                continue
+            r = dict(row)
+            if not r.get("physical_path") and r.get("local_path"):
+                r["physical_path"] = r.get("local_path")
+            r.pop("local_path", None)
+            normalized.append(r)
+        self.sources_pool = normalized
 
     def set_conversation_title(self, title: str) -> None:
         self.conversation_title = (title or "").strip()
@@ -968,6 +1050,23 @@ class Timeline:
         Only include external artifacts (file/display) from react tool results.
         """
         lines: List[str] = []
+        call_id_to_tool_id: Dict[str, str] = {}
+        for b in blocks or []:
+            if not isinstance(b, dict):
+                continue
+            if (b.get("type") or "") != "react.tool.call":
+                continue
+            payload = _maybe_parse_json(b.get("text") or "") if (b.get("mime") or "").strip() == "application/json" else None
+            tool_id = ""
+            tool_call_id = ""
+            if isinstance(payload, dict):
+                tool_id = (payload.get("tool_id") or "").strip()
+                tool_call_id = (payload.get("tool_call_id") or "").strip()
+            meta_local = b.get("meta") if isinstance(b.get("meta"), dict) else {}
+            if not tool_call_id:
+                tool_call_id = (meta_local.get("tool_call_id") or b.get("call_id") or "").strip()
+            if tool_call_id and tool_id:
+                call_id_to_tool_id[tool_call_id] = tool_id
         for b in blocks or []:
             if not isinstance(b, dict):
                 continue
@@ -993,6 +1092,8 @@ class Timeline:
             mime = (meta.get("mime") or "").strip()
             tool_id = (meta.get("tool_id") or "").strip()
             tool_call_id = (meta.get("tool_call_id") or "").strip()
+            if not tool_id and tool_call_id:
+                tool_id = call_id_to_tool_id.get(tool_call_id, "")
             parts = []
             if artifact_path:
                 parts.append(f"artifact_path={artifact_path}")
@@ -1325,16 +1426,32 @@ class Timeline:
             if not path or path not in path_set:
                 continue
             blk["hidden"] = True
-            if isinstance(blk.get("text"), str):
+            original_text = blk.get("text") if isinstance(blk.get("text"), str) else ""
+            replacement_for_block = replacement_text if not replacement_assigned else ""
+            if not replacement_assigned:
+                replacement_assigned = True
+            blk["replacement_text"] = replacement_for_block or ""
+            try:
+                original_tokens = token_count(original_text or "")
+            except Exception:
+                original_tokens = 0
+            try:
+                replacement_tokens = token_count(replacement_for_block or "") if replacement_for_block else 0
+            except Exception:
+                replacement_tokens = 0
+            delta = original_tokens - replacement_tokens
+            tokens_hidden += delta
+            if delta < 0:
                 try:
-                    tokens_hidden += token_count(blk.get("text") or "")
+                    logger.warning(
+                        "[timeline.hide_paths] replacement longer than original: path=%s tool_call_id=%s original_tokens=%s replacement_tokens=%s",
+                        path,
+                        (blk.get("meta") or {}).get("tool_call_id"),
+                        original_tokens,
+                        replacement_tokens,
+                    )
                 except Exception:
                     pass
-            if not replacement_assigned:
-                blk["replacement_text"] = replacement_text or ""
-                replacement_assigned = True
-            else:
-                blk["replacement_text"] = ""
             replaced += 1
         status = "ok" if replaced else "not_found"
         if replaced:
@@ -1751,6 +1868,7 @@ class Timeline:
                 self.cache_last_ttl_seconds = runtime_ttl
             return res
         except Exception:
+            print(f"Error applying cache TTL pruning {traceback.format_exc()}")
             return {"status": "error"}
 
 
@@ -1948,12 +2066,6 @@ class Timeline:
         def _ts_line(val: str) -> str:
             return f"[ts: {val}]" if val else ""
 
-        def _maybe_parse_json(val: str) -> Optional[Any]:
-            try:
-                return json.loads(val)
-            except Exception:
-                return None
-
         def _derive_file_context_path(*, turn_id: str, raw_path: str) -> str:
             path = (raw_path or "").strip()
             if not path:
@@ -1980,6 +2092,7 @@ class Timeline:
         out: List[Dict[str, Any]] = []
         current_round_id: Optional[str] = None
         round_idx = 0
+        call_id_to_tool_id: Dict[str, str] = {}
 
         def _round_header(idx: int) -> str:
             return f"┌──────── ROUND {idx} ────────┐"
@@ -2007,6 +2120,25 @@ class Timeline:
                 if rid:
                     return rid
             return None
+        for b in (blocks or []):
+            if not isinstance(b, dict):
+                continue
+            if (b.get("type") or "") != "react.tool.call":
+                continue
+            payload = _maybe_parse_json(b.get("text") or "") if (b.get("mime") or "").strip() == "application/json" else None
+            tool_id = ""
+            tool_call_id = ""
+            if isinstance(payload, dict):
+                tool_id = (payload.get("tool_id") or "").strip()
+                tool_call_id = (payload.get("tool_call_id") or "").strip()
+            meta_local = b.get("meta") if isinstance(b.get("meta"), dict) else {}
+            if not tool_call_id:
+                tool_call_id = (meta_local.get("tool_call_id") or b.get("call_id") or "").strip()
+            if not tool_call_id:
+                tool_call_id = _call_id_from_path((b.get("path") or "").strip())
+            if tool_call_id and tool_id:
+                call_id_to_tool_id[tool_call_id] = tool_id
+
         for b in (blocks or []):
             if not isinstance(b, dict):
                 continue
@@ -2061,12 +2193,22 @@ class Timeline:
                     lines.append(text)
                 text = "\n".join(lines).strip()
             elif btype == "assistant.completion":
-                prefix = f"[ASSISTANT MESSAGE]"
+                lines = ["[ASSISTANT MESSAGE]"]
                 if ts:
-                    prefix += f"\n[ts: {ts}]"
+                    lines.append(f"[ts: {ts}]")
                 if path:
-                    prefix += f"\n[path: {path}]"
-                text = (prefix + "\n" + (text or "")).strip()
+                    lines.append(f"[path: {path}]")
+                sources_used = []
+                if isinstance(meta, dict):
+                    try:
+                        sources_used = citations_module.extract_source_sids(meta.get("sources_used"))
+                    except Exception:
+                        sources_used = []
+                if sources_used:
+                    lines.append(f"[sources_used: {sources_used}]")
+                if text:
+                    lines.append(text)
+                text = "\n".join(lines).strip()
             elif btype == "react.notes":
                 if isinstance(text, str):
                     ts_line = _ts_line(ts)
@@ -2141,8 +2283,9 @@ class Timeline:
                     tool_id = (payload.get("tool_id") or "").strip()
                     tool_call_id = (payload.get("tool_call_id") or "").strip()
                     params = payload.get("params")
+                meta_local = b.get("meta") if isinstance(b.get("meta"), dict) else {}
                 if not tool_call_id:
-                    tool_call_id = (b.get("call_id") or "").strip()
+                    tool_call_id = (meta_local.get("tool_call_id") or b.get("call_id") or "").strip()
                 if not tool_call_id:
                     tool_call_id = _call_id_from_path(path)
                 short_id = _short_tc_id(tool_call_id)
@@ -2173,14 +2316,17 @@ class Timeline:
                 text = "\n".join([l for l in lines if l is not None]).strip()
             elif btype == "react.tool.result":
                 mime_val = (b.get("mime") or "").strip()
-                tool_call_id = (b.get("call_id") or "").strip()
+                meta_local = b.get("meta") if isinstance(b.get("meta"), dict) else {}
+                tool_call_id = (b.get("call_id") or meta_local.get("tool_call_id") or "").strip()
                 if not tool_call_id:
                     tool_call_id = _call_id_from_path(path)
                 short_id = _short_tc_id(tool_call_id)
                 if mime_val == "application/json" and isinstance(text, str):
                     payload = _maybe_parse_json(text)
-                    if isinstance(payload, dict) and payload.get("artifact_path") and payload.get("tool_id"):
+                    if isinstance(payload, dict) and payload.get("artifact_path"):
                         tool_id = (payload.get("tool_id") or "").strip()
+                        if not tool_id and tool_call_id:
+                            tool_id = call_id_to_tool_id.get(tool_call_id, "")
                         # Skip noisy meta blocks for read/search/fetch; content blocks will carry the info.
                         if tool_id in {"react.read", "web_tools.web_search", "web_tools.web_fetch"}:
                             text = ""
@@ -2216,7 +2362,7 @@ class Timeline:
                                     lines.append(f"- {file_line}")
                                 if description:
                                     lines.append(f"Description: {description}")
-                            # Emit a cleaned meta JSON (no hosted_uri/rn/key/local_path).
+                            # Emit a cleaned meta JSON (no hosted_uri/rn/key).
                             meta_out = {
                                 k: v
                                 for k, v in payload.items()

@@ -777,10 +777,6 @@ class ReactSolverV2:
             tb = traceback.format_exc()
             try:
                 self.log.log(f"[react.v2] decision_node error: {exc}\n{tb}", level="ERROR")
-                self.log.log(
-                    "[react.v2] decision_node context: show_artifacts=0 types=[]",
-                    level="ERROR",
-                )
             except Exception:
                 pass
             raise

@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import time
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.proto import ToolCallView
@@ -21,6 +21,7 @@ DEFAULT_MAX_FIELD_CHARS = 1000
 DEFAULT_MAX_LIST_ITEMS = 50
 DEFAULT_MAX_DICT_KEYS = 80
 DEFAULT_MAX_BASE64_CHARS = 4000
+DEFAULT_MAX_TOOL_TEXT_CHARS = 400
 DEFAULT_KEEP_RECENT_IMAGES = 2
 DEFAULT_KEEP_INTACT_TURNS = 2
 DEFAULT_MAX_IMAGE_PDF_B64_SUM = 1_000_000
@@ -33,6 +34,7 @@ class TruncationConfig:
     max_list_items: int = DEFAULT_MAX_LIST_ITEMS
     max_dict_keys: int = DEFAULT_MAX_DICT_KEYS
     max_base64_chars: int = DEFAULT_MAX_BASE64_CHARS
+    max_tool_text_chars: int = DEFAULT_MAX_TOOL_TEXT_CHARS
     keep_recent_images: int = DEFAULT_KEEP_RECENT_IMAGES
     max_image_pdf_b64_sum: int = DEFAULT_MAX_IMAGE_PDF_B64_SUM
 
@@ -68,9 +70,21 @@ def build_truncation_config(runtime: Any, cfg: Optional[TruncationConfig] = None
     _apply("cache_truncation_max_list_items")
     _apply("cache_truncation_max_dict_keys")
     _apply("cache_truncation_max_base64_chars")
+    _apply("cache_truncation_max_tool_text_chars")
     _apply("cache_truncation_keep_recent_images", minimum=0)
     _apply("cache_truncation_max_image_pdf_b64_sum")
     return cfg
+
+
+def _tool_result_cfg(cfg: Optional[TruncationConfig]) -> TruncationConfig:
+    cfg = cfg or TruncationConfig()
+    try:
+        max_tool = int(getattr(cfg, "max_tool_text_chars", DEFAULT_MAX_TOOL_TEXT_CHARS))
+    except Exception:
+        max_tool = DEFAULT_MAX_TOOL_TEXT_CHARS
+    if max_tool <= 0:
+        return cfg
+    return replace(cfg, max_text_chars=max_tool, max_field_chars=min(cfg.max_field_chars, max_tool))
 
 
 def _parse_json(text: str) -> Optional[Any]:
@@ -85,7 +99,7 @@ def _truncate_str(text: str, limit: int) -> Tuple[str, bool]:
         return str(text), True
     if limit <= 0 or len(text) <= limit:
         return text, False
-    return text[:limit] + "...", True
+    return text[:limit] + "...[truncated]", True
 
 
 def _is_ref_str(value: Any) -> bool:
@@ -228,7 +242,7 @@ class ReactReadView(ToolCallView):
         payload: Any,
         cfg: Optional[TruncationConfig] = None,
     ) -> str:
-        cfg = cfg or TruncationConfig()
+        cfg = _tool_result_cfg(cfg)
         truncated_payload, did = _truncate_payload(payload, cfg)
         out = {
             "tool_id": self.tool_id,
@@ -267,7 +281,7 @@ class ReactWriteView(ToolCallView):
         payload: Any,
         cfg: Optional[TruncationConfig] = None,
     ) -> str:
-        cfg = cfg or TruncationConfig()
+        cfg = _tool_result_cfg(cfg)
         truncated_payload, did = _truncate_payload(payload, cfg)
         out = {
             "tool_id": self.tool_id,
@@ -306,7 +320,7 @@ class ReactPatchView(ToolCallView):
         payload: Any,
         cfg: Optional[TruncationConfig] = None,
     ) -> str:
-        cfg = cfg or TruncationConfig()
+        cfg = _tool_result_cfg(cfg)
         truncated_payload, did = _truncate_payload(payload, cfg)
         out = {
             "tool_id": self.tool_id,
@@ -353,7 +367,66 @@ class DefaultToolView(ToolCallView):
         payload: Any,
         cfg: Optional[TruncationConfig] = None,
     ) -> str:
-        cfg = cfg or TruncationConfig()
+        cfg = _tool_result_cfg(cfg)
+
+        if isinstance(payload, dict) and payload.get("artifact_path") and not (
+            payload.get("result") or payload.get("items") or payload.get("hits") or payload.get("paths")
+        ):
+            truncated_payload, did = _truncate_payload(payload, cfg)
+            return _format_json(truncated_payload, did)
+
+        if self.tool_id == "react.memsearch" and isinstance(payload, dict):
+            hits = payload.get("hits")
+            if isinstance(hits, list):
+                trimmed_hits: List[Dict[str, Any]] = []
+                truncated = False
+                for hit in hits[: cfg.max_list_items]:
+                    if not isinstance(hit, dict):
+                        continue
+                    out_hit: Dict[str, Any] = {
+                        "turn_id": hit.get("turn_id"),
+                        "score": hit.get("score"),
+                        "sim_score": hit.get("sim_score"),
+                        "recency_score": hit.get("recency_score"),
+                        "matched_via_role": hit.get("matched_via_role"),
+                        "source_query": hit.get("source_query"),
+                        "ts": hit.get("ts"),
+                        "best_turn_id": hit.get("best_turn_id"),
+                    }
+                    snippets_out: List[Dict[str, Any]] = []
+                    snippets = hit.get("snippets")
+                    if isinstance(snippets, list):
+                        for snip in snippets[: cfg.max_list_items]:
+                            if not isinstance(snip, dict):
+                                continue
+                            snip_out: Dict[str, Any] = {
+                                "role": snip.get("role"),
+                                "path": snip.get("path"),
+                                "ts": snip.get("ts"),
+                            }
+                            text_val = snip.get("text")
+                            if isinstance(text_val, str):
+                                text_val, did = _truncate_str(text_val, cfg.max_text_chars)
+                                truncated = truncated or did
+                                snip_out["text"] = text_val
+                            snippets_out.append(snip_out)
+                        if len(snippets) > cfg.max_list_items:
+                            snippets_out.append({"...": f"{len(snippets) - cfg.max_list_items} more"})
+                            truncated = True
+                    out_hit["snippets"] = snippets_out
+                    trimmed_hits.append(out_hit)
+                if len(hits) > cfg.max_list_items:
+                    trimmed_hits.append({"...": f"{len(hits) - cfg.max_list_items} more"})
+                    truncated = True
+                out = {
+                    "tool_id": self.tool_id,
+                    "tool_call_id": tool_result_block.get("call_id"),
+                    "result": {
+                        "hits": trimmed_hits,
+                        "tokens": payload.get("tokens"),
+                    },
+                }
+                return _format_json(out, truncated)
 
         if tools_insights.is_search_tool(self.tool_id) and isinstance(payload, list):
             trimmed: List[Dict[str, Any]] = []
@@ -365,10 +438,13 @@ class DefaultToolView(ToolCallView):
                     "sid": item.get("sid"),
                     "url": item.get("url") or item.get("link"),
                     "title": item.get("title"),
-                    "text": item.get("text"),
                 }
-                if isinstance(entry.get("text"), str):
-                    entry["text"], did = _truncate_str(entry["text"], cfg.max_text_chars)
+                text_val = item.get("text")
+                if isinstance(text_val, str):
+                    entry["text"] = text_val
+                content_val = item.get("content")
+                if isinstance(content_val, str):
+                    entry["content"], did = _truncate_str(content_val, cfg.max_text_chars)
                     truncated = truncated or did
                 trimmed.append(entry)
             if len(payload) > cfg.max_list_items:
@@ -378,6 +454,35 @@ class DefaultToolView(ToolCallView):
                 "tool_id": self.tool_id,
                 "tool_call_id": tool_result_block.get("call_id"),
                 "result": trimmed,
+            }
+            return _format_json(out, truncated)
+
+        if tools_insights.is_fetch_uri_content_tool(self.tool_id) and isinstance(payload, list):
+            trimmed_list: List[Dict[str, Any]] = []
+            truncated = False
+            for item in payload[: cfg.max_list_items]:
+                if not isinstance(item, dict):
+                    continue
+                entry = {
+                    "sid": item.get("sid"),
+                    "url": item.get("url") or item.get("link"),
+                    "title": item.get("title"),
+                }
+                text_val = item.get("text")
+                if isinstance(text_val, str):
+                    entry["text"] = text_val
+                content_val = item.get("content")
+                if isinstance(content_val, str):
+                    entry["content"], did = _truncate_str(content_val, cfg.max_text_chars)
+                    truncated = truncated or did
+                trimmed_list.append(entry)
+            if len(payload) > cfg.max_list_items:
+                trimmed_list.append({"...": f"{len(payload) - cfg.max_list_items} more"})
+                truncated = True
+            out = {
+                "tool_id": self.tool_id,
+                "tool_call_id": tool_result_block.get("call_id"),
+                "result": trimmed_list,
             }
             return _format_json(out, truncated)
 
@@ -485,12 +590,77 @@ def _build_generic_replacement(block: Dict[str, Any], cfg: TruncationConfig) -> 
     return "[TRUNCATED]"
 
 
+def _build_skill_prune_message(path: str) -> str:
+    label = (path or "").strip() or "skill"
+    return f"[content removed by pruning, reread with react.read if needed: {label}]"
+
+
 def _build_prune_message_text(ttl_seconds: int) -> str:
     return (
         "[SYSTEM MESSAGE] Context was pruned because the session TTL "
         f"({ttl_seconds}s) was exceeded. Some blocks were hidden. "
         "Use react.read(path) to restore a logical path (fi:/ar:/so:/sk:)."
     )
+
+
+def _build_search_result_replacement_compact(
+    *,
+    tool_id: str,
+    call_id: str,
+    payload: Any,
+    cfg: TruncationConfig,
+) -> str:
+    cfg = _tool_result_cfg(cfg)
+    truncated = False
+
+    def _compact_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        nonlocal truncated
+        entry: Dict[str, Any] = {
+            "sid": item.get("sid"),
+            "url": item.get("url") or item.get("link"),
+            "title": item.get("title"),
+        }
+        # If item refers to a file/attachment, keep the fi: path.
+        for key in ("artifact_path", "path"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                entry["path"] = val
+                break
+        mime = item.get("mime")
+        if isinstance(mime, str) and mime.strip():
+            entry["mime"] = mime
+        text_val = item.get("text")
+        if isinstance(text_val, str) and text_val.strip():
+            text_val, did = _truncate_str(text_val, cfg.max_text_chars)
+            truncated = truncated or did
+            entry["text"] = text_val
+        return entry
+
+    trimmed: List[Dict[str, Any]] = []
+    if isinstance(payload, list):
+        for item in payload[: cfg.max_list_items]:
+            if not isinstance(item, dict):
+                continue
+            trimmed.append(_compact_item(item))
+        if len(payload) > cfg.max_list_items:
+            trimmed.append({"...": f"{len(payload) - cfg.max_list_items} more"})
+            truncated = True
+    elif isinstance(payload, dict):
+        # some tools return dict keyed by URL
+        for _, val in list(payload.items())[: cfg.max_dict_keys]:
+            if not isinstance(val, dict):
+                continue
+            trimmed.append(_compact_item(val))
+        if len(payload) > cfg.max_dict_keys:
+            trimmed.append({"...": f"{len(payload) - cfg.max_dict_keys} more"})
+            truncated = True
+
+    out = {
+        "tool_id": tool_id,
+        "tool_call_id": call_id,
+        "result": trimmed,
+    }
+    return _format_json(out, truncated)
 
 
 def apply_cache_ttl_pruning(
@@ -589,13 +759,15 @@ def apply_cache_ttl_pruning(
     for blk in blocks:
         if not isinstance(blk, dict):
             continue
-        if (blk.get("type") or "") != "react.tool.call":
+        btype = (blk.get("type") or "")
+        if btype == "react.tool.call":
+            payload = _parse_json(blk.get("text") or "") or {}
+            meta_local = blk.get("meta") if isinstance(blk.get("meta"), dict) else {}
+            call_id = (blk.get("call_id") or meta_local.get("tool_call_id") or payload.get("tool_call_id") or "").strip()
+            tool_id = _coerce_tool_id(blk, payload)
+            if call_id:
+                call_meta[call_id] = {"tool_id": tool_id, "payload": payload}
             continue
-        payload = _parse_json(blk.get("text") or "") or {}
-        call_id = (blk.get("call_id") or payload.get("tool_call_id") or "").strip()
-        tool_id = _coerce_tool_id(blk, payload)
-        if call_id:
-            call_meta[call_id] = {"tool_id": tool_id, "payload": payload}
 
     # Image/PDF keep set (only within recent turns)
     image_candidates: List[Tuple[int, str, int]] = []
@@ -646,21 +818,30 @@ def apply_cache_ttl_pruning(
             continue
 
         btype = (blk.get("type") or "").strip()
-        if btype == "react.tool.call":
+        if path.startswith("sk:"):
+            rep = _build_skill_prune_message(path)
+        elif btype == "react.tool.call":
             payload = _parse_json(blk.get("text") or "") or {}
             tool_id = _coerce_tool_id(blk, payload)
             view = _get_view(tool_id)
             rep = view.build_call_replacement(tool_call_block=blk, payload=payload, cfg=cfg)
-        elif btype == "react.tool.result" and path.startswith("tc:"):
+        elif btype == "react.tool.result" and (path.startswith("tc:") or path.startswith("so:")):
             payload = _parse_json(blk.get("text") or "") if isinstance(blk.get("text"), str) else None
-            call_id = (blk.get("call_id") or (payload or {}).get("tool_call_id") or "").strip()
+            meta = blk.get("meta") if isinstance(blk.get("meta"), dict) else {}
+            call_id = (meta.get("tool_call_id") or blk.get("call_id") or "").strip()
             tool_id = ""
             if call_id and call_id in call_meta:
                 tool_id = call_meta[call_id].get("tool_id") or ""
-            if not tool_id and isinstance(payload, dict):
-                tool_id = str(payload.get("tool_id") or "")
-            view = _get_view(tool_id)
-            rep = view.build_result_replacement(tool_result_block=blk, payload=payload or {}, cfg=cfg)
+            if tools_insights.is_search_tool(tool_id) or tools_insights.is_fetch_uri_content_tool(tool_id):
+                rep = _build_search_result_replacement_compact(
+                    tool_id=tool_id,
+                    call_id=call_id,
+                    payload=payload or {},
+                    cfg=cfg,
+                )
+            else:
+                view = _get_view(tool_id)
+                rep = view.build_result_replacement(tool_result_block=blk, payload=payload or {}, cfg=cfg)
         elif path.startswith("fi:"):
             rep = _build_file_replacement(blk)
         else:
@@ -678,6 +859,54 @@ def apply_cache_ttl_pruning(
                 pass
 
     hidden_recent_paths: set[str] = set()
+
+    # Light-truncate heavy tool results in recent-but-not-intact turns.
+    for blk in blocks:
+        if not isinstance(blk, dict):
+            continue
+        if (blk.get("type") or "") in skip_types:
+            continue
+        if blk.get("hidden") or (isinstance(blk.get("meta"), dict) and blk.get("meta", {}).get("hidden")):
+            continue
+        path = (blk.get("path") or "").strip()
+        if not path or path in hidden_recent_paths:
+            continue
+        turn_id = _extract_turn_id(blk)
+        if not skip_old_turns:
+            if turn_id and turn_id not in recent_turns:
+                continue
+        if turn_id and turn_id in intact_turns:
+            continue
+        if (blk.get("type") or "").strip() != "react.tool.result":
+            continue
+
+        payload = _parse_json(blk.get("text") or "") if isinstance(blk.get("text"), str) else None
+        meta = blk.get("meta") if isinstance(blk.get("meta"), dict) else {}
+        call_id = (meta.get("tool_call_id") or blk.get("call_id") or "").strip()
+        tool_id = ""
+        if call_id and call_id in call_meta:
+            tool_id = call_meta[call_id].get("tool_id") or ""
+
+        if tool_id == "react.read" and path.startswith("sk:"):
+            try:
+                timeline.hide_paths([path], _build_skill_prune_message(path))
+                hidden_recent_paths.add(path)
+            except Exception:
+                pass
+            continue
+
+        if (
+            tool_id == "react.memsearch"
+            or tools_insights.is_search_tool(tool_id)
+            or tools_insights.is_fetch_uri_content_tool(tool_id)
+        ):
+            view = _get_view(tool_id)
+            rep = view.build_result_replacement(tool_result_block=blk, payload=payload or {}, cfg=cfg)
+            try:
+                timeline.hide_paths([path], rep)
+                hidden_recent_paths.add(path)
+            except Exception:
+                pass
 
     # Hide oversized images/PDFs in recent-but-not-intact turns.
     for blk in blocks:
@@ -733,9 +962,9 @@ def apply_cache_ttl_pruning(
     timeline.cache_last_touch_at = now
     after_blocks = len(blocks)
     after_tokens = _estimate_blocks_tokens_safe(blocks)
+    pruned_tokens = max(0, (before_tokens or 0) - (after_tokens or 0))
     try:
         ttl_msg = _build_prune_message_text(ttl_seconds)
-        pruned_tokens = max(0, (before_tokens or 0) - (after_tokens or 0))
         had_effect = (
             bool(hidden_paths)
             or bool(hidden_recent_paths)
@@ -782,9 +1011,17 @@ def apply_cache_ttl_pruning(
     except Exception:
         pass
     try:
+        def _format_paths(paths: List[str], limit: int = 20) -> str:
+            if not paths:
+                return ""
+            sample = paths[:limit]
+            tail = f"...(+{len(paths) - limit})" if len(paths) > limit else ""
+            return ",".join(sample) + tail
+
         logger.info(
             "[cache_ttl_prune] ttl=%ss buffer=%ss last_touch=%s now=%s "
-            "blocks=%s->%s tokens=%s->%s hidden_paths=%s hidden_recent=%s "
+            "blocks=%s->%s tokens=%s->%s pruned_tokens=%s hidden_paths=%s hidden_recent=%s "
+            "paths=%s recent_paths=%s "
             "keep_recent_turns=%s keep_intact=%s skip_old_turns=%s",
             int(ttl_seconds or 0),
             int(buffer_seconds or 0),
@@ -794,8 +1031,11 @@ def apply_cache_ttl_pruning(
             after_blocks,
             before_tokens,
             after_tokens,
+            pruned_tokens,
             len(hidden_paths),
             len(hidden_recent_paths),
+            _format_paths(hidden_paths),
+            _format_paths(sorted(hidden_recent_paths)),
             int(keep_recent_turns or 0),
             int(keep_recent_intact_turns or 0),
             bool(skip_old_turns),

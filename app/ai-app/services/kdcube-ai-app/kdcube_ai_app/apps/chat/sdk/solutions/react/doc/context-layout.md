@@ -1,30 +1,44 @@
 # Context Layout (Blocks)
 
-This describes the block stream that agents receive.
+This document describes the **rendered block stream** that agents receive and how it is
+assembled each turn.
 
 ## Block Stream (per agent call)
-1) **History blocks**  
-   Built once per turn by `ContextBrowser.load_timeline()`.  
-   Includes prior turns (user → contributions → assistant) plus any stored `conv.range.summary` blocks.
+1) **History blocks**
+   - Built from timeline (including any `conv.range.summary` blocks).
+   - Includes prior turns (user → contributions → assistant → tool calls/results).
 
-2) **Current turn user blocks**  
-   Built once per turn.  
-   Includes current user prompt + attachments.
+2) **Current turn user blocks**
+   - Current user prompt + attachments.
 
-3) **Turn progress blocks**  
-   Any downstream agent can append progress contributions (e.g., gate blocks, `react.notes`).  
-   These are appended via `ContextBrowser.contribute(...)` and appear in the same stream.  
-   By default they are persisted into the turn log for reconstruction next turn.
+3) **Turn progress blocks**
+   - Added by downstream agents (e.g., `react.notes`, tool call/result blocks).
+   - Appended via `ContextBrowser.contribute(...)` and persisted into the turn log.
 
-4) **Sources pool block** (uncached; optional via `timeline.render(include_sources=True)`).
+4) **Sources pool block** (optional)
+   - Only included if `timeline.render(include_sources=True)`.
+   - Always appended at the tail; never cached.
 
-5) **Announce block** (uncached; optional via `timeline.render(include_announce=True)`; active until explicitly cleared).
+5) **Announce block** (optional)
+   - Only included if `timeline.render(include_announce=True)`.
+   - Always appended at the tail; never cached.
 
-Caching: two cache checkpoints are applied inside the stable stream (history + current + contributions).  
+---
+
+## Caching (exact behavior)
+Cache points are placed **inside the stable stream** (history + current + contributions).
 Tail blocks (sources/announce) are never cached.
 
-## Schematic Layout
+**Cache points (in order):**
+1) **Previous‑turn cache point** — last block before the current turn header (if present).
+2) **Pre‑tail cache point** — last block of round `N‑4` (`cache_point_offset_rounds=4`).
+3) **Tail cache point** — last block in the visible stream.
 
+This ensures prompt caching is stable even when turns are edited or hidden.
+
+---
+
+## Schematic Layout
 ```
 ┌──────────────────────────┐
 │ RANGE SUMMARIES          │
@@ -35,6 +49,7 @@ Tail blocks (sources/announce) are never cached.
 │  - prior user prompt     │
 │  - prior contributions   │
 │  - prior assistant       │
+│  - tool call/result      │
 └──────────────────────────┘
 ┌──────────────────────────┐
 │ CURRENT TURN USER BLOCKS │
@@ -43,8 +58,8 @@ Tail blocks (sources/announce) are never cached.
 └──────────────────────────┘
 ┌──────────────────────────┐
 │ TURN PROGRESS LOG        │
-│  - gate/react            │
-│  - react.notes           │
+│  - gate/react notes      │
+│  - tool call/result      │
 └──────────────────────────┘
 ┌──────────────────────────┐
 │ SOURCES POOL (optional)  │  ← uncached tail
@@ -54,55 +69,35 @@ Tail blocks (sources/announce) are never cached.
 └──────────────────────────┘
 ```
 
-### Announce Example (rendered)
-```
-╔══════════════════════════════════════╗
-║  ANNOUNCE — Iteration 3/15          ║
-╚══════════════════════════════════════╝
+---
 
-[BUDGET]
-  iterations  ███░░░░░░░  12 remaining
-  time_elapsed_in_turn   2m15s
+## Compaction Notes (high‑level)
+When compaction runs, a `conv.range.summary` block is inserted at a cut point.
+`timeline.render(...)` then slices the visible stream **from the latest summary onward**.
+Older blocks remain in storage but are hidden from the rendered context.
 
-[AUTHORITATIVE TEMPORAL CONTEXT (GROUND TRUTH)]
-  user_timezone: Europe/Berlin
-  current_utc_timestamp: 2026-02-10T13:55:01Z
-  current_utc_date: 2026-02-10
-  All relative dates MUST be interpreted against this context.
+See `compaction-README.md` for exact cut‑point rules.
 
-[ACTIVE PLAN]
-  - plans:
-    • plan #1 (current) last=2026-02-07T19:22:10Z
-      ✓ [1] gather sources
-      □ [2] draft report
-  - plan_status: done=1 failed=0 pending=1
-  - plan_complete: false
+---
 
-[SYSTEM MESSAGE]
-  Context was pruned because the session TTL (300s) was exceeded.
-  Use react.read(path) to restore a logical path (fi:/ar:/so:/sk:).
-```
+## Stable Paths (concrete, no “current_turn”)
+All paths use a concrete `turn_id` and standard `tool_call_id` (always `tc_<id>`):
 
-Caching: tail blocks are always uncached. Cache checkpoints are placed by the browser (see context-caching.md).
-
-## Compaction Notes
-When compaction runs, `conv.range.summary` is inserted at a cut point.
-`timeline.render(...)` slices the visible stream from the **latest** summary onward,
-so older blocks remain in the timeline (storage) but are hidden from the rendered context.
-Summaries are stored in the index (not in the turn log).
-
-## Stable Paths
-All paths use concrete `turn_id` (no `current_turn` namespace):
-- `ar:<turn_id>.user.prompt` / `ar:<turn_id>.assistant.completion`
+- `ar:<turn_id>.user.prompt`
+- `ar:<turn_id>.assistant.completion`
 - `ar:<turn_id>.react.notes.<tool_call_id>`
 - `fi:<turn_id>.user.attachments/<name>`
 - `fi:<turn_id>.files/<relative_path>`
-- `tc:<turn_id>.<id>.call` / `.result`
+- `fi:<turn_id>.code.<tool_call_id>`
+- `tc:<turn_id>.<tool_call_id>.call`
+- `tc:<turn_id>.<tool_call_id>.result`
+- `tc:<turn_id>.tool_calls.<tool_call_id>.notice.json`
 - `so:sources_pool[...]`
 
+---
+
 ## Visible Timeline (rendered order)
-Blocks are rendered **oldest → newest** (newest at bottom).  
-Each turn begins with:
+Blocks are rendered **oldest → newest** (newest at bottom). Each turn begins with:
 
 ```
 [TURN <turn_id>] ts=<iso>
@@ -114,7 +109,7 @@ Each turn begins with:
 
 [USER MESSAGE]
 [path: ar:turn_1770603271112_2yz1lp.user.prompt]
-could you find top 3 places to eat here in wuppertal
+Could you find top 3 places to eat here in Wuppertal?
 
 [USER ATTACHMENT] menu.pdf | application/pdf
 summary: 2‑page menu, prices & address (Wuppertal)
@@ -123,54 +118,35 @@ summary: 2‑page menu, prices & address (Wuppertal)
 
 <document media_type=application/pdf b64_len=183942>
 
-[STAGE: GATE OUTPUT]
-route: answer
-conversation_title: Wuppertal dining
-needs_clarification: False
-
-[REACT.PLAN]
-id=plan_abc
-□ 1) Search top restaurants
-□ 2) Cross‑check ratings
-□ 3) Draft ranked list
-
-[AI Agent say]: searching for top-rated restaurants in Wuppertal
+[AI Agent say]: Searching for top‑rated restaurants in Wuppertal
 
 [react.tool.call] (JSON)
 {
   "tool_id": "web_tools.web_search",
-  "tool_call_id": "18f62649fb3b",
+  "tool_call_id": "tc_18f62649fb3b",
   "params": { ... }
 }
 
-[react.tool.result] (JSON meta)
+[react.tool.result] (JSON status)
 {
-  "artifact_path": "tc:turn_1770603271112_2yz1lp.18f62649fb3b.result",
-  "tool_call_id": "18f62649fb3b",
-  "mime": "application/json"
+  "tool_id": "web_tools.web_search",
+  "tool_call_id": "tc_18f62649fb3b",
+  "result": [ ... truncated ... ]
 }
 
-[react.tool.call] (JSON)
-{
-  "tool_id": "react.patch",
-  "tool_call_id": "6a3f1e0d9b21",
-  "reasoning": "...",
-  "params": { "path": "turn_1770603271112_2yz1lp/files/draft.md", "patch": "..." }
-}
-
-[react.tool.result] (JSON meta)
-{
-  "artifact_path": "fi:turn_1770603271112_2yz1lp.files/draft.md",
-  "physical_path": "turn_1770603271112_2yz1lp/files/draft.md",
-  "tool_call_id": "6a3f1e0d9b21",
-  "mime": "text/markdown",
-  "edited": true
-}
+[react.tool.result] (artifact block)
+[path: so:sources_pool[1-5]]
+...
 ```
 
-## Agent Contribution Example
-An agent can append blocks using a formatter:
+Notes:
+- Tool results may appear as multiple blocks (status + artifact blocks).
+- For file artifacts, the file block uses `fi:<turn_id>.files/...` and contains
+  a public digest; hosting metadata lives in `meta`.
 
+---
+
+## Agent Contribution Example
 ```python
 block = {
     "type": "react.notes",
@@ -181,10 +157,10 @@ block = {
     "text": "short progress note",
     "meta": {"channel": "timeline_text"},
 }
-ctx_browser.contribute(
-    blocks=[block],
-)
+ctx_browser.contribute(blocks=[block])
 ```
+
+---
 
 ## Contribution Filters
 ContextBrowser can filter contribution blocks centrally:
@@ -193,9 +169,11 @@ ContextBrowser can filter contribution blocks centrally:
 
 Filtering applies to both:
 - historical reconstruction
-- current-turn contributions
+- current‑turn contributions
 
-Example: use timeline context with retry-on-limit
+---
+
+## Retry with Compaction (example)
 ```python
 blocks = ctx_browser.timeline.render(
     include_sources=True,

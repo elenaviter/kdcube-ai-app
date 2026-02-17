@@ -4,11 +4,42 @@ This document describes how the **sources pool** is maintained, persisted, and r
 
 ## What it is
 The sources pool is a per‑conversation registry of sources collected by tools:
-- `web_tools.web_search`, `web_tools.web_fetch` results (URL/title/snippet/etc.)
-- user attachments that are treated as sources
-- files produced by tools that are eligible to be cited
+- `web_tools.web_search`, `web_tools.web_fetch` results (URL/title/text/etc.)
+- user attachments **if** they are cite‑eligible (`text/*`, `image/*`, `application/pdf`)
+- files produced by tools **if** they are cite‑eligible (`text/*`, `image/*`, `application/pdf`)
 
-Each item in the pool has a stable `sid` and metadata (url/title/snippet/…).
+Each item in the pool has a stable `sid` and metadata.  
+The pool is append‑only within a conversation (SIDs never change).
+
+## Eligibility (what is included)
+- Web results are always eligible.
+- Attachments and produced files are included **only** if their MIME is one of:
+  - `text/*`
+  - `image/*`
+  - `application/pdf`
+- Non‑eligible files (e.g., `.xlsx`, `.pptx`, `.docx`, archives) are **not** added to the pool.
+
+## Source item fields (canonical)
+
+All source rows are dictionaries. Fields are **additive**; only a subset may be present.
+
+Common fields:
+- `sid` (int, required): Stable ID.
+- `source_type` (str, required): `web` | `file` | `attachment` | `manual`.
+- `title` (str): Human‑readable label.
+- `text` (str): Extract/snippet for web sources or textual artifacts.
+- `url` (str): Canonical URL (web sources).
+- `domain` (str): Normalized domain (web sources).
+- `mime` (str): MIME type for file/attachment sources.
+- `size_bytes` (int): File size for file/attachment sources.
+- `artifact_path` (str): Logical path, e.g. `fi:<turn>.files/<name>`.
+- `physical_path` (str): OUT_DIR‑relative physical path, e.g. `turn_<id>/files/...`.
+- `hosted_uri`, `rn`, `key` (str): Hosting references (not rendered to the model).
+- `base64` (str): Optional; only for inline binary sources (rare; not produced for large files).
+
+Optional metadata (web sources):
+- `published_time_iso`, `modified_time_iso`, `fetched_time_iso`
+- `author`, `authority`, `provider_rank`, `weighted_rank`, `date_confidence`
 
 ## Source item shapes (examples)
 
@@ -19,10 +50,10 @@ Each item in the pool has a stable `sid` and metadata (url/title/snippet/…).
   "source_type": "web",
   "url": "https://example.com/article",
   "title": "Article title",
-  "snippet": "Short extract or summary...",
+  "text": "Short extract or summary...",
   "domain": "example.com",
-  "published_at": "2026-02-10",
-  "score": 0.83
+  "published_time_iso": "2026-02-10T00:00:00Z",
+  "fetched_time_iso": "2026-02-10T12:01:22Z"
 }
 ```
 
@@ -32,11 +63,12 @@ Each item in the pool has a stable `sid` and metadata (url/title/snippet/…).
   "sid": 5,
   "source_type": "attachment",
   "title": "menu.pdf",
-  "url": "rn:.../menu.pdf",
-  "rn": "rn:.../menu.pdf",
-  "local_path": "turn_123/attachments/menu.pdf",
+  "physical_path": "turn_123/attachments/menu.pdf",
+  "artifact_path": "fi:turn_123.user.attachments/menu.pdf",
   "mime": "application/pdf",
-  "size_bytes": 183942
+  "size_bytes": 183942,
+  "rn": "rn:.../menu.pdf",
+  "hosted_uri": "s3://.../menu.pdf"
 }
 ```
 
@@ -46,11 +78,12 @@ Each item in the pool has a stable `sid` and metadata (url/title/snippet/…).
   "sid": 8,
   "source_type": "file",
   "title": "report.pdf",
-  "url": "rn:.../report.pdf",
-  "rn": "rn:.../report.pdf",
-  "local_path": "turn_123/files/report.pdf",
+  "physical_path": "turn_123/files/report.pdf",
+  "artifact_path": "fi:turn_123.files/report.pdf",
   "mime": "application/pdf",
-  "size_bytes": 45921
+  "size_bytes": 45921,
+  "rn": "rn:.../report.pdf",
+  "hosted_uri": "s3://.../report.pdf"
 }
 ```
 
@@ -80,8 +113,16 @@ When `timeline.render(include_sources=True)` is used, the sources pool is render
 SOURCES POOL (3 sources)
 [S:1] example.com  |  "Title..."
 [S:2] another.com  |  "Snippet..."
-[S:3] local.pdf    |  "User attachment"
+[S:3] fi:turn_123.user.attachments/menu.pdf  |  "<binary>"
 ```
+
+Notes on rendering:
+- The list is **not truncated**; all pool entries are shown.
+- For file/attachment sources, the “domain” column shows the **logical artifact path**
+  (e.g., `fi:turn_123.files/report.pdf`), not the hosting bucket.
+- For `image/*` and `application/pdf`, the snippet is rendered as `<base64>`.
+- Token counts for binary sources are estimated from `size_bytes`.
+- Hosting fields (`rn`, `hosted_uri`, `key`) are kept in the pool but **not** rendered.
 
 This block is **always the last non‑cached block**, and appears **after announce** when both are included.
 
@@ -97,7 +138,16 @@ This block is **always the last non‑cached block**, and appears **after announ
 ## How to access sources (agent guidance)
 - Use `react.read(paths=["so:sources_pool[1,2]"])` to load sources into visible context.
 - Use `ctx_tools.fetch_ctx("so:sources_pool[1,2]")` inside exec code for programmatic access.
-- Prefer ranges: `so:sources_pool[1:5]`.
+- Prefer ranges: `so:sources_pool[1-5]`.
+- Comma lists also work: `so:sources_pool[1,3,7]`.
+
+## fetch_ctx behavior for sources_pool
+- `fetch_ctx("so:sources_pool[...])` returns the **raw list of source rows**.
+- If a row includes `base64`, it is returned as‑is (rare).
+- For file/attachment sources:
+- **Code must open files via OUT_DIR + physical_path** (physical path).  
+  Example: `Path(OUT_DIR) / row["physical_path"]`.
+  - `artifact_path` is **logical** and should be used only with `react.read`, not for direct file I/O.
 
 ## Example
 Rendered order when include_sources + include_announce:

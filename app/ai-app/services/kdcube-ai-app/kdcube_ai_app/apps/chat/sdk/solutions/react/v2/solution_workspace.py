@@ -33,6 +33,9 @@ _REL_FILES_RE = re.compile(r"(?<![A-Za-z0-9_])files/[^\s'\"\)\];,]+")
 _REL_ATTACHMENTS_RE = re.compile(r"(?<![A-Za-z0-9_])attachments/[^\s'\"\)\];,]+")
 _FETCH_CTX_PATH_RE = re.compile(r"([a-z]{2}:[A-Za-z0-9_./\\-]+)")
 
+_ALLOWED_READ_BASE64_MIMES = {"application/pdf"}
+_ALLOWED_READ_BASE64_PREFIXES = ("image/",)
+
 
 def extract_code_file_paths(code: str, *, turn_id: str = "") -> tuple[List[str], List[str]]:
     """
@@ -118,6 +121,160 @@ def _safe_relpath(path_value: str) -> bool:
         return False
 
 
+def _infer_physical_from_fi(path: str) -> str:
+    if not isinstance(path, str) or not path.strip():
+        return ""
+    p = path.strip()
+    if p.startswith("fi:"):
+        p = p[len("fi:"):]
+    if ".files/" in p:
+        tid, rel = p.split(".files/", 1)
+        if tid and rel:
+            return f"{tid}/files/{rel}"
+    if ".user.attachments/" in p:
+        tid, rel = p.split(".user.attachments/", 1)
+        if tid and rel:
+            return f"{tid}/attachments/{rel}"
+    if ".attachments/" in p:
+        tid, rel = p.split(".attachments/", 1)
+        if tid and rel:
+            return f"{tid}/attachments/{rel}"
+    return ""
+
+
+def _guess_mime_from_path(path: str) -> str:
+    try:
+        import mimetypes
+        guess, _ = mimetypes.guess_type(path)
+        return (guess or "").strip()
+    except Exception:
+        return ""
+
+
+def _is_base64_allowed_mime(mime: str) -> bool:
+    if not mime:
+        return False
+    m = mime.strip().lower()
+    if m in _ALLOWED_READ_BASE64_MIMES:
+        return True
+    for prefix in _ALLOWED_READ_BASE64_PREFIXES:
+        if m.startswith(prefix):
+            return True
+    return False
+
+
+def _read_local_file(abs_path: pathlib.Path, mime: str) -> tuple[Optional[str], Optional[str]]:
+    try:
+        if not abs_path.exists() or not abs_path.is_file():
+            return None, None
+        if _is_text_mime(mime or ""):
+            return abs_path.read_text(encoding="utf-8", errors="replace"), None
+        if _is_base64_allowed_mime(mime or ""):
+            data = abs_path.read_bytes()
+            import base64 as _b64
+            return None, _b64.b64encode(data).decode("utf-8")
+    except Exception:
+        return None, None
+    return None, None
+
+
+async def read_artifact_for_react(
+        *,
+        ctx_browser: Any,
+        path: str,
+        outdir: pathlib.Path,
+) -> Dict[str, Any]:
+    """
+    Resolve a fi: artifact path to a local file (rehosting if needed) and read its
+    content in a safe, model-friendly form. Returns dict with keys:
+      - artifact, mime, text, base64, physical_path, missing, error
+    """
+    if not isinstance(path, str) or not path.strip():
+        return {"missing": True}
+    raw_path = path.strip()
+    if not raw_path.startswith("fi:"):
+        return {"missing": True}
+
+    artifact: Optional[Dict[str, Any]] = None
+    try:
+        artifact = ctx_browser.timeline.resolve_artifact(raw_path)
+    except Exception:
+        artifact = None
+
+    if not isinstance(artifact, dict):
+        # attempt to load from historical turn log
+        tid = ""
+        p = raw_path[len("fi:"):]
+        if ".files/" in p:
+            tid = p.split(".files/", 1)[0]
+        elif ".user.attachments/" in p:
+            tid = p.split(".user.attachments/", 1)[0]
+        elif ".attachments/" in p:
+            tid = p.split(".attachments/", 1)[0]
+        if tid:
+            try:
+                turn_log = await ctx_browser.get_turn_log(turn_id=tid)
+            except Exception:
+                turn_log = {}
+            contrib_log = (turn_log.get("blocks") or []) if isinstance(turn_log, dict) else []
+            if contrib_log:
+                artifact = resolve_artifact_from_timeline({"blocks": contrib_log, "sources_pool": []}, raw_path)
+
+    if not isinstance(artifact, dict):
+        return {"missing": True}
+
+    mime = (artifact.get("mime") or _guess_mime_from_path(raw_path) or "application/octet-stream").strip()
+
+    physical_path = (
+        artifact.get("filepath")
+        or artifact.get("physical_path")
+        or _infer_physical_from_fi(raw_path)
+        or ""
+    )
+    if not physical_path:
+        return {
+            "artifact": artifact,
+            "mime": mime,
+            "missing": True,
+            "error": "no_physical_path",
+        }
+    if physical_path:
+        try:
+            await rehost_files_from_timeline(
+                ctx_browser=ctx_browser,
+                paths=[physical_path],
+                outdir=outdir,
+            )
+        except Exception:
+            pass
+        abs_path = outdir / physical_path
+        if not abs_path.exists():
+            return {
+                "artifact": artifact,
+                "mime": mime,
+                "physical_path": physical_path,
+                "missing": True,
+                "error": "file_missing",
+            }
+        text, b64 = _read_local_file(abs_path, mime)
+        if text is not None or b64 is not None:
+            return {
+                "artifact": artifact,
+                "mime": mime,
+                "text": text,
+                "base64": b64,
+                "physical_path": physical_path,
+                "missing": False,
+            }
+
+    # fallback: file exists but not readable by model (binary)
+    return {
+        "artifact": artifact,
+        "mime": mime,
+        "physical_path": physical_path,
+        "missing": False,
+    }
+
 async def rehost_files_from_timeline(
         *,
         ctx_browser: Any,
@@ -175,21 +332,46 @@ async def rehost_files_from_timeline(
             if not isinstance(artifact, dict):
                 missing.append(f"{turn_id}/files/{rel}")
                 continue
-            src = (artifact.get("hosted_uri") or artifact.get("rn") or artifact.get("key") or "").strip()
-            if not src and (artifact.get("base64") or artifact.get("text")):
-                src = ""
+            src = (artifact.get("hosted_uri") or artifact.get("key") or artifact.get("rn") or "").strip()
+            mime = (artifact.get("mime") or "").strip().lower()
+            expected_size = artifact.get("size_bytes")
+            if not isinstance(expected_size, int):
+                expected_size = None
             target = outdir / turn_id / "files" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
-                if not target.exists():
-                    if artifact.get("base64"):
+                needs_rehost = not target.exists()
+                if target.exists():
+                    try:
+                        current_size = target.stat().st_size
+                    except Exception:
+                        current_size = None
+                    if expected_size:
+                        if current_size == expected_size:
+                            rehosted.append(f"{turn_id}/files/{rel}")
+                            continue
+                        needs_rehost = True
+                    elif src and current_size == 0:
+                        needs_rehost = True
+                if needs_rehost:
+                    if src:
+                        try:
+                            data = await store.get_blob_bytes(src)
+                            target.write_bytes(data)
+                        except Exception:
+                            # fall back to inline content only when mime supports it
+                            if artifact.get("base64"):
+                                import base64 as _b64
+                                target.write_bytes(_b64.b64decode(artifact.get("base64")))
+                            elif isinstance(artifact.get("text"), str) and _is_text_mime(mime):
+                                target.write_text(artifact.get("text"), encoding="utf-8")
+                            else:
+                                raise
+                    elif artifact.get("base64"):
                         import base64 as _b64
                         target.write_bytes(_b64.b64decode(artifact.get("base64")))
-                    elif isinstance(artifact.get("text"), str):
+                    elif isinstance(artifact.get("text"), str) and _is_text_mime(mime):
                         target.write_text(artifact.get("text"), encoding="utf-8")
-                    elif src:
-                        data = await store.get_blob_bytes(src)
-                        target.write_bytes(data)
                     else:
                         missing.append(f"{turn_id}/files/{rel}")
                         continue
@@ -209,21 +391,45 @@ async def rehost_files_from_timeline(
             if not isinstance(artifact, dict):
                 missing.append(f"{turn_id}/attachments/{rel}")
                 continue
-            src = (artifact.get("hosted_uri") or artifact.get("rn") or artifact.get("key") or "").strip()
-            if not src and (artifact.get("base64") or artifact.get("text")):
-                src = ""
+            src = (artifact.get("hosted_uri") or artifact.get("key") or artifact.get("rn") or "").strip()
+            mime = (artifact.get("mime") or "").strip().lower()
+            expected_size = artifact.get("size_bytes")
+            if not isinstance(expected_size, int):
+                expected_size = None
             target = outdir / turn_id / "attachments" / rel
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
-                if not target.exists():
-                    if artifact.get("base64"):
+                needs_rehost = not target.exists()
+                if target.exists():
+                    try:
+                        current_size = target.stat().st_size
+                    except Exception:
+                        current_size = None
+                    if expected_size:
+                        if current_size == expected_size:
+                            rehosted.append(f"{turn_id}/attachments/{rel}")
+                            continue
+                        needs_rehost = True
+                    elif src and current_size == 0:
+                        needs_rehost = True
+                if needs_rehost:
+                    if src:
+                        try:
+                            data = await store.get_blob_bytes(src)
+                            target.write_bytes(data)
+                        except Exception:
+                            if artifact.get("base64"):
+                                import base64 as _b64
+                                target.write_bytes(_b64.b64decode(artifact.get("base64")))
+                            elif isinstance(artifact.get("text"), str) and _is_text_mime(mime):
+                                target.write_text(artifact.get("text"), encoding="utf-8")
+                            else:
+                                raise
+                    elif artifact.get("base64"):
                         import base64 as _b64
                         target.write_bytes(_b64.b64decode(artifact.get("base64")))
-                    elif isinstance(artifact.get("text"), str):
+                    elif isinstance(artifact.get("text"), str) and _is_text_mime(mime):
                         target.write_text(artifact.get("text"), encoding="utf-8")
-                    elif src:
-                        data = await store.get_blob_bytes(src)
-                        target.write_bytes(data)
                     else:
                         missing.append(f"{turn_id}/attachments/{rel}")
                         continue
@@ -734,7 +940,7 @@ class ApplicationHostingService:
     ) -> List[Dict[str, Any]]:
         """
         Copy deliverable file artifacts from local outdir → ConversationStore.
-        Returns rows: [{slot, key, hosted_uri, filename, mime, size, tool_id, description, owner_id, rn, local_path}]
+        Returns rows: [{slot, key, hosted_uri, filename, mime, size, tool_id, description, owner_id, rn, physical_path}]
         """
         import pathlib as _pathlib
 
@@ -773,6 +979,12 @@ class ApplicationHostingService:
                 turn_id=turn_id,
                 request_id=rid,
             )
+            physical_path = str(p)
+            if base:
+                try:
+                    physical_path = str(p.relative_to(base))
+                except Exception:
+                    physical_path = str(p)
             files_rehosted.append({
                 "slot": info.get("slot") or "",
                 "key": key,
@@ -784,7 +996,7 @@ class ApplicationHostingService:
                 "owner_id": user,
                 "rn": rn_f,
                 "hosted_uri": uri,
-                "local_path": str(p),
+                "physical_path": physical_path,
             })
         return files_rehosted
 

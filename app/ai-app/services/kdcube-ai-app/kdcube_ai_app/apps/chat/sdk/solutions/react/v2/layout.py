@@ -50,7 +50,11 @@ def build_user_input_blocks(
         mime = (att.get("mime") or "").strip() or "application/octet-stream"
         summary = (att.get("summary") or "").strip()
         attachment_path = f"fi:{tid}.user.attachments/{name}" if name and name != "(attachment)" else ""
-        meta = {k: att.get(k) for k in ("hosted_uri", "rn", "key", "local_path") if att.get(k)}
+        meta = {k: att.get(k) for k in ("hosted_uri", "rn", "key", "physical_path") if att.get(k)}
+        if not meta.get("physical_path") and att.get("local_path"):
+            meta["physical_path"] = att.get("local_path")
+        if tid:
+            meta["turn_id"] = tid
         if summary:
             meta["summary"] = summary
         if name and name != "(attachment)":
@@ -61,6 +65,29 @@ def build_user_input_blocks(
         if name and name != "(attachment)":
             physical_path = f"{tid}/attachments/{name}"
             meta["physical_path"] = physical_path
+        # Build a stable, safe metadata digest (no hosted_uri/rn/key).
+        try:
+            digest_obj = {
+                "artifact_path": attachment_path,
+                "physical_path": physical_path,
+                "mime": mime,
+                "kind": "file",
+                "visibility": "external",
+                "ts": ts,
+            }
+            size_bytes = att.get("size") or att.get("size_bytes")
+            if size_bytes is not None:
+                digest_obj["size_bytes"] = size_bytes
+            if summary:
+                digest_obj["description"] = summary
+            digest_text = json.dumps(
+                {k: v for k, v in digest_obj.items() if v not in ("", None)},
+                ensure_ascii=False,
+                indent=2,
+            )
+            meta["digest"] = digest_text
+        except Exception:
+            digest_text = ""
         blocks.append(block_factory(
             type="user.attachment.meta",
             author="user",
@@ -68,7 +95,8 @@ def build_user_input_blocks(
             ts=ts,
             path=attachment_path,
             meta=meta or None,
-            text=None,
+            text=digest_text or None,
+            mime="application/json" if digest_text else None,
         ))
         if att.get("base64"):
             blocks.append(block_factory(
@@ -247,7 +275,6 @@ def build_sources_pool_text(*, sources_pool: List[Dict[str, Any]]) -> str:
     hr = "━" * width
 
     title_w = 36
-    domain_w = 16
     sid_pad = max(2, len(str(max([int(s.get('sid') or 0) for s in pool] or [0]))))
 
     def _domain_from_url(url: str) -> str:
@@ -288,20 +315,29 @@ def build_sources_pool_text(*, sources_pool: List[Dict[str, Any]]) -> str:
         def _emit(src: Dict[str, Any]) -> None:
             sid = int(src.get("sid") or 0)
             sid_label = str(sid).zfill(sid_pad)
-            url = (src.get("url") or src.get("local_path") or "").strip()
+            url = (src.get("url") or src.get("physical_path") or src.get("local_path") or "").strip()
+            artifact_path = (src.get("artifact_path") or "").strip()
+            source_type = (src.get("source_type") or "").strip().lower()
+            mime = (src.get("mime") or "").strip()
             title = (src.get("title") or src.get("name") or url or "(untitled)").strip()
             if title and not (title.startswith("\"") and title.endswith("\"")):
                 title = f"\"{title}\""
             title = _shorten(title, title_w)
-            domain = (src.get("domain") or "").strip()
-            if not domain:
-                domain = _domain_from_url(url)
-            domain = _shorten(domain or "-", domain_w)
+            if artifact_path and (source_type in {"file", "attachment"} or artifact_path.startswith("fi:")):
+                domain = artifact_path
+            else:
+                domain = (src.get("domain") or "").strip() or _domain_from_url(url)
+            domain = domain or "-"
+            mime_label = mime or "-"
             text_val = _snippet_from(src)
             tok_count = token_count(text_val) if text_val else 0
+            if tok_count <= 0:
+                size_bytes = src.get("size_bytes")
+                if isinstance(size_bytes, (int, float)) and size_bytes > 0:
+                    tok_count = max(1, int(size_bytes) // 4)
             tok_label = _fmt_tokens(tok_count)
-            lines.append(f"SID:{sid_label}  {title:<{title_w}}  {domain:<{domain_w}}  {tok_label}")
-            snippet = _shorten(text_val, 200) if text_val else "<text>"
+            lines.append(f"SID:{sid_label}  {title:<{title_w}}  {mime_label}  {domain}  {tok_label}")
+            snippet = _shorten(text_val, 200) if text_val else ("<base64>" if (mime.startswith("image/") or mime == "application/pdf") else "<text>")
             lines.append(f"        {snippet}")
             lines.append("")
 
@@ -752,7 +788,30 @@ def build_embedding_presentation(blocks: List[Dict[str, Any]]) -> str:
     Build a compact presentation for semantic indexing.
     Only include external artifacts (file/display) from react tool results.
     """
+    def _maybe_parse_json(val: str) -> Optional[Any]:
+        try:
+            return json.loads(val)
+        except Exception:
+            return None
+
     lines: List[str] = []
+    call_id_to_tool_id: Dict[str, str] = {}
+    for b in blocks or []:
+        if not isinstance(b, dict):
+            continue
+        if (b.get("type") or "") != "react.tool.call":
+            continue
+        payload = _maybe_parse_json(b.get("text") or "") if (b.get("mime") or "").strip() == "application/json" else None
+        tool_id = ""
+        tool_call_id = ""
+        if isinstance(payload, dict):
+            tool_id = (payload.get("tool_id") or "").strip()
+            tool_call_id = (payload.get("tool_call_id") or "").strip()
+        meta_local = b.get("meta") if isinstance(b.get("meta"), dict) else {}
+        if not tool_call_id:
+            tool_call_id = (meta_local.get("tool_call_id") or b.get("call_id") or "").strip()
+        if tool_call_id and tool_id:
+            call_id_to_tool_id[tool_call_id] = tool_id
     for b in blocks or []:
         if not isinstance(b, dict):
             continue
@@ -778,6 +837,8 @@ def build_embedding_presentation(blocks: List[Dict[str, Any]]) -> str:
         mime = (meta.get("mime") or "").strip()
         tool_id = (meta.get("tool_id") or "").strip()
         tool_call_id = (meta.get("tool_call_id") or "").strip()
+        if not tool_id and tool_call_id:
+            tool_id = call_id_to_tool_id.get(tool_call_id, "")
         parts = []
         if artifact_path:
             parts.append(f"artifact_path={artifact_path}")
