@@ -34,6 +34,7 @@ TOOL_SPEC = {
         "Use channel='timeline_text' ONLY for short markdown text (status/brief summary); "
         "use channel='canvas' for LARGE content (even markdown) or any non‑markdown. "
         "Use channel='internal' to write user-invisible notes (they are stored in the timeline as react.note). "
+        "The file extension MUST match the content format (e.g., HTML -> .html, Markdown -> .md). "
         "When channel='canvas', the file extension MUST match a supported canvas format: "
         ".md/.markdown, .html/.htm, .mermaid/.mmd, .json, .yaml/.yml, .txt, .xml. "
         "react.write only writes text-based files. For PDFs/PPTX/DOCX/PNG, use rendering_tools.write_* "
@@ -76,6 +77,24 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         state["exit_reason"] = "error"
         state["error"] = {"where": "tool_execution", "error": "missing_artifact_name", "managed": True}
         return state
+    if channel == "canvas":
+        try:
+            ext = pathlib.Path(artifact_name).suffix.lower()
+        except Exception:
+            ext = ""
+        allowed_exts = {".md", ".markdown", ".html", ".htm", ".mermaid", ".mmd", ".json", ".yaml", ".yml", ".txt", ".xml"}
+        if ext and ext not in allowed_exts:
+            notice_block(
+                ctx_browser=ctx_browser,
+                tool_call_id=tool_call_id,
+                code="protocol_violation.write_extension_mismatch",
+                message=(
+                    "react.write(canvas) supports only text formats. "
+                    "Use .md/.html/.mmd/.json/.yaml/.txt/.xml or use rendering_tools.write_* for binary files."
+                ),
+                extra={"path": artifact_name, "ext": ext},
+                rel="call",
+            )
     phys_path, rel_path, rewritten = normalize_physical_path(
         artifact_name, turn_id=ctx_browser.runtime_ctx.turn_id or ""
     )
