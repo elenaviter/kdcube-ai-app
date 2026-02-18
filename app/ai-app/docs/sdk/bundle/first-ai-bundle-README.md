@@ -1,16 +1,11 @@
 # Bundle Authoring Guide (Chat SDK)
 
-This guide replaces the old “First AI Bundle” doc. It’s based on the current reference bundle:
-`kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44`.
-
-Use it as the canonical template for building and running bundles in our platform.
-
 ---
 
 ## 1) Reference Bundle (Use This as Your Starting Point)
 
 Bundle path:
-`kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44`
+[react@2026-02-10-02-44](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/react%402026-02-10-02-44)`kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44`
 
 Key files:
 - `entrypoint.py` — bundle entrypoint (agentic_workflow)
@@ -199,15 +194,6 @@ export AGENTIC_BUNDLES_ROOT=/bundles
    - followups and files are visible
 
 ---
-
-## 11) Notes / Gotchas
-
-- Use `react.write` for text artifacts only.
-- Use `rendering_tools.write_*` for PDF/PPTX/DOCX/PNG.
-- Always call `react.read` before using large or truncated artifacts.
-- When using `channel=canvas`, the filename extension must be one of:
-  `.md/.markdown, .html/.htm, .mermaid/.mmd, .json, .yaml/.yml, .txt, .xml`.
-
----
-
-If you want a “starter bundle” repo, I can generate one from the reference bundle. 
+## Examples
+- [ReAct Agent](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/react%402026-02-10-02-44): General purpose ReAct agent equipped with [react-tools-README.md](../agents/react/react-tools-README.md) tools (read/write/memsearch/hide/file_search/patch), web tools (search/fetch) and rendering tools (write_pdf|docx|png|pptx). More on it: [react](../agents/react)
+- [Iso Runtime Demo](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/with-isoruntime%402026-02-16-14-00): demonstrates the code execution in iso runtime (`docker`, `fargate`).
