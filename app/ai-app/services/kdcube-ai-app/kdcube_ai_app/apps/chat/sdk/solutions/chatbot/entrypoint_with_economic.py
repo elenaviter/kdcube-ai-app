@@ -456,6 +456,14 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
 
         _log("user_budget", "Computed user lifetime budget", user_budget_tokens=user_budget_tokens)
 
+        policy_for_est = base_policy
+        if tier_balance and tier_balance.tier_override_is_active():
+            policy_for_est = _merge_policy_with_tier_balance(base_policy, tier_balance)
+        est_limit_tokens, _ = policy_for_est.effective_allowed_tokens()
+        if est_limit_tokens is not None and int(est_limit_tokens) > 0:
+            est_turn_tokens = min(int(est_turn_tokens), int(est_limit_tokens))
+        _log("estimate", "Estimated per-turn tokens", est_turn_tokens=est_turn_tokens, est_limit_tokens=est_limit_tokens)
+
         subscription = await self.cp_manager.subscription_mgr.get_subscription(
             tenant=tenant,
             project=project,
