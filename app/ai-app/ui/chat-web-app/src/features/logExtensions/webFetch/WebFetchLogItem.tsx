@@ -4,6 +4,7 @@ import IconContainer from "../../../components/IconContainer.tsx";
 import {WebFetchArtifact, WebFetchArtifactType, WebFetchDataItem} from "./types.ts";
 import {BanknoteX, Check, Download, Ellipsis, GlobeOff} from "lucide-react";
 import IconLoader from "../../../components/IconLoader.tsx";
+import {retry} from "@reduxjs/toolkit/query";
 
 const WebFetchLogItem = ({item}: ChatLogComponentProps) => {
     const maxVisibleLinks = 3;
@@ -25,14 +26,20 @@ const WebFetchLogItem = ({item}: ChatLogComponentProps) => {
     }, [expanded, expandable, webSearchItem.content.items])
 
     return useMemo(() => {
-        const getIcon = (item: WebFetchDataItem) => {
+        const getStatus = (item: WebFetchDataItem) => {
             switch (item.status) {
+                case null:
+                case undefined:
+                    return null
                 case "success":
-                    return <IconContainer icon={Check} size={1} className={"text-green-900"}/>
+                    return <span className={`text-green-700 text-sm`}> - Success</span>
                 case "paywall":
-                    return <IconContainer icon={BanknoteX} size={1} className={"text-yellow-800"}/>
+                    return <div className={`text-red-800 text-sm`}> - Paywall</div>
+                case "timeout":
+                    return <div className={`text-red-800 text-sm`}> - Timeout</div>
+                case "error":
                 default:
-                    return <IconContainer icon={GlobeOff} size={1} className={"text-red-800"}/>
+                    return <div className={`text-red-800 text-sm`}> - Failed</div>
             }
         }
         return <div
@@ -59,7 +66,7 @@ const WebFetchLogItem = ({item}: ChatLogComponentProps) => {
                                             <span className={"truncate"}>{link.url}</span>
                                         </a>
                                     </div>
-                                    <div className={"ml-2 mr-auto"}>{getIcon(link)}</div>
+                                    <div className={"ml-1 mr-auto"}>{getStatus(link)}</div>
                                 </div>
                             })}
                             {expandable && (expanded ? <div>
