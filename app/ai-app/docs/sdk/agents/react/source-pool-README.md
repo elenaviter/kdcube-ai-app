@@ -1,163 +1,103 @@
-# Sources Pool (source-pool-README.md)
+# Sources Pool
 
-This document describes how the **sources pool** is maintained, persisted, and rendered.
+This document describes how the **sources pool** is populated, stored, and accessed in the ReAct runtime.
 
 ## What it is
-The sources pool is a per‑conversation registry of sources collected by tools:
-- `web_tools.web_search`, `web_tools.web_fetch` results (URL/title/text/etc.)
-- user attachments **if** they are cite‑eligible (`text/*`, `image/*`, `application/pdf`)
-- files produced by tools **if** they are cite‑eligible (`text/*`, `image/*`, `application/pdf`)
 
-Each item in the pool has a stable `sid` and metadata.  
-The pool is append‑only within a conversation (SIDs never change).
+The sources pool is a per‑conversation registry of canonical source rows collected from:
+- `web_tools.web_search` and `web_tools.web_fetch`
+- user attachments (eligible MIME types only)
+- files produced by tools (eligible MIME types only)
+- skill sources (`sources.yaml`) when a skill is loaded via `react.read`
+
+## Where it lives
+
+The full pool is stored as a separate conversation‑level artifact `conv:sources_pool`.
+When a turn starts, the runtime loads that artifact and hydrates the in‑memory pool.
+For local turn access, a compact snapshot is written into `timeline.json` under `sources_pool`.
+
+The pool is rendered as a single “SOURCES POOL” tail block when timeline rendering includes sources.
+
+### Compact snapshot contents
+
+The snapshot stored in the timeline artifact / local `timeline.json` is lightweight and
+keeps only essential fields (e.g., `sid`, `title`, `url`, short `text`, and limited metadata like
+`published_time_iso` or `favicon`). The full source rows remain in `conv:sources_pool`.
+
+## Dedupe and SID behavior
+
+- Sources are merged by normalized URL (or `physical_path` for local files).
+- Existing rows keep their SID.
+- Duplicate URLs/paths reuse the existing SID (no new row).
+- New unique rows receive the next SID.
+
+SIDs are stable within a conversation once assigned.
 
 ## Eligibility (what is included)
-- Web results are always eligible.
-- Attachments and produced files are included **only** if their MIME is one of:
-  - `text/*`
-  - `image/*`
-  - `application/pdf`
-- Non‑eligible files (e.g., `.xlsx`, `.pptx`, `.docx`, archives) are **not** added to the pool.
 
-## Source item fields (canonical)
+Attachments and produced files are included only if MIME is one of:
+- `text/*`
+- `image/*`
+- `application/pdf`
 
-All source rows are dictionaries. Fields are **additive**; only a subset may be present.
+Other binary types (e.g., `.xlsx`, `.pptx`, `.docx`, archives) are not added to the pool.
 
-Common fields:
-- `sid` (int, required): Stable ID.
-- `source_type` (str, required): `web` | `file` | `attachment` | `manual`.
-- `title` (str): Human‑readable label.
-- `text` (str): Extract/snippet for web sources or textual artifacts.
-- `url` (str): Canonical URL (web sources).
-- `domain` (str): Normalized domain (web sources).
-- `mime` (str): MIME type for file/attachment sources.
-- `size_bytes` (int): File size for file/attachment sources.
-- `artifact_path` (str): Logical path, e.g. `fi:<turn>.files/<name>`.
-- `physical_path` (str): OUT_DIR‑relative physical path, e.g. `turn_<id>/files/...`.
-- `hosted_uri`, `rn`, `key` (str): Hosting references (not rendered to the model).
-- `base64` (str): Optional; only for inline binary sources (rare; not produced for large files).
+## Canonical source row fields
 
-Optional metadata (web sources):
-- `published_time_iso`, `modified_time_iso`, `fetched_time_iso`
-- `author`, `authority`, `provider_rank`, `weighted_rank`, `date_confidence`
+All rows are dictionaries; fields are additive. Common fields:
+- `sid` (int): source identifier
+- `source_type` (str): `web` | `file` | `attachment` | `manual`
+- `title` (str)
+- `url` (str) for web sources
+- `text` (str): short snippet/preview
+- `content` (str): full body (optional)
+- `mime` (str)
+- `size_bytes` (int)
+- `artifact_path` (str): logical path (e.g., `fi:<turn>.files/report.pdf`)
+- `physical_path` (str): OUT_DIR‑relative file path
+- `rn`, `hosted_uri`, `key` (str): hosting references (not rendered to the model)
 
-## Source item shapes (examples)
+Optional metadata for web sources:
+- `domain`, `published_time_iso`, `modified_time_iso`, `fetched_time_iso`
+- `provider_rank`, `weighted_rank`, `objective_relevance`, `query_relevance`, `authority`
 
-### Web search / fetch
-```json
-{
-  "sid": 12,
-  "source_type": "web",
-  "url": "https://example.com/article",
-  "title": "Article title",
-  "text": "Short extract or summary...",
-  "domain": "example.com",
-  "published_time_iso": "2026-02-10T00:00:00Z",
-  "fetched_time_iso": "2026-02-10T12:01:22Z"
-}
-```
+Notes:
+- `local_path` is legacy; prefer `physical_path`.
+- `content` is expensive and should be used sparingly.
 
-### User attachment (pdf/png)
-```json
-{
-  "sid": 5,
-  "source_type": "attachment",
-  "title": "menu.pdf",
-  "physical_path": "turn_123/attachments/menu.pdf",
-  "artifact_path": "fi:turn_123.user.attachments/menu.pdf",
-  "mime": "application/pdf",
-  "size_bytes": 183942,
-  "rn": "rn:.../menu.pdf",
-  "hosted_uri": "s3://.../menu.pdf"
-}
-```
+## Accessing sources
 
-### Files produced by bot (pdf/png)
-```json
-{
-  "sid": 8,
-  "source_type": "file",
-  "title": "report.pdf",
-  "physical_path": "turn_123/files/report.pdf",
-  "artifact_path": "fi:turn_123.files/report.pdf",
-  "mime": "application/pdf",
-  "size_bytes": 45921,
-  "rn": "rn:.../report.pdf",
-  "hosted_uri": "s3://.../report.pdf"
-}
-```
+### In the ReAct timeline
+- The SOURCES POOL block shows title, mime, domain/artifact path, and a short snippet.
+- For binary sources (`image/*`, `application/pdf`), the snippet is rendered as `<base64>`.
 
-## Where it lives (source of truth)
-The pool is stored inside `timeline.json`:
-```
-{
-  "version": 1,
-  "blocks": [ ... ],
-  "sources_pool": [ {sid: 1, ...}, {sid: 2, ...} ],
-  ...
-}
-```
+### In the model context
+- Load sources with `react.read(["so:sources_pool[1-5]"])` or a comma list
+  like `react.read(["so:sources_pool[1,3,7]"])`.
 
-This means:
-- It is persisted with the timeline artifact (conv.timeline.v1).
-- It is available for `react.read` and `ctx_tools.fetch_ctx` via `so:sources_pool[...]`.
+### In code (exec)
+- Use `context_tools.fetch_ctx("so:sources_pool[1,3]")`.
+- `fetch_ctx` returns the raw list of source rows (not a canonical artifact object).
+- For files/attachments, read from `OUT_DIR / physical_path`.
 
-## How it is updated
-The pool grows when tools return sources (search/fetch) or when attachments/files are registered as sources.
-When new sources are merged, they are assigned new SIDs, and the timeline is flushed to disk.
+## Citing sources
 
-## How agents see it
-When `timeline.render(include_sources=True)` is used, the sources pool is rendered as a **single uncached tail block**:
+Use citation tokens in generated text:
 
 ```
-SOURCES POOL (3 sources)
-[S:1] example.com  |  "Title..."
-[S:2] another.com  |  "Snippet..."
-[S:3] fi:turn_123.user.attachments/menu.pdf  |  "<binary>"
+[[S:1]]
+[[S:1,3]]
+[[S:2-4]]
 ```
 
-Notes on rendering:
-- The list is **not truncated**; all pool entries are shown.
-- For file/attachment sources, the “domain” column shows the **logical artifact path**
-  (e.g., `fi:turn_123.files/report.pdf`), not the hosting bucket.
-- For `image/*` and `application/pdf`, the snippet is rendered as `<base64>`.
-- Token counts for binary sources are estimated from `size_bytes`.
-- Hosting fields (`rn`, `hosted_uri`, `key`) are kept in the pool but **not** rendered.
+Do not place citations inside fenced code blocks.
 
-This block is **always the last non‑cached block**, and appears **after announce** when both are included.
+## Rendering behavior
 
-## How agents cite sources
-- Agents **must** cite sources using tokens like `[[S:1]]`, `[[S:1,2]]`, or `[[S:1-3]]`.
-- We do **not** embed raw links into generated text blocks (saves tokens, reduces errors).
-- When the system can trace citations for an artifact, it records `sources_used` in the artifact’s timeline metadata.
-
-## Streaming behavior
-- Streaming output replaces `[[S:...]]` tokens in‑flight using the sources_pool resolution.
-- This keeps user-facing streams concise while preserving source attribution internally.
-
-## How to access sources (agent guidance)
-- Use `react.read(paths=["so:sources_pool[1,2]"])` to load sources into visible context.
-- Use `ctx_tools.fetch_ctx("so:sources_pool[1,2]")` inside exec code for programmatic access.
-- Prefer ranges: `so:sources_pool[1-5]`.
-- Comma lists also work: `so:sources_pool[1,3,7]`.
-
-## fetch_ctx behavior for sources_pool
-- `fetch_ctx("so:sources_pool[...])` returns the **raw list of source rows**.
-- If a row includes `base64`, it is returned as‑is (rare).
-- For file/attachment sources:
-- **Code must open files via OUT_DIR + physical_path** (physical path).  
-  Example: `Path(OUT_DIR) / row["physical_path"]`.
-  - `artifact_path` is **logical** and should be used only with `react.read`, not for direct file I/O.
-
-## Example
-Rendered order when include_sources + include_announce:
-
-```
-... timeline blocks ...
-[ANNOUNCE]  (uncached)
-SOURCES POOL (uncached)
-```
+Streaming output replaces `[[S:...]]` in markdown/text/html channels using the current
+`sources_pool`. HTML uses `<sup class="cite" data-sids="...">` markers when present.
 
 ## Notes for clients
-Clients may rehydrate citations by matching used SIDs in turn logs with the pool
-from `timeline.json`.
+
+Clients can rehydrate citations by matching `sources_used` SIDs in artifacts with the
+current `sources_pool` in `timeline.json`.

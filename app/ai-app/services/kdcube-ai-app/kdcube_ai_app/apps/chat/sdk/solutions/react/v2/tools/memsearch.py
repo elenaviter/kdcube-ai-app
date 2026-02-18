@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 import json
 
-from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.artifacts import build_artifact_meta_block
+import time
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.timeline import (
     build_timeline_payload,
     TimelineView,
@@ -132,6 +132,7 @@ async def handle_react_memsearch(*, ctx_browser: Any, state: Dict[str, Any], too
                         "path": path,
                         "text": text,
                         "ts": art.get("ts") or "",
+                        "meta": art.get("meta") if isinstance(art.get("meta"), dict) else {},
                     })
             if want_assistant:
                 path = f"ar:{tid}.assistant.completion"
@@ -145,6 +146,7 @@ async def handle_react_memsearch(*, ctx_browser: Any, state: Dict[str, Any], too
                         "path": path,
                         "text": text,
                         "ts": art.get("ts") or "",
+                        "meta": art.get("meta") if isinstance(art.get("meta"), dict) else {},
                     })
             if want_attachment:
                 # Collect attachment meta blocks from blocks
@@ -162,6 +164,7 @@ async def handle_react_memsearch(*, ctx_browser: Any, state: Dict[str, Any], too
                             "path": blk.get("path") or "",
                             "text": text,
                             "ts": blk.get("ts") or "",
+                            "meta": blk.get("meta") if isinstance(blk.get("meta"), dict) else {},
                         })
 
             search_hits_formatted.append({
@@ -180,29 +183,64 @@ async def handle_react_memsearch(*, ctx_browser: Any, state: Dict[str, Any], too
         state["error"] = {"where": "tool_execution", "error": f"memsearch_failed:{exc}", "managed": True}
         return state
 
-    artifact_path = tc_result_path(turn_id=turn_id, call_id=tool_call_id)
-    meta_block = build_artifact_meta_block(
-        turn_id=turn_id,
-        tool_call_id=tool_call_id,
-        artifact={"artifact_kind": "inline", "visibility": "internal", "tool_id": tool_id, "tool_call_id": tool_call_id, "value": {"mime": "application/json"}},
-        artifact_path=artifact_path,
-        physical_path="",
-    )
-    add_block(ctx_browser, meta_block)
-    payload = {
-        "hits": search_hits_formatted,
-        "tokens": total_tokens,
-    }
+    summary_hits: List[Dict[str, Any]] = []
+    for hit in search_hits_formatted:
+        if not isinstance(hit, dict):
+            continue
+        hit_out = {k: v for k, v in hit.items() if k != "snippets"}
+        snippets_out: List[Dict[str, Any]] = []
+        for sn in hit.get("snippets") or []:
+            if not isinstance(sn, dict):
+                continue
+            spath = (sn.get("path") or "").strip()
+            if not spath:
+                continue
+            sn_out: Dict[str, Any] = {"path": spath}
+            srole = (sn.get("role") or "").strip()
+            sts = sn.get("ts") or ""
+            if srole:
+                sn_out["role"] = srole
+            if sts:
+                sn_out["ts"] = sts
+            snippets_out.append(sn_out)
+        if snippets_out:
+            hit_out["snippets"] = snippets_out
+        summary_hits.append(hit_out)
+    summary_payload = {"hits": summary_hits, "tokens": total_tokens}
     add_block(ctx_browser, {
         "turn": turn_id,
         "type": "react.tool.result",
         "call_id": tool_call_id,
         "mime": "application/json",
-        "path": artifact_path,
-        "text": json.dumps(payload, ensure_ascii=False, indent=2),
+        "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
+        "text": json.dumps(summary_payload, ensure_ascii=False, indent=2),
         "meta": {
             "tool_call_id": tool_call_id,
+            "render_role": "summary",
         },
     })
+    for hit in search_hits_formatted:
+        for sn in hit.get("snippets") or []:
+            if not isinstance(sn, dict):
+                continue
+            spath = (sn.get("path") or "").strip()
+            stext = sn.get("text") or ""
+            if not spath or not isinstance(stext, str) or not stext.strip():
+                continue
+            add_block(ctx_browser, {
+                "turn": turn_id,
+                "type": "react.tool.result",
+                "call_id": tool_call_id,
+                "mime": "text/markdown",
+                "path": spath,
+                "text": stext.strip(),
+                "meta": {
+                    "tool_call_id": tool_call_id,
+                    **({"physical_path": (sn.get("meta") or {}).get("physical_path")} if isinstance(sn.get("meta"), dict) else {}),
+                    **({"hosted_uri": (sn.get("meta") or {}).get("hosted_uri")} if isinstance(sn.get("meta"), dict) else {}),
+                    **({"rn": (sn.get("meta") or {}).get("rn")} if isinstance(sn.get("meta"), dict) else {}),
+                    **({"key": (sn.get("meta") or {}).get("key")} if isinstance(sn.get("meta"), dict) else {}),
+                },
+            })
     state["last_tool_result"] = search_hits_formatted
     return state

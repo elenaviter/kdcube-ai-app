@@ -1,8 +1,4 @@
 tools:
-  - id: generic_tools.write_pdf
+  - id: rendering_tools.write_pdf
     role: document rendering
     why: Renders text content, either html or markdown format, into PDF document
-  - id: llm_tools.generate_content_llm
-    role: document content generation
-    why: Generates the content with the needed layout, with the needed sources (plugged with `[S:<sid1>,<sid2>,..]` or `S[<sid.start>-<sid.end>]` tokens pointing to source pool sid)
-

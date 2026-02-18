@@ -1,6 +1,6 @@
 # Economics Operations (Schema + Jobs + Config)
 
-This document describes the **tables**, **maintenance jobs**, **emailing**, and **runtime configuration** required for the economics subsystem to operate safely.
+This document describes the tables, maintenance jobs, emailing, and runtime configuration required for the economics subsystem to operate safely.
 
 ## Schema (Control Plane)
 
@@ -10,15 +10,24 @@ The authoritative schema is defined here:
 
 Key table groups:
 
-- **Quota policies**: `user_quota_policies`
-- **Tier overrides**: `user_tier_overrides`
-- **Lifetime credits**: `user_lifetime_credits`
-- **Credit reservations**: `user_token_reservations`
-- **Project budget**: `tenant_project_budget`, `tenant_project_budget_reservations`, `tenant_project_budget_ledger`
-- **Subscription settings**: `user_subscription_budget_settings`
-- **Subscription period budgets**: `user_subscription_period_budget`, `user_subscription_period_reservations`, `user_subscription_period_ledger`
-- **Subscriptions**: `user_subscriptions`
-- **Idempotency & audit**: `external_economics_events`
+- Quota policies: `plan_quota_policies`
+- Tier overrides: `user_tier_overrides`
+- Lifetime credits: `user_lifetime_credits`
+- Credit reservations: `user_token_reservations`
+- Project budget: `tenant_project_budget`, `tenant_project_budget_reservations`, `tenant_project_budget_ledger`
+- Subscription plans: `subscription_plans`
+- Subscriptions: `user_subscriptions`
+- Subscription settings: `user_subscription_budget_settings`
+- Subscription period budgets: `user_subscription_period_budget`, `user_subscription_period_reservations`, `user_subscription_period_ledger`
+- Idempotency and audit: `external_economics_events`
+
+## Plan Policy Seeding
+
+Plan quotas are seeded once by a master bundle:
+
+- `ensure_policies_initialized()` inserts defaults from `app_quota_policies` into `plan_quota_policies` if missing.
+- After the first seed, use the admin UI to adjust limits.
+- If you change code defaults, update DB policies in the admin UI or clear the table to re‑seed.
 
 ## Maintenance Jobs
 
@@ -27,7 +36,7 @@ Key table groups:
 Purpose:
 
 - Close subscription periods that have ended.
-- Move unused subscription balance (balance - reserved) into project budget.
+- Move unused subscription balance into project budget.
 - Record idempotent internal events.
 
 Entry point:
@@ -37,10 +46,24 @@ Entry point:
 
 Notes:
 
-- Rollover is **idempotent** per period key.
+- Rollover is idempotent per period key.
 - Rollover uses row locks and the `external_economics_events` table to prevent double processing.
 
-### 2) Stripe pending reconcile
+### 2) Reap expired subscription reservations
+
+Purpose:
+
+- Clear stale reservation holds whose `expires_at` is in the past.
+- Release held balance back to the subscription period.
+- Prevents ghost reservations from blocking new requests.
+
+Entry points:
+
+- Runtime entrypoint calls reaper before reading balances (best effort).
+- Control plane endpoint: `POST /subscriptions/reservations/reap` (single user)
+- Control plane endpoint: `POST /subscriptions/reservations/reap-all` (entire tenant/project)
+
+### 3) Stripe pending reconcile
 
 Purpose:
 
@@ -52,7 +75,7 @@ Entry point:
 - `StripeEconomicsAdminService.reconcile_pending_requests(...)`
 - Control plane endpoint: `POST /stripe/reconcile`
 
-### 3) Admin wallet refund and cancel flows
+### 4) Admin wallet refund and cancel flows
 
 These are not scheduled jobs but operational actions:
 
@@ -93,6 +116,7 @@ Recommended routine checks:
 - Pending Stripe events: `GET /stripe/pending`
 - Pending internal economics events: `GET /economics/pending`
 - Subscription balances for paid users: `GET /subscriptions/user/{user_id}`
+- Expired reservation cleanup: `POST /subscriptions/reservations/reap-all`
 - Project budget balance: `GET /app-budget/status`
 
 ## Deployment Notes

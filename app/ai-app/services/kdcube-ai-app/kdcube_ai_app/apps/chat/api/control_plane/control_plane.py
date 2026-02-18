@@ -8,7 +8,7 @@ Control Plane API
 
 Provides REST endpoints for managing:
 1. User tier balance (tier overrides + lifetime budget)
-2. User quota policies (base tier limits by user type)
+2. Plan quota policies (base limits by plan id)
 3. Application budget policies (spending limits per provider - NO bundle_id!)
 
 Includes Stripe webhook integration for automated credit purchases.
@@ -47,6 +47,10 @@ router = APIRouter()
 
 REF_PROVIDER = anthropic
 REF_MODEL = sonnet_45
+DEFAULT_PLAN_FREE = "free"
+DEFAULT_PLAN_PAYG = "payasyougo"
+DEFAULT_PLAN_ADMIN = "admin"
+DEFAULT_PLAN_ANON = "anonymous"
 
 def _tokens_from_usd(usd_amount: Optional[float]) -> Optional[int]:
     if usd_amount is None:
@@ -77,19 +81,85 @@ def _usd_from_cents(cents: Optional[int]) -> Optional[float]:
         return None
     return float(cents) / 100.0
 
+def _normalize_role(role: Optional[str]) -> Optional[str]:
+    if not role:
+        return None
+    return role.strip().lower()
+
+async def _resolve_plan_id_for_user(
+        *,
+        mgr,
+        tenant: str,
+        project: str,
+        user_id: str,
+        role: Optional[str],
+        explicit_plan_id: Optional[str],
+) -> tuple[str, str]:
+    if explicit_plan_id:
+        return explicit_plan_id, "explicit"
+
+    role_norm = _normalize_role(role)
+    if role_norm in ("privileged", "admin"):
+        return DEFAULT_PLAN_ADMIN, "role"
+    if role_norm == "anonymous":
+        return DEFAULT_PLAN_ANON, "role"
+
+    sub = await mgr.subscription_mgr.get_subscription(
+        tenant=tenant,
+        project=project,
+        user_id=user_id,
+    )
+    now = datetime.utcnow().replace(tzinfo=timezone.utc)
+    sub_due_at = getattr(sub, "next_charge_at", None) if sub else None
+    sub_chargeable = bool(sub and int(getattr(sub, "monthly_price_cents", 0) or 0) > 0)
+    sub_past_due = bool(sub_due_at and sub_due_at <= now)
+    has_active_subscription = bool(
+        sub
+        and getattr(sub, "status", None) == "active"
+        and sub_chargeable
+        and not sub_past_due
+    )
+    if has_active_subscription:
+        return (getattr(sub, "plan_id", None) or DEFAULT_PLAN_PAYG), "subscription"
+
+    wallet_tokens = await mgr.user_credits_mgr.get_lifetime_balance(
+        tenant=tenant,
+        project=project,
+        user_id=user_id,
+    )
+    if wallet_tokens and int(wallet_tokens) > 0:
+        return DEFAULT_PLAN_PAYG, "wallet"
+
+    if role_norm == "paid":
+        return DEFAULT_PLAN_PAYG, "role"
+
+    return DEFAULT_PLAN_FREE, "role"
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
 
 class CreateSubscriptionRequest(BaseModel):
     user_id: str
-    tier: str = Field(..., description="free|paid|premium|admin")
+    plan_id: str = Field(..., description="Subscription plan id")
     provider: str = Field("stripe", description="stripe|internal")
 
     # Stripe params
     stripe_price_id: str | None = None
     stripe_customer_id: str | None = None
     monthly_price_cents_hint: int | None = None
+
+    # Legacy/compat (ignored if plan_id is provided)
+    tier: str | None = Field(None, description="Legacy tier hint (deprecated)")
+
+class UpsertSubscriptionPlanRequest(BaseModel):
+    plan_id: str = Field(..., description="Plan identifier")
+    provider: str = Field("internal", description="internal|stripe")
+    stripe_price_id: Optional[str] = Field(None, description="Stripe price id (required for stripe plans)")
+    monthly_price_cents: int = Field(0, ge=0, description="Monthly price in cents")
+    active: bool = Field(True)
+    notes: Optional[str] = None
+    metadata: Optional[dict] = None
 
 
 class InternalRenewOnceRequest(BaseModel):
@@ -115,6 +185,11 @@ class ReapSubscriptionReservationsRequest(BaseModel):
         description="Optional explicit period_key; if omitted, uses the active subscription period",
     )
     limit: int = Field(500, ge=1, le=2000)
+
+class ReapAllSubscriptionReservationsRequest(BaseModel):
+    user_id: Optional[str] = Field(None, description="Optional user id to scope the sweep")
+    limit_periods: int = Field(500, ge=1, le=5000)
+    per_period_limit: int = Field(500, ge=1, le=2000)
 
 class SweepSubscriptionRolloversRequest(BaseModel):
     user_id: Optional[str] = None
@@ -208,8 +283,8 @@ class StripeReconcileRequest(BaseModel):
 
 
 class SetQuotaPolicyRequest(BaseModel):
-    """Set quota policy for a user type (tier limits - NO bundle_id!)."""
-    user_type: str = Field(..., description="User type (free, paid, premium, etc.)")
+    """Set quota policy for a plan (base limits - NO bundle_id!)."""
+    plan_id: str = Field(..., description="Plan id (free, payasyougo, admin, etc.)")
     max_concurrent: Optional[int] = Field(None, description="Max concurrent requests")
     requests_per_day: Optional[int] = Field(None, description="Requests per day")
     requests_per_month: Optional[int] = Field(None, description="Requests per month")
@@ -767,6 +842,47 @@ async def list_subscriptions(
     )
     return {"status": "ok", "count": len(subs), "subscriptions": [s.__dict__ for s in subs]}
 
+@router.get("/subscriptions/plans")
+async def list_subscription_plans(
+        provider: str | None = Query(None),
+        active_only: bool = Query(True),
+        limit: int = Query(200, ge=1, le=5000),
+        offset: int = Query(0, ge=0),
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    settings = get_settings()
+    mgr = _get_control_plane_manager(router)
+    plans = await mgr.subscription_mgr.list_plans(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        provider=provider,
+        active_only=active_only,
+        limit=limit,
+        offset=offset,
+    )
+    return {"status": "ok", "count": len(plans), "plans": [p.__dict__ for p in plans]}
+
+@router.post("/subscriptions/plans")
+async def upsert_subscription_plan(
+        payload: UpsertSubscriptionPlanRequest,
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    settings = get_settings()
+    mgr = _get_control_plane_manager(router)
+    plan = await mgr.subscription_mgr.upsert_plan(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        plan_id=payload.plan_id,
+        provider=payload.provider,
+        stripe_price_id=payload.stripe_price_id,
+        monthly_price_cents=int(payload.monthly_price_cents or 0),
+        active=bool(payload.active),
+        metadata=payload.metadata,
+        created_by=session.username or session.user_id,
+        notes=payload.notes,
+    )
+    return {"status": "ok", "plan": plan.__dict__}
+
 @router.get("/subscriptions/periods/{user_id}")
 async def list_subscription_periods(
         user_id: str,
@@ -948,6 +1064,79 @@ async def reap_subscription_reservations(
         "period_key": period_desc["period_key"],
         "expired": int(expired),
         "subscription_balance": bal,
+    }
+
+@router.post("/subscriptions/reservations/reap-all")
+async def reap_subscription_reservations_all(
+        payload: ReapAllSubscriptionReservationsRequest,
+        session: UserSession = Depends(auth_without_pressure()),
+):
+    settings = get_settings()
+    pg_pool = getattr(router.state, "pg_pool", None)
+    redis = getattr(router.state, "redis", None)
+    if not pg_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not available")
+
+    schema = SubscriptionBudgetLimiter.CONTROL_PLANE_SCHEMA
+    res_table = SubscriptionBudgetLimiter.RESERVATIONS_TABLE
+    bud_table = SubscriptionBudgetLimiter.BUDGET_TABLE
+
+    clauses = ["r.tenant=$1", "r.project=$2", "r.status='active'", "r.expires_at <= $3"]
+    args: list = [settings.TENANT, settings.PROJECT, datetime.utcnow().replace(tzinfo=timezone.utc)]
+    idx = 4
+    if payload.user_id:
+        clauses.append(f"r.user_id=${idx}")
+        args.append(payload.user_id)
+        idx += 1
+
+    sql = f"""
+        SELECT r.user_id, r.period_key, b.period_start, b.period_end
+        FROM {schema}.{res_table} r
+        JOIN {schema}.{bud_table} b
+          ON b.tenant = r.tenant
+         AND b.project = r.project
+         AND b.user_id = r.user_id
+         AND b.period_key = r.period_key
+        WHERE {" AND ".join(clauses)}
+        GROUP BY r.user_id, r.period_key, b.period_start, b.period_end
+        ORDER BY MIN(r.expires_at) ASC
+        LIMIT {int(payload.limit_periods)}
+    """
+
+    async with pg_pool.acquire() as c:
+        rows = await c.fetch(sql, *args)
+
+    if not rows:
+        return {"status": "ok", "periods_processed": 0, "expired": 0}
+
+    project_budget = ProjectBudgetLimiter(redis, pg_pool, tenant=settings.TENANT, project=settings.PROJECT)
+    periods_processed = 0
+    expired_total = 0
+    processed_keys: list[str] = []
+
+    for row in rows:
+        limiter = SubscriptionBudgetLimiter(
+            pg_pool=pg_pool,
+            tenant=settings.TENANT,
+            project=settings.PROJECT,
+            user_id=str(row["user_id"]),
+            period_key=str(row["period_key"]),
+            period_start=row["period_start"],
+            period_end=row["period_end"],
+        )
+        expired = await limiter.reap_expired_reservations(
+            limit=payload.per_period_limit,
+            project_budget=project_budget,
+        )
+        expired_total += int(expired or 0)
+        periods_processed += 1
+        processed_keys.append(str(row["period_key"]))
+
+    return {
+        "status": "ok",
+        "periods_processed": periods_processed,
+        "expired": expired_total,
+        "period_keys": processed_keys,
     }
 
 @router.post("/subscriptions/internal/renew-once")
@@ -1238,24 +1427,37 @@ async def create_subscription(
 
     tenant, project = settings.TENANT, settings.PROJECT
 
+    plan = await mgr.subscription_mgr.get_plan(
+        tenant=tenant,
+        project=project,
+        plan_id=payload.plan_id,
+        include_inactive=True,
+    )
+    if not plan:
+        raise HTTPException(status_code=404, detail="subscription plan not found")
+
     if payload.provider.lower() == "internal":
-        # create/ensure internal subscription row using ensure_subscription_for_user
-        tier_to_user_type = {"free": "registered", "paid": "paid", "premium": "privileged", "admin": "admin"}
-        user_type = tier_to_user_type.get(payload.tier.lower())
-        if not user_type:
-            raise HTTPException(400, detail="invalid tier")
+        if plan.provider != "internal":
+            raise HTTPException(status_code=400, detail="plan provider mismatch (expected internal)")
 
         sub = await mgr.subscription_mgr.ensure_subscription_for_user(
             tenant=tenant,
             project=project,
             user_id=payload.user_id,
-            user_type=user_type,
+            plan_id=plan.plan_id,
         )
-        return {"status": "ok", "provider": "internal", "subscription": {"tier": sub.tier, "status": sub.status}}
+        return {
+            "status": "ok",
+            "provider": "internal",
+            "subscription": {
+                "plan_id": sub.plan_id,
+                "status": sub.status,
+            },
+        }
 
     # stripe
-    if not payload.stripe_price_id:
-        raise HTTPException(400, detail="stripe_price_id is required for stripe provider")
+    if plan.provider != "stripe":
+        raise HTTPException(status_code=400, detail="plan provider mismatch (expected stripe)")
 
     from kdcube_ai_app.apps.chat.sdk.infra.economics.stripe import StripeSubscriptionService
     svc = StripeSubscriptionService(
@@ -1269,7 +1471,7 @@ async def create_subscription(
         tenant=tenant,
         project=project,
         user_id=payload.user_id,
-        tier=payload.tier,
+        plan_id=plan.plan_id,
         stripe_price_id=payload.stripe_price_id,
         stripe_customer_id=payload.stripe_customer_id,
         monthly_price_cents_hint=payload.monthly_price_cents_hint,
@@ -1505,15 +1707,15 @@ async def list_quota_policies(
         session: UserSession = Depends(auth_without_pressure())
 ):
     """
-    List user quota policies (base policies by user type).
+    List plan quota policies (base policies by plan id).
 
-    Shows configured policies for different user tiers (free, paid, premium, etc.).
+    Shows configured policies for different plans (free, payasyougo, admin, etc.).
     """
     try:
         mgr = _get_control_plane_manager(router)
         settings = get_settings()
 
-        policies = await mgr.list_quota_policies(
+        policies = await mgr.list_plan_quota_policies(
             tenant=tenant or settings.TENANT,
             project=project or settings.PROJECT,
             limit=limit,
@@ -1524,7 +1726,7 @@ async def list_quota_policies(
             result.append({
                 "tenant": p.tenant,
                 "project": p.project,
-                "user_type": p.user_type,
+                "plan_id": p.plan_id,
                 "max_concurrent": p.max_concurrent,
                 "requests_per_day": p.requests_per_day,
                 "requests_per_month": p.requests_per_month,
@@ -1554,9 +1756,9 @@ async def set_quota_policy(
         session: UserSession = Depends(auth_without_pressure())
 ):
     """
-    Set the quota policy for a user type.
+    Set the quota policy for a plan.
 
-    Defines base rate limits for different user tiers.
+    Defines base rate limits for different plans.
     Supports partial updates via COALESCE.
     """
     try:
@@ -1567,10 +1769,10 @@ async def set_quota_policy(
         tokens_per_day = _tokens_from_usd(payload.usd_per_day) if payload.usd_per_day is not None else payload.tokens_per_day
         tokens_per_month = _tokens_from_usd(payload.usd_per_month) if payload.usd_per_month is not None else payload.tokens_per_month
 
-        policy = await mgr.set_tenant_project_user_quota_policy(
+        policy = await mgr.set_tenant_project_plan_quota_policy(
             tenant=settings.TENANT,
             project=settings.PROJECT,
-            user_type=payload.user_type,
+            plan_id=payload.plan_id,
             max_concurrent=payload.max_concurrent,
             requests_per_day=payload.requests_per_day,
             requests_per_month=payload.requests_per_month,
@@ -1583,15 +1785,15 @@ async def set_quota_policy(
         )
 
         logger.info(
-            f"[set_quota_policy] {settings.TENANT}/{settings.PROJECT}/{payload.user_type}: "
+            f"[set_quota_policy] {settings.TENANT}/{settings.PROJECT}/{payload.plan_id}: "
             f"policy updated by {session.username or session.user_id}"
         )
 
         return {
             "status": "ok",
-            "message": f"Quota policy set for {payload.user_type}",
+            "message": f"Quota policy set for {payload.plan_id}",
             "policy": {
-                "user_type": policy.user_type,
+                "plan_id": policy.plan_id,
                 "requests_per_day": policy.requests_per_day,
                 "tokens_per_day": policy.tokens_per_day,
                 "tokens_per_day_usd": _usd_from_tokens(policy.tokens_per_day),
@@ -1599,7 +1801,7 @@ async def set_quota_policy(
             }
         }
     except Exception as e:
-        logger.exception(f"[set_quota_policy] Failed for {payload.user_type}")
+        logger.exception(f"[set_quota_policy] Failed for {payload.plan_id}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1700,7 +1902,9 @@ async def set_budget_policy(
 @router.get("/users/{user_id}/quota-breakdown")
 async def get_user_quota_breakdown(
         user_id: str,
-        user_type: str = Query(..., description="User type (free, paid, premium, etc.)"),
+        plan_id: Optional[str] = Query(None, description="Plan id override (free, payasyougo, admin, etc.)"),
+        role: Optional[str] = Query(None, description="Optional role hint (registered, paid, privileged, anonymous)"),
+        user_type: Optional[str] = Query(None, description="Deprecated: role hint (registered, paid, privileged, anonymous)"),
         session: UserSession = Depends(auth_without_pressure())
 ):
     """
@@ -1715,17 +1919,27 @@ async def get_user_quota_breakdown(
         tenant = settings.TENANT
         project = settings.PROJECT
 
-        # Get base policy
-        base_policy = await mgr.get_user_quota_policy(
+        role_hint = role or user_type
+        resolved_plan_id, plan_source = await _resolve_plan_id_for_user(
+            mgr=mgr,
             tenant=tenant,
             project=project,
-            user_type=user_type,
+            user_id=user_id,
+            role=role_hint,
+            explicit_plan_id=plan_id,
+        )
+
+        # Get base policy
+        base_policy = await mgr.get_plan_quota_policy(
+            tenant=tenant,
+            project=project,
+            plan_id=resolved_plan_id,
         )
 
         if not base_policy:
             raise HTTPException(
                 status_code=404,
-                detail=f"No policy found for user_type={user_type}"
+                detail=f"No policy found for plan_id={resolved_plan_id}"
             )
 
         # Get tier balance
@@ -1786,7 +2000,9 @@ async def get_user_quota_breakdown(
         return {
             "status": "ok",
             "user_id": user_id,
-            "user_type": user_type,
+            "role": role_hint,
+            "plan_id": resolved_plan_id,
+            "plan_source": plan_source,
             "bundle_breakdown": usage_breakdown.get("bundles"),
             "base_policy": {
                 "max_concurrent": base_policy.max_concurrent,
@@ -1837,7 +2053,9 @@ async def get_user_quota_breakdown(
 @router.get("/users/{user_id}/budget-breakdown")
 async def get_user_budget_breakdown(
         user_id: str,
-        user_type: str = Query(..., description="User type (free, paid, premium, etc.)"),
+        plan_id: Optional[str] = Query(None, description="Plan id override (free, payasyougo, admin, etc.)"),
+        role: Optional[str] = Query(None, description="Optional role hint (registered, paid, privileged, anonymous)"),
+        user_type: Optional[str] = Query(None, description="Deprecated: role hint (registered, paid, privileged, anonymous)"),
         include_expired_override: bool = Query(True),
         reservations_limit: int = Query(50, ge=0, le=500),
         session: UserSession = Depends(auth_without_pressure())
@@ -1849,13 +2067,23 @@ async def get_user_budget_breakdown(
     mgr = _get_control_plane_manager(router)
     settings = get_settings()
 
-    base_policy = await mgr.get_user_quota_policy(
+    role_hint = role or user_type
+    resolved_plan_id, plan_source = await _resolve_plan_id_for_user(
+        mgr=mgr,
         tenant=settings.TENANT,
         project=settings.PROJECT,
-        user_type=user_type,
+        user_id=user_id,
+        role=role_hint,
+        explicit_plan_id=plan_id,
+    )
+
+    base_policy = await mgr.get_plan_quota_policy(
+        tenant=settings.TENANT,
+        project=settings.PROJECT,
+        plan_id=resolved_plan_id,
     )
     if not base_policy:
-        raise HTTPException(status_code=404, detail=f"No policy found for user_type={user_type}")
+        raise HTTPException(status_code=404, detail=f"No policy found for plan_id={resolved_plan_id}")
 
     pg_pool = getattr(router.state, "pg_pool", None)
     redis = getattr(router.state.middleware, "redis", None)
@@ -1875,7 +2103,9 @@ async def get_user_budget_breakdown(
         tenant=settings.TENANT,
         project=settings.PROJECT,
         user_id=user_id,
-        user_type=user_type,
+        role=role_hint,
+        plan_id=resolved_plan_id,
+        plan_source=plan_source,
         base_policy=base_policy,
         include_expired_override=include_expired_override,
         reservations_limit=reservations_limit,

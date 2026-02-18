@@ -1,7 +1,4 @@
 tools:
-  - id: generic_tools.write_docx
+  - id: rendering_tools.write_docx
     role: document rendering
     why: Renders Markdown into a DOCX document.
-  - id: llm_tools.generate_content_llm
-    role: content generation
-    why: Generates structured Markdown with citations for DOCX.

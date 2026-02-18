@@ -25,6 +25,12 @@ The decision prompt is built from the timeline:
 
 Caching rule: two cache points are inserted in the stable stream (see `context-caching-README.md`).
 
+Rendered tool output uses a compact view:
+- `[TOOL CALL <id>].call <tool_id>` + `tc:<turn_id>.<tool_call_id>.call`
+- `[TOOL RESULT <id>].summary <tool_id>` for artifact-producing tools
+- `[TOOL RESULT <id>].result <tool_id>` for non‑artifact tools
+- `[TOOL RESULT <id>].artifact <tool_id>` per artifact (logical_path + content)
+
 ## Context Compaction
 The timeline can compact older turns into summary blocks:
 - `conv.range.summary` blocks contain a summary + `meta.covered_turn_ids`.

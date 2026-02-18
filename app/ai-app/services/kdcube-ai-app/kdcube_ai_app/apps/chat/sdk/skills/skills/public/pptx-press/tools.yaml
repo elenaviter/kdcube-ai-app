@@ -1,7 +1,4 @@
 tools:
-  - id: generic_tools.write_pptx
+  - id: rendering_tools.write_pptx
     role: slide rendering
     why: Renders HTML slides into a PPTX deck.
-  - id: llm_tools.generate_content_llm
-    role: content generation
-    why: Generates slide HTML with citations and layout constraints.

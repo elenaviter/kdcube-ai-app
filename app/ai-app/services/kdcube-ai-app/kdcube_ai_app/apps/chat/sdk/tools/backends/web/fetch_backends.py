@@ -95,12 +95,16 @@ async def _fetch_urls_core(
     widget_payload = None
     favicon_by_url: Dict[str, Dict[str, Any]] = {}
     url_items: Dict[str, Dict[str, Any]] = {}
+
+    agent_suffix = uuid.uuid4().hex[:8]
+    execution_id = f"Web Fetch Results [{agent_suffix}]-{uuid.uuid4().hex[:6]}"
     if emit_delta_fn and comm and widget_agent:
         widget = FetchWebResourceWidget(
             emit_delta=emit_delta_fn,
             agent=widget_agent,
             artifact_name=widget_artifact_name or "web_fetch.results",
             title=widget_title or "Fetch Results",
+            execution_id=execution_id
         )
         widget_payload = {}
         if objective:

@@ -700,18 +700,25 @@ def rewrite_citation_tokens(md: str, sid_map: Dict[int, int]) -> str:
     if not md or not sid_map:
         return md or ""
     def repl(m: re.Match) -> str:
-        body = m.group(1)
-        nums = []
-        for p in (body or "").split(","):
-            p = p.strip()
-            if not p.isdigit():
+        body = (m.group(1) or "").strip()
+        try:
+            ids = _expand_ids(body)
+        except Exception:
+            ids = []
+        if not ids:
+            return ""
+        out: List[str] = []
+        seen: Set[int] = set()
+        for old in ids:
+            new = sid_map.get(int(old))
+            if not new:
                 continue
-            old = int(p)
-            new = sid_map.get(old)
-            if new:
-                nums.append(str(new))
-        return f"[[S:{','.join(nums)}]]" if nums else ""
-    return re.sub(r"\[\[\s*S\s*:\s*([0-9,\s]+)\s*\]\]", repl, md, flags=re.I)
+            if new in seen:
+                continue
+            seen.add(new)
+            out.append(str(new))
+        return f"[[S:{','.join(out)}]]" if out else ""
+    return re.sub(CITE_CORE, repl, md, flags=re.I)
 
 # ---------------------------------------------------------------------------
 # Render options

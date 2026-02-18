@@ -57,7 +57,8 @@ WRITE_TOOLS = {
     "rendering_tools.write_docx",
     "rendering_tools.write_html",
     "rendering_tools.write_png",
-    "infra.write"
+    "infra.write",
+    "react.write",
 }
 
 CODEGEN_TOOLS = {

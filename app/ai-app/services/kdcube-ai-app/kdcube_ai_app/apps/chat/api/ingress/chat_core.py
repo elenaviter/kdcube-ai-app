@@ -1028,7 +1028,7 @@ async def upgrade_session_from_tokens(
         "email": user.email,
     }
 
-    new_session = await gateway_adapter.gateway.session_manager.get_or_create_session(
+    new_session = await gateway_adapter.gateway.get_or_create_session_with_econ_role(
         ctx,
         user_type=user_type,
         user_data=user_data,

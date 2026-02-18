@@ -11,6 +11,9 @@ from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     dedupe_sources_by_url,
     extract_citation_sids_any,
     extract_local_paths_any,
+    normalize_sources_any,
+    normalize_url,
+    _get_physical_path,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.run_ctx import SOURCE_ID_CV
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.solution_workspace import rehost_files_from_timeline
@@ -38,6 +41,59 @@ def _bump_sources_pool_next_sid(pool: List[Dict[str, Any]]) -> None:
         SOURCE_ID_CV.set({"next": int(mx) + 1})
     except Exception:
         pass
+
+
+def _sources_pool_key(row: Dict[str, Any]) -> str:
+    url = normalize_url(row.get("url", ""))
+    physical_path = _get_physical_path(row)
+    if physical_path:
+        return f"local:{physical_path}"
+    return url
+
+
+def merge_sources_pool_with_map(
+    *,
+    prior: List[Dict[str, Any]],
+    new: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[int, int]]:
+    """
+    Merge sources with dedupe and return a sid mapping for the new sources.
+    """
+    prior_rows = normalize_sources_any(prior)
+    new_rows = normalize_sources_any(new)
+    merged = dedupe_sources_by_url(prior_rows, new_rows)
+    if not new_rows:
+        return merged, {}
+
+    by_key: Dict[str, int] = {}
+    for row in merged:
+        if not isinstance(row, dict):
+            continue
+        key = _sources_pool_key(row)
+        if not key:
+            continue
+        try:
+            by_key[key] = int(row.get("sid") or 0)
+        except Exception:
+            continue
+
+    sid_map: Dict[int, int] = {}
+    for row in new_rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            old_sid = int(row.get("sid") or 0)
+        except Exception:
+            continue
+        if not old_sid:
+            continue
+        key = _sources_pool_key(row)
+        if not key:
+            continue
+        new_sid = by_key.get(key)
+        if new_sid:
+            sid_map[old_sid] = int(new_sid)
+    return merged, sid_map
 
 
 def _is_sources_pool_allowed_mime(mime: str) -> bool:

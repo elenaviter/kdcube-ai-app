@@ -10,6 +10,7 @@ both the ReAct runtime and isolated execution environments.
     - built-in skills root: `kdcube_ai_app/apps/chat/sdk/skills/skills/`
     - optional custom skills root from the descriptor
   - Provides runtime helpers (gallery text, short ids, instruction blocks)
+  - Loads per-skill metadata from `tools.yaml` and `sources.yaml`
   - Exports a portable descriptor for isolated runtimes
 
 ## Skills descriptor
@@ -57,6 +58,13 @@ If omitted and the bundle has `skills/` under its root, the bundle can pass that
   - `build_skills_instruction_block(...)` for generator system prompts
 - Isolated runtime:
   - `set_skills_descriptor(...)` from `SKILLS_DESCRIPTOR` in runtime globals
+
+## Sources and citations
+
+- Skills can ship `sources.yaml` alongside `SKILL.md`.
+- When a skill is read via `react.read`, its sources are merged into the turn
+  sources pool and any `[[S:...]]` tokens in the skill body are rewritten to the
+  merged pool SIDs.
 
 ## Notes
 

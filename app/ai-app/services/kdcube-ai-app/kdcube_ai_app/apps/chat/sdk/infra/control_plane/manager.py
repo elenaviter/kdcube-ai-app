@@ -8,7 +8,7 @@ Control Plane Manager
 
 Unified manager for:
 1. User tier balance (via TierBalanceManager)
-2. User quota policies (base tier limits by user type)
+2. Plan quota policies (base limits by plan id)
 3. Application budget policies (spending limits per provider - NO bundle_id!)
 
 All with PostgreSQL storage and Redis caching.
@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class UserQuotaPolicy:
-    """Base quota policy for a user type (free, paid, premium)."""
+class PlanQuotaPolicy:
+    """Base quota policy for a plan (free, payasyougo, admin, etc.)."""
     tenant: str
     project: str
-    user_type: str
+    plan_id: str
     # Policies are global per tenant/project
 
     # Quota limits (None = unlimited)
@@ -110,7 +110,7 @@ class ControlPlaneManager:
     Unified Control Plane Manager.
 
     Manages:
-    1. User Quota Policies (base tier limits by user type)
+    1. Plan Quota Policies (base limits by plan id)
     2. User Tier Balance (tier overrides + lifetime budget) - delegates to TierBalanceManager
     3. Application Budget POLICIES (spending limits)
     # Stores SPENDING LIMITS per provider
@@ -299,20 +299,20 @@ class ControlPlaneManager:
         return bal
 
     # =========================================================================
-    # User Quota Policy Operations
+    # Plan Quota Policy Operations
     # =========================================================================
 
     def _quota_policy_cache_key(
-            self, tenant: str, project: str, user_type: str
+            self, tenant: str, project: str, plan_id: str
     ) -> str:
         """Build Redis cache key for quota policy."""
-        return f"kdcube:cp:quota_policy:{tenant}:{project}:{user_type}"
+        return f"kdcube:cp:quota_policy:{tenant}:{project}:{plan_id}"
 
-    async def get_user_quota_policy(
-            self, *, tenant: str, project: str, user_type: str,
+    async def get_plan_quota_policy(
+            self, *, tenant: str, project: str, plan_id: str,
     ) -> Optional[QuotaPolicy]:
         """
-        Get quota policy for a user type.
+        Get quota policy for a plan.
 
         Lookup order:
         1. Redis cache
@@ -322,13 +322,13 @@ class ControlPlaneManager:
         """
         # Check Redis cache
         if self._redis:
-            cache_key = self._quota_policy_cache_key(tenant, project, user_type)
+            cache_key = self._quota_policy_cache_key(tenant, project, plan_id)
             try:
                 cached = await self._redis.get(cache_key)
                 if cached:
                     data = json.loads(cached.decode())
                     if data:
-                        logger.debug(f"Quota policy cache HIT (Redis): {user_type}")
+                        logger.debug(f"Quota policy cache HIT (Redis): {plan_id}")
                         return QuotaPolicy(**data)
             except Exception as e:
                 logger.warning(f"Redis cache read error for quota policy: {e}")
@@ -340,20 +340,20 @@ class ControlPlaneManager:
         async with self._pg_pool.acquire() as conn:
             row = await conn.fetchrow(f"""
                 SELECT *
-                FROM {self.CONTROL_PLANE_SCHEMA}.user_quota_policies
-                WHERE tenant = $1 AND project = $2 AND user_type = $3
+                FROM {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies
+                WHERE tenant = $1 AND project = $2 AND plan_id = $3
                   AND active = TRUE
                 LIMIT 1
-            """, tenant, project, user_type)
+            """, tenant, project, plan_id)
 
         if row:
-            logger.debug(f"Quota policy cache MISS (DB hit): {user_type}")
-            policy_obj = UserQuotaPolicy(**dict(row))
+            logger.debug(f"Quota policy cache MISS (DB hit): {plan_id}")
+            policy_obj = PlanQuotaPolicy(**dict(row))
             quota_policy = policy_obj.to_quota_policy()
 
             # Cache in Redis
             if self._redis:
-                cache_key = self._quota_policy_cache_key(tenant, project, user_type)
+                cache_key = self._quota_policy_cache_key(tenant, project, plan_id)
                 try:
                     await self._redis.setex(
                         cache_key,
@@ -367,12 +367,12 @@ class ControlPlaneManager:
 
         return None
 
-    async def set_tenant_project_user_quota_policy(
+    async def set_tenant_project_plan_quota_policy(
             self,
             *,
             tenant: str,
             project: str,
-            user_type: str,
+            plan_id: str,
             max_concurrent: Optional[int] = None,
             requests_per_day: Optional[int] = None,
             requests_per_month: Optional[int] = None,
@@ -382,34 +382,34 @@ class ControlPlaneManager:
             tokens_per_month: Optional[int] = None,
             created_by: Optional[str] = None,
             notes: Optional[str] = None,
-    ) -> UserQuotaPolicy:
+    ) -> PlanQuotaPolicy:
         """Create or update quota policy (supports partial updates via COALESCE)."""
         if not self._pg_pool:
             raise RuntimeError("PostgreSQL pool not initialized")
 
         async with self._pg_pool.acquire() as conn:
             row = await conn.fetchrow(f"""
-                INSERT INTO {self.CONTROL_PLANE_SCHEMA}.user_quota_policies (
-                    tenant, project, user_type,
+                INSERT INTO {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies (
+                    tenant, project, plan_id,
                     max_concurrent, requests_per_day, requests_per_month, total_requests,
                     tokens_per_hour, tokens_per_day, tokens_per_month,
                     created_by, notes
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                ON CONFLICT (tenant, project, user_type)
+                ON CONFLICT (tenant, project, plan_id)
                 DO UPDATE SET
-                    max_concurrent = COALESCE(EXCLUDED.max_concurrent, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.max_concurrent),
-                    requests_per_day = COALESCE(EXCLUDED.requests_per_day, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.requests_per_day),
-                    requests_per_month = COALESCE(EXCLUDED.requests_per_month, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.requests_per_month),
-                    total_requests = COALESCE(EXCLUDED.total_requests, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.total_requests),
-                    tokens_per_hour = COALESCE(EXCLUDED.tokens_per_hour, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.tokens_per_hour),
-                    tokens_per_day = COALESCE(EXCLUDED.tokens_per_day, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.tokens_per_day),
-                    tokens_per_month = COALESCE(EXCLUDED.tokens_per_month, {self.CONTROL_PLANE_SCHEMA}.user_quota_policies.tokens_per_month),
+                    max_concurrent = COALESCE(EXCLUDED.max_concurrent, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.max_concurrent),
+                    requests_per_day = COALESCE(EXCLUDED.requests_per_day, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.requests_per_day),
+                    requests_per_month = COALESCE(EXCLUDED.requests_per_month, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.requests_per_month),
+                    total_requests = COALESCE(EXCLUDED.total_requests, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.total_requests),
+                    tokens_per_hour = COALESCE(EXCLUDED.tokens_per_hour, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.tokens_per_hour),
+                    tokens_per_day = COALESCE(EXCLUDED.tokens_per_day, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.tokens_per_day),
+                    tokens_per_month = COALESCE(EXCLUDED.tokens_per_month, {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies.tokens_per_month),
                     created_by = EXCLUDED.created_by,
                     notes = EXCLUDED.notes,
                     updated_at = NOW()
                 RETURNING *
             """,
-                                      tenant, project, user_type,
+                                      tenant, project, plan_id,
                                       max_concurrent, requests_per_day, requests_per_month, total_requests,
                                       tokens_per_hour, tokens_per_day, tokens_per_month,
                                       created_by, notes
@@ -417,17 +417,17 @@ class ControlPlaneManager:
 
         # Invalidate cache
         if self._redis:
-            cache_key = self._quota_policy_cache_key(tenant, project, user_type)
+            cache_key = self._quota_policy_cache_key(tenant, project, plan_id)
             try:
                 await self._redis.delete(cache_key)
             except Exception:
                 pass
 
-        return UserQuotaPolicy(**dict(row))
+        return PlanQuotaPolicy(**dict(row))
 
-    async def list_quota_policies(
+    async def list_plan_quota_policies(
             self, *, tenant: Optional[str] = None, project: Optional[str] = None, limit: int = 100
-    ) -> List[UserQuotaPolicy]:
+    ) -> List[PlanQuotaPolicy]:
         """List all quota policies."""
         if not self._pg_pool:
             return []
@@ -447,20 +447,20 @@ class ControlPlaneManager:
         async with self._pg_pool.acquire() as conn:
             rows = await conn.fetch(f"""
                 SELECT *
-                FROM {self.CONTROL_PLANE_SCHEMA}.user_quota_policies
+                FROM {self.CONTROL_PLANE_SCHEMA}.plan_quota_policies
                 WHERE {where_sql}
                 ORDER BY created_at DESC
                 LIMIT {int(limit)}
             """, *args)
 
-        return [UserQuotaPolicy(**dict(row)) for row in rows]
+        return [PlanQuotaPolicy(**dict(row)) for row in rows]
 
-    async def tenant_project_user_quota_policies_policies_initialize_from_master_app(self,
-                                                                                     tenant: str,
-                                                                                     project: str,
-                                                                                     bundle_id: str,
-                                                                                     app_quota_policies,
-                                                                                     app_budget_policies):
+    async def tenant_project_plan_quota_policies_initialize_from_master_app(self,
+                                                                            tenant: str,
+                                                                            project: str,
+                                                                            bundle_id: str,
+                                                                            app_quota_policies,
+                                                                            app_budget_policies):
         """
         Ensure policies are seeded from bundle configuration (one-time operation).
 
@@ -490,7 +490,7 @@ class ControlPlaneManager:
             if not lock_acquired:
                 # Another instance is initializing, wait a bit then assume done
                 logger.info(
-                    f"[tenant_project_user_quota_policies_policies_initialize_from_master_app] Lock held by another instance, waiting..."
+                    f"[tenant_project_plan_quota_policies_initialize_from_master_app] Lock held by another instance, waiting..."
                 )
                 import asyncio
                 await asyncio.sleep(2)
@@ -498,7 +498,7 @@ class ControlPlaneManager:
                 return policies_initialized
 
             # We have the lock - check if policies exist
-            existing_policies = await self.list_quota_policies(
+            existing_policies = await self.list_plan_quota_policies(
                 tenant=tenant,
                 project=project,
                 limit=1,
@@ -521,12 +521,12 @@ class ControlPlaneManager:
             bundle_budget_policies = app_budget_policies
 
             # Seed quota policies
-            for user_type, policy in bundle_quota_policies.items():
+            for plan_id, policy in bundle_quota_policies.items():
                 try:
-                    await self.set_tenant_project_user_quota_policy(
+                    await self.set_tenant_project_plan_quota_policy(
                         tenant=tenant,
                         project=project,
-                        user_type=user_type,
+                        plan_id=plan_id,
                         max_concurrent=policy.max_concurrent,
                         requests_per_day=policy.requests_per_day,
                         requests_per_month=policy.requests_per_month,
@@ -538,11 +538,11 @@ class ControlPlaneManager:
                         notes=f"Seeded from {bundle_id} configuration",
                     )
                     logger.info(
-                        f"[ensure_policies_initialized] Seeded quota policy for {user_type}"
+                        f"[ensure_policies_initialized] Seeded quota policy for {plan_id}"
                     )
                 except Exception as e:
                     logger.exception(
-                        f"[ensure_policies_initialized] Failed to seed {user_type}: {e}"
+                        f"[ensure_policies_initialized] Failed to seed {plan_id}: {e}"
                     )
 
             # Seed budget policies

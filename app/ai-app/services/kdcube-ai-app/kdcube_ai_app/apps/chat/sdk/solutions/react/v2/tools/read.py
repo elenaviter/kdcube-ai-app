@@ -129,9 +129,36 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
             from kdcube_ai_app.apps.chat.sdk.skills.skills_registry import (
                 import_skillset,
                 build_skill_short_id_map,
-                build_skills_instruction_block,
+                get_skill,
             )
+            from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.sources import (
+                merge_sources_pool_with_map,
+                _bump_sources_pool_next_sid,
+            )
+            from kdcube_ai_app.apps.chat.sdk.tools.citations import rewrite_citation_tokens
             short_map = build_skill_short_id_map(consumer="solver.react.decision.v2")
+
+            def _read_skill_instruction_text(spec: Any, *, variant: str = "full") -> str:
+                instr_text = ""
+                if variant == "compact" and getattr(spec, "instruction_compact_text", None):
+                    instr_text = (spec.instruction_compact_text or "").strip()
+                elif getattr(spec, "instruction_text", None):
+                    instr_text = (spec.instruction_text or "").strip()
+                if not instr_text:
+                    instr_path = None
+                    if variant == "compact":
+                        instr_path = getattr(spec, "instruction_paths", None)
+                        instr_path = instr_path.compact if instr_path else None
+                    else:
+                        instr_path = getattr(spec, "instruction_paths", None)
+                        instr_path = instr_path.full if instr_path else None
+                    if instr_path:
+                        try:
+                            instr_text = instr_path.read_text(encoding="utf-8").strip()
+                        except Exception:
+                            instr_text = ""
+                return instr_text
+
             normalized_skills: List[str] = []
             for raw in skill_paths:
                 s = str(raw or "").strip()
@@ -157,7 +184,34 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 if not sid:
                     continue
                 loaded.add(sid)
-                skill_text = build_skills_instruction_block([sid])
+                block_ids = import_skillset([sid], short_id_map=short_map)
+                blocks: List[str] = []
+                for block_sid in block_ids:
+                    spec = get_skill(block_sid)
+                    if not spec:
+                        continue
+                    instr_text = _read_skill_instruction_text(spec)
+                    if not instr_text:
+                        continue
+                    sid_map: Dict[int, int] = {}
+                    if getattr(spec, "sources", None):
+                        merged, sid_map = merge_sources_pool_with_map(
+                            prior=list(ctx_browser.sources_pool or []),
+                            new=list(spec.sources or []),
+                        )
+                        ctx_browser.set_sources_pool(sources_pool=merged)
+                        _bump_sources_pool_next_sid(merged)
+                    instr_text = rewrite_citation_tokens(instr_text, sid_map)
+                    blocks.append(
+                        "\n".join([
+                            f"## Skill: {spec.name} ({spec.namespace}.{spec.id})",
+                            instr_text,
+                        ])
+                    )
+                skill_text = "\n".join([
+                    "[ACTIVE SKILLS]",
+                    *blocks,
+                ]) if blocks else ""
                 skill_block = {
                     "turn": turn_id,
                     "type": "react.tool.result",

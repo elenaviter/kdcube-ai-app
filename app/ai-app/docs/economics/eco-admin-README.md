@@ -1,0 +1,226 @@
+# Economics Admin UI Guide
+
+This document describes what can be done from the Economics admin dashboard and how each action affects the control plane.
+
+UI file:
+- [EconomicsDashboard.tsx](services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/EconomicsDashboard.tsx)
+
+Backend routes:
+- [control_plane.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/control_plane.py)
+
+## Overview of Admin Capabilities
+
+From the Economics dashboard you can:
+
+- Create and manage subscription plans (plan_id → price mapping)
+- Create subscriptions (internal or Stripe)
+- Look up subscription status and balances
+- Manually top up subscription balances
+- Manually renew internal subscriptions (top up + advance next charge)
+- Set subscription overdraft limits
+- Reap expired subscription reservations (single user or all users in project)
+- Sweep expired subscription periods (rollover to project budget)
+- Top up the project budget
+- Add lifetime credits (wallet)
+- Refund wallet credits (Stripe refunds)
+- Cancel Stripe subscriptions
+- Reconcile pending Stripe requests
+- View pending Stripe requests and pending economics events
+- Manage plan quota policies and provider budget policies
+
+## Plan Quotas and Limits
+
+### Plan quota policies
+
+UI card: **Quota Policies**
+
+- Policies are stored in `plan_quota_policies` and keyed by `plan_id`.
+- These are the base limits used by the rate limiter.
+- Tier overrides can temporarily replace these values per user.
+
+### How plan limits are initialized
+
+Plan quotas are seeded once by a master bundle:
+
+- The entrypoint seeds from `app_quota_policies` if `plan_quota_policies` is missing records.
+- After seeding, updates should be made in the admin UI.
+
+If you change `app_quota_policies` in code, you must either:
+
+- Update the policies directly in the admin UI, or
+- Clear the table and let the master bundle re‑seed
+
+## Subscription Plans
+
+UI card: **Subscription Plans**
+
+This is where you define plan metadata and (optionally) Stripe price mapping.
+
+Fields:
+
+- `plan_id` (required)
+- `provider` (internal or stripe)
+- `stripe_price_id` (required if provider is stripe)
+- `monthly_price_cents`
+- `active` flag
+
+Plans are later referenced by subscriptions and used by plan quota policies.
+
+## Subscription Management
+
+### Create subscription
+
+UI card: **Create Subscription**
+
+- Internal subscription: creates a row in `user_subscriptions` with provider `internal`.
+- Stripe subscription: creates a Stripe subscription and stores a snapshot.
+- Plan ID is required and must exist in `subscription_plans`.
+
+Backend: `POST /subscriptions/create`
+
+### Lookup subscription
+
+UI card: **Lookup Subscription (by user)**
+
+- Shows subscription metadata and current period balance.
+- Displays a Renew now button for internal subscriptions.
+
+Backend: `GET /subscriptions/user/{user_id}`
+
+### Renew internal subscription
+
+UI button: **Renew now** (visible only for internal active subscriptions)
+
+- Tops up the subscription period balance.
+- Advances `next_charge_at`.
+
+Backend: `POST /subscriptions/internal/renew-once`
+
+### Manual subscription balance top‑up
+
+UI card: **Subscription Balance Admin**
+
+- Manually adds USD to the current subscription period budget.
+- Optional Force topup allows multiple topups within the same period.
+
+Backend: `POST /subscriptions/budget/topup`
+
+Note: Manual top‑ups do not advance billing dates. Use Renew now for internal billing cycles.
+
+### Set subscription overdraft
+
+UI card: **Subscription Balance Admin** (second form)
+
+- Sets overdraft limit for a user’s subscription budget.
+- Blank limit = unlimited negative.
+
+Backend: `POST /subscriptions/budget/overdraft`
+
+### Sweep expired subscription periods
+
+UI card: **Subscription Rollovers**
+
+- Closes any subscription periods whose `next_charge_at <= now`.
+- Moves remaining balance to project budget.
+- Idempotent per period.
+
+Backend: `POST /subscriptions/rollover/sweep`
+
+### Reap expired subscription reservations
+
+UI card: **Reap Expired Subscription Reservations**
+
+- Expires active reservation holds whose `expires_at` has passed.
+- Releases held balance back to the subscription period.
+- Can target a single user or sweep the entire tenant/project.
+
+Backend:
+
+- `POST /subscriptions/reservations/reap` (single user or explicit period)
+- `POST /subscriptions/reservations/reap-all` (all users or all periods in project)
+
+## Project Budget
+
+### Top up project budget
+
+UI card: **App Budget**
+
+- Adds USD to project budget.
+- Updates ledger and lifetime totals.
+
+Backend: `POST /app-budget/topup`
+
+## Wallet (Lifetime Credits)
+
+### Add lifetime credits
+
+UI card: **Lifetime Credits**
+
+- Adds token credits based on USD amount and reference model pricing.
+
+Backend: `POST /tier-balance/add-lifetime-credits`
+
+### Check lifetime balance
+
+UI action: **Check balance**
+
+Backend: `GET /tier-balance/lifetime-balance/{user_id}`
+
+### Wallet refund (Stripe)
+
+UI card: **Wallet Refund (Stripe)**
+
+- Removes credits immediately.
+- Creates a Stripe refund request.
+- Finalizes on webhook or reconcile.
+
+Backend: `POST /wallet/refund`
+
+## Stripe Operations
+
+### Cancel Stripe subscription
+
+UI card: **Cancel Stripe Subscription**
+
+- Requests cancellation at period end.
+- Balance remains usable until period closes.
+
+Backend: `POST /subscriptions/cancel`
+
+### Reconcile pending Stripe requests
+
+UI card: **Reconcile Stripe Requests**
+
+- Checks Stripe for pending refunds/cancels.
+- Applies final status in control plane.
+
+Backend: `POST /stripe/reconcile`
+
+### View pending Stripe requests
+
+UI card: **Pending Stripe Requests**
+
+Backend: `GET /stripe/pending`
+
+### View pending internal economics events
+
+UI card: **Pending Economics Events**
+
+Backend: `GET /economics/pending`
+
+## Provider Budget Policies
+
+UI card: **Budget Policies**
+
+- Set per‑provider spend limits stored in `application_budget_policies`.
+
+Backend: `POST /policies/budget`
+
+## Notes and Limits
+
+- Manual subscription topups are per‑period by default; Force topup can override once‑per‑period guard.
+- Stripe actions are idempotent via `external_economics_events`.
+- Admin email notifications are sent for wallet refunds and subscription cancels/reconciles.
+
+For Stripe details, see [stripe-README.md](stripe-README.md).
+For operational procedures, see [operational-README.md](operational-README.md).

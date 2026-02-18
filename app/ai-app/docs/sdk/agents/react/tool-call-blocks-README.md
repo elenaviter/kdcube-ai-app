@@ -55,11 +55,13 @@ When a decision uses `action=call_tool`, the timeline receives blocks in this or
 
 4. **Tool results**
    - One or more `react.tool.result` blocks:
-     - **Meta block** (JSON) with a **safe digest**:
-       `artifact_path`, `physical_path`, `mime`, `kind`, `visibility`, `tool_call_id`, `sources_used`, etc.
+     - **Meta block** (JSON) with a safe digest (e.g., `artifact_path`, `mime`, `kind`, `visibility`,
+       `tool_call_id`, `sources_used`, `tokens`).
      - **Content block** (text or base64) when applicable.
-   - The tool result path (`tc:<turn_id>.<tool_call_id>.result`) is a **rendered view** (status/errors + metadata).
-     It does **not** contain full file contents. Read the `artifact_path` shown there to access full content.
+   - In the **rendered timeline** (model view), tool results are grouped as:
+     - `[TOOL RESULT <id>].summary <tool_id>` for artifact‑producing tools (status + artifact list)
+     - `[TOOL RESULT <id>].result <tool_id>` for non‑artifact tools (logical path + result payload)
+     - `[TOOL RESULT <id>].artifact <tool_id>` for each artifact (logical path + optional physical path + content)
 
 Notes:
 - File content blocks (`path=fi:...`) store hosting info in `meta` (`hosted_uri`, `rn`, `key`, `physical_path`)
@@ -115,15 +117,15 @@ For write tools we also validate the output file and record:
 
 1. `react.notes` (optional)
 2. `react.tool.call`
-   - `params.content` is **truncated** to the first 100 characters and then appended with:
-     `"[truncated.. see fi:<turn_id>.files/<name>]"` to avoid duplication.
+   - `params.content` is shortened to a prefix and then appended with:
+     `"... [see fi:<turn_id>.files/<name>]"` to avoid duplication.
 3. `react.notice` (optional)
    - `protocol_violation.path_rewritten`
    - `react.write.hosting_failed` (file missing / hosting failure)
-4. `react.tool.result` (meta JSON)
-5. Content block:
-   - `type=react.tool.result` when channel is `timeline_text` or `canvas`
-   - `type=react.note` when channel is `internal`
+4. `react.tool.result` (meta JSON + content blocks)
+5. Rendered model view uses:
+   - `[TOOL RESULT <id>].summary react.write` (status + artifact list)
+   - `[TOOL RESULT <id>].artifact react.write` (logical path + optional physical path + content)
 
 **Example (simplified)**
 ```json
@@ -132,11 +134,11 @@ For write tools we also validate the output file and record:
 
 // react.tool.call (content truncated)
 { "type": "react.tool.call", "path": "tc:turn_1.abc.call",
-  "text": "{ \"tool_id\": \"react.write\", \"tool_call_id\": \"abc\", \"params\": {\"content\": \"# Report... [truncated.. see fi:turn_1.files/report.md]\", ...} }" }
+  "text": "{ \"tool_id\": \"react.write\", \"tool_call_id\": \"abc\", \"params\": {\"content\": \"# Report... [see fi:turn_1.files/report.md]\", ...} }" }
 
 // react.tool.result (meta, tokens included if available)
 { "type": "react.tool.result", "path": "tc:turn_1.abc.result",
-  "text": "{ \"artifact_path\": \"fi:turn_1.files/report.md\", \"physical_path\": \"turn_1/files/report.md\", \"kind\": \"display\", \"visibility\": \"external\", \"tokens\": 1234, \"size_bytes\": 1842 }" }
+  "text": "{ \"artifact_path\": \"fi:turn_1.files/report.md\", \"physical_path\": \"turn_1/files/report.md\", \"kind\": \"display\", \"visibility\": \"external\", \"tokens\": 1234 }" }
 
 // content
 { "type": "react.tool.result", "path": "fi:turn_1.files/report.md", "mime": "text/markdown", "text": "# Report..." }
@@ -167,6 +169,8 @@ Write validation applies here too (`size_bytes`, `write_warning`, missing/empty 
    - `type=react.tool.result`
    - `mime=application/pdf` or `image/*`
    - `base64=<...>`
+
+Rendered view uses `[TOOL RESULT <id>].summary` + `[TOOL RESULT <id>].artifact` (logical path + content).
 
 **Example (PDF)**
 ```json
@@ -213,6 +217,7 @@ The model does **not** see raw blocks; it sees the rendered message content:
 
 **Important:** Exec tools do **not** emit `tool_call_error` or `tool_result_error` notices.
 All errors are consolidated into the text report.
+Rendered view follows the same summary/artifact layout for produced files.
 
 ### Case A: All contract files produced, but runtime reports error
 

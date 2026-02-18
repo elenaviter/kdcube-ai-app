@@ -21,7 +21,7 @@ interface AppSettings {
 interface QuotaPolicy {
     tenant: string;
     project: string;
-    user_type: string;
+    plan_id: string;
     max_concurrent: number | null;
     requests_per_day: number | null;
     requests_per_month: number | null;
@@ -144,7 +144,9 @@ interface LifetimeCreditsBreakdown {
 
 interface QuotaBreakdown {
     user_id: string;
-    user_type: string;
+    role?: string | null;
+    plan_id: string;
+    plan_source?: string | null;
 
     bundle_breakdown: Record<string, any>;
 
@@ -228,7 +230,7 @@ interface Subscription {
     tenant: string;
     project: string;
     user_id: string;
-    tier: string;
+    plan_id: string | null;
     status: string;
     monthly_price_cents: number;
     started_at: string;
@@ -244,7 +246,7 @@ interface Subscription {
 interface SubscriptionBalance {
     has_subscription?: boolean;
     active?: boolean;
-    tier?: string | null;
+    plan_id?: string | null;
     provider?: string | null;
     status?: string | null;
     monthly_price_cents?: number | null;
@@ -264,6 +266,20 @@ interface SubscriptionBalance {
     lifetime_added_usd?: number | null;
     lifetime_spent_usd?: number | null;
     reference_model?: string;
+}
+
+interface SubscriptionPlan {
+    tenant: string;
+    project: string;
+    plan_id: string;
+    provider: string;
+    stripe_price_id: string | null;
+    monthly_price_cents: number;
+    active: boolean;
+    created_at: string;
+    updated_at: string;
+    created_by: string | null;
+    notes: string | null;
 }
 
 interface SubscriptionPeriod {
@@ -684,7 +700,7 @@ class ControlPlaneAPI {
     }
 
     async setQuotaPolicy(policy: {
-        userType: string;
+        planId: string;
         maxConcurrent?: number;
         requestsPerDay?: number;
         requestsPerMonth?: number;
@@ -703,7 +719,7 @@ class ControlPlaneAPI {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    user_type: policy.userType,
+                    plan_id: policy.planId,
                     max_concurrent: policy.maxConcurrent,
                     requests_per_day: policy.requestsPerDay,
                     requests_per_month: policy.requestsPerMonth,
@@ -760,12 +776,14 @@ class ControlPlaneAPI {
     //     return response.json();
     // }
 
-    async getUserBudgetBreakdown(userId: string, userType: string): Promise<{ status: string; } & QuotaBreakdown> {
+    async getUserBudgetBreakdown(userId: string, planId?: string): Promise<{ status: string; } & QuotaBreakdown> {
         const queryParams = new URLSearchParams({
-            user_type: userType,
             include_expired_override: 'true',
             reservations_limit: '50',
         });
+        if (planId) {
+            queryParams.set('plan_id', planId);
+        }
 
         const response = await this.fetchWithAuth(
             `${this.getFullUrl(`/users/${userId}/budget-breakdown`)}?${queryParams}`
@@ -809,7 +827,7 @@ class ControlPlaneAPI {
 
     async createSubscription(payload: {
         userId: string;
-        tier: string;
+        planId: string;
         provider: 'stripe' | 'internal';
         stripePriceId?: string;
         stripeCustomerId?: string;
@@ -822,11 +840,54 @@ class ControlPlaneAPI {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     user_id: payload.userId,
-                    tier: payload.tier,
+                    plan_id: payload.planId,
                     provider: payload.provider,
                     stripe_price_id: payload.stripePriceId ?? null,
                     stripe_customer_id: payload.stripeCustomerId ?? null,
                     monthly_price_cents_hint: payload.monthlyPriceCentsHint ?? null,
+                })
+            }
+        );
+        return response.json();
+    }
+
+    async listSubscriptionPlans(params?: {
+        provider?: string;
+        activeOnly?: boolean;
+        limit?: number;
+        offset?: number;
+    }): Promise<{ status: string; count: number; plans: SubscriptionPlan[] }> {
+        const qp = new URLSearchParams();
+        if (params?.provider) qp.set('provider', params.provider);
+        if (params?.activeOnly != null) qp.set('active_only', String(params.activeOnly));
+        qp.set('limit', String(params?.limit ?? 200));
+        qp.set('offset', String(params?.offset ?? 0));
+        const response = await this.fetchWithAuth(
+            `${this.getFullUrl('/subscriptions/plans')}?${qp.toString()}`
+        );
+        return response.json();
+    }
+
+    async upsertSubscriptionPlan(payload: {
+        planId: string;
+        provider: 'internal' | 'stripe';
+        stripePriceId?: string | null;
+        monthlyPriceCents: number;
+        active: boolean;
+        notes?: string;
+    }): Promise<any> {
+        const response = await this.fetchWithAuth(
+            this.getFullUrl('/subscriptions/plans'),
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    plan_id: payload.planId,
+                    provider: payload.provider,
+                    stripe_price_id: payload.stripePriceId ?? null,
+                    monthly_price_cents: payload.monthlyPriceCents,
+                    active: payload.active,
+                    notes: payload.notes ?? null,
                 })
             }
         );
@@ -952,6 +1013,26 @@ class ControlPlaneAPI {
                 body: JSON.stringify({
                     user_id: userId || null,
                     limit: 200
+                })
+            }
+        );
+        return response.json();
+    }
+
+    async reapSubscriptionReservationsAll(payload: {
+        userId?: string;
+        limitPeriods?: number;
+        perPeriodLimit?: number;
+    }): Promise<any> {
+        const response = await this.fetchWithAuth(
+            this.getFullUrl('/subscriptions/reservations/reap-all'),
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: payload.userId ?? null,
+                    limit_periods: payload.limitPeriods ?? 500,
+                    per_period_limit: payload.perPeriodLimit ?? 500,
                 })
             }
         );
@@ -1127,8 +1208,9 @@ const Input: React.FC<{
     required?: boolean;
     min?: string | number;
     step?: string;
+    list?: string;
     className?: string;
-}> = ({ label, value, onChange, type = 'text', placeholder, required, min, step, className = '' }) => (
+}> = ({ label, value, onChange, type = 'text', placeholder, required, min, step, list, className = '' }) => (
     <div className={className}>
         {label && <label className="block text-sm font-medium text-gray-800 mb-2">{label}</label>}
         <input
@@ -1139,6 +1221,7 @@ const Input: React.FC<{
             required={required}
             min={min}
             step={step}
+            list={list}
             className="w-full px-4 py-2.5 border border-gray-200/80 rounded-xl bg-white
                  focus:ring-2 focus:ring-gray-900/10 focus:border-gray-300 transition-colors
                  placeholder:text-gray-400"
@@ -1217,20 +1300,17 @@ const EmptyState: React.FC<{ message: string; icon?: string }> = ({ message, ico
 // Subscription display helpers
 // =============================================================================
 
-type Tier = 'registered' | 'paid' | 'privileged';
-
-const TIER_OPTIONS: { value: Tier; label: string }[] = [
-    { value: 'registered', label: 'registered' },
-    { value: 'paid', label: 'paid' },
-    { value: 'privileged', label: 'privileged' },
+const PLAN_OPTIONS = [
+    { value: 'free', label: 'free' },
+    { value: 'payasyougo', label: 'payasyougo' },
+    { value: 'admin', label: 'admin' },
+    { value: 'anonymous', label: 'anonymous' },
+    { value: 'custom', label: 'custom…' },
 ];
 
-const USER_TYPE_OPTIONS = [
-    { value: 'registered', label: 'registered (free / pilot default)' },
-    { value: 'paid', label: 'paid' },
-    { value: 'privileged', label: 'privileged (premium)' },
-    { value: 'admin', label: 'admin' },
-    { value: 'custom', label: 'custom…' },
+const PLAN_OPTIONS_WITH_AUTO = [
+    { value: 'auto', label: 'auto (resolve from subscription/wallet)' },
+    ...PLAN_OPTIONS,
 ];
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -1383,7 +1463,7 @@ const EconomicsOverview: React.FC<{ goTo?: (tabId: string) => void }> = ({ goTo 
                         <div><strong>Who pays:</strong> <strong>App Budget</strong> (tenant/project wallet).</div>
                         <div><strong>What moves:</strong> tier counters (requests/tokens) are committed.</div>
                         <div className="text-gray-600">
-                            Effective tier = base policy (<code>user_type</code>) possibly replaced by a user’s tier override.
+                            Effective tier = base policy (<code>plan_id</code>) possibly replaced by a user’s tier override.
                         </div>
                     </div>
                 </div>
@@ -1404,13 +1484,13 @@ const EconomicsOverview: React.FC<{ goTo?: (tabId: string) => void }> = ({ goTo 
                 </summary>
                 <div className="mt-3 text-sm text-gray-700 leading-relaxed space-y-2">
                     <div className="rounded-xl border border-gray-200 bg-gray-50 p-3">
-                        <div className="font-semibold text-gray-900">1) Base tier (by user_type)</div>
+                        <div className="font-semibold text-gray-900">1) Base tier (by plan_id)</div>
                         <div className="text-gray-700">
                             Configure default limits for <code>registered</code>, <code>paid</code>, <code>privileged</code>, <code>admin</code>.
                         </div>
                         {goTo && (
                             <div className="mt-2">
-                                <Button variant="secondary" onClick={() => goTo('quotaPolicies')}>Open Tier Quota Policies</Button>
+                                <Button variant="secondary" onClick={() => goTo('quotaPolicies')}>Open Plan Quota Policies</Button>
                             </div>
                         )}
                     </div>
@@ -1540,8 +1620,8 @@ const ControlPlaneAdmin: React.FC = () => {
     const [tierBalance, setTierBalance] = useState<TierBalance | null>(null);
 
     // Forms - Quota Policy
-    const [policyUserType, setPolicyUserType] = useState<string>('registered');
-    const [policyUserTypeCustom, setPolicyUserTypeCustom] = useState<string>('');
+    const [policyPlanId, setPolicyPlanId] = useState<string>('free');
+    const [policyPlanIdCustom, setPolicyPlanIdCustom] = useState<string>('');
     const [policyMaxConcurrent, setPolicyMaxConcurrent] = useState<string>('');
     const [policyRequestsDay, setPolicyRequestsDay] = useState<string>('');
     const [policyRequestsMonth, setPolicyRequestsMonth] = useState<string>('');
@@ -1562,7 +1642,7 @@ const ControlPlaneAdmin: React.FC = () => {
 
     // Forms - Quota Breakdown
     const [breakdownUserId, setBreakdownUserId] = useState<string>('');
-    const [breakdownUserType, setBreakdownUserType] = useState<string>('registered');
+    const [breakdownPlanId, setBreakdownPlanId] = useState<string>('auto');
     const [quotaBreakdown, setQuotaBreakdown] = useState<QuotaBreakdown | null>(null);
 
     // Forms - Lifetime Credits
@@ -1578,11 +1658,20 @@ const ControlPlaneAdmin: React.FC = () => {
     // Subscriptions
     const [subProvider, setSubProvider] = useState<'internal' | 'stripe'>('internal');
     const [subUserId, setSubUserId] = useState<string>('');
-    const [subTier, setSubTier] = useState<string>('paid');
+    const [subPlanId, setSubPlanId] = useState<string>('');
 
     const [subStripePriceId, setSubStripePriceId] = useState<string>('');
     const [subStripeCustomerId, setSubStripeCustomerId] = useState<string>('');
     const [subPriceHint, setSubPriceHint] = useState<string>('');
+
+    const [planId, setPlanId] = useState<string>('');
+    const [planProvider, setPlanProvider] = useState<'internal' | 'stripe'>('internal');
+    const [planStripePriceId, setPlanStripePriceId] = useState<string>('');
+    const [planPriceCents, setPlanPriceCents] = useState<string>('0');
+    const [planActive, setPlanActive] = useState<boolean>(true);
+    const [planNotes, setPlanNotes] = useState<string>('');
+    const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>([]);
+    const [loadingPlans, setLoadingPlans] = useState<boolean>(false);
 
     const [subLookupUserId, setSubLookupUserId] = useState<string>('');
     const [subscription, setSubscription] = useState<Subscription | null>(null);
@@ -1593,6 +1682,9 @@ const ControlPlaneAdmin: React.FC = () => {
     const [subOverdraftUsd, setSubOverdraftUsd] = useState<string>('');
     const [subSweepUserId, setSubSweepUserId] = useState<string>('');
     const [subscriptionBalance, setSubscriptionBalance] = useState<SubscriptionBalance | null>(null);
+    const [subReapUserId, setSubReapUserId] = useState<string>('');
+    const [subReapLimitPeriods, setSubReapLimitPeriods] = useState<string>('500');
+    const [subReapPerPeriodLimit, setSubReapPerPeriodLimit] = useState<string>('500');
 
     const [walletRefundUserId, setWalletRefundUserId] = useState<string>('');
     const [walletRefundPaymentIntentId, setWalletRefundPaymentIntentId] = useState<string>('');
@@ -1623,7 +1715,7 @@ const ControlPlaneAdmin: React.FC = () => {
     const [subsProviderFilter, setSubsProviderFilter] = useState<string>('');
     const [subsList, setSubsList] = useState<Subscription[]>([]);
 
-    const [breakdownUserTypeCustom, setBreakdownUserTypeCustom] = useState<string>('');
+    const [breakdownPlanIdCustom, setBreakdownPlanIdCustom] = useState<string>('');
 
     const [economicsRef, setEconomicsRef] = useState<EconomicsReference | null>(null);
 
@@ -1683,7 +1775,7 @@ const ControlPlaneAdmin: React.FC = () => {
     }, [api, configStatus]);
 
     const loadDataForView = async (mode: string) => {
-        const needsData = ['quotaPolicies', 'budgetPolicies', 'appBudget'].includes(mode);
+        const needsData = ['quotaPolicies', 'budgetPolicies', 'appBudget', 'subscriptions'].includes(mode);
         if (!needsData) return;
 
         setLoadingData(true);
@@ -1699,12 +1791,28 @@ const ControlPlaneAdmin: React.FC = () => {
             } else if (mode === 'appBudget') {
                 const balance = await api.getAppBudgetBalance();
                 setAppBudget(balance);
+            } else if (mode === 'subscriptions') {
+                const res = await api.listSubscriptionPlans({ limit: 200, offset: 0, activeOnly: false });
+                setSubscriptionPlans(res.plans || []);
             }
         } catch (err) {
             setError((err as Error).message);
             console.error('Failed to load data:', err);
         } finally {
             setLoadingData(false);
+        }
+    };
+
+    const handleLoadSubscriptionPlans = async () => {
+        clearMessages();
+        setLoadingPlans(true);
+        try {
+            const res = await api.listSubscriptionPlans({ limit: 200, offset: 0, activeOnly: false });
+            setSubscriptionPlans(res.plans || []);
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setLoadingPlans(false);
         }
     };
 
@@ -1810,7 +1918,9 @@ const ControlPlaneAdmin: React.FC = () => {
         setLoadingAction(true);
 
         try {
-            const result = await api.getUserBudgetBreakdown(breakdownUserId, breakdownUserType);
+            const planIdRaw = breakdownPlanId === 'custom' ? breakdownPlanIdCustom : breakdownPlanId;
+            const planId = planIdRaw && planIdRaw !== 'auto' ? planIdRaw : undefined;
+            const result = await api.getUserBudgetBreakdown(breakdownUserId, planId);
             setQuotaBreakdown(result);
         } catch (err) {
             setError((err as Error).message);
@@ -1827,7 +1937,7 @@ const ControlPlaneAdmin: React.FC = () => {
         try {
 
             await api.setQuotaPolicy({
-                userType: policyUserType === 'custom' ? policyUserTypeCustom : policyUserType,
+                planId: policyPlanId === 'custom' ? policyPlanIdCustom : policyPlanId,
                 maxConcurrent: policyMaxConcurrent ? parseInt(policyMaxConcurrent) : undefined,
                 requestsPerDay: policyRequestsDay ? parseInt(policyRequestsDay) : undefined,
                 requestsPerMonth: policyRequestsMonth ? parseInt(policyRequestsMonth) : undefined,
@@ -1840,7 +1950,7 @@ const ControlPlaneAdmin: React.FC = () => {
                 notes: policyNotes
             });
 
-            setSuccess(`Quota policy set for ${policyUserType}`);
+            setSuccess(`Quota policy set for ${policyPlanId}`);
             // setPolicyUserType(policyUserType);
             setPolicyMaxConcurrent('');
             setPolicyRequestsDay('');
@@ -1851,7 +1961,7 @@ const ControlPlaneAdmin: React.FC = () => {
             setPolicyUsdHour('');
             setPolicyUsdDay('');
             setPolicyUsdMonth('');
-            setPolicyUserTypeCustom('');
+            setPolicyPlanIdCustom('');
             setPolicyNotes('');
 
             await loadDataForView('quotaPolicies');
@@ -1962,7 +2072,7 @@ const ControlPlaneAdmin: React.FC = () => {
         try {
             const res = await api.createSubscription({
                 userId: subUserId.trim(),
-                tier: subTier,
+                planId: subPlanId.trim(),
                 provider: subProvider,
                 stripePriceId: subProvider === 'stripe' ? subStripePriceId.trim() : undefined,
                 stripeCustomerId: subProvider === 'stripe' ? (subStripeCustomerId.trim() || undefined) : undefined,
@@ -1974,6 +2084,35 @@ const ControlPlaneAdmin: React.FC = () => {
             setSubStripePriceId('');
             setSubStripeCustomerId('');
             setSubPriceHint('');
+            setSubPlanId('');
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setLoadingAction(false);
+        }
+    };
+
+    const handleUpsertSubscriptionPlan = async (e: React.FormEvent) => {
+        e.preventDefault();
+        clearMessages();
+        setLoadingAction(true);
+
+        try {
+            const res = await api.upsertSubscriptionPlan({
+                planId: planId.trim(),
+                provider: planProvider,
+                stripePriceId: planProvider === 'stripe' ? (planStripePriceId.trim() || null) : null,
+                monthlyPriceCents: parseInt(planPriceCents || '0'),
+                active: planActive,
+                notes: planNotes || undefined,
+            });
+            setSuccess(res.message || `Plan saved: ${planId}`);
+            await handleLoadSubscriptionPlans();
+            setPlanId('');
+            setPlanStripePriceId('');
+            setPlanPriceCents('0');
+            setPlanActive(true);
+            setPlanNotes('');
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -2066,6 +2205,27 @@ const ControlPlaneAdmin: React.FC = () => {
             const res = await api.sweepSubscriptionRollovers(subSweepUserId.trim() || undefined);
             const moved = res?.moved_usd != null ? `$${Number(res.moved_usd).toFixed(2)}` : 'N/A';
             setSuccess(`Sweep complete. Moved: ${moved}`);
+        } catch (err) {
+            setError((err as Error).message);
+        } finally {
+            setLoadingAction(false);
+        }
+    };
+
+    const handleReapSubscriptionReservations = async (e: React.FormEvent) => {
+        e.preventDefault();
+        clearMessages();
+        setLoadingAction(true);
+
+        try {
+            const res = await api.reapSubscriptionReservationsAll({
+                userId: subReapUserId.trim() || undefined,
+                limitPeriods: subReapLimitPeriods ? parseInt(subReapLimitPeriods) : undefined,
+                perPeriodLimit: subReapPerPeriodLimit ? parseInt(subReapPerPeriodLimit) : undefined,
+            });
+            const expired = res?.expired != null ? Number(res.expired) : 0;
+            const periods = res?.periods_processed != null ? Number(res.periods_processed) : 0;
+            setSuccess(`Reaped ${expired} expired reservations across ${periods} period(s).`);
         } catch (err) {
             setError((err as Error).message);
         } finally {
@@ -2232,7 +2392,7 @@ const ControlPlaneAdmin: React.FC = () => {
         { id: 'updateTier', label: 'Override Tier Limits for User' },
         { id: 'lookup', label: 'Lookup Balance' },
         { id: 'quotaBreakdown', label: 'User Budget Breakdown' },
-        { id: 'quotaPolicies', label: 'Tier Limits' },
+        { id: 'quotaPolicies', label: 'Plan Limits' },
         { id: 'budgetPolicies', label: 'Project Budget Policies' },
         { id: 'lifetimeCredits', label: 'Lifetime Credits' },
         { id: 'appBudget', label: 'App Budget' },
@@ -2781,18 +2941,18 @@ const ControlPlaneAdmin: React.FC = () => {
                                             required
                                         />
                                         <Select
-                                            label="User Type *"
-                                            value={breakdownUserType}
-                                            onChange={(e) => setBreakdownUserType(e.target.value)}
-                                            options={USER_TYPE_OPTIONS}
+                                            label="Plan ID (optional)"
+                                            value={breakdownPlanId}
+                                            onChange={(e) => setBreakdownPlanId(e.target.value)}
+                                            options={PLAN_OPTIONS_WITH_AUTO}
                                         />
 
-                                        {breakdownUserType === 'custom' && (
+                                        {breakdownPlanId === 'custom' && (
                                             <Input
-                                                label="Custom user_type *"
-                                                value={breakdownUserTypeCustom}
-                                                onChange={(e) => setBreakdownUserTypeCustom(e.target.value)}
-                                                placeholder="e.g. enterprise"
+                                                label="Custom plan_id *"
+                                                value={breakdownPlanIdCustom}
+                                                onChange={(e) => setBreakdownPlanIdCustom(e.target.value)}
+                                                placeholder="e.g. enterprise-plan"
                                                 required
                                             />
                                         )}
@@ -2827,7 +2987,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                             <div className="rounded-2xl border border-gray-200/70 bg-gray-50 p-5">
                                                 <div className="flex items-center justify-between">
                                                     <div>
-                                                        <div className="text-sm font-semibold text-gray-900">Tier envelope</div>
+                                <div className="text-sm font-semibold text-gray-900">Plan envelope</div>
                                                         <div className="text-xs text-gray-600 mt-1">Base → Override → Effective</div>
                                                     </div>
                                                     <div className="text-2xl">📊</div>
@@ -2966,9 +3126,9 @@ const ControlPlaneAdmin: React.FC = () => {
                                             ) : (
                                                 <div className="mt-4 space-y-3 text-sm">
                                                     <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-600">
-                                                        {quotaBreakdown.subscription_balance.tier && (
+                                                        {quotaBreakdown.subscription_balance.plan_id && (
                                                             <div>
-                                                                tier: <span className="font-semibold text-gray-900">{quotaBreakdown.subscription_balance.tier}</span>
+                                                                plan: <span className="font-semibold text-gray-900">{quotaBreakdown.subscription_balance.plan_id}</span>
                                                             </div>
                                                         )}
                                                         {quotaBreakdown.subscription_balance.status && (
@@ -3107,12 +3267,12 @@ const ControlPlaneAdmin: React.FC = () => {
                         <div className="space-y-6">
                             <Card>
                                 <CardHeader
-                                    title="Set Tier Policy"
-                                    subtitle="Base limits per user_type (global for tenant/project). No bundle_id."
+                                    title="Set Plan Policy"
+                                    subtitle="Base limits per plan_id (global for tenant/project). No bundle_id."
                                 />
                                 <CardBody className="space-y-6">
                                     <Callout tone="neutral" title="Meaning">
-                                        This is the default tier envelope for a user class (free/paid/premium). These counters reset on their window (day/month).
+                                        This is the default quota envelope for a plan (free/payasyougo/admin). These counters reset on their window (day/month).
                                     </Callout>
                                     {economicsRef && (
                                         <div className="text-xs text-gray-500">
@@ -3122,17 +3282,17 @@ const ControlPlaneAdmin: React.FC = () => {
 
                                     <form onSubmit={handleSetQuotaPolicy} className="space-y-5">
                                         <Select
-                                            label="User Type *"
-                                            value={policyUserType}
-                                            onChange={(e) => setPolicyUserType(e.target.value)}
-                                            options={USER_TYPE_OPTIONS}
+                                            label="Plan ID *"
+                                            value={policyPlanId}
+                                            onChange={(e) => setPolicyPlanId(e.target.value)}
+                                            options={PLAN_OPTIONS}
                                         />
-                                        {policyUserType === 'custom' && (
+                                        {policyPlanId === 'custom' && (
                                             <Input
-                                                label="Custom user_type *"
-                                                value={policyUserTypeCustom}
-                                                onChange={(e) => setPolicyUserTypeCustom(e.target.value)}
-                                                placeholder="e.g. enterprise"
+                                                label="Custom plan_id *"
+                                                value={policyPlanIdCustom}
+                                                onChange={(e) => setPolicyPlanIdCustom(e.target.value)}
+                                                placeholder="e.g. enterprise-plan"
                                                 required
                                             />
                                         )}
@@ -3270,20 +3430,20 @@ const ControlPlaneAdmin: React.FC = () => {
 
                             <Card>
                                 <CardHeader
-                                    title="Current Tier Quota Policies"
+                                    title="Current Plan Quota Policies"
                                     subtitle={`${quotaPolicies.length} policy records`}
                                 />
                                 <CardBody>
                                     {loadingData ? (
                                         <LoadingSpinner />
                                     ) : quotaPolicies.length === 0 ? (
-                                        <EmptyState message="No tier policies configured." icon="📋" />
+                                        <EmptyState message="No plan policies configured." icon="📋" />
                                     ) : (
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-sm">
                                                 <thead className="bg-gray-50 border-b border-gray-200/70">
                                                 <tr className="text-gray-600">
-                                                    <th className="px-6 py-4 text-left font-semibold">User type</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Plan ID</th>
                                                     <th className="px-6 py-4 text-right font-semibold">Max concurrent</th>
                                                     <th className="px-6 py-4 text-right font-semibold">Req/day</th>
                                                     <th className="px-6 py-4 text-right font-semibold">Tok/hour</th>
@@ -3298,7 +3458,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                                 <tbody className="divide-y divide-gray-200/70">
                                                 {quotaPolicies.map((policy, idx) => (
                                                     <tr key={idx} className="hover:bg-gray-50/70 transition-colors">
-                                                        <td className="px-6 py-4 font-semibold text-gray-900">{policy.user_type}</td>
+                                                        <td className="px-6 py-4 font-semibold text-gray-900">{policy.plan_id}</td>
                                                         <td className="px-6 py-4 text-right text-gray-700">{policy.max_concurrent ?? '—'}</td>
                                                         <td className="px-6 py-4 text-right text-gray-700">{policy.requests_per_day ?? '—'}</td>
                                                         <td className="px-6 py-4 text-right text-gray-700">{policy.tokens_per_hour?.toLocaleString() ?? '—'}</td>
@@ -3682,8 +3842,125 @@ const ControlPlaneAdmin: React.FC = () => {
                         <div className="space-y-6">
                             <Card>
                                 <CardHeader
+                                    title="Subscription Plans"
+                                    subtitle="Define plan_id → price mapping (internal or Stripe). Plan IDs drive quota policies."
+                                    action={
+                                        <Button
+                                            variant="secondary"
+                                            onClick={handleLoadSubscriptionPlans}
+                                            disabled={loadingPlans || loadingData}
+                                        >
+                                            {(loadingPlans || loadingData) ? 'Loading…' : 'Refresh'}
+                                        </Button>
+                                    }
+                                />
+                                <CardBody className="space-y-6">
+                                    <form onSubmit={handleUpsertSubscriptionPlan} className="space-y-5">
+                                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                            <Input
+                                                label="Plan ID *"
+                                                value={planId}
+                                                onChange={(e) => setPlanId(e.target.value)}
+                                                placeholder="payasyougo"
+                                                required
+                                            />
+                                            <Select
+                                                label="Provider"
+                                                value={planProvider}
+                                                onChange={(e) => setPlanProvider(e.target.value as 'internal' | 'stripe')}
+                                                options={[
+                                                    { value: 'internal', label: 'internal' },
+                                                    { value: 'stripe', label: 'stripe' },
+                                                ]}
+                                            />
+                                            <Input
+                                                label="Monthly price (cents) *"
+                                                type="number"
+                                                value={planPriceCents}
+                                                onChange={(e) => setPlanPriceCents(e.target.value)}
+                                                placeholder="2000"
+                                                min={0}
+                                                required
+                                            />
+                                            <div className="flex flex-col">
+                                                <label className="block text-sm font-medium text-gray-800 mb-2">Active</label>
+                                                <div className="flex items-center gap-3 h-full">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={planActive}
+                                                        onChange={(e) => setPlanActive(e.target.checked)}
+                                                        className="h-4 w-4 rounded border-gray-300 text-gray-900 focus:ring-gray-900/20"
+                                                    />
+                                                    <span className="text-sm text-gray-600">{planActive ? 'enabled' : 'disabled'}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {planProvider === 'stripe' && (
+                                            <Input
+                                                label="stripe_price_id *"
+                                                value={planStripePriceId}
+                                                onChange={(e) => setPlanStripePriceId(e.target.value)}
+                                                placeholder="price_..."
+                                                required
+                                            />
+                                        )}
+
+                                        <TextArea
+                                            label="Notes"
+                                            value={planNotes}
+                                            onChange={(e) => setPlanNotes(e.target.value)}
+                                            placeholder="Plan description, intended tier, or internal notes"
+                                        />
+
+                                        <Button type="submit" disabled={loadingAction}>
+                                            {loadingAction ? 'Saving…' : 'Save Plan'}
+                                        </Button>
+                                    </form>
+
+                                    {(loadingPlans || loadingData) ? (
+                                        <LoadingSpinner />
+                                    ) : subscriptionPlans.length === 0 ? (
+                                        <EmptyState message="No plans configured yet." icon="🧾" />
+                                    ) : (
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-sm">
+                                                <thead className="bg-gray-50 border-b border-gray-200/70">
+                                                <tr className="text-gray-600">
+                                                    <th className="px-6 py-4 text-left font-semibold">Plan ID</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Provider</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Stripe price</th>
+                                                    <th className="px-6 py-4 text-right font-semibold">Monthly price</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Active</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Updated</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Notes</th>
+                                                </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-gray-200/70">
+                                                {subscriptionPlans.map((plan) => (
+                                                    <tr key={`${plan.tenant}:${plan.project}:${plan.plan_id}`} className="hover:bg-gray-50/70 transition-colors">
+                                                        <td className="px-6 py-4 font-semibold text-gray-900">{plan.plan_id}</td>
+                                                        <td className="px-6 py-4 text-gray-700">{plan.provider}</td>
+                                                        <td className="px-6 py-4 text-gray-700">{plan.stripe_price_id || '—'}</td>
+                                                        <td className="px-6 py-4 text-right text-gray-700">
+                                                            ${(Number(plan.monthly_price_cents || 0) / 100).toFixed(2)} ({plan.monthly_price_cents}¢)
+                                                        </td>
+                                                        <td className="px-6 py-4 text-gray-700">{plan.active ? 'yes' : 'no'}</td>
+                                                        <td className="px-6 py-4 text-gray-600">{formatDateTime(plan.updated_at)}</td>
+                                                        <td className="px-6 py-4 text-gray-600">{plan.notes || '—'}</td>
+                                                    </tr>
+                                                ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </CardBody>
+                            </Card>
+
+                            <Card>
+                                <CardHeader
                                     title="Create Subscription"
-                                    subtitle="Creates an internal subscription row or a Stripe subscription (Stripe needs stripe_price_id)."
+                                    subtitle="Creates an internal or Stripe subscription using a plan_id."
                                 />
                                 <CardBody className="space-y-6">
                                     <form onSubmit={handleCreateSubscription} className="space-y-5">
@@ -3697,17 +3974,6 @@ const ControlPlaneAdmin: React.FC = () => {
                                                     { value: 'stripe', label: 'Stripe' },
                                                 ]}
                                             />
-                                            <Select
-                                                label="Tier"
-                                                value={subTier}
-                                                onChange={(e) => setSubTier(e.target.value)}
-                                                options={[
-                                                    { value: 'free', label: 'free' },
-                                                    { value: 'paid', label: 'paid' },
-                                                    { value: 'premium', label: 'premium' },
-                                                    { value: 'admin', label: 'admin' },
-                                                ]}
-                                            />
                                             <Input
                                                 label="User ID *"
                                                 value={subUserId}
@@ -3715,16 +3981,30 @@ const ControlPlaneAdmin: React.FC = () => {
                                                 placeholder="user123"
                                                 required
                                             />
+                                            <Input
+                                                label="Plan ID *"
+                                                value={subPlanId}
+                                                onChange={(e) => setSubPlanId(e.target.value)}
+                                                placeholder="plan_basic"
+                                                list="subscription-plan-options"
+                                                required
+                                            />
                                         </div>
+                                        <datalist id="subscription-plan-options">
+                                            {subscriptionPlans.map((plan) => (
+                                                <option key={plan.plan_id} value={plan.plan_id}>
+                                                    {plan.plan_id}{plan.active ? '' : ' (inactive)'}
+                                                </option>
+                                            ))}
+                                        </datalist>
 
                                         {subProvider === 'stripe' && (
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                                 <Input
-                                                    label="stripe_price_id *"
+                                                    label="stripe_price_id (optional override)"
                                                     value={subStripePriceId}
                                                     onChange={(e) => setSubStripePriceId(e.target.value)}
                                                     placeholder="price_..."
-                                                    required
                                                 />
                                                 <Input
                                                     label="stripe_customer_id (optional)"
@@ -3779,13 +4059,13 @@ const ControlPlaneAdmin: React.FC = () => {
 
                                             <div className="space-y-2">
                                                 <div className="flex justify-between">
-                                                    <span className="text-gray-600">billing</span>
-                                                    <strong>{providerLabel(subscription.provider)}</strong>
+                                                    <span className="text-gray-600">plan_id</span>
+                                                    <strong>{subscription.plan_id || '—'}</strong>
                                                 </div>
 
                                                 <div className="flex justify-between">
-                                                    <span className="text-gray-600">tier</span>
-                                                    <strong>{subscription.tier}</strong>
+                                                    <span className="text-gray-600">billing</span>
+                                                    <strong>{providerLabel(subscription.provider)}</strong>
                                                 </div>
 
                                                 <div className="flex justify-between">
@@ -3901,7 +4181,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                             {/* Internal ops */}
                                             {subscription.provider === 'internal' &&
                                                 subscription.status === 'active' &&
-                                                (subscription.tier === 'paid' || subscription.tier === 'premium') && (
+                                                Number(subscription.monthly_price_cents || 0) > 0 && (
                                                     <div className="pt-4 border-t border-gray-200/70 flex flex-wrap items-center justify-between gap-3">
                                                         <div className="text-xs text-gray-600">
                                                             Manual billing: renew will top-up subscription balance and advance next due date.
@@ -4315,6 +4595,42 @@ const ControlPlaneAdmin: React.FC = () => {
 
                             <Card>
                                 <CardHeader
+                                    title="Reap Expired Subscription Reservations"
+                                    subtitle="Cleans up expired reservation holds across subscription periods."
+                                />
+                                <CardBody className="space-y-4">
+                                    <form onSubmit={handleReapSubscriptionReservations} className="space-y-4">
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                            <Input
+                                                label="User ID (optional)"
+                                                value={subReapUserId}
+                                                onChange={(e) => setSubReapUserId(e.target.value)}
+                                                placeholder="user123"
+                                            />
+                                            <Input
+                                                label="Max periods"
+                                                value={subReapLimitPeriods}
+                                                onChange={(e) => setSubReapLimitPeriods(e.target.value)}
+                                                placeholder="500"
+                                            />
+                                            <Input
+                                                label="Max per period"
+                                                value={subReapPerPeriodLimit}
+                                                onChange={(e) => setSubReapPerPeriodLimit(e.target.value)}
+                                                placeholder="500"
+                                            />
+                                        </div>
+                                        <div className="flex items-end">
+                                            <Button type="submit" variant="secondary" disabled={loadingAction}>
+                                                {loadingAction ? 'Reaping…' : 'Reap Now'}
+                                            </Button>
+                                        </div>
+                                    </form>
+                                </CardBody>
+                            </Card>
+
+                            <Card>
+                                <CardHeader
                                     title="Subscription Period History"
                                     subtitle="Closed periods and ledger entries for a user's subscription."
                                 />
@@ -4490,7 +4806,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                                 <tr className="text-gray-600">
                                                     <th className="px-6 py-4 text-left font-semibold">User</th>
                                                     <th className="px-6 py-4 text-left font-semibold">Billing</th>
-                                                    <th className="px-6 py-4 text-left font-semibold">Tier</th>
+                                                    <th className="px-6 py-4 text-left font-semibold">Plan</th>
                                                     <th className="px-6 py-4 text-left font-semibold">Due</th>
                                                     <th className="px-6 py-4 text-left font-semibold">Next</th>
                                                     <th className="px-6 py-4 text-left font-semibold">Last</th>
@@ -4502,7 +4818,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                                     <tr key={`${s.tenant}:${s.project}:${s.user_id}`} className="hover:bg-gray-50/70 transition-colors">
                                                         <td className="px-6 py-4 font-semibold text-gray-900">{s.user_id}</td>
                                                         <td className="px-6 py-4 text-gray-700">{providerLabel(s.provider)}</td>
-                                                        <td className="px-6 py-4 text-gray-700">{s.tier}</td>
+                                                        <td className="px-6 py-4 text-gray-700">{s.plan_id || '—'}</td>
                                                         <td className="px-6 py-4"><DuePill sub={s} /></td>
                                                         <td className="px-6 py-4 text-gray-700">{formatDateTime(s.next_charge_at)}</td>
                                                         <td className="px-6 py-4 text-gray-700">{formatDateTime(s.last_charged_at)}</td>

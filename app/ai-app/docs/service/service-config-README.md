@@ -111,13 +111,19 @@ The cleanup loop uses Redis locks to avoid multi‑worker collisions.
 Economics requires PostgreSQL (control‑plane schema) and Redis (rate limiting + analytics).
 Stripe and email are optional but recommended for production.
 
-**Control plane schema**
+Control plane schema
 
 Deploy the economics schema before enabling control plane endpoints:
 
 - [deploy-kdcube-control-plane.sql](services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/deploy-kdcube-control-plane.sql)
 
-**Stripe configuration**
+Plan quota seeding
+
+- A master bundle seeds `plan_quota_policies` from `app_quota_policies` on first run.
+- After seeding, update limits in the admin UI (Quota Policies card).
+- If code defaults change, update DB policies or clear the table to re‑seed.
+
+Stripe configuration
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -127,7 +133,7 @@ Deploy the economics schema before enabling control plane endpoints:
 
 If `STRIPE_WEBHOOK_SECRET` is not set, webhook payloads are accepted without signature verification (not recommended).
 
-**Admin email notifications**
+Admin email notifications
 
 | Setting | Default | Purpose |
 | --- | --- | --- |

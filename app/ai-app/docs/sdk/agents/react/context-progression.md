@@ -19,6 +19,11 @@ This describes how context is built and updated during a turn.
   - Examples: gate/coordinator decisions, react tool calls/results.
   - When `persist=True`, they are stored in the turn log blocks for next-turn reconstruction.
 - React rounds append `react.tool.call` / `react.tool.result` blocks as contributions.
+- The rendered model view groups tool output into:
+  - `[TOOL CALL <id>].call <tool_id>`
+  - `[TOOL RESULT <id>].summary <tool_id>` (artifact tools)
+  - `[TOOL RESULT <id>].result <tool_id>` (non‑artifact tools)
+  - `[TOOL RESULT <id>].artifact <tool_id>` per artifact (logical_path + content)
 - `react.read` may skip re‑emitting blocks already visible (dedup) and records this in its status block.
 - Agents can also set:
   - sources pool via `ContextBrowser.set_sources_pool(...)`

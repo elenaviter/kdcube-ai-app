@@ -176,12 +176,12 @@ CREATE TRIGGER trg_cp_utr_updated_at
   FOR EACH ROW EXECUTE FUNCTION kdcube_control_plane.update_updated_at();
 
 -- =========================================
--- USER QUOTA POLICIES (base tier per user_type)
+-- PLAN QUOTA POLICIES (base limits per plan_id)
 -- =========================================
-CREATE TABLE IF NOT EXISTS kdcube_control_plane.user_quota_policies (
+CREATE TABLE IF NOT EXISTS kdcube_control_plane.plan_quota_policies (
     tenant VARCHAR(255) NOT NULL,
     project VARCHAR(255) NOT NULL,
-    user_type VARCHAR(255) NOT NULL,
+    plan_id VARCHAR(255) NOT NULL,
 
     max_concurrent INTEGER DEFAULT NULL,
     requests_per_day INTEGER DEFAULT NULL,
@@ -197,16 +197,16 @@ CREATE TABLE IF NOT EXISTS kdcube_control_plane.user_quota_policies (
     notes TEXT DEFAULT NULL,
     active BOOLEAN NOT NULL DEFAULT TRUE,
 
-    PRIMARY KEY (tenant, project, user_type)
+    PRIMARY KEY (tenant, project, plan_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_cp_uqp_lookup
-  ON kdcube_control_plane.user_quota_policies(tenant, project, user_type)
+CREATE INDEX IF NOT EXISTS idx_cp_pqp_lookup
+  ON kdcube_control_plane.plan_quota_policies(tenant, project, plan_id)
   WHERE active = TRUE;
 
-DROP TRIGGER IF EXISTS trg_cp_uqp_updated_at ON kdcube_control_plane.user_quota_policies;
-CREATE TRIGGER trg_cp_uqp_updated_at
-  BEFORE UPDATE ON kdcube_control_plane.user_quota_policies
+DROP TRIGGER IF EXISTS trg_cp_pqp_updated_at ON kdcube_control_plane.plan_quota_policies;
+CREATE TRIGGER trg_cp_pqp_updated_at
+  BEFORE UPDATE ON kdcube_control_plane.plan_quota_policies
   FOR EACH ROW EXECUTE FUNCTION kdcube_control_plane.update_updated_at();
 
 -- =========================================
@@ -535,14 +535,57 @@ CREATE INDEX IF NOT EXISTS idx_cp_sub_period_ledger_reservation
   ON kdcube_control_plane.user_subscription_period_ledger (reservation_id);
 
 -- =========================================
--- SUBSCRIPTIONS (TIER)
+-- SUBSCRIPTION PLANS (TIER + PRICE MAPPING)
+-- =========================================
+CREATE TABLE IF NOT EXISTS kdcube_control_plane.subscription_plans (
+    tenant text NOT NULL,
+    project text NOT NULL,
+    plan_id text NOT NULL,
+
+    provider text NOT NULL DEFAULT 'internal',
+    stripe_price_id text NULL,
+    monthly_price_cents int NOT NULL DEFAULT 0,
+
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    metadata JSONB NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    created_by text NULL,
+    notes text NULL,
+
+    PRIMARY KEY (tenant, project, plan_id),
+
+    CONSTRAINT chk_cp_pl_provider CHECK (provider IN ('internal','stripe')),
+    CONSTRAINT chk_cp_pl_price_nonneg CHECK (monthly_price_cents >= 0),
+    CONSTRAINT chk_cp_pl_stripe_price_req CHECK (
+      provider <> 'stripe' OR stripe_price_id IS NOT NULL
+    )
+);
+
+CREATE INDEX IF NOT EXISTS idx_cp_pl_provider_active
+  ON kdcube_control_plane.subscription_plans (tenant, project, provider, active);
+
+DROP INDEX IF EXISTS uq_cp_pl_stripe_price_id;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_cp_pl_stripe_price_id
+  ON kdcube_control_plane.subscription_plans (tenant, project, stripe_price_id)
+  WHERE provider='stripe' AND stripe_price_id IS NOT NULL;
+
+DROP TRIGGER IF EXISTS trg_cp_pl_updated_at ON kdcube_control_plane.subscription_plans;
+CREATE TRIGGER trg_cp_pl_updated_at
+  BEFORE UPDATE ON kdcube_control_plane.subscription_plans
+  FOR EACH ROW EXECUTE FUNCTION kdcube_control_plane.update_updated_at();
+
+-- =========================================
+-- SUBSCRIPTIONS (PLAN RESOLUTION SNAPSHOT)
+--  - plan_id points to subscription_plans
+--  - tier/monthly_price_cents are denormalized from plan
 -- =========================================
 CREATE TABLE IF NOT EXISTS kdcube_control_plane.user_subscriptions (
     tenant text NOT NULL,
     project text NOT NULL,
     user_id text NOT NULL,
 
-    tier text NOT NULL,
+    plan_id text NULL,
     status text NOT NULL,
     monthly_price_cents int NOT NULL DEFAULT 0,
 
@@ -561,13 +604,17 @@ CREATE TABLE IF NOT EXISTS kdcube_control_plane.user_subscriptions (
 
     CONSTRAINT chk_cp_us_provider CHECK (provider IN ('internal','stripe')),
     CONSTRAINT chk_cp_us_status CHECK (status IN ('active','canceled','suspended')),
-    CONSTRAINT chk_cp_us_tier CHECK (tier IN ('free','paid','premium','admin')),
     CONSTRAINT chk_cp_us_price_nonneg CHECK (monthly_price_cents >= 0),
 
     CONSTRAINT chk_cp_us_stripe_ids_internal_null CHECK (
       provider <> 'internal'
       OR (stripe_customer_id IS NULL AND stripe_subscription_id IS NULL)
-    )
+    ),
+
+    CONSTRAINT fk_cp_us_plan
+      FOREIGN KEY (tenant, project, plan_id)
+      REFERENCES kdcube_control_plane.subscription_plans (tenant, project, plan_id)
+      ON DELETE SET NULL
 );
 
 DROP TRIGGER IF EXISTS trg_cp_us_updated_at ON kdcube_control_plane.user_subscriptions;
@@ -577,7 +624,7 @@ CREATE TRIGGER trg_cp_us_updated_at
 
 CREATE INDEX IF NOT EXISTS idx_cp_us_due_internal
   ON kdcube_control_plane.user_subscriptions (tenant, project, next_charge_at)
-  WHERE provider='internal' AND tier='paid' AND status='active' AND next_charge_at IS NOT NULL;
+  WHERE provider='internal' AND status='active' AND next_charge_at IS NOT NULL AND monthly_price_cents > 0;
 
 CREATE INDEX IF NOT EXISTS idx_cp_us_provider_status
   ON kdcube_control_plane.user_subscriptions (tenant, project, provider, status);

@@ -1,221 +1,211 @@
 # Economics Model (Control Plane)
 
-This document is the authoritative description of the current economics model and how it is enforced in runtime.
+This document is the authoritative description of the current economics model and how it is enforced at runtime.
 It replaces the older usage notes and reflects the production bundle flow and control‑plane schema.
+
+Runtime entrypoint:
+- [entrypoint_with_economic.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/chatbot/entrypoint_with_economic.py)
 
 ## Scope
 
 The economics subsystem covers:
 
 - Rate limits and quotas (requests, tokens, concurrency)
-- Funding lanes (subscription budget, project budget, personal credits)
+- Funding lanes (subscription budget, project budget, wallet credits)
 - Reservation semantics for correctness under concurrency
 - Accounting and cost attribution
 - Subscription period management and rollovers
 
-Runtime entrypoint: [entrypoint_with_economic.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/chatbot/entrypoint_with_economic.py).
-
-## Roles and Funding Rules
-
-We currently use three user types (roles):
-
-- `registered` (free/trial users)
-- `paid` (users with an active subscription)
-- `privileged` (admin/operators)
-
-Important: **user_type is for quota policy**, while **subscription status is for funding source**. The two are related but not identical.
-
-Funding rules are enforced in the runtime entrypoint:
-
-1. **Paid users**
-   - Must have an active subscription (`user_subscriptions.status=active`, tier in `paid|premium`, not past due).
-   - Funding source: **subscription period budget** only.
-   - If subscription is inactive/past‑due, they have **no funding source** unless they also have personal lifetime credits.
-
-2. **Registered users**
-   - No subscription expected.
-   - Funding source: **project budget** (tenant/project balance).
-
-3. **Privileged users**
-   - Budget checks are bypassed, but **project budget is still charged**.
-   - This is an explicit operational decision: admins can run even if budget is negative.
-   - Quota policy still applies (max_concurrent etc), but limits are effectively “almost unlimited” in the default policy.
-
-Implementation detail:
-
-- Allowed project budget user types are declared in `project_budget_user_types()` (default: `{"registered"}`).
-- Budget bypass user types are declared in `budget_bypass_user_types()` (default: `{"privileged", "admin"}`).
-- Privileged bypass still charges the project budget after the run using `force_project_spend` (no overdraft checks).
-
 ## Core Concepts
 
-### 1) Quotas (Rate Limiting)
+### Role (economics role)
 
-- Enforced by `UserEconomicsRateLimiter` using Redis + Lua.
-- Counters: requests (day/month/total), tokens (hour/day/month), concurrency lock.
-- Policies are stored in the control plane and loaded per user_type.
-- A **tier override** can temporarily replace base limits (not additive).
+Role is the funding access decision, not the quota policy. The gateway can override the authenticated role based on economics state.
 
-The admit decision is made before running the model. If allowed, a concurrency lock is held and released on commit or failure.
+Role resolution is applied in the gateway and stored in the session:
 
-### 2) Tier Overrides
+- If `privileged` or `admin`, role stays privileged.
+- Else if active subscription or wallet credits exist, role becomes `paid`.
+- Else role remains `registered`.
 
-- Stored in `user_tier_overrides`.
-- Optional `expires_at` controls automatic expiry.
-- Overrides replace base limits (e.g., raise tokens_per_month for 7 days).
+This overrides the session `user_type` (the role used by the runtime entrypoint). The session key uses the resolved role:
 
-### 3) Personal Lifetime Credits (Token Wallet)
+- `...:paid:<user_id>`
+- `...:registered:<user_id>`
 
-- Stored in `user_lifetime_credits`.
-- Depleting token bucket; never expires.
-- Used when a request exceeds tier funding or the user is in the paid lane.
+### Plan (quota policy identity)
 
-Concurrency safety:
+Plan (`plan_id`) is the quota policy identity used by the rate limiter. It is distinct from role.
 
-- `user_token_reservations` prevents two concurrent turns from spending the same credits.
-- Reservations are short‑lived and either committed or released.
+Plan is resolved in the entrypoint at request time. The active plan determines base quotas via `plan_quota_policies`.
 
-### 4) Project Budget (Money)
+### Funding Sources
 
-- Stored in `tenant_project_budget` with ledger + reservations.
-- Used by `registered` users and for admin bypass charging.
-- Project budget is **money**, not tokens. We convert token usage to USD via the reference model at runtime.
+Funding sources are money or tokens used to pay for requests:
 
-Overdraft rules:
+- Subscription period budget (per‑month balance, USD)
+- Wallet or lifetime credits (token bucket, USD‑quoted)
+- Project budget (tenant/project balance, USD)
 
-- `overdraft_limit_cents` controls how negative the budget may go.
-- `force_project_spend` bypasses overdraft checks (used for admin bypass and post‑fact settlement).
+Role determines which funding sources are allowed, while plan determines rate limits.
 
-### 5) Subscription Period Budget (Per‑month balance)
+## Plan Resolution (Runtime)
 
-- Stored in `user_subscription_period_budget` (one row per user per billing period).
-- Topped up once per period (idempotent).
-- Not additive across months.
-- Expired periods are **closed** and any remaining balance is rolled into the project budget.
+Plan resolution is performed in the entrypoint using the following priority:
 
-## Funding Lanes (Runtime Flow)
+1. `privileged/admin` → `admin`
+2. `anonymous` → `anonymous`
+3. active subscription → `subscription.plan_id`
+4. wallet only → `payasyougo`
+5. paid role without subscription → `payasyougo`
+6. default → `free`
 
-Runtime logic (simplified):
-
-1. **Load policy** from control plane.
-2. **Admit** via `UserEconomicsRateLimiter`.
-3. **Select funding source**:
-   - Active subscription: subscription budget.
-   - Registered: project budget (only if no active subscription).
-   - Privileged/admin: bypass checks; charge project budget after run.
-4. **Reserve** funds before execution:
-   - Tier lane: reserve subscription/project budget for estimated tier coverage.
-   - Overflow: reserve personal lifetime credits.
-5. **Execute model**.
-6. **Apply accounting** and compute actual cost.
-7. **Commit** reservations and apply final spend.
-
-If a funding source has insufficient funds, a user can still run if they have personal lifetime credits; otherwise the request is denied.
-
-## Decision Tree by User Role (Visual)
-
-The following diagram shows the per‑request decision path from arrival to funding and execution.
+Visual summary:
 
 ```mermaid
 flowchart TD
-   A["Request arrives"] --> B["Load quota policy from control plane"]
-   B --> C{"Rate limit admit?"}
-   C -- No --> C1["Deny: rate limit"]
-   C -- Yes --> D{"User type"}
+  A[Request arrives] --> B{Role}
+  B -- admin/privileged --> P[plan_id = admin]
+  B -- anonymous --> N[plan_id = anonymous]
+  B -- other --> C{Active subscription?}
+  C -- yes --> S[plan_id = subscription.plan_id]
+  C -- no --> D{Wallet credits?}
+  D -- yes --> W[plan_id = payasyougo]
+  D -- no --> E{Role is paid?}
+  E -- yes --> W
+  E -- no --> F[plan_id = free]
+```
 
-   D -- "privileged/admin" --> P1["Budget bypass enabled"]
-   P1 --> P2["Execute run"]
-   P2 --> P3["Charge project budget\nforce_project_spend (can go negative)"]
-   P3 --> P4["Commit RL counters"]
+## Where Limits Come From (Plan Quotas)
 
-   D -- paid --> S1{"Active subscription?"}
-   S1 -- No --> S2{"Has personal credits?"}
-   S2 -- No --> S3["Deny: no funding source"]
-   S2 -- Yes --> S4["Paid lane: reserve personal credits"]
-   S4 --> S5["Execute run"]
-   S5 --> S6["Charge personal credits"]
-   S6 --> S7["Commit RL counters"]
-   S1 -- Yes --> S8["Use subscription period budget"]
-   S8 --> S9["Reserve subscription budget"]
-   S9 --> S10["Execute run"]
-   S10 --> S11["Commit subscription spend"]
-   S11 --> S12["Commit RL counters"]
+Plan quotas are stored in the control plane table `plan_quota_policies`.
 
-   D -- registered --> R1["Use project budget"]
-   R1 --> R2["Reserve project budget"]
-   R2 --> R3["Execute run"]
-   R3 --> R4["Commit project spend"]
-   R4 --> R5["Commit RL counters"]
+Seeding flow:
+
+- A master bundle calls `ensure_policies_initialized()`.
+- The entrypoint seeds `plan_quota_policies` from `app_quota_policies` only if records are missing.
+- After initial seeding, updates should be made in the admin UI or directly in the table.
+- Runtime always prefers the DB policy, with a fallback to `app_quota_policies` if a plan is missing.
+
+```mermaid
+flowchart TD
+  A[Master bundle starts] --> B[ensure_policies_initialized]
+  B --> C{plan_quota_policies empty?}
+  C -- yes --> D[Insert defaults from app_quota_policies]
+  C -- no --> E[No changes]
+  D --> F[Runtime uses DB policies]
+  E --> F
+  F --> G[Fallback to app_quota_policies only if DB missing]
+```
+
+## Funding Lanes and Reservation Semantics
+
+### Tier lane
+
+Tier lane is the normal path when rate‑limit admit succeeds.
+
+Funding for tier lane:
+
+- Active subscription → reserve from subscription period budget.
+- Registered role (no subscription) → reserve from project budget.
+- Privileged bypass → no pre‑check; project budget is charged after run.
+
+### Paid lane
+
+Paid lane is used when tier admit is denied or when tier funding cannot be reserved.
+
+Funding for paid lane:
+
+- Active subscription → reserve subscription budget for the full estimated cost.
+- Otherwise → reserve wallet credits (lifetime tokens).
+
+### Reservation types
+
+- Rate limiter token reservation (Redis) for tier lane
+- Subscription reservations in `user_subscription_period_reservations`
+- Project budget reservations in `tenant_project_budget_reservations`
+- Wallet reservations in `user_token_reservations`
+
+Reservations are committed or released after execution and accounting. Expired reservations are reaped automatically.
+
+## Decision Tree (Role → Plan → Funding)
+
+```mermaid
+flowchart TD
+  A[Request] --> B[Resolve role]
+  B --> C[Resolve plan_id]
+  C --> D[Load plan quota policy]
+  D --> E{Rate‑limit admit?}
+  E -- No --> F{Personal funding available?}
+  F -- No --> X[Deny: rate limit]
+  F -- Yes --> P1[Paid lane]
+
+  E -- Yes --> T1[Tier lane]
+
+  T1 --> S{Active subscription?}
+  S -- Yes --> SB[Reserve subscription budget]
+  S -- No --> R{Role allows project budget?}
+  R -- Yes --> PB[Reserve project budget]
+  R -- No --> P1
+
+  P1 --> PF{Active subscription?}
+  PF -- Yes --> PS[Reserve subscription budget]
+  PF -- No --> PW[Reserve wallet credits]
+
+  SB --> RUN[Execute]
+  PB --> RUN
+  PS --> RUN
+  PW --> RUN
+
+  RUN --> ACC[Accounting]
+  ACC --> COMMIT[Commit reservations and spend]
 ```
 
 ## Subscription Periods and Rollovers
 
-Subscription budgets are **per billing period**. The period key is deterministic and derived from:
+Subscription budgets are per billing period.
 
-- `provider` (internal or stripe)
-- `stripe_subscription_id` (if stripe)
-- `period_start` and `period_end`
-
-At period end:
-
-- The period is closed.
-- Available balance (balance - reserved) is rolled into the project budget.
-- This is **idempotent** and recorded via `external_economics_events` with `kind=subscription_rollover`.
+- Each period is keyed by `(tenant, project, user_id, period_key)`.
+- Top‑up is once per period by default (idempotent).
+- Periods are closed at the end date.
+- Unused balance is rolled into project budget.
 
 Maintenance entry points:
 
 - `SubscriptionManager.sweep_due_subscription_rollovers(...)`
-- Control plane endpoint: `/subscriptions/rollover/sweep`
+- Control plane endpoint: `POST /subscriptions/rollover/sweep`
+- Reservation reaper: `POST /subscriptions/reservations/reap-all`
 
 ## Data Model (Tables)
 
-Authoritative schema is defined in:
+Authoritative schema:
 
 - [deploy-kdcube-control-plane.sql](services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/deploy-kdcube-control-plane.sql)
 
 Key tables:
 
-- `user_quota_policies` — base policy per user_type
+- `plan_quota_policies` — base policy per plan_id
 - `user_tier_overrides` — temporary overrides
-- `user_lifetime_credits` — lifetime token wallet
+- `user_lifetime_credits` — wallet credits
 - `user_token_reservations` — wallet reservations
 - `tenant_project_budget` — project money balance
 - `tenant_project_budget_reservations` — project budget holds
 - `tenant_project_budget_ledger` — project budget ledger
+- `subscription_plans` — plan catalog and Stripe price mapping
+- `user_subscriptions` — subscription metadata
 - `user_subscription_budget_settings` — per user subscription config (overdraft)
 - `user_subscription_period_budget` — per period subscription balance
 - `user_subscription_period_reservations` — subscription holds
 - `user_subscription_period_ledger` — subscription ledger
-- `user_subscriptions` — subscription metadata
-- `external_economics_events` — idempotency + audit for external/internal economic operations
+- `external_economics_events` — idempotency and audit for external/internal economic operations
 
 ## Accounting and Costing
 
-Accounting events are emitted by service wrappers (e.g., LLM calls, web search).
-They are aggregated per turn, then converted to cost using the reference model.
+Accounting events are emitted by service wrappers (LLM calls, web search, etc.).
+Events are aggregated per turn and converted to USD using the reference model.
 
-Model usage is billed by the runtime entrypoint when the turn completes.
+Reference model conversion is used for:
 
-## Admin Operations
-
-The admin control plane supports:
-
-- Policy seeding from bundle config
-- Project budget topups
-- Tier overrides and trials
-- Wallet (lifetime credits) topups and refunds
-- Subscription creation, manual renewal, and rollover sweep
-- Stripe reconciliation
-
-Control plane entrypoint:
-
-- [control_plane.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/control_plane.py)
-
-## Operational Guarantees
-
-- **Idempotency** for Stripe and internal “once per period” actions via `external_economics_events`.
-- **Atomicity** for budget adjustments via SQL transactions and row locks.
-- **Concurrency safety** for credits and quotas via Redis/Lua + DB reservations.
-
-For Stripe-specific flows and operations, see `stripe-README.md` in this folder.
-For operational procedures and configuration, see `operational-README.md` in this folder.
+- Wallet credit conversion (USD → tokens)
+- Token balance display (tokens → USD)
+- Estimation of request cost for reservations

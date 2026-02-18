@@ -317,11 +317,17 @@ class RenderingTools:
     @kernel_function(
         name="write_png",
         description=(
-            "Render Markdown, HTML, or Mermaid diagrams to PNG image using Playwright + Chromium. "
-            "Supports three formats: 'markdown', 'html' (control sizing via CSS), or 'mermaid'. "
-            "Returns an envelope: {ok, error}. "
-            "Fitting guidance: prefer full_page=True; increase width (e.g., 2200–3200) for wide diagrams; "
-            "use render_delay_ms=1000–2000 to allow Mermaid/layout to settle. File is saved under OUTPUT_DIR."
+            "Render Markdown, HTML, or Mermaid diagrams to PNG using Playwright + Chromium. "
+            "Supports three formats: 'markdown', 'html', or 'mermaid'. "
+            "Returns an envelope: {ok, error}.\n\n"
+            "For PNG authoring best practices (layout sizing, scale, cropping, mermaid tips):\n"
+            "→ Use skill 'png-press' (skills.public.png-press)\n\n"
+            "=== QUICK ESSENTIALS ===\n"
+            "• Prefer fit='content' (default) to crop to actual content and avoid tiny centered diagrams\n"
+            "• Use content_selector for HTML (e.g. '#render-root') to define the crop target\n"
+            "• Increase width (2200–3200) for wide diagrams; use zoom=1.2–1.8 for readability\n"
+            "• Use render_delay_ms=1000–2000 for Mermaid/JS layout to settle\n"
+            "• Use base_dir for relative assets; avoid base64 data URIs in HTML/Markdown\n"
         )
     )
     async def write_png(
@@ -336,9 +342,16 @@ class RenderingTools:
         title: Annotated[Optional[str], "Optional title (for Markdown mode)."] = None,
         base_dir: Annotated[Optional[str], "Base directory for resolving relative assets."] = None,
         render_delay_ms: Annotated[int, "Extra delay for JS rendering (useful for charts/diagrams)."] = 1000,
-        full_page: Annotated[bool, "Capture full scrollable page vs viewport only."] = True,
+        fit: Annotated[str, "Sizing strategy: 'content' (tight crop) or 'viewport' (use full_page/viewport)."] = "content",
+        content_selector: Annotated[Optional[str], "CSS selector for content root (HTML mode)."] = None,
+        padding_px: Annotated[int, "Padding around content when fit='content'."] = 32,
+        zoom: Annotated[Optional[float], "CSS zoom applied after render (1.2–1.8 improves readability)."] = None,
+        background: Annotated[Optional[str], "Background color. Use 'transparent' for alpha."] = "white",
+        full_page: Annotated[bool, "Capture full scrollable page vs viewport only (fit='viewport')."] = True,
         width: Annotated[Optional[int], "Viewport width in pixels (defaults to 1200)."] = 3000,
         height: Annotated[Optional[int], "Viewport height in pixels (only used if full_page=False)."] = 2000,
+        device_scale_factor: Annotated[float, "Device pixel ratio (2 = retina)."] = 2.0,
+        mermaid_theme: Annotated[str, "Mermaid theme: default | neutral | dark | forest."] = "default",
     ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
         import html as html_lib
         import urllib.parse
@@ -349,6 +362,10 @@ class RenderingTools:
             out_path = outdir / fname
             out_path.parent.mkdir(parents=True, exist_ok=True)
             base_dir = base_dir or str(outdir)
+            format = (format or "mermaid").strip().lower()
+            fit = (fit or "content").strip().lower()
+            if fit not in {"content", "viewport"}:
+                fit = "content"
 
             print(f"[RenderingTools.write_png]: rendering {format} to {out_path}")
 
@@ -361,6 +378,7 @@ class RenderingTools:
 
             _update_sources_used_for_filename(fname, content)
             if format in ("html", "markdown"):
+                _warn_on_data_uri(content, "write_png")
                 _log_asset_resolution(content, pathlib.Path(base_dir), tool_name="write_png")
 
             if format == "mermaid":
@@ -376,29 +394,27 @@ class RenderingTools:
         <style>
             body {{
                 margin: 0;
-                padding: 40px;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                background: white;
+                padding: 0;
+                background: {background or "white"};
             }}
-            .mermaid {{
-                display: flex;
-                justify-content: center;
-                align-items: center;
+            #canvas {{
+                display: inline-block;
             }}
+            .mermaid {{ display: inline-block; }}
             #error {{ color: red; white-space: pre-wrap; font-family: monospace; }}
         </style>
     </head>
     <body>
         <div id="error"></div>
-        <div class="mermaid">
+        <div id="canvas">
+          <div class="mermaid">
     {html_lib.escape(content)}
+          </div>
         </div>
         <script>
             mermaid.initialize({{ 
                 startOnLoad: true, 
-                theme: 'default',
+                theme: '{html_lib.escape(mermaid_theme or "default")}',
                 securityLevel: 'loose',
                 logLevel: 'debug'
             }});
@@ -410,14 +426,20 @@ class RenderingTools:
                 document.getElementById('error').textContent = 'Mermaid Parse Error:\\n' + err;
             }};                  
             window.addEventListener('load', () => {{
-                setTimeout(() => {{ window.__RENDER_READY__ = true; }}, 500);
+                Promise.resolve(mermaid.run && mermaid.run())
+                    .catch((err) => {{
+                        document.getElementById('error').textContent = 'Mermaid Render Error:\\n' + err;
+                    }})
+                    .finally(() => {{
+                        setTimeout(() => {{ window.__RENDER_READY__ = true; }}, 150);
+                    }});
             }});
         </script>
     </body>
     </html>"""
 
             elif format == "html":
-                html_content = content
+                html_content = _ensure_html_wrapper(content, title=title)
 
             else:
                 base_href = conv._base_href_for(pathlib.Path(base_dir) if base_dir else None)
@@ -431,7 +453,7 @@ class RenderingTools:
             try:
                 context = await conv._browser.new_context(
                     viewport={"width": width or 1200, "height": height or 800},
-                    device_scale_factor=2
+                    device_scale_factor=device_scale_factor or 2
                 )
                 page = await context.new_page()
 
@@ -439,13 +461,78 @@ class RenderingTools:
                     "path": str(out_path),
                     "full_page": bool(full_page),
                 }
+                if isinstance(background, str) and background.strip().lower() in {"transparent", "none"}:
+                    screenshot_opts["omit_background"] = True
+
+                async def _apply_zoom():
+                    if zoom and zoom > 0:
+                        await page.evaluate("z => { document.body.style.zoom = String(z); }", zoom)
+
+                async def _apply_background():
+                    if background and isinstance(background, str):
+                        bg = background.strip()
+                        if bg and bg.lower() not in {"transparent", "none"}:
+                            await page.add_style_tag(content=f"body {{ background: {bg} !important; }}")
+
+                async def _compute_bbox(selector: Optional[str]):
+                    if selector:
+                        el = await page.query_selector(selector)
+                        if el:
+                            box = await el.bounding_box()
+                            if box:
+                                return box
+                    return await page.evaluate(
+                        """() => {
+                            const ignoreTags = new Set(['SCRIPT','STYLE','HEAD','META','LINK']);
+                            const elements = Array.from(document.body.querySelectorAll('*'));
+                            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+                            for (const el of elements) {
+                                if (!el || ignoreTags.has(el.tagName)) continue;
+                                const style = window.getComputedStyle(el);
+                                if (style.display === 'none' || style.visibility === 'hidden') continue;
+                                if (style.position === 'fixed') continue;
+                                const rect = el.getBoundingClientRect();
+                                if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+                                minX = Math.min(minX, rect.left);
+                                minY = Math.min(minY, rect.top);
+                                maxX = Math.max(maxX, rect.right);
+                                maxY = Math.max(maxY, rect.bottom);
+                            }
+                            if (!isFinite(minX) || !isFinite(minY)) return null;
+                            return {
+                                x: minX + window.scrollX,
+                                y: minY + window.scrollY,
+                                width: maxX - minX,
+                                height: maxY - minY
+                            };
+                        }"""
+                    )
+
+                def _clip_from_box(box: dict) -> dict:
+                    pad = max(int(padding_px or 0), 0)
+                    x = max(float(box.get("x", 0)) - pad, 0)
+                    y = max(float(box.get("y", 0)) - pad, 0)
+                    width = max(float(box.get("width", 0)) + pad * 2, 1)
+                    height = max(float(box.get("height", 0)) + pad * 2, 1)
+                    return {"x": x, "y": y, "width": width, "height": height}
 
                 if format == "mermaid":
                     try:
                         await page.goto(f"file://{html_path}", wait_until="networkidle")
                         await page.wait_for_function("window.__RENDER_READY__ === true", timeout=30000)
+                        await page.wait_for_timeout(max(int(render_delay_ms or 0), 0))
+                        await _apply_background()
+                        await _apply_zoom()
 
-                        if full_page:
+                        if fit == "content":
+                            box = await _compute_bbox(".mermaid svg")
+                            if box:
+                                screenshot_opts["clip"] = _clip_from_box(box)
+                                screenshot_opts["full_page"] = False
+                                await page.screenshot(**screenshot_opts)
+                            else:
+                                await page.screenshot(**screenshot_opts)
+                        elif full_page:
                             await page.screenshot(**screenshot_opts)
                         else:
                             svg_element = await page.query_selector(".mermaid svg")
@@ -469,7 +556,7 @@ class RenderingTools:
             </html>"""
                                 png_context = await conv._browser.new_context(
                                     viewport={"width": width or 2400, "height": height or 1600},
-                                    device_scale_factor=2
+                                    device_scale_factor=device_scale_factor or 2
                                 )
                                 png_page = await png_context.new_page()
                                 svg_data_url = f"data:text/html;charset=utf-8,{urllib.parse.quote(svg_html)}"
@@ -484,6 +571,17 @@ class RenderingTools:
                         await page.screenshot(**screenshot_opts)
                 else:
                     await page.goto(f"file://{html_path}", wait_until="networkidle")
+                    await page.wait_for_timeout(max(int(render_delay_ms or 0), 0))
+                    await _apply_background()
+                    await _apply_zoom()
+                    if fit == "content":
+                        auto_selector = content_selector
+                        if not auto_selector and format == "markdown":
+                            auto_selector = "main"
+                        box = await _compute_bbox(auto_selector)
+                        if box:
+                            screenshot_opts["clip"] = _clip_from_box(box)
+                            screenshot_opts["full_page"] = False
                     await page.screenshot(**screenshot_opts)
 
                 await context.close()

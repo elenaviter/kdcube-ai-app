@@ -120,29 +120,20 @@ summary: 2‑page menu, prices & address (Wuppertal)
 
 [AI Agent say]: Searching for top‑rated restaurants in Wuppertal
 
-[react.tool.call] (JSON)
-{
-  "tool_id": "web_tools.web_search",
-  "tool_call_id": "tc_18f62649fb3b",
-  "params": { ... }
-}
+[TOOL CALL tc_18f62649fb3b].call web_tools.web_search
+tc:turn_1770603271112_2yz1lp.tc_18f62649fb3b.call
+Params:
+{ ... }
 
-[react.tool.result] (JSON status)
-{
-  "tool_id": "web_tools.web_search",
-  "tool_call_id": "tc_18f62649fb3b",
-  "result": [ ... truncated ... ]
-}
-
-[react.tool.result] (artifact block)
-[path: so:sources_pool[1-5]]
+[TOOL RESULT tc_18f62649fb3b].result web_tools.web_search
+logical_path: so:sources_pool[1-5]
 ...
 ```
 
 Notes:
-- Tool results may appear as multiple blocks (status + artifact blocks).
-- For file artifacts, the file block uses `fi:<turn_id>.files/...` and contains
-  a public digest; hosting metadata lives in `meta`.
+- Artifact‑producing tools render **summary + artifact** blocks.
+- Non‑artifact tools render a single `.result` block with `logical_path`.
+- For file artifacts, the content block uses `fi:<turn_id>.files/...`; hosted metadata stays in `meta`.
 
 ---
 

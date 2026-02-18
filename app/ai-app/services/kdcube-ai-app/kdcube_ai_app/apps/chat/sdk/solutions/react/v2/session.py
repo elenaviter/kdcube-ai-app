@@ -915,9 +915,12 @@ def apply_cache_ttl_pruning(
             or tools_insights.is_search_tool(tool_id)
             or tools_insights.is_fetch_uri_content_tool(tool_id)
         ):
-            view = _get_view(tool_id)
-            rep = view.build_result_replacement(tool_result_block=blk, payload=payload or {}, cfg=cfg)
             try:
+                if tool_id == "react.memsearch" and not path.startswith(("tc:", "so:")):
+                    rep = _build_skill_prune_message(path)
+                else:
+                    view = _get_view(tool_id)
+                    rep = view.build_result_replacement(tool_result_block=blk, payload=payload or {}, cfg=cfg)
                 timeline.hide_paths([path], rep)
                 hidden_recent_paths.add(path)
             except Exception:

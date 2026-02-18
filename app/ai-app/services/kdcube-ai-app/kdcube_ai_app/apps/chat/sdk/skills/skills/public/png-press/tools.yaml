@@ -1,0 +1,4 @@
+tools:
+  - id: rendering_tools.write_png
+    role: image rendering
+    why: Renders HTML, Markdown, or Mermaid content into PNG screenshots.

@@ -65,6 +65,12 @@ class FastAPIGatewayAdapter:
                  policy_resolver):
         self.gateway = gateway
         self.policy = policy_resolver
+        self.econ_role_resolver = None
+
+    def set_econ_role_resolver(self, resolver):
+        self.econ_role_resolver = resolver
+        if hasattr(self.gateway, "set_econ_role_resolver"):
+            self.gateway.set_econ_role_resolver(resolver)
 
     def _extract_context(self, request: Request) -> RequestContext:
         """Extract request context from FastAPI request"""

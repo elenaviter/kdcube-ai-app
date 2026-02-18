@@ -2149,6 +2149,7 @@ class Timeline:
             ts = str(raw_ts).strip() if raw_ts is not None else ""
             path = (b.get("path") or "").strip()
             meta = b.get("meta") if isinstance(b.get("meta"), dict) else {}
+            extra_text_blocks: List[str] = []
             # Round boundaries (open/close)
             round_id = _extract_round_id(b)
             if round_id and round_id != current_round_id:
@@ -2160,6 +2161,29 @@ class Timeline:
             elif current_round_id and not round_id:
                 out.append({"type": "text", "text": _round_footer()})
                 current_round_id = None
+
+            if meta.get("render_as") == "raw":
+                base64 = b.get("base64") or b.get("data")
+                mime = (b.get("mime") or b.get("media_type") or "").strip() or None
+                emitted_raw: List[Dict[str, Any]] = []
+                if isinstance(text, str) and text:
+                    if current_round_id:
+                        text = _indent_text_block(str(text))
+                    emitted_raw.append({"type": "text", "text": str(text)})
+                if base64:
+                    is_image = mime.startswith("image/") if mime else False
+                    if is_image:
+                        emitted_raw.append({
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": mime, "data": base64},
+                        })
+                    else:
+                        emitted_raw.append({
+                            "type": "document",
+                            "source": {"type": "base64", "media_type": mime or "application/octet-stream", "data": base64},
+                        })
+                out.extend(emitted_raw)
+                continue
 
             if btype == "turn.header":
                 # Close any open round at turn boundary.
@@ -2304,12 +2328,12 @@ class Timeline:
                 ts_line = _ts_line(ts)
                 if ts_line:
                     lines.append(ts_line)
-                header = f"[TOOL CALL {short_id}]"
+                header = f"[TOOL CALL {short_id}].call"
                 if tool_id:
                     header += f" {tool_id}"
                 lines.append(header)
                 if path:
-                    lines.append(f"artifact_path: {path}")
+                    lines.append(path)
                 if isinstance(params, dict):
                     params_out = dict(params)
                     if isinstance(params_out.get("content"), str):
@@ -2337,83 +2361,80 @@ class Timeline:
                 if not tool_call_id:
                     tool_call_id = _call_id_from_path(path)
                 short_id = _short_tc_id(tool_call_id)
-                if mime_val == "application/json" and isinstance(text, str):
+                handled = False
+                render_role = (meta_local.get("render_role") or "").strip().lower()
+                if render_role == "summary" and isinstance(text, str):
+                    tool_id = call_id_to_tool_id.get(tool_call_id, "")
+                    lines = []
+                    ts_line = _ts_line(ts)
+                    if ts_line:
+                        lines.append(ts_line)
+                    header = f"[TOOL RESULT {short_id}].summary"
+                    if tool_id:
+                        header += f" {tool_id}"
+                    lines.append(header)
+                    lines.append(text)
+                    text = "\n".join([l for l in lines if l]).strip()
+                    handled = True
+                if (not handled) and mime_val == "application/json" and isinstance(text, str):
                     payload = _maybe_parse_json(text)
                     if isinstance(payload, dict) and payload.get("artifact_path"):
                         tool_id = (payload.get("tool_id") or "").strip()
                         if not tool_id and tool_call_id:
                             tool_id = call_id_to_tool_id.get(tool_call_id, "")
-                        # Skip noisy meta blocks for read/search/fetch; content blocks will carry the info.
                         if tool_id in {"react.read", "web_tools.web_search", "web_tools.web_fetch"}:
                             text = ""
+                            handled = True
+                            continue
+                        lines = []
+                        ts_line = _ts_line(ts)
+                        if ts_line:
+                            lines.append(ts_line)
+                        header = f"[TOOL RESULT {short_id}].summary"
+                        if tool_id:
+                            header += f" {tool_id}"
+                        lines.append(header)
+                        err = payload.get("error") or None
+                        if err:
+                            code = err.get("code") or "error"
+                            msg = err.get("message") or ""
+                            lines.append(f"Status: error — {code} {msg}".strip())
                         else:
-                            lines = []
-                            ts_line = _ts_line(ts)
-                            if ts_line:
-                                lines.append(ts_line)
-                            header = f"[TOOL RESULT {short_id}]"
-                            if tool_id:
-                                header += f" {tool_id}"
-                            lines.append(header)
-                            err = payload.get("error") or None
-                            if err:
-                                code = err.get("code") or "error"
-                                msg = err.get("message") or ""
-                                status_line = f"❌ ERROR: {code} {msg}".strip()
-                                lines.append(status_line)
-                            else:
-                                lines.append("✅ SUCCESS")
-                            ap_line = (payload.get("artifact_path") or path or "").strip()
-                            if ap_line:
-                                lines.append(f"artifact_path: {ap_line}")
-                            ap = (payload.get("artifact_path") or "").strip()
-                            pp = (payload.get("physical_path") or "").strip()
-                            kind = (payload.get("kind") or "").strip()
-                            visibility = (payload.get("visibility") or "").strip()
-                            description = (payload.get("description") or "").strip()
-                            if err is None and kind == "file" and visibility == "external":
-                                lines.append("[Produced files]")
-                                file_line = pp or ap
-                                if file_line:
-                                    lines.append(f"- {file_line}")
-                                if description:
-                                    lines.append(f"Description: {description}")
-                            # Emit a cleaned meta JSON (no hosted_uri/rn/key).
-                            meta_out = {
-                                k: v
-                                for k, v in payload.items()
-                                if k in {
-                                    "artifact_path",
-                                    "physical_path",
-                                    "mime",
-                                    "kind",
-                                    "visibility",
-                                    "channel",
-                                    "tool_id",
-                                    "tool_call_id",
-                                    "edited",
-                                    "ts",
-                                    "size_bytes",
-                                    "description",
-                                    "write_warning",
-                                    "sources_used",
-                                    "tokens",
-                                    "error",
-                                }
-                                and v is not None
-                                and (not isinstance(v, str) or v.strip() != "")
-                            }
-                            if meta_out:
-                                lines.append(json.dumps(meta_out, ensure_ascii=False, indent=2))
-                            text = "\n".join(lines).strip()
+                            lines.append("Status: success")
+                        ap = (payload.get("artifact_path") or "").strip()
+                        kind = (payload.get("kind") or "").strip()
+                        visibility = (payload.get("visibility") or "").strip()
+                        channel = (payload.get("channel") or "").strip()
+                        tokens = payload.get("tokens")
+                        sources_used = payload.get("sources_used")
+                        if ap:
+                            meta_bits = []
+                            if kind:
+                                meta_bits.append(f"kind: {kind}")
+                            if visibility:
+                                meta_bits.append(f"visibility: {visibility}")
+                            if channel:
+                                meta_bits.append(f"channel: {channel}")
+                            if tokens is not None:
+                                meta_bits.append(f"tokens: {tokens}")
+                            if isinstance(sources_used, list) and sources_used:
+                                meta_bits.append(f"sources_used: {sources_used}")
+                            meta_tail = f" | " + " | ".join(meta_bits) if meta_bits else ""
+                            lines.append("Artifacts:")
+                            lines.append(f"- logical_path: {ap}{meta_tail}")
+                        text = "\n".join(lines).strip()
                     elif isinstance(payload, dict) and "paths" in payload and "total_tokens" in payload:
                         lines = []
                         ts_line = _ts_line(ts)
                         if ts_line:
                             lines.append(ts_line)
-                        lines.append(f"[TOOL RESULT {short_id}] read summary")
+                        header = f"[TOOL RESULT {short_id}].result"
+                        tool_id = call_id_to_tool_id.get(tool_call_id, "")
+                        if tool_id:
+                            header += f" {tool_id}"
+                        lines.append(header)
                         if path:
-                            lines.append(f"artifact_path: {path}")
+                            lines.append(f"logical_path: {path}")
                         paths = payload.get("paths") or []
                         if isinstance(paths, list) and paths:
                             for row in paths:
@@ -2437,12 +2458,15 @@ class Timeline:
                         ts_line = _ts_line(ts)
                         if ts_line:
                             lines.append(ts_line)
-                        header = f"[TOOL RESULT {short_id}]"
-                        if range_path:
-                            header += f" artifact_path: {range_path}"
+                        header = f"[TOOL RESULT {short_id}].result"
+                        tool_id = call_id_to_tool_id.get(tool_call_id, "")
+                        if tool_id:
+                            header += f" {tool_id}"
                         lines.append(header)
-                        if path and not range_path:
-                            lines.append(f"artifact_path: {path}")
+                        if range_path:
+                            lines.append(f"logical_path: {range_path}")
+                        elif path:
+                            lines.append(f"logical_path: {path}")
                         # keep payload as-is
                         lines.append(text)
                         text = "\n".join([l for l in lines if l]).strip()
@@ -2452,23 +2476,46 @@ class Timeline:
                         ts_line = _ts_line(ts)
                         if ts_line:
                             lines.append(ts_line)
-                        lines.append(f"[TOOL RESULT {short_id}]")
+                        header = f"[TOOL RESULT {short_id}].result"
+                        tool_id = call_id_to_tool_id.get(tool_call_id, "")
+                        if tool_id:
+                            header += f" {tool_id}"
+                        lines.append(header)
                         if path:
-                            lines.append(f"artifact_path: {path}")
+                            lines.append(f"logical_path: {path}")
                         lines.append(text)
                         text = "\n".join([l for l in lines if l]).strip()
                 elif isinstance(text, str):
-                    # Non-JSON content blocks: prefix with tool result header.
+                    # Non-JSON content blocks: render as artifact when path looks like an artifact.
                     lines = []
                     ts_line = _ts_line(ts)
                     if ts_line:
                         lines.append(ts_line)
-                    header = f"[TOOL RESULT {short_id}]"
-                    lines.append(header)
-                    if path:
-                        lines.append(f"artifact_path: {path}")
-                    lines.append(text)
-                    text = "\n".join([l for l in lines if l]).strip()
+                    tool_id = call_id_to_tool_id.get(tool_call_id, "")
+                    is_artifact = path.startswith(("fi:", "ar:", "sk:", "so:"))
+                    if is_artifact:
+                        header = f"[TOOL RESULT {short_id}].artifact"
+                        if tool_id:
+                            header += f" {tool_id}"
+                        lines.append(header)
+                        if path:
+                            lines.append(f"logical_path: {path}")
+                        if meta and (meta.get("hosted_uri") or meta.get("rn") or meta.get("key")):
+                            phys = (meta.get("physical_path") or "").strip()
+                            if phys:
+                                lines.append(f"physical_path: {phys}")
+                        header_text = "\n".join([l for l in lines if l]).strip()
+                        extra_text_blocks.append(text)
+                        text = header_text
+                    else:
+                        header = f"[TOOL RESULT {short_id}].result"
+                        if tool_id:
+                            header += f" {tool_id}"
+                        lines.append(header)
+                        if path:
+                            lines.append(f"logical_path: {path}")
+                        lines.append(text)
+                        text = "\n".join([l for l in lines if l]).strip()
             base64 = b.get("base64") or b.get("data")
             mime = (b.get("mime") or b.get("media_type") or "").strip() or None
             if btype == "react.note" and isinstance(text, str):
@@ -2479,6 +2526,14 @@ class Timeline:
                 if current_round_id:
                     text = _indent_text_block(str(text))
                 emitted.append({"type": "text", "text": str(text)})
+
+            if extra_text_blocks:
+                for extra_text in extra_text_blocks:
+                    if not extra_text:
+                        continue
+                    if current_round_id:
+                        extra_text = _indent_text_block(str(extra_text))
+                    emitted.append({"type": "text", "text": str(extra_text)})
 
             if base64:
                 is_image = mime.startswith("image/") if mime else False

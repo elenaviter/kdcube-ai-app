@@ -39,6 +39,12 @@ which yields:
 - citations (sources_used resolved against sources_pool)
 - follow‑up suggestions (from `stage.suggested_followups` blocks)
 
+Rendered model view (via `timeline.render`) groups tool output into:
+- `[TOOL CALL <id>].call <tool_id>`
+- `[TOOL RESULT <id>].summary <tool_id>` (artifact tools)
+- `[TOOL RESULT <id>].result <tool_id>` (non‑artifact tools)
+- `[TOOL RESULT <id>].artifact <tool_id>` per artifact (logical_path + content)
+
 ## Notes
 - No `user` / `assistant` fields are stored in the turn log.
 - No `files` list is stored separately. Files are reconstructed from blocks.

@@ -125,6 +125,17 @@ async def lifespan(app: FastAPI):
                                                 channel="chat.events",
                                                 )
     app.state.pg_pool = await get_pg_pool()
+    try:
+        from kdcube_ai_app.apps.middleware.economics_role import EconomicsRoleResolver
+        app.state.gateway_adapter.set_econ_role_resolver(
+            EconomicsRoleResolver(
+                pg_pool=app.state.pg_pool,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+            ).resolve_role_for_user_id
+        )
+    except Exception as e:
+        logger.warning("Failed to attach economics role resolver: %s", e)
 
     port = CHAT_APP_PORT
     process_id = os.getpid()

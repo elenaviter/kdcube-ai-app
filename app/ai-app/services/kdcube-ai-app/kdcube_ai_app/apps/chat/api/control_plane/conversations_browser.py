@@ -352,7 +352,7 @@ async def list_tenant_projects(
 
     # Control plane sources
     async with pool.acquire() as conn:
-        for table in ("user_quota_policies", "application_budget_policies"):
+        for table in ("plan_quota_policies", "application_budget_policies"):
             try:
                 rows = await conn.fetch(
                     f"""

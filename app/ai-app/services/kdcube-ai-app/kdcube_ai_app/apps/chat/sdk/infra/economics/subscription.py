@@ -17,15 +17,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _tier_from_user_type(user_type: str) -> str:
-    return {
-        "registered": "free",
-        "paid": "paid",
-        "privileged": "premium",
-        "admin": "admin",
-    }.get(user_type, "unknown")
-
-
 def _add_one_month(dt: datetime) -> datetime:
     # Preserve time + tz, clamp day (e.g. Jan 31 -> Feb 28/29)
     dt = dt.astimezone(timezone.utc)
@@ -94,7 +85,7 @@ class Subscription:
     tenant: str
     project: str
     user_id: str
-    tier: str
+    plan_id: Optional[str]
     status: str
     monthly_price_cents: int
     started_at: datetime
@@ -105,6 +96,22 @@ class Subscription:
     stripe_subscription_id: Optional[str]
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True)
+class SubscriptionPlan:
+    tenant: str
+    project: str
+    plan_id: str
+    provider: str
+    stripe_price_id: Optional[str]
+    monthly_price_cents: int
+    active: bool
+    metadata: Optional[dict]
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[str]
+    notes: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,7 @@ class InternalRenewOnceResult:
 class SubscriptionManager:
     CP = "kdcube_control_plane"
     TABLE = "user_subscriptions"
+    PLAN_TABLE = "subscription_plans"
     EXT_EVENTS_TABLE = "external_economics_events"
 
     def __init__(self, pg_pool: asyncpg.Pool):
@@ -128,6 +136,168 @@ class SubscriptionManager:
 
     def _from_row(self, row: asyncpg.Record) -> Subscription:
         return Subscription(**dict(row))
+
+    def _plan_from_row(self, row: asyncpg.Record) -> SubscriptionPlan:
+        return SubscriptionPlan(**dict(row))
+
+    async def get_plan(
+        self,
+        *,
+        tenant: str,
+        project: str,
+        plan_id: str,
+        include_inactive: bool = False,
+        conn: Optional[asyncpg.Connection] = None,
+    ) -> Optional[SubscriptionPlan]:
+        if not plan_id:
+            return None
+        active_clause = "" if include_inactive else "AND active = TRUE"
+        sql = f"""
+            SELECT *
+            FROM {self.CP}.{self.PLAN_TABLE}
+            WHERE tenant=$1 AND project=$2 AND plan_id=$3
+              {active_clause}
+            LIMIT 1
+        """
+        if conn:
+            row = await conn.fetchrow(sql, tenant, project, plan_id)
+        else:
+            async with self.pg_pool.acquire() as c:
+                row = await c.fetchrow(sql, tenant, project, plan_id)
+        return self._plan_from_row(row) if row else None
+
+    async def get_plan_by_stripe_price_id(
+        self,
+        *,
+        tenant: str,
+        project: str,
+        stripe_price_id: str,
+        include_inactive: bool = False,
+        conn: Optional[asyncpg.Connection] = None,
+    ) -> Optional[SubscriptionPlan]:
+        if not stripe_price_id:
+            return None
+        active_clause = "" if include_inactive else "AND active = TRUE"
+        sql = f"""
+            SELECT *
+            FROM {self.CP}.{self.PLAN_TABLE}
+            WHERE tenant=$1 AND project=$2
+              AND provider='stripe' AND stripe_price_id=$3
+              {active_clause}
+            LIMIT 1
+        """
+        if conn:
+            row = await conn.fetchrow(sql, tenant, project, stripe_price_id)
+        else:
+            async with self.pg_pool.acquire() as c:
+                row = await c.fetchrow(sql, tenant, project, stripe_price_id)
+        return self._plan_from_row(row) if row else None
+
+    async def list_plans(
+        self,
+        *,
+        tenant: str,
+        project: str,
+        provider: Optional[str] = None,
+        active_only: bool = True,
+        limit: int = 200,
+        offset: int = 0,
+        conn: Optional[asyncpg.Connection] = None,
+    ) -> List[SubscriptionPlan]:
+        clauses = ["tenant=$1", "project=$2"]
+        args: list = [tenant, project]
+        idx = 3
+        if provider:
+            clauses.append(f"provider=${idx}")
+            args.append(provider)
+            idx += 1
+        if active_only:
+            clauses.append("active = TRUE")
+
+        sql = f"""
+            SELECT *
+            FROM {self.CP}.{self.PLAN_TABLE}
+            WHERE {" AND ".join(clauses)}
+            ORDER BY created_at DESC
+            LIMIT ${idx} OFFSET ${idx + 1}
+        """
+        args.extend([limit, offset])
+
+        if conn:
+            rows = await conn.fetch(sql, *args)
+        else:
+            async with self.pg_pool.acquire() as c:
+                rows = await c.fetch(sql, *args)
+        return [self._plan_from_row(r) for r in rows]
+
+    async def upsert_plan(
+        self,
+        *,
+        tenant: str,
+        project: str,
+        plan_id: str,
+        provider: str,
+        stripe_price_id: Optional[str] = None,
+        monthly_price_cents: int = 0,
+        active: bool = True,
+        metadata: Optional[dict] = None,
+        created_by: Optional[str] = None,
+        notes: Optional[str] = None,
+        conn: Optional[asyncpg.Connection] = None,
+    ) -> SubscriptionPlan:
+        tbl = f"{self.CP}.{self.PLAN_TABLE}"
+        sql = f"""
+            INSERT INTO {tbl} (
+              tenant, project, plan_id,
+              provider, stripe_price_id, monthly_price_cents,
+              active, metadata, created_by, notes
+            ) VALUES (
+              $1,$2,$3,
+              $4,$5,$6,
+              $7,$8,$9,$10
+            )
+            ON CONFLICT (tenant, project, plan_id)
+            DO UPDATE SET
+              provider = COALESCE(EXCLUDED.provider, {tbl}.provider),
+              stripe_price_id = COALESCE(EXCLUDED.stripe_price_id, {tbl}.stripe_price_id),
+              monthly_price_cents = COALESCE(EXCLUDED.monthly_price_cents, {tbl}.monthly_price_cents),
+              active = COALESCE(EXCLUDED.active, {tbl}.active),
+              metadata = COALESCE(EXCLUDED.metadata, {tbl}.metadata),
+              created_by = COALESCE(EXCLUDED.created_by, {tbl}.created_by),
+              notes = COALESCE(EXCLUDED.notes, {tbl}.notes),
+              updated_at = NOW()
+            RETURNING *
+        """
+        if conn:
+            row = await conn.fetchrow(
+                sql,
+                tenant,
+                project,
+                plan_id,
+                provider,
+                stripe_price_id,
+                int(monthly_price_cents),
+                bool(active),
+                json.dumps(metadata) if metadata is not None else None,
+                created_by,
+                notes,
+            )
+        else:
+            async with self.pg_pool.acquire() as c:
+                row = await c.fetchrow(
+                    sql,
+                    tenant,
+                    project,
+                    plan_id,
+                    provider,
+                    stripe_price_id,
+                    int(monthly_price_cents),
+                    bool(active),
+                    json.dumps(metadata) if metadata is not None else None,
+                    created_by,
+                    notes,
+                )
+        return self._plan_from_row(row)
 
     async def get_subscription(
         self,
@@ -167,10 +337,7 @@ class SubscriptionManager:
             tenant: str,
             project: str,
             user_id: str,
-            user_type: str,
-            monthly_price_cents_free: int = 0,
-            monthly_price_cents_paid: int = 2000,
-            monthly_price_cents_admin: int = 0,
+            plan_id: str,
             now: Optional[datetime] = None,
             conn: Optional[asyncpg.Connection] = None,
     ) -> Subscription:
@@ -183,25 +350,20 @@ class SubscriptionManager:
           - Internal paid/premium ARE scheduled via next_charge_at.
         """
         now = now or _now()
-        tier = _tier_from_user_type(user_type)
+        plan = await self.get_plan(tenant=tenant, project=project, plan_id=plan_id, conn=conn)
+        if not plan:
+            raise ValueError(f"subscription plan not found: {plan_id}")
+        if plan.provider != "internal":
+            raise ValueError(f"plan provider must be internal: {plan_id}")
 
-        if tier == "unknown" or user_type == "anonymous":
-            raise ValueError(f"unsupported user_type={user_type}")
-
-        if tier == "free":
-            price = int(monthly_price_cents_free)
-        elif tier == "admin":
-            price = int(monthly_price_cents_admin)
-        else:
-            # paid OR premium default to paid price
-            price = int(monthly_price_cents_paid)
+        price = int(plan.monthly_price_cents)
 
         tbl = f"{self.CP}.{self.TABLE}"
 
         sql = f"""
         INSERT INTO {tbl} (
           tenant, project, user_id,
-          tier, status, monthly_price_cents,
+          plan_id, status, monthly_price_cents,
           started_at, next_charge_at, last_charged_at,
           provider, stripe_customer_id, stripe_subscription_id
         ) VALUES (
@@ -209,7 +371,7 @@ class SubscriptionManager:
           $4,'active',$5,
           $6::timestamptz,
           CASE
-            WHEN $4 IN ('paid','premium') AND $5 > 0 THEN ($6::timestamptz + interval '1 month')
+            WHEN $5 > 0 THEN ($6::timestamptz + interval '1 month')
             ELSE NULL
           END,
           NULL,
@@ -217,7 +379,7 @@ class SubscriptionManager:
         )
         ON CONFLICT (tenant, project, user_id)
         DO UPDATE SET
-          tier = EXCLUDED.tier,
+          plan_id = EXCLUDED.plan_id,
           status = 'active',
           monthly_price_cents = EXCLUDED.monthly_price_cents,
 
@@ -226,7 +388,7 @@ class SubscriptionManager:
 
           -- schedule only if chargeable
           next_charge_at = CASE
-            WHEN EXCLUDED.tier IN ('paid','premium') AND EXCLUDED.monthly_price_cents > 0 THEN
+            WHEN EXCLUDED.monthly_price_cents > 0 THEN
               COALESCE(
                 {tbl}.next_charge_at,
                 ({tbl}.last_charged_at + interval '1 month'),
@@ -246,7 +408,7 @@ class SubscriptionManager:
         """
 
         async def _run(c: asyncpg.Connection) -> asyncpg.Record:
-            row = await c.fetchrow(sql, tenant, project, user_id, tier, price, now)
+            row = await c.fetchrow(sql, tenant, project, user_id, plan.plan_id, price, now)
             if row:
                 return row
             # If conflict row exists and is stripe => UPDATE skipped => RETURNING empty => fetch existing row
@@ -273,12 +435,12 @@ class SubscriptionManager:
             tenant: str,
             project: str,
             user_id: str,
-            tier: str,
             monthly_price_cents: int,
             stripe_customer_id: Optional[str],
             stripe_subscription_id: Optional[str],
             next_charge_at: Optional[datetime],
             charged_at: Optional[datetime] = None,
+            plan_id: Optional[str] = None,
             conn: Optional[asyncpg.Connection] = None,
     ) -> Subscription:
         charged_at = charged_at or _now()
@@ -286,13 +448,13 @@ class SubscriptionManager:
         sql = f"""
         INSERT INTO {self.CP}.{self.TABLE} (
           tenant, project, user_id,
-          tier, status, monthly_price_cents,
+          plan_id, status, monthly_price_cents,
           started_at, next_charge_at, last_charged_at,
           provider, stripe_customer_id, stripe_subscription_id
         ) VALUES ($1,$2,$3, $4,'active',$5, NOW(), $6,$7, 'stripe', $8,$9)
         ON CONFLICT (tenant, project, user_id)
         DO UPDATE SET
-          tier=EXCLUDED.tier,
+          plan_id=COALESCE(EXCLUDED.plan_id, {self.CP}.{self.TABLE}.plan_id),
           status='active',
           monthly_price_cents=EXCLUDED.monthly_price_cents,
           -- keep started_at stable (don’t reset on renewals)
@@ -308,13 +470,13 @@ class SubscriptionManager:
 
         if conn:
             row = await conn.fetchrow(
-                sql, tenant, project, user_id, tier, int(monthly_price_cents),
+                sql, tenant, project, user_id, plan_id, int(monthly_price_cents),
                 next_charge_at, charged_at, stripe_customer_id, stripe_subscription_id
             )
         else:
             async with self.pg_pool.acquire() as c:
                 row = await c.fetchrow(
-                    sql, tenant, project, user_id, tier, int(monthly_price_cents),
+                    sql, tenant, project, user_id, plan_id, int(monthly_price_cents),
                     next_charge_at, charged_at, stripe_customer_id, stripe_subscription_id
                 )
         return self._from_row(row)
@@ -359,7 +521,7 @@ class SubscriptionManager:
         FROM {self.CP}.{self.TABLE}
         WHERE tenant=$1 AND project=$2
           AND provider='internal'
-          AND tier IN ('paid','premium')
+          AND monthly_price_cents > 0
           AND status='active'
           AND next_charge_at IS NOT NULL
           AND next_charge_at <= $3
@@ -586,7 +748,7 @@ class SubscriptionManager:
                 FROM {tbl}
                 WHERE tenant=$1 AND project=$2
                   AND status='active'
-                  AND tier IN ('paid','premium')
+                  AND monthly_price_cents > 0
                   AND next_charge_at IS NOT NULL
                   AND next_charge_at <= $3
                 ORDER BY next_charge_at ASC
@@ -673,8 +835,6 @@ class SubscriptionManager:
                 raise ValueError("not an internal subscription")
             if sub.status != "active":
                 raise ValueError("subscription not active")
-            if sub.tier not in ("paid", "premium"):
-                raise ValueError(f"tier={sub.tier} is not chargeable")
             if int(sub.monthly_price_cents or 0) <= 0:
                 raise ValueError("monthly_price_cents is 0; nothing to charge")
 
@@ -715,7 +875,7 @@ class SubscriptionManager:
                 user_id=user_id,
                 amount_cents=int(sub.monthly_price_cents),
                 metadata={
-                    "tier": sub.tier,
+                    "plan_id": sub.plan_id,
                     "by": actor or "unknown",
                     "period_end": period_end_new.isoformat(),
                 },
@@ -771,7 +931,7 @@ class SubscriptionManager:
 
                 await budget.topup_subscription_budget(
                     usd_amount=usd_amount,
-                    notes=f"internal subscription renewal user_id={user_id} tier={sub.tier}",
+                    notes=f"internal subscription renewal user_id={user_id}",
                     request_id=f"internal:renew:{external_id}",
                     conn=c,
                 )

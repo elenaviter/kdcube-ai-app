@@ -1367,7 +1367,7 @@ class ReactSolverV2:
             }, ensure_ascii=False, indent=2),
         }
 
-        # persist final turn stats to contrib log, then clear announce
+        # persist final turn stats to contrib log (after completion), then clear announce
         try:
             runtime_ctx = getattr(self.ctx_browser, "runtime_ctx", None) if self.ctx_browser else None
             final_text = ""
@@ -1385,7 +1385,7 @@ class ReactSolverV2:
             except Exception:
                 final_text = ""
             if final_text:
-                pre_blocks.append({"text": final_text})
+                post_blocks.append({"text": final_text})
             if self.ctx_browser:
                 self.ctx_browser.announce(blocks=None)
         except Exception:

@@ -15,6 +15,8 @@ import textwrap
 
 import yaml  # PyYAML; if you don't want this dependency, we can switch to JSON.
 
+from kdcube_ai_app.apps.chat.sdk.tools.citations import normalize_sources_any
+
 log = logging.getLogger("skills_registry")
 
 BUILTIN_SKILLS_ROOT: pathlib.Path = pathlib.Path(__file__).resolve().parent
@@ -88,6 +90,7 @@ class SkillSpec:
     when_to_use: List[str] = field(default_factory=list)
     imports: List[str] = field(default_factory=list)
     when_to_use: List[str] = field(default_factory=list)
+    sources: List[Dict[str, Any]] = field(default_factory=list)
 
     # ---- helpers ----
 
@@ -374,6 +377,22 @@ def _load_skill_tools_yaml(path: pathlib.Path, *, sid: str) -> List[SkillToolRef
     return _normalize_tools(tools_raw, sid=sid, path=path)
 
 
+def _load_skill_sources_yaml(path: pathlib.Path, *, sid: str) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        log.warning("Skill %s: failed to read sources at %s: %s", sid, path, e)
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("sources") or raw.get("items") or []
+    rows = normalize_sources_any(raw)
+    if not rows and raw:
+        log.warning("Skill %s: sources file %s had no usable entries", sid, path)
+    return rows
+
+
 def _normalize_descriptor(
         desc: Optional[Dict[str, Any]],
         *,
@@ -430,12 +449,13 @@ class SkillsSubsystem:
         if self.custom_skills_root:
             roots.append(self.custom_skills_root)
         files: List[pathlib.Path] = []
+        excluded = {"tools.yaml", "tools.yml", "sources.yaml", "sources.yml"}
         for root in roots:
             if not root.exists():
                 continue
             files.extend([p for p in root.glob("*/*/SKILL.md") if p.is_file()])
             files.extend([p for p in root.glob("*/*/skill.y*ml") if p.is_file()])
-            files.extend([p for p in root.glob("*/*/*.y*ml") if p.is_file() and p.name.lower() not in ("tools.yaml", "tools.yml")])
+            files.extend([p for p in root.glob("*/*/*.y*ml") if p.is_file() and p.name.lower() not in excluded])
         if not files:
             log.warning("Skills directories not found; no skills loaded")
         return sorted(set(files))
@@ -452,8 +472,20 @@ class SkillsSubsystem:
                     extra_tools = _load_skill_tools_yaml(tools_path, sid=s.id)
                     if extra_tools:
                         s.tools = extra_tools
+                    sources_path = path.parent / "sources.yaml"
+                    if not sources_path.exists():
+                        sources_path = path.parent / "sources.yml"
+                    extra_sources = _load_skill_sources_yaml(sources_path, sid=s.id)
+                    if extra_sources:
+                        s.sources = normalize_sources_any(list(s.sources or []) + extra_sources)
                 else:
                     s = _load_skill_yaml(path)
+                    sources_path = path.parent / "sources.yaml"
+                    if not sources_path.exists():
+                        sources_path = path.parent / "sources.yml"
+                    extra_sources = _load_skill_sources_yaml(sources_path, sid=s.id)
+                    if extra_sources:
+                        s.sources = normalize_sources_any(list(s.sources or []) + extra_sources)
             except Exception as e:
                 log.error("Failed to load skill from %s: %s", path, e)
                 continue

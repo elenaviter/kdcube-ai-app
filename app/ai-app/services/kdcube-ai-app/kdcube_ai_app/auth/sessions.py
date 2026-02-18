@@ -434,7 +434,9 @@ class SessionManager:
         fingerprint = context.get_fingerprint()
 
         # Decide key exactly as before
-        if user_type in [UserType.REGISTERED, UserType.PRIVILEGED] and user_data:
+        if user_type == UserType.PAID and user_data:
+            session_key = f"{self.SESSION_PREFIX}:paid:{user_data['user_id']}"
+        elif user_type in [UserType.REGISTERED, UserType.PRIVILEGED] and user_data:
             session_key = f"{self.SESSION_PREFIX}:registered:{user_data['user_id']}"
         else:
             session_key = f"{self.SESSION_PREFIX}:anonymous:{fingerprint}"
@@ -508,6 +510,26 @@ class SessionManager:
             # Store index: session_id -> session_key
             index_key = f"{self.SESSION_INDEX_PREFIX}:{session.session_id}"
             await self.redis.setex(index_key, self.SESSION_TTL, session_key)
+
+    async def update_session(self, session: UserSession) -> None:
+        """
+        Persist updates for an existing session by session_id.
+        Safe no-op if session key cannot be found.
+        """
+        await self.init_redis()
+        index_key = f"{self.SESSION_INDEX_PREFIX}:{session.session_id}"
+        session_key_raw = await self.redis.get(index_key)
+        session_key = self._as_str(session_key_raw)
+        if not session_key:
+            if session.user_type == UserType.PAID and session.user_id:
+                session_key = f"{self.SESSION_PREFIX}:paid:{session.user_id}"
+            elif session.user_id:
+                session_key = f"{self.SESSION_PREFIX}:registered:{session.user_id}"
+            elif session.fingerprint:
+                session_key = f"{self.SESSION_PREFIX}:anonymous:{session.fingerprint}"
+            else:
+                return
+        await self._save_session(session_key, session, write_index=True)
 
     async def get_session_by_id(self, session_id: str) -> Optional[UserSession]:
         """Retrieve a session by its session_id"""

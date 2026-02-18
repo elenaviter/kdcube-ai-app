@@ -98,8 +98,8 @@ class StripeSubscriptionService:
             tenant: str,
             project: str,
             user_id: str,
-            tier: str,
-            stripe_price_id: str,
+            plan_id: str,
+            stripe_price_id: Optional[str] = None,
             stripe_customer_id: Optional[str] = None,
             monthly_price_cents_hint: Optional[int] = None,
             metadata: Optional[Dict[str, str]] = None,
@@ -109,9 +109,13 @@ class StripeSubscriptionService:
         NOTE: If the customer has no default payment method, the subscription may start as 'incomplete'
         until payment is completed.
         """
-        tier = (tier or "paid").lower()
-        if tier not in ("free", "paid", "premium", "admin"):
-            tier = "paid"
+        plan = await self.subscription_mgr.get_plan(
+            tenant=tenant, project=project, plan_id=plan_id, include_inactive=True
+        )
+        if not plan:
+            raise ValueError(f"subscription plan not found: {plan_id}")
+        if plan.provider != "stripe":
+            raise ValueError(f"plan provider must be stripe: {plan_id}")
 
         stripe = self._stripe()
 
@@ -119,8 +123,12 @@ class StripeSubscriptionService:
         md.setdefault("tenant", tenant or self.default_tenant)
         md.setdefault("project", project or self.default_project)
         md.setdefault("user_id", user_id)
-        md.setdefault("tier", tier)
+        md.setdefault("plan_id", plan.plan_id)
         md.setdefault("kdcube_invoice_kind", "subscription")
+
+        stripe_price_id = stripe_price_id or plan.stripe_price_id
+        if not stripe_price_id:
+            raise ValueError("stripe_price_id is required (plan missing stripe_price_id)")
 
         # Ensure customer
         customer_id = stripe_customer_id
@@ -149,6 +157,8 @@ class StripeSubscriptionService:
 
         # price cents
         price_cents = int(monthly_price_cents_hint or 0)
+        if price_cents <= 0 and plan.monthly_price_cents:
+            price_cents = int(plan.monthly_price_cents)
         if price_cents <= 0:
             try:
                 price_obj = stripe.Price.retrieve(stripe_price_id)
@@ -169,19 +179,19 @@ class StripeSubscriptionService:
                 await conn.execute(f"""
                     INSERT INTO {SubscriptionManager.CP}.{SubscriptionManager.TABLE} (
                       tenant, project, user_id,
-                      tier, status, monthly_price_cents,
+                      plan_id, status, monthly_price_cents,
                       started_at, next_charge_at, last_charged_at,
                       provider, stripe_customer_id, stripe_subscription_id
                     ) VALUES (
                       $1,$2,$3,
                       $4,$5,$6,
-                      NOW(), $7, NULL,
-                      'stripe', $8, $9
+                      NOW(), $8, NULL,
+                      'stripe', $9, $10
                     )
                     ON CONFLICT (tenant, project, user_id)
                     DO UPDATE SET
                       provider='stripe',
-                      tier=EXCLUDED.tier,
+                      plan_id=COALESCE(EXCLUDED.plan_id, {SubscriptionManager.CP}.{SubscriptionManager.TABLE}.plan_id),
                       status=EXCLUDED.status,
                       monthly_price_cents=CASE
                         WHEN EXCLUDED.monthly_price_cents > 0 THEN EXCLUDED.monthly_price_cents
@@ -191,7 +201,7 @@ class StripeSubscriptionService:
                       stripe_customer_id=COALESCE(EXCLUDED.stripe_customer_id, {SubscriptionManager.CP}.{SubscriptionManager.TABLE}.stripe_customer_id),
                       stripe_subscription_id=COALESCE(EXCLUDED.stripe_subscription_id, {SubscriptionManager.CP}.{SubscriptionManager.TABLE}.stripe_subscription_id),
                       updated_at=NOW()
-                """, tenant, project, user_id, tier, sub_status, price_cents, next_charge_at, customer_id, sub_id)
+                """, tenant, project, user_id, plan.plan_id, sub_status, price_cents, next_charge_at, customer_id, sub_id)
 
         return StripeCreateSubscriptionResult(
             status="ok",
@@ -282,6 +292,20 @@ class StripeEconomicsWebhookHandler:
             return {str(k): str(v) for k, v in m.items() if v is not None}
         except Exception:
             return {}
+
+    def _price_id_from_invoice_lines(self, invoice: Dict[str, Any]) -> Optional[str]:
+        try:
+            lines = (invoice.get("lines") or {}).get("data") or []
+            for line in lines:
+                price = line.get("price") or {}
+                if isinstance(price, dict) and price.get("id"):
+                    return str(price.get("id"))
+                plan = line.get("plan") or {}
+                if isinstance(plan, dict) and plan.get("id"):
+                    return str(plan.get("id"))
+        except Exception:
+            return None
+        return None
 
     def _fetch_subscription_meta(self, subscription_id: Optional[str]) -> Dict[str, str]:
         if not subscription_id:
@@ -579,9 +603,22 @@ class StripeEconomicsWebhookHandler:
             return StripeHandleResult(status="ok", action="ignored", message="Missing invoice id")
 
         usd_amount = amount_cents / 100.0
-        tier = (meta.get("tier") or meta.get("plan") or "paid").lower()
-        if tier not in ("free", "paid", "premium", "admin"):
-            tier = "paid"
+        plan_id = (meta.get("plan_id") or "").strip() or None
+        price_id = self._price_id_from_invoice_lines(invoice)
+        plan = None
+        if plan_id:
+            plan = await self.subscription_mgr.get_plan(
+                tenant=tenant, project=project, plan_id=plan_id, include_inactive=True
+            )
+        if not plan and price_id:
+            plan = await self.subscription_mgr.get_plan_by_stripe_price_id(
+                tenant=tenant, project=project, stripe_price_id=price_id, include_inactive=True
+            )
+        if plan:
+            plan_id = plan.plan_id
+            monthly_price_cents = int(plan.monthly_price_cents or amount_cents)
+        else:
+            monthly_price_cents = int(amount_cents)
 
         stripe_customer_id = invoice.get("customer")
         stripe_subscription_id = invoice.get("subscription")
@@ -660,6 +697,8 @@ class StripeEconomicsWebhookHandler:
                     stripe_event_id=stripe_event_id,
                     metadata={
                         **meta,
+                        "plan_id": plan_id,
+                        "stripe_price_id": price_id,
                         "period_end": period_desc_new["period_end"].isoformat(),
                         "period_key": period_desc_new["period_key"],
                     },
@@ -718,12 +757,12 @@ class StripeEconomicsWebhookHandler:
                         tenant=tenant,
                         project=project,
                         user_id=user_id,
-                        tier=tier,
-                        monthly_price_cents=int(amount_cents),
+                        monthly_price_cents=int(monthly_price_cents),
                         stripe_customer_id=stripe_customer_id,
                         stripe_subscription_id=stripe_subscription_id,
                         next_charge_at=next_charge_at,
                         charged_at=now,
+                        plan_id=plan_id,
                         conn=conn,
                     )
 

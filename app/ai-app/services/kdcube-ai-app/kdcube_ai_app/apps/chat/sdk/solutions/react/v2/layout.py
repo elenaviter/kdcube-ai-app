@@ -359,10 +359,11 @@ def build_sources_pool_text(*, sources_pool: List[Dict[str, Any]]) -> str:
             _emit(row)
 
     lines.append(hr)
-    lines.append("  Hint: to see the full snippet if not visible / hide if no need and big (example)")
-    lines.append("  Load:  react.read([\"so:sources_pool[1,3,5]\"])")
-    lines.append("  Hide:  react.hide([\"so:sources_pool[1]\"])")
-    lines.append(hr)
+    if pool:
+        lines.append("  Hint: to see the full snippet if not visible / hide if no need and big (example)")
+        lines.append("  Load:  react.read([\"so:sources_pool[1,3,5]\"])")
+        lines.append("  Hide:  react.hide([\"so:sources_pool[1]\"])")
+        lines.append(hr)
     return "\n".join(lines) + "\n"
 
 def build_gate_stage_block(*, runtime: RuntimeCtx, gate_out: Any, clarification_questions: Optional[List[str]] = None) -> Dict[str, Any]:

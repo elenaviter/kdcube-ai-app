@@ -87,13 +87,13 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         bundle_id = self.config.ai_bundle_spec.id
 
         self._policies_initialized = \
-            await self.cp_manager.tenant_project_user_quota_policies_policies_initialize_from_master_app(tenant=tenant,
-                                                                                                         project=project,
-                                                                                                         bundle_id=bundle_id,
-                                                                                                         app_quota_policies=self.app_quota_policies,
-                                                                                                         app_budget_policies=self.app_budget_policies)
+            await self.cp_manager.tenant_project_plan_quota_policies_initialize_from_master_app(tenant=tenant,
+                                                                                                  project=project,
+                                                                                                  bundle_id=bundle_id,
+                                                                                                  app_quota_policies=self.app_quota_policies,
+                                                                                                  app_budget_policies=self.app_budget_policies)
 
-    def rate_limit_policy(self, user_type: str):
+    def rate_limit_policy(self, plan_id: str):
         from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import QuotaPolicy
 
         anonymous_policy = QuotaPolicy(
@@ -107,7 +107,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         )
         return {
             "anonymous": anonymous_policy,
-            "registered": QuotaPolicy(
+            "free": QuotaPolicy(
                 max_concurrent=2,
                 requests_per_day=10,
                 requests_per_month=1000,
@@ -116,7 +116,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 tokens_per_day=1_500_000,
                 tokens_per_month=20_000_000,
             ),
-            "paid": QuotaPolicy(
+            "payasyougo": QuotaPolicy(
                 max_concurrent=2,
                 requests_per_day=200,
                 requests_per_month=6000,
@@ -125,10 +125,10 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 tokens_per_day=1_500_000,
                 tokens_per_month=20_000_000,
             ),
-            "privileged": QuotaPolicy(
+            "admin": QuotaPolicy(
                 max_concurrent=10,
             )
-        }.get(user_type, anonymous_policy) or anonymous_policy
+        }.get(plan_id, anonymous_policy) or anonymous_policy
 
     @property
     def app_quota_policies(self):
@@ -145,7 +145,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         )
         return {
             "anonymous": anonymous_policy,
-            "registered": QuotaPolicy(
+            "free": QuotaPolicy(
                 max_concurrent=2,
                 requests_per_day=100,
                 requests_per_month=30000,
@@ -154,7 +154,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 tokens_per_day=2_000_000,
                 tokens_per_month=30_000_000,
             ),
-            "paid": QuotaPolicy(
+            "payasyougo": QuotaPolicy(
                 max_concurrent=2,
                 requests_per_day=200,
                 requests_per_month=6000,
@@ -163,7 +163,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 tokens_per_day=4_000_000,
                 tokens_per_month=60_000_000,
             ),
-            "privileged": QuotaPolicy(
+            "admin": QuotaPolicy(
                 max_concurrent=10,
             )
         }
@@ -415,7 +415,8 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         project = state.get("project")
         user_id = state.get("user") or state.get("fingerprint")
         user_type = state.get("user_type") or "anonymous"
-        budget_bypass = user_type in self.budget_bypass_user_types()
+        role = user_type
+        budget_bypass = role in self.budget_bypass_user_types()
         thread_id = state.get("conversation_id") or state.get("session_id") or "default"
 
         self.subj = subject_id_of(tenant, project, user_id)
@@ -424,12 +425,12 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             "init",
             "Initialized run()",
             tenant=tenant, project=project,
-            user_id=user_id, user_type=user_type,
+            user_id=user_id, user_type=role,
             thread_id=thread_id, turn_id=turn_id, bundle_id=bundle_id,
             text_len=len((state.get("text") or "")),
         )
         if budget_bypass:
-            _log("budget.bypass", "Budget bypass enabled for user type", user_type=user_type)
+            _log("budget.bypass", "Budget bypass enabled for user type", user_type=role)
 
         input_text = state.get("text") or ""
         try:
@@ -451,13 +452,6 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             est_turn_tokens=est_turn_tokens,
         )
 
-        base_policy = await self.cp_manager.get_user_quota_policy(tenant=tenant, project=project, user_type=user_type)
-        if not base_policy:
-            base_policy = self.app_quota_policies.get(user_type, self.app_quota_policies["anonymous"])
-            _log("policy.base", "No policy in DB; using fallback", "WARN", base_policy=dataclasses.asdict(base_policy))
-        else:
-            _log("policy.base", "Loaded base policy from control plane", base_policy=dataclasses.asdict(base_policy))
-
         tier_balance = await self.cp_manager.get_user_tier_balance(tenant=tenant, project=project, user_id=user_id)
         _log(
             "tier_balance",
@@ -477,29 +471,87 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
 
         _log("user_budget", "Computed user lifetime budget", user_budget_tokens=user_budget_tokens)
 
-        policy_for_est = base_policy
-        if tier_balance and tier_balance.tier_override_is_active():
-            policy_for_est = _merge_policy_with_tier_balance(base_policy, tier_balance)
-        est_limit_tokens, _ = policy_for_est.effective_allowed_tokens()
-        if est_limit_tokens is not None and int(est_limit_tokens) > 0:
-            est_turn_tokens = min(int(est_turn_tokens), int(est_limit_tokens))
-        _log("estimate", "Estimated per-turn tokens", est_turn_tokens=est_turn_tokens, est_limit_tokens=est_limit_tokens)
-
         subscription = await self.cp_manager.subscription_mgr.get_subscription(
             tenant=tenant,
             project=project,
             user_id=user_id,
         )
         sub_now = datetime.utcnow().replace(tzinfo=timezone.utc)
-        sub_tier = getattr(subscription, "tier", None) if subscription else None
         sub_due_at = getattr(subscription, "next_charge_at", None) if subscription else None
-        sub_chargeable = sub_tier in ("paid", "premium")
+        sub_chargeable = bool(subscription and int(getattr(subscription, "monthly_price_cents", 0) or 0) > 0)
         sub_past_due = bool(sub_due_at and sub_due_at <= sub_now)
         has_active_subscription = bool(
             subscription
             and getattr(subscription, "status", None) == "active"
             and sub_chargeable
             and not sub_past_due
+        )
+        has_wallet = bool(user_budget_tokens and int(user_budget_tokens) > 0)
+
+        plan_id = None
+        plan_source = None
+        if role in ("privileged", "admin"):
+            plan_id = "admin"
+            plan_source = "role"
+        elif role == "anonymous":
+            plan_id = "anonymous"
+            plan_source = "role"
+        elif has_active_subscription:
+            plan_id = getattr(subscription, "plan_id", None) or "payasyougo"
+            plan_source = "subscription"
+        elif has_wallet:
+            plan_id = "payasyougo"
+            plan_source = "wallet"
+        elif role == "paid":
+            plan_id = "payasyougo"
+            plan_source = "role"
+        else:
+            plan_id = "free"
+            plan_source = "role"
+
+        _log(
+            "plan",
+            "Resolved plan for user",
+            plan_id=plan_id,
+            plan_source=plan_source,
+            user_type=role,
+        )
+
+        base_policy = await self.cp_manager.get_plan_quota_policy(
+            tenant=tenant, project=project, plan_id=plan_id
+        )
+        if not base_policy:
+            base_policy = (
+                self.app_quota_policies.get(plan_id)
+                or self.app_quota_policies.get("free")
+                or self.app_quota_policies["anonymous"]
+            )
+            _log(
+                "policy.base",
+                "No policy in DB; using fallback",
+                "WARN",
+                plan_id=plan_id,
+                base_policy=dataclasses.asdict(base_policy),
+            )
+        else:
+            _log(
+                "policy.base",
+                "Loaded base policy from control plane",
+                plan_id=plan_id,
+                base_policy=dataclasses.asdict(base_policy),
+            )
+
+        policy_for_est = base_policy
+        if tier_balance and tier_balance.tier_override_is_active():
+            policy_for_est = _merge_policy_with_tier_balance(base_policy, tier_balance)
+        est_limit_tokens, _ = policy_for_est.effective_allowed_tokens()
+        if est_limit_tokens is not None and int(est_limit_tokens) > 0:
+            est_turn_tokens = min(int(est_turn_tokens), int(est_limit_tokens))
+        _log(
+            "estimate",
+            "Estimated per-turn tokens",
+            est_turn_tokens=est_turn_tokens,
+            est_limit_tokens=est_limit_tokens,
         )
 
         subscription_budget = None
@@ -607,7 +659,12 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             funding_available_usd = 0.0
             funding_balance_usd = 0.0
 
-        user_can_pay_turn = user_budget_tokens is not None and user_budget_tokens >= int(est_turn_tokens)
+        usd_per_token = float(llm_output_price_usd_per_token(ref_provider=anthropic, ref_model=sonnet_45))
+        est_turn_usd = float(est_turn_tokens) * usd_per_token * SAFETY_MARGIN
+
+        wallet_can_pay_turn = user_budget_tokens is not None and user_budget_tokens >= int(est_turn_tokens)
+        subscription_can_pay_turn = bool(has_active_subscription and subscription_available_usd >= est_turn_usd)
+        personal_can_pay_turn = wallet_can_pay_turn or subscription_can_pay_turn
 
         lane: str | None = None
         admit: AdmitResult | None = None
@@ -615,6 +672,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         tier_reservation_id = None
         tier_reservation_active = False
         paid_policy: QuotaPolicy | None = None
+        paid_funding_source: str | None = None
 
         def _build_paid_policy() -> QuotaPolicy:
             maxc = int(getattr(base_policy, "max_concurrent", 1) or 1)
@@ -705,8 +763,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 )
 
         if (not budget_bypass) and funding_available_usd <= 0.0:
-            usd_per_token = llm_output_price_usd_per_token(ref_model=sonnet_45, ref_provider=anthropic)
-            if not user_can_pay_turn:
+            if not personal_can_pay_turn:
                 user_budget_tokens_int = int(user_budget_tokens or 0)
                 if funding_source == "none":
                     await _econ_fail(
@@ -760,7 +817,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 lane = "tier"
                 admit = tier_admit
             else:
-                if not user_can_pay_turn:
+                if not personal_can_pay_turn:
                     insight = compute_quota_insight(
                         policy=base_policy,
                         snapshot=tier_admit.snapshot,
@@ -878,7 +935,6 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         personal_reservation_active: bool = False
 
         tier_reserved_tokens = 0
-        usd_per_token = float(llm_output_price_usd_per_token(anthropic, sonnet_45))
 
         async def _cleanup_reservations(reason: str) -> None:
             try:
@@ -953,7 +1009,9 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                     tier_reservation_active = (lane == "tier" and tier_reserved_tokens > 0 and tier_reservation_id is not None)
 
                     tier_covered_tokens_est = tier_reserved_tokens
-                    overflow_tokens_est = int(est_turn_tokens) - int(tier_covered_tokens_est)
+                    if funding_source == "subscription":
+                        tier_covered_tokens_est = int(est_turn_tokens)
+                    overflow_tokens_est = max(int(est_turn_tokens) - int(tier_covered_tokens_est), 0)
                     if tier_limit is None:
                         tier_remaining = est_turn_tokens
                         tokens_spent_stat = f'Tokens spent from tier in this month: {int(admit.snapshot.get("tok_month", 0) or 0)}'
@@ -983,7 +1041,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                                 est_turn_tokens=est_turn_tokens,
                                 tier_reserved_tokens=tier_reserved_tokens,
                             )
-                        elif not user_can_pay_turn:
+                        elif not personal_can_pay_turn:
                             await _econ_fail(
                                 code="tier_exhausted_no_personal",
                                 title="Tier exhausted",
@@ -1046,7 +1104,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                             except BudgetInsufficientFunds as e:
                                 _log("reserve.app", f"{funding_label.title()} reservation denied", "WARN", error=str(e), app_reserved_usd=app_reserved_usd)
 
-                                if not user_can_pay_turn:
+                                if not personal_can_pay_turn:
                                     await _econ_fail(
                                         code=f"{funding_source}_budget_reservation_failed_no_personal",
                                         title=f"Insufficient {funding_label}",
@@ -1116,52 +1174,106 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                     except Exception as ex:
                         _log("quota_lock", "Failed to release quota_lock", "WARN", error=str(ex))
 
-            if lane == "paid" and not personal_reservation_active and not budget_bypass:
-                if not (tier_balance and tier_balance.has_lifetime_budget()):
-                    await _econ_fail(
-                        code="paid_lane_requires_personal_budget",
-                        title="Insufficient personal credits",
-                        message="Paid lane requires personal lifetime budget.",
-                        event_type="rate_limit.denied",
-                        data={
-                            "reason": "no_personal_budget",
-                            "bundle_id": bundle_id,
-                            "subject_id": self.subj,
-                            "user_type": user_type,
-                            "lane": lane,
-                        },
-                    )
+            if lane == "paid" and not budget_bypass:
+                if has_active_subscription and funding_limiter:
+                    app_reserved_usd = float(est_turn_tokens) * float(usd_per_token) * SAFETY_MARGIN
+                    app_reservation_id = uuid4()
+                    try:
+                        rr = await funding_limiter.reserve(
+                            reservation_id=app_reservation_id,
+                            bundle_id=bundle_id,
+                            provider=None,
+                            request_id=turn_id,
+                            amount_usd=float(app_reserved_usd),
+                            ttl_sec=900,
+                            notes=f"paid reserve: est_turn={est_turn_tokens}, ref=anthropic/claude-sonnet-4-5-20250929",
+                        )
+                        app_reservation_active = True
+                        paid_funding_source = "subscription"
+                        _log(
+                            "reserve.app",
+                            "Reserved subscription balance (paid lane)",
+                            reservation_id=str(rr.reservation_id),
+                            app_reserved_usd=rr.reserved_usd,
+                            expires_at=rr.expires_at,
+                            snapshot=dataclasses.asdict(rr.snapshot),
+                        )
+                    except BudgetInsufficientFunds as e:
+                        _log(
+                            "reserve.app",
+                            "Subscription reservation denied (paid lane)",
+                            "WARN",
+                            error=str(e),
+                            app_reserved_usd=app_reserved_usd,
+                        )
+                        if not wallet_can_pay_turn:
+                            await _econ_fail(
+                                code="subscription_reservation_failed_paid",
+                                title="Insufficient subscription balance",
+                                message="Subscription balance cannot cover this request and no wallet credits are available.",
+                                event_type="rate_limit.subscription_exhausted",
+                                data={
+                                    "reason": "subscription_reservation_failed",
+                                    "bundle_id": bundle_id,
+                                    "subject_id": self.subj,
+                                    "user_type": user_type,
+                                    "tokens_required": int(est_turn_tokens),
+                                    "lane": lane,
+                                },
+                            )
 
-                ok = await self.cp_manager.user_credits_mgr.reserve_lifetime_tokens(
-                    tenant=tenant,
-                    project=project,
-                    user_id=user_id,
-                    reservation_id=turn_id,
-                    tokens=int(est_turn_tokens),
-                    ttl_sec=900,
-                    bundle_id=bundle_id,
-                    notes=f"auto-reserve paid: lane=paid, est_turn={est_turn_tokens}",
-                )
-                if not ok:
-                    await _econ_fail(
-                        code="personal_reservation_failed_paid",
-                        title="Insufficient personal credits",
-                        message="Insufficient personal credits to run this request.",
-                        event_type="rate_limit.denied",
-                        data={
-                            "reason": "personal_reservation_failed",
-                            "bundle_id": bundle_id,
-                            "subject_id": self.subj,
-                            "user_type": user_type,
-                            "tokens_required": int(est_turn_tokens),
-                            "lane": lane,
-                        },
-                    )
+                if not app_reservation_active:
+                    if not (tier_balance and tier_balance.has_lifetime_budget()):
+                        await _econ_fail(
+                            code="paid_lane_requires_personal_budget",
+                            title="Insufficient personal credits",
+                            message="Paid lane requires wallet credits.",
+                            event_type="rate_limit.denied",
+                            data={
+                                "reason": "no_personal_budget",
+                                "bundle_id": bundle_id,
+                                "subject_id": self.subj,
+                                "user_type": user_type,
+                                "lane": lane,
+                            },
+                        )
 
-                personal_reservation_id = turn_id
-                personal_reserved_tokens = int(est_turn_tokens)
-                personal_reservation_active = True
-                _log("reserve.personal", "Reserved personal tokens (paid lane)", reservation_id=turn_id, tokens_reserved=personal_reserved_tokens)
+                    ok = await self.cp_manager.user_credits_mgr.reserve_lifetime_tokens(
+                        tenant=tenant,
+                        project=project,
+                        user_id=user_id,
+                        reservation_id=turn_id,
+                        tokens=int(est_turn_tokens),
+                        ttl_sec=900,
+                        bundle_id=bundle_id,
+                        notes=f"auto-reserve paid: lane=paid, est_turn={est_turn_tokens}",
+                    )
+                    if not ok:
+                        await _econ_fail(
+                            code="personal_reservation_failed_paid",
+                            title="Insufficient personal credits",
+                            message="Insufficient wallet credits to run this request.",
+                            event_type="rate_limit.denied",
+                            data={
+                                "reason": "personal_reservation_failed",
+                                "bundle_id": bundle_id,
+                                "subject_id": self.subj,
+                                "user_type": user_type,
+                                "tokens_required": int(est_turn_tokens),
+                                "lane": lane,
+                            },
+                        )
+
+                    personal_reservation_id = turn_id
+                    personal_reserved_tokens = int(est_turn_tokens)
+                    personal_reservation_active = True
+                    paid_funding_source = "wallet"
+                    _log(
+                        "reserve.personal",
+                        "Reserved personal tokens (paid lane)",
+                        reservation_id=turn_id,
+                        tokens_reserved=personal_reserved_tokens,
+                    )
         except EconomicsLimitException:
             await _cleanup_reservations("pre_run_fail")
             raise
@@ -1249,6 +1361,15 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 tier_covered_usd = float(total_cost) * safe_frac(float(tier_covered_tokens), float(ranked_tokens))
                 overflow_usd = float(total_cost) * safe_frac(float(overflow_tokens), float(ranked_tokens))
 
+            use_subscription_funding = (
+                funding_source == "subscription"
+                and not budget_bypass
+                and (lane != "paid" or paid_funding_source == "subscription")
+            )
+            if use_subscription_funding and total_cost > 0:
+                tier_covered_usd = float(total_cost)
+                overflow_usd = 0.0
+
             _log(
                 "charge.split",
                 "Computed actual split",
@@ -1260,7 +1381,9 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 overflow_usd=overflow_usd,
             )
 
-            if lane == "paid":
+            if use_subscription_funding:
+                user_target_tokens = 0
+            elif lane == "paid":
                 user_target_tokens = int(ranked_tokens)
             else:
                 user_target_tokens = int(overflow_tokens)
@@ -1323,6 +1446,9 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             if budget_bypass:
                 app_spend_usd = float(total_cost)
                 app_note = "post-run settle: admin bypass"
+            elif use_subscription_funding:
+                app_spend_usd = float(total_cost)
+                app_note = "post-run settle: subscription_cost"
             elif lane == "tier":
                 app_spend_usd = float(tier_covered_usd) + float(user_uncovered_usd)
                 app_note = "post-run settle: tier_cost + user_shortfall"

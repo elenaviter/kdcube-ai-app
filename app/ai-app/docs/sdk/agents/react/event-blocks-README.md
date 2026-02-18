@@ -234,6 +234,27 @@ Here are the top three places...
 [D] decided to use Wanderlog + TheFork as primary sources
 ```
 
+### Rendered model view (summary/result/artifact)
+The model does **not** see raw tool-result JSON directly. The rendered timeline groups results:
+```
+[TOOL CALL tc_...] .call <tool_id>
+tc:<turn_id>.<tool_call_id>.call
+
+[TOOL RESULT tc_...].summary <tool_id>     # artifact-producing tools
+Status: success|error
+Artifacts:
+- logical_path: fi:...
+  (metadata: kind/visibility/channel/tokens/sources_used)
+
+[TOOL RESULT tc_...].result <tool_id>      # non-artifact tools
+logical_path: so:... / tc:... / ar:... / sk:...
+<result payload>
+
+[TOOL RESULT tc_...].artifact <tool_id>    # each artifact
+logical_path: fi:... (physical_path only if hosted)
+<content block immediately follows>
+```
+
 ### Exec ordering (notes → code → tool call)
 ```
 [AI Agent say]: Converting the data into an Excel report
@@ -276,6 +297,8 @@ path: fi:turn_...files/report.md
 mime: text/markdown
 text: "...generated markdown..."
 ```
+Rendered view: one `.summary` block listing the artifact (logical_path + sources_used),
+followed by a `.artifact` header with the logical path and the content block.
 
 ### react.write(kind=file)
 Same shape as above, but meta has:

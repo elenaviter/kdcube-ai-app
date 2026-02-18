@@ -33,21 +33,25 @@ Folder structure:
         SKILL.md
         compact.md            (optional, not used by default)
         tools.yaml
+        sources.yaml          (optional)
     internal/
       <skill_id>/
         SKILL.md
         compact.md
         tools.yaml
+        sources.yaml
     custom/
       <skill_id>/
         SKILL.md
         compact.md
         tools.yaml
+        sources.yaml
 
 Each skill folder contains:
 - SKILL.md: metadata + full instruction body
 - compact.md: optional compact instruction (not used by default)
 - tools.yaml: tool ids and why they matter for this skill
+- sources.yaml: canonical sources for citations used inside SKILL.md
 
 
 ## SKILL.md structure
@@ -100,6 +104,28 @@ tools:
   - id: llm_tools.generate_content_llm
     role: content generation
     why: Produces HTML/Markdown with correct layout and citations.
+
+
+## sources.yaml
+
+sources.yaml defines canonical sources referenced inside the skill body.
+Use this when SKILL.md includes links or factual claims that should resolve to
+the system sources pool.
+
+Format:
+
+sources:
+  - sid: 1
+    url: https://example.com/
+    title: Example
+    text: Short summary
+
+Authoring rules:
+- In SKILL.md, add `[[S:<sid>]]` right after links or claims that use a source.
+- Ranges are supported: `[[S:1-3]]` and comma lists `[[S:1,3]]`.
+- When a skill is loaded via `react.read`, its sources are merged into the turn
+  sources pool; SIDs may be remapped and citation tokens are rewritten to match
+  the merged pool.
 
 
 ## Namespaces

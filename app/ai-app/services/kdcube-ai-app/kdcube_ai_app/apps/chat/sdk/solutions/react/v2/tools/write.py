@@ -97,11 +97,12 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
     phys_path, rel_path, rewritten = normalize_physical_path(
         artifact_name, turn_id=ctx_browser.runtime_ctx.turn_id or ""
     )
-    if rewritten:
+    original_path = (params.get("path") or "").strip()
+    if rewritten and original_path and original_path != phys_path:
         rewrite_notice = {
             "code": "protocol_violation.path_rewritten",
             "message": f"Path rewritten to current-turn path: {phys_path}",
-            "extra": {"original": params.get("path"), "normalized": phys_path},
+            "extra": {"original": original_path, "normalized": phys_path},
         }
     if not phys_path or not is_safe_relpath(rel_path):
         state["exit_reason"] = "error"
@@ -266,7 +267,6 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
                     tool_call_id=tool_call_id,
                     code="react.write.hosting_failed",
                     message="Hosting failed (file missing). User will not receive a downloadable file.",
-                    extra={"physical_path": artifact_name, "outdir": str(state.get("outdir") or "")},
                     rel="result",
                 )
             elif (react.hosting_service and react.comm) and not hosted:
@@ -275,7 +275,6 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
                     tool_call_id=tool_call_id,
                     code="react.write.hosting_failed",
                     message="Hosting failed (no hosted result). User will not receive a downloadable file.",
-                    extra={"physical_path": artifact_name, "outdir": str(state.get("outdir") or "")},
                     rel="result",
                 )
     artifact_rel = (rel_path or "").strip()

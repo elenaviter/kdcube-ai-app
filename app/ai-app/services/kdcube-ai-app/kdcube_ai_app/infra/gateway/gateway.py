@@ -69,6 +69,32 @@ class RequestGateway:
             backpressure_manager=self.backpressure_manager  # Pass backpressure manager
         )
         self._setup_circuit_breakers()
+        self.econ_role_resolver = None
+
+    def set_econ_role_resolver(self, resolver):
+        self.econ_role_resolver = resolver
+    
+    async def get_or_create_session_with_econ_role(
+            self,
+            context: RequestContext,
+            user_type: UserType,
+            user_data: Optional[Dict] = None,
+    ) -> UserSession:
+        effective_user_type = user_type
+        if (
+                self.econ_role_resolver
+                and user_type != UserType.PRIVILEGED
+                and user_data
+                and user_data.get("user_id")
+        ):
+            try:
+                new_role = await self.econ_role_resolver(user_data["user_id"])
+                if new_role:
+                    effective_user_type = new_role
+            except Exception as e:
+                logger.warning("Failed to pre-resolve economics role: %s", e)
+
+        return await self.session_manager.get_or_create_session(context, effective_user_type, user_data)
 
     async def _ensure_capacity_calculator(self):
         """Ensure capacity calculator is initialized with Redis client"""
@@ -141,7 +167,7 @@ class RequestGateway:
             # Step 1: Authentication with circuit breaker
             try:
                 user_type, user_data = await self._authenticate(context)
-                session = await self.session_manager.get_or_create_session(context, user_type, user_data)
+                session = await self.get_or_create_session_with_econ_role(context, user_type, user_data)
 
                 # Check auth circuit breaker
                 await auth_circuit.check_request_allowed(session)

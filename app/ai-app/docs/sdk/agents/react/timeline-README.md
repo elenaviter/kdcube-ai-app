@@ -119,6 +119,16 @@ Use react.read(path) to restore a logical path (fi:/ar:/so:/sk:).
 - inserts cache checkpoints (see `context-caching-README.md`)
 - optionally appends sources/announce blocks at the tail
 
+### Rendered tool results (model view)
+Tool calls/results are rendered into a compact, consistent view:
+- **Tool call**: `[TOOL CALL <id>].call <tool_id>` + bare `tc:<turn_id>.<tool_call_id>.call` line + params
+- **Artifact‑producing tools**: `[TOOL RESULT <id>].summary <tool_id>`  
+  Status + artifact list (logical_path + key metadata, including `sources_used` when present)
+- **Non‑artifact tools**: `[TOOL RESULT <id>].result <tool_id>`  
+  `logical_path: ...` + result payload
+- **Each artifact**: `[TOOL RESULT <id>].artifact <tool_id>`  
+  `logical_path: ...` (+ `physical_path` only if hosted) followed immediately by content
+
 Assistant completion blocks (`assistant.completion`) are rendered with an extra line when
 `meta.sources_used` is present:
 ```
@@ -146,7 +156,8 @@ and `ctx_client.recent(kinds=("artifact:conv:sources_pool",), ...)`.
 ## Block metadata
 Each block may include:
 - `turn_id`, `ts`, `path`, `mime`
-- `meta`: hosted_uri / rn / key / physical_path / artifact_path / sources_used
+- `meta`: hosted_uri / rn / key / physical_path / artifact_path / sources_used  
+  (hosted fields are **not** rendered to the model; logical paths are surfaced instead)
 
 See `event-blocks-README.md` for concrete block examples.
 
