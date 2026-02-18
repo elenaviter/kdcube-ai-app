@@ -10,6 +10,10 @@ import {
     selectTurnOrder,
     selectTurns
 } from "../../../features/chat/chatStateSlice.ts";
+import {
+    ConversationStatusArtifact,
+    ConversationStatusArtifactType
+} from "../../../features/logExtensions/conversationStatus/types.ts";
 
 const ChatLog = () => {
     const dispatch = useAppDispatch();
@@ -73,14 +77,25 @@ const ChatLog = () => {
         return null
     }, [inProgress, followUpQuestion, sendMessage]);
 
+    const conversationStatus = useMemo(() => {
+        if (currentTurn) {
+            const statusArtifact = currentTurn.artifacts.find(artifact => artifact.artifactType === ConversationStatusArtifactType)
+            if (statusArtifact) {
+                const status = (statusArtifact as ConversationStatusArtifact).content.status
+                return (status.at(0)?.toUpperCase() + status.slice(1)).replace(/\.*$/g, "") + "..."
+            }
+        }
+        return null
+    }, [currentTurn])
+
     const processingRender = useMemo(() => {
         return inProgress ? (
             <div className="flex items-center text-gray-500 mt-2 ml-4">
                 <Loader size={16} className="animate-spin mr-2"/>
-                <span>Working…</span>
+                <span>{conversationStatus ? conversationStatus : "Working…"}</span>
             </div>
         ) : null
-    }, [inProgress])
+    }, [conversationStatus, inProgress])
 
     const turnsRender = useMemo(() => {
         return (<>

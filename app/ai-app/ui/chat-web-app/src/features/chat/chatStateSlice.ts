@@ -29,6 +29,7 @@ import {
     CodeExecProgramNameSubsystemEventDataSubtype,
     CodeExecStatusSubsystemEventDataSubtype,
     ConversationState,
+    ConversationStatusSubsystemEventDataSubtype,
     FileArtifact,
     NewChatTurnRequest,
     SubsystemEvent,
@@ -47,6 +48,7 @@ import {CodeExecArtifact, CodeExecArtifactType, CodeExecData} from "../logExtens
 import {WebSearchArtifact, WebSearchArtifactType, WebSearchData} from "../logExtensions/webSearch/types.ts";
 import {CanvasArtifact, CanvasArtifactType} from "../logExtensions/canvas/types.ts";
 import {TimelineTextArtifact, TimelineTextArtifactType} from "../logExtensions/timelineText/types.ts";
+import {ConversationStatusArtifact, ConversationStatusArtifactType} from "../logExtensions/conversationStatus/types.ts";
 
 const userAttachmentMapping = new Map<string, File>();
 
@@ -383,7 +385,7 @@ const chatStateSlice = createSlice({
         conversationStatus: (state, action: PayloadAction<ConvStatusEnvelope>) => {
             const payload = action.payload;
             if (!payload.conversation.conversation_id || state.conversationId !== payload.conversation.conversation_id) {
-                console.warn("received event for an unknown conversation id or no conversation id in patload", action.payload)
+                console.warn("received event for an unknown conversation id or no conversation id in payload", action.payload)
                 return
             }
 
@@ -459,6 +461,10 @@ const chatStateSlice = createSlice({
                         }
                         break;
                     }
+                    case "conversation_title":
+                        state.conversationTitle = env.data?.title as string;
+                        break;
+
                 }
             }
         },
@@ -648,6 +654,23 @@ const chatStateSlice = createSlice({
                                 text: textDelta
                             } as CodeExecMetaEventData
                             break
+                        case ConversationStatusSubsystemEventDataSubtype:
+                            reducer = () => {
+                                turn.artifacts = turn.artifacts.filter(c => c.artifactType !== ConversationStatusArtifactType)
+                                const artifact: ConversationStatusArtifact = {
+                                    artifactType: ConversationStatusArtifactType,
+                                    timestamp,
+                                    content: JSON.parse(textDelta),
+                                }
+                                turn.artifacts.push(artifact)
+                            }
+                            data = {
+                                name,
+                                subtype,
+                                title,
+                                text: textDelta
+                            } as SubsystemEventData
+                            break
                         default:
                             console.warn("unknown subtype", env)
                             data = {
@@ -697,6 +720,7 @@ const chatStateSlice = createSlice({
             state.userMessage = ""
             state.userAttachments = []
             state.conversationId = null
+            state.conversationTitle = null
         },
         loadConversation: (state, action: PayloadAction<ConversationState>) => {
             state.turnOrder = action.payload.turnOrder
@@ -738,6 +762,7 @@ export const selectTurnOrder = (state: RootState) => state.chatState.turnOrder
 export const selectUserMessage = (state: RootState) => state.chatState.userMessage
 export const selectUserAttachments = (state: RootState) => state.chatState.userAttachments
 export const selectConversationId = (state: RootState) => state.chatState.conversationId
+export const selectConversationTitle = (state: RootState) => state.chatState.conversationTitle
 
 
 export default chatStateSlice.reducer

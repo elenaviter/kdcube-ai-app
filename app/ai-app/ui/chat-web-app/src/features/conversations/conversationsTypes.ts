@@ -129,6 +129,7 @@ export interface TurnDTO {
 
 export interface ConversationDTO {
     conversation_id: string
+    conversation_title: string
     turns: TurnDTO[]
 }
 

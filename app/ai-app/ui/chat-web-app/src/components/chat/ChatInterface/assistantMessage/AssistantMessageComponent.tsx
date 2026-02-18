@@ -323,7 +323,6 @@ export const AssistantMessageComponent = ({
             {items.map((item, i) => {
                 const Component = getChatLogComponent(item.artifactType)
                 if (!Component) {
-                    console.warn("unknown artifact type", item)
                     return null
                 }
                 return <Component key={i} item={item} historical={isHistorical}/>

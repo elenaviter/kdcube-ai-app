@@ -33,6 +33,7 @@ import WebSearchLogItem from "../../features/logExtensions/webSearch/WebSearchLo
 import {TimelineTextArtifactType} from "../../features/logExtensions/timelineText/types.ts";
 import TimelineTextLogItem from "../../features/logExtensions/timelineText/TimelineTextLogItem.tsx";
 import useSharedConfigProvider from "../../features/sharedConfigProvider/sharedConfigProvider.tsx";
+import ConversationTitle from "../../features/conversationTitle/ConversationTitle.tsx";
 
 //chat log extensions
 addChatLogExtension(CanvasArtifactType, CanvasLogItem)
@@ -75,7 +76,7 @@ const SingleChatApp: React.FC = () => {
             setOverrideCanvasItemLink(false)
         }
 
-    }, [canvasItemLink, currentTurn, lastCanvasItem, overrideCanvasItemLink]);
+    }, [currentTurn, lastCanvasItem, overrideCanvasItemLink]);
 
     const showItem = useCallback((link: CanvasItemLink | null) => {
         if (currentTurn) {
@@ -100,6 +101,7 @@ const SingleChatApp: React.FC = () => {
             <div className={`flex flex-row overflow-hidden flex-1 w-full min-h-0 min-w-0`}>
                 <ChatSidePanel/>
                 <div className={`flex-1 flex flex-col h-full`}>
+                    <ConversationTitle/>
                     <div className={`flex flex-row flex-1 min-h-0 min-w-0`}>
                         <ChatCanvasContext value={chatCanvasContextValue}>
                             <ChatInterface/>

@@ -104,6 +104,10 @@ export interface SubsystemEventData {
     title?: string | null;
 }
 
+export interface SubsystemEvent extends TurnEvent<SubsystemEventData> {
+    eventType: "subsystem";
+}
+
 export interface WebSearchSubsystemEventData extends SubsystemEventData {
     searchId: string;
 }
@@ -172,8 +176,10 @@ export type CodeExecMetaEventData = CodeExecCodeSubsystemEventData
 
 export type CodeExecEvent = TurnEvent<CodeExecMetaEventData>
 
-export interface SubsystemEvent extends TurnEvent<SubsystemEventData> {
-    eventType: "subsystem";
+export const ConversationStatusSubsystemEventDataSubtype = "conversation.turn.status"
+
+export interface ConversationStatusSubsystemEventData extends SubsystemEventData {
+    subtype: typeof ConversationStatusSubsystemEventDataSubtype
 }
 
 export interface Artifact<C> extends Timestamped {

@@ -259,8 +259,8 @@ const conversationsMiddleware = (): Middleware => {
                     }
                     return previousValue
                 }, {} as Record<string, ChatTurn>),
-                conversationId: conversation.conversation_id
-                //todo: conversationTitle:
+                conversationId: conversation.conversation_id,
+                conversationTitle:conversation.conversation_title
             }))
             dispatch(requestConversationStatus(conversation.conversation_id))
         }).catch(error => {
