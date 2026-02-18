@@ -219,6 +219,7 @@ interface QuotaBreakdown {
     };
 
     lifetime_credits: LifetimeCreditsBreakdown | null;
+    subscription_balance?: SubscriptionBalance | null;
     active_reservations: TokenReservationView[];
     reference_model?: string;
 }
@@ -241,10 +242,16 @@ interface Subscription {
 }
 
 interface SubscriptionBalance {
+    has_subscription?: boolean;
+    active?: boolean;
+    tier?: string | null;
+    provider?: string | null;
+    status?: string | null;
+    monthly_price_cents?: number | null;
     period_key?: string | null;
     period_start?: string | null;
     period_end?: string | null;
-    status?: string | null;
+    period_status?: string | null;
     balance_usd: number;
     reserved_usd: number;
     available_usd: number;
@@ -2758,9 +2765,10 @@ const ControlPlaneAdmin: React.FC = () => {
                                     “Remaining” is computed from the effective limits minus current counters.
                                 </Callout>
                                 <Callout tone="warning" title="Paid lane does NOT show up in these counters">
-                                    If the user is being served from <strong>lifetime credits</strong> because tier admit is denied, tier counters are not committed.
-                                    That means <strong>requests/tokens here can stay flat</strong> while the user’s lifetime balance goes down.
-                                    Use <em>Lifetime Balance</em> to confirm paid-lane spend.
+                                    If the user is being served from <strong>lifetime credits</strong> or a <strong>subscription balance</strong>
+                                    because tier admit is denied, tier counters are not committed.
+                                    That means <strong>requests/tokens here can stay flat</strong> while paid balances go down.
+                                    Use <em>Lifetime Balance</em> or <em>Subscription balance</em> to confirm paid-lane spend.
                                 </Callout>
 
                                 <form onSubmit={handleGetQuotaBreakdown} className="space-y-4">
@@ -2940,6 +2948,121 @@ const ControlPlaneAdmin: React.FC = () => {
                                                     </div>
                                                 )}
                                             </div>
+                                        </div>
+
+                                        <div className="rounded-2xl border border-gray-200/70 bg-gray-50 p-5">
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <div className="text-sm font-semibold text-gray-900">Subscription balance</div>
+                                                    <div className="text-xs text-gray-600 mt-1">Per-period subscription lane</div>
+                                                </div>
+                                                <div className="text-2xl">🧾</div>
+                                            </div>
+
+                                            {!quotaBreakdown.subscription_balance ? (
+                                                <div className="mt-4 text-sm text-gray-600">
+                                                    No subscription balance record for this user.
+                                                </div>
+                                            ) : (
+                                                <div className="mt-4 space-y-3 text-sm">
+                                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs text-gray-600">
+                                                        {quotaBreakdown.subscription_balance.tier && (
+                                                            <div>
+                                                                tier: <span className="font-semibold text-gray-900">{quotaBreakdown.subscription_balance.tier}</span>
+                                                            </div>
+                                                        )}
+                                                        {quotaBreakdown.subscription_balance.status && (
+                                                            <div>
+                                                                status: <span className="font-semibold text-gray-900">{quotaBreakdown.subscription_balance.status}</span>
+                                                            </div>
+                                                        )}
+                                                        {quotaBreakdown.subscription_balance.provider && (
+                                                            <div>
+                                                                provider: <span className="font-semibold text-gray-900">{providerLabel(quotaBreakdown.subscription_balance.provider)}</span>
+                                                            </div>
+                                                        )}
+                                                        {quotaBreakdown.subscription_balance.monthly_price_cents != null && (
+                                                            <div>
+                                                                monthly price: <span className="font-semibold text-gray-900">
+                                                                    ${Number(quotaBreakdown.subscription_balance.monthly_price_cents / 100).toFixed(2)}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {quotaBreakdown.subscription_balance.period_start && quotaBreakdown.subscription_balance.period_end && (
+                                                        <div className="text-xs text-gray-600">
+                                                            Period: {formatDateTime(quotaBreakdown.subscription_balance.period_start)} → {formatDateTime(quotaBreakdown.subscription_balance.period_end)}
+                                                        </div>
+                                                    )}
+                                                    {quotaBreakdown.subscription_balance.period_status && (
+                                                        <div className="text-xs text-gray-600">
+                                                            Period status: {quotaBreakdown.subscription_balance.period_status}
+                                                        </div>
+                                                    )}
+
+                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                                                        <div className="rounded-xl bg-white border border-gray-200/70 p-3">
+                                                            <div className="text-gray-600">Balance</div>
+                                                            <div className="font-semibold text-gray-900">
+                                                                ${Number(quotaBreakdown.subscription_balance.balance_usd || 0).toFixed(2)}
+                                                            </div>
+                                                            {quotaBreakdown.subscription_balance.balance_tokens != null && (
+                                                                <div className="text-xs text-gray-500">
+                                                                    {Number(quotaBreakdown.subscription_balance.balance_tokens).toLocaleString()} tokens
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="rounded-xl bg-white border border-gray-200/70 p-3">
+                                                            <div className="text-gray-600">Reserved</div>
+                                                            <div className="font-semibold text-gray-900">
+                                                                ${Number(quotaBreakdown.subscription_balance.reserved_usd || 0).toFixed(2)}
+                                                            </div>
+                                                            {quotaBreakdown.subscription_balance.reserved_tokens != null && (
+                                                                <div className="text-xs text-gray-500">
+                                                                    {Number(quotaBreakdown.subscription_balance.reserved_tokens).toLocaleString()} tokens
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                        <div className="rounded-xl bg-white border border-gray-200/70 p-3">
+                                                            <div className="text-gray-600">Available</div>
+                                                            <div className="font-semibold text-gray-900">
+                                                                ${Number(quotaBreakdown.subscription_balance.available_usd || 0).toFixed(2)}
+                                                            </div>
+                                                            {quotaBreakdown.subscription_balance.available_tokens != null && (
+                                                                <div className="text-xs text-gray-500">
+                                                                    {Number(quotaBreakdown.subscription_balance.available_tokens).toLocaleString()} tokens
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                                                        <div className="rounded-xl bg-white border border-gray-200/70 p-3">
+                                                            <div className="text-gray-600">Period top-up</div>
+                                                            <div className="font-semibold text-gray-900">
+                                                                ${Number(quotaBreakdown.subscription_balance.topup_usd ?? quotaBreakdown.subscription_balance.lifetime_added_usd ?? 0).toFixed(2)}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl bg-white border border-gray-200/70 p-3">
+                                                            <div className="text-gray-600">Period spent</div>
+                                                            <div className="font-semibold text-gray-900">
+                                                                ${Number(quotaBreakdown.subscription_balance.spent_usd ?? quotaBreakdown.subscription_balance.lifetime_spent_usd ?? 0).toFixed(2)}
+                                                            </div>
+                                                        </div>
+                                                        <div className="rounded-xl bg-white border border-gray-200/70 p-3">
+                                                            <div className="text-gray-600">Rolled over</div>
+                                                            <div className="font-semibold text-gray-900">
+                                                                ${Number(quotaBreakdown.subscription_balance.rolled_over_usd || 0).toFixed(2)}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="pt-2 text-xs text-gray-600">
+                                                        Reference: {quotaBreakdown.subscription_balance.reference_model || 'anthropic/claude-sonnet-4-5-20250929'}
+                                                    </div>
+                                                </div>
+                                            )}
                                         </div>
 
                                         {/* Reservations table */}
@@ -3820,6 +3943,10 @@ const ControlPlaneAdmin: React.FC = () => {
                                     subtitle="Manual top-ups and overdraft configuration for a user's subscription balance."
                                 />
                                 <CardBody className="space-y-6">
+                                    <div className="text-xs text-gray-600">
+                                        Manual top-ups do not advance billing dates. For internal subscriptions, prefer
+                                        “Renew now” in the lookup card to top up and advance next due date together.
+                                    </div>
                                     <form onSubmit={handleTopupSubscriptionBudget} className="space-y-4">
                                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                             <Input
