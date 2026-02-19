@@ -1,12 +1,6 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useAppDispatch, useAppSelector} from "../../app/store.ts";
-import {
-    selectConversationTitle,
-    selectCurrentTurn,
-    selectIsNewConversation,
-    selectTurnOrder,
-    setUserMessage
-} from "../chat/chatStateSlice.ts";
+import {selectConversationTitle, selectIsNewConversation, setUserMessage} from "../chat/chatStateSlice.ts";
 import AnimatedExpander from "../../components/AnimatedExpander.tsx";
 import {
     QuestionCategory,
