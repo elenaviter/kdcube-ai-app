@@ -253,6 +253,8 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             payload = {"stage": stage, **kv}
             self.logger.log(f"[run] {stage} | {msg} | { _j(payload) }", level)
 
+        _log("economics", "--- START PRE-RUN ECONOMICS ---")
+
         async def _emit_event(*, type: str, status: str, title: str, data: dict):
             try:
                 await self.comm.service_event(
@@ -1318,9 +1320,12 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         try:
             usage_from = datetime.utcnow().date().isoformat()
             _log("exec", "Invoking execute_core", lane=lane, usage_from=usage_from)
-            result = await self.execute_core(state=state, thread_id=thread_id, params=params)
-            _log("exec", "execute_core completed", lane=lane)
+            _log("economics", "--- END PRE-RUN ECONOMICS ---")
 
+            result = await self.execute_core(state=state, thread_id=thread_id, params=params)
+
+            _log("economics", "--- START POST-RUN ECONOMICS ---")
+            _log("exec", "execute_core completed", lane=lane)
             _log("accounting", "Applying accounting", lane=lane)
             ranked_tokens, cost_result = await self.run_accounting(
                 tenant=tenant, project=project, user_id=user_id, user_type=user_type,
@@ -1591,4 +1596,5 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
 
         await self.post_run_hook(state=state, result=result, econ_ctx=econ_ctx)
         _log("done", "run() completed successfully", lane=lane)
+        _log("economics", "--- END POST-RUN ECONOMICS ---")
         return self.project_app_state(result)
