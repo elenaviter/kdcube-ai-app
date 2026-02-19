@@ -41,7 +41,6 @@ const ChatHeader = () => {
                     </div>
 
                     <div className="flex items-center gap-2">
-                        {/* Connection status pill */}
                         <div className={`flex items-center px-3 py-1 rounded-lg text-sm ${connectionStatus.color}`}>
                             {connectionStatus.icon}
                             <span className="ml-2 font-medium">{connectionStatus.text}</span>

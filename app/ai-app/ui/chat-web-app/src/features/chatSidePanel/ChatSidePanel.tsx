@@ -361,7 +361,7 @@ const ChatSidePanel = () => {
                 </MenuButton>
             </div>
             {/*<div className={"absolute h-full top-0 left-12 z-20 shadow-md border-r border-gray-200 bg-white"}>*/}
-            <div className={"h-full border-r border-gray-200 bg-white relative"}>
+            <div className={`h-full border-r border-gray-200 bg-white relative ${visiblePanel ? "pointer-events-auto" : "pointer-events-none"}`}>
                 <AnimatedExpander contentRef={sidePanelContentRef} className={"h-full"}
                                   expanded={visiblePanel !== null}>
                     <div className={"h-full"} ref={sidePanelContentRef} style={{width: `${panelWidth}px`}}>

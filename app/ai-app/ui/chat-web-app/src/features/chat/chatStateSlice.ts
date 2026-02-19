@@ -801,6 +801,8 @@ export const selectUserMessage = (state: RootState) => state.chatState.userMessa
 export const selectUserAttachments = (state: RootState) => state.chatState.userAttachments
 export const selectConversationId = (state: RootState) => state.chatState.conversationId
 export const selectConversationTitle = (state: RootState) => state.chatState.conversationTitle
+export const selectIsNewConversation = (state: RootState) => state.chatState.turnOrder.length === 0
+
 
 
 export default chatStateSlice.reducer

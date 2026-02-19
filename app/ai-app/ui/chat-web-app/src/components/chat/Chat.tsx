@@ -16,7 +16,7 @@ import ChatCanvas from "../../features/canvas/ChatCanvas.tsx";
 import {CanvasItemLink, ChatCanvasContext, ChatCanvasContextValue} from "../../features/canvas/canvasContext.tsx";
 import {getCanvasArtifactTypes, getCanvasItemLinkGenerator} from "../../features/extensions/canvasExtensions.ts";
 import useSharedConfigProvider from "../../features/sharedConfigProvider/sharedConfigProvider.tsx";
-import ConversationTitle from "../../features/conversationTitle/ConversationTitle.tsx";
+import ConversationHeader from "../../features/conversationHeader/ConversationHeader.tsx";
 
 const SingleChatApp: React.FC = () => {
     const currentTurn = useAppSelector(selectCurrentTurn);
@@ -74,7 +74,7 @@ const SingleChatApp: React.FC = () => {
             <div className={`flex flex-row overflow-hidden flex-1 w-full min-h-0 min-w-0`}>
                 <ChatSidePanel/>
                 <div className={`flex-1 flex flex-col h-full`}>
-                    <ConversationTitle/>
+                    <ConversationHeader/>
                     <div className={`flex flex-row flex-1 min-h-0 min-w-0`}>
                         <ChatCanvasContext value={chatCanvasContextValue}>
                             <ChatInterface/>

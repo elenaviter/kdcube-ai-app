@@ -2,26 +2,17 @@ import {createApi, fetchBaseQuery} from "@reduxjs/toolkit/query/react";
 import {RootState} from "../../app/store.ts";
 import {selectAuthToken} from "../auth/authSlice.ts";
 
-class Question {
-    readonly id: string | number;
-    readonly question: string;
-
-    constructor(id: string | number, question: string) {
-        this.id = id;
-        this.question = question;
-    }
+export interface Question {
+    type: "question";
+    id: string;
+    text: string;
 }
 
-class QuestionCategory {
-    readonly id: string | number;
-    readonly category: string;
-    readonly items: QuestionsPanelItem[];
-
-    constructor(id: string | number, category: string, items: QuestionsPanelItem[]) {
-        this.id = id;
-        this.category = category;
-        this.items = items;
-    }
+export interface QuestionCategory {
+    type: "category";
+    id: string;
+    text: string;
+    items: QuestionsPanelItem[];
 }
 
 export type QuestionsPanelItem = Question | QuestionCategory;
@@ -29,7 +20,7 @@ export type QuestionsPanelItem = Question | QuestionCategory;
 export const suggestedQuestionsApiSlice = createApi({
     reducerPath: 'suggestedQuestions',
     baseQuery: fetchBaseQuery({
-        prepareHeaders(headers, { getState }) {
+        prepareHeaders(headers, {getState}) {
             const token = selectAuthToken(getState() as RootState)
             if (token) {
                 headers.set('authorization', `Bearer ${token}`)
@@ -39,7 +30,7 @@ export const suggestedQuestionsApiSlice = createApi({
     }),
     tagTypes: ['suggestedQuestions'],
     endpoints: builder => ({
-        getSuggestedQuestions: builder.query<unknown, {
+        getSuggestedQuestions: builder.query<QuestionsPanelItem[], {
             tenant: string,
             project: string,
         }>({
@@ -53,23 +44,33 @@ export const suggestedQuestionsApiSlice = createApi({
                     body: "{}" //todo: why?
                 }
             },
-            // transformResponse(res) {
-            //     const parseQuestions = (items: unknown, parentID?: string | number): Question[] | QuestionCategory[] => {
-            //         if (items instanceof Array) {
-            //             return items.map((item, i) => {
-            //                 return new Question(parentID ? `${parentID}_q_${i}` : `q_${i}`, item as string);
-            //             })
-            //         } else if (items instanceof Object) {
-            //             return Object.keys(items).map((category, i) => {
-            //                 const itemID = parentID ? `${parentID}_c_${i}` : `c_${i}`
-            //                 return new QuestionCategory(itemID, category, parseQuestions((items as Record<string, unknown>)[category], itemID))
-            //             })
-            //         }
-            //         console.warn("unknown question items", items);
-            //         return []
-            //     }
-            //     return  parseQuestions(res);
-            // },
+            transformResponse(res:{suggestions:unknown}) {
+                const parseQuestions = (items: unknown, parentID?: string | number): Question[] | QuestionCategory[] => {
+                    if (items instanceof Array) {
+                        return items.map((item, i) => {
+                            const id = parentID ? `${parentID}_q_${i}` : `q_${i}`;
+                            return {
+                                type: "question",
+                                id,
+                                text: item as string
+                            }
+                        })
+                    } else if (items instanceof Object) {
+                        return Object.keys(items).map((category, i) => {
+                            const id = parentID ? `${parentID}_c_${i}` : `c_${i}`
+                            return {
+                                type: "category",
+                                id,
+                                text: category,
+                                items: parseQuestions((items as Record<string, unknown>)[category], id)
+                            }
+                        })
+                    }
+                    console.warn("unknown question items", items);
+                    return []
+                }
+                return parseQuestions(res.suggestions);
+            },
             providesTags: ['suggestedQuestions'],
         })
     })
