@@ -128,5 +128,43 @@ class EcoEntrypoint(BaseEntrypointWithEconomics):
         config["role_models"] = role_models
         return config
 
+    @property
+    def app_quota_policies(self):
+        from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import QuotaPolicy
+
+        anonymous_policy = QuotaPolicy(
+            max_concurrent=1,
+            requests_per_day=2,
+            requests_per_month=60,
+            total_requests=None,
+            tokens_per_hour=150_000,
+            tokens_per_day=1_500_000,
+            tokens_per_month=20_000_000,
+        )
+        return {
+            "anonymous": anonymous_policy,
+            "free": QuotaPolicy(
+                max_concurrent=2,
+                requests_per_day=100,
+                requests_per_month=30000,
+                total_requests=None,
+                tokens_per_hour=500_000,
+                tokens_per_day=2_000_000,
+                tokens_per_month=30_000_000,
+            ),
+            "payasyougo": QuotaPolicy(
+                max_concurrent=2,
+                requests_per_day=200,
+                requests_per_month=6000,
+                total_requests=None,
+                tokens_per_hour=1_500_000,
+                tokens_per_day=4_000_000,
+                tokens_per_month=60_000_000,
+            ),
+            "admin": QuotaPolicy(
+                max_concurrent=10,
+            )
+        }
+
     async def execute_core(self, *, state: Dict[str, Any], thread_id: str, params: Dict[str, Any]):
         return await self.graph.ainvoke(state, config={"configurable": {"thread_id": thread_id}})
