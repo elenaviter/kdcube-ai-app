@@ -12,6 +12,8 @@ import pathlib
 import time
 from typing import Dict, Any, Optional
 
+from dotenv import find_dotenv, load_dotenv
+
 from kdcube_ai_app.apps.chat.sdk.runtime.external.detect_aws_env import check_and_apply_cloud_environment
 from kdcube_ai_app.apps.chat.sdk.runtime.external.service_discovery import CONTAINER_BUNDLES_ROOT, _path, \
     _translate_container_path_to_host, _is_running_in_docker, _resolve_redis_url_for_container
@@ -236,7 +238,24 @@ async def run_py_in_docker(
         network_mode=network_mode or "host",
     )
 
-    log.log(f"[docker.exec] Running: {' '.join(argv)}")
+    sanitized_argv = []
+    skip_next = False
+    for idx, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+
+        sanitized_argv.append(arg)
+        if arg == "-e" and idx + 1 < len(argv):
+            env_val = argv[idx + 1]
+            if "=" in env_val:
+                key = env_val.split("=", 1)[0]
+                sanitized_argv.append(f"{key}=******")
+            else:
+                sanitized_argv.append(env_val)
+            skip_next = True
+
+    log.log(f"[docker.exec] Running: {' '.join(sanitized_argv)}")
 
     proc = await asyncio.create_subprocess_exec(
         *argv,
