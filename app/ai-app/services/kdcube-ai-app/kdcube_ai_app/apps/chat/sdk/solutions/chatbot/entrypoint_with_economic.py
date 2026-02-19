@@ -159,9 +159,6 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 requests_per_day=200,
                 requests_per_month=6000,
                 total_requests=None,
-                tokens_per_hour=1_500_000,
-                tokens_per_day=4_000_000,
-                tokens_per_month=60_000_000,
             ),
             "admin": QuotaPolicy(
                 max_concurrent=10,

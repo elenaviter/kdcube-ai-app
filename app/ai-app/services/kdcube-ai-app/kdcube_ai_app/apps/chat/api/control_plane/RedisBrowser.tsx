@@ -87,6 +87,18 @@ class SettingsManager {
             : this.settings.idTokenHeader;
     }
 
+    getDefaultTenant(): string {
+        return this.settings.defaultTenant === this.PLACEHOLDER_TENANT
+            ? 'home'
+            : this.settings.defaultTenant;
+    }
+
+    getDefaultProject(): string {
+        return this.settings.defaultProject === this.PLACEHOLDER_PROJECT
+            ? 'demo'
+            : this.settings.defaultProject;
+    }
+
     hasPlaceholderSettings(): boolean {
         return this.settings.baseUrl === this.PLACEHOLDER_BASE_URL;
     }
@@ -243,13 +255,14 @@ const RedisBrowserAdmin: React.FC = () => {
         });
     }, []);
 
-    const loadKeys = async (reset: boolean) => {
+    const loadKeys = async (reset: boolean, overridePrefix?: string) => {
         if (!configReady) return;
         setLoading(true);
         setError(null);
         try {
+            const activePrefix = overridePrefix !== undefined ? overridePrefix : prefix;
             const nextCursor = reset ? 0 : cursor;
-            const data = await api.listKeys(prefix, nextCursor, limit);
+            const data = await api.listKeys(activePrefix, nextCursor, limit);
             setCursor(data.next_cursor || 0);
             setKeys((prev) => reset ? data.items : [...prev, ...data.items]);
         } catch (err) {
@@ -281,6 +294,21 @@ const RedisBrowserAdmin: React.FC = () => {
         return `Type: ${keyDetails.type} • TTL: ${ttl} • Size: ${len}`;
     }, [keyDetails]);
 
+    const quickPrefixes = useMemo(() => {
+        if (!configReady) return [];
+        const tenant = settings.getDefaultTenant();
+        const project = settings.getDefaultProject();
+        const tp = `${tenant}:${project}:`;
+        return [
+            { label: 'Queues', value: `${tp}kdcube:chat:prompt:queue` },
+            { label: 'Locks', value: `${tp}kdcube:lock` },
+            { label: 'Process HB', value: `${tp}kdcube:heartbeat:process` },
+            { label: 'Instance HB', value: `${tp}kdcube:heartbeat:instance` },
+            { label: 'Capacity', value: `${tp}kdcube:system:capacity` },
+            { label: 'Bundles', value: 'kdcube:config:bundles:' },
+        ];
+    }, [configReady]);
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50">
             <div className="max-w-7xl mx-auto px-6 py-10">
@@ -308,6 +336,24 @@ const RedisBrowserAdmin: React.FC = () => {
                                 value={prefix}
                                 onChange={(e) => setPrefix(e.target.value)}
                             />
+                            {quickPrefixes.length > 0 && (
+                                <div className="flex flex-wrap gap-2 mt-3">
+                                    {quickPrefixes.map((item) => (
+                                        <button
+                                            key={item.label}
+                                            className="px-3 py-1 rounded-full text-[11px] font-semibold border border-gray-200 text-gray-700 hover:bg-gray-50"
+                                            onClick={() => {
+                                                setPrefix(item.value);
+                                                setCursor(0);
+                                                setKeys([]);
+                                                loadKeys(true, item.value);
+                                            }}
+                                        >
+                                            {item.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                             <div className="flex gap-2 mt-3">
                                 <button
                                     className="flex-1 px-3 py-2 rounded-xl text-xs font-semibold bg-gray-900 text-white"

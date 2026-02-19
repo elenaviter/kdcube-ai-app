@@ -667,6 +667,7 @@ async def process_chat_message(
                 logger.exception("failed to emit attachments step")
 
     # --- Enqueue ---
+    enqueue_started_at = time.monotonic()
     try:
         success, reason, stats = await chat_queue_manager.enqueue_chat_task_atomic(
             session.user_type,
@@ -678,6 +679,28 @@ async def process_chat_message(
     except Exception as e:
         logger.exception("enqueue_chat_task_atomic failed: %s", e)
         success, reason, stats = False, "internal_error", {}
+    enqueue_ms = int((time.monotonic() - enqueue_started_at) * 1000)
+    try:
+        created_at = float(payload.meta.created_at) if payload.meta else None
+    except Exception:
+        created_at = None
+    ingress_to_enqueue_ms = None
+    if created_at:
+        try:
+            ingress_to_enqueue_ms = int((time.time() - created_at) * 1000)
+        except Exception:
+            ingress_to_enqueue_ms = None
+
+    logger.info(
+        "enqueue_chat_task_atomic result task_id=%s user_type=%s success=%s reason=%s enqueue_ms=%s ingress_to_enqueue_ms=%s queue_stats=%s",
+        task_id,
+        session.user_type.value,
+        success,
+        reason,
+        enqueue_ms,
+        ingress_to_enqueue_ms,
+        stats,
+    )
 
     if not success:
         # rollback state since nothing will process this turn

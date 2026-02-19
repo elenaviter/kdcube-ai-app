@@ -57,6 +57,17 @@ interface SystemMonitoringResponse {
         capacity_context?: Record<string, any>;
         analytics?: Record<string, any>;
     };
+    queue_analytics?: {
+        wait_times?: Record<string, number>;
+        throughput?: Record<string, number>;
+        individual_queues?: Record<string, {
+            size?: number;
+            avg_wait?: number;
+            throughput?: number;
+            blocked?: boolean;
+        }>;
+    };
+    queue_utilization?: number;
     throttling_stats?: Record<string, any>;
     throttling_by_period?: Record<string, any>;
     recent_throttling_events?: Array<any>;
@@ -640,6 +651,8 @@ const MonitoringDashboard: React.FC = () => {
 
     const queue = system?.queue_stats;
     const capacityCtx = system?.queue_stats?.capacity_context || {};
+    const queueAnalytics = system?.queue_analytics;
+    const queueUtilization = system?.queue_utilization;
     const throttling = system?.throttling_stats;
     const events = system?.recent_throttling_events || [];
     const gateway = system?.gateway_configuration;
@@ -799,6 +812,35 @@ const MonitoringDashboard: React.FC = () => {
                                 <div className="text-xs text-gray-600">Hard Limit</div>
                                 <div className="text-sm font-semibold">{capacityCtx.thresholds?.hard_limit_threshold ?? 0}</div>
                                 <div className="text-xs text-gray-500">items</div>
+                            </div>
+                        </div>
+                    </CardBody>
+                </Card>
+
+                <Card>
+                    <CardHeader title="Queue Analytics" subtitle="Average wait time and throughput (last hour)." />
+                    <CardBody>
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                            {["anonymous", "registered", "privileged"].map((key) => {
+                                const q = queueAnalytics?.individual_queues?.[key] || {};
+                                const wait = q.avg_wait ?? 0;
+                                const throughput = q.throughput ?? 0;
+                                return (
+                                    <div key={key} className="p-4 rounded-xl bg-gray-100">
+                                        <div className="text-xs text-gray-600">{key}</div>
+                                        <div className="text-sm font-semibold">{q.size ?? 0} queued</div>
+                                        <div className="text-xs text-gray-500">avg wait {wait.toFixed(2)}s</div>
+                                        <div className="text-xs text-gray-500">throughput {throughput}/hr</div>
+                                        <div className="text-xs text-gray-500">{q.blocked ? 'blocked' : 'accepting'}</div>
+                                    </div>
+                                );
+                            })}
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Utilization</div>
+                                <div className="text-sm font-semibold">
+                                    {typeof queueUtilization === 'number' ? `${queueUtilization.toFixed(1)}%` : '—'}
+                                </div>
+                                <div className="text-xs text-gray-500">queue / weighted capacity</div>
                             </div>
                         </div>
                     </CardBody>

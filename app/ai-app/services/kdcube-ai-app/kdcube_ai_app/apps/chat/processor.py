@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import os
@@ -155,7 +156,17 @@ class EnhancedChatRequestProcessor:
             )
             if acquired:
                 self._current_load += 1
-                logger.info(f"Process {self.process_id} acquired task {logical_id} ({user_type})")
+                created_at = (task_dict.get("meta") or {}).get("created_at")
+                queue_wait_ms = None
+                if created_at:
+                    try:
+                        queue_wait_ms = int((time.time() - float(created_at)) * 1000)
+                    except Exception:
+                        queue_wait_ms = None
+                logger.info(
+                    f"Process {self.process_id} acquired task {logical_id} ({user_type})"
+                    + (f" queue_wait_ms={queue_wait_ms}" if queue_wait_ms is not None else "")
+                )
                 task_dict["_lock_key"] = lock_key
                 task_dict["_queue_key"] = queue_key
                 return task_dict
@@ -366,6 +377,8 @@ class EnhancedChatRequestProcessor:
                 if lock_key:
                     await self.middleware.redis.delete(lock_key)
             finally:
+                # Ensure load is released even for invalid payloads
+                self._current_load = max(0, self._current_load - 1)
                 return
 
         assert payload is not None
@@ -408,6 +421,16 @@ class EnhancedChatRequestProcessor:
         storage_backend = create_storage_backend(_settings.STORAGE_PATH, **{})
 
         # 5) Announce start (async)
+        created_at = None
+        try:
+            created_at = float(getattr(payload.meta, "created_at", None))
+        except Exception:
+            created_at = None
+        if created_at:
+            queue_wait_ms = int((time.time() - created_at) * 1000)
+            logger.info(
+                f"Starting task {task_id} queue_wait_ms={queue_wait_ms} current_load={self._current_load}"
+            )
         msg = (
             (payload.request.message[:100] + "...")
             if payload.request.message and len(payload.request.message) > 100
