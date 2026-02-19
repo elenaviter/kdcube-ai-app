@@ -6,12 +6,15 @@
 from __future__ import annotations
 import json
 import asyncpg
+import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Sequence, Union, Callable, Iterable, Tuple
 
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.infra.embedding.embedding import convert_embedding_to_string
+
+logger = logging.getLogger(__name__)
 
 def _coerce_ts(ts: Union[str, datetime]) -> datetime:
     """Ensure ts is a timezone-aware datetime."""
@@ -810,8 +813,12 @@ class ConvIndex:
             args.append(bundle_id)
             where.append(f"bundle_id = ${len(args)}")
         if since_ts:
-            args.append(since_ts)
-            where.append(f"ts >= ${len(args)}::timestamptz")
+            try:
+                since_dt = _coerce_ts(since_ts)
+                args.append(since_dt)
+                where.append(f"ts > ${len(args)}")
+            except Exception:
+                logger.warning("[conv_index.fetch_latest_reactions] invalid since_ts=%r; skipping filter", since_ts)
         if turn_ids:
             args.append(list(turn_ids))
             where.append(f"turn_id = ANY(${len(args)}::text[])")

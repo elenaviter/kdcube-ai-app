@@ -19,6 +19,13 @@ This doc describes how the **announce** block is used for ReAct v2.
 - On exit: the final announce block is **persisted** into the turn log blocks,
   then announce is cleared.
 
+## Feedback in ANNOUNCE
+- Feedback updates are fetched **only at turn start** (timeline load).
+- If cache is **hot**, feedback remains in ANNOUNCE each round until a cold turn incorporates it.
+- If cache is **cold**, feedback is injected into the target turn(s) and ANNOUNCE shows the same updates
+  once with “(incorporated into turn timeline)”.
+- After incorporation, those items are **not** repeated in later turns.
+
 ## System messages in announce
 When cache TTL pruning occurs, the render path appends a one-time announce block
 containing a system notice. It appears after the budget section and advises

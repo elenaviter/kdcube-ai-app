@@ -112,7 +112,7 @@ sources.yaml defines canonical sources referenced inside the skill body.
 Use this when SKILL.md includes links or factual claims that should resolve to
 the system sources pool.
 
-Format:
+Format (canonical shape):
 
 sources:
   - sid: 1
@@ -126,6 +126,19 @@ Authoring rules:
 - When a skill is loaded via `react.read`, its sources are merged into the turn
   sources pool; SIDs may be remapped and citation tokens are rewritten to match
   the merged pool.
+
+Optional fields supported by the canonical sources pool are preserved when
+loading from `sources.yaml`. Common examples:
+- `published_time_iso`, `modified_time_iso`, `fetched_time_iso`
+- `author`, `authority`, `provider_rank`, `weighted_rank`
+- `source_type`, `mime`, `size_bytes`
+- `favicon_url` or `favicon` (for UI)
+
+Notes:
+- URLs are normalized on load.
+- `local_path` is normalized to `physical_path`.
+- Large `base64` values may be trimmed for safety.
+- See `docs/citations-system.md` for the full canonical sources shape.
 
 
 ## Namespaces

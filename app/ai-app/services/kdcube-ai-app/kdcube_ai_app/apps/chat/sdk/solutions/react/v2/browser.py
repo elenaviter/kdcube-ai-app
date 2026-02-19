@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 import json
 import pathlib
+import traceback
+
 import time
 from datetime import datetime, timezone
 import tempfile
@@ -54,9 +56,6 @@ class ContextBrowser:
         self._cache_min_blocks = max(1, int(cache_additional_min_blocks))
         self._cache_offset = max(1, int(cache_additional_offset))
         self._turn_log_cache: Dict[str, Dict[str, Any]] = {}
-        self._feedback_seen: Dict[str, str] = {}
-        self._feedback_updates: List[Dict[str, Any]] = []
-        self._feedback_updates_integrated: bool = False
 
     async def load_timeline(
             self,
@@ -199,144 +198,22 @@ class ContextBrowser:
         except Exception:
             pass
         try:
-            await self.refresh_feedbacks(days=days)
+            if self._timeline:
+                await self._timeline.refresh_feedbacks(ctx_client=self.ctx_client, days=days)
         except Exception:
-            pass
+            self.log.log(f"[timeline.load]: refresh feedbacks failure {traceback.format_exc()}", "ERROR")
 
     @property
     def feedback_updates(self) -> List[Dict[str, Any]]:
-        return list(self._feedback_updates or [])
+        if not self._timeline:
+            return []
+        return self._timeline.feedback_updates()
 
     @property
     def feedback_updates_integrated(self) -> bool:
-        return bool(self._feedback_updates_integrated)
-
-    async def refresh_feedbacks(self, *, days: int = 365) -> None:
-        if not self.ctx_client or not self._timeline:
-            self._feedback_updates = []
-            self._feedback_updates_integrated = False
-            return
-        try:
-            from kdcube_ai_app.apps.chat.sdk.solutions.react.feeback import Feedback
-        except Exception:
-            self._feedback_updates = []
-            self._feedback_updates_integrated = False
-            return
-        try:
-            turn_ids = extract_turn_ids_from_blocks(self._timeline.blocks or [])
-        except Exception:
-            turn_ids = []
-        if not turn_ids:
-            self._feedback_updates = []
-            self._feedback_updates_integrated = False
-            return
-
-        def _earliest_turn_ts() -> str:
-            earliest: Optional[str] = None
-            for blk in (self._timeline.blocks or []):
-                if not isinstance(blk, dict):
-                    continue
-                if (blk.get("turn_id") or "").strip() == "":
-                    continue
-                ts = (blk.get("ts") or "").strip()
-                if not ts:
-                    continue
-                if earliest is None:
-                    earliest = ts
-                    continue
-                if ts < earliest:
-                    earliest = ts
-            return earliest or ""
-
-        fb = Feedback(ctx_client=self.ctx_client, logger_obj=self.log)
-        since_ts = (self._timeline.last_known_feedback_ts or "").strip()
-        if not since_ts:
-            since_ts = _earliest_turn_ts()
-
-        recent_by_turn = await fb.collect_recent(
-            user_id=self._runtime_ctx.user_id,
-            conversation_id=self._runtime_ctx.conversation_id,
-            turn_ids=turn_ids,
-            since_ts=since_ts or None,
-            days=days,
-        )
-
-        updates, seen_map = fb.diff_updates(
-            feedbacks_by_turn=recent_by_turn,
-            seen_map=self._feedback_seen,
-        )
-
-        cache_hot = False
-        try:
-            cache_hot = bool(self._timeline.is_cache_hot())
-        except Exception:
-            cache_hot = False
-
-        integrated = False
-        full_by_turn = recent_by_turn
-        if not cache_hot:
-            try:
-                full_by_turn = await fb.collect_latest(
-                    user_id=self._runtime_ctx.user_id,
-                    conversation_id=self._runtime_ctx.conversation_id,
-                    turn_ids=turn_ids,
-                    days=days,
-                )
-            except Exception:
-                full_by_turn = recent_by_turn
-            try:
-                integrated = fb.ensure_blocks(timeline=self._timeline, feedbacks_by_turn=full_by_turn)
-                if integrated:
-                    self._timeline.write_local()
-            except Exception:
-                integrated = False
-
-        # Build updates for announce (only when changed since last seen).
-        updates_payload: List[Dict[str, Any]] = []
-        if updates:
-            turn_ts_map: Dict[str, str] = {}
-            for blk in (self._timeline.blocks or []):
-                if not isinstance(blk, dict):
-                    continue
-                tid = (blk.get("turn_id") or "").strip()
-                if not tid or tid in turn_ts_map:
-                    continue
-                ts = (blk.get("ts") or "").strip()
-                if ts:
-                    turn_ts_map[tid] = ts
-
-            for item in updates:
-                updates_payload.append({
-                    "turn_id": item.turn_id,
-                    "turn_ts": turn_ts_map.get(item.turn_id, ""),
-                    "feedback_ts": item.ts,
-                    "origin": item.origin,
-                    "reaction": item.reaction,
-                    "text": item.text,
-                })
-
-        # Update last-known feedback timestamp (max of updates; or full set on cold start)
-        if updates:
-            last_ts = fb.max_ts(updates)
-            if last_ts:
-                self._timeline.last_known_feedback_ts = last_ts
-        elif not cache_hot and not (self._timeline.last_known_feedback_ts or "").strip():
-            try:
-                all_items: List[Any] = []
-                for items in full_by_turn.values():
-                    all_items.extend(items or [])
-                last_ts = fb.max_ts(all_items)
-                if last_ts:
-                    self._timeline.last_known_feedback_ts = last_ts
-            except Exception:
-                pass
-
-        self._feedback_seen = seen_map
-        self._feedback_updates = updates_payload
-        if not cache_hot and updates_payload:
-            self._feedback_updates_integrated = True
-        else:
-            self._feedback_updates_integrated = bool(integrated)
+        if not self._timeline:
+            return False
+        return self._timeline.feedback_updates_integrated()
 
     def _allow_contribution(self, block_type: str) -> bool:
         if self._contrib_include_only:

@@ -145,10 +145,19 @@ class ReactSolverV2:
         try:
             from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.layout import build_announce_text
             runtime_ctx = getattr(self.ctx_browser, "runtime_ctx", None)
-            try:
-                await self.ctx_browser.refresh_feedbacks()
-            except Exception:
-                pass
+            # NOTE: feedback refresh is performed at turn start (timeline load).
+            # We intentionally skip per-announce refresh to avoid mid-turn fetches.
+            # try:
+            #     if self.ctx_browser and self.ctx_browser.timeline:
+            #         await self.ctx_browser.timeline.refresh_feedbacks(
+            #             ctx_client=self.ctx_browser.ctx_client,
+            #             days=365,
+            #         )
+            # except Exception:
+            #     try:
+            #         self.log.log("[react.v2] refresh_feedbacks failed: " + traceback.format_exc(), level="ERROR")
+            #     except Exception:
+            #         pass
             active_block = build_announce_text(
                 iteration=iteration,
                 max_iterations=max_iterations,

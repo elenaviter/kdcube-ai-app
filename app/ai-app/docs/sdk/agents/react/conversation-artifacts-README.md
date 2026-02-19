@@ -22,7 +22,7 @@ Reference implementations:
 |---------------------------------------------|-----------------|---------|------------------------------------------------------------------------------|------------------------------------------------|----------------------------------|-------------|
 | `conv.timeline.v1`                          | Yes             | Yes     | `artifact:conv.timeline.v1`, `turn:<turn_id>`                               | End of turn (persist timeline).               | Yes (compact summary text)       | Timeline payload with blocks + metadata + **compact** sources_pool snapshot. |
 | `conv:sources_pool`                         | Yes             | Yes     | `artifact:conv:sources_pool`, `turn:<turn_id>`                              | End of turn (persist sources pool).           | Yes (compact summary text)       | Full sources pool (authoritative, progressive conversation‑level artifact). |
-| `turn.log` (`artifact:turn.log`)            | Yes             | No      | `kind:turn.log`, `artifact:turn.log`, `turn:<turn_id>`                      | End of turn when `TurnLog` is persisted.      | No                               | Minimal turn log: blocks produced this turn (JSON payload). |
+| `turn.log` (`artifact:turn.log`)            | Yes             | No      | `kind:turn.log`, `artifact:turn.log`, `turn:<turn_id>`                      | End of turn when `TurnLog` is persisted.      | No                               | Minimal turn log: blocks produced this turn (JSON payload). Index text is a compact JSON summary. |
 | `turn.log.reaction`                         | Yes             | No      | `artifact:turn.log.reaction`, `turn:<turn_id>`, `origin:<user|machine>`     | When feedback is added.                       | No                               | Feedback / reaction linked to a turn. |
 | `conv.range.summary`                        | No (index‑only) | Yes     | `artifact:conv.range.summary`, `turn:<turn_id>`                              | When context compaction runs.                 | Yes (summary text)               | Summary for a range of turns. |
 | `conv.thinking.stream`                      | No (synthesized) | No      | `artifact:conv.thinking.stream`, `turn:<turn_id>`                            | Fetch (from turn log timeline).                | No                               | Thinking items reconstructed from `react.thinking` blocks in turn log. |
@@ -36,13 +36,43 @@ Reference implementations:
   UI artifacts in the fetch payload.
 - User attachments and produced files are hosted separately (rn/hosted_uri) and referenced
   via block metadata; they are not standalone conversation artifacts here.
-- Feedback is persisted as `artifact:turn.log.reaction` and mirrored into `artifact:turn.log`.
+- Feedback is persisted as `artifact:turn.log.reaction` and mirrored into the **turn log payload**
+  (`turn_log.feedbacks[]` and `turn_log.entries[]`) inside `artifact:turn.log`.
   When cache is cold, React v2 injects `turn.feedback` blocks into the timeline and those
   blocks are persisted inside `conv.timeline.v1`.
+- React v2 refreshes feedback by querying **latest reaction per turn** (SQL `DISTINCT ON`),
+  filtered by `artifact:turn.log.reaction` tag and the timeline’s `turn_id`s.
 - `artifact:turn.log.reaction` rows store reaction JSON in `conv_messages.text`
-  (`[turn.log.reaction] ...`) for fast index-only reads.
-- `artifact:turn.log` rows store compact feedback summaries in `conv_messages.text`
-  (`[turn.log.feedbacks] {...}`) for fast index-only reads.
+  for fast index‑only reads. Shape:
+  ```json
+  {
+    "turn_id": "<turn_id>",
+    "text": "<feedback text>",
+    "confidence": 1.0,
+    "ts": "<feedback_ts>",
+    "reaction": "ok|not_ok|neutral",
+    "origin": "user|machine"
+  }
+  ```
+- `artifact:turn.log` rows store a **compact JSON summary** in `conv_messages.text`
+  for fast index‑only reads. Shape:
+  ```json
+  {
+    "turn_id": "<turn_id>",
+    "ts": "<turn_start_ts>",
+    "end_ts": "<turn_end_ts>",
+    "sources_used": [1, 2, 3],
+    "blocks_count": 42,
+    "tokens": 1234,
+    "feedback": {
+      "count": 2,
+      "last_ts": "<feedback_ts>",
+      "last_reaction": "ok|not_ok|neutral|null",
+      "last_origin": "user|machine",
+      "last_text": "<latest feedback text>"
+    }
+  }
+  ```
 - The timeline artifact stores only a lightweight sources_pool snapshot for indexing/local access;
   the full pool lives in `conv:sources_pool` and is loaded at turn start.
 - Loading happens in `ContextBrowser.load_timeline` (`kdcube_ai_app/apps/chat/sdk/solutions/react/v2/browser.py`).

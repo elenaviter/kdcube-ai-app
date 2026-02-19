@@ -7,6 +7,7 @@ assembled each turn.
 1) **History blocks**
    - Built from timeline (including any `conv.range.summary` blocks).
    - Includes prior turns (user → contributions → assistant → tool calls/results).
+   - May include `turn.feedback` blocks injected as the **last block of a turn** (cache cold only).
 
 2) **Current turn user blocks**
    - Current user prompt + attachments.
@@ -22,6 +23,8 @@ assembled each turn.
 5) **Announce block** (optional)
    - Only included if `timeline.render(include_announce=True)`.
    - Always appended at the tail; never cached.
+   - Contains `[NEW USER FEEDBACKS]` / `[NEW FEEDBACKS]` when feedback is fetched on turn start
+     and cache is hot (not injected).
 
 ---
 
@@ -134,6 +137,8 @@ Notes:
 - Artifact‑producing tools render **summary + artifact** blocks.
 - Non‑artifact tools render a single `.result` block with `logical_path`.
 - For file artifacts, the content block uses `fi:<turn_id>.files/...`; hosted metadata stays in `meta`.
+- Feedback updates are fetched **only at turn start** (timeline load). If cache is cold, they are injected
+  into the target turn and still announced once with “(incorporated into turn timeline)”.
 
 ---
 

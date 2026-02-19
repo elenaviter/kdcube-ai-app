@@ -1195,10 +1195,46 @@ class BaseWorkflow():
                     contrib_log = list(self.ctx_browser.current_turn_blocks() or [])
             except Exception:
                 contrib_log = []
+            end_ts = datetime.datetime.utcnow().isoformat() + "Z"
+            used_sids = []
+            total_tokens = 0
+            try:
+                from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.timeline import extract_sources_used_from_blocks
+                used_sids = extract_sources_used_from_blocks(contrib_log)
+            except Exception:
+                used_sids = []
+            try:
+                from kdcube_ai_app.apps.chat.sdk.util import token_count
+
+                def _block_tokens(block: dict) -> int:
+                    total = 0
+                    if not isinstance(block, dict):
+                        return 0
+                    text_val = block.get("text")
+                    if isinstance(text_val, str) and text_val:
+                        try:
+                            total += token_count(text_val)
+                        except Exception:
+                            pass
+                    b64_val = block.get("base64")
+                    if isinstance(b64_val, str) and b64_val:
+                        try:
+                            total += token_count(b64_val)
+                        except Exception:
+                            pass
+                    return total
+
+                total_tokens = sum(_block_tokens(b) for b in (contrib_log or []))
+            except Exception:
+                total_tokens = 0
             tlog = TurnLog(
                 turn_id=turn_id,
                 ts=(scratchpad.started_at or ""),
                 blocks=contrib_log,
+                end_ts=end_ts,
+                sources_used=used_sids,
+                blocks_count=len(contrib_log),
+                tokens=total_tokens,
             )
             payload = tlog.to_dict()
             # sources_pool is stored in timeline artifact, not in turn log

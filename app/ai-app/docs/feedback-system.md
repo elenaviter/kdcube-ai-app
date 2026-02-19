@@ -32,13 +32,27 @@ React v2 also **surfaces feedback to the agent** via the timeline/announce:
 
 For quick feedback discovery without fetching turn-log blobs:
 
-- `artifact:turn.log.reaction` rows store the **reaction JSON** in `conv_messages.text`
-  (prefix `[turn.log.reaction] ...`).
-- `artifact:turn.log` rows store a **compact feedback summary** in `conv_messages.text`
-  (prefix `[turn.log.feedbacks] {...}`).
+- `artifact:turn.log.reaction` rows store the **reaction JSON** in `conv_messages.text`.
+- `artifact:turn.log` rows store a **compact turn summary** (JSON) in `conv_messages.text`
+  including turn metadata and optional feedback summary.
 
-React v2 uses reaction artifacts for timeline refresh; turn logs are used in
-`memsearch` and conversation fetch APIs.
+React v2 uses reaction artifacts for timeline refresh (single SQL query,
+latest per turn). Turn logs are used in `memsearch` and conversation fetch APIs.
+
+### Recommended SQL indexes (performance)
+
+To keep the “latest reaction per turn” query fast, add:
+
+```sql
+-- Fast latest-per-turn scan
+CREATE INDEX CONCURRENTLY IF NOT EXISTS conv_messages_reaction_latest_idx
+ON conv_messages (conversation_id, turn_id, ts DESC)
+WHERE tags @> ARRAY['artifact:turn.log.reaction']::text[];
+
+-- If not already present, a general tag index helps other tag-based lookups
+CREATE INDEX CONCURRENTLY IF NOT EXISTS conv_messages_tags_gin
+ON conv_messages USING GIN (tags);
+```
 
 ### Lifecycle (high level)
 
@@ -96,10 +110,11 @@ graph TB
 
 When a React v2 session renders a timeline:
 
-1. **Collect feedbacks** for the conversation (from `artifact:turn.log` and `artifact:turn.log.reaction`).
+1. **Collect feedbacks** for the conversation (from `artifact:turn.log.reaction`).
 2. **Filter** to turns present in the timeline.
 3. **If cache is cold**, insert a `turn.feedback` block as the last block in the target turn.
 4. **If cache is hot**, do **not** mutate the timeline; include the feedback in ANNOUNCE instead.
+   Feedback continues to appear in ANNOUNCE each turn until a cold turn incorporates it.
 
 **Block shape (timeline):**
 
@@ -165,6 +180,28 @@ meta: {
 ```
 
 ---
+
+### Turn log index text (compact summary JSON)
+
+`artifact:turn.log` rows store the following compact JSON in `conv_messages.text`:
+
+```json
+{
+  "turn_id": "<turn_id>",
+  "ts": "<turn_start_ts>",
+  "end_ts": "<turn_end_ts>",
+  "sources_used": [1, 2, 3],
+  "blocks_count": 42,
+  "tokens": 1234,
+  "feedback": {
+    "count": 2,
+    "last_ts": "<feedback_ts>",
+    "last_reaction": "ok|not_ok|neutral|null",
+    "last_origin": "user|machine",
+    "last_text": "<latest feedback text>"
+  }
+}
+```
 
 ## Component Details
 

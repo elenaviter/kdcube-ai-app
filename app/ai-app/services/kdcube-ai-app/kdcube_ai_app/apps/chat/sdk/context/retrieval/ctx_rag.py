@@ -481,8 +481,9 @@ class ContextRAGClient:
     ) -> Dict[str, Any]:
         """Writes artifact to store and/or index (see index_only/store_only flags)."""
         from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.turn_log import TurnLog as V2TurnLog
-        log = V2TurnLog.from_dict(payload or {})
-        md = log.to_markdown()
+        payload = payload or {}
+        log = V2TurnLog.from_dict(payload)
+        index_text = V2TurnLog.build_index_text(payload) or ""
 
         tags = TURN_LOG_TAGS_BASE + [f"turn:{turn_id}"]
         if extra_tags:
@@ -491,7 +492,7 @@ class ContextRAGClient:
             tenant=tenant, project=project, user=user, fingerprint=None,
             conversation_id=conversation_id,
             bundle_id=bundle_id,
-            role="artifact", text=md,
+            role="artifact", text=index_text,
             id="turn.log",
             payload=payload,
             meta={"kind": "turn.log", "turn_id": turn_id},
@@ -502,7 +503,7 @@ class ContextRAGClient:
             turn_id=turn_id,
             bundle_id=bundle_id,
             role="artifact",
-            text=md, hosted_uri=hosted_uri, ts=log.ts,
+            text=index_text, hosted_uri=hosted_uri, ts=log.ts,
             tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id
         )
@@ -891,14 +892,13 @@ class ContextRAGClient:
             original_embedding = turn_log_item.get("embedding")
             original_tags = turn_log_item.get("tags") or []
 
-            # Build compact feedback text for index (SQL) entry
-            feedback_text = ""
+            # Build compact turn_log index text for SQL entry
+            index_text = ""
             try:
-                from kdcube_ai_app.apps.chat.sdk.solutions.react.feeback import Feedback
-                fb_helper = Feedback(ctx_client=None, logger_obj=logger)
-                feedback_text = fb_helper.build_turn_log_index_text(list(tl.get("feedbacks") or []))
+                from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.turn_log import TurnLog as V2TurnLog
+                index_text = V2TurnLog.build_index_text(payload)
             except Exception:
-                feedback_text = ""
+                index_text = ""
 
             # Write new blob
             hosted_uri, message_id, rn = await self.store.put_message(
@@ -919,7 +919,7 @@ class ContextRAGClient:
                 hosted_uri=hosted_uri,
                 tags=tags,
                 ts=original_ts,
-                text=feedback_text if feedback_text else "",
+                text=index_text if index_text else "",
             )
             return True
 
@@ -966,7 +966,7 @@ class ContextRAGClient:
             conversation_id=conversation_id,
             bundle_id=bundle_id,
             role="artifact",
-            text=f"[turn.log.reaction] {reaction_text}",
+            text=reaction_text,
             payload=payload,
             meta={"kind": "turn.log.reaction", "turn_id": turn_id, "origin": origin},
             id="turn.log.reaction",
@@ -977,7 +977,7 @@ class ContextRAGClient:
             user_id=user, conversation_id=conversation_id, turn_id=turn_id,
             bundle_id=bundle_id,
             role="artifact",
-            text=f"[turn.log.reaction] {reaction_text}", hosted_uri=hosted_uri, ts=payload["reaction"]["ts"],
+            text=reaction_text, hosted_uri=hosted_uri, ts=payload["reaction"]["ts"],
             tags=tags,
             ttl_days=365, user_type=user_type, embedding=None, message_id=message_id
         )
@@ -1091,14 +1091,13 @@ class ContextRAGClient:
             original_embedding = turn_log_item.get("embedding")  # Preserve embedding!
             original_tags = turn_log_item.get("tags") or []
 
-            # Build compact feedback text for index (SQL) entry
-            feedback_text = ""
+            # Build compact turn_log index text for SQL entry
+            index_text = ""
             try:
-                from kdcube_ai_app.apps.chat.sdk.solutions.react.feeback import Feedback
-                fb_helper = Feedback(ctx_client=None, logger_obj=logger)
-                feedback_text = fb_helper.build_turn_log_index_text(list(turn_log_dict.get("feedbacks") or []))
+                from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.turn_log import TurnLog as V2TurnLog
+                index_text = V2TurnLog.build_index_text(payload)
             except Exception:
-                feedback_text = ""
+                index_text = ""
 
             # 9) Write NEW S3 blob with updated payload
             hosted_uri, message_id, rn = await self.store.put_message(
@@ -1130,7 +1129,7 @@ class ContextRAGClient:
                 hosted_uri=hosted_uri,
                 tags=merged_tags,
                 ts=original_ts,  # PRESERVE original timestamp
-                text=feedback_text if feedback_text else "",
+                text=index_text if index_text else "",
             )
 
             logger.info(

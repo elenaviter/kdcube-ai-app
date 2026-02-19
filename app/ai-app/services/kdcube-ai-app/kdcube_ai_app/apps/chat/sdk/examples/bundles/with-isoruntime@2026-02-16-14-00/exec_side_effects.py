@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 
 from kdcube_ai_app.apps.chat.sdk.tools.exec_tools import run_exec_tool_side_effects
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger

@@ -51,6 +51,36 @@ class Feedback:
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
 
+    def _digest_item(self, item: FeedbackItem) -> str:
+        return self._digest_items([item])
+
+    def existing_feedback_digests(self, blocks: Iterable[Dict[str, Any]]) -> Dict[str, str]:
+        """
+        Build digest map for existing turn.feedback blocks in the timeline.
+        Keyed by feedback path.
+        """
+        out: Dict[str, str] = {}
+        for blk in (blocks or []):
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("type") != "turn.feedback":
+                continue
+            path = (blk.get("path") or "").strip()
+            if not path:
+                continue
+            meta = blk.get("meta") if isinstance(blk.get("meta"), dict) else {}
+            item = FeedbackItem(
+                turn_id=str(blk.get("turn_id") or ""),
+                ts=str(blk.get("ts") or ""),
+                text=str(blk.get("text") or ""),
+                origin=str(meta.get("origin") or ""),
+                reaction=meta.get("reaction"),
+                confidence=meta.get("confidence"),
+                from_turn_id=meta.get("from_turn_id"),
+            )
+            out[path] = self._digest_item(item)
+        return out
+
     def format_reaction_text(self, reaction: Dict[str, Any]) -> str:
         try:
             return json.dumps(reaction, ensure_ascii=False)
@@ -80,7 +110,7 @@ class Feedback:
                 "last_origin": latest.get("origin"),
                 "last_text": latest.get("text") or "",
             }
-            return "[turn.log.feedbacks] " + json.dumps(compact, ensure_ascii=False)
+            return json.dumps(compact, ensure_ascii=False)
         except Exception:
             return ""
 
@@ -88,8 +118,6 @@ class Feedback:
         if not isinstance(text, str) or not text.strip():
             return None
         raw = text.strip()
-        if raw.startswith("[turn.log.reaction]"):
-            raw = raw[len("[turn.log.reaction]"):].strip()
         if not raw:
             return None
         # Prefer JSON

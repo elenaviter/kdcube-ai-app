@@ -792,6 +792,9 @@ class Timeline:
     _cache_trace_prev: Optional[Dict[str, Any]] = field(default=None, init=False, repr=False)
     _cache_ttl_bootstrap: bool = field(default=False, init=False, repr=False)
     _suppress_prev_turn_cache: bool = field(default=False, init=False, repr=False)
+    _feedback_seen: Dict[str, str] = field(default_factory=dict, init=False, repr=False)
+    _feedback_updates: List[Dict[str, Any]] = field(default_factory=list, init=False, repr=False)
+    _feedback_updates_integrated: bool = field(default=False, init=False, repr=False)
     version: int = 1
     ts: str = ""
     blocks: List[Dict[str, Any]] = None
@@ -930,7 +933,7 @@ class Timeline:
         else:
             self.announce_blocks = [b for b in (blocks or []) if isinstance(b, dict)]
 
-    def is_cache_hot(self) -> bool:
+    def is_cache_hot(self, *, buffer_seconds: Optional[int] = None) -> bool:
         """
         Best-effort check: whether cache TTL is active and has not expired since last touch.
         Used to decide if we can mutate historical blocks without invalidating cache.
@@ -945,6 +948,21 @@ class Timeline:
             ttl = 0
         if ttl <= 0:
             return False
+        buf = 0
+        if buffer_seconds is not None:
+            try:
+                buf = max(0, int(buffer_seconds or 0))
+            except Exception:
+                buf = 0
+        else:
+            try:
+                session = getattr(self.runtime, "session", None)
+                buf = int(getattr(session, "cache_ttl_prune_buffer_seconds", 0) or 0) if session is not None else 0
+            except Exception:
+                buf = 0
+        effective_ttl = max(0, ttl - buf)
+        if effective_ttl <= 0:
+            return False
         last_touch = self.cache_last_touch_at
         try:
             last_touch_val = int(last_touch) if last_touch is not None else None
@@ -953,9 +971,205 @@ class Timeline:
         if last_touch_val is None:
             return False
         try:
-            return (int(time.time()) - last_touch_val) < ttl
+            return (int(time.time()) - last_touch_val) < effective_ttl
         except Exception:
             return False
+
+    def feedback_updates(self) -> List[Dict[str, Any]]:
+        ret = list(self._feedback_updates or [])
+        return ret
+
+    def feedback_updates_integrated(self) -> bool:
+        return bool(self._feedback_updates_integrated)
+
+    async def refresh_feedbacks(self, *, ctx_client: Any, days: int = 365) -> None:
+        if not ctx_client:
+            self._feedback_updates = []
+            self._feedback_updates_integrated = False
+            return
+        log = logger
+        from kdcube_ai_app.apps.chat.sdk.solutions.react.feeback import Feedback
+        self._feedback_updates = []
+        self._feedback_updates_integrated = False
+        try:
+            turn_ids = extract_turn_ids_from_blocks(self.blocks or [])
+        except Exception:
+            try:
+                log.error(f"[timeline.refresh_feedbacks]: failed to extract turn ids from blocks. {traceback.format_exc()}")
+            except Exception:
+                pass
+            turn_ids = []
+        if not turn_ids:
+            return
+
+        def _ts_to_epoch(ts_val: Any) -> Optional[float]:
+            if isinstance(ts_val, (int, float)):
+                val = float(ts_val)
+                if val > 1e12:
+                    val = val / 1000.0
+                return val
+            if isinstance(ts_val, str):
+                s = ts_val.strip()
+                if not s:
+                    return None
+                try:
+                    if s.endswith("Z"):
+                        s = s[:-1] + "+00:00"
+                    dt = _dt.datetime.fromisoformat(s)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=_dt.timezone.utc)
+                    return dt.timestamp()
+                except Exception:
+                    try:
+                        val = float(s)
+                        if val > 1e12:
+                            val = val / 1000.0
+                        return val
+                    except Exception:
+                        return None
+            return None
+
+        def _epoch_to_iso(val: float) -> str:
+            try:
+                return _dt.datetime.fromtimestamp(val, tz=_dt.timezone.utc).isoformat().replace("+00:00", "Z")
+            except Exception:
+                return ""
+
+        def _earliest_turn_ts() -> str:
+            earliest_val: Optional[float] = None
+            for blk in (self.blocks or []):
+                if not isinstance(blk, dict):
+                    continue
+                if (blk.get("turn_id") or "").strip() == "":
+                    continue
+                ts_val = blk.get("ts")
+                epoch = _ts_to_epoch(ts_val)
+                if epoch is None:
+                    continue
+                if earliest_val is None or epoch < earliest_val:
+                    earliest_val = epoch
+            return _epoch_to_iso(earliest_val) if earliest_val is not None else ""
+
+        fb = Feedback(ctx_client=ctx_client, logger_obj=log)
+        since_ts = (self.last_known_feedback_ts or "").strip()
+        if not since_ts:
+            since_ts = _earliest_turn_ts()
+
+        try:
+            log.info(
+                f"[timeline.refresh_feedbacks] query: user={self.runtime.user_id} "
+                f"conv={self.runtime.conversation_id} turn_ids={len(turn_ids)} "
+                f"since_ts={since_ts or ''} days={days}"
+            )
+        except Exception:
+            pass
+
+        recent_by_turn = await fb.collect_recent(
+            user_id=self.runtime.user_id,
+            conversation_id=self.runtime.conversation_id,
+            turn_ids=turn_ids,
+            since_ts=since_ts or None,
+            days=days,
+        )
+        try:
+            count_recent = sum(len(v or []) for v in (recent_by_turn or {}).values())
+            log.info(
+                f"[timeline.refresh_feedbacks] query results: turns={len(recent_by_turn or {})} "
+                f"items={count_recent}"
+            )
+        except Exception:
+            pass
+
+        updates, seen_map = fb.diff_updates(
+            feedbacks_by_turn=recent_by_turn,
+            seen_map=self._feedback_seen,
+        )
+        pre_existing_digests = fb.existing_feedback_digests(self.blocks or [])
+
+        integrated = False
+        full_by_turn = recent_by_turn
+        cache_hot = False
+        try:
+            cache_hot = bool(self.is_cache_hot())
+            session = getattr(self.runtime, "session", None)
+            ttl_seconds = getattr(session, "cache_ttl_seconds", None) if session is not None else None
+            if ttl_seconds is None:
+                ttl_seconds = getattr(self.runtime, "cache_ttl_seconds", None)
+            buf_seconds = getattr(session, "cache_ttl_prune_buffer_seconds", 0) if session is not None else 0
+            log.info(
+                "[timeline.refresh_feedbacks] cache_hot="
+                f"{cache_hot} ttl={ttl_seconds} buffer={buf_seconds} last_touch={self.cache_last_touch_at}"
+            )
+        except Exception:
+            pass
+
+        # Only inject on cold cache. No additional fetches here; use already collected results.
+        if not cache_hot:
+            try:
+                integrated = fb.ensure_blocks(timeline=self, feedbacks_by_turn=full_by_turn)
+                if integrated:
+                    self.write_local()
+            except Exception:
+                try:
+                    log.error(f"[timeline.refresh_feedbacks]: failed to ensure_blocks. {traceback.format_exc()}")
+                except Exception:
+                    pass
+                integrated = False
+
+        # Build updates for announce (only when changed since last seen).
+        updates_payload: List[Dict[str, Any]] = []
+        if updates:
+            turn_ts_map: Dict[str, str] = {}
+            for blk in (self.blocks or []):
+                if not isinstance(blk, dict):
+                    continue
+                tid = (blk.get("turn_id") or "").strip()
+                if not tid or tid in turn_ts_map:
+                    continue
+                ts_val = blk.get("ts")
+                ts = ts_val.strip() if isinstance(ts_val, str) else ""
+                if ts:
+                    turn_ts_map[tid] = ts
+
+            for item in updates:
+                path = fb._path_for(item)
+                if pre_existing_digests.get(path) == fb._digest_item(item):
+                    continue
+                updates_payload.append({
+                    "turn_id": item.turn_id,
+                    "turn_ts": turn_ts_map.get(item.turn_id, ""),
+                    "feedback_ts": item.ts,
+                    "origin": item.origin,
+                    "reaction": item.reaction,
+                    "text": item.text,
+                })
+
+        try:
+            log.info(
+                f"[timeline.refresh_feedbacks] announce: items={len(updates_payload)} "
+                f"integrated={integrated} cache_hot={cache_hot}"
+            )
+        except Exception:
+            pass
+
+        # Update last-known feedback timestamp ONLY for feedbacks that are incorporated into the timeline.
+        if not cache_hot and updates:
+            incorporated: List[Any] = []
+            if integrated:
+                incorporated = list(updates)
+            else:
+                for item in updates:
+                    path = fb._path_for(item)
+                    if pre_existing_digests.get(path) == fb._digest_item(item):
+                        incorporated.append(item)
+            if incorporated:
+                last_ts = fb.max_ts(incorporated)
+                if last_ts:
+                    self.last_known_feedback_ts = last_ts
+
+        self._feedback_seen = seen_map
+        self._feedback_updates = updates_payload
+        self._feedback_updates_integrated = bool(integrated)
     def visible_paths(self) -> set[str]:
         paths: set[str] = set()
         blocks = self._apply_hidden_replacements(self._collect_blocks())
