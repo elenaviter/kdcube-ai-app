@@ -7,6 +7,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 def configure_cors(app: FastAPI):
     config_str = os.environ.get("CORS_CONFIG")
+    allow_origins = None
     if config_str is not None and config_str != "":
         cors_config:Dict = json.loads(config_str)
         allow_origins = cors_config.get("allow_origins") or ["*"]
@@ -20,3 +21,4 @@ def configure_cors(app: FastAPI):
             allow_methods=allow_methods,
             allow_headers=allow_headers,
         )
+    return allow_origins

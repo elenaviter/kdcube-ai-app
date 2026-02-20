@@ -358,7 +358,7 @@ app = FastAPI(
 )
 
 # CORS middleware for React frontend
-configure_cors(app)
+allowed_origins = configure_cors(app)
 
 # ================================
 # MIDDLEWARE
