@@ -91,7 +91,7 @@ def _pick_namespace_exists(store: ConversationStore, tenant: str, project: str,
     Try both namespaces (registered/anonymous) with the provided owner_id token.
     rel_builder(who,user_or_fp) -> relative key to check.
     """
-    for who in ("registered", "anonymous", "privileged"):
+    for who in ("registered", "anonymous", "privileged", "paid"):
         rel = rel_builder(who, owner_id)
         if store.backend.exists(rel):
             return who, owner_id
