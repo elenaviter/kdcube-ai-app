@@ -3,7 +3,11 @@
 # kdcube_ai_app/infra/plugin/bundle_registry.py
 
 from __future__ import annotations
-import json, os, threading
+import asyncio
+import json
+import logging
+import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -11,6 +15,7 @@ from typing import Optional, Dict, Any
 _REG_LOCK = threading.RLock()
 _REGISTRY: Dict[str, Dict[str, Any]] = {}
 _DEFAULT_ID: Optional[str] = None
+logger = logging.getLogger(__name__)
 
 @dataclass
 class BundleSpec:
@@ -227,58 +232,75 @@ def upsert_bundles(partial: Dict[str, Dict[str, Any]], default_id: Optional[str]
 
 def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] = None) -> Optional[BundleSpec]:
     """Return the effective BundleSpec from (id OR override)."""
+    if override and (override.get("path") or override.get("git_url") or override.get("git_repo")):
+        d = _normalize({
+            "id": override.get("id") or "override",
+            "path": override.get("path") or "",
+            "module": override.get("module"),
+            "singleton": bool(override.get("singleton", False)),
+            "name": override.get("name"),
+            "description": override.get("description"),
+            "git_url": override.get("git_url") or override.get("git_repo"),
+            "git_ref": override.get("git_ref"),
+            "git_subdir": override.get("git_subdir"),
+        })
+        return BundleSpec(**d)
+
     with _REG_LOCK:
-        if override and (override.get("path") or override.get("git_url") or override.get("git_repo")):
-            d = _normalize({
-                "id": override.get("id") or "override",
-                "path": override.get("path") or "",
-                "module": override.get("module"),
-                "singleton": bool(override.get("singleton", False)),
-                "name": override.get("name"),
-                "description": override.get("description"),
-                "git_url": override.get("git_url") or override.get("git_repo"),
-                "git_ref": override.get("git_ref"),
-                "git_subdir": override.get("git_subdir"),
-            })
-            return BundleSpec(**d)
         bid = bundle_id or _DEFAULT_ID
-        print(f"[resolve_bundle]. Default bundle id = {_DEFAULT_ID}\nRegistry={_REGISTRY}\nRequested id = {bundle_id}\nUsing id = {bid}")
         if not bid or bid not in _REGISTRY:
             return None
         spec_dict = dict(_REGISTRY[bid])
-        git_url = spec_dict.get("git_url") or spec_dict.get("git_repo")
-        if git_url:
-            try:
-                from kdcube_ai_app.infra.plugin.git_bundle import ensure_git_bundle, resolve_bundles_root
-                from pathlib import Path as _Path
-                atomic = os.environ.get("BUNDLE_GIT_ATOMIC", "1").lower() in {"1", "true", "yes"}
-                force_pull = os.environ.get("BUNDLE_GIT_ALWAYS_PULL", "0").lower() in {"1", "true", "yes"}
-                path_val = (spec_dict.get("path") or "").strip()
-                need_pull = force_pull or (not path_val) or (not _Path(path_val).exists())
-                if need_pull:
-                    paths = ensure_git_bundle(
-                        bundle_id=spec_dict.get("id"),
-                        git_url=git_url,
-                        git_ref=spec_dict.get("git_ref"),
-                        git_subdir=spec_dict.get("git_subdir"),
-                        bundles_root=resolve_bundles_root(),
-                        atomic=atomic,
+
+    git_url = spec_dict.get("git_url") or spec_dict.get("git_repo")
+    if git_url:
+        try:
+            from kdcube_ai_app.infra.plugin.git_bundle import ensure_git_bundle, resolve_bundles_root
+            from pathlib import Path as _Path
+            atomic = os.environ.get("BUNDLE_GIT_ATOMIC", "1").lower() in {"1", "true", "yes"}
+            force_pull = os.environ.get("BUNDLE_GIT_ALWAYS_PULL", "0").lower() in {"1", "true", "yes"}
+            path_val = (spec_dict.get("path") or "").strip()
+            need_pull = force_pull or (not path_val) or (not _Path(path_val).exists())
+            if need_pull:
+                paths = ensure_git_bundle(
+                    bundle_id=spec_dict.get("id"),
+                    git_url=git_url,
+                    git_ref=spec_dict.get("git_ref"),
+                    git_subdir=spec_dict.get("git_subdir"),
+                    bundles_root=resolve_bundles_root(),
+                    atomic=atomic,
+                )
+                spec_dict["path"] = str(paths.bundle_root)
+                try:
+                    import subprocess
+                    proc = subprocess.run(
+                        ["git", "-C", str(paths.repo_root), "rev-parse", "HEAD"],
+                        check=True, capture_output=True, text=True,
                     )
-                    spec_dict["path"] = str(paths.bundle_root)
-                    try:
-                        import subprocess
-                        proc = subprocess.run(
-                            ["git", "-C", str(paths.repo_root), "rev-parse", "HEAD"],
-                            check=True, capture_output=True, text=True,
-                        )
-                        commit = (proc.stdout or "").strip()
-                        if commit:
-                            spec_dict["git_commit"] = commit
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-        return BundleSpec(**spec_dict)
+                    commit = (proc.stdout or "").strip()
+                    if commit:
+                        spec_dict["git_commit"] = commit
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug("resolve_bundle git resolution failed: %s", e)
+
+    return BundleSpec(**spec_dict)
+
+
+async def resolve_bundle_async(bundle_id: Optional[str], override: Optional[Dict[str, Any]] = None) -> Optional[BundleSpec]:
+    """Async wrapper around resolve_bundle (runs in thread pool)."""
+    return await asyncio.to_thread(resolve_bundle, bundle_id, override)
+
+
+async def set_registry_async(registry: Dict[str, Dict[str, Any]], default_id: Optional[str]) -> None:
+    """Async wrapper around set_registry (runs in thread pool)."""
+    await asyncio.to_thread(set_registry, registry, default_id)
+
+
+async def upsert_bundles_async(partial: Dict[str, Dict[str, Any]], default_id: Optional[str]) -> None:
+    """Async wrapper around upsert_bundles (runs in thread pool)."""
+    await asyncio.to_thread(upsert_bundles, partial, default_id)
 
 
 async def load_registry(redis, logger):
@@ -286,7 +308,7 @@ async def load_registry(redis, logger):
         from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store
 
         persisted = await _load_store(redis)  # tenant/project inferred from env
-        set_registry(
+        await set_registry_async(
             {bid: be.model_dump() for bid, be in persisted.bundles.items()},
             persisted.default_bundle_id
         )

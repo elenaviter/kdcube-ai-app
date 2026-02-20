@@ -29,6 +29,11 @@ Plan quotas are seeded once by a master bundle:
 - After the first seed, use the admin UI to adjust limits.
 - If you change code defaults, update DB policies in the admin UI or clear the table to re‑seed.
 
+Window semantics (global per tenant/project):
+- Hourly tokens: rolling 60‑minute window (minute buckets).
+- Monthly requests/tokens: rolling 30‑day window anchored to first usage per tenant/project.
+- Daily: calendar day (UTC).
+
 ## Maintenance Jobs
 
 ### 1) Subscription rollover sweep
@@ -118,6 +123,10 @@ Recommended routine checks:
 - Subscription balances for paid users: `GET /subscriptions/user/{user_id}`
 - Expired reservation cleanup: `POST /subscriptions/reservations/reap-all`
 - Project budget balance: `GET /app-budget/status`
+
+Redis note:
+- Hourly token counters are stored as minute buckets under `toks:hour:bucket:{epoch_minute}` (rolling 60‑minute window).
+- Global quota scope uses bundle id `__project__` (subject_id already includes tenant/project).
 
 ## Deployment Notes
 

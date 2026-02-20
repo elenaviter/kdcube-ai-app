@@ -2056,6 +2056,7 @@ async def get_user_budget_breakdown(
         plan_id: Optional[str] = Query(None, description="Plan id override (free, payasyougo, admin, etc.)"),
         role: Optional[str] = Query(None, description="Optional role hint (registered, paid, privileged, anonymous)"),
         user_type: Optional[str] = Query(None, description="Deprecated: role hint (registered, paid, privileged, anonymous)"),
+        bundle_id: Optional[str] = Query(None, description="Optional bundle id for per-bundle windows"),
         include_expired_override: bool = Query(True),
         reservations_limit: int = Query(50, ge=0, le=500),
         session: UserSession = Depends(auth_without_pressure())
@@ -2109,6 +2110,7 @@ async def get_user_budget_breakdown(
         base_policy=base_policy,
         include_expired_override=include_expired_override,
         reservations_limit=reservations_limit,
+        bundle_ids=[bundle_id] if bundle_id else None,
     )
 
 # ============================================================================

@@ -1127,10 +1127,13 @@ class UserBudgetBreakdownService:
         from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import (
             UserEconomicsRateLimiter,
             _merge_policy_with_tier_balance,
+            _k,
+            subject_id_of,
         )
         from kdcube_ai_app.infra.accounting.usage import llm_output_price_usd_per_token, quote_tokens_for_usd
 
         bundle_ids = bundle_ids or ["*"]
+        now = datetime.utcnow().replace(tzinfo=timezone.utc)
 
         # -------- tier balance snapshots (for display + for effective merge) --------
         tier_full = await self._tier_snapshot.get_user_tier_balance(
@@ -1150,7 +1153,7 @@ class UserBudgetBreakdownService:
         # -------- usage counters from RL (Redis) --------
         rl = UserEconomicsRateLimiter(self._redis)
         usage_breakdown = await rl.breakdown(
-            tenant=tenant, project=project, user_id=user_id, bundle_ids=bundle_ids
+            tenant=tenant, project=project, user_id=user_id, bundle_ids=bundle_ids, now=now
         )
 
         totals = usage_breakdown.get("totals") or {}
@@ -1162,6 +1165,45 @@ class UserBudgetBreakdownService:
 
         # -------- effective policy (override semantics) --------
         effective_policy = _merge_policy_with_tier_balance(base_policy, tier_effective) if tier_effective else base_policy
+
+        # -------- rolling window reset info (per bundle, optional) --------
+        reset_windows = None
+        if bundle_ids and len(bundle_ids) == 1 and bundle_ids[0] != "*":
+            bundle_id = bundle_ids[0]
+            subject_id = subject_id_of(tenant, project, user_id)
+
+            hour_reset_at = None
+            tokens_per_hour = getattr(effective_policy, "tokens_per_hour", None)
+            if tokens_per_hour is not None:
+                bucket_prefix = _k(rl.ns, bundle_id, subject_id, "toks:hour:bucket")
+                _, reset_at = await rl._rolling_hour_stats(
+                    bucket_prefix,
+                    now,
+                    limit=int(tokens_per_hour or 0),
+                    reserved=0,
+                )
+                if reset_at:
+                    hour_reset_at = datetime.fromtimestamp(reset_at, tz=timezone.utc).isoformat()
+
+            month_reset_at = None
+            has_month_limit = (
+                getattr(effective_policy, "requests_per_month", None) is not None
+                or getattr(effective_policy, "tokens_per_month", None) is not None
+            )
+            period_start, period_end, period_key = await rl._rolling_month_period(
+                bundle_id=bundle_id,
+                subject_id=subject_id,
+                now=now,
+                create_if_missing=False,
+            )
+            if has_month_limit and period_end:
+                month_reset_at = period_end.isoformat()
+
+            reset_windows = {
+                "bundle_id": bundle_id,
+                "hour_reset_at": hour_reset_at,
+                "month_reset_at": month_reset_at,
+            }
 
         # Remaining (NOTE: not clamped to >=0; admin wants to see negative headroom too)
         remaining_req_day = self._calc_remaining(getattr(effective_policy, "requests_per_day", None), req_day)
@@ -1350,6 +1392,7 @@ class UserBudgetBreakdownService:
                 "tokens_this_month_usd": _usd(tok_month),
                 "concurrent": 0,
             },
+            "reset_windows": reset_windows,
             "remaining": {
                 "requests_today": remaining_req_day,
                 "requests_this_month": remaining_req_month,

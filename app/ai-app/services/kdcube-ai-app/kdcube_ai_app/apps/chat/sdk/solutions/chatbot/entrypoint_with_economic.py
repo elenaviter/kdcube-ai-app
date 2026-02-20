@@ -227,6 +227,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             QuotaInsight,
             compute_quota_insight,
             subject_id_of,
+            GLOBAL_BUNDLE_ID,
         )
         from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import QuotaPolicy, EconomicsLimitException
         from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import _merge_policy_with_tier_balance
@@ -242,6 +243,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         lock_released = False
 
         bundle_id = self.config.ai_bundle_spec.id
+        rl_bundle_id = GLOBAL_BUNDLE_ID
 
         def _j(obj) -> str:
             try:
@@ -370,7 +372,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             if self.redis is None:
                 _log("quota_lock", "Redis unavailable; quota_lock disabled", "WARN")
                 return
-            quota_lock_key = f"quota_lock:{tenant}:{project}:{user_id}:{scope}:{bundle_id}"
+            quota_lock_key = f"quota_lock:{tenant}:{project}:{user_id}:{scope}:{rl_bundle_id}"
             quota_lock_token = secrets.token_hex(16)
             ttl_sec = 60
             wait_total_sec = 5.0
@@ -438,7 +440,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             "Initialized run()",
             tenant=tenant, project=project,
             user_id=user_id, user_type=role,
-            thread_id=thread_id, turn_id=turn_id, bundle_id=bundle_id,
+            thread_id=thread_id, turn_id=turn_id, bundle_id=bundle_id, rl_bundle_id=rl_bundle_id,
             text_len=len((state.get("text") or "")),
         )
         if budget_bypass:
@@ -699,7 +701,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
         async def _admit_tier() -> AdmitResult:
             try:
                 return await self.rl.admit(
-                    bundle_id=bundle_id,
+                    bundle_id=rl_bundle_id,
                     subject_id=self.subj,
                     policy=base_policy,
                     lock_id=lock_id, lock_ttl_sec=180,
@@ -712,21 +714,21 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             except TypeError:
                 _log("admit.tier", "rl.admit lacks apply_tier_override; calling without", "WARN")
                 return await self.rl.admit(
-                    bundle_id=bundle_id, subject_id=self.subj, policy=base_policy,
+                    bundle_id=rl_bundle_id, subject_id=self.subj, policy=base_policy,
                     lock_id=lock_id, lock_ttl_sec=180,
                 )
 
         async def _admit_paid(p: QuotaPolicy) -> AdmitResult:
             try:
                 return await self.rl.admit(
-                    bundle_id=bundle_id, subject_id=self.subj, policy=p,
+                    bundle_id=rl_bundle_id, subject_id=self.subj, policy=p,
                     lock_id=lock_id, lock_ttl_sec=180,
                     apply_tier_override=False,
                 )
             except TypeError:
                 _log("admit.paid", "rl.admit lacks apply_tier_override; calling without", "WARN")
                 return await self.rl.admit(
-                    bundle_id=bundle_id, subject_id=self.subj, policy=p,
+                    bundle_id=rl_bundle_id, subject_id=self.subj, policy=p,
                     lock_id=lock_id, lock_ttl_sec=180,
                 )
 
@@ -737,7 +739,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             if tier_reservation_id:
                 try:
                     await self.rl.release_token_reservation(
-                        bundle_id=bundle_id,
+                        bundle_id=rl_bundle_id,
                         subject_id=self.subj,
                         reservation_id=tier_reservation_id,
                         now=tier_admit_now,
@@ -748,7 +750,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                     tier_reserved_tokens = 0
 
             if not lock_released:
-                await self.rl.release(bundle_id=bundle_id, subject_id=self.subj, lock_id=lock_id)
+                await self.rl.release(bundle_id=rl_bundle_id, subject_id=self.subj, lock_id=lock_id)
                 lock_released = True
 
             lane = "paid"
@@ -994,7 +996,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             try:
                 if tier_reservation_active and tier_reservation_id:
                     await self.rl.release_token_reservation(
-                        bundle_id=bundle_id, subject_id=self.subj,
+                        bundle_id=rl_bundle_id, subject_id=self.subj,
                         reservation_id=tier_reservation_id,
                         now=tier_admit_now,
                     )
@@ -1004,7 +1006,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
 
             try:
                 if not lock_released:
-                    await self.rl.release(bundle_id=bundle_id, subject_id=self.subj, lock_id=lock_id)
+                    await self.rl.release(bundle_id=rl_bundle_id, subject_id=self.subj, lock_id=lock_id)
                     _log("rl.release", f"Released lock ({reason})", lock_id=lock_id)
             except Exception as ex:
                 _log("rl.release", f"Failed to release lock ({reason})", "WARN", error=str(ex))
@@ -1409,6 +1411,20 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                     lane_name=lane,
                 )
                 post_run_violations = _post_run_violations(effective_policy, post_run_snapshot)
+                try:
+                    if getattr(effective_policy, "tokens_per_hour", None) is not None:
+                        prefix = f"{self.rl.ns}:{rl_bundle_id}:{self.subj}:toks:hour:bucket"
+                        tok_h_now, reset_at = await self.rl._rolling_hour_stats(
+                            prefix,
+                            now,
+                            limit=getattr(effective_policy, "tokens_per_hour", None),
+                            reserved=0,
+                        )
+                        post_run_snapshot["tok_hour"] = int(tok_h_now or 0)
+                        if reset_at:
+                            post_run_snapshot["tok_hour_reset_at"] = int(reset_at)
+                except Exception as ex:
+                    _log("rate_limit", "Failed to compute rolling-hour reset", "WARN", error=str(ex))
 
             if budget_bypass or use_subscription_funding or project_funding:
                 tier_covered_tokens = int(ranked_tokens)
@@ -1522,7 +1538,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 if not funding_limiter:
                     await self.budget_limiter.force_project_spend(
                         spent_usd=float(app_spend_usd),
-                        bundle_id=bundle_id,
+                        bundle_id=rl_bundle_id,
                         provider=None,
                         request_id=turn_id,
                         user_id=user_id,
@@ -1595,7 +1611,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 tokens_to_commit = int(ranked_tokens) if ranked_tokens > 0 else int(tier_covered_tokens)
                 if lane == "tier":
                     await self.rl.commit_with_reservation(
-                        bundle_id=bundle_id,
+                        bundle_id=rl_bundle_id,
                         subject_id=self.subj,
                         tokens=tokens_to_commit,
                         lock_id=lock_id,
@@ -1614,7 +1630,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                     )
                 elif lane == "paid":
                     await self.rl.commit_with_reservation(
-                        bundle_id=bundle_id,
+                        bundle_id=rl_bundle_id,
                         subject_id=self.subj,
                         tokens=tokens_to_commit,
                         lock_id=lock_id,
@@ -1629,7 +1645,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                         tokens=tokens_to_commit,
                     )
                 else:
-                    await self.rl.release(bundle_id=bundle_id, subject_id=self.subj, lock_id=lock_id)
+                    await self.rl.release(bundle_id=rl_bundle_id, subject_id=self.subj, lock_id=lock_id)
                     lock_released = True
                     _log("rl.release", "RL lock released", lane=lane)
 

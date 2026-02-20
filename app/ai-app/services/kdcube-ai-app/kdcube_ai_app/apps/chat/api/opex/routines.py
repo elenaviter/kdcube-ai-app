@@ -452,7 +452,7 @@ async def _run_bundle_cleanup_once() -> None:
     try:
         from kdcube_ai_app.infra.plugin.bundle_registry import get_all
         from kdcube_ai_app.infra.plugin.git_bundle import (
-            cleanup_old_git_bundles,
+            cleanup_old_git_bundles_async,
             resolve_bundles_root,
             bundle_dir_for_git,
         )
@@ -466,7 +466,7 @@ async def _run_bundle_cleanup_once() -> None:
             if not git_url:
                 continue
             base_dir = bundle_dir_for_git(bid, entry.get("git_ref"))
-            removed = cleanup_old_git_bundles(
+            removed = await cleanup_old_git_bundles_async(
                 bundle_id=base_dir,
                 bundles_root=resolve_bundles_root(),
                 active_paths=active_paths,

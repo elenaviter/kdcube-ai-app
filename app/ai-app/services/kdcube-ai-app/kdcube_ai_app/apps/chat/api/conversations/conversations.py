@@ -19,7 +19,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 )
 from kdcube_ai_app.auth.AuthManager import RequireUser
 from kdcube_ai_app.auth.sessions import UserSession
-from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
 from kdcube_ai_app.apps.chat.sdk.tools.citations import strip_base64_from_citables_artifact
 
 """
@@ -288,8 +288,7 @@ async def delete_conversation(
 
     # Bundle scoping (same pattern as feedback endpoints)
     try:
-        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
-        spec_resolved = resolve_bundle(None, override=None)
+        spec_resolved = await resolve_bundle_async(None, override=None)
         bundle_id = spec_resolved.id
     except Exception:
         bundle_id = None
@@ -398,7 +397,7 @@ async def submit_turn_feedback(
         # Get tenant, project info from session or config
         user_type = session.user_type if hasattr(session, 'user_type') else 'standard'
 
-        spec_resolved = resolve_bundle(None, override=None)
+        spec_resolved = await resolve_bundle_async(None, override=None)
         bundle_id = spec_resolved.id
         # CASE 1: Clear feedback (reaction is null)
         if req.reaction is None:
@@ -408,7 +407,7 @@ async def submit_turn_feedback(
                 conversation_id=conversation_id
             )
             # Also scrub mirrored entries from turn log
-            spec_resolved = resolve_bundle(None, override=None)
+            spec_resolved = await resolve_bundle_async(None, override=None)
             bundle_id = spec_resolved.id
             _ = await router.state.conversation_browser.clear_user_feedback_in_turn_log(
                 tenant=tenant,
@@ -540,7 +539,7 @@ async def fetch_turns_with_feedbacks(
         raise HTTPException(status_code=401, detail="No user in session")
 
     try:
-        spec_resolved = resolve_bundle(None, override=None)
+        spec_resolved = await resolve_bundle_async(None, override=None)
         bundle_id = spec_resolved.id
 
         data = await router.state.conversation_browser.fetch_turns_with_feedbacks(
@@ -614,7 +613,7 @@ async def conversations_with_feedbacks_in_period(
     try:
         # Keep the implementation detail in the conversation_browser to match your existing architecture
         # and to allow swapping storage/index strategies without touching the API surface.
-        spec_resolved = resolve_bundle(None, override=None)
+        spec_resolved = await resolve_bundle_async(None, override=None)
         bundle_id = spec_resolved.id
 
         result = await router.state.conversation_browser.fetch_feedback_conversations_in_period(

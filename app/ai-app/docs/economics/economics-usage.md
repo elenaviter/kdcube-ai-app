@@ -28,13 +28,10 @@ Important: changing namespaces changes the Redis key-space (effectively resets u
 
 ## Data model overview
 
-### A) User tier + credits (PostgreSQL)
-**Table:** `kdcube_control_plane.user_tier_balance`
-Stores TWO things in one row:
-1) **Tier override** (temporary replacement of tier limits; optional `expires_at`)
-2) **Lifetime token budget** (purchased tokens that deplete)
-
-Also used for metadata (`purchase_id`, `purchase_amount_usd`, notes).
+### A) User tier overrides + credits (PostgreSQL)
+**Tables:**
+- `kdcube_control_plane.user_tier_overrides` — temporary quota overrides (expires).
+- `kdcube_control_plane.user_lifetime_credits` — wallet credits (lifetime tokens).
 
 ### B) User credit reservations (PostgreSQL)
 **Table:** `kdcube_control_plane.user_token_reservations`
@@ -44,18 +41,29 @@ Reservations are short-lived (TTL) and are either:
 - `reserved` → then later `committed` or `released`
 - auto-ignored after expiry
 
-### C) Economic RL (Redis)
+### C) Plan quota policies (PostgreSQL)
+**Table:** `kdcube_control_plane.plan_quota_policies`
+
+- Base quota envelopes keyed by `plan_id`.
+- Runtime resolves `plan_id` per request and applies these limits.
+
+### D) Economic RL (Redis)
 **Module:** `UserEconomicsRateLimiter`
 
-Tracks:
+Tracks (quota counters are global per tenant/project; accounting still uses bundle = product):
 - Concurrency: ZSET lock (members have expiry timestamps)
-- Requests: day/month/total counters
-- Tokens: hour/day/month counters
+- Requests: day / rolling‑30‑day / total counters
+- Tokens: rolling‑hour / day / rolling‑30‑day counters
 - Last turn: `last_turn_tokens`, `last_turn_at`
 
-This is tier-aware:
-- Base tier policy comes from user_type (free/paid/premium/admin)
-- Optional tier override is pulled from `TierBalanceManager` and merged as **OVERRIDE** (not additive)
+Policy source:
+- Base policy comes from **plan_id** (not role).
+- Optional tier override is pulled from `user_tier_overrides` and merged as **OVERRIDE** (not additive).
+
+Window semantics:
+- Hourly tokens: **rolling 60‑minute** window (minute buckets).
+- Monthly requests/tokens: **rolling 30‑day** window anchored to first usage per tenant/project.
+- Daily: calendar day (UTC).
 
 ### D) Project budget (money) (PostgreSQL + Redis analytics)
 **Module:** `ProjectBudgetLimiter`
@@ -79,18 +87,19 @@ Redis is for fast spend reporting / analytics only.
 
 Inputs:
 - `subject_id = "{tenant}:{project}:{user_id}"` (or session-scoped variant)
-- `bundle_id` (e.g. orchestrator name)
-- `base_policy` (derived from `session.user_type`)
-- optional `tier_override` (from `TierBalanceManager`)
+- `bundle_id` (product id for accounting/analytics)
+- `base_policy` (derived from `plan_id`)
+- optional `tier_override` (from `user_tier_overrides`)
 
 Process:
 1) Load tier override (if enabled) and compute **effective policy**:
     - If override exists and is not expired → override any configured limits.
     - Otherwise use base policy.
 
-2) Read current counters from Redis:
-    - reqs: day/month/total
-    - toks: hour/day/month
+2) Read current counters from Redis (global quota scope):
+   - Global quota counters use bundle id `__project__` in Redis keys.
+    - reqs: day / rolling‑30‑day / total
+    - toks: rolling‑hour / day / rolling‑30‑day
 
 3) Check policy violations:
     - requests_per_day / month / total
@@ -105,7 +114,8 @@ Output:
 - `AdmitResult(allowed, reason, lock_id, snapshot, used_tier_override, effective_policy)`
 
 Important semantics:
-- Token limits are **post-paid**: we check based on committed counters from previous turns.
+- Token limits are **post‑paid**: checks are based on committed counters from previous turns.
+- Hourly window is rolling; monthly is rolling 30‑day (anchored to first usage per tenant/project).
 - Concurrency lock is released at commit (or forced release on error).
 
 ---
@@ -119,7 +129,7 @@ Charging order:
 2) **Project budget** — money-based, deducted from tenant/project balance
 
 ### 2.1 User lifetime credits (token budget)
-Module: `TierBalanceManager`
+Module: `UserCreditsManager`
 - Reserve before work (optional but strongly recommended):
     - `reserve_lifetime_tokens(...)`
 - Commit after we know actual token usage:
@@ -151,13 +161,13 @@ Overdraft:
 
 We have 4 “budget dimensions”:
 
-### 3.1 Base tier quotas (per user_type)
+### 3.1 Base plan quotas (per plan_id)
 Stored as policies (control plane):
-- free / paid / premium / admin (your mapping)
-  Enforced by Economic RL (Redis counters).
+- `plan_quota_policies` keyed by `plan_id`
+- Enforced by Economic RL (Redis counters, global per tenant/project)
 
 ### 3.2 Tier override (temporary replacement)
-Stored in `user_tier_balance`, with optional expiry.
+Stored in `user_tier_overrides`, with optional expiry.
 Semantics: **OVERRIDE**, not additive.
 
 Use cases:
@@ -167,7 +177,7 @@ Use cases:
 - admin “grant user more limits for N days”
 
 ### 3.3 User lifetime credits (depleting token bucket)
-Stored in `user_tier_balance`:
+Stored in `user_lifetime_credits`:
 - lifetime_tokens_purchased
 - lifetime_tokens_consumed
 
@@ -181,7 +191,7 @@ Use cases:
 Stored in `tenant_project_budget` and ledger.
 Used when:
 - user credits are insufficient OR not present
-- tier says user can use the service but the company is paying
+- plan admits the request but funding is project‑paid (registered role)
 
 Common management operations:
 - top up

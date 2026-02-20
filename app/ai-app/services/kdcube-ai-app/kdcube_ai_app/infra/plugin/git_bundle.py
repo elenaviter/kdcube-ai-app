@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 import subprocess
@@ -311,6 +312,54 @@ def cleanup_old_git_bundles(
     if removed:
         log.log(f"[git.bundle] cleaned {removed} old bundles for {bundle_id}", level="INFO")
     return removed
+
+
+async def ensure_git_bundle_async(
+    *,
+    bundle_id: Optional[str],
+    git_url: str,
+    git_ref: Optional[str] = None,
+    git_subdir: Optional[str] = None,
+    bundles_root: Optional[pathlib.Path] = None,
+    logger: Optional[AgentLogger] = None,
+    atomic: bool = False,
+) -> GitBundlePaths:
+    """
+    Async wrapper around ensure_git_bundle (runs in thread pool).
+    """
+    return await asyncio.to_thread(
+        ensure_git_bundle,
+        bundle_id=bundle_id,
+        git_url=git_url,
+        git_ref=git_ref,
+        git_subdir=git_subdir,
+        bundles_root=bundles_root,
+        logger=logger,
+        atomic=atomic,
+    )
+
+
+async def cleanup_old_git_bundles_async(
+    *,
+    bundle_id: str,
+    bundles_root: Optional[pathlib.Path] = None,
+    keep: Optional[int] = None,
+    ttl_hours: Optional[int] = None,
+    active_paths: Optional[Iterable[str]] = None,
+    logger: Optional[AgentLogger] = None,
+) -> int:
+    """
+    Async wrapper around cleanup_old_git_bundles (runs in thread pool).
+    """
+    return await asyncio.to_thread(
+        cleanup_old_git_bundles,
+        bundle_id=bundle_id,
+        bundles_root=bundles_root,
+        keep=keep,
+        ttl_hours=ttl_hours,
+        active_paths=active_paths,
+        logger=logger,
+    )
 
 
 def _delete_dir(path: pathlib.Path) -> None:

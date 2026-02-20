@@ -179,10 +179,10 @@ async def _load_bundle_props_defaults(
         session: UserSession,
 ) -> Dict[str, Any]:
     from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
-    from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+    from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
     from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
 
-    spec_resolved = resolve_bundle(bundle_id, override=None)
+    spec_resolved = await resolve_bundle_async(bundle_id, override=None)
     if not spec_resolved:
         raise HTTPException(status_code=404, detail=f"Bundle {bundle_id} not found")
 
@@ -387,7 +387,7 @@ async def admin_set_bundles(
     tenant_id = payload.tenant or settings.TENANT
     project_id = payload.project or settings.PROJECT
     from kdcube_ai_app.infra.plugin.bundle_registry import (
-        set_registry, upsert_bundles, serialize_to_env, get_all, get_default_id
+        set_registry_async, upsert_bundles_async, serialize_to_env, get_all, get_default_id
     )
     from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
     from kdcube_ai_app.infra.plugin.bundle_store import (
@@ -408,9 +408,9 @@ async def admin_set_bundles(
     # If targeting the current tenant/project, update in-memory registry/env too
     if tenant_id == settings.TENANT and project_id == settings.PROJECT:
         if payload.op == "replace":
-            set_registry(payload.bundles, payload.default_bundle_id)
+            await set_registry_async(payload.bundles, payload.default_bundle_id)
         elif payload.op == "merge":
-            upsert_bundles(payload.bundles, payload.default_bundle_id)
+            await upsert_bundles_async(payload.bundles, payload.default_bundle_id)
         else:
             raise HTTPException(status_code=400, detail="Invalid op; use 'replace' or 'merge'")
         reg = get_all()
@@ -450,7 +450,7 @@ async def admin_reset_bundles_from_env(
 ):
     settings = get_settings()
     from kdcube_ai_app.infra.plugin.bundle_store import reset_registry_from_env
-    from kdcube_ai_app.infra.plugin.bundle_registry import set_registry, serialize_to_env
+    from kdcube_ai_app.infra.plugin.bundle_registry import set_registry_async, serialize_to_env
     from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
 
     tenant_id = (payload.tenant if payload else None) or settings.TENANT
@@ -466,7 +466,7 @@ async def admin_reset_bundles_from_env(
     bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
     # Mirror to in-memory registry/env only for current tenant/project
     if tenant_id == settings.TENANT and project_id == settings.PROJECT:
-        set_registry(bundles_dict, reg.default_bundle_id)
+        await set_registry_async(bundles_dict, reg.default_bundle_id)
         serialize_to_env(bundles_dict, reg.default_bundle_id)
         clear_agentic_caches()
 
@@ -560,7 +560,7 @@ async def call_bundle_op(
     Returns generic JSON from the bundle, or an empty suggestions list when not implemented.
     """
     from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
-    from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+    from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
     from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec, get_workflow_instance
 
     config_data = {}
@@ -583,7 +583,7 @@ async def call_bundle_op(
     request_id = str(uuid.uuid4())
 
     # 1) Resolve bundle from the in-process registry (keeps processor-owned semantics)
-    spec_resolved = resolve_bundle(config_request.agentic_bundle_id, override=None)
+    spec_resolved = await resolve_bundle_async(config_request.agentic_bundle_id, override=None)
     if not spec_resolved:
         raise HTTPException(status_code=404, detail=f"Bundle {config_request.agentic_bundle_id} not found")
 
@@ -629,7 +629,7 @@ async def call_bundle_op(
     except Exception as e:
         logger.exception(f"[get_bundle_suggestions.{tenant}.{project}] Failed to load bundle {asdict(spec)}")
         try:
-            admin_spec = resolve_bundle("kdcube.admin", override=None)
+            admin_spec = await resolve_bundle_async("kdcube.admin", override=None)
             if not admin_spec:
                 raise e
             wf_config.ai_bundle_spec = admin_spec

@@ -14,6 +14,9 @@ from redis.asyncio import Redis
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import QuotaPolicy
 from kdcube_ai_app.infra.namespaces import REDIS
 
+# Global enforcement scope (per tenant/project via subject_id).
+GLOBAL_BUNDLE_ID = "__project__"
+
 # --------- helpers (keys / time) ---------
 def _k(ns: str, bundle: str, subject: str, *parts: str) -> str:
     """
@@ -25,7 +28,6 @@ def _k(ns: str, bundle: str, subject: str, *parts: str) -> str:
     return ":".join([ns, bundle, subject, *parts])
 
 def _ymd(dt: datetime) -> str:  return dt.strftime("%Y%m%d")
-def _ym(dt: datetime) -> str:   return dt.strftime("%Y%m")
 def _ymdh(dt: datetime) -> str: return dt.strftime("%Y%m%d%H")
 
 def _eod(dt: datetime) -> int:
@@ -56,7 +58,7 @@ def _strs(*items) -> list[str]:
 #  2  req_day
 #  3  req_month
 #  4  req_total
-#  5  tok_hour
+#  5  tok_hour_prefix (rolling buckets)
 #  6  tok_day
 #  7  tok_month
 #  8  tok_hour_resv
@@ -87,7 +89,7 @@ local locks = KEYS[1]
 local req_d_k = KEYS[2]
 local req_m_k = KEYS[3]
 local req_t_k = KEYS[4]
-local tok_h_k = KEYS[5]
+local tok_h_prefix = KEYS[5]
 local tok_d_k = KEYS[6]
 local tok_m_k = KEYS[7]
 local tok_hr_k = KEYS[8]
@@ -158,7 +160,20 @@ local req_d = tonumber(redis.call("GET", req_d_k) or "0")
 local req_m = tonumber(redis.call("GET", req_m_k) or "0")
 local req_t = tonumber(redis.call("GET", req_t_k) or "0")
 
-local tok_h = tonumber(redis.call("GET", tok_h_k) or "0")
+local function hour_bucket_key(minute)
+  return tok_h_prefix .. ":" .. tostring(minute)
+end
+
+local min_now = math.floor(now / 60)
+local tok_h = 0
+local buckets = {}
+for i = min_now - 59, min_now do
+  local v = tonumber(redis.call("GET", hour_bucket_key(i)) or "0")
+  if v and v > 0 then
+    tok_h = tok_h + v
+    table.insert(buckets, {i, v})
+  end
+end
 local tok_d = tonumber(redis.call("GET", tok_d_k) or "0")
 local tok_m = tonumber(redis.call("GET", tok_m_k) or "0")
 
@@ -169,6 +184,22 @@ local tok_mr = tonumber(redis.call("GET", tok_mr_k) or "0")
 
 -- Effective usage for checks = committed + reserved
 local tok_h_eff = tok_h + tok_hr
+local tok_h_reset_at = 0
+if lim_tok_h >= 0 and tok_h_eff > lim_tok_h then
+  local target = lim_tok_h - tok_hr
+  if target < 0 then target = 0 end
+  local running = tok_h
+  for j = 1, #buckets do
+    running = running - buckets[j][2]
+    if running <= target then
+      tok_h_reset_at = (buckets[j][1] * 60) + 3600
+      break
+    end
+  end
+  if tok_h_reset_at == 0 and #buckets > 0 then
+    tok_h_reset_at = (buckets[#buckets][1] * 60) + 3600
+  end
+end
 local tok_d_eff = tok_d + tok_dr
 local tok_m_eff = tok_m + tok_mr
 
@@ -187,7 +218,7 @@ if lim_tok_d >= 0 and tok_d_eff >= lim_tok_d then add_violation("tokens_per_day"
 if lim_tok_m >= 0 and tok_m_eff >= lim_tok_m then add_violation("tokens_per_month") end
 
 if reason ~= "" then
-  return {0, reason, req_d, req_m, req_t, tok_h_eff, tok_d_eff, tok_m_eff, 0, 0}
+  return {0, reason, req_d, req_m, req_t, tok_h_eff, tok_d_eff, tok_m_eff, 0, 0, tok_h_reset_at}
 end
 
 -- Concurrency
@@ -214,7 +245,7 @@ if maxc and maxc > 0 then
     in_flight = current
   else
     if current >= maxc then
-      return {0, "concurrency", req_d, req_m, req_t, tok_h_eff, tok_d_eff, tok_m_eff, current, 0}
+      return {0, "concurrency", req_d, req_m, req_t, tok_h_eff, tok_d_eff, tok_m_eff, current, 0, tok_h_reset_at}
     end
     redis.call("ZADD", locks, lock_exp, lock_id)
 
@@ -293,7 +324,7 @@ if want_resv and want_resv > 0 and resv_id and resv_id ~= "" then
   end
 end
 
-return {1, "", req_d, req_m, req_t, tok_h_eff, tok_d_eff, tok_m_eff, in_flight, reserved}
+return {1, "", req_d, req_m, req_t, tok_h_eff, tok_d_eff, tok_m_eff, in_flight, reserved, tok_h_reset_at}
 """
 
 # KEYS: resv_index_zset, resv_data_hash
@@ -371,7 +402,7 @@ _LUA_COMMIT_WITH_RESERVATION = r"""
 local d_reqs = KEYS[1]
 local m_reqs = KEYS[2]
 local t_reqs = KEYS[3]
-local h_toks = KEYS[4]
+local h_toks_prefix = KEYS[4]
 local d_toks = KEYS[5]
 local m_toks = KEYS[6]
 local last_t = KEYS[7]
@@ -471,7 +502,10 @@ end
 
 -- commit token counters
 if inc_tok and inc_tok > 0 then
-  redis.call("INCRBY", h_toks, inc_tok); redis.call("EXPIREAT", h_toks, exp_hour)
+  local min = math.floor(now_ts / 60)
+  local hk = h_toks_prefix .. ":" .. tostring(min)
+  redis.call("INCRBY", hk, inc_tok)
+  redis.call("EXPIRE", hk, 7200)
   redis.call("INCRBY", d_toks, inc_tok); redis.call("EXPIREAT", d_toks, exp_day)
   redis.call("INCRBY", m_toks, inc_tok); redis.call("EXPIREAT", m_toks, exp_mon)
 end
@@ -542,13 +576,13 @@ return {1, current + 1, maxc}
 """
 
 # Atomic commit: +1 request, +tokens into hour/day/month, write last_turn_*, release lock
-# KEYS: d_reqs, m_reqs, t_reqs, h_toks, d_toks, m_toks, last_tok, last_at, locks_zset, commit_dedupe_key
+# KEYS: d_reqs, m_reqs, t_reqs, h_toks_prefix, d_toks, m_toks, last_tok, last_at, locks_zset, commit_dedupe_key
 # ARGV: inc_req, inc_tokens, exp_day, exp_mon, exp_hour, now_ts, lock_id
 _LUA_COMMIT = r"""
 local d_reqs = KEYS[1]
 local m_reqs = KEYS[2]
 local t_reqs = KEYS[3]
-local h_toks = KEYS[4]
+local h_toks_prefix = KEYS[4]
 local d_toks = KEYS[5]
 local m_toks = KEYS[6]
 local last_t = KEYS[7]
@@ -596,7 +630,10 @@ if inc_req > 0 then
 end
 
 if inc_tok > 0 then
-  redis.call('INCRBY', h_toks, inc_tok); redis.call('EXPIREAT', h_toks, exp_hour)
+  local min = math.floor(now_ts / 60)
+  local hk = h_toks_prefix .. ":" .. tostring(min)
+  redis.call("INCRBY", hk, inc_tok)
+  redis.call("EXPIRE", hk, 7200)
   redis.call('INCRBY', d_toks, inc_tok); redis.call('EXPIREAT', d_toks, exp_day)
   redis.call('INCRBY', m_toks, inc_tok); redis.call('EXPIREAT', m_toks, exp_mon)
 end
@@ -678,7 +715,7 @@ class AdmitResult:
     reason: Optional[str]
     lock_id: Optional[str]
     # snapshot after admission (remaining or current readings)
-    snapshot: Dict[str, int]     # {req_day, req_month, req_total, tok_hour, tok_day, tok_month, in_flight}
+    snapshot: Dict[str, int]     # {req_day, req_month, req_total, tok_hour, tok_day, tok_month, in_flight, tok_hour_reset_at?}
     # tier balance info (for transparency)
     used_tier_override: bool = False
     effective_policy: Optional[Dict[str, Any]] = None  # Merged policy used for admission
@@ -702,11 +739,11 @@ class UserEconomicsRateLimiter:
     Redis Keys (bundle-scoped with namespace prefix):
       kdcube:economics:rl:{bundle}:{subject}:locks
       kdcube:economics:rl:{bundle}:{subject}:reqs:day:{YYYYMMDD}
-      kdcube:economics:rl:{bundle}:{subject}:reqs:month:{YYYYMM}
+      kdcube:economics:rl:{bundle}:{subject}:reqs:month:{period_key}
       kdcube:economics:rl:{bundle}:{subject}:reqs:total
-      kdcube:economics:rl:{bundle}:{subject}:toks:hour:{YYYYMMDDHH}
+      kdcube:economics:rl:{bundle}:{subject}:toks:hour:bucket:{epoch_minute}
       kdcube:economics:rl:{bundle}:{subject}:toks:day:{YYYYMMDD}
-      kdcube:economics:rl:{bundle}:{subject}:toks:month:{YYYYMM}
+      kdcube:economics:rl:{bundle}:{subject}:toks:month:{period_key}
       kdcube:economics:rl:{bundle}:{subject}:last_turn_tokens
       kdcube:economics:rl:{bundle}:{subject}:last_turn_at
 
@@ -717,7 +754,7 @@ class UserEconomicsRateLimiter:
     Example:
       kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:locks
       kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:reqs:day:20250515
-      kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:toks:hour:2025051514
+      kdcube:economics:rl:kdcube.codegen.orchestrator:tenant-a:project-x:user123:toks:hour:bucket:29187612
     """
 
     def __init__(
@@ -773,7 +810,12 @@ class UserEconomicsRateLimiter:
             AdmitResult with allowed status, snapshot, and tier balance info
         """
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
-        ymd, ym, ymdh = _ymd(now), _ym(now), _ymdh(now)
+        ymd, ymdh = _ymd(now), _ymdh(now)
+        period_start, period_end, period_key = await self._rolling_month_period(
+            bundle_id=bundle_id,
+            subject_id=subject_id,
+            now=now,
+        )
 
         # Parse subject_id to get tenant, project, user_id
         subject_parts = subject_id.split(":")
@@ -806,21 +848,20 @@ class UserEconomicsRateLimiter:
         k_locks = _k(self.ns, bundle_id, subject_id, "locks")
 
         k_req_d = _k(self.ns, bundle_id, subject_id, "reqs:day", ymd)
-        k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", ym)
+        k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", period_key)
         k_req_t = _k(self.ns, bundle_id, subject_id, "reqs:total")
 
-        k_tok_h = _k(self.ns, bundle_id, subject_id, "toks:hour", ymdh)
+        k_tok_h_prefix = _k(self.ns, bundle_id, subject_id, "toks:hour:bucket")
         k_tok_d = _k(self.ns, bundle_id, subject_id, "toks:day", ymd)
-        k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", ym)
+        k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", period_key)
 
         # Reserved keys
         k_tok_hr = _k(self.ns, bundle_id, subject_id, "toks_resv:hour", ymdh)
         k_tok_dr = _k(self.ns, bundle_id, subject_id, "toks_resv:day", ymd)
-        k_tok_mr = _k(self.ns, bundle_id, subject_id, "toks_resv:month", ym)
+        k_tok_mr = _k(self.ns, bundle_id, subject_id, "toks_resv:month", period_key)
 
         k_resv_idx = _k(self.ns, bundle_id, subject_id, "toks_resv:index")
         k_resv_map = _k(self.ns, bundle_id, subject_id, "toks_resv:data")
-
 
         def _lim(x: Optional[int]) -> int:
             return int(x) if x is not None else -1
@@ -835,7 +876,7 @@ class UserEconomicsRateLimiter:
                 *_strs(
                     k_locks,
                     k_req_d, k_req_m, k_req_t,
-                    k_tok_h, k_tok_d, k_tok_m,
+                    k_tok_h_prefix, k_tok_d, k_tok_m,
                     k_tok_hr, k_tok_dr, k_tok_mr,
                     k_resv_idx, k_resv_map,
                 ),
@@ -854,7 +895,7 @@ class UserEconomicsRateLimiter:
                     resv_id,
                     now_ts + int(reservation_ttl_sec),
                     _eod(now),
-                    _eom(now),
+                    int(period_end.timestamp()),
                     _eoh(now),
                     )
             )
@@ -865,6 +906,8 @@ class UserEconomicsRateLimiter:
             tok_h_eff = int(out[5] or 0); tok_d_eff = int(out[6] or 0); tok_m_eff = int(out[7] or 0)
             in_flight = int(out[8] or 0)
             reserved = int(out[9] or 0)
+            tok_h_reset_at = int(out[10] or 0)
+            month_reset_at = int(period_end.timestamp())
 
             return AdmitResult(
                 allowed=allowed,
@@ -875,6 +918,8 @@ class UserEconomicsRateLimiter:
                     # IMPORTANT: snapshot includes committed+reserved (effective usage)
                     "tok_hour": tok_h_eff, "tok_day": tok_d_eff, "tok_month": tok_m_eff,
                     "in_flight": in_flight,
+                    "tok_hour_reset_at": tok_h_reset_at,
+                    "month_reset_at": month_reset_at,
                 },
                 used_tier_override=used_tier_override,
                 effective_policy=asdict(effective_policy) if used_tier_override else None,
@@ -883,9 +928,15 @@ class UserEconomicsRateLimiter:
             )
 
         # ---- read current counters
-        vals = await self.r.mget(k_req_d, k_req_m, k_req_t, k_tok_h, k_tok_d, k_tok_m)
+        vals = await self.r.mget(k_req_d, k_req_m, k_req_t, k_tok_d, k_tok_m)
         req_d = int(vals[0] or 0); req_m = int(vals[1] or 0); req_t = int(vals[2] or 0)
-        tok_h = int(vals[3] or 0); tok_d = int(vals[4] or 0); tok_m = int(vals[5] or 0)
+        tok_d = int(vals[3] or 0); tok_m = int(vals[4] or 0)
+        tok_h, tok_h_reset_at = await self._rolling_hour_stats(
+            k_tok_h_prefix,
+            now,
+            limit=getattr(effective_policy, "tokens_per_hour", None),
+            reserved=0,
+        )
 
         # ---- policy checks using EFFECTIVE policy (base + tier override)
         violations = []
@@ -905,6 +956,8 @@ class UserEconomicsRateLimiter:
                     "req_day": req_d, "req_month": req_m, "req_total": req_t,
                     "tok_hour": tok_h, "tok_day": tok_d, "tok_month": tok_m,
                     "in_flight": 0,
+                    "tok_hour_reset_at": tok_h_reset_at,
+                    "month_reset_at": int(period_end.timestamp()),
                 },
                 used_tier_override=used_tier_override,
                 effective_policy=asdict(effective_policy) if used_tier_override else None,
@@ -981,15 +1034,20 @@ class UserEconomicsRateLimiter:
             raise ValueError("UserEconomicsRateLimiter.commit(): lock_id is required (dedupe safety).")
 
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
-        ymd, ym, ymdh = _ymd(now), _ym(now), _ymdh(now)
+        ymd, ymdh = _ymd(now), _ymdh(now)
+        period_start, period_end, period_key = await self._rolling_month_period(
+            bundle_id=bundle_id,
+            subject_id=subject_id,
+            now=now,
+        )
 
         k_req_d = _k(self.ns, bundle_id, subject_id, "reqs:day", ymd)
-        k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", ym)
+        k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", period_key)
         k_req_t = _k(self.ns, bundle_id, subject_id, "reqs:total")
 
-        k_tok_h = _k(self.ns, bundle_id, subject_id, "toks:hour", ymdh)
+        k_tok_h_prefix = _k(self.ns, bundle_id, subject_id, "toks:hour:bucket")
         k_tok_d = _k(self.ns, bundle_id, subject_id, "toks:day", ymd)
-        k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", ym)
+        k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", period_key)
 
         k_last_t = _k(self.ns, bundle_id, subject_id, "last_turn_tokens")
         k_last_a = _k(self.ns, bundle_id, subject_id, "last_turn_at")
@@ -1003,7 +1061,7 @@ class UserEconomicsRateLimiter:
             10,
             *_strs(
                 k_req_d, k_req_m, k_req_t,
-                k_tok_h, k_tok_d, k_tok_m,
+                k_tok_h_prefix, k_tok_d, k_tok_m,
                 k_last_t, k_last_a, k_locks,
                 k_commit,
             ),
@@ -1011,7 +1069,7 @@ class UserEconomicsRateLimiter:
                 1,                      # +1 request
                 int(tokens or 0),       # +tokens
                 _eod(now),              # day EXPIREAT
-                _eom(now),              # month EXPIREAT
+                int(period_end.timestamp()),  # month EXPIREAT
                 _eoh(now),              # hour EXPIREAT
                 int(now.timestamp()),   # last_at
                 str(lock_id),           # release this member
@@ -1075,7 +1133,6 @@ class UserEconomicsRateLimiter:
         """
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
         ymd = _ymd(now)
-        ym = _ym(now)
 
         subject_id = subject_id_of(tenant, project, user_id)
 
@@ -1126,18 +1183,32 @@ class UserEconomicsRateLimiter:
 
         for bundle_id in bundle_ids:
             k_req_d = _k(self.ns, bundle_id, subject_id, "reqs:day", ymd)
-            k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", ym)
+            period_start, period_end, period_key = await self._rolling_month_period(
+                bundle_id=bundle_id,
+                subject_id=subject_id,
+                now=now,
+                create_if_missing=False,
+            )
             k_req_t = _k(self.ns, bundle_id, subject_id, "reqs:total")
             k_tok_d = _k(self.ns, bundle_id, subject_id, "toks:day", ymd)
-            k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", ym)
             k_locks = _k(self.ns, bundle_id, subject_id, "locks")
 
-            vals = await self.r.mget(k_req_d, k_req_m, k_req_t, k_tok_d, k_tok_m)
-            req_d = int(vals[0] or 0)
-            req_m = int(vals[1] or 0)
-            req_t = int(vals[2] or 0)
-            tok_d = int(vals[3] or 0)
-            tok_m = int(vals[4] or 0)
+            if period_key:
+                k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", period_key)
+                k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", period_key)
+                vals = await self.r.mget(k_req_d, k_req_m, k_req_t, k_tok_d, k_tok_m)
+                req_d = int(vals[0] or 0)
+                req_m = int(vals[1] or 0)
+                req_t = int(vals[2] or 0)
+                tok_d = int(vals[3] or 0)
+                tok_m = int(vals[4] or 0)
+            else:
+                vals = await self.r.mget(k_req_d, k_req_t, k_tok_d)
+                req_d = int(vals[0] or 0)
+                req_t = int(vals[1] or 0)
+                tok_d = int(vals[2] or 0)
+                req_m = 0
+                tok_m = 0
             concurrent = await self.r.zcard(k_locks)
 
             bundles[bundle_id] = {
@@ -1157,6 +1228,92 @@ class UserEconomicsRateLimiter:
             totals["tokens_this_month"] += tok_m
 
         return {"bundles": bundles, "totals": totals}
+
+    async def _rolling_hour_stats(
+            self,
+            bucket_prefix: str,
+            now: datetime,
+            *,
+            limit: Optional[int] = None,
+            reserved: int = 0,
+    ) -> tuple[int, int]:
+        """
+        Return (tokens_last_hour, reset_at_epoch_sec).
+
+        reset_at_epoch_sec is 0 if not over limit or limit not set.
+        """
+        min_now = int(now.timestamp()) // 60
+        minutes = list(range(min_now - 59, min_now + 1))
+        keys = [f"{bucket_prefix}:{m}" for m in minutes]
+        vals = await self.r.mget(*keys)
+
+        buckets: list[tuple[int, int]] = []
+        total = 0
+        for m, v in zip(minutes, vals):
+            if v:
+                amt = int(v)
+                if amt > 0:
+                    buckets.append((m, amt))
+                    total += amt
+
+        reset_at = 0
+        if limit is not None and int(limit) >= 0 and (total + int(reserved or 0)) > int(limit):
+            target = int(limit) - int(reserved or 0)
+            if target < 0:
+                target = 0
+            running = total
+            for m, amt in buckets:
+                running -= amt
+                if running <= target:
+                    reset_at = (m * 60) + 3600
+                    break
+            if reset_at == 0 and buckets:
+                reset_at = (buckets[-1][0] * 60) + 3600
+
+        return total, reset_at
+
+    async def _rolling_month_period(
+            self,
+            *,
+            bundle_id: str,
+            subject_id: str,
+            now: datetime,
+            create_if_missing: bool = True,
+    ) -> tuple[Optional[datetime], Optional[datetime], Optional[str]]:
+        """
+        Per-user rolling 30-day period anchored to first usage.
+        Returns (period_start, period_end, period_key).
+        If create_if_missing is False and no anchor exists, returns (None, None, None).
+        """
+        anchor_key = _k(self.ns, bundle_id, subject_id, "month_anchor")
+        now_ts = int(now.timestamp())
+
+        anchor_raw = await self.r.get(anchor_key)
+        if anchor_raw is None:
+            if not create_if_missing:
+                return None, None, None
+            if await self.r.setnx(anchor_key, now_ts):
+                anchor_ts = now_ts
+            else:
+                anchor_raw = await self.r.get(anchor_key)
+                anchor_ts = int(anchor_raw or now_ts)
+        else:
+            anchor_ts = int(anchor_raw)
+
+        if anchor_ts > now_ts:
+            anchor_ts = now_ts
+
+        period_len = 30 * 24 * 60 * 60
+        elapsed = max(now_ts - anchor_ts, 0)
+        periods = elapsed // period_len
+
+        period_start_ts = anchor_ts + (periods * period_len)
+        period_end_ts = period_start_ts + period_len
+
+        period_start = datetime.fromtimestamp(period_start_ts, tz=timezone.utc)
+        period_end = datetime.fromtimestamp(period_end_ts, tz=timezone.utc)
+        period_key = period_start.strftime("%Y%m%d%H%M")
+        return period_start, period_end, period_key
 
     async def release_token_reservation(
             self,
@@ -1199,15 +1356,20 @@ class UserEconomicsRateLimiter:
             raise ValueError("commit_with_reservation(): lock_id or reservation_id is required (dedupe safety).")
 
         now = (now or datetime.utcnow()).replace(tzinfo=timezone.utc)
-        ymd, ym, ymdh = _ymd(now), _ym(now), _ymdh(now)
+        ymd, ymdh = _ymd(now), _ymdh(now)
+        period_start, period_end, period_key = await self._rolling_month_period(
+            bundle_id=bundle_id,
+            subject_id=subject_id,
+            now=now,
+        )
 
         k_req_d = _k(self.ns, bundle_id, subject_id, "reqs:day", ymd)
-        k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", ym)
+        k_req_m = _k(self.ns, bundle_id, subject_id, "reqs:month", period_key)
         k_req_t = _k(self.ns, bundle_id, subject_id, "reqs:total")
 
-        k_tok_h = _k(self.ns, bundle_id, subject_id, "toks:hour", ymdh)
+        k_tok_h_prefix = _k(self.ns, bundle_id, subject_id, "toks:hour:bucket")
         k_tok_d = _k(self.ns, bundle_id, subject_id, "toks:day", ymd)
-        k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", ym)
+        k_tok_m = _k(self.ns, bundle_id, subject_id, "toks:month", period_key)
 
         k_last_t = _k(self.ns, bundle_id, subject_id, "last_turn_tokens")
         k_last_a = _k(self.ns, bundle_id, subject_id, "last_turn_at")
@@ -1225,7 +1387,7 @@ class UserEconomicsRateLimiter:
             12,
             *_strs(
                 k_req_d, k_req_m, k_req_t,
-                k_tok_h, k_tok_d, k_tok_m,
+                k_tok_h_prefix, k_tok_d, k_tok_m,
                 k_last_t, k_last_a, k_locks,
                 k_resv_idx, k_resv_map,
                 k_commit
@@ -1234,7 +1396,7 @@ class UserEconomicsRateLimiter:
                 int(inc_request or 0),
                 int(tokens or 0),
                 _eod(now),
-                _eom(now),
+                int(period_end.timestamp()),
                 _eoh(now),
                 int(now.timestamp()),
                 lock_id or "",
@@ -1330,7 +1492,12 @@ def _messages_remaining_from_remaining(remaining: Dict[str, Optional[int]]) -> O
     return min(candidates)
 
 
-def _retry_after_from_violations(violations: List[str], *, now: Optional[datetime] = None) -> Tuple[Optional[int], Optional[str]]:
+def _retry_after_from_violations(
+    violations: List[str],
+    *,
+    now: Optional[datetime] = None,
+    snapshot: Optional[Dict[str, int]] = None,
+) -> Tuple[Optional[int], Optional[str]]:
     """
     Given violated quota names (matching the strings from RateLimiter.admit),
     compute TTL until the user is allowed again.
@@ -1352,10 +1519,28 @@ def _retry_after_from_violations(violations: List[str], *, now: Optional[datetim
             ttl = max(_eod(now) - now_ts, 0)
             candidates.append(("day", ttl))
         elif v in ("requests_per_month", "tokens_per_month"):
-            ttl = max(_eom(now) - now_ts, 0)
+            reset_at = None
+            if snapshot:
+                try:
+                    reset_at = int(snapshot.get("month_reset_at") or 0)
+                except Exception:
+                    reset_at = None
+            if reset_at and reset_at > now_ts:
+                ttl = max(reset_at - now_ts, 0)
+            else:
+                ttl = max(_eom(now) - now_ts, 0)
             candidates.append(("month", ttl))
         elif v == "tokens_per_hour":
-            ttl = max(_eoh(now) - now_ts, 0)
+            reset_at = None
+            if snapshot:
+                try:
+                    reset_at = int(snapshot.get("tok_hour_reset_at") or 0)
+                except Exception:
+                    reset_at = None
+            if reset_at and reset_at > now_ts:
+                ttl = max(reset_at - now_ts, 0)
+            else:
+                ttl = max(_eoh(now) - now_ts, 0)
             candidates.append(("hour", ttl))
         # total_requests has no reset; concurrency is not a quota window → ignore
 
@@ -1453,7 +1638,7 @@ def compute_quota_insight(
     remaining = _remaining_from_policy(policy, snapshot)
     violations: List[str] = (reason or "").split("|") if reason else []
 
-    retry_after_sec, retry_scope = _retry_after_from_violations(violations, now=now)
+    retry_after_sec, retry_scope = _retry_after_from_violations(violations, now=now, snapshot=snapshot)
 
     # Calculate messages_remaining from REQUEST quotas
     request_remaining = _messages_remaining_from_remaining(remaining)
@@ -1492,4 +1677,3 @@ def compute_quota_insight(
     )
 
     return qi
-

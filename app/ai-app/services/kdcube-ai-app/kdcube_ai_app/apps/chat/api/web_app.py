@@ -129,7 +129,7 @@ async def lifespan(app: FastAPI):
         We receive a ready-to-use ChatCommunicator and pass it into the workflow.
         """
         import inspect
-        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
         from kdcube_ai_app.infra.plugin.agentic_loader import get_workflow_instance
         from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
 
@@ -137,7 +137,7 @@ async def lifespan(app: FastAPI):
         cfg_req = ConfigRequest(**(comm_context.config.values or {}))
         wf_config = create_workflow_config(cfg_req)
         bundle_id = comm_context.routing.bundle_id
-        spec_resolved = resolve_bundle(bundle_id, override=None)
+        spec_resolved = await resolve_bundle_async(bundle_id, override=None)
 
         wf_config.ai_bundle_spec = spec_resolved
         spec = AgenticBundleSpec(
@@ -155,7 +155,7 @@ async def lifespan(app: FastAPI):
             )
         except Exception as e:
             try:
-                admin_spec = resolve_bundle("kdcube.admin", override=None)
+                admin_spec = await resolve_bundle_async("kdcube.admin", override=None)
                 if not admin_spec:
                     raise e
                 wf_config.ai_bundle_spec = admin_spec
@@ -430,24 +430,6 @@ async def root():
     }
 
 
-@app.post("/landing/test-embeddings")
-async def check_embeddings_endpoint(request: ConfigRequest,
-                                    session: UserSession = Depends(auth_without_pressure())):
-    """Test embedding configuration"""
-    try:
-        from kdcube_ai_app.infra.service_hub.inventory import probe_embeddings
-        return probe_embeddings(request)
-    except Exception as e:
-        import traceback
-        logger.error(f"Error testing embeddings: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": f"Error testing embeddings: {str(e)}",
-                "embedder_id": request.selected_embedder
-            }
-        )
-
 @app.get("/profile")
 # think of replacing with auth_without_pressure
 async def get_profile(session: UserSession = Depends(get_user_session_dependency())):
@@ -478,55 +460,6 @@ async def get_profile(session: UserSession = Depends(get_user_session_dependency
             "session_id": session.session_id,
             "created_at": session.created_at
         }
-
-@app.get("/landing/models")
-async def get_available_models(session: UserSession = Depends(require_auth(RequireUser()))):
-    """Get available model configurations"""
-    return {
-        "available_models": {
-            model_id: {
-                "id": model_id,
-                "name": config["model_name"],
-                "provider": config["provider"],
-                "has_classifier": config["has_classifier"],
-                "description": config["description"]
-            }
-            for model_id, config in MODEL_CONFIGS.items()
-        },
-        "default_model": "gpt-4o"
-    }
-
-@app.get("/landing/embedders")
-async def get_available_embedders(session: UserSession = Depends(require_auth(RequireUser()))):
-    """Get available embedding configurations"""
-    available_embedders = {
-        "available_embedders": {
-            embedder_id: {
-                "id": embedder_id,
-                "provider": config["provider"],
-                "model": config["model_name"],
-                "dimension": config["dim"],
-                "description": config["description"]
-            }
-            for embedder_id, config in EMBEDDERS.items()
-        },
-        "default_embedder": "openai-text-embedding-3-small",
-        "providers": {
-            "openai": {
-                "name": "OpenAI",
-                "description": "OpenAI's embedding models",
-                "requires_api_key": True,
-                "requires_endpoint": False
-            },
-            "custom": {
-                "name": "Custom/HuggingFace",
-                "description": "Custom embedding endpoints (HuggingFace, etc.)",
-                "requires_api_key": False,
-                "requires_endpoint": True
-            }
-        }
-    }
-    return available_embedders
 
 # ================================
 # MONITORING ENDPOINTS

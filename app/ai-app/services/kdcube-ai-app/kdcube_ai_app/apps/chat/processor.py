@@ -179,7 +179,7 @@ class EnhancedChatRequestProcessor:
         import kdcube_ai_app.infra.namespaces as namespaces
         from kdcube_ai_app.apps.chat.sdk.config import get_settings
         from kdcube_ai_app.infra.plugin.bundle_registry import (
-            set_registry, serialize_to_env, get_all, get_default_id
+            set_registry_async, serialize_to_env, get_all, get_default_id
         )
         from kdcube_ai_app.infra.plugin.agentic_loader import clear_agentic_caches
         from kdcube_ai_app.infra.plugin.bundle_store import (
@@ -225,7 +225,7 @@ class EnhancedChatRequestProcessor:
                     except Exception:
                         logger.warning("Invalid registry payload; ignoring")
                         continue
-                    set_registry(
+                    await set_registry_async(
                         {bid: be.model_dump() for bid, be in reg.bundles.items()},
                         reg.default_bundle_id
                     )
@@ -266,7 +266,7 @@ class EnhancedChatRequestProcessor:
                     except Exception as e:
                         logger.error(f"Failed to persist/broadcast bundles: {e}")
 
-                    set_registry(
+                    await set_registry_async(
                         {bid: be.model_dump() for bid, be in reg.bundles.items()},
                         reg.default_bundle_id
                     )
@@ -282,7 +282,7 @@ class EnhancedChatRequestProcessor:
                 if evt.get("type") == "bundles.cleanup":
                     from kdcube_ai_app.infra.plugin.agentic_loader import evict_inactive_specs, AgenticBundleSpec
                     from kdcube_ai_app.infra.plugin.git_bundle import (
-                        cleanup_old_git_bundles,
+                        cleanup_old_git_bundles_async,
                         resolve_bundles_root,
                         bundle_dir_for_git,
                     )
@@ -316,7 +316,7 @@ class EnhancedChatRequestProcessor:
                             if not git_url:
                                 continue
                             base_dir = bundle_dir_for_git(_bid, entry.get("git_ref"))
-                            cleanup_old_git_bundles(
+                            await cleanup_old_git_bundles_async(
                                 bundle_id=base_dir,
                                 bundles_root=resolve_bundles_root(),
                                 active_paths=active_paths,

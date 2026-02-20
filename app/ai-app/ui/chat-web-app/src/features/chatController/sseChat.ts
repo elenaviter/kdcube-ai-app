@@ -45,6 +45,11 @@ class SSEChat extends ChatBase {
 
         this._eventSource.addEventListener("open", () => {
             this._connecting = false;
+            console.info("[sse.stream] opened", {
+                sessionId: this._sessionId,
+                streamId: this._streamId,
+                ts: new Date().toISOString(),
+            })
             this._eventHandlers?.onConnect?.()
         })
 
@@ -104,6 +109,14 @@ class SSEChat extends ChatBase {
 
     public override async sendChatMessage(conversationId: string, req: ChatRequest, attachments?: File[] | null): Promise<void> {
         if (!this._streamId) throw new Error("no streamId provided");
+        console.info("[sse.chat] send", {
+            sessionId: this._sessionId,
+            streamId: this._streamId,
+            conversationId,
+            turnId: req.turn_id,
+            attachments: attachments?.length || 0,
+            ts: new Date().toISOString(),
+        })
 
         const payload = {
             message: {

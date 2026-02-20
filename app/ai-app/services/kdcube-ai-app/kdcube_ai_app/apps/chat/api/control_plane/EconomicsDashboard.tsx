@@ -210,6 +210,12 @@ interface QuotaBreakdown {
         concurrent: number;
     };
 
+    reset_windows?: {
+        bundle_id: string;
+        hour_reset_at?: string | null;
+        month_reset_at?: string | null;
+    } | null;
+
     remaining: {
         requests_today: number | null;
         requests_this_month: number | null;
@@ -776,13 +782,20 @@ class ControlPlaneAPI {
     //     return response.json();
     // }
 
-    async getUserBudgetBreakdown(userId: string, planId?: string): Promise<{ status: string; } & QuotaBreakdown> {
+    async getUserBudgetBreakdown(
+        userId: string,
+        planId?: string,
+        bundleId?: string
+    ): Promise<{ status: string; } & QuotaBreakdown> {
         const queryParams = new URLSearchParams({
             include_expired_override: 'true',
             reservations_limit: '50',
         });
         if (planId) {
             queryParams.set('plan_id', planId);
+        }
+        if (bundleId) {
+            queryParams.set('bundle_id', bundleId);
         }
 
         const response = await this.fetchWithAuth(
@@ -1644,6 +1657,7 @@ const ControlPlaneAdmin: React.FC = () => {
     const [breakdownUserId, setBreakdownUserId] = useState<string>('');
     const [breakdownPlanId, setBreakdownPlanId] = useState<string>('auto');
     const [quotaBreakdown, setQuotaBreakdown] = useState<QuotaBreakdown | null>(null);
+    const [breakdownBundleId, setBreakdownBundleId] = useState<string>('');
 
     // Forms - Lifetime Credits
     const [lifetimeUserId, setLifetimeUserId] = useState<string>('');
@@ -1920,7 +1934,8 @@ const ControlPlaneAdmin: React.FC = () => {
         try {
             const planIdRaw = breakdownPlanId === 'custom' ? breakdownPlanIdCustom : breakdownPlanId;
             const planId = planIdRaw && planIdRaw !== 'auto' ? planIdRaw : undefined;
-            const result = await api.getUserBudgetBreakdown(breakdownUserId, planId);
+            const bundleId = breakdownBundleId.trim() || undefined;
+            const result = await api.getUserBudgetBreakdown(breakdownUserId, planId, bundleId);
             setQuotaBreakdown(result);
         } catch (err) {
             setError((err as Error).message);
@@ -2923,6 +2938,9 @@ const ControlPlaneAdmin: React.FC = () => {
                                 <Callout tone="neutral" title="How to read this view">
                                     <strong>Effective policy</strong> is what the limiter enforces right now (base tier possibly overridden).
                                     “Remaining” is computed from the effective limits minus current counters.
+                                    <div className="mt-2 text-xs text-gray-600">
+                                        Quotas are enforced at the project scope. Use Bundle ID <code>__project__</code> to see rolling reset timestamps.
+                                    </div>
                                 </Callout>
                                 <Callout tone="warning" title="Paid lane does NOT show up in these counters">
                                     If the user is being served from <strong>lifetime credits</strong> or a <strong>subscription balance</strong>
@@ -2947,6 +2965,13 @@ const ControlPlaneAdmin: React.FC = () => {
                                             options={PLAN_OPTIONS_WITH_AUTO}
                                         />
 
+                                        <Input
+                                            label="Bundle ID (optional)"
+                                            value={breakdownBundleId}
+                                            onChange={(e) => setBreakdownBundleId(e.target.value)}
+                                            placeholder="e.g. __project__ (global)"
+                                        />
+
                                         {breakdownPlanId === 'custom' && (
                                             <Input
                                                 label="Custom plan_id *"
@@ -2966,7 +2991,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                     <div className="space-y-6">
                                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                                             <StatCard label="Requests today" value={quotaBreakdown.current_usage.requests_today} />
-                                            <StatCard label="Requests this month" value={quotaBreakdown.current_usage.requests_this_month} />
+                                            <StatCard label="Requests (30‑day window)" value={quotaBreakdown.current_usage.requests_this_month} />
                                             <StatCard
                                                 label="Tokens today"
                                                 value={`${(quotaBreakdown.current_usage.tokens_today / 1_000_000).toFixed(2)}M`}
@@ -2981,6 +3006,28 @@ const ControlPlaneAdmin: React.FC = () => {
                                                 value={`${quotaBreakdown.remaining.percentage_used ?? 0}%`}
                                             />
                                         </div>
+                                        {quotaBreakdown.reset_windows ? (
+                                            <div className="rounded-xl border border-gray-200/70 bg-white p-4 text-sm text-gray-700">
+                                                <div className="font-semibold text-gray-900">Rolling window resets</div>
+                                                <div className="text-xs text-gray-500 mt-1">
+                                                    Bundle: {quotaBreakdown.reset_windows.bundle_id}
+                                                </div>
+                                                <div className="mt-2">
+                                                    Hourly reset: {quotaBreakdown.reset_windows.hour_reset_at
+                                                        ? new Date(quotaBreakdown.reset_windows.hour_reset_at).toLocaleString()
+                                                        : '—'}
+                                                </div>
+                                                <div>
+                                                    30‑day reset: {quotaBreakdown.reset_windows.month_reset_at
+                                                        ? new Date(quotaBreakdown.reset_windows.month_reset_at).toLocaleString()
+                                                        : '—'}
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="text-xs text-gray-500">
+                                                Provide a Bundle ID (use <code>__project__</code> for global quotas) to see rolling reset timestamps.
+                                            </div>
+                                        )}
 
                                         {/* Credits snapshot */}
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -3272,7 +3319,7 @@ const ControlPlaneAdmin: React.FC = () => {
                                 />
                                 <CardBody className="space-y-6">
                                     <Callout tone="neutral" title="Meaning">
-                                        This is the default quota envelope for a plan (free/payasyougo/admin). These counters reset on their window (day/month).
+                                        This is the default quota envelope for a plan (free/payasyougo/admin). Daily is calendar day, hourly is a rolling 60‑minute window, and monthly is a rolling 30‑day window (anchored to first usage per bundle).
                                     </Callout>
                                     {economicsRef && (
                                         <div className="text-xs text-gray-500">

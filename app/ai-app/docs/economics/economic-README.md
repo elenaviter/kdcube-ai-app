@@ -80,6 +80,16 @@ flowchart TD
 
 Plan quotas are stored in the control plane table `plan_quota_policies`.
 
+**Scope and window semantics (important):**
+- Quotas are enforced **per tenant/project** (global across bundles).
+- Hourly token limits use a **rolling 60‑minute** window (minute buckets).
+- Monthly limits use a **rolling 30‑day** window anchored to the user’s first usage **per tenant/project**.
+- Daily limits use **calendar day (UTC)**.
+- Total requests do not reset.
+
+Accounting and spend are still recorded **per bundle** for reporting, but quota enforcement is global per tenant/project.
+Global quota counters use bundle id `__project__` in Redis keys (subject_id already encodes tenant/project).
+
 Seeding flow:
 
 - A master bundle calls `ensure_policies_initialized()`.

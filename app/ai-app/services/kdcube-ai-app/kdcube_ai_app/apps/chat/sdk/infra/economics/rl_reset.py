@@ -27,6 +27,7 @@ PATTERNS_LEGACY = [
     "reqs:month:*",
     "reqs:total",
     "toks:hour:*",
+    "toks:hour:bucket:*",
     "toks:day:*",
     "toks:month:*",
     "last:tokens",

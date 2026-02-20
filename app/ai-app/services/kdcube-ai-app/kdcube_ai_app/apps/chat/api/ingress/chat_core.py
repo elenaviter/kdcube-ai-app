@@ -32,7 +32,7 @@ from kdcube_ai_app.apps.middleware.token_extract import (
     resolve_socket_auth_tokens,
 )
 from kdcube_ai_app.apps.chat.api.resolvers import get_auth_manager
-from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle
+from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
 
 from kdcube_ai_app.auth.AuthManager import AuthenticationError, PRIVILEGED_ROLES
 
@@ -271,7 +271,7 @@ async def process_chat_message(
             http_status=413,
         )
 
-    spec_resolved = resolve_bundle(provided_bundle_id, override=None)
+    spec_resolved = await resolve_bundle_async(provided_bundle_id, override=None)
     if not spec_resolved:
         err = f"Unknown bundle_id '{provided_bundle_id}'"
         await chat_comm.emit_error(
@@ -861,7 +861,7 @@ async def get_conversation_status(
         payload_row = row.get("payload") or {}
         current_turn_id = payload_row.get("last_turn_id")
     if publish:
-        spec_resolved = resolve_bundle(bundle_id, override=None)
+        spec_resolved = await resolve_bundle_async(bundle_id, override=None)
 
         routing = ChatTaskRouting(
             session_id=session.session_id,

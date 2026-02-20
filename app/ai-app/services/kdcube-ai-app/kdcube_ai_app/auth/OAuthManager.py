@@ -5,10 +5,12 @@
 """
 Framework-agnostic OAuth Manager implementation
 """
-import base64, time, hashlib
+import asyncio
+import base64
+import time
+import hashlib
 import logging
 import os
-from functools import lru_cache
 from typing import Optional, Dict, Any, Tuple
 
 import httpx
@@ -101,6 +103,17 @@ class OAuthManager(AuthManager):
         # small in-proc caches
         self._user_cache: dict[str, Tuple[dict, float]] = {}      # token_hash -> (user_dict, exp_ts)
         self._negative_cache: dict[str, float] = {}               # token_hash -> exp_ts (inactive/revoked)
+        self._jwks_cache: Optional[dict] = None
+        self._jwks_cache_exp: float = 0.0
+        self._jwks_lock: Optional[asyncio.Lock] = None
+        try:
+            self._jwks_cache_ttl = int(os.getenv("JWKS_CACHE_TTL_SECONDS", "3600") or "3600")
+        except Exception:
+            self._jwks_cache_ttl = 3600
+        try:
+            self._jwks_timeout = float(os.getenv("JWKS_HTTP_TIMEOUT_S", "5.0") or "5.0")
+        except Exception:
+            self._jwks_timeout = 5.0
 
     # -------------- Utilities --------------
 
@@ -139,20 +152,38 @@ class OAuthManager(AuthManager):
 
     # -------------- JWKS & Introspection --------------
 
-    @lru_cache(maxsize=1)
-    def get_jwks_keys(self):
-        try:
-            with httpx.Client() as client:
-                r = client.get(self.oauth_config.OAUTH2_JWKS_URL)
-                r.raise_for_status()
-                return r.json()
-        except Exception as e:
-            raise AuthenticationError(f"Failed to fetch JWKS: {e}")
+    async def get_jwks_keys(self) -> dict:
+        now = time.time()
+        if self._jwks_cache and self._jwks_cache_exp > now:
+            return self._jwks_cache
 
-    def _jwt_verify(self, token: str, *, audience: Optional[str] = None) -> Dict[str, Any]:
+        if self._jwks_lock is None:
+            self._jwks_lock = asyncio.Lock()
+
+        async with self._jwks_lock:
+            now = time.time()
+            if self._jwks_cache and self._jwks_cache_exp > now:
+                return self._jwks_cache
+            try:
+                async with httpx.AsyncClient(timeout=self._jwks_timeout) as client:
+                    r = await client.get(self.oauth_config.OAUTH2_JWKS_URL)
+                    r.raise_for_status()
+                    keys = r.json()
+            except Exception as e:
+                if self._jwks_cache:
+                    logger.warning("JWKS refresh failed; using cached keys: %s", e)
+                    return self._jwks_cache
+                raise AuthenticationError(f"Failed to fetch JWKS: {e}")
+
+            ttl = max(60, self._jwks_cache_ttl)
+            self._jwks_cache = keys
+            self._jwks_cache_exp = now + ttl
+            return keys
+
+    async def _jwt_verify(self, token: str, *, audience: Optional[str] = None) -> Dict[str, Any]:
         if not self.oauth_config.VERIFY_SIGNATURE:
             return jwt.decode(token, options={"verify_signature": False})
-        jwks = self.get_jwks_keys()
+        jwks = await self.get_jwks_keys()
         header = jwt.get_unverified_header(token)
         kid = header.get("kid")
         key = None
@@ -234,7 +265,7 @@ class OAuthManager(AuthManager):
             }
 
         # JWKS (default) or BOTH
-        payload = self._jwt_verify(token, audience=self.oauth_config.OAUTH2_AUDIENCE)
+        payload = await self._jwt_verify(token, audience=self.oauth_config.OAUTH2_AUDIENCE)
 
         if method == "both" or self.oauth_config.ALWAYS_INTROSPECT_ACCESS:
             try:
@@ -255,11 +286,11 @@ class OAuthManager(AuthManager):
 
         return payload
 
-    def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
+    async def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
         """
         ID tokens are JWTs meant for the client; validate signature/iss/aud.
         """
-        return self._jwt_verify(id_token, audience=self.oauth_config.OAUTH2_AUDIENCE)
+        return await self._jwt_verify(id_token, audience=self.oauth_config.OAUTH2_AUDIENCE)
 
     async def get_user_info(self, token: str) -> Dict[str, Any]:
         try:
@@ -321,7 +352,7 @@ class OAuthManager(AuthManager):
                 )
             return user
 
-        id_payload = self._verify_id_token(id_token)
+        id_payload = await self._verify_id_token(id_token)
 
         acc_sub = getattr(user, "sub", None)
         id_sub = id_payload.get("sub")

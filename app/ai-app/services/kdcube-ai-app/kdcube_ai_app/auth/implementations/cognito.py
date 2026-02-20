@@ -65,7 +65,7 @@ class CognitoAuthManager(OAuthManager):
                 return self._create_user_from_access_token(payload)
             elif token_use == "id":
                 # This is an ID token - verify and extract full user info
-                payload = self._verify_id_token(token)
+                payload = await self._verify_id_token(token)
                 return self._create_user_from_id_token(payload)
             else:
                 raise AuthenticationError("Unknown token type")
@@ -94,7 +94,7 @@ class CognitoAuthManager(OAuthManager):
         # 2. If we have ID token, extract user identity from it
         if id_token:
             try:
-                id_payload = self._verify_id_token(id_token)
+                id_payload = await self._verify_id_token(id_token)
 
                 # Verify subjects match
                 access_sub = access_payload.get("sub")
@@ -190,9 +190,9 @@ class CognitoAuthManager(OAuthManager):
             preferred_username=payload.get("preferred_username")
         )
 
-    def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
+    async def _verify_id_token(self, id_token: str) -> Dict[str, Any]:
         """Override to handle Cognito ID token specifics"""
-        return self._jwt_verify(id_token, audience=self.oauth_config.OAUTH2_AUDIENCE)
+        return await self._jwt_verify(id_token, audience=self.oauth_config.OAUTH2_AUDIENCE)
 
     async def get_service_token(self) -> str:
         raise NotImplementedError("Service tokens are not issued by Cognito User Pools.")

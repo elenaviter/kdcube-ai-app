@@ -37,6 +37,8 @@ UI card: **Quota Policies**
 - Policies are stored in `plan_quota_policies` and keyed by `plan_id`.
 - These are the base limits used by the rate limiter.
 - Tier overrides can temporarily replace these values per user.
+- Quotas are enforced **per tenant/project** (global across bundles).
+- Hourly limits use a **rolling 60‑minute** window; monthly limits use a **rolling 30‑day** window anchored to first usage per tenant/project; daily is **calendar day (UTC)**.
 
 ### How plan limits are initialized
 
@@ -215,6 +217,18 @@ UI card: **Budget Policies**
 - Set per‑provider spend limits stored in `application_budget_policies`.
 
 Backend: `POST /policies/budget`
+
+## User Budget Breakdown
+
+UI card: **Budget Breakdown**
+
+- Shows base policy vs override vs effective policy, plus current usage and remaining headroom.
+- Usage counters are **global per tenant/project** (bundles share the same quota pool).
+- If you provide a **Bundle ID**, the UI shows **rolling reset timestamps**.
+Use `__project__` for the global quota scope. Hourly reset uses a rolling 60‑minute window.
+30‑day reset is anchored to first usage per tenant/project.
+
+Backend: `GET /users/{user_id}/budget-breakdown` (optional `bundle_id`)
 
 ## Notes and Limits
 

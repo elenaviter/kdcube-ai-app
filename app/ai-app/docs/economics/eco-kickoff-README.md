@@ -17,6 +17,7 @@ It is written for a director‑led setup session using the admin UI.
 - Plan decides quota limits (`free`, `payasyougo`, `admin`, or custom plan IDs).
 - Paid role is derived automatically if a user has an active subscription or wallet credits.
 - Plan is resolved at runtime from subscription or wallet.
+- Quotas are enforced **per tenant/project** (global across bundles): hourly is rolling 60‑minute, monthly is rolling 30‑day (anchored to first usage per tenant/project), daily is calendar day (UTC).
 
 ## Visual Overview
 
@@ -134,6 +135,7 @@ Check:
 - `plan_id` (free, beta‑30, payasyougo)
 - `plan_source` (subscription or wallet)
 - Subscription balance or wallet balance
+- If you want to verify rolling reset timestamps, provide the **Bundle ID** in the breakdown form.
 
 ### 9) Run test traffic
 
