@@ -263,6 +263,7 @@ UI card: **Budget Breakdown**
 - Shows base policy vs override vs effective policy, plus current usage and remaining headroom.
 - Usage counters are **global per tenant/project** (bundles share the same quota pool).
 - If you provide a **Bundle ID**, the UI shows **rolling reset timestamps**.
+ - Role is auto‑resolved from the user’s cached session; if no session exists, it falls back to subscription/wallet detection.
 Use `__project__` for the global quota scope. Hourly reset uses a rolling 60‑minute window.
 30‑day reset is anchored to first usage per tenant/project.
 

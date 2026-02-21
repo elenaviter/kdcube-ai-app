@@ -137,11 +137,15 @@ Admin UI: **User Budget Breakdown**
 
 Check:
 
-- `role` (registered or paid)
+- `role` (auto‑resolved from user session)
 - `plan_id` (free, beta‑30, payasyougo)
 - `plan_source` (subscription or role)
 - Subscription balance or wallet balance
 - If you want to verify rolling reset timestamps, provide the **Bundle ID** in the breakdown form.
+
+Note:
+- If a user has never logged in, their role may resolve as `registered` even if they are privileged.
+  Ask them to open the app once (create session) and re‑check.
 
 ### 9) Run test traffic
 
@@ -184,6 +188,7 @@ This will later move into a dedicated reporting view.
 
 - If a user is marked as `paid` but has no subscription or wallet, ensure their session role is correct.
 - If limits are wrong, update the plan policy in admin UI.
-- Use **Min reservation (USD)** in plan policies to enforce a per‑request reservation floor.
+- Per‑request reservation floor is configured per bundle via
+  `economics.reservation_amount_dollars` (bundle props API).
 - If subscription balance is stuck, run Reap Expired Reservation and re‑check.
 - If a subscription period is closed, remaining balance is moved to project budget by the sweep job.

@@ -48,6 +48,10 @@ This overrides the session `user_type` (the role used by the runtime entrypoint)
 - `...:paid:<user_id>`
 - `...:registered:<user_id>`
 
+Admin UI role resolution:
+- The admin endpoints auto‑resolve role from the user’s cached session in Redis.
+- If the user has never logged in (no session), role falls back to subscription/wallet detection (paid) or `registered`.
+
 ### Plan (quota policy identity)
 
 Plan (`plan_id`) is the quota policy identity used by the rate limiter. It is distinct from role.

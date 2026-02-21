@@ -117,7 +117,7 @@ Shows:
 - Last usage and quota insight
 
 Use this to confirm:
-- plan / role is correct
+- plan and auto‑resolved role are correct (role is read from user session)
 - wallet and subscription balances update after requests
 
 ## 3) Test Plan (QA, ~1.5–2 hours)
