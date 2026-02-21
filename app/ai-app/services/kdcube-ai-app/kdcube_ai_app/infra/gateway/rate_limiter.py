@@ -42,7 +42,8 @@ class RateLimiter:
         self.redis = None
         self.gateway_config = gateway_config
         self.monitor = monitor
-        self.RATE_LIMIT_PREFIX = REDIS.SYSTEM.RATE_LIMIT
+        # Rate-limit keys are tenant/project namespaced
+        self.RATE_LIMIT_PREFIX = self.ns(REDIS.SYSTEM.RATE_LIMIT)
 
         self.limits = {}
         self._refresh_limits()

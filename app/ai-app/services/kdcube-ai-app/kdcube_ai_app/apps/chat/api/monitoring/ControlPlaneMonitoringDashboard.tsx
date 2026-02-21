@@ -648,6 +648,7 @@ const MonitoringDashboard: React.FC = () => {
     const [resetRateLimits, setResetRateLimits] = useState(true);
     const [resetBackpressure, setResetBackpressure] = useState(true);
     const [resetThrottlingStats, setResetThrottlingStats] = useState(false);
+    const [purgeChatQueues, setPurgeChatQueues] = useState(false);
     const [resettingThrottling, setResettingThrottling] = useState(false);
     const [resetThrottlingMessage, setResetThrottlingMessage] = useState<string | null>(null);
 
@@ -789,7 +790,7 @@ const MonitoringDashboard: React.FC = () => {
     };
 
     const handleResetThrottling = async () => {
-        if (!resetRateLimits && !resetBackpressure && !resetThrottlingStats) {
+        if (!resetRateLimits && !resetBackpressure && !resetThrottlingStats && !purgeChatQueues) {
             setResetThrottlingMessage('Select at least one reset option');
             return;
         }
@@ -802,6 +803,7 @@ const MonitoringDashboard: React.FC = () => {
                 reset_rate_limits: resetRateLimits,
                 reset_backpressure: resetBackpressure,
                 reset_throttling_stats: resetThrottlingStats,
+                purge_chat_queues: purgeChatQueues,
                 all_sessions: resetAllSessions,
             };
             if (resetSessionId.trim()) {
@@ -1198,10 +1200,20 @@ const MonitoringDashboard: React.FC = () => {
                                 />
                                 Clear throttling stats
                             </label>
+                            <label className="text-xs text-gray-600 flex items-center gap-2">
+                                <input
+                                    type="checkbox"
+                                    checked={purgeChatQueues}
+                                    onChange={(e) => setPurgeChatQueues(e.target.checked)}
+                                />
+                                Purge chat queues (drops pending tasks)
+                            </label>
                         </div>
-                        {resetAllSessions && (
+                        {(resetAllSessions || purgeChatQueues) && (
                             <div className="text-xs text-rose-700">
-                                Warning: clears rate limits for all sessions on this Redis.
+                                {resetAllSessions ? 'Warning: clears rate limits for all sessions in this tenant/project.' : ''}
+                                {resetAllSessions && purgeChatQueues ? ' ' : ''}
+                                {purgeChatQueues ? 'Warning: purging queues drops pending chat tasks.' : ''}
                             </div>
                         )}
                         <div className="flex flex-wrap items-center gap-3">

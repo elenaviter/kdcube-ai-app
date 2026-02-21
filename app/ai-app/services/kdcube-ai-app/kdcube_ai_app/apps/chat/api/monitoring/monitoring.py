@@ -133,6 +133,7 @@ async def reset_throttling_state(
     reset_rate_limits = bool(payload.get("reset_rate_limits", True))
     reset_backpressure = bool(payload.get("reset_backpressure", True))
     reset_stats = bool(payload.get("reset_throttling_stats", False))
+    purge_chat_queues = bool(payload.get("purge_chat_queues", False))
     all_sessions = bool(payload.get("all_sessions", False))
     session_id = (payload.get("session_id") or "").strip() or (session.session_id if not all_sessions else None)
 
@@ -146,18 +147,19 @@ async def reset_throttling_state(
 
     results: Dict[str, Any] = {"deleted": {}, "tenant": tenant, "project": project}
 
-    # Rate limit keys (global, not namespaced)
+    # Rate limit keys (tenant/project namespaced)
     if reset_rate_limits:
+        rate_prefix = ns_key(REDIS.SYSTEM.RATE_LIMIT, tenant=tenant, project=project)
         if all_sessions:
-            deleted_burst = await _scan_delete(redis, f"{REDIS.SYSTEM.RATE_LIMIT}:*:burst")
-            deleted_hour = await _scan_delete(redis, f"{REDIS.SYSTEM.RATE_LIMIT}:*:hour:*")
+            deleted_burst = await _scan_delete(redis, f"{rate_prefix}:*:burst")
+            deleted_hour = await _scan_delete(redis, f"{rate_prefix}:*:hour:*")
             results["deleted"]["rate_limits_all_sessions"] = deleted_burst + deleted_hour
         else:
             if not session_id:
                 raise HTTPException(status_code=400, detail="session_id is required unless all_sessions=true")
             deleted = 0
-            deleted += await redis.delete(f"{REDIS.SYSTEM.RATE_LIMIT}:{session_id}:burst")
-            deleted += await _scan_delete(redis, f"{REDIS.SYSTEM.RATE_LIMIT}:{session_id}:hour:*")
+            deleted += await redis.delete(f"{rate_prefix}:{session_id}:burst")
+            deleted += await _scan_delete(redis, f"{rate_prefix}:{session_id}:hour:*")
             results["deleted"]["rate_limits_session"] = deleted
 
     # Backpressure counters (namespaced)
@@ -165,6 +167,22 @@ async def reset_throttling_state(
         capacity_base = ns_key(f"{REDIS.SYSTEM.CAPACITY}:counter", tenant=tenant, project=project)
         deleted = await redis.delete(capacity_base, f"{capacity_base}:total")
         results["deleted"]["backpressure_capacity_counters"] = deleted
+
+    # Chat queues (danger: drops pending tasks)
+    if purge_chat_queues:
+        queue_prefix = ns_key(REDIS.CHAT.PROMPT_QUEUE_PREFIX, tenant=tenant, project=project)
+        keys = [
+            f"{queue_prefix}:anonymous",
+            f"{queue_prefix}:registered",
+            f"{queue_prefix}:privileged",
+            f"{queue_prefix}:paid",
+        ]
+        deleted = await redis.delete(*keys)
+        results["deleted"]["chat_queues"] = deleted
+        # If queues are purged, clear capacity counters to avoid stale pressure.
+        capacity_base = ns_key(f"{REDIS.SYSTEM.CAPACITY}:counter", tenant=tenant, project=project)
+        deleted = await redis.delete(capacity_base, f"{capacity_base}:total")
+        results["deleted"]["backpressure_capacity_counters_from_purge"] = deleted
 
     # Throttling stats (namespaced, dashboard-only)
     if reset_stats:
