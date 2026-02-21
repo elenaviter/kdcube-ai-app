@@ -92,6 +92,14 @@ def _install_crash_logging() -> None:
 
 _install_crash_logging()
 
+async def _safe_shutdown_step(name: str, coro, timeout: float = 5.0) -> None:
+    try:
+        await asyncio.wait_for(coro, timeout=timeout)
+    except asyncio.TimeoutError:
+        logger.warning("Shutdown step timed out: %s (>%ss)", name, timeout)
+    except Exception:
+        logger.exception("Shutdown step failed: %s", name)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Simplified lifespan management"""
@@ -370,15 +378,13 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     if hasattr(app.state, "socketio_handler") and getattr(app.state.socketio_handler, "stop", None):
-        try:
-            await app.state.socketio_handler.stop()
-        except Exception:
-            pass
-    await app.state.sse_hub.stop()
+        await _safe_shutdown_step("socketio_handler.stop", app.state.socketio_handler.stop(), timeout=5.0)
+    if hasattr(app.state, "sse_hub"):
+        await _safe_shutdown_step("sse_hub.stop", app.state.sse_hub.stop(), timeout=5.0)
     if hasattr(app.state, 'heartbeat_manager'):
-        await app.state.heartbeat_manager.stop_heartbeat()
+        await _safe_shutdown_step("heartbeat_manager.stop_heartbeat", app.state.heartbeat_manager.stop_heartbeat(), timeout=5.0)
     if hasattr(app.state, 'processor'):
-        await app.state.processor.stop_processing()
+        await _safe_shutdown_step("processor.stop_processing", app.state.processor.stop_processing(), timeout=5.0)
     if hasattr(app.state, 'health_checker'):
         await app.state.health_checker.stop_monitoring()
 
