@@ -965,6 +965,7 @@ async def debug_environment(session: UserSession = Depends(auth_without_pressure
         "MAX_CONCURRENT_CHATS": os.getenv("MAX_CONCURRENT_CHATS", ""),
         "CHAT_PROC_PARALLELISM": os.getenv("CHAT_PROC_PARALLELISM", ""),
         "CHAT_APP_PARALLELISM": os.getenv("CHAT_APP_PARALLELISM", "1"),
+        "GATEWAY_FORCE_SERVICE_CAPACITY_FROM_ENV": os.getenv("GATEWAY_FORCE_SERVICE_CAPACITY_FROM_ENV", "1"),
         "AVG_PROCESSING_TIME_SECONDS": os.getenv("AVG_PROCESSING_TIME_SECONDS", "25.0"),
         "GATEWAY_PROFILE": os.getenv("GATEWAY_PROFILE", "development"),
         "INSTANCE_ID": os.getenv("INSTANCE_ID", "default-instance"),

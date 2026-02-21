@@ -46,6 +46,8 @@ def _get_chat_processes_per_instance() -> int:
 def _get_max_concurrent_per_process() -> int:
     return _read_int_env(["MAX_CONCURRENT_CHATS", "MAX_CONCURRENT_CHAT"], 5)
 
+def _force_service_capacity_from_env() -> bool:
+    return os.getenv("GATEWAY_FORCE_SERVICE_CAPACITY_FROM_ENV", "1").lower() in {"1", "true", "yes", "on"}
 
 def get_chat_processes_per_instance_env() -> int:
     """Public helper for chat process parallelism (env-derived)."""
@@ -62,6 +64,8 @@ def apply_service_capacity_env_overrides(config: "GatewayConfiguration") -> bool
     Force service_capacity concurrency + process counts to match env values.
     Returns True if any override was applied.
     """
+    if not _force_service_capacity_from_env():
+        return False
     changed = False
     env_concurrent = _get_max_concurrent_per_process()
     env_processes = _get_chat_processes_per_instance()
