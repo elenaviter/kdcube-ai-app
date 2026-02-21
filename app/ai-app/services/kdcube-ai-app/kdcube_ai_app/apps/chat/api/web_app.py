@@ -6,6 +6,7 @@
 FastAPI chat application with modular Socket.IO integration and gateway protection
 """
 import traceback
+import faulthandler
 
 import time
 import logging
@@ -68,37 +69,47 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Simplified lifespan management"""
     # Startup
-    logger.info(f"Chat service starting on port {CHAT_APP_PORT}")
+    logger.info(
+        "Lifespan startup begin: port=%s pid=%s workers_env=%s reload_env=%s",
+        CHAT_APP_PORT,
+        os.getpid(),
+        os.getenv("CHAT_APP_PARALLELISM", "1"),
+        os.getenv("UVICORN_RELOAD", "0"),
+    )
 
     # mark not shutting down yet
     app.state.shutting_down = False
 
-    # Initialize gateway adapter and store in app state
-    app.state.gateway_adapter = get_fastapi_adapter()
-    settings = get_settings()
-    await apply_gateway_config_from_cache(
-        gateway_adapter=app.state.gateway_adapter,
-        tenant=settings.TENANT,
-        project=settings.PROJECT,
-        redis_url=REDIS_URL,
-    )
-    app.state.gateway_config_stop = asyncio.Event()
-    app.state.gateway_config_task = asyncio.create_task(
-        subscribe_gateway_config_updates(
+    try:
+        # Initialize gateway adapter and store in app state
+        app.state.gateway_adapter = get_fastapi_adapter()
+        settings = get_settings()
+        await apply_gateway_config_from_cache(
             gateway_adapter=app.state.gateway_adapter,
             tenant=settings.TENANT,
             project=settings.PROJECT,
             redis_url=REDIS_URL,
-            stop_event=app.state.gateway_config_stop,
         )
-    )
-    gateway_config = get_gateway_config()
-    app.state.chat_queue_manager = create_atomic_chat_queue_manager(
-        gateway_config.redis_url,
-        gateway_config,
-        app.state.gateway_adapter.gateway.throttling_monitor  # Pass throttling monitor
-    )
-    app.state.acc_binder = get_fast_api_accounting_binder()
+        app.state.gateway_config_stop = asyncio.Event()
+        app.state.gateway_config_task = asyncio.create_task(
+            subscribe_gateway_config_updates(
+                gateway_adapter=app.state.gateway_adapter,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                redis_url=REDIS_URL,
+                stop_event=app.state.gateway_config_stop,
+            )
+        )
+        gateway_config = get_gateway_config()
+        app.state.chat_queue_manager = create_atomic_chat_queue_manager(
+            gateway_config.redis_url,
+            gateway_config,
+            app.state.gateway_adapter.gateway.throttling_monitor  # Pass throttling monitor
+        )
+        app.state.acc_binder = get_fast_api_accounting_binder()
+    except Exception:
+        logger.exception("Lifespan startup failed during gateway initialization")
+        raise
 
     # --- Heartbeats / processor (uses local queue processor) ---
     from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
@@ -313,7 +324,10 @@ async def lifespan(app: FastAPI):
         _announce_startup()
 
     except Exception as e:
-        logger.warning(f"Could not start legacy middleware: {e}")
+        logger.exception("Could not start legacy middleware")
+        raise
+
+    logger.info("Lifespan startup complete: port=%s pid=%s", CHAT_APP_PORT, os.getpid())
 
     yield
 
@@ -559,6 +573,9 @@ mount_control_plane_router(app)
 if __name__ == "__main__":
     import uvicorn
 
+    # Enable faulthandler to capture native crashes and dump tracebacks.
+    faulthandler.enable()
+
     workers = max(1, int(os.getenv("CHAT_APP_PARALLELISM", "1")))
     reload_enabled = os.getenv("UVICORN_RELOAD", "").lower() in {"1", "true", "yes", "on"}
     # Uvicorn requires an import string when using workers or reload.
@@ -578,4 +595,12 @@ if __name__ == "__main__":
         if reload_enabled:
             run_kwargs["reload"] = True
 
+    logger.info(
+        "Starting Uvicorn: target=%s workers=%s reload=%s port=%s pid=%s",
+        app_target,
+        workers,
+        reload_enabled,
+        CHAT_APP_PORT,
+        os.getpid(),
+    )
     uvicorn.run(app_target, **run_kwargs)
