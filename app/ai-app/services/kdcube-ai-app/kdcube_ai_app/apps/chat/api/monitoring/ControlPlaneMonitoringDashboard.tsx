@@ -1157,6 +1157,24 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Reset Throttling / Backpressure" subtitle="Clear rate-limit counters and backpressure slots." />
                     <CardBody className="space-y-3">
+                        <div className="text-xs text-gray-600">
+                            Active scope: <span className="font-semibold">{tenant || '—'}</span> / <span className="font-semibold">{project || '—'}</span>
+                        </div>
+                        <div className="text-[11px] text-gray-500">
+                            Affected keys:
+                            <div className="font-mono break-all">
+                                {tenant && project ? `${tenant}:${project}:kdcube:system:ratelimit:<session_id>` : '<tenant>:<project>:kdcube:system:ratelimit:<session_id>'}
+                            </div>
+                            <div className="font-mono break-all">
+                                {tenant && project ? `${tenant}:${project}:kdcube:system:capacity:counter` : '<tenant>:<project>:kdcube:system:capacity:counter'}
+                            </div>
+                            <div className="font-mono break-all">
+                                {tenant && project ? `${tenant}:${project}:kdcube:throttling:*` : '<tenant>:<project>:kdcube:throttling:*'}
+                            </div>
+                            <div className="font-mono break-all">
+                                {tenant && project ? `${tenant}:${project}:kdcube:chat:prompt:queue:*` : '<tenant>:<project>:kdcube:chat:prompt:queue:*'}
+                            </div>
+                        </div>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <Input
                                 label="Session ID (optional)"

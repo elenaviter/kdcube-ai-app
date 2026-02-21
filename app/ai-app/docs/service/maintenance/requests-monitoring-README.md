@@ -35,6 +35,29 @@ Interpreting signals:
 - Low queue size + high avg wait → delivery/stream issue or processor starvation.
 - Low healthy processes right after restart → enqueue may reject or queue wait will spike.
 
+## Fast reset actions (admin)
+Use this when 429/503 is stuck due to stale counters or misbehaving clients.
+
+Where tenant/project is configured:
+- The dashboard uses the `Tenant` and `Project` fields in the **Gateway Configuration** panel.
+- Defaults come from the embedded dashboard settings (backend config). If you don’t change them, resets apply to the backend’s default tenant/project.
+
+Steps:
+1. Open Control Plane Monitoring Dashboard.
+2. Scroll to **Reset Throttling / Backpressure**.
+3. Confirm `Tenant` and `Project` are correct (same fields as Gateway Configuration).
+4. Optional: Set `Session ID` to reset a single session (leave empty to use your current session).
+5. Select what to reset:
+   - Reset rate limits (429 counters)
+   - Reset backpressure counters (503 capacity slots)
+   - Clear throttling stats (dashboard numbers only)
+   - Purge chat queues (drops pending tasks)
+6. Click `Reset`.
+
+Notes:
+- “All sessions” clears rate limits for all sessions in the selected tenant/project.
+- “Purge chat queues” drops pending tasks and should be used only for recovery.
+
 ## Redis Browser (Control Plane)
 Use the quick prefix buttons to inspect keys fast:
 1. Queues: `<tenant>:<project>:kdcube:chat:prompt:queue` (list)
@@ -88,6 +111,7 @@ Use these for fast diagnostics:
 1. `GET /monitoring/system`
 2. `GET /admin/circuit-breakers`
 3. `POST /admin/circuit-breakers/{name}/reset`
+4. `POST /admin/throttling/reset` (admin)
 
 Note: Responses include queue stats, capacity context, and throttling data.
 
