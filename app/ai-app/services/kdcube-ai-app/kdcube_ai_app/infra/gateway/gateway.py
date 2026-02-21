@@ -334,6 +334,7 @@ class RequestGateway:
             "queue_stats": {
                 "anonymous": queue_stats.anonymous_queue,
                 "registered": queue_stats.registered_queue,
+                "paid": queue_stats.paid_queue,
                 "privileged": queue_stats.privileged_queue,
                 "total": queue_stats.total_queue,
                 "capacity_context": {
@@ -344,10 +345,12 @@ class RequestGateway:
                     "pressure_ratio": queue_stats.pressure_ratio,
                     "accepting_anonymous": queue_stats.accepting_anonymous,
                     "accepting_registered": queue_stats.accepting_registered,
+                    "accepting_paid": queue_stats.accepting_paid,
                     "accepting_privileged": queue_stats.accepting_privileged,
                     "thresholds": {
                         "anonymous_threshold": queue_stats.anonymous_threshold,
                         "registered_threshold": queue_stats.registered_threshold,
+                        "paid_threshold": queue_stats.paid_threshold,
                         "hard_limit_threshold": queue_stats.hard_limit_threshold
                     }
                 },

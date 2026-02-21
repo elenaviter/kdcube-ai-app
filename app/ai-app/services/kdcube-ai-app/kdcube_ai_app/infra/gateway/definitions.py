@@ -20,6 +20,7 @@ class QueueStats:
     """Individual queue statistics"""
     anonymous_queue: int
     registered_queue: int
+    paid_queue: int
     privileged_queue: int
     total_queue: int
 
@@ -33,11 +34,13 @@ class QueueStats:
     pressure_ratio: float
     accepting_anonymous: bool
     accepting_registered: bool
+    accepting_paid: bool
     accepting_privileged: bool
 
     # Threshold information
     anonymous_threshold: int
     registered_threshold: int
+    paid_threshold: int
     hard_limit_threshold: int
 
     # Processing metrics
@@ -91,6 +94,7 @@ class DynamicCapacityMetrics:
     # Thresholds
     anonymous_threshold_ratio: float
     registered_threshold_ratio: float
+    paid_threshold_ratio: float
     hard_limit_threshold_ratio: float
 
     @classmethod
@@ -155,6 +159,7 @@ class DynamicCapacityMetrics:
             # Thresholds
             anonymous_threshold_ratio=gateway_config.backpressure.anonymous_pressure_threshold,
             registered_threshold_ratio=gateway_config.backpressure.registered_pressure_threshold,
+            paid_threshold_ratio=gateway_config.backpressure.paid_pressure_threshold,
             hard_limit_threshold_ratio=gateway_config.backpressure.hard_limit_threshold
         )
 
@@ -179,6 +184,7 @@ class DynamicCapacityMetrics:
         return {
             "anonymous_threshold": int(total_actual_capacity * self.anonymous_threshold_ratio),
             "registered_threshold": int(total_actual_capacity * self.registered_threshold_ratio),
+            "paid_threshold": int(total_actual_capacity * self.paid_threshold_ratio),
             "hard_limit": int(total_actual_capacity * self.hard_limit_threshold_ratio),
             "total_capacity": total_actual_capacity
         }
@@ -215,6 +221,7 @@ class DynamicCapacityMetrics:
             "threshold_ratios": {
                 "anonymous_threshold_ratio": self.anonymous_threshold_ratio,
                 "registered_threshold_ratio": self.registered_threshold_ratio,
+                "paid_threshold_ratio": self.paid_threshold_ratio,
                 "hard_limit_threshold_ratio": self.hard_limit_threshold_ratio
             }
         }
@@ -444,9 +451,11 @@ class DynamicCapacityCalculator:
         "threshold_breakdown": {
             "anonymous_blocks_at": thresholds["anonymous_threshold"],
             "registered_blocks_at": thresholds["registered_threshold"],
+            "paid_blocks_at": thresholds["paid_threshold"],
             "hard_limit_at": thresholds["hard_limit"],
             "anonymous_percentage": round(metrics.anonymous_threshold_ratio * 100, 1),
             "registered_percentage": round(metrics.registered_threshold_ratio * 100, 1),
+            "paid_percentage": round(metrics.paid_threshold_ratio * 100, 1),
             "hard_limit_percentage": round(metrics.hard_limit_threshold_ratio * 100, 1)
         },
         "capacity_warnings": self._generate_capacity_warnings(metrics, actual_processes_data)
@@ -508,6 +517,7 @@ class CapacityBasedBackpressureConfig:
     queue_depth_multiplier: float = 2.0
     anonymous_pressure_threshold: float = 0.6
     registered_pressure_threshold: float = 0.8
+    paid_pressure_threshold: float = 0.8
     hard_limit_threshold: float = 0.95
 
     def __post_init__(self):
@@ -542,6 +552,7 @@ class CapacityBasedBackpressureConfig:
         return {
             "anonymous_threshold": int(total_capacity * self.anonymous_pressure_threshold),
             "registered_threshold": int(total_capacity * self.registered_pressure_threshold),
+            "paid_threshold": int(total_capacity * self.paid_pressure_threshold),
             "hard_limit": int(total_capacity * self.hard_limit_threshold),
             "total_capacity": total_capacity
         }

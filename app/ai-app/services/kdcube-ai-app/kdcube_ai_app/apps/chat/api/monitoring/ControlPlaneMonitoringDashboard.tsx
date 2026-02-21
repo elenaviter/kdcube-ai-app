@@ -40,6 +40,7 @@ interface GatewayConfigurationView {
         queue_depth_multiplier: number;
         anonymous_pressure_threshold: number;
         registered_pressure_threshold: number;
+        paid_pressure_threshold?: number;
         hard_limit_threshold: number;
     };
     circuit_breaker_settings: Record<string, any>;
@@ -52,6 +53,7 @@ interface SystemMonitoringResponse {
     queue_stats?: {
         anonymous: number;
         registered: number;
+        paid?: number;
         privileged: number;
         total: number;
         capacity_context?: Record<string, any>;
@@ -502,7 +504,7 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any> }> = ({ capacity 
                 )}
 
                 {thresholds && (
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Anonymous Blocks At</div>
                             <div className="text-sm font-semibold">{thresholds.anonymous_blocks_at ?? '—'}</div>
@@ -512,6 +514,11 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any> }> = ({ capacity 
                             <div className="text-xs text-gray-600">Registered Blocks At</div>
                             <div className="text-sm font-semibold">{thresholds.registered_blocks_at ?? '—'}</div>
                             <div className="text-xs text-gray-500">{thresholds.registered_percentage ?? '—'}%</div>
+                        </div>
+                        <div className="p-3 rounded-xl bg-gray-100">
+                            <div className="text-xs text-gray-600">Paid Blocks At</div>
+                            <div className="text-sm font-semibold">{thresholds.paid_blocks_at ?? '—'}</div>
+                            <div className="text-xs text-gray-500">{thresholds.paid_percentage ?? '—'}%</div>
                         </div>
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Hard Limit At</div>
@@ -665,6 +672,19 @@ const MonitoringDashboard: React.FC = () => {
     const [burstRunning, setBurstRunning] = useState(false);
     const burstSessionsRef = useRef<BurstSession[]>([]);
 
+    const [plannerAdmins, setPlannerAdmins] = useState('10');
+    const [plannerRegistered, setPlannerRegistered] = useState('15');
+    const [plannerPaid, setPlannerPaid] = useState('15');
+    const [plannerPageLoad, setPlannerPageLoad] = useState('12');
+    const [plannerTabs, setPlannerTabs] = useState('10');
+    const [plannerPageWindow, setPlannerPageWindow] = useState('10');
+    const [plannerSafety, setPlannerSafety] = useState('1.2');
+    const [plannerConcurrentPerProcess, setPlannerConcurrentPerProcess] = useState('5');
+    const [plannerProcessesPerInstance, setPlannerProcessesPerInstance] = useState('1');
+    const [plannerAvgProcessing, setPlannerAvgProcessing] = useState('25');
+    const [plannerInstances, setPlannerInstances] = useState('1');
+    const plannerInitializedRef = useRef(false);
+
     const refreshAll = useCallback(async () => {
         setLoading(true);
         setError(null);
@@ -730,12 +750,25 @@ const MonitoringDashboard: React.FC = () => {
                 queue_depth_multiplier: cfg.backpressure_settings?.queue_depth_multiplier ?? 2.0,
                 anonymous_pressure_threshold: cfg.backpressure_settings?.anonymous_pressure_threshold ?? 0.6,
                 registered_pressure_threshold: cfg.backpressure_settings?.registered_pressure_threshold ?? 0.8,
+                paid_pressure_threshold: cfg.backpressure_settings?.paid_pressure_threshold ?? 0.8,
                 hard_limit_threshold: cfg.backpressure_settings?.hard_limit_threshold ?? 0.95,
             },
             rate_limits: cfg.rate_limits || {},
         };
         setConfigJson(JSON.stringify(payload, null, 2));
     }, [system, tenant, project]);
+
+    useEffect(() => {
+        if (plannerInitializedRef.current) return;
+        if (!system) return;
+        const capacityCfg = system.capacity_transparency?.capacity_metrics?.configuration || {};
+        const instanceCount = system.queue_stats?.capacity_context?.instance_count ?? 1;
+        setPlannerConcurrentPerProcess(String(capacityCfg.configured_concurrent_per_process ?? 5));
+        setPlannerProcessesPerInstance(String(capacityCfg.configured_processes_per_instance ?? 1));
+        setPlannerAvgProcessing(String(capacityCfg.configured_avg_processing_time_seconds ?? 25));
+        setPlannerInstances(String(instanceCount));
+        plannerInitializedRef.current = true;
+    }, [system]);
 
     const queue = system?.queue_stats;
     const capacityCtx = system?.queue_stats?.capacity_context || {};
@@ -746,6 +779,55 @@ const MonitoringDashboard: React.FC = () => {
     const lastThrottle = events.length ? events[0] : null;
     const gateway = system?.gateway_configuration;
     const throttlingByPeriod = system?.throttling_by_period || {};
+
+    const planner = useMemo(() => {
+        const toNum = (value: string, fallback: number) => {
+            const n = Number(value);
+            return Number.isFinite(n) ? n : fallback;
+        };
+        const admins = toNum(plannerAdmins, 0);
+        const registered = toNum(plannerRegistered, 0);
+        const paid = toNum(plannerPaid, 0);
+        const totalUsers = admins + registered + paid;
+        const pageLoad = toNum(plannerPageLoad, 0);
+        const maxTabs = Math.max(1, toNum(plannerTabs, 1));
+        const windowSeconds = Math.max(1, toNum(plannerPageWindow, 10));
+        const safety = Math.max(1.0, toNum(plannerSafety, 1.2));
+        const concurrentPerProcess = Math.max(1, toNum(plannerConcurrentPerProcess, 1));
+        const processesPerInstance = Math.max(1, toNum(plannerProcessesPerInstance, 1));
+        const instances = Math.max(1, toNum(plannerInstances, 1));
+        const avgSeconds = Math.max(1, toNum(plannerAvgProcessing, 25));
+
+        const burstPerSession = pageLoad * maxTabs;
+        const suggestedBurst = Math.ceil(burstPerSession * safety);
+
+        const peakRps = windowSeconds > 0 ? (pageLoad * totalUsers) / windowSeconds : 0;
+        const totalConcurrent = concurrentPerProcess * processesPerInstance * instances;
+        const maxRps = avgSeconds > 0 ? totalConcurrent / avgSeconds : 0;
+        const peakUtilization = maxRps > 0 ? peakRps / maxRps : 0;
+
+        return {
+            totalUsers,
+            burstPerSession,
+            suggestedBurst,
+            peakRps,
+            maxRps,
+            peakUtilization,
+            totalConcurrent,
+        };
+    }, [
+        plannerAdmins,
+        plannerRegistered,
+        plannerPaid,
+        plannerPageLoad,
+        plannerTabs,
+        plannerPageWindow,
+        plannerSafety,
+        plannerConcurrentPerProcess,
+        plannerProcessesPerInstance,
+        plannerAvgProcessing,
+        plannerInstances,
+    ]);
 
     const handleValidate = async () => {
         try {
@@ -1024,7 +1106,7 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Queues" subtitle="Current queue sizes and admission state." />
                     <CardBody>
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                             <div className="p-4 rounded-xl bg-gray-100">
                                 <div className="text-xs text-gray-600">Anonymous</div>
                                 <div className="text-sm font-semibold">{queue?.anonymous ?? 0}</div>
@@ -1037,6 +1119,13 @@ const MonitoringDashboard: React.FC = () => {
                                 <div className="text-sm font-semibold">{queue?.registered ?? 0}</div>
                                 <div className="text-xs text-gray-500">
                                     {capacityCtx.accepting_registered ? 'accepting' : 'blocked'}
+                                </div>
+                            </div>
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Paid</div>
+                                <div className="text-sm font-semibold">{queue?.paid ?? 0}</div>
+                                <div className="text-xs text-gray-500">
+                                    {(capacityCtx.accepting_paid ?? true) ? 'accepting' : 'blocked'}
                                 </div>
                             </div>
                             <div className="p-4 rounded-xl bg-gray-100">
@@ -1059,7 +1148,7 @@ const MonitoringDashboard: React.FC = () => {
                     <CardHeader title="Queue Analytics" subtitle="Average wait time and throughput (last hour)." />
                     <CardBody>
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                            {["anonymous", "registered", "privileged"].map((key) => {
+                            {["anonymous", "registered", "paid", "privileged"].map((key) => {
                                 const q = queueAnalytics?.individual_queues?.[key] || {};
                                 const wait = q.avg_wait ?? 0;
                                 const throughput = q.throughput ?? 0;
@@ -1125,6 +1214,69 @@ const MonitoringDashboard: React.FC = () => {
                 </Card>
 
                 <CapacityPanel capacity={system?.capacity_transparency} />
+
+                <Card>
+                    <CardHeader
+                        title="Capacity Planner (Rough)"
+                        subtitle="Estimate burst limits and compare expected peak traffic to capacity. This does not apply changes."
+                    />
+                    <CardBody className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                            <Input label="Admins" value={plannerAdmins} onChange={(e) => setPlannerAdmins(e.target.value)} />
+                            <Input label="Registered" value={plannerRegistered} onChange={(e) => setPlannerRegistered(e.target.value)} />
+                            <Input label="Paid" value={plannerPaid} onChange={(e) => setPlannerPaid(e.target.value)} />
+                            <Input label="Page-load requests" value={plannerPageLoad} onChange={(e) => setPlannerPageLoad(e.target.value)} />
+                            <Input label="Max tabs / session" value={plannerTabs} onChange={(e) => setPlannerTabs(e.target.value)} />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+                            <Input label="Page-load window (s)" value={plannerPageWindow} onChange={(e) => setPlannerPageWindow(e.target.value)} />
+                            <Input label="Safety factor" value={plannerSafety} onChange={(e) => setPlannerSafety(e.target.value)} />
+                            <Input label="Concurrent / process" value={plannerConcurrentPerProcess} onChange={(e) => setPlannerConcurrentPerProcess(e.target.value)} />
+                            <Input label="Processes / instance" value={plannerProcessesPerInstance} onChange={(e) => setPlannerProcessesPerInstance(e.target.value)} />
+                            <Input label="Instances" value={plannerInstances} onChange={(e) => setPlannerInstances(e.target.value)} />
+                            <Input label="Avg processing (s)" value={plannerAvgProcessing} onChange={(e) => setPlannerAvgProcessing(e.target.value)} />
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Total users</div>
+                                <div className="text-sm font-semibold">{planner.totalUsers}</div>
+                                <div className="text-xs text-gray-500">admins + registered + paid</div>
+                            </div>
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Burst / session (min)</div>
+                                <div className="text-sm font-semibold">{planner.burstPerSession}</div>
+                                <div className="text-xs text-gray-500">page-load × tabs</div>
+                            </div>
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Suggested burst</div>
+                                <div className="text-sm font-semibold">{planner.suggestedBurst}</div>
+                                <div className="text-xs text-gray-500">with safety factor</div>
+                            </div>
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Peak RPS</div>
+                                <div className="text-sm font-semibold">{planner.peakRps.toFixed(1)}</div>
+                                <div className="text-xs text-gray-500">page-load surge</div>
+                            </div>
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Max RPS</div>
+                                <div className="text-sm font-semibold">{planner.maxRps.toFixed(1)}</div>
+                                <div className="text-xs text-gray-500">capacity estimate</div>
+                            </div>
+                            <div className="p-4 rounded-xl bg-gray-100">
+                                <div className="text-xs text-gray-600">Peak utilization</div>
+                                <div className="text-sm font-semibold">
+                                    {(planner.peakUtilization * 100).toFixed(1)}%
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                    {planner.peakUtilization > 1 ? 'over capacity' : 'ok'}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="text-[11px] text-gray-500">
+                            Suggested burst is a per-session value. Set it per role in the config JSON under `rate_limits`.
+                        </div>
+                    </CardBody>
+                </Card>
 
                 <Card>
                     <CardHeader title="Circuit Breakers" subtitle="Live circuit states and resets." />

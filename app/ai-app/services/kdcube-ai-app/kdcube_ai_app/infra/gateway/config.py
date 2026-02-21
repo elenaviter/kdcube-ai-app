@@ -26,6 +26,26 @@ from kdcube_ai_app.infra.service_hub.cache import (
 
 logger = logging.getLogger(__name__)
 
+def _read_int_env(names, default: int) -> int:
+    for name in names:
+        value = os.getenv(name)
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            logger.warning("Invalid int for %s=%r; using default %s", name, value, default)
+            return default
+    return default
+
+
+def _get_chat_processes_per_instance() -> int:
+    return _read_int_env(["CHAT_PROC_PARALLELISM", "CHAT_APP_PARALLELISM"], 1)
+
+
+def _get_max_concurrent_per_process() -> int:
+    return _read_int_env(["MAX_CONCURRENT_CHATS", "MAX_CONCURRENT_CHAT"], 5)
+
 DEFAULT_GUARDED_REST_PATTERNS = [
     r"^/resources/link-preview$",
     r"^/resources/by-rn$",
@@ -81,9 +101,9 @@ class RateLimitSettings:
 @dataclass
 class ServiceCapacitySettings:
     """Service capacity configuration - now process-aware"""
-    concurrent_requests_per_process: int = 5  # MAX_CONCURRENT_CHAT
+    concurrent_requests_per_process: int = 5  # MAX_CONCURRENT_CHAT(S)
     avg_processing_time_seconds: float = 25.0
-    processes_per_instance: int = None  # Auto-detected from CHAT_APP_PARALLELISM
+    processes_per_instance: int = None  # Auto-detected from CHAT_PROC_PARALLELISM/CHAT_APP_PARALLELISM
 
     # Computed properties (will be calculated)
     concurrent_requests_per_instance: int = None
@@ -91,7 +111,9 @@ class ServiceCapacitySettings:
 
     def __post_init__(self):
         if self.processes_per_instance is None:
-            self.processes_per_instance = int(os.getenv("CHAT_APP_PARALLELISM", "1"))
+            self.processes_per_instance = _get_chat_processes_per_instance()
+        if self.concurrent_requests_per_process is None:
+            self.concurrent_requests_per_process = _get_max_concurrent_per_process()
 
         if self.concurrent_requests_per_instance is None:
             self.concurrent_requests_per_instance = (
@@ -112,6 +134,7 @@ class BackpressureSettings:
     # Pressure thresholds (as ratios of total capacity)
     anonymous_pressure_threshold: float = 0.6  # Block anonymous at 60%
     registered_pressure_threshold: float = 0.8  # Block registered at 80%
+    paid_pressure_threshold: float = 0.8  # Block paid at 80% (default same as registered)
     hard_limit_threshold: float = 0.95  # Hard block at 95%
 
 
@@ -228,6 +251,7 @@ class GatewayConfiguration:
             queue_depth_multiplier=self.backpressure.queue_depth_multiplier,
             anonymous_pressure_threshold=self.backpressure.anonymous_pressure_threshold,
             registered_pressure_threshold=self.backpressure.registered_pressure_threshold,
+            paid_pressure_threshold=self.backpressure.paid_pressure_threshold,
             hard_limit_threshold=self.backpressure.hard_limit_threshold
         )
 
@@ -285,6 +309,7 @@ class GatewayConfiguration:
         return {
             "anonymous_threshold": int(actual_system_capacity * self.backpressure.anonymous_pressure_threshold),
             "registered_threshold": int(actual_system_capacity * self.backpressure.registered_pressure_threshold),
+            "paid_threshold": int(actual_system_capacity * self.backpressure.paid_pressure_threshold),
             "hard_limit": int(actual_system_capacity * self.backpressure.hard_limit_threshold),
             "total_capacity": actual_system_capacity
         }
@@ -332,9 +357,9 @@ class GatewayConfigFactory:
 
         # Service capacity from environment
         service_capacity = ServiceCapacitySettings(
-            concurrent_requests_per_process=int(os.getenv("MAX_CONCURRENT_CHAT", "5")), # CONCURRENT_REQUESTS_PER_PROCESS
+            concurrent_requests_per_process=_get_max_concurrent_per_process(), # CONCURRENT_REQUESTS_PER_PROCESS
             avg_processing_time_seconds=float(os.getenv("AVG_PROCESSING_TIME_SECONDS", "25.0")),
-            processes_per_instance=int(os.getenv("CHAT_APP_PARALLELISM", "1"))
+            processes_per_instance=_get_chat_processes_per_instance()
         )
 
         # Apply profile-specific overrides
@@ -381,6 +406,7 @@ class GatewayConfigFactory:
             roles["registered"].hourly = 1000
             backpressure.anonymous_pressure_threshold = 0.8
             backpressure.registered_pressure_threshold = 0.9
+            backpressure.paid_pressure_threshold = backpressure.registered_pressure_threshold
             circuit_breakers.auth_failure_threshold = 20
 
         elif profile == GatewayProfile.TESTING:
@@ -397,6 +423,7 @@ class GatewayConfigFactory:
             backpressure.capacity_buffer = 0.25
             backpressure.anonymous_pressure_threshold = 0.5
             backpressure.registered_pressure_threshold = 0.7
+            backpressure.paid_pressure_threshold = backpressure.registered_pressure_threshold
             circuit_breakers.auth_failure_threshold = 10
 
         elif profile == GatewayProfile.LOAD_TEST:
@@ -407,6 +434,7 @@ class GatewayConfigFactory:
             service_capacity.avg_processing_time_seconds = 15.0
             backpressure.capacity_buffer = 0.1
             backpressure.queue_depth_multiplier = 3.0
+            backpressure.paid_pressure_threshold = backpressure.registered_pressure_threshold
 
         return rate_limits, service_capacity, backpressure, circuit_breakers
 
@@ -416,8 +444,8 @@ class GatewayConfigFactory:
         config = GatewayConfigFactory.create_from_env()
 
         # Chat-specific optimizations with process awareness
-        max_concurrent_per_process = int(os.getenv("MAX_CONCURRENT_CHAT", "5"))
-        processes = int(os.getenv("CHAT_APP_PARALLELISM", "1"))
+        max_concurrent_per_process = _get_max_concurrent_per_process()
+        processes = _get_chat_processes_per_instance()
 
         config.service_capacity.concurrent_requests_per_process = max_concurrent_per_process
         config.service_capacity.processes_per_instance = processes
@@ -425,6 +453,8 @@ class GatewayConfigFactory:
         config.service_capacity.avg_processing_time_seconds = 25.0
         config.backpressure.queue_depth_multiplier = 2.0
         config.backpressure.anonymous_pressure_threshold = 0.6
+        if not getattr(config.backpressure, "paid_pressure_threshold", None):
+            config.backpressure.paid_pressure_threshold = config.backpressure.registered_pressure_threshold
 
         return config
 
@@ -524,6 +554,9 @@ def validate_gateway_config(config: GatewayConfiguration) -> list[str]:
     if not (0 < config.backpressure.registered_pressure_threshold <= 1):
         issues.append("Registered pressure threshold must be between 0 and 1")
 
+    if not (0 < config.backpressure.paid_pressure_threshold <= 1):
+        issues.append("Paid pressure threshold must be between 0 and 1")
+
     if not (0 < config.backpressure.hard_limit_threshold <= 1):
         issues.append("Hard limit threshold must be between 0 and 1")
 
@@ -534,9 +567,15 @@ def validate_gateway_config(config: GatewayConfiguration) -> list[str]:
             f"must be less than registered threshold ({config.backpressure.registered_pressure_threshold})"
         )
 
-    if config.backpressure.registered_pressure_threshold >= config.backpressure.hard_limit_threshold:
+    if config.backpressure.registered_pressure_threshold > config.backpressure.paid_pressure_threshold:
         issues.append(
             f"Registered pressure threshold ({config.backpressure.registered_pressure_threshold}) "
+            f"must be less than or equal to paid threshold ({config.backpressure.paid_pressure_threshold})"
+        )
+
+    if config.backpressure.paid_pressure_threshold >= config.backpressure.hard_limit_threshold:
+        issues.append(
+            f"Paid pressure threshold ({config.backpressure.paid_pressure_threshold}) "
             f"must be less than hard limit threshold ({config.backpressure.hard_limit_threshold})"
         )
 
@@ -601,8 +640,8 @@ def validate_gateway_config(config: GatewayConfiguration) -> list[str]:
     # Environment consistency validation (skip when JSON config is supplied)
     if not os.getenv("GATEWAY_CONFIG_JSON"):
         try:
-            env_max_concurrent = int(os.getenv("MAX_CONCURRENT_CHAT", "5"))
-            env_parallelism = int(os.getenv("CHAT_APP_PARALLELISM", "1"))
+            env_max_concurrent = _get_max_concurrent_per_process()
+            env_parallelism = _get_chat_processes_per_instance()
 
             if config.service_capacity.concurrent_requests_per_process != env_max_concurrent:
                 issues.append(
@@ -613,7 +652,7 @@ def validate_gateway_config(config: GatewayConfiguration) -> list[str]:
             if config.service_capacity.processes_per_instance != env_parallelism:
                 issues.append(
                     f"Config processes_per_instance ({config.service_capacity.processes_per_instance}) "
-                    f"doesn't match CHAT_APP_PARALLELISM env var ({env_parallelism})"
+                    f"doesn't match CHAT_PROC_PARALLELISM/CHAT_APP_PARALLELISM env var ({env_parallelism})"
                 )
 
         except (ValueError, TypeError) as e:
@@ -667,9 +706,11 @@ def analyze_gateway_capacity(config: GatewayConfiguration) -> Dict[str, Any]:
             "thresholds": {
                 "anonymous_blocks_at": thresholds["anonymous_threshold"],
                 "registered_blocks_at": thresholds["registered_threshold"],
+                "paid_blocks_at": thresholds["paid_threshold"],
                 "hard_limit_at": thresholds["hard_limit"],
                 "anonymous_percentage": config.backpressure.anonymous_pressure_threshold * 100,
                 "registered_percentage": config.backpressure.registered_pressure_threshold * 100,
+                "paid_percentage": config.backpressure.paid_pressure_threshold * 100,
                 "hard_limit_percentage": config.backpressure.hard_limit_threshold * 100
             },
             "rate_limits": {
@@ -813,6 +854,7 @@ def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
         "queue_depth_multiplier",
         "anonymous_pressure_threshold",
         "registered_pressure_threshold",
+        "paid_pressure_threshold",
         "hard_limit_threshold",
     ]))
     circuit_breakers = CircuitBreakerSettings(**_pick(data.get("circuit_breakers", {}), [
@@ -1101,10 +1143,18 @@ class GatewayConfigurationManager:
             config.backpressure.capacity_buffer = merged_backpressure['capacity_buffer']
         if 'queue_depth_multiplier' in merged_backpressure:
             config.backpressure.queue_depth_multiplier = merged_backpressure['queue_depth_multiplier']
+        if 'anonymous_pressure_threshold' in merged_backpressure:
+            config.backpressure.anonymous_pressure_threshold = merged_backpressure['anonymous_pressure_threshold']
         if 'anonymous_threshold' in merged_backpressure:
             config.backpressure.anonymous_pressure_threshold = merged_backpressure['anonymous_threshold']
+        if 'registered_pressure_threshold' in merged_backpressure:
+            config.backpressure.registered_pressure_threshold = merged_backpressure['registered_pressure_threshold']
         if 'registered_threshold' in merged_backpressure:
             config.backpressure.registered_pressure_threshold = merged_backpressure['registered_threshold']
+        if 'paid_pressure_threshold' in merged_backpressure:
+            config.backpressure.paid_pressure_threshold = merged_backpressure['paid_pressure_threshold']
+        if 'paid_threshold' in merged_backpressure:
+            config.backpressure.paid_pressure_threshold = merged_backpressure['paid_threshold']
         if 'hard_limit_threshold' in merged_backpressure:
             config.backpressure.hard_limit_threshold = merged_backpressure['hard_limit_threshold']
 

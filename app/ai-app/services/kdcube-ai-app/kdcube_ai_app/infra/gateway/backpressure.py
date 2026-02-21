@@ -130,7 +130,8 @@ class BackpressureManager:
         queues = {
             "anonymous": f"{self.QUEUE_PREFIX}:anonymous",
             "registered": f"{self.QUEUE_PREFIX}:registered",
-            "privileged": f"{self.QUEUE_PREFIX}:privileged"
+            "privileged": f"{self.QUEUE_PREFIX}:privileged",
+            "paid": f"{self.QUEUE_PREFIX}:paid",
         }
 
         sizes = {}
@@ -147,7 +148,7 @@ class BackpressureManager:
         await self.init_redis()
 
         analytics = {}
-        for user_type in ["anonymous", "registered", "privileged"]:
+        for user_type in ["anonymous", "registered", "privileged", "paid"]:
             analytics_key = f"{self.QUEUE_ANALYTICS_PREFIX}:{user_type}"
 
             # Get or initialize analytics
@@ -316,6 +317,7 @@ class BackpressureManager:
 
         accepting_anonymous = total_size < thresholds['anonymous_threshold']
         accepting_registered = total_size < thresholds['registered_threshold']
+        accepting_paid = total_size < thresholds['paid_threshold']
         accepting_privileged = total_size < thresholds['hard_limit']
 
         # Get analytics
@@ -324,6 +326,7 @@ class BackpressureManager:
         return QueueStats(
             anonymous_queue=queue_sizes['anonymous'],
             registered_queue=queue_sizes['registered'],
+            paid_queue=queue_sizes.get('paid', 0),
             privileged_queue=queue_sizes['privileged'],
             total_queue=total_size,
             base_capacity_per_instance=base_capacity,
@@ -333,9 +336,11 @@ class BackpressureManager:
             pressure_ratio=pressure_ratio,
             accepting_anonymous=accepting_anonymous,
             accepting_registered=accepting_registered,
+            accepting_paid=accepting_paid,
             accepting_privileged=accepting_privileged,
             anonymous_threshold=thresholds['anonymous_threshold'],
             registered_threshold=thresholds['registered_threshold'],
+            paid_threshold=thresholds['paid_threshold'],
             hard_limit_threshold=thresholds['hard_limit'],
             avg_wait_times={
                 user_type: data.get('avg_wait_time', 0)
@@ -365,6 +370,8 @@ class BackpressureManager:
             threshold = thresholds['anonymous_threshold']
         elif user_type == UserType.REGISTERED:
             threshold = thresholds['registered_threshold']
+        elif user_type == UserType.PAID:
+            threshold = thresholds['paid_threshold']
         else:  # PRIVILEGED
             threshold = thresholds['hard_limit']
 
@@ -382,10 +389,14 @@ class BackpressureManager:
                 reason = ThrottlingReason.SYSTEM_BACKPRESSURE
                 message = f"System at hard limit ({current_total}/{thresholds['hard_limit']})"
                 retry_after = 60
-            elif current_total >= thresholds['registered_threshold'] and user_type != UserType.PRIVILEGED:
-                reason = ThrottlingReason.REGISTERED_BACKPRESSURE
-                message = f"System under high pressure - privileged users only ({current_total}/{thresholds['registered_threshold']})"
+            elif current_total >= thresholds['paid_threshold'] and user_type != UserType.PRIVILEGED:
+                reason = ThrottlingReason.PAID_BACKPRESSURE
+                message = f"System under high pressure - privileged users only ({current_total}/{thresholds['paid_threshold']})"
                 retry_after = 45
+            elif current_total >= thresholds['registered_threshold'] and user_type in (UserType.ANONYMOUS, UserType.REGISTERED):
+                reason = ThrottlingReason.REGISTERED_BACKPRESSURE
+                message = f"System under pressure - paid users only ({current_total}/{thresholds['registered_threshold']})"
+                retry_after = 30
             else:  # Anonymous threshold
                 reason = ThrottlingReason.SYSTEM_BACKPRESSURE
                 message = f"System under pressure - registered users only ({current_total}/{thresholds['anonymous_threshold']})"
@@ -424,14 +435,15 @@ class BackpressureManager:
         local anonymous_size = redis.call('LLEN', KEYS[3])
         local registered_size = redis.call('LLEN', KEYS[4])
         local privileged_size = redis.call('LLEN', KEYS[5])
-        total_size = anonymous_size + registered_size + privileged_size
+        local paid_size = redis.call('LLEN', KEYS[6])
+        total_size = anonymous_size + registered_size + paid_size + privileged_size
         
         -- Check if we can admit this request
         local can_admit = false
         
         if user_type == 'privileged' then
             can_admit = total_size < hard_limit
-        elseif user_type == 'registered' then
+        elseif user_type == 'registered' or user_type == 'paid' then
             can_admit = total_size < threshold
         else  -- anonymous
             can_admit = total_size < threshold
@@ -453,6 +465,7 @@ class BackpressureManager:
         anonymous_queue_key = f"{self.QUEUE_PREFIX}:anonymous"
         registered_queue_key = f"{self.QUEUE_PREFIX}:registered"
         privileged_queue_key = f"{self.QUEUE_PREFIX}:privileged"
+        paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
 
         try:
             # Execute atomic check
@@ -464,7 +477,7 @@ class BackpressureManager:
                 anonymous_queue_key,
                 registered_queue_key,
                 privileged_queue_key,
-                "",  # Placeholder for 6th key
+                paid_queue_key,
                 threshold,
                 thresholds['hard_limit'],
                 user_type.value.lower()
@@ -495,7 +508,7 @@ class BackpressureManager:
 
             if user_type == UserType.PRIVILEGED:
                 return total_size < thresholds['hard_limit']
-            elif user_type == UserType.REGISTERED:
+            elif user_type in (UserType.REGISTERED, UserType.PAID):
                 return total_size < threshold
             else:  # ANONYMOUS
                 return total_size < threshold
@@ -557,15 +570,17 @@ class AtomicBackpressureManager:
         local anon_queue_key = KEYS[1]
         local reg_queue_key = KEYS[2]
         local priv_queue_key = KEYS[3]
+        local paid_queue_key = KEYS[4]
         
         local user_type = ARGV[1]
         local anonymous_threshold = tonumber(ARGV[2])
         local registered_threshold = tonumber(ARGV[3])
-        local hard_limit = tonumber(ARGV[4])
-        local capacity_per_healthy_process = tonumber(ARGV[5])
-        local heartbeat_timeout = tonumber(ARGV[6])
-        local current_time = tonumber(ARGV[7])
-        local heartbeat_pattern = ARGV[8]
+        local paid_threshold = tonumber(ARGV[4])
+        local hard_limit = tonumber(ARGV[5])
+        local capacity_per_healthy_process = tonumber(ARGV[6])
+        local heartbeat_timeout = tonumber(ARGV[7])
+        local current_time = tonumber(ARGV[8])
+        local heartbeat_pattern = ARGV[9]
         
         -- Count healthy chat REST processes
         local heartbeat_keys = redis.call('KEYS', heartbeat_pattern)
@@ -599,11 +614,13 @@ class AtomicBackpressureManager:
         local anon_queue = redis.call('LLEN', anon_queue_key)
         local reg_queue = redis.call('LLEN', reg_queue_key) 
         local priv_queue = redis.call('LLEN', priv_queue_key)
-        local total_queue = anon_queue + reg_queue + priv_queue
+        local paid_queue = redis.call('LLEN', paid_queue_key)
+        local total_queue = anon_queue + reg_queue + paid_queue + priv_queue
         
         -- Calculate dynamic thresholds based on actual capacity
         local anon_threshold = math.floor(actual_capacity * (anonymous_threshold / hard_limit))
         local reg_threshold = math.floor(actual_capacity * (registered_threshold / hard_limit))
+        local paid_threshold_val = math.floor(actual_capacity * (paid_threshold / hard_limit))
         local hard_threshold = math.floor(actual_capacity * 1.0)
         
         -- Check if request can be admitted (without enqueueing)
@@ -616,6 +633,9 @@ class AtomicBackpressureManager:
         elseif user_type == "registered" then
             can_admit = total_queue < reg_threshold  
             rejection_reason = total_queue >= reg_threshold and "registered_threshold_exceeded" or ""
+        elseif user_type == "paid" then
+            can_admit = total_queue < paid_threshold_val
+            rejection_reason = total_queue >= paid_threshold_val and "paid_threshold_exceeded" or ""
         else -- anonymous
             can_admit = total_queue < anon_threshold
             rejection_reason = total_queue >= anon_threshold and "anonymous_threshold_exceeded" or ""
@@ -667,6 +687,7 @@ class AtomicBackpressureManager:
         anon_queue_key = f"{self.QUEUE_PREFIX}:anonymous"
         reg_queue_key = f"{self.QUEUE_PREFIX}:registered"
         priv_queue_key = f"{self.QUEUE_PREFIX}:privileged"
+        paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
 
         # Get theoretical thresholds from configuration
         total_instance_capacity = self.gateway_config.total_capacity_per_instance
@@ -681,14 +702,16 @@ class AtomicBackpressureManager:
         try:
             result = await self.redis.eval(
                 self.ATOMIC_CAPACITY_CHECK_SCRIPT,
-                3,  # Number of keys
+                4,  # Number of keys
                 anon_queue_key,
                 reg_queue_key,
                 priv_queue_key,
+                paid_queue_key,
                 # Arguments
                 user_type.value,
                 str(theoretical_thresholds["anonymous_threshold"]),
                 str(theoretical_thresholds["registered_threshold"]),
+                str(theoretical_thresholds["paid_threshold"]),
                 str(theoretical_thresholds["hard_limit"]),
                 # str(self.gateway_config.total_capacity_per_instance),
                 str(total_per_single_process),
@@ -740,10 +763,20 @@ class AtomicBackpressureManager:
             throttling_reason = ThrottlingReason.SYSTEM_BACKPRESSURE
             retry_after = 60
             message = f"System at hard limit ({stats.get('current_queue_size', 0)}/{stats.get('actual_capacity', 0)})"
+        elif "paid_threshold" in reason:
+            throttling_reason = ThrottlingReason.PAID_BACKPRESSURE
+            retry_after = 45
+            message = (
+                "System under high pressure - privileged users only "
+                f"({stats.get('current_queue_size', 0)}/{stats.get('actual_capacity', 0)})"
+            )
         elif "registered_threshold" in reason:
             throttling_reason = ThrottlingReason.REGISTERED_BACKPRESSURE
             retry_after = 45
-            message = f"System under high pressure - privileged users only ({stats.get('current_queue_size', 0)}/{stats.get('actual_capacity', 0)})"
+            message = (
+                "System under pressure - paid users only "
+                f"({stats.get('current_queue_size', 0)}/{stats.get('actual_capacity', 0)})"
+            )
         elif "anonymous_threshold" in reason:
             throttling_reason = ThrottlingReason.ANONYMOUS_BACKPRESSURE
             retry_after = 30
@@ -810,7 +843,8 @@ class AtomicBackpressureManager:
         queues = {
             "anonymous": f"{self.QUEUE_PREFIX}:anonymous",
             "registered": f"{self.QUEUE_PREFIX}:registered",
-            "privileged": f"{self.QUEUE_PREFIX}:privileged"
+            "privileged": f"{self.QUEUE_PREFIX}:privileged",
+            "paid": f"{self.QUEUE_PREFIX}:paid",
         }
 
         sizes = {}
@@ -827,7 +861,7 @@ class AtomicBackpressureManager:
         await self.init_redis()
 
         analytics = {}
-        for user_type in ["anonymous", "registered", "privileged"]:
+        for user_type in ["anonymous", "registered", "privileged", "paid"]:
             analytics_key = f"{self.QUEUE_ANALYTICS_PREFIX}:{user_type}"
 
             data = await self.redis.get(analytics_key)
@@ -909,6 +943,7 @@ class AtomicBackpressureManager:
 
             accepting_anonymous = total_size < thresholds['anonymous_threshold']
             accepting_registered = total_size < thresholds['registered_threshold']
+            accepting_paid = total_size < thresholds['paid_threshold']
             accepting_privileged = total_size < thresholds['hard_limit']
 
             analytics = await self.get_queue_analytics()
@@ -918,6 +953,7 @@ class AtomicBackpressureManager:
             return QueueStats(
                 anonymous_queue=queue_sizes['anonymous'],
                 registered_queue=queue_sizes['registered'],
+                paid_queue=queue_sizes.get('paid', 0),
                 privileged_queue=queue_sizes['privileged'],
                 total_queue=total_size,
                 base_capacity_per_instance=base_capacity,
@@ -927,9 +963,11 @@ class AtomicBackpressureManager:
                 pressure_ratio=pressure_ratio,
                 accepting_anonymous=accepting_anonymous,
                 accepting_registered=accepting_registered,
+                accepting_paid=accepting_paid,
                 accepting_privileged=accepting_privileged,
                 anonymous_threshold=thresholds['anonymous_threshold'],
                 registered_threshold=thresholds['registered_threshold'],
+                paid_threshold=thresholds['paid_threshold'],
                 hard_limit_threshold=thresholds['hard_limit'],
                 avg_wait_times={
                     user_type: data.get('avg_wait_time', 0)
@@ -960,6 +998,7 @@ class AtomicBackpressureManager:
 
         accepting_anonymous = total_size < actual_thresholds['anonymous_threshold']
         accepting_registered = total_size < actual_thresholds['registered_threshold']
+        accepting_paid = total_size < actual_thresholds['paid_threshold']
         accepting_privileged = total_size < actual_thresholds['hard_limit']
 
         analytics = await self.get_queue_analytics()
@@ -969,6 +1008,7 @@ class AtomicBackpressureManager:
         return QueueStats(
             anonymous_queue=queue_sizes['anonymous'],
             registered_queue=queue_sizes['registered'],
+            paid_queue=queue_sizes.get('paid', 0),
             privileged_queue=queue_sizes['privileged'],
             total_queue=total_size,
             base_capacity_per_instance=self.gateway_config.total_capacity_per_instance,
@@ -978,9 +1018,11 @@ class AtomicBackpressureManager:
             pressure_ratio=pressure_ratio,
             accepting_anonymous=accepting_anonymous,
             accepting_registered=accepting_registered,
+            accepting_paid=accepting_paid,
             accepting_privileged=accepting_privileged,
             anonymous_threshold=actual_thresholds['anonymous_threshold'],
             registered_threshold=actual_thresholds['registered_threshold'],
+            paid_threshold=actual_thresholds['paid_threshold'],
             hard_limit_threshold=actual_thresholds['hard_limit'],
             avg_wait_times={
                 user_type: data.get('avg_wait_time', 0)
@@ -1059,17 +1101,19 @@ class AtomicChatQueueManager:
         local anon_queue_key = KEYS[3] 
         local reg_queue_key = KEYS[4]
         local priv_queue_key = KEYS[5]
+        local paid_queue_key = KEYS[6]
         
         local user_type = ARGV[1]
         local chat_task_json = ARGV[2]  -- Actual chat task
         local anonymous_threshold = tonumber(ARGV[3])
         local registered_threshold = tonumber(ARGV[4])
-        local hard_limit = tonumber(ARGV[5])
-        local capacity_per_healthy_process = tonumber(ARGV[6])
-        local heartbeat_timeout = tonumber(ARGV[7])
-        local current_time = tonumber(ARGV[8])
-        local heartbeat_pattern = ARGV[9]
-        local max_queue_size = tonumber(ARGV[10])
+        local paid_threshold = tonumber(ARGV[5])
+        local hard_limit = tonumber(ARGV[6])
+        local capacity_per_healthy_process = tonumber(ARGV[7])
+        local heartbeat_timeout = tonumber(ARGV[8])
+        local current_time = tonumber(ARGV[9])
+        local heartbeat_pattern = ARGV[10]
+        local max_queue_size = tonumber(ARGV[11])
         
         -- Count healthy chat REST processes
         local heartbeat_keys = redis.call('KEYS', heartbeat_pattern)
@@ -1103,7 +1147,8 @@ class AtomicChatQueueManager:
         local anon_queue = redis.call('LLEN', anon_queue_key)
         local reg_queue = redis.call('LLEN', reg_queue_key) 
         local priv_queue = redis.call('LLEN', priv_queue_key)
-        local total_queue = anon_queue + reg_queue + priv_queue
+        local paid_queue = redis.call('LLEN', paid_queue_key)
+        local total_queue = anon_queue + reg_queue + paid_queue + priv_queue
 
         if max_queue_size and max_queue_size > 0 then
             if total_queue >= max_queue_size then
@@ -1114,6 +1159,7 @@ class AtomicChatQueueManager:
         -- Calculate dynamic thresholds
         local anon_threshold = math.floor(actual_capacity * (anonymous_threshold / hard_limit))
         local reg_threshold = math.floor(actual_capacity * (registered_threshold / hard_limit))
+        local paid_threshold_val = math.floor(actual_capacity * (paid_threshold / hard_limit))
         local hard_threshold = math.floor(actual_capacity * 1.0)
         
         -- Check if chat request can be admitted
@@ -1124,8 +1170,11 @@ class AtomicChatQueueManager:
             can_admit = total_queue < hard_threshold
             rejection_reason = total_queue >= hard_threshold and "hard_limit_exceeded" or ""
         elseif user_type == "registered" then
-            can_admit = total_queue < reg_threshold  
+            can_admit = total_queue < reg_threshold
             rejection_reason = total_queue >= reg_threshold and "registered_threshold_exceeded" or ""
+        elseif user_type == "paid" then
+            can_admit = total_queue < paid_threshold_val
+            rejection_reason = total_queue >= paid_threshold_val and "paid_threshold_exceeded" or ""
         else -- anonymous
             can_admit = total_queue < anon_threshold
             rejection_reason = total_queue >= anon_threshold and "anonymous_threshold_exceeded" or ""
@@ -1168,6 +1217,7 @@ class AtomicChatQueueManager:
         anon_queue_key = f"{self.QUEUE_PREFIX}:anonymous"
         reg_queue_key = f"{self.QUEUE_PREFIX}:registered"
         priv_queue_key = f"{self.QUEUE_PREFIX}:privileged"
+        paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
 
         # Get theoretical thresholds from configuration
         total_instance_capacity = self.gateway_config.total_capacity_per_instance
@@ -1182,17 +1232,19 @@ class AtomicChatQueueManager:
         try:
             result = await self.redis.eval(
                 self.ATOMIC_CHAT_ENQUEUE_SCRIPT,
-                5,  # Number of keys
+                6,  # Number of keys
                 queue_key,
                 capacity_counter_key,
                 anon_queue_key,
                 reg_queue_key,
                 priv_queue_key,
+                paid_queue_key,
                 # Arguments
                 user_type.value,
                 json.dumps(chat_task_data, ensure_ascii=False),  # Your actual chat task
                 str(theoretical_thresholds["anonymous_threshold"]),
                 str(theoretical_thresholds["registered_threshold"]),
+                str(theoretical_thresholds["paid_threshold"]),
                 str(theoretical_thresholds["hard_limit"]),
                 # str(self.gateway_config.total_capacity_per_instance),
                 str(total_per_single_process),
@@ -1249,6 +1301,9 @@ class AtomicChatQueueManager:
         if "hard_limit" in reason:
             throttling_reason = ThrottlingReason.SYSTEM_BACKPRESSURE
             retry_after = 60
+        elif "paid_threshold" in reason:
+            throttling_reason = ThrottlingReason.PAID_BACKPRESSURE
+            retry_after = 45
         elif "registered_threshold" in reason:
             throttling_reason = ThrottlingReason.REGISTERED_BACKPRESSURE
             retry_after = 45

@@ -25,6 +25,7 @@ class ThrottlingReason(Enum):
     SYSTEM_BACKPRESSURE = "system_backpressure"
     ANONYMOUS_BACKPRESSURE = "anonymous_backpressure"
     REGISTERED_BACKPRESSURE = "registered_backpressure"
+    PAID_BACKPRESSURE = "paid_backpressure"
 
 
 @dataclass

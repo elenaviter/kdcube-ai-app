@@ -555,11 +555,13 @@ async def get_system_monitoring(
             "queue_stats": {
                 "anonymous": queue_data["anonymous"],
                 "registered": queue_data["registered"],
+                "paid": queue_data.get("paid", 0),
                 "privileged": queue_data["privileged"]
             },
             "enhanced_queue_stats": {
                 "anonymous_queue": queue_data["anonymous"],
                 "registered_queue": queue_data["registered"],
+                "paid_queue": queue_data.get("paid", 0),
                 "privileged_queue": queue_data["privileged"],
                 "total_queue": queue_data["total"],
                 "base_capacity_per_instance": queue_data["capacity_context"]["base_capacity_per_instance"],
@@ -569,6 +571,7 @@ async def get_system_monitoring(
                 "pressure_ratio": queue_data["capacity_context"]["pressure_ratio"],
                 "accepting_anonymous": queue_data["capacity_context"]["accepting_anonymous"],
                 "accepting_registered": queue_data["capacity_context"]["accepting_registered"],
+                "accepting_paid": queue_data["capacity_context"].get("accepting_paid"),
                 "accepting_privileged": queue_data["capacity_context"]["accepting_privileged"]
             },
 
@@ -578,6 +581,7 @@ async def get_system_monitoring(
                 "current_effects": {
                     "anonymous_blocked": not queue_data["capacity_context"]["accepting_anonymous"],
                     "registered_blocked": not queue_data["capacity_context"]["accepting_registered"],
+                    "paid_blocked": not queue_data["capacity_context"].get("accepting_paid", True),
                     "all_blocked": not queue_data["capacity_context"]["accepting_privileged"],
                     "pressure_level": (
                         "critical" if queue_data["capacity_context"]["pressure_ratio"] > 0.9 else
@@ -613,6 +617,12 @@ async def get_system_monitoring(
                         "avg_wait": queue_data["analytics"]["avg_wait_times"].get("registered", 0),
                         "throughput": queue_data["analytics"]["throughput_metrics"].get("registered", 0),
                         "blocked": not queue_data["capacity_context"]["accepting_registered"]
+                    },
+                    "paid": {
+                        "size": queue_data.get("paid", 0),
+                        "avg_wait": queue_data["analytics"]["avg_wait_times"].get("paid", 0),
+                        "throughput": queue_data["analytics"]["throughput_metrics"].get("paid", 0),
+                        "blocked": not queue_data["capacity_context"].get("accepting_paid", True)
                     },
                     "privileged": {
                         "size": queue_data["privileged"],
@@ -707,6 +717,7 @@ def _extract_gateway_config_for_frontend(gateway_status: Dict[str, Any]) -> Dict
             "queue_depth_multiplier": config["backpressure"]["queue_depth_multiplier"],
             "anonymous_pressure_threshold": config["backpressure"]["anonymous_pressure_threshold"],
             "registered_pressure_threshold": config["backpressure"]["registered_pressure_threshold"],
+            "paid_pressure_threshold": config["backpressure"].get("paid_pressure_threshold"),
             "hard_limit_threshold": config["backpressure"]["hard_limit_threshold"]
         },
         "circuit_breaker_settings": config["circuit_breakers"],
@@ -738,6 +749,7 @@ def _extract_detailed_config_for_frontend(capacity_transparency: Dict[str, Any],
             "backpressure_thresholds": {
                 "anonymous_pressure_threshold": capacity.get("threshold_ratios", {}).get("anonymous_threshold_ratio", 0.6),
                 "registered_pressure_threshold": capacity.get("threshold_ratios", {}).get("registered_threshold_ratio", 0.8),
+                "paid_pressure_threshold": capacity.get("threshold_ratios", {}).get("paid_threshold_ratio", 0.8),
                 "hard_limit_threshold": capacity.get("threshold_ratios", {}).get("hard_limit_threshold_ratio", 0.95),
                 "capacity_buffer": configuration.get("capacity_buffer_percent", 20.0) / 100,
                 "queue_depth_multiplier": configuration.get("queue_depth_multiplier", 2.0)
@@ -859,6 +871,7 @@ async def debug_capacity_calculation(
                 "queue_depth_multiplier": config.backpressure.queue_depth_multiplier,
                 "anonymous_threshold": config.backpressure.anonymous_pressure_threshold,
                 "registered_threshold": config.backpressure.registered_pressure_threshold,
+                "paid_threshold": config.backpressure.paid_pressure_threshold,
                 "hard_limit_threshold": config.backpressure.hard_limit_threshold
             },
 
@@ -898,6 +911,7 @@ async def debug_capacity_calculation(
                 "thresholds": {
                     "anonymous_threshold": queue_stats.anonymous_threshold,
                     "registered_threshold": queue_stats.registered_threshold,
+                    "paid_threshold": queue_stats.paid_threshold,
                     "hard_limit_threshold": queue_stats.hard_limit_threshold
                 }
             },
@@ -905,11 +919,13 @@ async def debug_capacity_calculation(
             "current_queue_state": {
                 "anonymous_queue": queue_stats.anonymous_queue,
                 "registered_queue": queue_stats.registered_queue,
+                "paid_queue": queue_stats.paid_queue,
                 "privileged_queue": queue_stats.privileged_queue,
                 "total_queue": queue_stats.total_queue,
                 "pressure_ratio": queue_stats.pressure_ratio,
                 "accepting_anonymous": queue_stats.accepting_anonymous,
                 "accepting_registered": queue_stats.accepting_registered,
+                "accepting_paid": queue_stats.accepting_paid,
                 "accepting_privileged": queue_stats.accepting_privileged
             },
 
@@ -925,6 +941,7 @@ async def debug_capacity_calculation(
                 "step_9_thresholds": {
                     "anonymous": f"{queue_stats.anonymous_threshold} = {queue_stats.weighted_max_capacity} * {config.backpressure.anonymous_pressure_threshold}",
                     "registered": f"{queue_stats.registered_threshold} = {queue_stats.weighted_max_capacity} * {config.backpressure.registered_pressure_threshold}",
+                    "paid": f"{queue_stats.paid_threshold} = {queue_stats.weighted_max_capacity} * {config.backpressure.paid_pressure_threshold}",
                     "hard_limit": f"{queue_stats.hard_limit_threshold} = {queue_stats.weighted_max_capacity} * {config.backpressure.hard_limit_threshold}"
                 }
             }
@@ -945,6 +962,8 @@ async def debug_environment(session: UserSession = Depends(auth_without_pressure
     """Debug environment variables affecting capacity"""
     return {
         "MAX_CONCURRENT_CHAT": os.getenv("MAX_CONCURRENT_CHAT", "5"),
+        "MAX_CONCURRENT_CHATS": os.getenv("MAX_CONCURRENT_CHATS", ""),
+        "CHAT_PROC_PARALLELISM": os.getenv("CHAT_PROC_PARALLELISM", ""),
         "CHAT_APP_PARALLELISM": os.getenv("CHAT_APP_PARALLELISM", "1"),
         "AVG_PROCESSING_TIME_SECONDS": os.getenv("AVG_PROCESSING_TIME_SECONDS", "25.0"),
         "GATEWAY_PROFILE": os.getenv("GATEWAY_PROFILE", "development"),

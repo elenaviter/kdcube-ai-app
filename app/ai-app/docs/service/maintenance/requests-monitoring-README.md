@@ -26,8 +26,8 @@ Primary places to measure latency:
 ## Monitoring Dashboard (Control Plane)
 Open the Control Plane Monitoring Dashboard and check:
 1. System Summary
-2. Queues (anonymous/registered/privileged)
-3. Queue Analytics (avg wait, throughput, utilization)
+2. Queues (anonymous/registered/paid/privileged)
+3. Queue Analytics (avg wait, throughput, utilization for anonymous/registered/paid/privileged)
 4. Capacity Transparency (actual healthy processes vs configured)
 
 Interpreting signals:
@@ -60,7 +60,7 @@ Notes:
 
 ## Redis Browser (Control Plane)
 Use the quick prefix buttons to inspect keys fast:
-1. Queues: `<tenant>:<project>:kdcube:chat:prompt:queue` (list)
+1. Queues: `<tenant>:<project>:kdcube:chat:prompt:queue` (list, includes `:paid`)
 2. Locks: `<tenant>:<project>:kdcube:lock` (string)
 3. Process heartbeats: `<tenant>:<project>:kdcube:heartbeat:process` (string JSON)
 4. Instance heartbeats: `<tenant>:<project>:kdcube:heartbeat:instance` (string JSON)
