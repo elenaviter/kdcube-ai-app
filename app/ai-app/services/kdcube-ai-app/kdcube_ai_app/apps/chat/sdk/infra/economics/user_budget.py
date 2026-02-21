@@ -873,7 +873,7 @@ class UserCreditsManager:
                 UPDATE {self.CP}.{self.RESERVATIONS_TABLE}
                 SET status='released',
                     released_at=NOW(),
-                    notes = COALESCE(notes, '') || CASE WHEN $5 IS NULL THEN '' ELSE (' | ' || $5) END,
+                    notes = COALESCE(notes, '') || CASE WHEN $5::text IS NULL THEN '' ELSE (' | ' || $5::text) END,
                     updated_at=NOW()
                 WHERE tenant=$1 AND project=$2 AND user_id=$3 AND reservation_id=$4
                   AND status='reserved'
@@ -918,6 +918,12 @@ class UserCreditsManager:
                           AND status='reserved'
                     """, tenant, project, user_id, reservation_id)
                     return tokens
+
+                res = await conn.fetchrow(f"""
+                        SELECT status, tokens_reserved
+                        FROM {self.CP}.{self.RESERVATIONS_TABLE}
+                        WHERE tenant=$1 AND project=$2 AND user_id=$3 AND reservation_id=$4
+                    """, tenant, project, user_id, reservation_id)
 
                 if not res or res.get("status") != "reserved":
                     # Missing or already finalized reservation; do not consume
