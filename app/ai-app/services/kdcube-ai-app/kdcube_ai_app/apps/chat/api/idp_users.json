@@ -13,6 +13,62 @@
       "kdcube:*:monitoring:*;read"
     ]
   },
+  "test-admin-token-124": {
+    "sub": "admin-user-2",
+    "username": "admin2",
+    "email": "admin2@test.com",
+    "name": "Administrator 2",
+    "roles": [
+      "kdcube:role:super-admin"
+    ],
+    "permissions": [
+      "kdcube:*:knowledge_base:*;read;write;delete",
+      "kdcube:*:chat:*;read;write;delete",
+      "kdcube:*:monitoring:*;read"
+    ]
+  },
+  "test-admin-token-125": {
+    "sub": "admin-user-3",
+    "username": "admin3",
+    "email": "admin3@test.com",
+    "name": "Administrator 3",
+    "roles": [
+      "kdcube:role:super-admin"
+    ],
+    "permissions": [
+      "kdcube:*:knowledge_base:*;read;write;delete",
+      "kdcube:*:chat:*;read;write;delete",
+      "kdcube:*:monitoring:*;read"
+    ]
+  },
+  "test-admin-token-126": {
+    "sub": "admin-user-4",
+    "username": "admin4",
+    "email": "admin4@test.com",
+    "name": "Administrator 4",
+    "roles": [
+      "kdcube:role:super-admin"
+    ],
+    "permissions": [
+      "kdcube:*:knowledge_base:*;read;write;delete",
+      "kdcube:*:chat:*;read;write;delete",
+      "kdcube:*:monitoring:*;read"
+    ]
+  },
+  "test-admin-token-127": {
+    "sub": "admin-user-5",
+    "username": "admin5",
+    "email": "admin5@test.com",
+    "name": "Administrator 5",
+    "roles": [
+      "kdcube:role:super-admin"
+    ],
+    "permissions": [
+      "kdcube:*:knowledge_base:*;read;write;delete",
+      "kdcube:*:chat:*;read;write;delete",
+      "kdcube:*:monitoring:*;read"
+    ]
+  },
   "test-chat-token-456": {
     "sub": "chat-user-1",
     "username": "chatuser",

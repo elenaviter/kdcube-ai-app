@@ -57,10 +57,9 @@ from kdcube_ai_app.infra.gateway.config import (
 )
 from kdcube_ai_app.infra.namespaces import CONFIG
 
-# Import our simplified components
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency, require_auth,
-    INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, auth_without_pressure, _announce_startup,
+    INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, _announce_startup,
     get_pg_pool, get_conversation_system
 )
 from kdcube_ai_app.auth.AuthManager import RequireUser

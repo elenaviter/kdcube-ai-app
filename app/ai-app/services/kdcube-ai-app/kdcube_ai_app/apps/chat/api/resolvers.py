@@ -389,6 +389,7 @@ def get_external_request_processor(middleware, chat_handler, app):
         relay=app.state.chat_comm,      # use the Redis relay communicator
         conversation_ctx=app.state.conversation_browser,
         max_concurrent=gateway_config.service_capacity.concurrent_requests_per_process,
+        queue_analytics_updater=app.state.gateway_adapter.gateway.backpressure_manager.update_queue_analytics,
         task_timeout_sec=900,
     )
 

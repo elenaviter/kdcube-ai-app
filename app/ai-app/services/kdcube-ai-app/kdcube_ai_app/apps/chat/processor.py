@@ -45,6 +45,7 @@ class EnhancedChatRequestProcessor:
             conversation_ctx: ContextRAGClient,
             process_id: Optional[int] = None,
             relay: Optional[ChatRelayCommunicator] = None,   # unified relay (pub/sub)
+            queue_analytics_updater=None,
             max_concurrent: Optional[int] = None,
             task_timeout_sec: Optional[int] = None,
             lock_ttl_sec: int = 300,
@@ -58,6 +59,7 @@ class EnhancedChatRequestProcessor:
         self.lock_ttl_sec = lock_ttl_sec
         self.lock_renew_sec = lock_renew_sec
         self.conversation_ctx = conversation_ctx
+        self.queue_analytics_updater = queue_analytics_updater
 
         self._relay = relay or ChatRelayCommunicator()  # transport
         self._processor_task: Optional[asyncio.Task] = None
@@ -167,6 +169,7 @@ class EnhancedChatRequestProcessor:
                     f"Process {self.process_id} acquired task {logical_id} ({user_type})"
                     + (f" queue_wait_ms={queue_wait_ms}" if queue_wait_ms is not None else "")
                 )
+                task_dict["_queue_wait_ms"] = queue_wait_ms
                 task_dict["_lock_key"] = lock_key
                 task_dict["_queue_key"] = queue_key
                 return task_dict
@@ -421,13 +424,16 @@ class EnhancedChatRequestProcessor:
         storage_backend = create_storage_backend(_settings.STORAGE_PATH, **{})
 
         # 5) Announce start (async)
-        created_at = None
-        try:
-            created_at = float(getattr(payload.meta, "created_at", None))
-        except Exception:
+        queue_wait_ms = task_data.get("_queue_wait_ms")
+        if queue_wait_ms is None:
             created_at = None
-        if created_at:
-            queue_wait_ms = int((time.time() - created_at) * 1000)
+            try:
+                created_at = float(getattr(payload.meta, "created_at", None))
+            except Exception:
+                created_at = None
+            if created_at:
+                queue_wait_ms = int((time.time() - created_at) * 1000)
+        if queue_wait_ms is not None:
             logger.info(
                 f"Starting task {task_id} queue_wait_ms={queue_wait_ms} current_load={self._current_load}"
             )
@@ -484,6 +490,13 @@ class EnhancedChatRequestProcessor:
                     await self.middleware.redis.delete(lock_key)
             finally:
                 self._current_load = max(0, self._current_load - 1)
+                if self.queue_analytics_updater:
+                    try:
+                        user_type = payload.user.user_type.value if hasattr(payload.user.user_type, "value") else str(payload.user.user_type)
+                        wait_seconds = (float(queue_wait_ms) / 1000.0) if queue_wait_ms is not None else None
+                        await self.queue_analytics_updater(user_type.lower(), wait_time=wait_seconds, processed=True)
+                    except Exception:
+                        logger.debug("Failed to update queue analytics", exc_info=True)
                 try:
                     res = await self.conversation_ctx.set_conversation_state(
                         tenant=payload.actor.tenant_id, project=payload.actor.project_id, user_id=payload.user.user_id, conversation_id=payload.routing.conversation_id,

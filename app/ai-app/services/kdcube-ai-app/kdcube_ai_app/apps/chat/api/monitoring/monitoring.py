@@ -565,16 +565,27 @@ async def get_system_monitoring(
         estimated_total = estimated_per_instance * instance_count
         db_warning = False
         db_warning_reason = None
+        db_warning_level = None
+        db_percent_of_max = None
         if db_max_connections:
+            db_percent_of_max = round((estimated_total / db_max_connections) * 100, 1)
             if estimated_total > db_max_connections:
                 db_warning = True
+                db_warning_level = "exceeds"
                 db_warning_reason = (
                     f"Estimated DB connections ({estimated_total}) exceed max_connections ({db_max_connections})."
                 )
-            elif estimated_total > int(db_max_connections * 0.8):
+            elif estimated_total == db_max_connections:
                 db_warning = True
+                db_warning_level = "max"
                 db_warning_reason = (
-                    f"Estimated DB connections ({estimated_total}) are >80% of max_connections ({db_max_connections})."
+                    f"Estimated DB connections ({estimated_total}) are at max_connections ({db_max_connections})."
+                )
+            elif estimated_total >= int(db_max_connections * 0.8):
+                db_warning = True
+                db_warning_level = "high"
+                db_warning_reason = (
+                    f"Estimated DB connections ({estimated_total}) are >=80% of max_connections ({db_max_connections})."
                 )
 
         response_data = {
@@ -712,8 +723,10 @@ async def get_system_monitoring(
                 "estimated_per_instance": estimated_per_instance,
                 "instance_count": instance_count,
                 "estimated_total": estimated_total,
+                "percent_of_max": db_percent_of_max,
                 "warning": db_warning,
                 "warning_reason": db_warning_reason,
+                "warning_level": db_warning_level,
             },
 
             "timestamp": current_time,

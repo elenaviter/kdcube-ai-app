@@ -83,8 +83,10 @@ interface SystemMonitoringResponse {
         estimated_per_instance?: number;
         instance_count?: number;
         estimated_total?: number;
+        percent_of_max?: number;
         warning?: boolean;
         warning_reason?: string | null;
+        warning_level?: string | null;
     };
     timestamp?: number;
 }
@@ -444,10 +446,16 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
                 {dbConnections?.warning ? (
                     <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-sm">
                         <div className="font-semibold">DB connection capacity warning</div>
-                        <div>{dbConnections.warning_reason || 'Estimated DB connections are close to max_connections.'}</div>
+                        <div>
+                            {dbConnections.warning_reason || 'Estimated DB connections are close to max_connections.'}
+                            {dbConnections.percent_of_max != null ? ` (${dbConnections.percent_of_max}% of max)` : ''}
+                        </div>
                         <div className="text-[11px] text-rose-700 mt-1">
                             estimated_total={dbConnections.estimated_total ?? '—'} · max_connections={dbConnections.max_connections ?? '—'} ·
                             pool_per_worker={dbConnections.pool_max_per_worker ?? '—'} · processes_per_instance={dbConnections.processes_per_instance ?? '—'}
+                        </div>
+                        <div className="text-[11px] text-rose-700">
+                            source={dbConnections.source || 'unknown'}
                         </div>
                     </div>
                 ) : null}
