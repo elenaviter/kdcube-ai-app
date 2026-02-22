@@ -105,6 +105,11 @@ Use these patterns with your log stream or files:
    - `enqueue_chat_task_atomic result|acquired task|Starting task`
 2. SSE delivery issues
    - `SSEHub|sse_stream|no recipients found|DIRECT SEND|BROADCAST`
+   - Redis recovery: `[RedisMonitor] Redis connection recovered`
+   - SSE relay resync: `[SSEHub] resync relay reason=redis_reconnect`
+3. Bundle config listener (Redis pubsub)
+   - `Subscribed to bundles channels`
+   - `Config listener error`
 3. Gateway rejections and pressure
    - `gateway|backpressure|queue.enqueue_rejected|circuit_breaker`
 

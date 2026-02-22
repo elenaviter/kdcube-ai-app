@@ -195,154 +195,170 @@ class EnhancedChatRequestProcessor:
             BundlesRegistry
         )
 
-        try:
-            settings = get_settings()
-            tenant = settings.TENANT
-            project = settings.PROJECT
-            update_channel = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL.format(tenant=tenant, project=project)
-            cleanup_channel = namespaces.CONFIG.BUNDLES.CLEANUP_CHANNEL.format(tenant=tenant, project=project)
-            pubsub = self.redis.pubsub()
-            await pubsub.subscribe(
-                update_channel,
-                cleanup_channel,
-            )
-            logger.info(
-                "Subscribed to bundles channels: "
-                f"{update_channel}, {cleanup_channel}"
-            )
+        settings = get_settings()
+        tenant = settings.TENANT
+        project = settings.PROJECT
+        update_channel = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL.format(tenant=tenant, project=project)
+        cleanup_channel = namespaces.CONFIG.BUNDLES.CLEANUP_CHANNEL.format(tenant=tenant, project=project)
+        backoff = 0.5
+        while not self._stop_event.is_set():
+            pubsub = None
+            try:
+                pubsub = self.redis.pubsub()
+                await pubsub.subscribe(
+                    update_channel,
+                    cleanup_channel,
+                )
+                logger.info(
+                    "Subscribed to bundles channels: "
+                    f"{update_channel}, {cleanup_channel}"
+                )
+                backoff = 0.5
 
-            async for message in pubsub.listen():
-                if not message or message.get("type") != "message":
-                    continue
-
-                raw = message.get("data")
-                try:
-                    if isinstance(raw, bytes):
-                        raw = raw.decode("utf-8")
-                    evt = json.loads(raw)
-                except Exception:
-                    logger.warning("Invalid bundles broadcast; ignoring")
-                    continue
-
-                if "registry" in evt:
-                    try:
-                        reg = BundlesRegistry(**(evt.get("registry") or {}))
-                    except Exception:
-                        logger.warning("Invalid registry payload; ignoring")
-                        continue
-                    await set_registry_async(
-                        {bid: be.model_dump() for bid, be in reg.bundles.items()},
-                        reg.default_bundle_id
-                    )
-                    serialize_to_env(get_all(), get_default_id())
-                    try:
-                        clear_agentic_caches()
-                    except Exception:
-                        pass
-
-                    try:
-                        await store_save(self.redis, reg)
-                    except Exception:
-                        logger.debug("Could not save snapshot to Redis; continuing")
-
-                    logger.info(f"Applied bundles SNAPSHOT; now have {len(get_all())} bundles")
-                    continue
-
-                if evt.get("type") == "bundles.update":
-                    op = evt.get("op", "merge")
-                    bundles_patch = evt.get("bundles") or {}
-                    default_id = evt.get("default_bundle_id")
-
-                    try:
-                        current = await store_load(self.redis)
-                    except Exception as e:
-                        logger.error(f"Failed to load registry from Redis: {e}")
-                        current = BundlesRegistry()
-
-                    try:
-                        reg = apply_update(current, op, bundles_patch, default_id)
-                    except Exception as e:
-                        logger.error(f"Ignoring invalid bundles.update: {e}")
+                async for message in pubsub.listen():
+                    if self._stop_event.is_set():
+                        break
+                    if not message or message.get("type") != "message":
                         continue
 
+                    raw = message.get("data")
                     try:
-                        await store_save(self.redis, reg)
-                        await store_publish(self.redis, reg, op=op, actor=evt.get("updated_by") or None)
-                    except Exception as e:
-                        logger.error(f"Failed to persist/broadcast bundles: {e}")
-
-                    await set_registry_async(
-                        {bid: be.model_dump() for bid, be in reg.bundles.items()},
-                        reg.default_bundle_id
-                    )
-                    new_env = serialize_to_env(get_all(), get_default_id())
-                    try:
-                        clear_agentic_caches()
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8")
+                        evt = json.loads(raw)
                     except Exception:
-                        pass
+                        logger.warning("Invalid bundles broadcast; ignoring")
+                        continue
 
-                    logger.info(f"Applied bundles COMMAND (op={op}); now have {len(get_all())} bundles. New env = {new_env}")
-                    continue
-
-                if evt.get("type") == "bundles.cleanup":
-                    from kdcube_ai_app.infra.plugin.agentic_loader import evict_inactive_specs, AgenticBundleSpec
-                    from kdcube_ai_app.infra.plugin.git_bundle import (
-                        cleanup_old_git_bundles_async,
-                        resolve_bundles_root,
-                        bundle_dir_for_git,
-                    )
-                    from kdcube_ai_app.infra.plugin.bundle_refs import get_active_paths
-
-                    active_specs = []
-                    for _bid, entry in (get_all() or {}).items():
+                    if "registry" in evt:
                         try:
-                            active_specs.append(AgenticBundleSpec(
-                                path=entry.get("path"),
-                                module=entry.get("module"),
-                                singleton=bool(entry.get("singleton")),
-                            ))
+                            reg = BundlesRegistry(**(evt.get("registry") or {}))
                         except Exception:
+                            logger.warning("Invalid registry payload; ignoring")
                             continue
-                    drop_sys_modules = bool(evt.get("drop_sys_modules", True))
-                    result = evict_inactive_specs(
-                        active_specs=active_specs,
-                        drop_sys_modules=drop_sys_modules,
-                    )
-                    # Git bundle cleanup (skip active refs from Redis)
-                    try:
-                        active_paths = await get_active_paths(
-                            self.redis,
-                            tenant=tenant,
-                            project=project,
+                        await set_registry_async(
+                            {bid: be.model_dump() for bid, be in reg.bundles.items()},
+                            reg.default_bundle_id
                         )
-                        bundles = get_all() or {}
-                        for _bid, entry in bundles.items():
-                            git_url = entry.get("git_url") or entry.get("git_repo")
-                            if not git_url:
+                        serialize_to_env(get_all(), get_default_id())
+                        try:
+                            clear_agentic_caches()
+                        except Exception:
+                            pass
+
+                        try:
+                            await store_save(self.redis, reg)
+                        except Exception:
+                            logger.debug("Could not save snapshot to Redis; continuing")
+
+                        logger.info(f"Applied bundles SNAPSHOT; now have {len(get_all())} bundles")
+                        continue
+
+                    if evt.get("type") == "bundles.update":
+                        op = evt.get("op", "merge")
+                        bundles_patch = evt.get("bundles") or {}
+                        default_id = evt.get("default_bundle_id")
+
+                        try:
+                            current = await store_load(self.redis)
+                        except Exception as e:
+                            logger.error(f"Failed to load registry from Redis: {e}")
+                            current = BundlesRegistry()
+
+                        try:
+                            reg = apply_update(current, op, bundles_patch, default_id)
+                        except Exception as e:
+                            logger.error(f"Ignoring invalid bundles.update: {e}")
+                            continue
+
+                        try:
+                            await store_save(self.redis, reg)
+                            await store_publish(self.redis, reg, op=op, actor=evt.get("updated_by") or None)
+                        except Exception as e:
+                            logger.error(f"Failed to persist/broadcast bundles: {e}")
+
+                        await set_registry_async(
+                            {bid: be.model_dump() for bid, be in reg.bundles.items()},
+                            reg.default_bundle_id
+                        )
+                        new_env = serialize_to_env(get_all(), get_default_id())
+                        try:
+                            clear_agentic_caches()
+                        except Exception:
+                            pass
+
+                        logger.info(f"Applied bundles COMMAND (op={op}); now have {len(get_all())} bundles. New env = {new_env}")
+                        continue
+
+                    if evt.get("type") == "bundles.cleanup":
+                        from kdcube_ai_app.infra.plugin.agentic_loader import evict_inactive_specs, AgenticBundleSpec
+                        from kdcube_ai_app.infra.plugin.git_bundle import (
+                            cleanup_old_git_bundles_async,
+                            resolve_bundles_root,
+                            bundle_dir_for_git,
+                        )
+                        from kdcube_ai_app.infra.plugin.bundle_refs import get_active_paths
+
+                        active_specs = []
+                        for _bid, entry in (get_all() or {}).items():
+                            try:
+                                active_specs.append(AgenticBundleSpec(
+                                    path=entry.get("path"),
+                                    module=entry.get("module"),
+                                    singleton=bool(entry.get("singleton")),
+                                ))
+                            except Exception:
                                 continue
-                            base_dir = bundle_dir_for_git(_bid, entry.get("git_ref"))
-                            await cleanup_old_git_bundles_async(
-                                bundle_id=base_dir,
-                                bundles_root=resolve_bundles_root(),
-                                active_paths=active_paths,
+                        drop_sys_modules = bool(evt.get("drop_sys_modules", True))
+                        result = evict_inactive_specs(
+                            active_specs=active_specs,
+                            drop_sys_modules=drop_sys_modules,
+                        )
+                        # Git bundle cleanup (skip active refs from Redis)
+                        try:
+                            active_paths = await get_active_paths(
+                                self.redis,
+                                tenant=tenant,
+                                project=project,
                             )
-                    except Exception as e:
-                        logger.warning(f"Git bundle cleanup failed: {e}")
-                    logger.info(
-                        "Applied bundles cleanup. "
-                        f"evicted_modules={result.get('evicted_modules')}; "
-                        f"evicted_singletons={result.get('evicted_singletons')}; "
-                        f"sys_modules_deleted={result.get('sys_modules_deleted')}"
-                    )
-                    continue
+                            bundles = get_all() or {}
+                            for _bid, entry in bundles.items():
+                                git_url = entry.get("git_url") or entry.get("git_repo")
+                                if not git_url:
+                                    continue
+                                base_dir = bundle_dir_for_git(_bid, entry.get("git_ref"))
+                                await cleanup_old_git_bundles_async(
+                                    bundle_id=base_dir,
+                                    bundles_root=resolve_bundles_root(),
+                                    active_paths=active_paths,
+                                )
+                        except Exception as e:
+                            logger.warning(f"Git bundle cleanup failed: {e}")
+                        logger.info(
+                            "Applied bundles cleanup. "
+                            f"evicted_modules={result.get('evicted_modules')}; "
+                            f"evicted_singletons={result.get('evicted_singletons')}; "
+                            f"sys_modules_deleted={result.get('sys_modules_deleted')}"
+                        )
+                        continue
 
-                logger.debug("Ignoring unrelated pub/sub message on bundles channel")
+                    logger.debug("Ignoring unrelated pub/sub message on bundles channel")
 
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Config listener error: {e}")
-            await asyncio.sleep(1.0)
+                if self._stop_event.is_set():
+                    break
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Config listener error: {e}")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 10.0)
+            finally:
+                if pubsub:
+                    try:
+                        await pubsub.unsubscribe(update_channel, cleanup_channel)
+                        await pubsub.close()
+                    except Exception:
+                        pass
 
     # ---------------- Per-task execution ----------------
 

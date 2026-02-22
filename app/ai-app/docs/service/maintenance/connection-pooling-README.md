@@ -102,6 +102,19 @@ Where:
 
 ---
 
+**Postgres Env Quicklist**
+
+- `PGHOST` / `POSTGRES_HOST` → database host.
+- `PGPORT` / `POSTGRES_PORT` → database port.
+- `PGUSER` / `POSTGRES_USER` → database user.
+- `PGPASSWORD` / `POSTGRES_PASSWORD` → database password.
+- `PGDATABASE` / `POSTGRES_DATABASE` → database name.
+- `PGSSL` / `POSTGRES_SSL` → SSL mode.
+- `PGPOOL_MIN_SIZE` → minimum connections per worker.
+- `PGPOOL_MAX_SIZE` → maximum connections per worker.
+
+---
+
 **Operational Notes**
 
 - Redis and Postgres pools are **per process**. Total connections scale with worker count.
@@ -136,6 +149,17 @@ Env:
 - `REDIS_HEALTHCHECK_INTERVAL_SEC` (default: `5`)
 - `REDIS_HEALTHCHECK_TIMEOUT_SEC` (default: `2`)
 
+**Redis Env Quicklist**
+
+- `REDIS_URL` sets the Redis endpoint used by all shared pools and monitors.
+- `REDIS_MAX_CONNECTIONS` caps the per-process Redis pool size.
+- `REDIS_CLIENT_NAME` sets the client name prefix shown in `CLIENT LIST`.
+- `REDIS_HEALTHCHECK_INTERVAL_SEC` sets the Redis health poll interval.
+- `REDIS_HEALTHCHECK_TIMEOUT_SEC` sets the Redis health poll timeout.
+- `CB_RELAY_IDENTITY` / `CB_ORCHESTRATOR_TYPE` control the relay channel namespace.
+- `SSE_CLIENT_QUEUE` controls per-client SSE queue size (burst safety).
+- `CHAT_SSE_REJECT_ANONYMOUS` rejects anonymous SSE connections when `1`.
+
 Access:
 - `app.state.redis_monitor` (created during FastAPI lifespan)
 
@@ -145,6 +169,17 @@ You can register a listener:
 monitor = request.app.state.redis_monitor
 monitor.add_listener(lambda state, err: print("redis:", state, err))
 ```
+
+**Automatic Redis Reconnect Resync**
+
+When Redis reconnects, the chat service automatically:
+- Rebuilds SSE relay subscriptions from the active SSE hub state.
+- Reconnects gateway config pubsub listener.
+
+Look for logs:
+- `[RedisMonitor] Redis connection recovered`
+- `[SSEHub] resync relay reason=redis_reconnect ...`
+- `[gateway.config] Subscribed to ...`
 
 ---
 
