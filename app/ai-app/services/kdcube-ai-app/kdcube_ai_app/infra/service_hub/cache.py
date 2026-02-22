@@ -11,11 +11,11 @@ import os
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional
 
-from redis import asyncio as aioredis
 from redis.asyncio import Redis
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.infra.namespaces import ns_key, REDIS
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,7 @@ def create_namespaced_kv_cache_from_config(config: NamespacedKVCacheConfig | dic
         cfg = config
     if not cfg.redis_url:
         return None
-    redis = aioredis.from_url(cfg.redis_url, decode_responses=cfg.decode_responses)
+    redis = get_async_redis_client(cfg.redis_url, decode_responses=cfg.decode_responses)
     return NamespacedKVCache(
         redis,
         namespace=cfg.namespace,
@@ -255,7 +255,7 @@ def create_kv_cache_from_config(config: KVCacheConfig | dict | None) -> Optional
         cfg = config
     if not cfg.redis_url:
         return None
-    redis = aioredis.from_url(cfg.redis_url, decode_responses=cfg.decode_responses)
+    redis = get_async_redis_client(cfg.redis_url, decode_responses=cfg.decode_responses)
     return KVCache(
         redis,
         default_ttl_seconds=cfg.default_ttl_seconds,

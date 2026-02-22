@@ -46,6 +46,8 @@ Use **fit='content'** (default) + correct selectors/width/zoom to crop and scale
 - Increase viewport `width` for wide diagrams (2200–3200px typical).
 - Use `zoom=1.2–1.8` when text is too small.
 - Raise `device_scale_factor` (2 or 3) for crisper output.
+- For Mermaid, prefer `mermaid_font_size_px` (e.g. 16–22) and/or `mermaid_scale` (1.1–1.6).
+- Optionally set `mermaid_font_family` for consistent typography.
 
 4) **Allow time for layout**
 - Mermaid and JS charts need time to settle.
@@ -99,6 +101,8 @@ write_png(
   format="mermaid",
   width=2400,
   zoom=1.4,
+  mermaid_font_size_px=18,
+  device_scale_factor=3,
   fit="content",
   render_delay_ms=1200
 )
@@ -136,6 +140,7 @@ write_png(
 **Problem: Text too small**
 - Increase `zoom` to 1.4–1.8.
 - Set `device_scale_factor=2` or `3`.
+- For Mermaid, set `mermaid_font_size_px` (16–22) or `mermaid_scale` (1.2–1.5).
 
 **Problem: Mermaid fails to render**
 - Fix syntax (quote labels with punctuation).

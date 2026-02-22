@@ -10,11 +10,11 @@ from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Optional, Dict, List
 
-from redis import asyncio as aioredis
 import logging
 from kdcube_ai_app.auth.sessions import UserSession, RequestContext
 from kdcube_ai_app.infra.gateway.config import GatewayConfiguration
 from kdcube_ai_app.infra.namespaces import REDIS, ns_key
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class ThrottlingMonitor:
 
     async def init_redis(self):
         if not self.redis:
-            self.redis = aioredis.from_url(self.redis_url)
+            self.redis = get_async_redis_client(self.redis_url)
 
     async def record_request(self, session: UserSession):
         """Record a successful request (for statistics)"""

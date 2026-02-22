@@ -36,6 +36,17 @@ logger = logging.getLogger("Monitoring.API")
 _DB_MAX_CONNECTIONS_CACHE: dict[str, Any] = {"value": None, "ts": 0.0, "source": None}
 _DB_MAX_CONNECTIONS_TTL_SEC = 60
 
+def _get_router_redis():
+    redis = getattr(router.state, "redis_async", None)
+    if not redis:
+        redis = getattr(router.state, "redis_async_decode", None)
+    if not redis:
+        middleware = getattr(router.state, "middleware", None)
+        redis = getattr(middleware, "redis", None) if middleware else None
+    if not redis:
+        raise HTTPException(status_code=500, detail="Redis client not initialized")
+    return redis
+
 
 async def _resolve_db_max_connections() -> tuple[Optional[int], Optional[str]]:
     env_val = os.getenv("PG_MAX_CONNECTIONS") or os.getenv("POSTGRES_MAX_CONNECTIONS") or os.getenv("DB_MAX_CONNECTIONS")
@@ -168,8 +179,7 @@ async def reset_throttling_state(
     project = payload.get("project") or settings.PROJECT
 
     middleware = router.state.middleware
-    await middleware.init_redis()
-    redis = middleware.redis
+    redis = _get_router_redis()
 
     results: Dict[str, Any] = {"deleted": {}, "tenant": tenant, "project": project}
 
@@ -289,7 +299,7 @@ async def get_system_monitoring(
     """
     try:
         middleware = router.state.middleware
-        await middleware.init_redis()
+        redis = _get_router_redis()
         current_time = time.time()
 
         # Get expected services configuration
@@ -297,7 +307,7 @@ async def get_system_monitoring(
 
         # Get all process heartbeats from Redis
         process_pattern = f"{middleware.PROCESS_HEARTBEAT_PREFIX}:*"
-        process_keys = await middleware.redis.keys(process_pattern)
+        process_keys = await redis.keys(process_pattern)
 
         # Parse all heartbeats and separate chat REST from others
         all_heartbeats = {}
@@ -305,7 +315,7 @@ async def get_system_monitoring(
 
         for key in process_keys:
             try:
-                data = await middleware.redis.get(key)
+                data = await redis.get(key)
                 if not data:
                     continue
 

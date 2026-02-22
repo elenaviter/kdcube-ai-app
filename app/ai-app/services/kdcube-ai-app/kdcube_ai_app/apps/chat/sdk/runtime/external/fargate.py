@@ -154,6 +154,8 @@ class FargateRuntime(ExternalRuntime):
         if redis_url:
             base_env["REDIS_URL"] = redis_url
 
+        base_env.setdefault("REDIS_CLIENT_NAME", "exec")
+
         bundle_spec = runtime_globals.get("BUNDLE_SPEC") or {}
         bundle_id = bundle_spec.get("id") if isinstance(bundle_spec, dict) else None
         module_name = bundle_spec.get("module") if isinstance(bundle_spec, dict) else None

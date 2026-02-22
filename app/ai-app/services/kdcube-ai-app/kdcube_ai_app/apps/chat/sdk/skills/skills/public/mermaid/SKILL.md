@@ -202,6 +202,8 @@ Before finalizing a Mermaid diagram:
 2. **Test incrementally**: Build complex diagrams step-by-step, test each addition
 3. **Keep simple**: Avoid deeply nested subgraphs or overly complex structures
 4. **Use clear IDs**: Node IDs should be alphanumeric (A, B1, NodeA) without special chars
+5. **Plan for readability in PNG**: If the diagram is destined for PNG, keep labels concise
+   and prefer fewer nodes per branch; large dense graphs should be split across multiple diagrams.
 
 ## Remember
 

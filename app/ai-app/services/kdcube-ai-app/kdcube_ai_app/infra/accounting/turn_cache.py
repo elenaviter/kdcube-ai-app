@@ -6,7 +6,7 @@
 import json
 from typing import Any, List, Dict, Optional
 
-import redis.asyncio as aioredis
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 class TurnEventCache:
     """
@@ -35,7 +35,7 @@ class TurnEventCache:
             key_prefix: str = "acct:turn",
             ttl_seconds: int = 3600,
     ):
-        self.redis = aioredis.Redis.from_url(redis_url)
+        self.redis = get_async_redis_client(redis_url)
         self.key_prefix = key_prefix
         self.ttl_seconds = ttl_seconds
 

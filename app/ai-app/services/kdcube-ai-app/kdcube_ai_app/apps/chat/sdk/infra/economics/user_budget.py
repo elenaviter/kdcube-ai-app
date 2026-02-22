@@ -15,6 +15,7 @@ import asyncpg
 from redis.asyncio import Redis
 
 from kdcube_ai_app.infra.namespaces import REDIS
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription import SubscriptionManager
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription_budget import SubscriptionBudgetLimiter
 
@@ -273,14 +274,15 @@ class PlanOverrideManager:
             self._owns_pool = True
 
         if not self._redis and redis_url:
-            self._redis = Redis.from_url(redis_url)
+            self._redis = get_async_redis_client(redis_url)
             self._owns_redis = True
 
     async def close(self):
         if self._owns_pool and self._pg_pool:
             await self._pg_pool.close()
         if self._owns_redis and self._redis:
-            await self._redis.close()
+            if not getattr(self._redis, "_kdcube_shared", False):
+                await self._redis.close()
 
     def _cache_key(self, tenant: str, project: str, user_id: str) -> str:
         return f"{self.cache_ns}:{tenant}:{project}:{user_id}"
@@ -462,14 +464,15 @@ class UserCreditsManager:
             self._owns_pool = True
 
         if not self._redis and redis_url:
-            self._redis = Redis.from_url(redis_url)
+            self._redis = get_async_redis_client(redis_url)
             self._owns_redis = True
 
     async def close(self):
         if self._owns_pool and self._pg_pool:
             await self._pg_pool.close()
         if self._owns_redis and self._redis:
-            await self._redis.close()
+            if not getattr(self._redis, "_kdcube_shared", False):
+                await self._redis.close()
 
     def _cache_key(self, tenant: str, project: str, user_id: str) -> str:
         return f"{self.cache_ns}:{tenant}:{project}:{user_id}"

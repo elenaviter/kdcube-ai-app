@@ -8,8 +8,6 @@ import time
 import os
 from typing import Set, Dict, Any, Tuple
 
-from redis import asyncio as aioredis
-
 from kdcube_ai_app.auth.sessions import UserSession, UserType, RequestContext
 from kdcube_ai_app.infra.gateway.config import GatewayConfiguration
 from kdcube_ai_app.infra.gateway.definitions import GatewayError, DynamicCapacityCalculator, QueueStats
@@ -17,6 +15,7 @@ import logging
 
 from kdcube_ai_app.infra.gateway.thorttling import ThrottlingMonitor, ThrottlingReason
 from kdcube_ai_app.infra.namespaces import REDIS, ns_key
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,7 @@ class BackpressureManager:
 
     async def init_redis(self):
         if not self.redis:
-            self.redis = aioredis.from_url(self.redis_url)
+            self.redis = get_async_redis_client(self.redis_url)
 
     def set_capacity_calculator(self, calculator: DynamicCapacityCalculator):
         """Inject dynamic capacity calculator"""
@@ -653,7 +652,7 @@ class AtomicBackpressureManager:
 
     async def init_redis(self):
         if not self.redis:
-            self.redis = aioredis.from_url(self.redis_url)
+            self.redis = get_async_redis_client(self.redis_url)
 
     def set_capacity_calculator(self, calculator):
         """Inject dynamic capacity calculator (same interface as original)"""
@@ -1197,7 +1196,7 @@ class AtomicChatQueueManager:
 
     async def init_redis(self):
         if not self.redis:
-            self.redis = aioredis.from_url(self.redis_url)
+            self.redis = get_async_redis_client(self.redis_url)
 
     async def enqueue_chat_task_atomic(self,
                                        user_type: UserType,

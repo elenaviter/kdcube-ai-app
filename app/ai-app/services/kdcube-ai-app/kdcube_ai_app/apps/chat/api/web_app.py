@@ -60,7 +60,7 @@ from kdcube_ai_app.infra.namespaces import CONFIG
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency, require_auth,
     INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, _announce_startup,
-    get_pg_pool, get_conversation_system
+    get_pg_pool, get_conversation_system, get_redis_clients, close_redis_clients, get_redis_monitor_instance
 )
 from kdcube_ai_app.auth.AuthManager import RequireUser
 from kdcube_ai_app.auth.sessions import UserType, UserSession
@@ -172,6 +172,19 @@ async def lifespan(app: FastAPI):
         logger.exception("Lifespan startup failed during gateway initialization")
         raise
 
+    # Pre-warm shared Redis pools (per-process) and keep references on app.state.
+    try:
+        app.state.redis_async, app.state.redis_async_decode, app.state.redis_sync = await get_redis_clients()
+        logger.info("Redis pools ready (async/sync)")
+    except Exception:
+        logger.exception("Failed to initialize shared Redis pools")
+        raise
+    try:
+        app.state.redis_monitor = await get_redis_monitor_instance()
+    except Exception:
+        logger.exception("Failed to start Redis connection monitor")
+        raise
+
     # --- Heartbeats / processor (uses local queue processor) ---
     from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
         service_health_checker
@@ -223,7 +236,7 @@ async def lifespan(app: FastAPI):
                 config=wf_config,
                 comm_context=comm_context,
                 pg_pool=app.state.pg_pool,
-                redis=app.state.middleware.redis
+                redis=app.state.redis_async
             )
         except Exception as e:
             try:
@@ -241,7 +254,7 @@ async def lifespan(app: FastAPI):
                     config=wf_config,
                     comm_context=comm_context,
                     pg_pool=app.state.pg_pool,
-                    redis=app.state.middleware.redis
+                    redis=app.state.redis_async
                 )
             except Exception:
                 raise
@@ -316,6 +329,18 @@ async def lifespan(app: FastAPI):
 
     app.state.sse_hub = SSEHub(app.state.chat_comm)
 
+    # Resync SSE relay subscriptions after Redis reconnects.
+    if getattr(app.state, "redis_monitor", None):
+        async def _on_redis_state(state: str, err: Exception | None):
+            if state == "up":
+                try:
+                    await app.state.sse_hub.resync_relay(reason="redis_reconnect")
+                except Exception:
+                    logger.exception("[SSEHub] resync failed after Redis reconnect")
+
+        app.state.redis_monitor.add_listener(_on_redis_state)
+        app.state._redis_monitor_sse_cb = _on_redis_state
+
     # Mount SSE routes (same relay and queue manager as Socket.IO)
     try:
         await app.state.sse_hub.start()
@@ -337,7 +362,8 @@ async def lifespan(app: FastAPI):
     try:
         handler = agentic_app_func
 
-        middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(port=port)
+        redis_async, _, _ = await get_redis_clients()
+        middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(port=port, redis_client=redis_async)
         health_checker = service_health_checker(middleware)
 
         # Store in app state for monitoring endpoints
@@ -351,11 +377,11 @@ async def lifespan(app: FastAPI):
         app.state.conversation_index = conversation_index
         app.state.conversation_store = conversation_store
 
-        processor = get_external_request_processor(middleware, handler, app)
+        processor = get_external_request_processor(middleware, handler, app, redis=redis_async)
         app.state.processor = processor
 
         # Start services
-        await middleware.init_redis()
+        # Redis already injected via get_redis_clients; no init_redis needed.
         await heartbeat_manager.start_heartbeat(interval=10)
 
         try:
@@ -371,7 +397,7 @@ async def lifespan(app: FastAPI):
         try:
             from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
             from kdcube_ai_app.infra.plugin.bundle_registry import set_registry as _set_mem_registry
-            reg = await _load_store_registry(middleware.redis)
+            reg = await _load_store_registry(redis_async)
             bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
             _set_mem_registry(bundles_dict, reg.default_bundle_id)
             logger.info(f"Bundles registry loaded from Redis: {len(bundles_dict)} items (default={reg.default_bundle_id})")
@@ -416,6 +442,11 @@ async def lifespan(app: FastAPI):
 
     if hasattr(app.state, 'pg_pool'):
         await _safe_shutdown_step("pg_pool.close", app.state.pg_pool.close(), timeout=10.0)
+
+    if hasattr(app.state, "redis_monitor"):
+        await _safe_shutdown_step("redis_monitor.stop", app.state.redis_monitor.stop(), timeout=5.0)
+
+    await _safe_shutdown_step("redis.close_all", close_redis_clients(), timeout=5.0)
 
     await close_shared_link_preview()
     await close_shared_browser()

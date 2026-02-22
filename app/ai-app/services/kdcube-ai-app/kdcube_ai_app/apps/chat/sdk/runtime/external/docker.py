@@ -136,6 +136,9 @@ async def run_py_in_docker(
     if extra_env:
         base_env.update(extra_env)
 
+    # Mark executor Redis clients for easy attribution in CLIENT LIST
+    base_env.setdefault("REDIS_CLIENT_NAME", "exec")
+
     redis_url = base_env.get("REDIS_URL") or get_settings().REDIS_URL
     resolved_redis_url = _resolve_redis_url_for_container(redis_url, logger=log)
     base_env["REDIS_URL"] = resolved_redis_url

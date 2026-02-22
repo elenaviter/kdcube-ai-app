@@ -326,6 +326,8 @@ class RenderingTools:
             "• Prefer fit='content' (default) to crop to actual content and avoid tiny centered diagrams\n"
             "• Use content_selector for HTML (e.g. '#render-root') to define the crop target\n"
             "• Increase width (2200–3200) for wide diagrams; use zoom=1.2–1.8 for readability\n"
+            "• For Mermaid text clarity, use mermaid_font_size_px (e.g. 16–22) and/or mermaid_scale (1.1–1.6)\n"
+            "• You can pass mermaid_theme_variables or mermaid_config to control Mermaid rendering\n"
             "• Use render_delay_ms=1000–2000 for Mermaid/JS layout to settle\n"
             "• Use base_dir for relative assets; avoid base64 data URIs in HTML/Markdown\n"
         )
@@ -352,6 +354,11 @@ class RenderingTools:
         height: Annotated[Optional[int], "Viewport height in pixels (only used if full_page=False)."] = 2000,
         device_scale_factor: Annotated[float, "Device pixel ratio (2 = retina)."] = 2.0,
         mermaid_theme: Annotated[str, "Mermaid theme: default | neutral | dark | forest."] = "default",
+        mermaid_config: Annotated[Optional[Any], "Optional Mermaid initialize config (dict or JSON string)."] = None,
+        mermaid_theme_variables: Annotated[Optional[Any], "Optional Mermaid themeVariables (dict or JSON string)."] = None,
+        mermaid_font_size_px: Annotated[Optional[int], "Force Mermaid font size in px (improves readability)."] = None,
+        mermaid_font_family: Annotated[Optional[str], "Force Mermaid font family (CSS font-family)."] = None,
+        mermaid_scale: Annotated[Optional[float], "Scale Mermaid SVG (e.g., 1.1–1.6) before screenshot."] = None,
     ) -> Annotated[dict, "Result envelope: {ok: bool, error: null|{code,message,where,managed}}."]:
         import html as html_lib
         import urllib.parse
@@ -381,6 +388,55 @@ class RenderingTools:
                 _warn_on_data_uri(content, "write_png")
                 _log_asset_resolution(content, pathlib.Path(base_dir), tool_name="write_png")
 
+            def _coerce_dict(val: Any) -> Dict[str, Any]:
+                if isinstance(val, dict):
+                    return dict(val)
+                if isinstance(val, str) and val.strip():
+                    try:
+                        parsed = json.loads(val)
+                        return dict(parsed) if isinstance(parsed, dict) else {}
+                    except Exception:
+                        return {}
+                return {}
+
+            mermaid_css_bits: List[str] = []
+            mermaid_cfg: Dict[str, Any] = {
+                "startOnLoad": True,
+                "theme": mermaid_theme or "default",
+                "securityLevel": "loose",
+                "logLevel": "debug",
+            }
+
+            user_cfg = _coerce_dict(mermaid_config)
+            if user_cfg:
+                mermaid_cfg.update(user_cfg)
+
+            theme_vars = _coerce_dict(mermaid_theme_variables)
+            if mermaid_font_size_px and mermaid_font_size_px > 0:
+                theme_vars["fontSize"] = f"{int(mermaid_font_size_px)}px"
+                mermaid_css_bits.append(
+                    f".mermaid, .mermaid svg, .mermaid text {{ font-size: {int(mermaid_font_size_px)}px !important; }}"
+                )
+            if mermaid_font_family and isinstance(mermaid_font_family, str) and mermaid_font_family.strip():
+                theme_vars["fontFamily"] = mermaid_font_family.strip()
+                mermaid_css_bits.append(
+                    f".mermaid, .mermaid svg, .mermaid text {{ font-family: {mermaid_font_family.strip()} !important; }}"
+                )
+
+            if theme_vars:
+                base_tv = mermaid_cfg.get("themeVariables")
+                if not isinstance(base_tv, dict):
+                    base_tv = {}
+                base_tv.update(theme_vars)
+                mermaid_cfg["themeVariables"] = base_tv
+
+            if mermaid_scale and mermaid_scale > 0:
+                mermaid_css_bits.append(
+                    f".mermaid svg {{ transform: scale({mermaid_scale}); transform-origin: 0 0; }}"
+                )
+
+            mermaid_css = "\n            ".join(mermaid_css_bits)
+
             if format == "mermaid":
                 html_content = f"""<!DOCTYPE html>
     <html>
@@ -402,6 +458,7 @@ class RenderingTools:
             }}
             .mermaid {{ display: inline-block; }}
             #error {{ color: red; white-space: pre-wrap; font-family: monospace; }}
+            {mermaid_css}
         </style>
     </head>
     <body>
@@ -412,12 +469,7 @@ class RenderingTools:
           </div>
         </div>
         <script>
-            mermaid.initialize({{ 
-                startOnLoad: true, 
-                theme: '{html_lib.escape(mermaid_theme or "default")}',
-                securityLevel: 'loose',
-                logLevel: 'debug'
-            }});
+            mermaid.initialize({json.dumps(mermaid_cfg)});
            // Capture errors
             window.addEventListener('error', (e) => {{
                 document.getElementById('error').textContent = 'Error: ' + e.message + '\\n' + e.error?.stack;

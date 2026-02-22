@@ -13,11 +13,11 @@ import uuid
 import os
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
-import redis.asyncio as aioredis
 import logging
 from enum import Enum
 
 from kdcube_ai_app.infra.namespaces import REDIS, ns_key
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -63,12 +63,13 @@ class MultiprocessDistributedMiddleware:
     def __init__(self,
                  redis_url: str,
                  tenant: str, project: str,
-                 instance_id: str = None,):
+                 instance_id: str = None,
+                 redis=None,):
         self.redis_url = redis_url
         self.instance_id = instance_id or str(uuid.uuid4())
         self.tenant = tenant
         self.project = project
-        self.redis = None
+        self.redis = redis
 
         # Redis namespaces
         self.PROCESS_HEARTBEAT_PREFIX = self.ns(REDIS.PROCESS.HEARTBEAT_PREFIX)
@@ -86,7 +87,7 @@ class MultiprocessDistributedMiddleware:
 
     async def init_redis(self):
         if not self.redis:
-            self.redis = aioredis.from_url(self.redis_url)
+            self.redis = get_async_redis_client(self.redis_url)
 
     async def send_process_heartbeat(
             self,

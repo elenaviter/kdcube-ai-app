@@ -354,6 +354,13 @@ class S3StorageBackend(IStorageBackend):
                         or meta.get("mime")
                         or meta.get("mime_type")
                 )
+                if content_type is not None and not isinstance(content_type, str):
+                    logger.warning(
+                        "S3 write_bytes: invalid ContentType %r for path %s; dropping",
+                        content_type,
+                        path,
+                    )
+                    content_type = None
             if not content_type:
                 guessed_type, guessed_encoding = mimetypes.guess_type(path)
                 if guessed_type:
@@ -555,13 +562,20 @@ class S3StorageBackend(IStorageBackend):
         }
         # Copy of your sync metadata logic
         content_type = None
-        if meta:
+        if meta and isinstance(meta, dict):
             content_type = (
                     meta.get("ContentType")
                     or meta.get("content_type")
                     or meta.get("mime")
                     or meta.get("mime_type")
             )
+            if content_type is not None and not isinstance(content_type, str):
+                logger.warning(
+                    "S3 write_bytes_a: invalid ContentType %r for path %s; dropping",
+                    content_type,
+                    path,
+                )
+                content_type = None
         if not content_type:
             guessed_type, guessed_encoding = mimetypes.guess_type(path)
             if guessed_type:
@@ -582,7 +596,7 @@ class S3StorageBackend(IStorageBackend):
             "StorageClass",
         ]
 
-        if meta:
+        if meta and isinstance(meta, dict):
             for name in header_names:
                 if name in meta:
                     put_kwargs[name] = meta[name]
@@ -1001,4 +1015,3 @@ class InMemoryStorageBackend(IStorageBackend):
                 deleted_count += 1
 
             return deleted_count
-

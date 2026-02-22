@@ -14,6 +14,7 @@ import redis
 
 from kdcube_ai_app.storage.storage import IStorageBackend, create_storage_backend
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.infra.redis.client import get_sync_redis_client
 
 
 class FaissProjectCache:
@@ -36,7 +37,7 @@ class FaissProjectCache:
         self._max_loaded = max_loaded
 
         self.storage = storage
-        self._redis  = redis.Redis.from_url(redis_url)
+        self._redis  = get_sync_redis_client(redis_url)
 
         # Start watcher for external rebuilds
         threading.Thread(target=self._watch_updates, daemon=True).start()

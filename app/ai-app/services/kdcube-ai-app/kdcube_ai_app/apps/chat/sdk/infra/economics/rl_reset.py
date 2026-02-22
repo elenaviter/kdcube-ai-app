@@ -12,6 +12,7 @@ import sys
 from typing import List
 
 from redis.asyncio import Redis
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 
 PATTERNS_CURRENT = [
@@ -70,7 +71,7 @@ async def main():
 
     # connect
     if args.redis_url:
-        r = Redis.from_url(args.redis_url)
+        r = get_async_redis_client(args.redis_url)
     else:
         r = Redis(
             host=args.host,

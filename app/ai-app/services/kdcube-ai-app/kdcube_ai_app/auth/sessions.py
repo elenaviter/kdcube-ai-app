@@ -16,6 +16,7 @@ from redis import asyncio as aioredis
 
 from kdcube_ai_app.auth.AuthManager import User
 from kdcube_ai_app.infra.namespaces import REDIS, ns_key
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +421,7 @@ class SessionManager:
 
     async def init_redis(self):
         if not self.redis:
-            self.redis = aioredis.from_url(self.redis_url)
+            self.redis = get_async_redis_client(self.redis_url)
 
     async def get_or_create_session(
             self,

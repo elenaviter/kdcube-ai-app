@@ -50,8 +50,10 @@ class EnhancedChatRequestProcessor:
             task_timeout_sec: Optional[int] = None,
             lock_ttl_sec: int = 300,
             lock_renew_sec: int = 60,
+            redis=None,
     ):
         self.middleware = middleware
+        self.redis = redis or middleware.redis
         self.chat_handler = chat_handler
         self.process_id = process_id or os.getpid()
         self.max_concurrent = int(max_concurrent or 5)
@@ -134,7 +136,7 @@ class EnhancedChatRequestProcessor:
                 return None
 
             queue_key = f"{self.middleware.QUEUE_PREFIX}:{user_type}"
-            raw = await self.middleware.redis.brpop(queue_key, timeout=0.1)
+            raw = await self.redis.brpop(queue_key, timeout=0.1)
             if not raw:
                 continue
 
@@ -150,7 +152,7 @@ class EnhancedChatRequestProcessor:
                 continue
 
             lock_key = f"{self.middleware.LOCK_PREFIX}:{logical_id}"
-            acquired = await self.middleware.redis.set(
+            acquired = await self.redis.set(
                 lock_key,
                 f"{self.middleware.instance_id}:{self.process_id}",
                 nx=True,
@@ -174,7 +176,7 @@ class EnhancedChatRequestProcessor:
                 task_dict["_queue_key"] = queue_key
                 return task_dict
 
-            await self.middleware.redis.lpush(queue_key, json.dumps(task_dict, ensure_ascii=False))
+            await self.redis.lpush(queue_key, json.dumps(task_dict, ensure_ascii=False))
         return None
 
     # ---------------- Config loop ----------------
@@ -199,7 +201,7 @@ class EnhancedChatRequestProcessor:
             project = settings.PROJECT
             update_channel = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL.format(tenant=tenant, project=project)
             cleanup_channel = namespaces.CONFIG.BUNDLES.CLEANUP_CHANNEL.format(tenant=tenant, project=project)
-            pubsub = self.middleware.redis.pubsub()
+            pubsub = self.redis.pubsub()
             await pubsub.subscribe(
                 update_channel,
                 cleanup_channel,
@@ -239,7 +241,7 @@ class EnhancedChatRequestProcessor:
                         pass
 
                     try:
-                        await store_save(self.middleware.redis, reg)
+                        await store_save(self.redis, reg)
                     except Exception:
                         logger.debug("Could not save snapshot to Redis; continuing")
 
@@ -252,7 +254,7 @@ class EnhancedChatRequestProcessor:
                     default_id = evt.get("default_bundle_id")
 
                     try:
-                        current = await store_load(self.middleware.redis)
+                        current = await store_load(self.redis)
                     except Exception as e:
                         logger.error(f"Failed to load registry from Redis: {e}")
                         current = BundlesRegistry()
@@ -264,8 +266,8 @@ class EnhancedChatRequestProcessor:
                         continue
 
                     try:
-                        await store_save(self.middleware.redis, reg)
-                        await store_publish(self.middleware.redis, reg, op=op, actor=evt.get("updated_by") or None)
+                        await store_save(self.redis, reg)
+                        await store_publish(self.redis, reg, op=op, actor=evt.get("updated_by") or None)
                     except Exception as e:
                         logger.error(f"Failed to persist/broadcast bundles: {e}")
 
@@ -309,7 +311,7 @@ class EnhancedChatRequestProcessor:
                     # Git bundle cleanup (skip active refs from Redis)
                     try:
                         active_paths = await get_active_paths(
-                            self.middleware.redis,
+                            self.redis,
                             tenant=tenant,
                             project=project,
                         )
@@ -350,10 +352,10 @@ class EnhancedChatRequestProcessor:
             try:
                 while not self._stop_event.is_set():
                     await asyncio.sleep(self.lock_renew_sec)
-                    ttl = await self.middleware.redis.ttl(lock_key)
+                    ttl = await self.redis.ttl(lock_key)
                     if ttl is None or ttl < 0:
                         break
-                    await self.middleware.redis.expire(lock_key, self.lock_ttl_sec)
+                    await self.redis.expire(lock_key, self.lock_ttl_sec)
             except asyncio.CancelledError:
                 pass
 
@@ -378,7 +380,7 @@ class EnhancedChatRequestProcessor:
             logger.error(traceback.format_exc())
             try:
                 if lock_key:
-                    await self.middleware.redis.delete(lock_key)
+                    await self.redis.delete(lock_key)
             finally:
                 # Ensure load is released even for invalid payloads
                 self._current_load = max(0, self._current_load - 1)
@@ -487,7 +489,7 @@ class EnhancedChatRequestProcessor:
         finally:
             try:
                 if lock_key:
-                    await self.middleware.redis.delete(lock_key)
+                    await self.redis.delete(lock_key)
             finally:
                 self._current_load = max(0, self._current_load - 1)
                 if self.queue_analytics_updater:

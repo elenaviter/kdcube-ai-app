@@ -9,12 +9,12 @@ import os
 import contextlib
 from typing import Callable, Iterable, Optional, Union, AsyncIterator, List, Any
 
-import redis
 import redis.asyncio as aioredis
 
 from dotenv import load_dotenv, find_dotenv
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.infra.redis.client import get_async_redis_client, get_sync_redis_client
 
 # Load environment
 # load_dotenv(find_dotenv())
@@ -64,7 +64,7 @@ class ServiceCommunicator:
         self.orchestrator_identity = orchestrator_identity
 
         # sync client for publishing
-        self.redis = redis.Redis.from_url(self.redis_url)
+        self.redis = get_sync_redis_client(self.redis_url)
 
         # async client for subscribing
         self._aioredis: Optional[aioredis.Redis] = None
@@ -73,6 +73,7 @@ class ServiceCommunicator:
         self._last_message_ts = 0.0
 
         self._subscribed_channels: List[str] = []
+        self._subscribed_patterns: List[str] = []
 
         # Support multiple consumer callbacks
         self._listeners: List[Callable[[dict], Any]] = []
@@ -165,7 +166,8 @@ class ServiceCommunicator:
 
     async def _ensure_async(self):
         if self._aioredis is None:
-            self._aioredis = aioredis.Redis.from_url(self.redis_url)
+            self._aioredis = get_async_redis_client(self.redis_url)
+            logger.info("[ServiceCommunicator] Lazy Redis async client initialized")
 
     async def subscribe(self, channels: Union[str, Iterable[str]], *, pattern: bool = False):
         """
@@ -180,7 +182,10 @@ class ServiceCommunicator:
             channels = [channels]
 
         formatted = [self._fmt_channel(ch) for ch in channels]
-        self._subscribed_channels = formatted
+        if pattern:
+            self._subscribed_patterns = list(dict.fromkeys(formatted))
+        else:
+            self._subscribed_channels = list(dict.fromkeys(formatted))
 
         if pattern:
             await self._pubsub.psubscribe(*formatted)
@@ -200,7 +205,8 @@ class ServiceCommunicator:
         formatted = [self._fmt_channel(ch) for ch in channels]
 
         # Only subscribe to new ones
-        new_channels = [ch for ch in formatted if ch not in self._subscribed_channels]
+        target_list = self._subscribed_patterns if pattern else self._subscribed_channels
+        new_channels = [ch for ch in formatted if ch not in target_list]
         if not new_channels:
             logger.info(
                 "[ServiceCommunicator] subscribe_add noop self_id=%s pubsub_id=%s",
@@ -208,7 +214,7 @@ class ServiceCommunicator:
             )
             return
 
-        self._subscribed_channels.extend(new_channels)
+        target_list.extend(new_channels)
 
         if pattern:
             await self._pubsub.psubscribe(*new_channels)
@@ -302,33 +308,40 @@ class ServiceCommunicator:
             raise RuntimeError("Call subscribe() before start_listener().")
 
         async def _loop():
+            backoff = 0.5
             logger.info(
                 "[ServiceCommunicator] listener _loop starting self_id=%s pubsub_id=%s",
                 id(self), id(self._pubsub)
             )
-            try:
-                async for payload in self.listen():
-                    # fan-out payload to all listeners
-                    self._last_message_ts = time.time()
-                    listeners_snapshot = list(self._listeners)
-                    for cb in listeners_snapshot:
-                        try:
-                            res = cb(payload)
-                            if asyncio.iscoroutine(res):
-                                await res
-                        except Exception as cb_err:
-                            logger.error("[ServiceCommunicator] on_message error: %s", cb_err)
+            while True:
+                try:
+                    async for payload in self.listen():
+                        # fan-out payload to all listeners
+                        self._last_message_ts = time.time()
+                        listeners_snapshot = list(self._listeners)
+                        for cb in listeners_snapshot:
+                            try:
+                                res = cb(payload)
+                                if asyncio.iscoroutine(res):
+                                    await res
+                            except Exception as cb_err:
+                                logger.error("[ServiceCommunicator] on_message error: %s", cb_err)
 
-                logger.error(
-                    "[ServiceCommunicator] listen() ended WITHOUT exception "
-                    "self_id=%s pubsub_id=%s subscribed=%s",
-                    id(self), id(self._pubsub), self._subscribed_channels
-                )
-            except asyncio.CancelledError:
-                logger.info("[ServiceCommunicator] listener cancelled self_id=%s", id(self))
-                raise
-            except Exception as e:
-                logger.error("[ServiceCommunicator] listener error self_id=%s err=%s", id(self), e)
+                    logger.error(
+                        "[ServiceCommunicator] listen() ended WITHOUT exception "
+                        "self_id=%s pubsub_id=%s subscribed=%s",
+                        id(self), id(self._pubsub), self._subscribed_channels
+                    )
+                    raise RuntimeError("pubsub listen ended without exception")
+                except asyncio.CancelledError:
+                    logger.info("[ServiceCommunicator] listener cancelled self_id=%s", id(self))
+                    raise
+                except Exception as e:
+                    logger.error("[ServiceCommunicator] listener error self_id=%s err=%s", id(self), e)
+                    # attempt to reconnect with backoff
+                    await self._reconnect_pubsub()
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 10.0)
 
         if self._listen_task and not self._listen_task.done():
             logger.info(
@@ -340,7 +353,7 @@ class ServiceCommunicator:
         self._listen_task = asyncio.create_task(_loop(), name="service-communicator-listener")
         logger.info(
             "[ServiceCommunicator] Started listener task %r on channels: %s",
-            self._listen_task, self._subscribed_channels
+            self._listen_task, self._subscribed_channels + self._subscribed_patterns
         )
 
     async def stop_listener(self):
@@ -365,9 +378,27 @@ class ServiceCommunicator:
 
         if self._aioredis:
             with contextlib.suppress(Exception):
-                await self._aioredis.close()
+                if not getattr(self._aioredis, "_kdcube_shared", False):
+                    await self._aioredis.close()
             self._aioredis = None
         logger.info("Stopped listener and closed async Redis.")
+
+    async def _reconnect_pubsub(self):
+        """Recreate pubsub connection and resubscribe after Redis restart."""
+        with contextlib.suppress(Exception):
+            if self._pubsub:
+                await self._pubsub.close()
+        self._pubsub = None
+        await self._ensure_async()
+        self._pubsub = self._aioredis.pubsub()
+        if self._subscribed_channels:
+            await self._pubsub.subscribe(*self._subscribed_channels)
+        if self._subscribed_patterns:
+            await self._pubsub.psubscribe(*self._subscribed_patterns)
+        logger.info(
+            "[ServiceCommunicator] Reconnected pubsub self_id=%s pubsub_id=%s channels=%s patterns=%s",
+            id(self), id(self._pubsub), self._subscribed_channels, self._subscribed_patterns
+        )
 
 
     # ==============================================================================
@@ -376,7 +407,7 @@ class ServiceCommunicator:
 
     def get_queue_stats(self):
         """Get queue statistics - matches what the orchestrator interface expects"""
-        redis_client = redis.Redis.from_url(self.redis_url)
+        redis_client = get_sync_redis_client(self.redis_url)
         stats = {}
 
         queues = [

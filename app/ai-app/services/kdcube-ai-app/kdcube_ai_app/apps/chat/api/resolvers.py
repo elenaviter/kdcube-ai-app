@@ -31,6 +31,13 @@ from kdcube_ai_app.apps.middleware.gateway import FastAPIGatewayAdapter
 from kdcube_ai_app.infra.rendering.link_preview import AsyncLinkPreview
 from kdcube_ai_app.infra.rendering.shared_browser import SharedBrowserService
 from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, ModelServiceBase, create_workflow_config
+from kdcube_ai_app.infra.redis.client import (
+    get_async_redis_client,
+    get_sync_redis_client,
+    close_all_redis_clients,
+    get_redis_client_name_prefix,
+    get_redis_monitor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +290,9 @@ _auth_manager = None
 _gateway = None
 _fastapi_adapter = None
 _pg_pool: Optional = None
+_redis_async = None
+_redis_async_decode = None
+_redis_sync = None
 
 _conv_index: Optional[ConvIndex] = None
 _conv_store: Optional[ConversationStore] = None
@@ -363,14 +373,21 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "chat",
                                       service_name: str = "rest",
                                       instance_id: str = None,
                                       process_id: str = None,
-                                      port: int = CHAT_APP_PORT):
+                                      port: int = CHAT_APP_PORT,
+                                      redis_client=None):
     """Your existing middleware setup - can be kept for compatibility"""
     from kdcube_ai_app.infra.availability.health_and_heartbeat import (
         MultiprocessDistributedMiddleware, ProcessHeartbeatManager
     )
 
     instance_id = instance_id or INSTANCE_ID
-    middleware = MultiprocessDistributedMiddleware(REDIS_URL, instance_id=instance_id, tenant=TENANT_ID, project=DEFAULT_PROJECT)
+    middleware = MultiprocessDistributedMiddleware(
+        REDIS_URL,
+        instance_id=instance_id,
+        tenant=TENANT_ID,
+        project=DEFAULT_PROJECT,
+        redis=redis_client,
+    )
     heartbeat_manager = ProcessHeartbeatManager(
         middleware=middleware,
         service_type=service_type,
@@ -380,7 +397,7 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "chat",
     )
     return middleware, heartbeat_manager
 
-def get_external_request_processor(middleware, chat_handler, app):
+def get_external_request_processor(middleware, chat_handler, app, *, redis=None):
     from kdcube_ai_app.apps.chat.processor import EnhancedChatRequestProcessor
     gateway_config = get_gateway_config()
     return EnhancedChatRequestProcessor(
@@ -391,6 +408,7 @@ def get_external_request_processor(middleware, chat_handler, app):
         max_concurrent=gateway_config.service_capacity.concurrent_requests_per_process,
         queue_analytics_updater=app.state.gateway_adapter.gateway.backpressure_manager.update_queue_analytics,
         task_timeout_sec=900,
+        redis=redis,
     )
 
 def service_health_checker(middleware):
@@ -549,6 +567,45 @@ async def get_pg_pool():
         **pool_kwargs,
     )
     return _pg_pool
+
+
+async def get_redis_clients():
+    """
+    Return shared Redis clients for this process:
+      - async (decode_responses=False)
+      - async (decode_responses=True)
+      - sync
+    """
+    global _redis_async, _redis_async_decode, _redis_sync
+    created = False
+    if _redis_async is None:
+        _redis_async = get_async_redis_client(REDIS_URL)
+        created = True
+    if _redis_async_decode is None:
+        _redis_async_decode = get_async_redis_client(REDIS_URL, decode_responses=True)
+        created = True
+    if _redis_sync is None:
+        _redis_sync = get_sync_redis_client(REDIS_URL)
+        created = True
+    if created:
+        logger.info("Redis client name prefix: %s", get_redis_client_name_prefix())
+    return _redis_async, _redis_async_decode, _redis_sync
+
+
+async def close_redis_clients():
+    """Close shared Redis pools for this process (on shutdown)."""
+    global _redis_async, _redis_async_decode, _redis_sync
+    await close_all_redis_clients()
+    _redis_async = None
+    _redis_async_decode = None
+    _redis_sync = None
+
+
+async def get_redis_monitor_instance():
+    """Get (and start) the shared Redis connection monitor for this process."""
+    monitor = get_redis_monitor(REDIS_URL)
+    await monitor.start()
+    return monitor
 
 async def get_conversation_system(pg_pool) -> Tuple[ContextRAGClient, ConvIndex, ConversationStore]:
 

@@ -96,6 +96,7 @@ class ChatRelayCommunicator:
 
         self._callbacks: Set[Callable[[dict], Awaitable[None]]] = set()
         self._session_refcounts: Dict[str, int] = {}
+        self._session_meta: Dict[str, Tuple[str, str]] = {}
         self._listener_started = False
         self._sub_lock = asyncio.Lock()
 
@@ -250,6 +251,7 @@ class ChatRelayCommunicator:
             if callback:
                 self.add_listener(callback)
             ch = self._session_channel(session_id, tenant=tenant, project=project)
+            self._session_meta[session_id] = (tenant, project)
             logger.info(
                 "[ChatRelayCommunicator] acquire session=%s count_before=%s channel=%s "
                 "tenant=%s project=%s relay_id=%s comm_id=%s listener_started=%s",
@@ -277,9 +279,45 @@ class ChatRelayCommunicator:
             )
             if count <= 1:
                 self._session_refcounts.pop(session_id, None)
+                self._session_meta.pop(session_id, None)
                 await self._comm.unsubscribe_some(self._session_channel(session_id, tenant=tenant, project=project))
             else:
                 self._session_refcounts[session_id] = count - 1
+
+    async def reconcile_sessions(
+            self,
+            session_counts: Dict[str, Tuple[str, str, int]],
+            *,
+            reason: str = "manual",
+    ):
+        """
+        Rebuild relay subscriptions and refcounts from the authoritative SSE hub state.
+        session_counts: {session_id: (tenant, project, count)}
+        """
+        async with self._sub_lock:
+            desired = set(session_counts.keys())
+
+            # Ensure all desired sessions are subscribed and refcounted
+            for session_id, (tenant, project, count) in session_counts.items():
+                self._session_meta[session_id] = (tenant, project)
+                self._session_refcounts[session_id] = max(int(count), 1)
+                await self._comm.subscribe_add(self._session_channel(session_id, tenant=tenant, project=project))
+
+            # Unsubscribe stale sessions
+            stale = [sid for sid in list(self._session_refcounts.keys()) if sid not in desired]
+            for sid in stale:
+                tenant, project = self._session_meta.get(sid, (None, None))
+                if tenant is not None or project is not None:
+                    await self._comm.unsubscribe_some(self._session_channel(sid, tenant=tenant, project=project))
+                self._session_refcounts.pop(sid, None)
+                self._session_meta.pop(sid, None)
+
+        if session_counts:
+            await self._ensure_listener()
+        logger.info(
+            "[ChatRelayCommunicator] reconciled sessions reason=%s desired=%s current=%s",
+            reason, len(session_counts), len(self._session_refcounts),
+        )
 
     async def subscribe(self, callback):
         """

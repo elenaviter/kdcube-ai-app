@@ -15,6 +15,7 @@
 | `SELF_HOSTED_SERVING_ENDPOINT` | Custom model serving endpoint | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `REDIS_PASSWORD` | Redis password | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `REDIS_URL` | Redis connection URL | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
+| `REDIS_MAX_CONNECTIONS` | Cap Redis client pool per process (applies to shared async/sync pools) | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `KDCUBE_STORAGE_PATH` | Storage backend path or S3 URI | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `ORCHESTRATOR_WORKER_CONCURRENCY` | Worker concurrency for orchestrator | — | `deployment/docker/devenv/sample_env/.env.backend` | worker/orchestrator |
 | `CB_ORCHESTRATOR_TYPE` | Orchestrator name | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/worker |

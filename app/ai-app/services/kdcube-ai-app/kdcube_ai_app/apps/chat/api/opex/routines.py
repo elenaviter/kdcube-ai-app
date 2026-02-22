@@ -5,6 +5,8 @@
 
 import asyncio
 from typing import Optional
+import importlib.util
+from pathlib import Path
 import uuid, os, logging
 from datetime import datetime, timedelta, date, timezone
 from zoneinfo import ZoneInfo
@@ -17,6 +19,7 @@ from kdcube_ai_app.infra.accounting.aggregator import AccountingAggregator
 from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription import SubscriptionManager
 from kdcube_ai_app.apps.chat.sdk.infra.economics.project_budget import ProjectBudgetLimiter
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger("Periodical.Routines")
 
@@ -26,6 +29,7 @@ SUBSCRIPTION_TZ = ZoneInfo("UTC")
 _scheduler_task: Optional[asyncio.Task] = None
 _aggregator: Optional[AccountingAggregator] = None
 _agg_redis: Optional[aioredis.Redis] = None
+_idp_import_task: Optional[asyncio.Task] = None
 
 def _get_aggregator() -> AccountingAggregator:
     """
@@ -43,6 +47,138 @@ def _get_aggregator() -> AccountingAggregator:
                                        raw_base="accounting",
                                        agg_base="analytics",)
     return _aggregator
+
+
+def _idp_import_enabled() -> bool:
+    try:
+        return bool(get_settings().IDP_IMPORT_ENABLED)  # type: ignore[attr-defined]
+    except Exception:
+        return os.environ.get("IDP_IMPORT_ENABLED", "0").lower() in {"1", "true", "yes"}
+
+
+def _idp_import_run_at() -> Optional[datetime]:
+    raw = os.environ.get("IDP_IMPORT_RUN_AT")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw)
+    except Exception:
+        logger.exception("[IDP Import] Invalid IDP_IMPORT_RUN_AT: %s", raw)
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _idp_import_script_path() -> Optional[Path]:
+    raw = os.environ.get("IDP_IMPORT_SCRIPT_PATH")
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return p if p.exists() else None
+
+
+async def _run_idp_import_once(*, actor: str = "scheduler") -> dict:
+    if not _idp_import_enabled():
+        return {"status": "disabled"}
+
+    run_at = _idp_import_run_at()
+    if not run_at:
+        return {"status": "error", "message": "IDP_IMPORT_RUN_AT not set"}
+
+    script_path = _idp_import_script_path()
+    if not script_path:
+        return {"status": "error", "message": "IDP_IMPORT_SCRIPT_PATH not found"}
+
+    settings = get_settings()
+    tenant = settings.TENANT
+    project = settings.PROJECT
+
+    redis = await _get_agg_redis()
+    lock_key = f"idp_import:lock:{tenant}:{project}:{run_at.isoformat()}"
+    done_key = f"idp_import:done:{tenant}:{project}:{run_at.isoformat()}"
+    token = str(uuid.uuid4())
+
+    if redis:
+        if await redis.get(done_key):
+            logger.info("[IDP Import] Already completed; skipping (%s)", done_key)
+            return {"status": "skipped", "message": "already_completed"}
+
+        got_lock = await redis.set(lock_key, token, ex=3600, nx=True)
+        if not got_lock:
+            logger.info("[IDP Import] Another instance holds lock; skipping")
+            return {"status": "skipped", "message": "lock_held"}
+
+    try:
+        dotenv_path = os.environ.get("IDP_IMPORT_DOTENV_PATH")
+        if dotenv_path:
+            try:
+                from dotenv import load_dotenv
+                load_dotenv(dotenv_path)
+            except Exception:
+                logger.exception("[IDP Import] Failed to load dotenv at %s", dotenv_path)
+
+        def _run() -> None:
+            spec = importlib.util.spec_from_file_location("idp_import_users", str(script_path))
+            if not spec or not spec.loader:
+                raise RuntimeError(f"Unable to load script: {script_path}")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if not hasattr(mod, "process_users"):
+                raise RuntimeError("import_users.py has no process_users()")
+            mod.process_users()
+
+        await asyncio.to_thread(_run)
+        if redis:
+            await redis.set(done_key, datetime.now(timezone.utc).isoformat())
+        logger.info("[IDP Import] Completed successfully by %s", actor)
+        return {"status": "ok"}
+    except Exception as e:
+        logger.exception("[IDP Import] Failed")
+        return {"status": "error", "message": str(e)}
+    finally:
+        if redis:
+            try:
+                current_val = await redis.get(lock_key)
+                if current_val is not None and current_val.decode() == token:
+                    await redis.delete(lock_key)
+            except Exception:
+                logger.exception("[IDP Import] Failed to release lock %s", lock_key)
+
+
+async def idp_import_scheduler_once() -> None:
+    """
+    One-time scheduler for the IDP import script.
+    Controlled by env:
+      - IDP_IMPORT_ENABLED=1
+      - IDP_IMPORT_RUN_AT=ISO-8601 timestamp (UTC if no tz)
+      - IDP_IMPORT_SCRIPT_PATH=/abs/path/to/import_users.py
+      - optional IDP_IMPORT_DOTENV_PATH=/abs/path/to/.env
+    """
+    if not _idp_import_enabled():
+        logger.info("[IDP Import] Scheduler disabled (IDP_IMPORT_ENABLED=0)")
+        return
+
+    run_at = _idp_import_run_at()
+    if not run_at:
+        logger.warning("[IDP Import] Missing IDP_IMPORT_RUN_AT; scheduler not started")
+        return
+
+    now = datetime.now(timezone.utc)
+    if run_at > now:
+        sleep_seconds = (run_at - now).total_seconds()
+        logger.info(
+            "[IDP Import] Sleeping %.0f seconds until %s",
+            sleep_seconds,
+            run_at.isoformat(),
+        )
+        try:
+            await asyncio.sleep(sleep_seconds)
+        except asyncio.CancelledError:
+            logger.info("[IDP Import] Scheduler cancelled before run")
+            return
+
+    await _run_idp_import_once(actor="scheduler")
 
 
 async def _get_agg_redis() -> Optional[aioredis.Redis]:
@@ -66,7 +202,7 @@ async def _get_agg_redis() -> Optional[aioredis.Redis]:
         _agg_redis = None
         return None
 
-    _agg_redis = aioredis.Redis.from_url(redis_url)
+    _agg_redis = get_async_redis_client(redis_url)
     return _agg_redis
 
 def _get_cron_expression() -> str:

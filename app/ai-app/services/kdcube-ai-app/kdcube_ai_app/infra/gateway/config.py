@@ -23,6 +23,7 @@ from kdcube_ai_app.infra.service_hub.cache import (
     NamespacedKVCacheConfig,
     create_namespaced_kv_cache_from_config,
 )
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -937,11 +938,9 @@ async def clear_gateway_config_cache(
     if not redis_url:
         return 0
     try:
-        from redis import asyncio as aioredis
-        redis = aioredis.from_url(redis_url, decode_responses=True)
+        redis = get_async_redis_client(redis_url, decode_responses=True)
         key = gateway_config_cache_key(tenant=tenant, project=project)
         deleted = await redis.delete(key)
-        await redis.close()
         return int(deleted or 0)
     except Exception:
         return 0
@@ -952,8 +951,7 @@ async def publish_gateway_config_update(config: GatewayConfiguration, *, actor: 
         return
     channel = ns_key(CONFIG.GATEWAY.UPDATE_CHANNEL, tenant=config.tenant_id, project=config.project_id)
     try:
-        from redis import asyncio as aioredis
-        redis = aioredis.from_url(config.redis_url, decode_responses=True)
+        redis = get_async_redis_client(config.redis_url, decode_responses=True)
         payload = {
             "tenant": config.tenant_id,
             "project": config.project_id,
@@ -963,7 +961,6 @@ async def publish_gateway_config_update(config: GatewayConfiguration, *, actor: 
         if actor:
             payload["actor"] = actor
         await redis.publish(channel, json.dumps(payload, ensure_ascii=False))
-        await redis.close()
     except Exception:
         return
 
@@ -1062,42 +1059,62 @@ async def subscribe_gateway_config_updates(
     if not redis_url:
         return
     channel = ns_key(CONFIG.GATEWAY.UPDATE_CHANNEL, tenant=tenant, project=project)
-    from redis import asyncio as aioredis
-    redis = aioredis.from_url(redis_url, decode_responses=True)
-    pubsub = redis.pubsub()
-    await pubsub.subscribe(channel)
-    try:
-        while True:
+    backoff = 0.5
+    redis = None
+    pubsub = None
+    while True:
+        if stop_event and stop_event.is_set():
+            break
+        try:
+            redis = get_async_redis_client(redis_url, decode_responses=True)
+            pubsub = redis.pubsub()
+            await pubsub.subscribe(channel)
+            logger.info("[gateway.config] Subscribed to %s", channel)
+            backoff = 0.5
+
+            while True:
+                if stop_event and stop_event.is_set():
+                    break
+                msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if not msg:
+                    await asyncio.sleep(0.1)
+                    continue
+                if msg.get("type") != "message":
+                    continue
+                try:
+                    payload = json.loads(msg.get("data") or "{}")
+                    cfg_data = payload.get("config")
+                    if not cfg_data:
+                        continue
+                    cfg = _config_from_dict(cfg_data)
+                    apply_gateway_config_snapshot(gateway_adapter.gateway, cfg)
+                    set_gateway_config(gateway_adapter.gateway.gateway_config)
+                    if hasattr(gateway_adapter, "policy") and getattr(gateway_adapter.policy, "set_guarded_patterns", None):
+                        gateway_adapter.policy.set_guarded_patterns(gateway_adapter.gateway.gateway_config.guarded_rest_patterns)
+                except Exception:
+                    continue
             if stop_event and stop_event.is_set():
                 break
-            msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-            if not msg:
-                await asyncio.sleep(0.1)
-                continue
-            if msg.get("type") != "message":
-                continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("[gateway.config] Listener error on %s: %s", channel, e)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 10.0)
+        finally:
             try:
-                payload = json.loads(msg.get("data") or "{}")
-                cfg_data = payload.get("config")
-                if not cfg_data:
-                    continue
-                cfg = _config_from_dict(cfg_data)
-                apply_gateway_config_snapshot(gateway_adapter.gateway, cfg)
-                set_gateway_config(gateway_adapter.gateway.gateway_config)
-                if hasattr(gateway_adapter, "policy") and getattr(gateway_adapter.policy, "set_guarded_patterns", None):
-                    gateway_adapter.policy.set_guarded_patterns(gateway_adapter.gateway.gateway_config.guarded_rest_patterns)
+                if pubsub:
+                    await pubsub.unsubscribe(channel)
+                    await pubsub.close()
             except Exception:
-                continue
-    finally:
-        try:
-            await pubsub.unsubscribe(channel)
-            await pubsub.close()
-        except Exception:
-            pass
-        try:
-            await redis.close()
-        except Exception:
-            pass
+                pass
+            pubsub = None
+            try:
+                if redis and not getattr(redis, "_kdcube_shared", False):
+                    await redis.close()
+            except Exception:
+                pass
+            redis = None
 
 class GatewayConfigurationManager:
     """Manages gateway configuration changes and automatically updates all components"""

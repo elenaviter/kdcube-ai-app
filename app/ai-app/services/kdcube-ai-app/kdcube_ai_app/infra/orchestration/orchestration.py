@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 import redis
 
+from kdcube_ai_app.infra.redis.client import get_sync_redis_client
+
 logger = logging.getLogger("Orchestrator")
 
 @dataclass
@@ -198,7 +200,7 @@ class DramatiqOrchestrator(IOrchestrator):
         self.redis_url = redis_url
         self.orchestrator_identity = orchestrator_identity
         self.default_queue = default_queue
-        self.redis_client = redis.Redis.from_url(redis_url)
+        self.redis_client = get_sync_redis_client(redis_url)
         import uuid, json
         from dramatiq import Message
         from dramatiq.brokers.redis import RedisBroker

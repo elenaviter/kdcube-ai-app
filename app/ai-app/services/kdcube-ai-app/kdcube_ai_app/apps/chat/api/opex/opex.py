@@ -33,6 +33,7 @@ from the accounting system using the RateCalculator.
 _scheduler_task: Optional[asyncio.Task] = None
 _bundle_cleanup_task: Optional[asyncio.Task] = None
 _subscription_rollover_task: Optional[asyncio.Task] = None
+_idp_import_task: Optional[asyncio.Task] = None
 logger = logging.getLogger("OPEX.API")
 
 @asynccontextmanager
@@ -40,7 +41,7 @@ async def opex_lifespan(app: FastAPI):
     """
     Router lifespan: start scheduler on startup, stop it on shutdown.
     """
-    global _scheduler_task, _bundle_cleanup_task, _subscription_rollover_task
+    global _scheduler_task, _bundle_cleanup_task, _subscription_rollover_task, _idp_import_task
 
     import kdcube_ai_app.apps.chat.api.opex.routines as routines
     if _scheduler_task is None:
@@ -52,6 +53,9 @@ async def opex_lifespan(app: FastAPI):
     if _subscription_rollover_task is None and routines.subscription_rollover_enabled():
         _subscription_rollover_task = asyncio.create_task(routines.subscription_rollover_scheduler_loop())
         logger.info("[Subscription Rollover] Background scheduler task started")
+    if _idp_import_task is None and routines._idp_import_enabled():
+        _idp_import_task = asyncio.create_task(routines.idp_import_scheduler_once())
+        logger.info("[IDP Import] One-time scheduler task started")
 
     try:
         yield
@@ -80,6 +84,14 @@ async def opex_lifespan(app: FastAPI):
                 pass
             logger.info("[Subscription Rollover] Background scheduler task stopped")
             _subscription_rollover_task = None
+        if _idp_import_task is not None:
+            _idp_import_task.cancel()
+            try:
+                await _idp_import_task
+            except asyncio.CancelledError:
+                pass
+            logger.info("[IDP Import] Scheduler task stopped")
+            _idp_import_task = None
 
 # Create router
 router = APIRouter(lifespan=opex_lifespan)

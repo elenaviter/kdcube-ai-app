@@ -170,6 +170,25 @@ class SSEHub:
             id(self), id(self.chat_comm)
         )
 
+    async def resync_relay(self, *, reason: str = "manual"):
+        """
+        Reconcile relay subscriptions/refcounts with current SSE hub state.
+        Useful after Redis reconnect or suspected drift.
+        """
+        async with self._lock:
+            snapshot: Dict[str, tuple[str | None, str | None, int]] = {}
+            for session_id, clients in self._by_session.items():
+                if not clients:
+                    continue
+                tenant = clients[0].tenant
+                project = clients[0].project
+                snapshot[session_id] = (tenant, project, len(clients))
+
+        await self.chat_comm.reconcile_sessions(snapshot, reason=reason)
+        logger.info(
+            "[SSEHub] resync relay reason=%s sessions=%s hub_id=%s relay_id=%s",
+            reason, len(snapshot), id(self), id(self.chat_comm),
+        )
 
     # Relay callback invoked by ChatRelayCommunicator
     async def _on_relay(self, message: dict):

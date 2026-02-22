@@ -205,10 +205,17 @@ def get_system_health():
 def get_heartbeats_mgr_and_middleware(service_type: str = "kb",
                                       service_name: str = "rest",
                                       instance_id: str = None,
-                                      port: int = 8000):
+                                      port: int = 8000,
+                                      redis_client=None):
 
     instance_id = instance_id or os.getenv("INSTANCE_ID")
-    middleware = MultiprocessDistributedMiddleware(REDIS_URL, instance_id=instance_id, tenant=TENANT_ID, project=DEFAULT_PROJECT)
+    middleware = MultiprocessDistributedMiddleware(
+        REDIS_URL,
+        instance_id=instance_id,
+        tenant=TENANT_ID,
+        project=DEFAULT_PROJECT,
+        redis=redis_client,
+    )
     process_id = os.getpid()
     heartbeat_manager = ProcessHeartbeatManager(middleware, service_type, service_name, process_id, port=port)
     return middleware, heartbeat_manager

@@ -42,6 +42,13 @@ File: api/integrations/integrations.py
 
 logger = logging.getLogger("KBMonitoring.API")
 
+def _get_app_redis(request: Request):
+    redis = getattr(request.app.state, "redis_async", None)
+    if redis is None:
+        # fallback (should not happen once app.state is wired)
+        redis = _get_app_redis(request)
+    return redis
+
 # Create router
 router = APIRouter()
 
@@ -129,7 +136,7 @@ async def get_available_bundles(
     tenant_id = tenant or settings.TENANT
     project_id = project or settings.PROJECT
     try:
-        redis = request.app.state.middleware.redis  # set in web_app during startup
+        redis = _get_app_redis(request)
         reg = await load_registry(redis, tenant_id, project_id)
     except Exception:
         if tenant_id == settings.TENANT and project_id == settings.PROJECT:
@@ -220,8 +227,9 @@ async def _load_bundle_props_defaults(
     )
 
     wf_config.ai_bundle_spec = spec_resolved
+    redis = getattr(request.app.state, "redis_async", None)
     workflow, _mod = get_workflow_instance(
-        spec, wf_config, comm_context=comm_context,
+        spec, wf_config, comm_context=comm_context, redis=redis,
     )
     defaults = getattr(workflow, "bundle_props_defaults", None) or {}
     defaults = dict(defaults)
@@ -258,7 +266,7 @@ async def get_bundle_props(
     tenant_id = tenant or settings.TENANT
     project_id = project or settings.PROJECT
 
-    redis = request.app.state.middleware.redis
+    redis = _get_app_redis(request)
     key = _bundle_props_key(tenant=tenant_id, project=project_id, bundle_id=bundle_id)
     raw = await redis.get(key)
     props = {}
@@ -297,7 +305,7 @@ async def set_bundle_props(
     settings = get_settings()
     tenant_id = payload.tenant or settings.TENANT
     project_id = payload.project or settings.PROJECT
-    redis = request.app.state.middleware.redis
+    redis = _get_app_redis(request)
 
     key = _bundle_props_key(tenant=tenant_id, project=project_id, bundle_id=bundle_id)
     props = dict(payload.props or {})
@@ -355,7 +363,7 @@ async def reset_bundle_props_from_code(
         session=session,
     )
 
-    redis = request.app.state.middleware.redis
+    redis = _get_app_redis(request)
     key = _bundle_props_key(tenant=tenant_id, project=project_id, bundle_id=bundle_id)
     await redis.set(key, json.dumps(defaults, ensure_ascii=False))
 
@@ -397,7 +405,7 @@ async def admin_set_bundles(
     )
 
     # Persist to tenant/project registry in Redis
-    redis = request.app.state.middleware.redis
+    redis = _get_app_redis(request)
     try:
         current = await store_load(redis, tenant_id, project_id)
         updated = store_apply(current, payload.op, payload.bundles, payload.default_bundle_id)
@@ -455,7 +463,7 @@ async def admin_reset_bundles_from_env(
 
     tenant_id = (payload.tenant if payload else None) or settings.TENANT
     project_id = (payload.project if payload else None) or settings.PROJECT
-    redis = request.app.state.middleware.redis
+    redis = _get_app_redis(request)
 
     try:
         # Force overwrite Redis from env
@@ -534,7 +542,7 @@ async def admin_cleanup_bundles(
             "updated_by": session.username or session.user_id or "unknown",
             "ts": datetime.utcnow().isoformat() + "Z",
         }
-        redis = request.app.state.middleware.redis
+        redis = _get_app_redis(request)
         await redis.publish(
             _bundles_channel(namespaces.CONFIG.BUNDLES.CLEANUP_CHANNEL, tenant=tenant_id, project=project_id),
             json.dumps(msg, ensure_ascii=False),
@@ -621,10 +629,11 @@ async def call_bundle_op(
             utc_offset_min=session.request_context.user_utc_offset_min,
         ),
     )
+    redis = getattr(request.app.state, "redis_async", None)
     try:
         wf_config.ai_bundle_spec = spec_resolved
         workflow, _mod = get_workflow_instance(
-            spec, wf_config, comm_context=comm_context,
+            spec, wf_config, comm_context=comm_context, redis=redis,
         )
     except Exception as e:
         logger.exception(f"[get_bundle_suggestions.{tenant}.{project}] Failed to load bundle {asdict(spec)}")
@@ -639,7 +648,7 @@ async def call_bundle_op(
                 singleton=bool(admin_spec.singleton),
             )
             workflow, _mod = get_workflow_instance(
-                admin, wf_config, comm_context=comm_context,
+                admin, wf_config, comm_context=comm_context, redis=redis,
             )
             spec_resolved = admin_spec
         except Exception:
