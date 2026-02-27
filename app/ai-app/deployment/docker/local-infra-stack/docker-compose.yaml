@@ -13,8 +13,6 @@ services:
     depends_on:
       postgres-db:
         condition: service_healthy
-    networks:
-      - kdcube-local-net
     restart: "no"
 
   postgres-db:

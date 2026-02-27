@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     STORAGE_PATH: str | None = Field(default=None, alias="KDCUBE_STORAGE_PATH")
 
     TENANT: str = Field(default="home", alias="TENANT_ID")
-    PROJECT: str = Field(default="default-project", alias="DEFAULT_PROJECT_NAME")
+    PROJECT: str = Field(default="default-project", alias="PROJECT_ID")
     INSTANCE_ID: str = Field(default="home-instance-1", alias="INSTANCE_ID")
 
     DEFAULT_MODEL_LLM: str | None = "claude-3-7-sonnet-20250219"

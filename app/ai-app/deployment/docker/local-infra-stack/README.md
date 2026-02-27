@@ -21,7 +21,7 @@ mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import}}
 ```
 
 ```shell
-chmod -R 0777 data 
+chmod -R 0777 data
 ```
 
 ```shell
@@ -34,9 +34,12 @@ The `postgres-setup` service runs a one‑time bootstrap (schemas/tenant/project
 It uses `sample_env/.env.postgres.setup` for configuration.
 
 Run it explicitly if needed:
+docker compose run --rm postgres-setup
 
 ```shell
-docker compose run --rm postgres-setup
+
+
+docker compose stop postgres-setup && docker compose rm postgres-setup -f && docker compose build postgres-setup --no-cache && docker compose up postgres-setup -d
 ```
 
 ```shell
