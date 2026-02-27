@@ -3,10 +3,13 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from "@tailwindcss/vite";
 import basicSsl from '@vitejs/plugin-basic-ssl'
 
-// @ts-expect-error because reasons
 export default defineConfig(({mode}) => {
+
+    // @ts-expect-error because reasons
     const env = loadEnv(mode, process.cwd(), '')
+
     const apiBase = env.VITE_APP_API_BASE ?? 'http://localhost:8010/'
+    const integrationsApiBase = env.VITE_APP_INTEGRATIONS_API_BASE ?? 'http://localhost:8020/'
 
     return {
         plugins: [
@@ -22,10 +25,10 @@ export default defineConfig(({mode}) => {
             https: env.VITE_HTTPS === 'true',
 
             proxy: {
-                '^/api/.*': {
-                    target: apiBase,
+                '^/api/integrations/.*': {
+                    target: integrationsApiBase,
                 },
-                '^/integrations/.*': {
+                '^/api/.*': {
                     target: apiBase,
                 },
                 '^/profile': {

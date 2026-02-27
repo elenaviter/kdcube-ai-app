@@ -3,11 +3,11 @@
     "authType": "cognito",
     "idTokenHeaderName": "X-ID-Token",
     "oidcConfig": {
-      "authority": "<<AUTHORITY URL>>",
-      "client_id": "<<CLIENT ID>>"
+      "authority": "<AUTHORITY URL>",
+      "client_id": "<CLIENT ID>"
     }
   },
-  "tenant": "default",
-  "project": "default",
-  "routesPrefix": ""
+  "tenant": "TENANT_ID",
+  "project": "PROJECT_ID",
+  "routesPrefix": "/chatbot"
 }

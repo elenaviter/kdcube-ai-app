@@ -2,7 +2,7 @@
   "auth": {
     "authType": "none"
   },
-  "tenant": "default",
-  "project": "default",
-  "routesPrefix": ""
+  "tenant": "TENANT_ID",
+  "project": "PROJECT_ID",
+  "routesPrefix": "/chatbot"
 }

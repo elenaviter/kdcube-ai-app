@@ -3,7 +3,7 @@
     "authType": "hardcoded",
     "token": "test-admin-token-123"
   },
-  "tenant": "default",
-  "project": "default",
-  "routesPrefix": ""
+  "tenant": "TENANT_ID",
+  "project": "PROJECT_ID",
+  "routesPrefix": "/chatbot"
 }
