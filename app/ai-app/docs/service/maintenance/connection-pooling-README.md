@@ -1,12 +1,15 @@
-**Connection Pooling (Chat Service)**
+**Connection Pooling (Chat Services)**
 
-This doc describes how **Redis** and **Postgres** pools are created, shared, and closed **per worker (process)** in the chat service.
+This doc describes how **Redis** and **Postgres** pools are created, shared, and closed **per worker (process)** in the chat services (ingress + processor).
 
 ---
 
-**Where Pools Are Created (Chat)**
+**Where Pools Are Created (Ingress + Processor)**
 
-All pools are created once per process in `apps/chat/api/resolvers.py` and stored in `app.state` during FastAPI lifespan in `apps/chat/api/web_app.py`.
+All pools are created once per process in `apps/chat/api/resolvers.py` and stored in `app.state` during FastAPI lifespan.
+Each service sets `GATEWAY_COMPONENT` so it selects the **component slice** of the gateway config:
+- `ingress` (SSE/REST ingress)
+- `proc` (processor + integrations)
 
 - Postgres:
   - `get_pg_pool()` → `app.state.pg_pool`
@@ -38,14 +41,14 @@ These are shared across all chat components (processor, monitoring, gateway, bun
 No additional Redis pools should be created outside these.
 
 **Size control**
-- `REDIS_MAX_CONNECTIONS` (env) caps **each pool**.
+- `GATEWAY_CONFIG_JSON.pools.<component>.redis_max_connections` caps **each pool**.
 - Approx max Redis connections per process:
 
 ```
-max_redis_conns_per_process ≈ 3 * REDIS_MAX_CONNECTIONS
+max_redis_conns_per_process ≈ 3 * redis_max_connections
 ```
 
-If `REDIS_MAX_CONNECTIONS` is **unset**, the pool size is unbounded and will grow with load.
+If `redis_max_connections` is **unset**, the pool size is unbounded and will grow with load.
 
 **Client names (for `CLIENT LIST`)**
 
@@ -78,12 +81,12 @@ app.state.pg_pool
 ```
 
 **Size control**
-- `PGPOOL_MAX_SIZE` (env) → hard cap for pool size
-- `PGPOOL_MIN_SIZE` (env) → minimum connections
-- If `PGPOOL_MAX_SIZE` is **not set**, it defaults to:
+- `GATEWAY_CONFIG_JSON.pools.<component>.pg_pool_max_size` → hard cap for pool size
+- `GATEWAY_CONFIG_JSON.pools.<component>.pg_pool_min_size` → minimum connections
+- If pools are **not set**, it defaults to:
 
 ```
-gateway_config.service_capacity.concurrent_requests_per_process
+gateway_config.service_capacity.<component>.concurrent_requests_per_process
 ```
 
 **Approx Postgres connections per instance**
@@ -93,8 +96,8 @@ pg_conns_per_instance ≈ workers * pg_pool_max_size
 ```
 
 Where:
-- `workers` = `service_capacity.processes_per_instance`
-- `pg_pool_max_size` = `PGPOOL_MAX_SIZE` or fallback
+- `workers` = `service_capacity.<component>.processes_per_instance`
+- `pg_pool_max_size` = gateway config pool size or fallback
 
 **Where implemented**
 - `apps/chat/api/resolvers.py` → `get_pg_pool()`
@@ -110,19 +113,25 @@ Where:
 - `PGPASSWORD` / `POSTGRES_PASSWORD` → database password.
 - `PGDATABASE` / `POSTGRES_DATABASE` → database name.
 - `PGSSL` / `POSTGRES_SSL` → SSL mode.
-- `PGPOOL_MIN_SIZE` → minimum connections per worker.
-- `PGPOOL_MAX_SIZE` → maximum connections per worker.
+- Pool sizing is controlled via `GATEWAY_CONFIG_JSON.pools.<component>.*`.
 
 ---
 
 **Operational Notes**
 
 - Redis and Postgres pools are **per process**. Total connections scale with worker count.
-- When you raise `service_capacity.processes_per_instance`, you also raise total Postgres and Redis connections.
+- When you raise `service_capacity.<component>.processes_per_instance`, you also raise total Postgres and Redis connections.
 - For Redis max clients, ensure:
 
+**Quick validation tool**
+Run this to print the effective per-process limits from gateway config:
+
+```bash
+python -m kdcube_ai_app.infra.tools.gateway_config_dump
 ```
-total_redis_connections ≈ processes * 3 * REDIS_MAX_CONNECTIONS
+
+```
+total_redis_connections ≈ processes * 3 * redis_max_connections
 ```
 
 fits within Elasticache `maxclients`.
@@ -130,7 +139,18 @@ fits within Elasticache `maxclients`.
 - For Postgres, ensure:
 
 ```
-total_pg_connections ≈ processes * PGPOOL_MAX_SIZE
+total_pg_connections ≈ processes * pg_pool_max_size
+```
+
+**SSE capacity (per process)**
+
+`limits.ingress.max_sse_connections_per_instance` is enforced **per worker process** because each
+Uvicorn worker owns its own in‑process `SSEHub`.
+
+Total per instance:
+
+```
+total_sse_connections_per_instance ≈ max_sse_connections_per_instance * processes_per_instance
 ```
 
 fits within `max_connections` on the DB.
@@ -152,7 +172,8 @@ Env:
 **Redis Env Quicklist**
 
 - `REDIS_URL` sets the Redis endpoint used by all shared pools and monitors.
-- `REDIS_MAX_CONNECTIONS` caps the per-process Redis pool size.
+- `pools.<component>.redis_max_connections` caps the per-process Redis pool size.
+- `GATEWAY_CONFIG_JSON.pools.<component>.redis_max_connections` sets the pool cap.
 - `REDIS_CLIENT_NAME` sets the client name prefix shown in `CLIENT LIST`.
 - `REDIS_HEALTHCHECK_INTERVAL_SEC` sets the Redis health poll interval.
 - `REDIS_HEALTHCHECK_TIMEOUT_SEC` sets the Redis health poll timeout.

@@ -572,41 +572,43 @@ class AtomicBackpressureManager:
         local paid_queue_key = KEYS[4]
         
         local user_type = ARGV[1]
-        local anonymous_threshold = tonumber(ARGV[2])
-        local registered_threshold = tonumber(ARGV[3])
-        local paid_threshold = tonumber(ARGV[4])
-        local hard_limit = tonumber(ARGV[5])
-        local capacity_per_healthy_process = tonumber(ARGV[6])
-        local heartbeat_timeout = tonumber(ARGV[7])
-        local current_time = tonumber(ARGV[8])
-        local heartbeat_pattern = ARGV[9]
+        local anonymous_ratio = tonumber(ARGV[2])
+        local registered_ratio = tonumber(ARGV[3])
+        local paid_ratio = tonumber(ARGV[4])
+        local hard_ratio = tonumber(ARGV[5])
+        local capacity_buffer = tonumber(ARGV[6])
+        local queue_depth_multiplier = tonumber(ARGV[7])
+        local heartbeat_timeout = tonumber(ARGV[8])
+        local current_time = tonumber(ARGV[9])
+        local heartbeat_pattern = ARGV[10]
+        local target_service_type = ARGV[11]
+        local target_service_name = ARGV[12]
         
-        -- Count healthy chat REST processes
+        -- Count healthy capacity-source processes and aggregate capacity
         local heartbeat_keys = redis.call('KEYS', heartbeat_pattern)
         local healthy_processes = 0
+        local actual_capacity = 0
         
         for i, key in ipairs(heartbeat_keys) do
             local heartbeat_data = redis.call('GET', key)
             if heartbeat_data then
                 local success, heartbeat = pcall(cjson.decode, heartbeat_data)
                 if success and heartbeat then
-                    if heartbeat.service_type == "chat" and heartbeat.service_name == "rest" then
+                    if heartbeat.service_type == target_service_type and heartbeat.service_name == target_service_name then
                         local age = current_time - (heartbeat.last_heartbeat or 0)
                         local is_healthy = (heartbeat.health_status == "healthy" or 
                                           heartbeat.health_status == "HEALTHY" or
                                           string.find(tostring(heartbeat.health_status), "HEALTHY"))
                         if age <= heartbeat_timeout and is_healthy then
                             healthy_processes = healthy_processes + 1
+                            local max_cap = tonumber(heartbeat.max_capacity) or 0
+                            local effective = math.floor(max_cap * (1 - capacity_buffer))
+                            local queue_cap = math.floor(max_cap * queue_depth_multiplier)
+                            actual_capacity = actual_capacity + effective + queue_cap
                         end
                     end
                 end
             end
-        end
-        
-        -- Calculate actual system capacity
-        local actual_capacity = healthy_processes * capacity_per_healthy_process
-        if actual_capacity <= 0 then
-            return {0, "no_healthy_processes", 0, 0, 0}
         end
         
         -- Get current queue sizes
@@ -616,11 +618,15 @@ class AtomicBackpressureManager:
         local paid_queue = redis.call('LLEN', paid_queue_key)
         local total_queue = anon_queue + reg_queue + paid_queue + priv_queue
         
+        if actual_capacity <= 0 then
+            return {0, "no_healthy_processes", total_queue, 0, healthy_processes}
+        end
+        
         -- Calculate dynamic thresholds based on actual capacity
-        local anon_threshold = math.floor(actual_capacity * (anonymous_threshold / hard_limit))
-        local reg_threshold = math.floor(actual_capacity * (registered_threshold / hard_limit))
-        local paid_threshold_val = math.floor(actual_capacity * (paid_threshold / hard_limit))
-        local hard_threshold = math.floor(actual_capacity * 1.0)
+        local anon_threshold = math.floor(actual_capacity * anonymous_ratio)
+        local reg_threshold = math.floor(actual_capacity * registered_ratio)
+        local paid_threshold_val = math.floor(actual_capacity * paid_ratio)
+        local hard_threshold = math.floor(actual_capacity * hard_ratio)
         
         -- Check if request can be admitted (without enqueueing)
         local can_admit = false
@@ -688,16 +694,9 @@ class AtomicBackpressureManager:
         priv_queue_key = f"{self.QUEUE_PREFIX}:privileged"
         paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
 
-        # Get theoretical thresholds from configuration
-        total_instance_capacity = self.gateway_config.total_capacity_per_instance
-        theoretical_thresholds = self.gateway_config.get_thresholds_for_actual_capacity(total_instance_capacity)
-
         heartbeat_pattern = f"{self.PROCESS_HEARTBEAT_PREFIX}:*"
-
-        total_per_single_process = (
-                int(self.gateway_config.service_capacity.concurrent_requests_per_process * (1 - self.gateway_config.backpressure.capacity_buffer)) +
-                int(self.gateway_config.service_capacity.concurrent_requests_per_process * self.gateway_config.backpressure.queue_depth_multiplier)
-        )
+        service_type, service_name = self.gateway_config.capacity_source_selector()
+        bp = self.gateway_config.backpressure
         try:
             result = await self.redis.eval(
                 self.ATOMIC_CAPACITY_CHECK_SCRIPT,
@@ -708,29 +707,32 @@ class AtomicBackpressureManager:
                 paid_queue_key,
                 # Arguments
                 user_type.value,
-                str(theoretical_thresholds["anonymous_threshold"]),
-                str(theoretical_thresholds["registered_threshold"]),
-                str(theoretical_thresholds["paid_threshold"]),
-                str(theoretical_thresholds["hard_limit"]),
-                # str(self.gateway_config.total_capacity_per_instance),
-                str(total_per_single_process),
+                str(bp.anonymous_pressure_threshold),
+                str(bp.registered_pressure_threshold),
+                str(bp.paid_pressure_threshold),
+                str(bp.hard_limit_threshold),
+                str(bp.capacity_buffer),
+                str(bp.queue_depth_multiplier),
                 str(self.gateway_config.monitoring.heartbeat_timeout_seconds),
                 str(time.time()),
-                heartbeat_pattern
+                heartbeat_pattern,
+                service_type,
+                service_name,
             )
 
             success = bool(result[0])
             reason = result[1]
             reason = reason.decode('utf-8') if reason and isinstance(reason, bytes) else reason
             current_queue_size = result[2]
-            actual_capacity = result[3]
+            actual_capacity = int(result[3])
             healthy_processes = result[4] if len(result) > 4 else 0
+            theoretical_thresholds = self.gateway_config.get_thresholds_for_actual_capacity(actual_capacity)
 
             stats = {
                 "current_queue_size": current_queue_size,
                 "actual_capacity": actual_capacity,
                 "healthy_processes": healthy_processes,
-                "configured_capacity": total_instance_capacity,
+                "configured_capacity": self.gateway_config.total_capacity_per_instance,
                 "theoretical_thresholds": theoretical_thresholds,
                 "user_type": user_type.value,
                 "check_type": "gateway_immediate",
@@ -989,8 +991,7 @@ class AtomicBackpressureManager:
         alive_instances = await self.get_alive_instances()
         instance_count = max(len(alive_instances), 1)
 
-        healthy_processes = await self._count_healthy_chat_processes()
-        actual_capacity = self.gateway_config.total_capacity_per_instance * healthy_processes
+        healthy_processes, actual_capacity = await self._get_capacity_from_heartbeats()
         actual_thresholds = self.gateway_config.get_thresholds_for_actual_capacity(actual_capacity)
 
         pressure_ratio = total_size / actual_capacity if actual_capacity > 0 else 1.0
@@ -1033,13 +1034,15 @@ class AtomicBackpressureManager:
             } if analytics else {}
         )
 
-    async def _count_healthy_chat_processes(self) -> int:
-        """Count healthy chat REST processes from heartbeats"""
+    async def _get_capacity_from_heartbeats(self) -> Tuple[int, int]:
+        """Aggregate healthy process count and capacity from heartbeats."""
         try:
             pattern = f"{self.PROCESS_HEARTBEAT_PREFIX}:*"
             keys = await self.redis.keys(pattern)
             healthy_count = 0
             current_time = time.time()
+            actual_capacity = 0
+            service_type, service_name = self.gateway_config.capacity_source_selector()
 
             for key in keys:
                 try:
@@ -1048,8 +1051,8 @@ class AtomicBackpressureManager:
                         continue
 
                     heartbeat = json.loads(data)
-                    if (heartbeat.get("service_type") == "chat" and
-                            heartbeat.get("service_name") == "rest"):
+                    if (heartbeat.get("service_type") == service_type and
+                            heartbeat.get("service_name") == service_name):
 
                         age = current_time - heartbeat.get("last_heartbeat", 0)
                         health_status = str(heartbeat.get("health_status", "")).upper()
@@ -1057,16 +1060,23 @@ class AtomicBackpressureManager:
 
                         if age <= self.gateway_config.monitoring.heartbeat_timeout_seconds and is_healthy:
                             healthy_count += 1
+                            max_cap = int(heartbeat.get("max_capacity") or 0)
+                            effective = int(max_cap * (1 - self.gateway_config.backpressure.capacity_buffer))
+                            queue_cap = int(max_cap * self.gateway_config.backpressure.queue_depth_multiplier)
+                            actual_capacity += effective + queue_cap
 
                 except Exception as e:
                     logger.debug(f"Error parsing heartbeat {key}: {e}")
                     continue
 
-            return max(healthy_count, 1)  # Assume at least 1 process
+            if actual_capacity <= 0:
+                actual_capacity = self.gateway_config.total_capacity_per_instance * max(healthy_count, 1)
+
+            return max(healthy_count, 1), actual_capacity
 
         except Exception as e:
             logger.error(f"Error counting healthy processes: {e}")
-            return 1  # Fallback
+            return 1, self.gateway_config.total_capacity_per_instance  # Fallback
 
     async def release_capacity_slot(self):
         """Release a capacity slot when request processing completes"""
@@ -1086,7 +1096,7 @@ class AtomicChatQueueManager:
         self.redis = None
         self.gateway_config = gateway_config
         self.monitor = monitor
-        self.max_queue_size = int(os.getenv("MAX_QUEUE_SIZE", "0") or "0")
+        self.max_queue_size = int(getattr(gateway_config.limits, "max_queue_size", 0) or 0)
 
         # Redis keys
         self.QUEUE_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_PREFIX)
@@ -1104,42 +1114,44 @@ class AtomicChatQueueManager:
         
         local user_type = ARGV[1]
         local chat_task_json = ARGV[2]  -- Actual chat task
-        local anonymous_threshold = tonumber(ARGV[3])
-        local registered_threshold = tonumber(ARGV[4])
-        local paid_threshold = tonumber(ARGV[5])
-        local hard_limit = tonumber(ARGV[6])
-        local capacity_per_healthy_process = tonumber(ARGV[7])
-        local heartbeat_timeout = tonumber(ARGV[8])
-        local current_time = tonumber(ARGV[9])
-        local heartbeat_pattern = ARGV[10]
-        local max_queue_size = tonumber(ARGV[11])
+        local anonymous_ratio = tonumber(ARGV[3])
+        local registered_ratio = tonumber(ARGV[4])
+        local paid_ratio = tonumber(ARGV[5])
+        local hard_ratio = tonumber(ARGV[6])
+        local capacity_buffer = tonumber(ARGV[7])
+        local queue_depth_multiplier = tonumber(ARGV[8])
+        local heartbeat_timeout = tonumber(ARGV[9])
+        local current_time = tonumber(ARGV[10])
+        local heartbeat_pattern = ARGV[11]
+        local max_queue_size = tonumber(ARGV[12])
+        local target_service_type = ARGV[13]
+        local target_service_name = ARGV[14]
         
-        -- Count healthy chat REST processes
+        -- Count healthy capacity-source processes
         local heartbeat_keys = redis.call('KEYS', heartbeat_pattern)
         local healthy_processes = 0
+        local actual_capacity = 0
         
         for i, key in ipairs(heartbeat_keys) do
             local heartbeat_data = redis.call('GET', key)
             if heartbeat_data then
                 local success, heartbeat = pcall(cjson.decode, heartbeat_data)
                 if success and heartbeat then
-                    if heartbeat.service_type == "chat" and heartbeat.service_name == "rest" then
+                    if heartbeat.service_type == target_service_type and heartbeat.service_name == target_service_name then
                         local age = current_time - (heartbeat.last_heartbeat or 0)
                         local is_healthy = (heartbeat.health_status == "healthy" or 
                                           heartbeat.health_status == "HEALTHY" or
                                           string.find(tostring(heartbeat.health_status), "HEALTHY"))
                         if age <= heartbeat_timeout and is_healthy then
                             healthy_processes = healthy_processes + 1
+                            local max_cap = tonumber(heartbeat.max_capacity) or 0
+                            local effective = math.floor(max_cap * (1 - capacity_buffer))
+                            local queue_cap = math.floor(max_cap * queue_depth_multiplier)
+                            actual_capacity = actual_capacity + effective + queue_cap
                         end
                     end
                 end
             end
-        end
-        
-        -- Calculate actual system capacity
-        local actual_capacity = healthy_processes * capacity_per_healthy_process
-        if actual_capacity <= 0 then
-            return {0, "no_healthy_processes", 0, 0, 0}
         end
         
         -- Get current queue sizes
@@ -1149,17 +1161,21 @@ class AtomicChatQueueManager:
         local paid_queue = redis.call('LLEN', paid_queue_key)
         local total_queue = anon_queue + reg_queue + paid_queue + priv_queue
 
+        if actual_capacity <= 0 then
+            return {0, "no_healthy_processes", total_queue, 0, healthy_processes}
+        end
+
         if max_queue_size and max_queue_size > 0 then
             if total_queue >= max_queue_size then
-                return {0, "queue_size_exceeded", total_queue, 0, 0}
+                return {0, "queue_size_exceeded", total_queue, actual_capacity, healthy_processes}
             end
         end
         
         -- Calculate dynamic thresholds
-        local anon_threshold = math.floor(actual_capacity * (anonymous_threshold / hard_limit))
-        local reg_threshold = math.floor(actual_capacity * (registered_threshold / hard_limit))
-        local paid_threshold_val = math.floor(actual_capacity * (paid_threshold / hard_limit))
-        local hard_threshold = math.floor(actual_capacity * 1.0)
+        local anon_threshold = math.floor(actual_capacity * anonymous_ratio)
+        local reg_threshold = math.floor(actual_capacity * registered_ratio)
+        local paid_threshold_val = math.floor(actual_capacity * paid_ratio)
+        local hard_threshold = math.floor(actual_capacity * hard_ratio)
         
         -- Check if chat request can be admitted
         local can_admit = false
@@ -1218,16 +1234,9 @@ class AtomicChatQueueManager:
         priv_queue_key = f"{self.QUEUE_PREFIX}:privileged"
         paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
 
-        # Get theoretical thresholds from configuration
-        total_instance_capacity = self.gateway_config.total_capacity_per_instance
-        theoretical_thresholds = self.gateway_config.get_thresholds_for_actual_capacity(total_instance_capacity)
-
         heartbeat_pattern = f"{self.PROCESS_HEARTBEAT_PREFIX}:*"
-
-        total_per_single_process = (
-                int(self.gateway_config.service_capacity.concurrent_requests_per_process * (1 - self.gateway_config.backpressure.capacity_buffer)) +
-                int(self.gateway_config.service_capacity.concurrent_requests_per_process * self.gateway_config.backpressure.queue_depth_multiplier)
-        )
+        service_type, service_name = self.gateway_config.capacity_source_selector()
+        bp = self.gateway_config.backpressure
         try:
             result = await self.redis.eval(
                 self.ATOMIC_CHAT_ENQUEUE_SCRIPT,
@@ -1241,29 +1250,32 @@ class AtomicChatQueueManager:
                 # Arguments
                 user_type.value,
                 json.dumps(chat_task_data, ensure_ascii=False),  # Your actual chat task
-                str(theoretical_thresholds["anonymous_threshold"]),
-                str(theoretical_thresholds["registered_threshold"]),
-                str(theoretical_thresholds["paid_threshold"]),
-                str(theoretical_thresholds["hard_limit"]),
-                # str(self.gateway_config.total_capacity_per_instance),
-                str(total_per_single_process),
+                str(bp.anonymous_pressure_threshold),
+                str(bp.registered_pressure_threshold),
+                str(bp.paid_pressure_threshold),
+                str(bp.hard_limit_threshold),
+                str(bp.capacity_buffer),
+                str(bp.queue_depth_multiplier),
                 str(self.gateway_config.monitoring.heartbeat_timeout_seconds),
                 str(time.time()),
                 heartbeat_pattern,
-                str(self.max_queue_size)
+                str(self.max_queue_size),
+                service_type,
+                service_name,
             )
 
             success = bool(result[0])
             reason = result[1]
             current_queue_size = result[2]
-            actual_capacity = result[3]
+            actual_capacity = int(result[3])
             healthy_processes = result[4] if len(result) > 4 else 0
+            theoretical_thresholds = self.gateway_config.get_thresholds_for_actual_capacity(actual_capacity)
 
             stats = {
                 "current_queue_size": current_queue_size,
                 "actual_capacity": actual_capacity,
                 "healthy_processes": healthy_processes,
-                "configured_capacity": total_instance_capacity,
+                "configured_capacity": self.gateway_config.total_capacity_per_instance,
                 "theoretical_thresholds": theoretical_thresholds,
                 "user_type": user_type.value,
                 "task_id": chat_task_data.get("task_id"),

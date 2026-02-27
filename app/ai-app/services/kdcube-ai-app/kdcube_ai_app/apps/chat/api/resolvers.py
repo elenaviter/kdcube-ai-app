@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Elena Viter
+# Copyright (c) 2026 Elena Viter
 
 # chat/api/resolvers.py
 """
@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # TENANT_ID = os.environ.get("TENANT_ID", "home")
 # INSTANCE_ID = os.environ.get("INSTANCE_ID", "home-instance-1")
 CHAT_APP_PORT = int(os.environ.get("CHAT_APP_PORT", 8010))
+CHAT_PROCESSOR_PORT = int(os.environ.get("CHAT_PROCESSOR_PORT", CHAT_APP_PORT))
 
 # Gateway Profile Selection
 GATEWAY_PROFILE = os.environ.get("GATEWAY_PROFILE", "development").lower()
@@ -122,8 +123,10 @@ def create_gateway_configuration() -> GatewayConfiguration:
         # Override with environment-specific values
         config.redis_url = REDIS_URL
         config.instance_id = INSTANCE_ID
-        config.tenant_id = TENANT_ID
-        config.project_id = DEFAULT_PROJECT
+        if not config.tenant_id:
+            config.tenant_id = TENANT_ID
+        if not config.project_id:
+            config.project_id = DEFAULT_PROJECT
 
         return config
 
@@ -141,8 +144,10 @@ def create_gateway_configuration() -> GatewayConfiguration:
     # Override with specific environment values
     config.redis_url = REDIS_URL
     config.instance_id = INSTANCE_ID
-    config.tenant_id = TENANT_ID
-    config.project_id = DEFAULT_PROJECT
+    if not config.tenant_id:
+        config.tenant_id = TENANT_ID
+    if not config.project_id:
+        config.project_id = DEFAULT_PROJECT
 
     return config
 
@@ -374,12 +379,14 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "chat",
                                       instance_id: str = None,
                                       process_id: str = None,
                                       port: int = CHAT_APP_PORT,
-                                      redis_client=None):
+                                      redis_client=None,
+                                      metadata_provider=None):
     """Your existing middleware setup - can be kept for compatibility"""
     from kdcube_ai_app.infra.availability.health_and_heartbeat import (
         MultiprocessDistributedMiddleware, ProcessHeartbeatManager
     )
 
+    gateway_config = get_gateway_config()
     instance_id = instance_id or INSTANCE_ID
     middleware = MultiprocessDistributedMiddleware(
         REDIS_URL,
@@ -393,7 +400,9 @@ def get_heartbeats_mgr_and_middleware(service_type: str = "chat",
         service_type=service_type,
         service_name=service_name,
         process_id=process_id,
-        port=port
+        port=port,
+        max_capacity=gateway_config.service_capacity.concurrent_requests_per_process,
+        metadata_provider=metadata_provider,
     )
     return middleware, heartbeat_manager
 
@@ -530,12 +539,17 @@ async def get_pg_pool():
 
     import asyncpg, json
     pool_kwargs = {}
-    min_size_env = os.getenv("PGPOOL_MIN_SIZE")
-    max_size_env = os.getenv("PGPOOL_MAX_SIZE")
-    if min_size_env is not None:
-        pool_kwargs["min_size"] = int(min_size_env)
-    if max_size_env is not None:
-        pool_kwargs["max_size"] = int(max_size_env)
+    # Gateway config is the single source of truth for pool sizing.
+    try:
+        from kdcube_ai_app.infra.gateway.config import get_gateway_config
+        cfg = get_gateway_config()
+        pools_cfg = getattr(cfg, "pools", None)
+        if pools_cfg and pools_cfg.pg_pool_min_size is not None:
+            pool_kwargs["min_size"] = int(pools_cfg.pg_pool_min_size)
+        if pools_cfg and pools_cfg.pg_pool_max_size is not None:
+            pool_kwargs["max_size"] = int(pools_cfg.pg_pool_max_size)
+    except Exception:
+        pass
 
     if "max_size" not in pool_kwargs:
         try:
@@ -549,7 +563,7 @@ async def get_pg_pool():
     if pool_kwargs["max_size"] < pool_kwargs["min_size"]:
         pool_kwargs["max_size"] = pool_kwargs["min_size"]
 
-    logger.info("PG pool sizing: %s (set PGPOOL_MIN_SIZE/PGPOOL_MAX_SIZE to override)", pool_kwargs)
+    logger.info("PG pool sizing (gateway config): %s", pool_kwargs)
 
     async def _init_conn(conn: asyncpg.Connection):
         # Encode/decode json & jsonb as Python dicts automatically
@@ -577,15 +591,24 @@ async def get_redis_clients():
       - sync
     """
     global _redis_async, _redis_async_decode, _redis_sync
+    max_connections = None
+    try:
+        from kdcube_ai_app.infra.gateway.config import get_gateway_config
+        cfg = get_gateway_config()
+        pools_cfg = getattr(cfg, "pools", None)
+        if pools_cfg and pools_cfg.redis_max_connections is not None:
+            max_connections = int(pools_cfg.redis_max_connections)
+    except Exception:
+        max_connections = None
     created = False
     if _redis_async is None:
-        _redis_async = get_async_redis_client(REDIS_URL)
+        _redis_async = get_async_redis_client(REDIS_URL, max_connections=max_connections)
         created = True
     if _redis_async_decode is None:
-        _redis_async_decode = get_async_redis_client(REDIS_URL, decode_responses=True)
+        _redis_async_decode = get_async_redis_client(REDIS_URL, decode_responses=True, max_connections=max_connections)
         created = True
     if _redis_sync is None:
-        _redis_sync = get_sync_redis_client(REDIS_URL)
+        _redis_sync = get_sync_redis_client(REDIS_URL, max_connections=max_connections)
         created = True
     if created:
         logger.info("Redis client name prefix: %s", get_redis_client_name_prefix())

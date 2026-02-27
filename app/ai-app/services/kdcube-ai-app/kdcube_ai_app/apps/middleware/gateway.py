@@ -160,13 +160,15 @@ class FastAPIGatewayAdapter:
             requirements=pol.requirements or [],
             bypass_throttling=pol.bypass_throttling,
             bypass_gate=pol.bypass_gate,
+            bypass_backpressure=pol.bypass_backpressure,
         )
 
     async def process_request(self,
                               request: Request,
                               requirements: List[RequirementBase] = None,
                               bypass_throttling: bool = False,
-                              bypass_gate: bool = False) -> UserSession:
+                              bypass_gate: bool = False,
+                              bypass_backpressure: bool = False) -> UserSession:
         """Process request and return session"""
         requirements = requirements or []
         context = self._extract_context(request)
@@ -178,7 +180,8 @@ class FastAPIGatewayAdapter:
                 requirements,
                 endpoint,
                 bypass_throttling,
-                bypass_gate=bypass_gate
+                bypass_gate=bypass_gate,
+                bypass_backpressure=bypass_backpressure,
             )
             await self._enforce_user_session_ownership(request, session)
             return session
@@ -219,7 +222,14 @@ class FastAPIGatewayAdapter:
     def require(self, *requirements: RequirementBase):
         """Create FastAPI dependency that enforces requirements"""
         async def dependency(request: Request) -> UserSession:
-            return await self.process_request(request, list(requirements))
+            pol = self.policy.resolve(request)
+            return await self.process_request(
+                request,
+                list(requirements),
+                bypass_throttling=pol.bypass_throttling,
+                bypass_gate=pol.bypass_gate,
+                bypass_backpressure=pol.bypass_backpressure,
+            )
         return dependency
 
     def get_session(self, bypass_gate: bool = False):

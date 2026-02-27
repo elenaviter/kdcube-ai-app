@@ -60,6 +60,18 @@ class KBClient:
             await conn.execute("SET TIME ZONE 'UTC'; SET datestyle = ISO, YMD;")
 
         if not self._pool:
+            pool_min = 0
+            pool_max = 2
+            try:
+                from kdcube_ai_app.infra.gateway.config import get_gateway_config
+                cfg = get_gateway_config()
+                pools_cfg = getattr(cfg, "pools", None)
+                if pools_cfg and pools_cfg.pg_pool_min_size is not None:
+                    pool_min = int(pools_cfg.pg_pool_min_size)
+                if pools_cfg and pools_cfg.pg_pool_max_size is not None:
+                    pool_max = int(pools_cfg.pg_pool_max_size)
+            except Exception:
+                pass
             self._pool = await asyncpg.create_pool(
                 host=self._settings.PGHOST,
                 port=self._settings.PGPORT,
@@ -68,8 +80,8 @@ class KBClient:
                 database=self._settings.PGDATABASE,
                 ssl=self._settings.PGSSL,
                 max_inactive_connection_lifetime=300.0,
-                min_size=int(os.getenv("PGPOOL_MIN_SIZE", "0")),   # 0 so idle workers release conns
-                max_size=int(os.getenv("PGPOOL_MAX_SIZE", "2")),   # keep this SMALL in child runtimes
+                min_size=pool_min,   # 0 so idle workers release conns
+                max_size=pool_max,
                 init=_init_conn,
                 server_settings={"application_name": "kdcube-kb-client"},
             )

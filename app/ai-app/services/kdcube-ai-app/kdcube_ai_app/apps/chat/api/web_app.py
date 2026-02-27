@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Elena Viter
+# Copyright (c) 2026 Elena Viter
 
 # chat/web_app.py
 """
@@ -14,17 +14,29 @@ import os
 import asyncio
 import signal
 import sys
+import uuid
 
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv, find_dotenv
+
+# Default component identity for shared .env usage
+os.environ.setdefault("GATEWAY_COMPONENT", "ingress")
+
+_ENV_DIR = Path(__file__).resolve().parent
+load_dotenv(_ENV_DIR / ".env.ingress", override=True)
+load_dotenv(find_dotenv(usecwd=False))
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
+get_settings.cache_clear()
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 
-from dotenv import load_dotenv, find_dotenv
-
 from kdcube_ai_app.apps.utils.cors import configure_cors
 
-load_dotenv(find_dotenv())
+# Ensure per-replica instance id is set (do not override explicit env)
+os.environ.setdefault("INSTANCE_ID", f"ingress-{uuid.uuid4().hex[:8]}")
 
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
@@ -60,8 +72,11 @@ from kdcube_ai_app.infra.namespaces import CONFIG
 from kdcube_ai_app.apps.chat.api.resolvers import (
     get_fastapi_adapter, get_fast_api_accounting_binder, get_user_session_dependency, require_auth,
     INSTANCE_ID, CHAT_APP_PORT, REDIS_URL, _announce_startup,
-    get_pg_pool, get_conversation_system, get_redis_clients, close_redis_clients, get_redis_monitor_instance
+    get_pg_pool, get_conversation_system, get_redis_clients, close_redis_clients, get_redis_monitor_instance,
+    get_heartbeats_mgr_and_middleware, service_health_checker
 )
+from kdcube_ai_app.infra.metrics.rolling_stats import record_metric
+from kdcube_ai_app.infra.namespaces import REDIS
 from kdcube_ai_app.auth.AuthManager import RequireUser
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -123,6 +138,26 @@ async def lifespan(app: FastAPI):
 
     # mark not shutting down yet
     app.state.shutting_down = False
+    app.state.draining = False
+
+    # register signal handlers for graceful drain (best-effort)
+    try:
+        import signal
+        loop = asyncio.get_running_loop()
+
+        def _enter_draining_mode():
+            if not getattr(app.state, "draining", False):
+                app.state.draining = True
+                app.state.shutting_down = True
+                logger.warning("Ingress entering draining mode (SIGTERM/SIGINT).")
+
+        for _sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(_sig, _enter_draining_mode)
+            except Exception:
+                signal.signal(_sig, lambda *_args: _enter_draining_mode())
+    except Exception:
+        pass
 
     try:
         # Initialize gateway adapter and store in app state
@@ -135,6 +170,7 @@ async def lifespan(app: FastAPI):
             redis_url=REDIS_URL,
         )
         if cache_applied:
+            app.state.gateway_config_source = "redis-cache"
             logger.info(
                 "Gateway config source: redis-cache tenant=%s project=%s key=%s",
                 settings.TENANT,
@@ -145,6 +181,7 @@ async def lifespan(app: FastAPI):
             source = "env"
             if os.getenv("GATEWAY_CONFIG_JSON"):
                 source = "env (GATEWAY_CONFIG_JSON)"
+            app.state.gateway_config_source = source
             logger.info(
                 "Gateway config source: %s tenant=%s project=%s",
                 source,
@@ -185,9 +222,9 @@ async def lifespan(app: FastAPI):
         logger.exception("Failed to start Redis connection monitor")
         raise
 
-    # --- Heartbeats / processor (uses local queue processor) ---
-    from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
-        service_health_checker
+    # --- Heartbeats / processor (moved to proc service) ---
+    # from kdcube_ai_app.apps.chat.api.resolvers import get_heartbeats_mgr_and_middleware, get_external_request_processor, \
+    #     service_health_checker
 
     app.state.chat_comm = ChatRelayCommunicator(redis_url=REDIS_URL,
                                                 channel="chat.events",
@@ -327,7 +364,11 @@ async def lifespan(app: FastAPI):
         logger.error(f"Failed to setup Socket.IO chat handler: {e}")
         app.state.socketio_handler = None
 
-    app.state.sse_hub = SSEHub(app.state.chat_comm)
+    app.state.sse_hub = SSEHub(
+        app.state.chat_comm,
+        redis=getattr(app.state, "redis_async", None),
+        instance_id=INSTANCE_ID,
+    )
 
     # Resync SSE relay subscriptions after Redis reconnects.
     if getattr(app.state, "redis_monitor", None):
@@ -360,10 +401,26 @@ async def lifespan(app: FastAPI):
         app.state.sse_enabled = False
 
     try:
-        handler = agentic_app_func
+        redis_async = app.state.redis_async
+        from kdcube_ai_app.infra.metrics.pool_stats import build_pool_metadata
 
-        redis_async, _, _ = await get_redis_clients()
-        middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(port=port, redis_client=redis_async)
+        def _heartbeat_metadata():
+            return build_pool_metadata(
+                pg_pool=app.state.pg_pool,
+                redis_clients={
+                    "async": app.state.redis_async,
+                    "async_decode": app.state.redis_async_decode,
+                    "sync": app.state.redis_sync,
+                },
+            )
+
+        middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(
+            service_type="chat",
+            service_name="rest",
+            port=port,
+            redis_client=redis_async,
+            metadata_provider=_heartbeat_metadata,
+        )
         health_checker = service_health_checker(middleware)
 
         # Store in app state for monitoring endpoints
@@ -376,12 +433,7 @@ async def lifespan(app: FastAPI):
         app.state.conversation_browser = conversation_browser
         app.state.conversation_index = conversation_index
         app.state.conversation_store = conversation_store
-
-        processor = get_external_request_processor(middleware, handler, app, redis=redis_async)
-        app.state.processor = processor
-
-        # Start services
-        # Redis already injected via get_redis_clients; no init_redis needed.
+        # Start heartbeats for ingress processes
         await heartbeat_manager.start_heartbeat(interval=10)
 
         try:
@@ -397,15 +449,20 @@ async def lifespan(app: FastAPI):
         try:
             from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
             from kdcube_ai_app.infra.plugin.bundle_registry import set_registry as _set_mem_registry
-            reg = await _load_store_registry(redis_async)
-            bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
-            _set_mem_registry(bundles_dict, reg.default_bundle_id)
-            logger.info(f"Bundles registry loaded from Redis: {len(bundles_dict)} items (default={reg.default_bundle_id})")
+            reg = await _load_store_registry(app.state.redis_async)
+            if reg and reg.bundles:
+                bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}
+                _set_mem_registry(bundles_dict, reg.default_bundle_id)
+                logger.info(
+                    "Bundles registry loaded from Redis: %s items (default=%s)",
+                    len(bundles_dict),
+                    reg.default_bundle_id,
+                )
         except Exception as e:
-            logger.warning(f"Failed to load bundles registry from Redis; using env-only registry. {e}")
-
-        await processor.start_processing()
-        await health_checker.start_monitoring()
+            logger.warning("Failed to load bundles registry from Redis; using env-only registry. %s", e)
+        #
+        # await processor.start_processing()
+        # await health_checker.start_monitoring()
 
         logger.info(f"Chat process {process_id} started with enhanced gateway")
         _announce_startup()
@@ -470,6 +527,11 @@ allowed_origins = configure_cors(app)
 
 @app.middleware("http")
 async def gateway_middleware(request: Request, call_next):
+    if getattr(request.app.state, "draining", False) and not request.url.path.startswith("/health"):
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Service is draining", "status": "draining"},
+        )
     if request.method == "OPTIONS" or request.url.path.startswith(("/profile", "/monitoring", "/admin", "/health", "/docs", "/openapi.json", "/favicon.ico")):
         return await call_next(request)
 
@@ -512,6 +574,30 @@ async def gateway_middleware(request: Request, call_next):
             content=e.detail if isinstance(e.detail, dict) else {" detail": e.detail},
             headers=headers
         )
+
+
+@app.middleware("http")
+async def ingress_latency_middleware(request: Request, call_next):
+    if request.url.path.startswith("/sse/"):
+        return await call_next(request)
+    start = time.monotonic()
+    response = await call_next(request)
+    try:
+        settings = get_settings()
+        redis_client = getattr(request.app.state, "redis_async", None)
+        if redis_client:
+            ms = int((time.monotonic() - start) * 1000)
+            await record_metric(
+                redis_client,
+                base=REDIS.METRICS.INGRESS_REST_MS,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                component="ingress",
+                value=float(ms),
+            )
+    except Exception:
+        pass
+    return response
 
 # ================================
 # ENDPOINTS
@@ -574,14 +660,19 @@ async def health_check():
     """Basic health check"""
     socketio_status = "enabled" if hasattr(app.state, 'socketio_handler') and app.state.socketio_handler else "disabled"
     sse_status = "enabled" if  hasattr(app.state, 'sse_enabled') and app.state.sse_enabled else "disabled"
-    return {
-        "status": "healthy",
+    draining = getattr(app.state, "draining", False)
+    payload = {
+        "status": "draining" if draining else "healthy",
+        "draining": draining,
         "timestamp": time.time(),
         "instance_id": INSTANCE_ID,
         "port": CHAT_APP_PORT,
         "socketio_status": socketio_status,
         "sse_status": sse_status,
     }
+    if draining:
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 @app.get("/debug/session")
 async def debug_session(session: UserSession = Depends(require_auth(RequireUser()))):

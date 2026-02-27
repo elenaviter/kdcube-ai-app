@@ -403,8 +403,10 @@ async def _run_daily_and_monthly_for_date(run_date: date) -> None:
     agg = _get_aggregator()
     redis = await _get_agg_redis()
 
-    tenant = os.getenv("DEFAULT_TENANT", "home")
-    project = os.getenv("DEFAULT_PROJECT_NAME", "demo")
+    from kdcube_ai_app.apps.chat.sdk.config import get_settings
+    settings = get_settings()
+    tenant = settings.TENANT
+    project = settings.PROJECT
 
     lock_key = f"acct:agg:{tenant}:{project}:{run_date.isoformat()}"
     token = str(uuid.uuid4())

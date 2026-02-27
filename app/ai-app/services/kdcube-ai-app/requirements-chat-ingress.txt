@@ -1,0 +1,88 @@
+# Core API / gateway
+aiohttp==3.12.15
+fastapi==0.116.1
+PyJWT[crypto]==2.10.1
+pydantic==2.11.7
+pydantic-settings==2.10.1
+python-dotenv==1.1.1
+python-socketio==5.13.0
+redis==6.2.0
+requests==2.32.5
+uvicorn==0.35.0
+asyncpg
+httpx
+orjson
+tenacity
+aiolimiter
+
+dramatiq==1.18.0
+
+# Auth + storage (Cognito / S3)
+boto3
+aioboto3
+aiobotocore
+
+# Uploads / AV / MIME preflight
+python-multipart
+aiofiles
+python-magic
+clamd
+beautifulsoup4
+
+# Scheduling (opex routines)
+croniter
+
+# Link preview (optional but used by /resources/link-preview)
+playwright
+
+# Payments (control plane)
+stripe
+
+tiktoken
+langchain==1.2.0
+langchain-community==0.4.1
+langchain-openai==1.1.6
+langchain-core==1.2.6
+jsonschema
+# ------------------------------------------------------------
+# Legacy bundle runtime + tools (keep if /integrations runs here)
+# ------------------------------------------------------------
+
+# langgraph==1.0.5
+# langmem==0.0.30
+# semantic-kernel
+# ddgs
+# mcp
+# rich
+# brotli
+# markdown-it-py
+# mdit-py-plugins
+# linkify-it-py
+# pygments
+# jinja2
+# markdownify
+# trafilatura
+# lxml
+# Pillow
+# python-dateutil
+# networkx
+# neo4j
+# pandas
+# matplotlib
+# plotly
+# kaleido
+# graphviz
+# seaborn
+# diagrams
+# pyvis
+# tinycss2
+# reportlab
+# pymupdf
+# pdfminer.six
+# pypdf
+# python-docx
+# python-pptx
+# xlsxwriter
+# openpyxl
+# geopy
+# folium

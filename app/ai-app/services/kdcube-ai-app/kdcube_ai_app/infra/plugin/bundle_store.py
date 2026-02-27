@@ -8,6 +8,7 @@ from typing import Dict, Optional, Tuple, Any
 from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 import kdcube_ai_app.infra.namespaces as namespaces
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 REDIS_KEY_FMT = namespaces.CONFIG.BUNDLES.BUNDLE_MAPPING_KEY_FMT
 REDIS_CHANNEL_FMT = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL
@@ -54,9 +55,8 @@ class BundlesRegistry(BaseModel):
     bundles: Dict[str, BundleEntry] = Field(default_factory=dict)
 
 def _tp_from_env() -> Tuple[str,str]:
-    tenant = os.getenv("DEFAULT_TENANT") or os.getenv("TENANT_ID") or "default-tenant"
-    project = os.getenv("DEFAULT_PROJECT_NAME") or os.getenv("CHAT_WEB_APP_PROJECT") or "default-project"
-    return tenant, project
+    settings = get_settings()
+    return settings.TENANT, settings.PROJECT
 
 def redis_key(tenant: Optional[str]=None, project: Optional[str]=None) -> str:
     t,p = tenant, project
@@ -184,6 +184,38 @@ async def reset_registry_from_env(redis, tenant: Optional[str] = None, project: 
     )
     reg = _ensure_admin_bundle(reg)
     await save_registry(redis, reg, tenant, project)
+    return reg
+
+
+async def force_env_reset_if_requested(
+    redis,
+    tenant: Optional[str] = None,
+    project: Optional[str] = None,
+    actor: Optional[str] = None,
+) -> Optional[BundlesRegistry]:
+    """
+    If BUNDLES_FORCE_ENV_ON_STARTUP is set, overwrite Redis registry from env once.
+    Uses a Redis lock to avoid multiple workers doing it concurrently.
+    """
+    settings = get_settings()
+    if not settings.BUNDLES_FORCE_ENV_ON_STARTUP:
+        return None
+
+    t, p = tenant, project
+    if not t or not p:
+        t, p = _tp_from_env()
+
+    lock_key = namespaces.CONFIG.BUNDLES.ENV_SYNC_LOCK_FMT.format(tenant=t, project=p)
+    try:
+        acquired = await redis.set(lock_key, "1", nx=True, ex=settings.BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS)
+    except Exception:
+        acquired = False
+
+    if not acquired:
+        return None
+
+    reg = await reset_registry_from_env(redis, t, p)
+    await publish_update(redis, reg, tenant=t, project=p, op="replace", actor=actor or "startup-env")
     return reg
 
 

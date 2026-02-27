@@ -1,0 +1,269 @@
+# Metrics Server (Autoscaling Source of Truth)
+
+This document explains **what the Metrics server is**, how it collects data,
+and how it integrates with autoscalers (ECS/CloudWatch or Prometheus/HPA).
+
+---
+
+## 1) What the Metrics server does
+
+The Metrics server is a **single internal service** that aggregates system
+signals and **exports** them for autoscaling.
+
+It can operate in two modes:
+
+### A) **Redis mode** (default, recommended)
+- **No REST calls** to other services.
+- Reads all required stats directly from Redis.
+- Avoids Cognito tokens entirely.
+- Works well in private networks and is safe for production.
+
+In Redis mode it also computes **rolling windows** and **percentiles**:
+- SSE connections (1m/15m/1h/max)
+- Queue depth + pressure (1m/15m/1h/max)
+- Pool utilization + max in‑use (1m/15m/1h/max)
+- Task latency percentiles (p50/p95/p99 for 1m/15m/1h)
+- Ingress REST latency percentiles (p50/p95/p99 for 1m/15m/1h)
+
+### B) **Proxy mode** (optional)
+- Calls `ingress` and `proc` `/monitoring/system` endpoints.
+- Requires auth headers or tokens.
+- Useful in dev or when you want *exactly* what those endpoints return.
+
+---
+
+## 2) Why Redis mode is preferred
+
+You asked to avoid static auth tokens (especially with Cognito).
+Redis mode achieves this because:
+
+- It does **not** call any protected HTTP endpoints.
+- It only needs **Redis access** (and optionally Postgres).
+- It can run in a private subnet.
+
+If you need **Prometheus** or **CloudWatch** integration, Redis mode still works.
+
+---
+
+## 3) How autoscalers consume metrics
+
+### ECS (CloudWatch)
+1. Metrics server **pushes metrics** to CloudWatch (`METRICS_EXPORT_CLOUDWATCH=1`).
+2. ECS Service Auto Scaling uses those metrics (Target Tracking or Step Scaling).
+
+### Kubernetes (Prometheus + HPA)
+1. Prometheus scrapes the **Metrics server** at `/metrics`.
+2. Prometheus Adapter exposes metrics as HPA signals.
+
+### Other vendors
+Same pattern: choose either **push** (CloudWatch/Pushgateway) or **pull** (`/metrics`).
+
+---
+
+## 4) Environment variables (full reference)
+
+### Core
+| Env | Default | Meaning |
+|---|---|---|
+| `METRICS_MODE` | `redis` | `redis` (direct) or `proxy` (calls ingress/proc). |
+| `METRICS_PORT` | `8090` | Metrics server port. |
+| `METRICS_ENABLE_PG_POOL` | `0` | If `1`, create Postgres pool to query `max_connections`. |
+| `GATEWAY_CONFIG_JSON` | — | Required: provides `tenant` + `project` (used for Redis namespacing). |
+
+### Redis mode
+Redis mode uses standard app env:
+- `REDIS_URL`, `INSTANCE_ID`, `GATEWAY_CONFIG_JSON` (with `tenant` + `project`)
+Optional SSE stats tuning (gateway config):
+- `redis.sse_stats_ttl_seconds` (default `60`) – TTL for per‑process SSE stats.
+- `redis.sse_stats_max_age_seconds` (default `120`) – ignore older samples.
+
+No auth tokens required.
+
+The metrics server operates **per tenant/project**.  
+Run one metrics instance per tenant/project by setting `GATEWAY_CONFIG_JSON`
+with the target `tenant`/`project`.
+
+Note:
+- The metrics server sets `GATEWAY_COMPONENT=proc` by default so queue/backpressure
+  calculations use **processor** capacity.
+
+Redis mode now includes SSE counts:
+- Each ingress worker publishes SSE counts to Redis under
+  `kdcube:chat:sse:connections:<instance>:<pid>` (namespaced by tenant/project).
+- The metrics server aggregates these keys and returns `sse_connections` in Redis mode.
+- TTL is controlled by gateway config `redis.sse_stats_ttl_seconds` (default `60`).
+- Rolling windows are computed by the Metrics server and stored under
+  `kdcube:metrics:*` keys (tenant/project‑scoped).
+
+### Proxy mode
+| Env | Meaning |
+|---|---|
+| `METRICS_INGRESS_BASE_URL` | Base URL for ingress service (e.g. `http://ingress:8010`). |
+| `METRICS_PROC_BASE_URL` | Base URL for processor service (e.g. `http://proc:8020`). |
+| `METRICS_AUTH_HEADER_NAME` | Header name for auth (e.g. `Authorization`). |
+| `METRICS_AUTH_HEADER_VALUE` | Header value (e.g. `Bearer <token>`). |
+
+### Scheduler
+| Env | Default | Meaning |
+|---|---|---|
+| `METRICS_SCHEDULER_ENABLED` | `0` | Run periodic export loop. |
+| `METRICS_EXPORT_INTERVAL_SEC` | `30` | Export interval. |
+| `METRICS_EXPORT_ON_START` | `1` | Export once at boot. |
+| `METRICS_RUN_ONCE` | `0` | Run once and exit (EventBridge task). |
+
+### CloudWatch
+| Env | Meaning |
+|---|---|
+| `METRICS_EXPORT_CLOUDWATCH` | Enable CloudWatch export. |
+| `METRICS_CLOUDWATCH_NAMESPACE` | Namespace (default `KDCube/Metrics`). |
+| `METRICS_CLOUDWATCH_REGION` | AWS region. |
+| `METRICS_CLOUDWATCH_DIMENSIONS_JSON` | JSON dict of dimensions (tenant/project/env). |
+
+### Prometheus
+| Env | Meaning |
+|---|---|
+| `METRICS_EXPORT_PROMETHEUS_PUSH` | Enable Pushgateway export. |
+| `METRICS_PROM_PUSHGATEWAY_URL` | Pushgateway URL. |
+| `METRICS_PROM_JOB_NAME` | Job label. |
+| `METRICS_PROM_GROUPING_LABELS_JSON` | Grouping labels (tenant/project). |
+| `METRICS_PROM_SCRAPE_TTL_SEC` | Cache TTL for `/metrics`. |
+
+### Metric mapping
+| Env | Meaning |
+|---|---|
+| `METRICS_MAPPING_JSON` | Optional mapping from internal metric keys to names/units. |
+
+Example:
+```json
+{
+  "ingress.sse.total_connections": { "name": "Ingress/SSEConnections", "unit": "Count" },
+  "proc.queue.pressure_ratio": { "name": "Processor/QueuePressure", "unit": "None" },
+  "proc.queue.wait.p95": { "name": "Processor/QueueWaitP95", "unit": "Milliseconds" },
+  "ingress.rest.latency.p95": { "name": "Ingress/RestLatencyP95", "unit": "Milliseconds" }
+}
+```
+
+---
+
+## 5) What is `METRICS_INGRESS_BASE_URL`?
+
+This is **only used in proxy mode**.  
+It tells the Metrics server where the **ingress** API is so it can call:
+
+`GET <METRICS_INGRESS_BASE_URL>/monitoring/system`
+
+If you use Redis mode, you do **not** need it.
+
+---
+
+## 6) How to run (Redis mode)
+
+```bash
+METRICS_MODE=redis \
+REDIS_URL=redis://... \
+GATEWAY_CONFIG_JSON='{"tenant":"<TENANT_ID>","project":"<PROJECT_ID>"}' \
+python -m kdcube_ai_app.apps.metrics.web_app
+```
+
+---
+
+## 7) How to run (Proxy mode)
+
+```bash
+METRICS_MODE=proxy \
+METRICS_INGRESS_BASE_URL=http://ingress:8010 \
+METRICS_PROC_BASE_URL=http://proc:8020 \
+METRICS_AUTH_HEADER_NAME=Authorization \
+METRICS_AUTH_HEADER_VALUE="Bearer <admin-token>" \
+python -m kdcube_ai_app.apps.metrics.web_app
+```
+
+---
+
+## 8) Security & Auth
+
+### Redis mode (recommended)
+- No user tokens.
+- Metrics server is **internal only**.
+- Secure via VPC / security groups.
+
+### Proxy mode
+- Requires an **admin token** to access `/monitoring/system`.
+- Cognito tokens are **short‑lived**, so proxy mode is fragile unless you
+  add service‑to‑service auth (mTLS or internal header allowlist).
+
+---
+
+## 9) ECS autoscaling integration
+
+### Option A: Long‑running metrics service (recommended)
+- Run `kdcube-metrics` as a service.
+- Enable CloudWatch export.
+- Configure ECS Auto Scaling to use the CloudWatch metrics.
+
+### Option B: Scheduled exporter (EventBridge)
+- Run `METRICS_RUN_ONCE=1` task on a schedule.
+- Useful if you want no always‑on metrics service.
+
+Sample ECS task definitions:
+- `deployment/ecs/metrics/metrics-task-definition.json`
+- `deployment/ecs/metrics/metrics-scheduled-task.json`
+
+Template env file:
+- `deployment/ecs/metrics/env.template`
+
+---
+
+## 10) Prometheus/HPA integration
+
+Expose the Metrics server’s `/metrics` endpoint to Prometheus.
+Then map metrics to HPA via Prometheus Adapter.
+
+---
+
+## 11) Recommended default (ECS)
+
+For ECS, use Redis mode + CloudWatch export:
+
+```env
+METRICS_MODE=redis
+METRICS_EXPORT_CLOUDWATCH=1
+METRICS_SCHEDULER_ENABLED=1
+METRICS_EXPORT_INTERVAL_SEC=30
+```
+
+## 11.1) CloudWatch export (quick start)
+
+Minimum required:
+```env
+METRICS_EXPORT_CLOUDWATCH=1
+METRICS_CLOUDWATCH_NAMESPACE=KDCube/Metrics
+METRICS_CLOUDWATCH_REGION=eu-west-1
+```
+
+Optional dimensions (recommended for filtering):
+```env
+METRICS_CLOUDWATCH_DIMENSIONS_JSON='{"tenant":"tenant-id","project":"project-id","env":"prod"}'
+```
+
+On ECS/EC2 with IAM role:
+```env
+AWS_EC2_METADATA_DISABLED=false
+NO_PROXY=169.254.169.254,localhost,127.0.0.1
+```
+
+Local dev (profile-based):
+```env
+AWS_SDK_LOAD_CONFIG=1
+AWS_PROFILE=your-profile
+```
+
+---
+
+## 12) Where metrics are computed
+
+The same computation is reused from the chat monitoring endpoint:
+
+- `infra/metrics/system_monitoring.py`
+- Used by `/monitoring/system` in chat API.
+- Used by Metrics server directly (redis mode). No proxy needed.

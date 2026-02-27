@@ -124,6 +124,8 @@ class BackpressureSettings:
     registered_pressure_threshold: float = 0.8  # Block registered at 80%
     paid_pressure_threshold: float = 0.8  # Block paid at 80% (default same as registered)
     hard_limit_threshold: float = 0.95  # Hard block at 95%
+    # Which component's capacity to use for backpressure admission (e.g. "proc").
+    capacity_source_component: str = "proc"
 
 
 @dataclass
@@ -194,6 +196,27 @@ class RedisSettings:
     analytics_ttl: int = 86400
     circuit_breaker_stats_ttl: int = 3600
     heartbeat_ttl: int = 30
+    # SSE stats published by ingress workers (stored in Redis)
+    sse_stats_ttl_seconds: int = 60
+    sse_stats_max_age_seconds: int = 120
+
+
+@dataclass
+class PoolsSettings:
+    """Connection pool sizing (per process, component-aware)."""
+    pg_pool_min_size: Optional[int] = None
+    pg_pool_max_size: Optional[int] = None
+    redis_max_connections: Optional[int] = None
+    # Optional DB capacity reference (used for monitoring warnings)
+    pg_max_connections: Optional[int] = None
+
+
+@dataclass
+class LimitsSettings:
+    """Soft limits for service resources (per process, component-aware)."""
+    max_sse_connections_per_instance: Optional[int] = None
+    max_integrations_ops_concurrency: Optional[int] = None
+    max_queue_size: Optional[int] = None
 
 
 @dataclass
@@ -211,6 +234,8 @@ class GatewayConfiguration:
     circuit_breakers: CircuitBreakerSettings
     monitoring: MonitoringSettings
     redis: RedisSettings
+    pools: PoolsSettings
+    limits: LimitsSettings
 
     # Environment-specific
     redis_url: str
@@ -256,6 +281,8 @@ class GatewayConfiguration:
             "circuit_breakers": self.circuit_breakers.to_dict(),  # Use custom method here
             "monitoring": asdict(self.monitoring),
             "redis": asdict(self.redis),
+            "pools": asdict(self.pools),
+            "limits": asdict(self.limits),
             "guarded_rest_patterns": list(self.guarded_rest_patterns or []),
             "computed_metrics": {
                 "base_queue_size_per_instance": self.backpressure_config_obj.get_base_queue_size_per_instance(),
@@ -292,6 +319,26 @@ class GatewayConfiguration:
         """Total capacity per instance (effective + queue)"""
         return self.effective_concurrent_per_instance + self.queue_capacity_per_instance
 
+    def capacity_source_selector(self) -> tuple[str, str]:
+        """
+        Resolve which heartbeat service_type/service_name should drive backpressure capacity.
+        Defaults to chat/proc. Accepts either:
+          - "proc", "ingress", "rest" (shorthand for chat/{proc,rest})
+          - "chat:proc" (explicit service_type:service_name)
+          - any other value -> treated as chat/{value}
+        """
+        raw = (self.backpressure.capacity_source_component or "proc").strip().lower()
+        if ":" in raw:
+            service_type, service_name = raw.split(":", 1)
+            service_type = (service_type or "chat").strip() or "chat"
+            service_name = (service_name or "proc").strip() or "proc"
+            return service_type, service_name
+        if raw in {"proc", "processor", "chat-proc", "chat_proc"}:
+            return "chat", "proc"
+        if raw in {"ingress", "rest", "chat-rest", "chat_rest"}:
+            return "chat", "rest"
+        return "chat", raw
+
     def get_thresholds_for_actual_capacity(self, actual_system_capacity: int) -> Dict[str, int]:
         """Calculate thresholds based on actual system capacity"""
         return {
@@ -321,8 +368,8 @@ class GatewayConfigFactory:
                     cfg.tenant_id = os.getenv("TENANT_ID", "default-tenant")
                 if not cfg.project_id:
                     cfg.project_id = os.getenv("DEFAULT_PROJECT_NAME", "default-tenant")
-                if not cfg.instance_id:
-                    cfg.instance_id = os.getenv("INSTANCE_ID", "default-instance")
+                # instance_id must be unique per replica and should not be sourced from shared JSON
+                cfg.instance_id = os.getenv("INSTANCE_ID", cfg.instance_id or "default-instance")
                 return cfg
             except Exception as e:
                 logger.warning(f"Failed to parse GATEWAY_CONFIG_JSON: {e}. Falling back to env defaults.")
@@ -363,6 +410,8 @@ class GatewayConfigFactory:
             circuit_breakers=circuit_breakers,
             monitoring=MonitoringSettings(),
             redis=RedisSettings(),
+            pools=PoolsSettings(),
+            limits=LimitsSettings(),
             redis_url=redis_url,
             instance_id=instance_id,
             tenant_id=tenant_id,
@@ -546,12 +595,37 @@ def validate_gateway_config(config: GatewayConfiguration) -> list[str]:
     if not (0 < config.backpressure.hard_limit_threshold <= 1):
         issues.append("Hard limit threshold must be between 0 and 1")
 
+    # Pool sizing validation (optional)
+    if config.pools:
+        pg_min = config.pools.pg_pool_min_size
+        pg_max = config.pools.pg_pool_max_size
+        if pg_min is not None and pg_min < 0:
+            issues.append("PG pool min size must be >= 0")
+        if pg_max is not None and pg_max < 0:
+            issues.append("PG pool max size must be >= 0")
+        if pg_min is not None and pg_max is not None and pg_max < pg_min:
+            issues.append("PG pool max size must be >= min size")
+        if config.pools.redis_max_connections is not None and config.pools.redis_max_connections <= 0:
+            issues.append("Redis max connections must be > 0 when set")
+        if config.pools.pg_max_connections is not None and config.pools.pg_max_connections <= 0:
+            issues.append("PG max connections must be > 0 when set")
+
+    # Limits validation (optional)
+    if config.limits:
+        if config.limits.max_sse_connections_per_instance is not None and config.limits.max_sse_connections_per_instance < 0:
+            issues.append("Max SSE connections per instance must be >= 0 when set")
+        if config.limits.max_integrations_ops_concurrency is not None and config.limits.max_integrations_ops_concurrency < 0:
+            issues.append("Max integrations ops concurrency must be >= 0 when set")
+
     # Threshold ordering validation
     if config.backpressure.anonymous_pressure_threshold >= config.backpressure.registered_pressure_threshold:
         issues.append(
             f"Anonymous pressure threshold ({config.backpressure.anonymous_pressure_threshold}) "
             f"must be less than registered threshold ({config.backpressure.registered_pressure_threshold})"
         )
+
+    if not config.backpressure.capacity_source_component:
+        issues.append("Backpressure capacity_source_component must be a non-empty string")
 
     if config.backpressure.registered_pressure_threshold > config.backpressure.paid_pressure_threshold:
         issues.append(
@@ -742,6 +816,8 @@ PRESET_CONFIGURATIONS = {
         circuit_breakers=CircuitBreakerSettings(),
         monitoring=MonitoringSettings(),
         redis=RedisSettings(),
+        pools=PoolsSettings(),
+        limits=LimitsSettings(),
         redis_url=get_settings().REDIS_URL,
         instance_id=os.getenv("INSTANCE_ID", "chat-prod"),
         tenant_id=os.getenv("TENANT_ID", "production"),
@@ -761,6 +837,8 @@ PRESET_CONFIGURATIONS = {
         circuit_breakers=CircuitBreakerSettings(),
         monitoring=MonitoringSettings(),
         redis=RedisSettings(),
+        pools=PoolsSettings(),
+        limits=LimitsSettings(),
         redis_url=get_settings().REDIS_URL,
         instance_id=os.getenv("INSTANCE_ID", "load-test"),
         tenant_id=os.getenv("TENANT_ID", "testing"),
@@ -785,15 +863,54 @@ def _serialize_gateway_config(config: GatewayConfiguration) -> Dict[str, Any]:
         "circuit_breakers": asdict(config.circuit_breakers),
         "monitoring": asdict(config.monitoring),
         "redis": asdict(config.redis),
+        "pools": asdict(config.pools),
+        "limits": asdict(config.limits),
         "guarded_rest_patterns": list(config.guarded_rest_patterns or []),
     }
 
 
-def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
+def _normalize_component_name(component: Optional[str]) -> str:
+    raw = (component or "").strip().lower()
+    if not raw:
+        return "ingress"
+    if raw in {"proc", "processor", "worker", "chat-proc", "chat_proc"}:
+        return "proc"
+    if raw in {"ingress", "rest", "chat-rest", "chat_rest"}:
+        return "ingress"
+    return raw
+
+
+def _config_from_dict(data: Dict[str, Any], *, component_override: Optional[str] = None) -> GatewayConfiguration:
+    def _component() -> str:
+        if component_override:
+            return _normalize_component_name(component_override)
+        return _normalize_component_name(os.getenv("GATEWAY_COMPONENT") or "ingress")
+
+    def _select_component_payload(payload: Any) -> Any:
+        if not isinstance(payload, dict):
+            return payload
+        # If payload is already flat (no component keys), return as-is.
+        if not any(k in payload for k in ("ingress", "proc", "processor", "worker")):
+            return payload
+        comp = _component()
+        if comp in {"proc", "processor", "worker"}:
+            for key in ("proc", "processor", "worker"):
+                if key in payload:
+                    return payload[key]
+        if comp in {"ingress", "rest", "chat-rest", "chat_rest"} and "ingress" in payload:
+            return payload["ingress"]
+        if "ingress" in payload:
+            return payload["ingress"]
+        # fallback to first dict value
+        for v in payload.values():
+            if isinstance(v, dict):
+                return v
+        return payload
+
     def _pick(src: Dict[str, Any], keys: list[str]) -> Dict[str, Any]:
         return {k: src[k] for k in keys if k in src}
 
-    rate_limits_data = data.get("rate_limits", {})
+    rate_limits_data = _select_component_payload(data.get("rate_limits", {}))
     roles_data = rate_limits_data.get("roles") if isinstance(rate_limits_data, dict) else None
     roles_data = roles_data if roles_data is not None else rate_limits_data
     roles: Dict[str, RoleRateLimit] = {}
@@ -807,7 +924,7 @@ def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
                 burst_window=int(cfg.get("burst_window", 60)),
             )
     rate_limits = RateLimitSettings(roles=roles)
-    service_capacity_payload = data.get("service_capacity", {}) or {}
+    service_capacity_payload = _select_component_payload(data.get("service_capacity", {}) or {}) or {}
     if "concurrent_per_process" in service_capacity_payload or "avg_processing_time" in service_capacity_payload:
         logger.warning(
             "Legacy service_capacity keys detected (concurrent_per_process/avg_processing_time). "
@@ -821,13 +938,15 @@ def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
         "concurrent_requests_per_instance",
         "requests_per_hour",
     ]))
-    backpressure = BackpressureSettings(**_pick(data.get("backpressure", {}), [
+    backpressure_payload = _select_component_payload(data.get("backpressure", {}))
+    backpressure = BackpressureSettings(**_pick(backpressure_payload, [
         "capacity_buffer",
         "queue_depth_multiplier",
         "anonymous_pressure_threshold",
         "registered_pressure_threshold",
         "paid_pressure_threshold",
         "hard_limit_threshold",
+        "capacity_source_component",
     ]))
     circuit_breakers = CircuitBreakerSettings(**_pick(data.get("circuit_breakers", {}), [
         "auth_failure_threshold", "auth_recovery_timeout", "auth_success_threshold",
@@ -853,7 +972,45 @@ def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
         "analytics_ttl",
         "circuit_breaker_stats_ttl",
         "heartbeat_ttl",
+        "sse_stats_ttl_seconds",
+        "sse_stats_max_age_seconds",
     ]))
+    pools_payload = _select_component_payload(data.get("pools", {}))
+    pools_kwargs = _pick(pools_payload, [
+        "pg_pool_min_size",
+        "pg_pool_max_size",
+        "redis_max_connections",
+        "pg_max_connections",
+    ])
+    for key in list(pools_kwargs.keys()):
+        if pools_kwargs[key] is None or pools_kwargs[key] == "":
+            pools_kwargs[key] = None
+            continue
+        try:
+            pools_kwargs[key] = int(pools_kwargs[key])
+        except Exception:
+            pools_kwargs[key] = None
+    pools = PoolsSettings(**pools_kwargs)
+    limits_payload = _select_component_payload(data.get("limits", {}))
+    limits_kwargs = _pick(limits_payload, [
+        "max_sse_connections_per_instance",
+        "max_integrations_ops_concurrency",
+        "max_queue_size",
+    ])
+    # Backward-compat: accept legacy key if new one not present.
+    if "max_integrations_ops_concurrency" not in limits_kwargs and isinstance(limits_payload, dict):
+        legacy = limits_payload.get("max_integrations_concurrency")
+        if legacy is not None:
+            limits_kwargs["max_integrations_ops_concurrency"] = legacy
+    for key in list(limits_kwargs.keys()):
+        if limits_kwargs[key] is None or limits_kwargs[key] == "":
+            limits_kwargs[key] = None
+            continue
+        try:
+            limits_kwargs[key] = int(limits_kwargs[key])
+        except Exception:
+            limits_kwargs[key] = None
+    limits = LimitsSettings(**limits_kwargs)
 
     profile_raw = str(data.get("profile") or GatewayProfile.DEVELOPMENT.value)
     profile = GatewayProfile(profile_raw) if profile_raw in GatewayProfile._value2member_map_ else GatewayProfile.DEVELOPMENT
@@ -866,21 +1023,32 @@ def _config_from_dict(data: Dict[str, Any]) -> GatewayConfiguration:
         if not guarded_rest_patterns:
             guarded_rest_patterns = list(DEFAULT_GUARDED_REST_PATTERNS)
 
+    tenant_value = data.get("tenant_id") or data.get("tenant")
+    project_value = data.get("project_id") or data.get("project")
+    if not tenant_value or not project_value:
+        raise ValueError("Gateway config must include tenant/project (prefer keys: tenant, project)")
     cfg = GatewayConfiguration(
         profile=profile,
         instance_id=str(data.get("instance_id") or os.getenv("INSTANCE_ID", "default-instance")),
-        tenant_id=str(data.get("tenant_id") or os.getenv("TENANT_ID", "default-tenant")),
-        project_id=str(data.get("project_id") or os.getenv("DEFAULT_PROJECT_NAME", "default-tenant")),
+        tenant_id=str(tenant_value),
+        project_id=str(project_value),
         rate_limits=rate_limits,
         service_capacity=service_capacity,
         backpressure=backpressure,
         circuit_breakers=circuit_breakers,
         monitoring=monitoring,
         redis=redis,
+        pools=pools,
+        limits=limits,
         redis_url=str(data.get("redis_url") or get_settings().REDIS_URL),
         guarded_rest_patterns=guarded_rest_patterns,
     )
     return cfg
+
+
+def parse_gateway_config_for_component(data: Dict[str, Any], component: str) -> GatewayConfiguration:
+    """Parse a raw gateway config dict for a specific component (ingress/proc)."""
+    return _config_from_dict(data, component_override=component)
 
 
 def _build_gateway_config_cache(*, tenant: str, project: str, redis_url: Optional[str]) -> Optional[Any]:
@@ -917,6 +1085,18 @@ async def load_gateway_config_from_cache(
     return _config_from_dict(data)
 
 
+async def load_gateway_config_raw_from_cache(
+        *,
+        tenant: str,
+        project: str,
+        redis_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    cache = _build_gateway_config_cache(tenant=tenant, project=project, redis_url=redis_url)
+    if not cache:
+        return None
+    return await cache.get_json(CONFIG.GATEWAY.CURRENT_KEY)
+
+
 async def save_gateway_config_to_cache(config: GatewayConfiguration) -> bool:
     cache = _build_gateway_config_cache(
         tenant=config.tenant_id,
@@ -927,6 +1107,38 @@ async def save_gateway_config_to_cache(config: GatewayConfiguration) -> bool:
         return False
     payload = _serialize_gateway_config(config)
     return await cache.set_json(CONFIG.GATEWAY.CURRENT_KEY, payload, ttl_seconds=0)
+
+
+async def save_gateway_config_raw_to_cache(
+        *,
+        tenant: str,
+        project: str,
+        redis_url: Optional[str],
+        raw_config: Dict[str, Any],
+) -> bool:
+    cache = _build_gateway_config_cache(tenant=tenant, project=project, redis_url=redis_url)
+    if not cache:
+        return False
+    return await cache.set_json(CONFIG.GATEWAY.CURRENT_KEY, raw_config, ttl_seconds=0)
+
+
+async def load_gateway_config_raw(
+        *,
+        tenant: str,
+        project: str,
+        redis_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    raw = await load_gateway_config_raw_from_cache(tenant=tenant, project=project, redis_url=redis_url)
+    if raw:
+        return raw
+    cfg_json = os.getenv("GATEWAY_CONFIG_JSON")
+    if isinstance(cfg_json, str) and cfg_json.strip():
+        try:
+            return json.loads(cfg_json)
+        except Exception:
+            pass
+    # Fallback to current component config serialized (flat)
+    return _serialize_gateway_config(get_gateway_config())
 
 
 async def clear_gateway_config_cache(
@@ -957,6 +1169,32 @@ async def publish_gateway_config_update(config: GatewayConfiguration, *, actor: 
             "project": config.project_id,
             "ts": time.time(),
             "config": _serialize_gateway_config(config),
+        }
+        if actor:
+            payload["actor"] = actor
+        await redis.publish(channel, json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        return
+
+
+async def publish_gateway_config_update_raw(
+        *,
+        raw_config: Dict[str, Any],
+        tenant: str,
+        project: str,
+        redis_url: Optional[str],
+        actor: Optional[str] = None,
+) -> None:
+    if not redis_url:
+        return
+    channel = ns_key(CONFIG.GATEWAY.UPDATE_CHANNEL, tenant=tenant, project=project)
+    try:
+        redis = get_async_redis_client(redis_url, decode_responses=True)
+        payload = {
+            "tenant": tenant,
+            "project": project,
+            "ts": time.time(),
+            "config": raw_config,
         }
         if actor:
             payload["actor"] = actor
@@ -1123,87 +1361,113 @@ class GatewayConfigurationManager:
         self.gateway_adapter = gateway_adapter
         self.gateway = gateway_adapter.gateway
 
+    def _component_key(self, component: Optional[str] = None) -> str:
+        return _normalize_component_name(component or os.getenv("GATEWAY_COMPONENT") or "ingress")
+
+    async def _load_raw_config(self, *, tenant: str, project: str) -> Dict[str, Any]:
+        return await load_gateway_config_raw(tenant=tenant, project=project, redis_url=self.gateway.gateway_config.redis_url)
+
+    @staticmethod
+    def _ensure_component_sections(raw: Dict[str, Any], key: str) -> None:
+        payload = raw.get(key)
+        if isinstance(payload, dict) and any(k in payload for k in ("ingress", "proc", "processor", "worker")):
+            return
+        if payload is None:
+            payload = {}
+        raw[key] = {
+            "ingress": json.loads(json.dumps(payload)),
+            "proc": json.loads(json.dumps(payload)),
+        }
+
+    def _merge_component_payload(self, raw: Dict[str, Any], key: str, component: Optional[str], payload: Dict[str, Any]) -> None:
+        if payload is None or not isinstance(payload, dict):
+            return
+        self._ensure_component_sections(raw, key)
+        comp_key = self._component_key(component)
+        section = raw.get(key) or {}
+        base = section.get(comp_key, {})
+        if not isinstance(base, dict):
+            base = {}
+        merged = {**base, **payload}
+        section[comp_key] = merged
+        raw[key] = section
+
     async def update_capacity_settings(self, **kwargs):
         """Update capacity settings and refresh all dependent calculations"""
         target_tenant = kwargs.pop("tenant", None) or kwargs.pop("tenant_id", None)
         target_project = kwargs.pop("project", None) or kwargs.pop("project_id", None)
+        component = kwargs.pop("component", None)
         service_capacity_payload = kwargs.pop("service_capacity", None) or {}
         backpressure_payload = kwargs.pop("backpressure", None) or {}
         rate_limits_payload = kwargs.pop("rate_limits", None) or {}
+        pools_payload = kwargs.pop("pools", None) or {}
+        limits_payload = kwargs.pop("limits", None) or {}
         guarded_rest_patterns = kwargs.pop("guarded_rest_patterns", None)
         base_config = get_gateway_config()
-        config = _config_from_dict(_serialize_gateway_config(base_config))
-        if target_tenant:
-            config.tenant_id = target_tenant
-        if target_project:
-            config.project_id = target_project
+        target_tenant = target_tenant or base_config.tenant_id
+        target_project = target_project or base_config.project_id
+        raw_config = await self._load_raw_config(tenant=target_tenant, project=target_project)
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        raw_config.setdefault("tenant", target_tenant)
+        raw_config.setdefault("project", target_project)
+        raw_config.setdefault("tenant_id", target_tenant)
+        raw_config.setdefault("project_id", target_project)
+        raw_config.setdefault("tenant_id", target_tenant)
+        raw_config.setdefault("project_id", target_project)
 
-        # Update capacity settings
         merged_service_capacity = {**service_capacity_payload, **kwargs}
-        if 'processes_per_instance' in merged_service_capacity:
-            config.service_capacity.processes_per_instance = merged_service_capacity['processes_per_instance']
-        if 'concurrent_requests_per_process' in merged_service_capacity:
-            config.service_capacity.concurrent_requests_per_process = merged_service_capacity['concurrent_requests_per_process']
-        if 'avg_processing_time_seconds' in merged_service_capacity:
-            config.service_capacity.avg_processing_time_seconds = merged_service_capacity['avg_processing_time_seconds']
+        if merged_service_capacity:
+            self._merge_component_payload(raw_config, "service_capacity", component, merged_service_capacity)
 
-        # Update thresholds
+        merged_pools = {**pools_payload, **kwargs}
+        if merged_pools:
+            self._merge_component_payload(raw_config, "pools", component, merged_pools)
+
+        merged_limits = {**limits_payload, **kwargs}
+        if merged_limits:
+            self._merge_component_payload(raw_config, "limits", component, merged_limits)
+
         merged_backpressure = {**backpressure_payload, **kwargs}
-        if 'capacity_buffer' in merged_backpressure:
-            config.backpressure.capacity_buffer = merged_backpressure['capacity_buffer']
-        if 'queue_depth_multiplier' in merged_backpressure:
-            config.backpressure.queue_depth_multiplier = merged_backpressure['queue_depth_multiplier']
-        if 'anonymous_pressure_threshold' in merged_backpressure:
-            config.backpressure.anonymous_pressure_threshold = merged_backpressure['anonymous_pressure_threshold']
-        if 'anonymous_threshold' in merged_backpressure:
-            config.backpressure.anonymous_pressure_threshold = merged_backpressure['anonymous_threshold']
-        if 'registered_pressure_threshold' in merged_backpressure:
-            config.backpressure.registered_pressure_threshold = merged_backpressure['registered_pressure_threshold']
-        if 'registered_threshold' in merged_backpressure:
-            config.backpressure.registered_pressure_threshold = merged_backpressure['registered_threshold']
-        if 'paid_pressure_threshold' in merged_backpressure:
-            config.backpressure.paid_pressure_threshold = merged_backpressure['paid_pressure_threshold']
-        if 'paid_threshold' in merged_backpressure:
-            config.backpressure.paid_pressure_threshold = merged_backpressure['paid_threshold']
-        if 'hard_limit_threshold' in merged_backpressure:
-            config.backpressure.hard_limit_threshold = merged_backpressure['hard_limit_threshold']
+        if merged_backpressure:
+            self._merge_component_payload(raw_config, "backpressure", component, merged_backpressure)
 
-        # Role-based rate limits
-        roles_payload = rate_limits_payload.get('roles') if isinstance(rate_limits_payload, dict) else None
+        roles_payload = rate_limits_payload.get("roles") if isinstance(rate_limits_payload, dict) else None
         roles_payload = roles_payload if roles_payload is not None else rate_limits_payload
         if isinstance(roles_payload, dict):
-            for role, cfg in roles_payload.items():
-                if not isinstance(cfg, dict):
-                    continue
-                config.rate_limits.roles[str(role)] = RoleRateLimit(
-                    hourly=int(cfg.get("hourly", 50)),
-                    burst=int(cfg.get("burst", 5)),
-                    burst_window=int(cfg.get("burst_window", 60)),
-                )
+            self._merge_component_payload(raw_config, "rate_limits", component, {"roles": roles_payload})
 
         if isinstance(guarded_rest_patterns, list):
-            config.guarded_rest_patterns = [str(p) for p in guarded_rest_patterns if p]
-            if not config.guarded_rest_patterns:
-                config.guarded_rest_patterns = list(DEFAULT_GUARDED_REST_PATTERNS)
+            patterns = [str(p) for p in guarded_rest_patterns if p]
+            raw_config["guarded_rest_patterns"] = patterns or list(DEFAULT_GUARDED_REST_PATTERNS)
 
         is_local_target = (
-            (config.tenant_id == base_config.tenant_id) and
-            (config.project_id == base_config.project_id)
+            (target_tenant == base_config.tenant_id) and
+            (target_project == base_config.project_id)
         )
-
+        local_component = self._component_key(component)
         if is_local_target:
-            # Apply config snapshot to gateway + refresh
-            apply_gateway_config_snapshot(self.gateway, config)
-            # Update global config
+            applied_cfg = parse_gateway_config_for_component(raw_config, local_component)
+            apply_gateway_config_snapshot(self.gateway, applied_cfg)
             set_gateway_config(self.gateway.gateway_config)
             applied = self.gateway.gateway_config
         else:
-            applied = config
+            applied = parse_gateway_config_for_component(raw_config, local_component)
 
-        # Persist + publish (best-effort) for the target tenant/project
         try:
-            await save_gateway_config_to_cache(applied)
-            await publish_gateway_config_update(applied, actor="admin")
+            await save_gateway_config_raw_to_cache(
+                tenant=target_tenant,
+                project=target_project,
+                redis_url=self.gateway.gateway_config.redis_url,
+                raw_config=raw_config,
+            )
+            await publish_gateway_config_update_raw(
+                raw_config=raw_config,
+                tenant=target_tenant,
+                project=target_project,
+                redis_url=self.gateway.gateway_config.redis_url,
+                actor="admin",
+            )
         except Exception:
             pass
 
@@ -1223,29 +1487,53 @@ class GatewayConfigurationManager:
         target_tenant = kwargs.pop("tenant", None) or kwargs.pop("tenant_id", None)
         target_project = kwargs.pop("project", None) or kwargs.pop("project_id", None)
         dry_run = bool(kwargs.pop("dry_run", False))
-
         base_config = GatewayConfigFactory.create_from_env()
-        if target_tenant:
-            base_config.tenant_id = target_tenant
-        if target_project:
-            base_config.project_id = target_project
+        target_tenant = target_tenant or base_config.tenant_id
+        target_project = target_project or base_config.project_id
+
+        raw_config = None
+        cfg_json = os.getenv("GATEWAY_CONFIG_JSON")
+        if isinstance(cfg_json, str) and cfg_json.strip():
+            try:
+                raw_config = json.loads(cfg_json)
+            except Exception:
+                raw_config = None
+        if not raw_config:
+            raw_config = _serialize_gateway_config(base_config)
+        raw_config["tenant"] = target_tenant
+        raw_config["project"] = target_project
+        raw_config["tenant_id"] = target_tenant
+        raw_config["project_id"] = target_project
 
         is_local_target = (
-            (base_config.tenant_id == self.gateway.gateway_config.tenant_id) and
-            (base_config.project_id == self.gateway.gateway_config.project_id)
+            (target_tenant == self.gateway.gateway_config.tenant_id) and
+            (target_project == self.gateway.gateway_config.project_id)
         )
 
         if is_local_target:
-            apply_gateway_config_snapshot(self.gateway, base_config)
+            comp_key = self._component_key()
+            applied_cfg = parse_gateway_config_for_component(raw_config, comp_key)
+            apply_gateway_config_snapshot(self.gateway, applied_cfg)
             set_gateway_config(self.gateway.gateway_config)
             applied = self.gateway.gateway_config
         else:
-            applied = base_config
+            applied = parse_gateway_config_for_component(raw_config, self._component_key())
 
         if not dry_run:
             try:
-                await save_gateway_config_to_cache(applied)
-                await publish_gateway_config_update(applied, actor="admin.reset")
+                await save_gateway_config_raw_to_cache(
+                    tenant=target_tenant,
+                    project=target_project,
+                    redis_url=self.gateway.gateway_config.redis_url,
+                    raw_config=raw_config,
+                )
+                await publish_gateway_config_update_raw(
+                    raw_config=raw_config,
+                    tenant=target_tenant,
+                    project=target_project,
+                    redis_url=self.gateway.gateway_config.redis_url,
+                    actor="admin.reset",
+                )
             except Exception:
                 pass
 
@@ -1273,52 +1561,37 @@ class GatewayConfigurationManager:
         """Validate proposed configuration changes before applying"""
         target_tenant = kwargs.pop("tenant", None) or kwargs.pop("tenant_id", None)
         target_project = kwargs.pop("project", None) or kwargs.pop("project_id", None)
+        component = kwargs.pop("component", None)
         service_capacity_payload = kwargs.pop("service_capacity", None) or {}
         backpressure_payload = kwargs.pop("backpressure", None) or {}
         rate_limits_payload = kwargs.pop("rate_limits", None) or {}
         guarded_rest_patterns = kwargs.pop("guarded_rest_patterns", None)
-        # Create a temporary config with proposed changes (do not mutate global)
-        temp_config = _config_from_dict(_serialize_gateway_config(get_gateway_config()))
-        if target_tenant:
-            temp_config.tenant_id = target_tenant
-        if target_project:
-            temp_config.project_id = target_project
+        base_config = get_gateway_config()
+        target_tenant = target_tenant or base_config.tenant_id
+        target_project = target_project or base_config.project_id
+        raw_config = await self._load_raw_config(tenant=target_tenant, project=target_project)
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        raw_config.setdefault("tenant", target_tenant)
+        raw_config.setdefault("project", target_project)
 
-        # Apply proposed changes to temp config
-        for key, value in kwargs.items():
-            if hasattr(temp_config.service_capacity, key):
-                setattr(temp_config.service_capacity, key, value)
-            elif hasattr(temp_config.backpressure, key):
-                setattr(temp_config.backpressure, key, value)
+        merged_service_capacity = {**service_capacity_payload, **kwargs}
+        if merged_service_capacity:
+            self._merge_component_payload(raw_config, "service_capacity", component, merged_service_capacity)
 
-        merged_service_capacity = {**service_capacity_payload}
-        for key, value in merged_service_capacity.items():
-            if hasattr(temp_config.service_capacity, key):
-                setattr(temp_config.service_capacity, key, value)
-
-        merged_backpressure = {**backpressure_payload}
-        for key, value in merged_backpressure.items():
-            if hasattr(temp_config.backpressure, key):
-                setattr(temp_config.backpressure, key, value)
+        merged_backpressure = {**backpressure_payload, **kwargs}
+        if merged_backpressure:
+            self._merge_component_payload(raw_config, "backpressure", component, merged_backpressure)
 
         roles_payload = rate_limits_payload.get("roles") if isinstance(rate_limits_payload, dict) else None
         roles_payload = roles_payload if roles_payload is not None else rate_limits_payload
         if isinstance(roles_payload, dict):
-            for role, cfg in roles_payload.items():
-                if not isinstance(cfg, dict):
-                    continue
-                temp_config.rate_limits.roles[str(role)] = RoleRateLimit(
-                    hourly=int(cfg.get("hourly", 50)),
-                    burst=int(cfg.get("burst", 5)),
-                    burst_window=int(cfg.get("burst_window", 60)),
-                )
+            self._merge_component_payload(raw_config, "rate_limits", component, {"roles": roles_payload})
 
         if isinstance(guarded_rest_patterns, list):
-            temp_config.guarded_rest_patterns = [str(p) for p in guarded_rest_patterns if p]
-            if not temp_config.guarded_rest_patterns:
-                temp_config.guarded_rest_patterns = list(DEFAULT_GUARDED_REST_PATTERNS)
+            patterns = [str(p) for p in guarded_rest_patterns if p]
+            raw_config["guarded_rest_patterns"] = patterns or list(DEFAULT_GUARDED_REST_PATTERNS)
 
-        # Validate the temporary config
+        temp_config = parse_gateway_config_for_component(raw_config, self._component_key(component))
         validation = get_validation_summary(temp_config)
-
         return validation

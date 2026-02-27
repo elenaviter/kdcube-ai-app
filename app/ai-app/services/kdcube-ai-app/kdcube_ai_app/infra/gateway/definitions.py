@@ -14,6 +14,10 @@ from kdcube_ai_app.infra.namespaces import ns_key, REDIS
 
 logger = logging.getLogger(__name__)
 
+def _matches_capacity_source(process_info: "ActualProcessInfo", gateway_config) -> bool:
+    service_type, service_name = gateway_config.capacity_source_selector()
+    return process_info.service_type == service_type and process_info.service_name == service_name
+
 @dataclass
 class QueueStats:
     """Individual queue statistics"""
@@ -106,24 +110,24 @@ class DynamicCapacityMetrics:
         capacity_buffer = gateway_config.backpressure.capacity_buffer
         queue_depth_multiplier = gateway_config.backpressure.queue_depth_multiplier
 
-        # Calculate actual process counts - ONLY CHAT REST PROCESSES
+        # Calculate actual process counts for capacity source processes
         actual_total_processes = 0
         actual_healthy_processes = 0
         total_current_load = 0
         total_reported_capacity = 0
 
-        # Count ONLY chat REST processes for capacity calculation
+        # Count ONLY capacity-source processes for capacity calculation
         for process_info in actual_processes:
-            if process_info.service_type == "chat" and process_info.service_name == "rest":
+            if _matches_capacity_source(process_info, gateway_config):
                 actual_total_processes += process_info.process_count
                 actual_healthy_processes += process_info.healthy_processes
                 total_current_load += process_info.total_load
                 total_reported_capacity += process_info.total_capacity
 
-        # Use actual CHAT REST process count for calculations
+        # Use actual capacity-source process count for calculations
         effective_processes = max(actual_healthy_processes, 1)  # At least 1 to avoid division by zero
 
-        # Compute derived values based on ACTUAL CHAT REST processes only
+        # Compute derived values based on ACTUAL capacity-source processes only
         actual_concurrent = concurrent_per_process * effective_processes
         actual_effective_concurrent = int(actual_concurrent * (1 - capacity_buffer))
         actual_queue_capacity = int(actual_concurrent * queue_depth_multiplier)
@@ -142,7 +146,7 @@ class DynamicCapacityMetrics:
             capacity_buffer=capacity_buffer,
             queue_depth_multiplier=queue_depth_multiplier,
 
-        # Actual runtime values - BASED ON CHAT REST PROCESSES ONLY
+        # Actual runtime values - based on capacity-source processes only
         actual_processes_per_instance=actual_total_processes,
         actual_healthy_processes_per_instance=actual_healthy_processes,
         actual_concurrent_per_instance=actual_concurrent,
@@ -162,14 +166,19 @@ class DynamicCapacityMetrics:
             hard_limit_threshold_ratio=gateway_config.backpressure.hard_limit_threshold
         )
 
-    def get_thresholds_for_instances(self, instance_count: int, actual_process_data: Dict[str, List[ActualProcessInfo]]) -> Dict[str, int]:
+    def get_thresholds_for_instances(
+        self,
+        instance_count: int,
+        actual_process_data: Dict[str, List[ActualProcessInfo]],
+        gateway_config,
+    ) -> Dict[str, int]:
         """Calculate thresholds based on actual processes across all instances"""
         total_actual_capacity = 0
 
         for instance_id, processes in actual_process_data.items():
             instance_capacity = 0
             for process_info in processes:
-                if process_info.service_type == "chat" and process_info.service_name == "rest":
+                if _matches_capacity_source(process_info, gateway_config):
                     # Use actual healthy processes for capacity calculation
                     instance_actual_concurrent = (
                             self.configured_concurrent_per_process * process_info.healthy_processes
@@ -341,10 +350,11 @@ class DynamicCapacityCalculator:
         configured_capacity = self.gateway_config.service_capacity.concurrent_requests_per_process
 
         # Create fallback data assuming all configured processes are healthy
+        service_type, service_name = self.gateway_config.capacity_source_selector()
         fallback_info = ActualProcessInfo(
             instance_id=instance_id,
-            service_type="chat",
-            service_name="rest",
+            service_type=service_type,
+            service_name=service_name,
             process_count=configured_processes,
             healthy_processes=configured_processes,
             total_load=0,  # Unknown
@@ -388,13 +398,15 @@ class DynamicCapacityCalculator:
         metrics = await self.get_dynamic_metrics()
         return metrics.get_thresholds_for_instances(
             len(actual_instances_data),
-            actual_instances_data
+            actual_instances_data,
+            self.gateway_config,
         )
 
     async def get_monitoring_data(self) -> Dict[str, Any]:
         """Get comprehensive monitoring data with actual vs configured comparison"""
         metrics = await self.get_dynamic_metrics()
         actual_processes_data = await self.get_actual_process_info()
+        cap_service_type, cap_service_name = self.gateway_config.capacity_source_selector()
 
         # Calculate system-wide metrics - ONLY CHAT REST PROCESSES
         total_instances = len(actual_processes_data)
@@ -410,15 +422,15 @@ class DynamicCapacityCalculator:
             for processes in actual_processes_data.values()
         )
 
-        # Count ONLY chat REST processes for capacity calculations
-        chat_rest_actual_processes = sum(
+        # Count ONLY capacity-source processes for capacity calculations
+        capacity_source_actual_processes = sum(
             sum(p.process_count for p in processes
-                if p.service_type == "chat" and p.service_name == "rest")
+                if _matches_capacity_source(p, self.gateway_config))
             for processes in actual_processes_data.values()
         )
-        chat_rest_healthy_processes = sum(
+        capacity_source_healthy_processes = sum(
             sum(p.healthy_processes for p in processes
-                if p.service_type == "chat" and p.service_name == "rest")
+                if _matches_capacity_source(p, self.gateway_config))
             for processes in actual_processes_data.values()
         )
 
@@ -433,18 +445,25 @@ class DynamicCapacityCalculator:
                 "total_healthy_processes": total_healthy_processes,
                 "process_health_ratio": total_healthy_processes / max(total_actual_processes, 1),
 
-                # Capacity metrics based ONLY on chat REST processes
-                "chat_rest_configured_processes": metrics.configured_processes_per_instance * total_instances,
-                "chat_rest_actual_processes": chat_rest_actual_processes,
-                "chat_rest_healthy_processes": chat_rest_healthy_processes,
-                "chat_rest_health_ratio": chat_rest_healthy_processes / max(chat_rest_actual_processes, 1) if chat_rest_actual_processes > 0 else 0,
+                # Capacity metrics based ONLY on capacity-source processes
+                "capacity_source": f"{cap_service_type}:{cap_service_name}",
+                "capacity_source_configured_processes": metrics.configured_processes_per_instance * total_instances,
+                "capacity_source_actual_processes": capacity_source_actual_processes,
+                "capacity_source_healthy_processes": capacity_source_healthy_processes,
+                "capacity_source_health_ratio": capacity_source_healthy_processes / max(capacity_source_actual_processes, 1) if capacity_source_actual_processes > 0 else 0,
 
-            # Capacity based on actual healthy CHAT REST processes only
-            "total_concurrent_capacity": metrics.configured_concurrent_per_process * chat_rest_healthy_processes,
-            "total_effective_capacity": int(metrics.configured_concurrent_per_process * chat_rest_healthy_processes * (1 - metrics.capacity_buffer)),
-            "total_queue_capacity": int(metrics.configured_concurrent_per_process * chat_rest_healthy_processes * metrics.queue_depth_multiplier),
+                # Legacy keys (kept for compatibility; represent capacity source now)
+                "chat_rest_configured_processes": metrics.configured_processes_per_instance * total_instances,
+                "chat_rest_actual_processes": capacity_source_actual_processes,
+                "chat_rest_healthy_processes": capacity_source_healthy_processes,
+                "chat_rest_health_ratio": capacity_source_healthy_processes / max(capacity_source_actual_processes, 1) if capacity_source_actual_processes > 0 else 0,
+
+            # Capacity based on actual healthy capacity-source processes only
+            "total_concurrent_capacity": metrics.configured_concurrent_per_process * capacity_source_healthy_processes,
+            "total_effective_capacity": int(metrics.configured_concurrent_per_process * capacity_source_healthy_processes * (1 - metrics.capacity_buffer)),
+            "total_queue_capacity": int(metrics.configured_concurrent_per_process * capacity_source_healthy_processes * metrics.queue_depth_multiplier),
             "total_system_capacity": thresholds["total_capacity"],
-            "theoretical_system_hourly": int((metrics.configured_concurrent_per_process * chat_rest_healthy_processes * 3600) / metrics.configured_avg_processing_time)
+            "theoretical_system_hourly": int((metrics.configured_concurrent_per_process * capacity_source_healthy_processes * 3600) / metrics.configured_avg_processing_time)
         },
         "current_thresholds": thresholds,
         "threshold_breakdown": {
@@ -464,6 +483,9 @@ class DynamicCapacityCalculator:
                                     actual_processes_data: Dict[str, List[ActualProcessInfo]]) -> List[str]:
         """Generate warnings about capacity issues"""
         warnings = []
+        now = time.time()
+        heartbeat_timeout = getattr(self.gateway_config.monitoring, "heartbeat_timeout_seconds", 45) or 45
+        grace_seconds = max(heartbeat_timeout * 2, heartbeat_timeout + 10)
 
         # Check for process deficits
         if metrics.actual_healthy_processes_per_instance < metrics.configured_processes_per_instance:
@@ -476,9 +498,32 @@ class DynamicCapacityCalculator:
 
         # Check for instances with no processes
         for instance_id, processes in actual_processes_data.items():
-            chat_processes = [p for p in processes if p.service_type == "chat" and p.service_name == "rest"]
-            if not chat_processes or all(p.healthy_processes == 0 for p in chat_processes):
-                warnings.append(f"Instance {instance_id} has no healthy chat processes")
+            cap_processes = [p for p in processes if _matches_capacity_source(p, self.gateway_config)]
+            # Only warn for instances that are actually running the capacity-source component.
+            if not cap_processes:
+                continue
+            if all(p.healthy_processes == 0 for p in cap_processes):
+                last_heartbeat = None
+                for p in cap_processes:
+                    for detail in p.process_details or []:
+                        hb = detail.get("last_heartbeat")
+                        if hb is None:
+                            continue
+                        last_heartbeat = hb if last_heartbeat is None else max(last_heartbeat, hb)
+                if last_heartbeat is not None:
+                    age = max(0, int(now - last_heartbeat))
+                    if age <= grace_seconds:
+                        warnings.append(
+                            f"Instance {instance_id} has no healthy capacity-source processes "
+                            f"(draining; last heartbeat {age}s ago)"
+                        )
+                    else:
+                        warnings.append(
+                            f"Instance {instance_id} has no healthy capacity-source processes "
+                            f"(stale; last heartbeat {age}s ago)"
+                        )
+                else:
+                    warnings.append(f"Instance {instance_id} has no healthy capacity-source processes")
 
         return warnings
 

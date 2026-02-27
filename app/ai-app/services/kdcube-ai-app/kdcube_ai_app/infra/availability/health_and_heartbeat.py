@@ -7,6 +7,7 @@ Multiprocess-aware distributed system for distributed app with the single point 
 Handles N replicas per service type on same instance with proper health tracking
 """
 import asyncio
+import inspect
 import json
 import time
 import uuid
@@ -249,7 +250,9 @@ class ProcessHeartbeatManager:
             service_type: str,
             service_name: str,
             process_id: int = None,
-            port: Optional[int] = None
+            port: Optional[int] = None,
+            max_capacity: Optional[int] = None,
+            metadata_provider=None,
     ):
         self.middleware = middleware
         self.service_type = service_type
@@ -257,9 +260,12 @@ class ProcessHeartbeatManager:
         self.process_id = process_id or os.getpid()
         self.port = port
         self.current_load = 0
-        self.max_capacity = int(os.getenv(f"MAX_CONCURRENT_{service_type.upper()}", "5"))
+        if max_capacity is None:
+            max_capacity = os.getenv(f"MAX_CONCURRENT_{service_type.upper()}")
+        self.max_capacity = int(max_capacity or 5)
         self.health_status = ServiceHealth.HEALTHY
         self.metadata = {}
+        self.metadata_provider = metadata_provider
         self.heartbeat_task = None
 
     def set_load(self, current_load: int):
@@ -299,6 +305,16 @@ class ProcessHeartbeatManager:
         """Heartbeat loop"""
         while True:
             try:
+                metadata = dict(self.metadata)
+                if self.metadata_provider:
+                    try:
+                        maybe_meta = self.metadata_provider()
+                        if inspect.isawaitable(maybe_meta):
+                            maybe_meta = await maybe_meta
+                        if isinstance(maybe_meta, dict):
+                            metadata.update(maybe_meta)
+                    except Exception as e:
+                        logger.debug("Heartbeat metadata provider failed: %s", e)
                 await self.middleware.send_process_heartbeat(
                     self.service_type,
                     self.service_name,
@@ -307,7 +323,7 @@ class ProcessHeartbeatManager:
                     self.max_capacity,
                     self.port,
                     self.health_status,
-                    self.metadata
+                    metadata
                 )
 
                 # Update instance-level status
@@ -408,14 +424,11 @@ class ServiceHealthChecker:
 
     async def _check_service_health(self):
         """Check health of all services on this instance"""
-
-        # Define expected services
-        expected_services = [
-            ("chat", "rest"),
-            ("chat", "socketio"),
-            ("kb", "rest"),
-            ("chat", "orchestrator")  # Dramatiq workers
-        ]
+        component = (os.getenv("GATEWAY_COMPONENT") or "ingress").strip().lower()
+        if component in {"proc", "processor", "worker"}:
+            expected_services = [("chat", "proc")]
+        else:
+            expected_services = [("chat", "rest")]
 
         for service_type, service_name in expected_services:
             status = await self.middleware.get_instance_service_status(service_type, service_name)
@@ -450,26 +463,19 @@ def get_expected_services(INSTANCE_ID) -> Dict[str, List[ServiceConfig]]:
     """
     Define expected services per instance based on gateway config and environment variables
     """
-    # Get configuration from gateway config (fallback to 1 if unavailable)
+    component = (os.getenv("GATEWAY_COMPONENT") or "ingress").strip().lower()
     try:
         from kdcube_ai_app.infra.gateway.config import get_gateway_config
         chat_workers = max(1, int(get_gateway_config().service_capacity.processes_per_instance or 1))
     except Exception:
         chat_workers = 1
-    kb_workers = int(os.getenv("KB_PARALLELISM", "1"))
-    orchestrator_workers = int(os.getenv("DRAMATIQ_WORKERS", "4"))
 
-    # Get port configurations
     chat_port = int(os.getenv("CHAT_APP_PORT", "8010"))
-    kb_port = int(os.getenv("KB_PORT", "8000"))
+    service_name = "proc" if component in {"proc", "processor", "worker"} else "rest"
 
-    # Define expected services per instance
     expected_services = {
         INSTANCE_ID: [
-            ServiceConfig("chat", "rest", chat_workers, [chat_port + i for i in range(chat_workers)]),
-            ServiceConfig("kb", "rest", kb_workers, [kb_port + i for i in range(kb_workers)]),
-            ServiceConfig("chat", "orchestrator", orchestrator_workers, [])  # No ports for workers
+            ServiceConfig("chat", service_name, chat_workers, [chat_port + i for i in range(chat_workers)]),
         ]
     }
-
     return expected_services

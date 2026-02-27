@@ -11,7 +11,7 @@ from fastapi import Depends
 from fastapi.responses import JSONResponse
 
 from kdcube_ai_app.apps.chat.api.resolvers import auth_without_pressure, INSTANCE_ID, get_fastapi_adapter, require_auth, \
-    reset_circuit_breaker, get_circuit_breaker_stats, get_pg_pool
+    reset_circuit_breaker, get_circuit_breaker_stats
 from kdcube_ai_app.apps.middleware.gateway import CircuitBreakersResponse, CircuitBreakerSummaryResponse, \
     CircuitBreakerStatusResponse
 from kdcube_ai_app.auth.AuthManager import RequireUser, RequireRoles
@@ -21,6 +21,7 @@ from kdcube_ai_app.infra.gateway.circuit_breaker import CircuitState
 from kdcube_ai_app.infra.gateway.config import GatewayConfigurationManager, get_gateway_config
 from kdcube_ai_app.infra.namespaces import REDIS, ns_key
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.infra.metrics.system_monitoring import compute_system_monitoring
 
 """
 Monitoring API
@@ -33,9 +34,6 @@ import logging
 
 logger = logging.getLogger("Monitoring.API")
 
-_DB_MAX_CONNECTIONS_CACHE: dict[str, Any] = {"value": None, "ts": 0.0, "source": None}
-_DB_MAX_CONNECTIONS_TTL_SEC = 60
-
 def _get_router_redis():
     redis = getattr(router.state, "redis_async", None)
     if not redis:
@@ -47,28 +45,6 @@ def _get_router_redis():
         raise HTTPException(status_code=500, detail="Redis client not initialized")
     return redis
 
-
-async def _resolve_db_max_connections() -> tuple[Optional[int], Optional[str]]:
-    env_val = os.getenv("PG_MAX_CONNECTIONS") or os.getenv("POSTGRES_MAX_CONNECTIONS") or os.getenv("DB_MAX_CONNECTIONS")
-    if env_val:
-        try:
-            return int(env_val), "env"
-        except Exception:
-            pass
-    now = time.time()
-    if _DB_MAX_CONNECTIONS_CACHE["value"] is not None and now - _DB_MAX_CONNECTIONS_CACHE["ts"] < _DB_MAX_CONNECTIONS_TTL_SEC:
-        return _DB_MAX_CONNECTIONS_CACHE["value"], _DB_MAX_CONNECTIONS_CACHE["source"]
-    try:
-        pool = await get_pg_pool()
-        async with pool.acquire() as conn:
-            val = await conn.fetchval("SHOW max_connections;")
-            if val is not None:
-                value = int(val)
-                _DB_MAX_CONNECTIONS_CACHE.update({"value": value, "ts": now, "source": "query"})
-                return value, "query"
-    except Exception as e:
-        logger.warning("Failed to fetch DB max_connections: %s", e)
-    return None, None
 
 # Create router
 router = APIRouter()
@@ -298,456 +274,49 @@ async def get_system_monitoring(
     Enhanced system monitoring with chat REST vs other process tracking
     """
     try:
-        middleware = router.state.middleware
         redis = _get_router_redis()
-        current_time = time.time()
-
-        # Get expected services configuration
+        middleware = getattr(router.state, "middleware", None)
+        if middleware is None:
+            from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware
+            settings = get_settings()
+            middleware = MultiprocessDistributedMiddleware(
+                settings.REDIS_URL,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                instance_id=INSTANCE_ID,
+                redis=redis,
+            )
+            router.state.middleware = middleware
+        gateway_adapter = router.state.gateway_adapter
         expected_services = get_expected_services(INSTANCE_ID)
 
-        # Get all process heartbeats from Redis
-        process_pattern = f"{middleware.PROCESS_HEARTBEAT_PREFIX}:*"
-        process_keys = await redis.keys(process_pattern)
-
-        # Parse all heartbeats and separate chat REST from others
-        all_heartbeats = {}
-        chat_rest_heartbeats = {}
-
-        for key in process_keys:
-            try:
-                data = await redis.get(key)
-                if not data:
-                    continue
-
-                heartbeat = json.loads(data)
-                instance_id = heartbeat['instance_id']
-                service_type = heartbeat['service_type']
-                service_name = heartbeat['service_name']
-                service_key = f"{service_type}_{service_name}"
-
-                # Initialize instance data
-                if instance_id not in all_heartbeats:
-                    all_heartbeats[instance_id] = {}
-                    chat_rest_heartbeats[instance_id] = {}
-                if service_key not in all_heartbeats[instance_id]:
-                    all_heartbeats[instance_id][service_key] = []
-
-                # Calculate age and normalize health status
-                age_seconds = current_time - heartbeat.get('last_heartbeat', 0)
-                raw_health = heartbeat.get('health_status', 'unknown')
-
-                # Normalize health status
-                if isinstance(raw_health, str):
-                    if 'HEALTHY' in raw_health.upper() or raw_health.lower() == 'healthy':
-                        status = 'healthy'
-                    elif 'DEGRADED' in raw_health.upper() or raw_health.lower() == 'degraded':
-                        status = 'degraded'
-                    elif 'UNHEALTHY' in raw_health.upper() or raw_health.lower() == 'unhealthy':
-                        status = 'unhealthy'
-                    else:
-                        status = 'unknown'
-                else:
-                    status = str(raw_health).lower()
-
-                # Determine if process is stale
-                if age_seconds > middleware.PROCESS_TIMEOUT:
-                    status = 'stale'
-
-                process_info = {
-                    'pid': heartbeat.get('process_id'),
-                    'port': heartbeat.get('port'),
-                    'load': heartbeat.get('current_load', 0),
-                    'capacity': heartbeat.get('max_capacity', 0),
-                    'last_heartbeat': heartbeat.get('last_heartbeat', current_time),
-                    'status': status,
-                    'age_seconds': age_seconds,
-                    'service_type': service_type,
-                    'service_name': service_name
-                }
-
-                all_heartbeats[instance_id][service_key].append(process_info)
-
-                # Separate chat REST processes for capacity calculations
-                if service_type == "chat" and service_name == "rest":
-                    if service_key not in chat_rest_heartbeats[instance_id]:
-                        chat_rest_heartbeats[instance_id][service_key] = []
-                    chat_rest_heartbeats[instance_id][service_key].append(process_info)
-
-            except Exception as e:
-                logger.error(f"Error parsing process heartbeat {key}: {e}")
-                continue
-
-        # Build service health for each instance
-        instances_data = {}
-        global_stats = {
-            'total_expected': 0,
-            'total_actual': 0,
-            'total_healthy': 0,
-            'total_load': 0,
-            'total_capacity': 0,
-            'healthy_instances': 0,
-            'total_instances': 0,
-            # Chat REST specific stats
-            'chat_rest_expected': 0,
-            'chat_rest_actual': 0,
-            'chat_rest_healthy': 0,
-            'chat_rest_load': 0,
-            'chat_rest_capacity': 0
-        }
-
-        for instance_id, services_config in expected_services.items():
-            instances_data[instance_id] = {}
-            instance_healthy = True
-
-            for service_config in services_config:
-                service_key = service_config.get_service_key()
-
-                # Get actual processes for this service
-                actual_processes = all_heartbeats.get(instance_id, {}).get(service_key, [])
-
-                # Count process states
-                healthy_count = len([p for p in actual_processes if p['status'] == 'healthy'])
-                degraded_count = len([p for p in actual_processes if p['status'] == 'degraded'])
-                unhealthy_count = len([p for p in actual_processes if p['status'] == 'unhealthy'])
-                stale_count = len([p for p in actual_processes if p['status'] == 'stale'])
-
-                actual_count = len(actual_processes)
-                missing_count = max(0, service_config.expected_processes - actual_count)
-
-                # Calculate service-level health
-                responsive_processes = healthy_count + degraded_count
-                if responsive_processes == service_config.expected_processes:
-                    if healthy_count == service_config.expected_processes:
-                        overall_status = 'healthy'
-                    else:
-                        overall_status = 'degraded'
-                elif responsive_processes > 0:
-                    overall_status = 'degraded'
-                else:
-                    overall_status = 'unhealthy'
-                    instance_healthy = False
-
-                # Calculate totals
-                total_load = sum(p['load'] for p in actual_processes)
-                total_capacity = sum(p['capacity'] for p in actual_processes)
-
-                # Store service data
-                instances_data[instance_id][service_key] = {
-                    'processes': service_config.expected_processes,
-                    'actual_processes': actual_count,
-                    'load': total_load,
-                    'capacity': total_capacity,
-                    'health': overall_status,
-                    'healthy_processes': responsive_processes,
-                    'missing_processes': missing_count,
-                    'status_breakdown': {
-                        'healthy': healthy_count,
-                        'degraded': degraded_count,
-                        'unhealthy': unhealthy_count,
-                        'stale': stale_count,
-                        'missing': missing_count
-                    },
-                    'pids': [p['pid'] for p in actual_processes],
-                    'ports': [p['port'] for p in actual_processes if p['port']],
-                    'loads': [p['load'] for p in actual_processes],
-                    'heartbeats': [p['last_heartbeat'] for p in actual_processes],
-                    'health_statuses': [p['status'] for p in actual_processes],
-                    # Mark if this is a chat REST service
-                    'is_chat_rest': service_config.service_type == "chat" and service_config.service_name == "rest"
-                }
-
-                # Update global stats
-                global_stats['total_expected'] += service_config.expected_processes
-                global_stats['total_actual'] += actual_count
-                global_stats['total_healthy'] += responsive_processes
-                global_stats['total_load'] += total_load
-                global_stats['total_capacity'] += total_capacity
-
-                # Update chat REST specific stats
-                if service_config.service_type == "chat" and service_config.service_name == "rest":
-                    global_stats['chat_rest_expected'] += service_config.expected_processes
-                    global_stats['chat_rest_actual'] += actual_count
-                    global_stats['chat_rest_healthy'] += responsive_processes
-                    global_stats['chat_rest_load'] += total_load
-                    global_stats['chat_rest_capacity'] += total_capacity
-
-            if instance_healthy:
-                global_stats['healthy_instances'] += 1
-            global_stats['total_instances'] += 1
-
-        # Get gateway system status with corrected capacity calculations
-        gateway_adapter = router.state.gateway_adapter
-        gateway_status = await gateway_adapter.gateway.get_system_status()
-
-        # Extract the automatically computed data
-        queue_data = gateway_status["queue_stats"]
-        capacity_transparency = gateway_status["capacity_transparency"]
-
-        # Get throttling statistics for multiple time periods
-        throttling_stats = None
-        throttling_events = None
-        throttling_by_period = {}
-
+        response_data = await compute_system_monitoring(
+            redis=redis,
+            gateway_adapter=gateway_adapter,
+            middleware=middleware,
+            instance_id=INSTANCE_ID,
+            expected_services=expected_services,
+            sse_hub=getattr(router.state, "sse_hub", None),
+            pg_pool=getattr(router.state, "pg_pool", None),
+            redis_clients={
+                "async": getattr(router.state, "redis_async", None),
+                "async_decode": getattr(router.state, "redis_async_decode", None),
+                "sync": getattr(router.state, "redis_sync", None),
+            },
+        )
+        response_data["gateway_config_source"] = getattr(router.state, "gateway_config_source", None)
+        gateway_status = response_data.pop("_gateway_status", None)
+        if gateway_status:
+            response_data["gateway_configuration"] = _extract_gateway_config_for_frontend(gateway_status)
+            response_data["configuration"] = _extract_detailed_config_for_frontend(
+                response_data.get("capacity_transparency", {}),
+                gateway_status,
+            )
         try:
-            # Get throttling data for different time periods
-            time_periods = [1, 3, 6, 12, 24]  # hours
-            for hours in time_periods:
-                period_data = await gateway_adapter.gateway.throttling_monitor.get_throttling_stats_for_period(hours)
-
-                # Calculate throttle rate
-                throttle_rate = 0
-                total_attempted = 0
-                if period_data.total_requests > 0:
-                    estimated_successful = max(0, period_data.total_requests - period_data.total_throttled)
-                    total_attempted = estimated_successful + period_data.total_throttled
-                    throttle_rate = (period_data.total_throttled / total_attempted * 100) if total_attempted > 0 else 0
-
-                throttling_by_period[f"{hours}h"] = {
-                    'total_requests': period_data.total_requests,
-                    'total_throttled': period_data.total_throttled,
-                    'rate_limit_429': period_data.rate_limit_429,
-                    'backpressure_503': period_data.backpressure_503,
-                    'throttled_by_reason': period_data.throttled_by_reason,
-                    'hourly_stats': period_data.hourly_stats,
-                    'top_throttled_sessions': period_data.top_throttled_sessions,
-                    'throttle_rate': round(throttle_rate, 2),
-                    'total_attempted': total_attempted,
-                    'events_per_hour': period_data.total_throttled / hours if hours > 0 else 0
-                }
-
-            # Use 1 hour data as default for backward compatibility
-            throttling_stats = throttling_by_period.get("1h", {
-                'total_requests': 0,
-                'total_throttled': 0,
-                'rate_limit_429': 0,
-                'backpressure_503': 0,
-                'throttle_rate': 0,
-                'throttled_by_reason': {},
-                'hourly_stats': {},
-                'top_throttled_sessions': [],
-                'recent_events_count': 0
-            })
-
-            # Get recent events (last hour)
-            throttling_events_data = await gateway_adapter.gateway.throttling_monitor.get_recent_events_for_period(1, 20)
-
-            # Convert enum values to strings
-            serializable_events = []
-            for event in throttling_events_data:
-                event_copy = asdict(event)
-                if 'reason' in event_copy and hasattr(event_copy['reason'], 'value'):
-                    event_copy['reason'] = event_copy['reason'].value
-                elif 'reason' in event_copy:
-                    event_copy['reason'] = str(event_copy['reason'])
-                serializable_events.append(event_copy)
-
-            throttling_events = serializable_events
-            throttling_stats['recent_events_count'] = len(throttling_events)
-
-        except Exception as e:
-            logger.error(f"Error getting throttling statistics: {e}")
-            # Provide fallback data structure
-            throttling_stats = {
-                'total_requests': 0,
-                'total_throttled': 0,
-                'rate_limit_429': 0,
-                'backpressure_503': 0,
-                'throttle_rate': 0,
-                'throttled_by_reason': {},
-                'hourly_stats': {},
-                'top_throttled_sessions': [],
-                'recent_events_count': 0
-            }
-            throttling_events = []
-            throttling_by_period = {"1h": throttling_stats}
-
-        # Get circuit breaker status
-        circuit_breakers = await get_circuit_breaker_status()
-
-        # Enhanced response with detailed capacity breakdown
-        # DB connection capacity warnings (optional)
-        db_max_connections, db_max_source = await _resolve_db_max_connections()
-        cfg_capacity = gateway_status["gateway_configuration"]["service_capacity"]
-        pool_max_per_worker = int(os.getenv("PGPOOL_MAX_SIZE") or cfg_capacity.get("concurrent_requests_per_process") or 0)
-        processes_per_instance = int(cfg_capacity.get("processes_per_instance") or 1)
-        estimated_per_instance = pool_max_per_worker * processes_per_instance
-        instance_count = queue_data["capacity_context"]["instance_count"] or 1
-        estimated_total = estimated_per_instance * instance_count
-        db_warning = False
-        db_warning_reason = None
-        db_warning_level = None
-        db_percent_of_max = None
-        if db_max_connections:
-            db_percent_of_max = round((estimated_total / db_max_connections) * 100, 1)
-            if estimated_total > db_max_connections:
-                db_warning = True
-                db_warning_level = "exceeds"
-                db_warning_reason = (
-                    f"Estimated DB connections ({estimated_total}) exceed max_connections ({db_max_connections})."
-                )
-            elif estimated_total == db_max_connections:
-                db_warning = True
-                db_warning_level = "max"
-                db_warning_reason = (
-                    f"Estimated DB connections ({estimated_total}) are at max_connections ({db_max_connections})."
-                )
-            elif estimated_total >= int(db_max_connections * 0.8):
-                db_warning = True
-                db_warning_level = "high"
-                db_warning_reason = (
-                    f"Estimated DB connections ({estimated_total}) are >=80% of max_connections ({db_max_connections})."
-                )
-
-        response_data = {
-            "instances": instances_data,
-            "global_stats": {
-                "load": global_stats['total_load'],
-                "capacity": global_stats['total_capacity'],
-                "healthy": global_stats['total_healthy'],
-                "total": global_stats['total_expected'],
-                "actual": global_stats['total_actual'],
-                "healthy_instances": global_stats['healthy_instances'],
-                "total_instances": global_stats['total_instances'],
-                "utilization_percent": round((global_stats['total_load'] / global_stats['total_capacity'] * 100) if global_stats['total_capacity'] > 0 else 0, 1),
-                # Chat REST specific metrics
-                "chat_rest": {
-                    "expected": global_stats['chat_rest_expected'],
-                    "actual": global_stats['chat_rest_actual'],
-                    "healthy": global_stats['chat_rest_healthy'],
-                    "load": global_stats['chat_rest_load'],
-                    "capacity": global_stats['chat_rest_capacity'],
-                    "utilization_percent": round((global_stats['chat_rest_load'] / global_stats['chat_rest_capacity'] * 100) if global_stats['chat_rest_capacity'] > 0 else 0, 1)
-                }
-            },
-
-            # Queue stats with chat REST capacity context
-            "queue_stats": {
-                "anonymous": queue_data["anonymous"],
-                "registered": queue_data["registered"],
-                "paid": queue_data.get("paid", 0),
-                "privileged": queue_data["privileged"]
-            },
-            "enhanced_queue_stats": {
-                "anonymous_queue": queue_data["anonymous"],
-                "registered_queue": queue_data["registered"],
-                "paid_queue": queue_data.get("paid", 0),
-                "privileged_queue": queue_data["privileged"],
-                "total_queue": queue_data["total"],
-                "base_capacity_per_instance": queue_data["capacity_context"]["base_capacity_per_instance"],
-                "alive_instances": queue_data["capacity_context"]["alive_instances"],
-                "instance_count": queue_data["capacity_context"]["instance_count"],
-                "weighted_max_capacity": queue_data["capacity_context"]["weighted_max_capacity"],
-                "pressure_ratio": queue_data["capacity_context"]["pressure_ratio"],
-                "accepting_anonymous": queue_data["capacity_context"]["accepting_anonymous"],
-                "accepting_registered": queue_data["capacity_context"]["accepting_registered"],
-                "accepting_paid": queue_data["capacity_context"].get("accepting_paid"),
-                "accepting_privileged": queue_data["capacity_context"]["accepting_privileged"]
-            },
-
-            # Backpressure policy with chat REST context
-            "backpressure_policy": {
-                "thresholds": queue_data["capacity_context"]["thresholds"],
-                "current_effects": {
-                    "anonymous_blocked": not queue_data["capacity_context"]["accepting_anonymous"],
-                    "registered_blocked": not queue_data["capacity_context"]["accepting_registered"],
-                    "paid_blocked": not queue_data["capacity_context"].get("accepting_paid", True),
-                    "all_blocked": not queue_data["capacity_context"]["accepting_privileged"],
-                    "pressure_level": (
-                        "critical" if queue_data["capacity_context"]["pressure_ratio"] > 0.9 else
-                        "high" if queue_data["capacity_context"]["pressure_ratio"] > 0.8 else
-                        "medium" if queue_data["capacity_context"]["pressure_ratio"] > 0.6 else
-                        "low"
-                    )
-                },
-                "capacity_scaling": {
-                    "base_per_instance": capacity_transparency["capacity_metrics"].get("actual_runtime", {}).get("actual_total_capacity_per_instance", 0),
-                    "instances_detected": capacity_transparency["instance_scaling"]["detected_instances"],
-                    "total_weighted_capacity": capacity_transparency["instance_scaling"]["total_system_capacity"],
-                    "utilization_percent": round(queue_data["capacity_context"]["pressure_ratio"] * 100, 1),
-                    # Chat REST specific capacity info
-                    "chat_rest_capacity": global_stats['chat_rest_capacity'],
-                    "chat_rest_utilization": round((global_stats['chat_rest_load'] / global_stats['chat_rest_capacity'] * 100) if global_stats['chat_rest_capacity'] > 0 else 0, 1)
-                }
-            },
-
-            # Queue analytics
-            "queue_analytics": {
-                "wait_times": queue_data["analytics"]["avg_wait_times"],
-                "throughput": queue_data["analytics"]["throughput_metrics"],
-                "individual_queues": {
-                    "anonymous": {
-                        "size": queue_data["anonymous"],
-                        "avg_wait": queue_data["analytics"]["avg_wait_times"].get("anonymous", 0),
-                        "throughput": queue_data["analytics"]["throughput_metrics"].get("anonymous", 0),
-                        "blocked": not queue_data["capacity_context"]["accepting_anonymous"]
-                    },
-                    "registered": {
-                        "size": queue_data["registered"],
-                        "avg_wait": queue_data["analytics"]["avg_wait_times"].get("registered", 0),
-                        "throughput": queue_data["analytics"]["throughput_metrics"].get("registered", 0),
-                        "blocked": not queue_data["capacity_context"]["accepting_registered"]
-                    },
-                    "paid": {
-                        "size": queue_data.get("paid", 0),
-                        "avg_wait": queue_data["analytics"]["avg_wait_times"].get("paid", 0),
-                        "throughput": queue_data["analytics"]["throughput_metrics"].get("paid", 0),
-                        "blocked": not queue_data["capacity_context"].get("accepting_paid", True)
-                    },
-                    "privileged": {
-                        "size": queue_data["privileged"],
-                        "avg_wait": queue_data["analytics"]["avg_wait_times"].get("privileged", 0),
-                        "throughput": queue_data["analytics"]["throughput_metrics"].get("privileged", 0),
-                        "blocked": not queue_data["capacity_context"]["accepting_privileged"]
-                    }
-                }
-            },
-
-            # Overall utilization based on chat REST capacity
-            "queue_utilization": round((queue_data["total"] / queue_data["capacity_context"]["weighted_max_capacity"] * 100) if queue_data["capacity_context"]["weighted_max_capacity"] > 0 else 0, 1),
-
-            # Capacity info
-            "capacity_info": queue_data["capacity_context"],
-
-            # Time-based throttling data (multiple periods)
-            "throttling_stats": throttling_stats,  # Default 1h for backward compatibility
-            "throttling_by_period": throttling_by_period,  # All time periods
-            "recent_throttling_events": throttling_events,
-
-            # Circuit breakers
-            "circuit_breakers": circuit_breakers.model_dump(),
-
-            # Gateway configuration
-            "gateway_configuration": _extract_gateway_config_for_frontend(gateway_status),
-
-            # Capacity transparency with chat REST focus
-            "capacity_transparency": capacity_transparency,
-
-            # Configuration details
-            "configuration": _extract_detailed_config_for_frontend(capacity_transparency, gateway_status),
-
-            "db_connections": {
-                "max_connections": db_max_connections,
-                "source": db_max_source,
-                "pool_max_per_worker": pool_max_per_worker,
-                "processes_per_instance": processes_per_instance,
-                "estimated_per_instance": estimated_per_instance,
-                "instance_count": instance_count,
-                "estimated_total": estimated_total,
-                "percent_of_max": db_percent_of_max,
-                "warning": db_warning,
-                "warning_reason": db_warning_reason,
-                "warning_level": db_warning_level,
-            },
-
-            "timestamp": current_time,
-            "redis_info": {
-                "process_keys_found": len(process_keys),
-                "active_processes": global_stats['total_actual'],
-                "chat_rest_processes": global_stats['chat_rest_actual'],
-                "max_queue_size": queue_data["capacity_context"]["weighted_max_capacity"]
-            }
-        }
-
+            cb = await get_circuit_breaker_status()
+            response_data["circuit_breakers"] = cb.model_dump()
+        except Exception:
+            pass
         return JSONResponse(content=response_data)
 
     except Exception as e:

@@ -1,26 +1,41 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Elena Viter
+# Copyright (c) 2026 Elena Viter
 
 # chatbot/sdk/config.py
 from __future__ import annotations
 import os
 from pydantic import Field
+from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+
+class CorsConfig(BaseModel):
+    allow_origins: list[str] = Field(default_factory=lambda: ["*"])
+    allow_methods: list[str] = Field(default_factory=lambda: ["*"])
+    allow_headers: list[str] = Field(default_factory=lambda: ["*"])
+    allow_credentials: bool = True
+
+    @field_validator("allow_origins", "allow_methods", "allow_headers", mode="before")
+    @classmethod
+    def _coerce_list(cls, v):
+        if v is None:
+            return ["*"]
+        if isinstance(v, str):
+            if v.strip() == "*":
+                return ["*"]
+            return [s.strip() for s in v.split(",") if s.strip()]
+        if isinstance(v, list):
+            return v
+        return [str(v)]
+
 
 class Settings(BaseSettings):
     # API
     PORT: int = 8011
-    CORS_ORIGINS: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    CORS_CONFIG: str | None = None
+    CORS_CONFIG_OBJ: CorsConfig | None = None
 
-    # OpenAI
     OPENAI_API_KEY: str | None = None
-    OPENAI_MODEL_ANSWER: str = "gpt-4o-mini"
-    OPENAI_MODEL_CLASSIFIER: str = "gpt-4o-mini"
-    OPENAI_MODEL_QUERYWRITER: str = "gpt-4o-mini"
-    OPENAI_MODEL_RERANKER: str = "gpt-4o-mini"
-    OPENAI_MODEL_EMBEDDING: str = "text-embedding-3-small"
-
     ANTHROPIC_API_KEY: str | None = None
     GOOGLE_API_KEY: str | None = Field(default=None, alias="GEMINI_API_KEY")
 
@@ -74,18 +89,36 @@ class Settings(BaseSettings):
     BUNDLE_CLEANUP_INTERVAL_SECONDS: int = Field(default=3600)
     BUNDLE_CLEANUP_LOCK_TTL_SECONDS: int = Field(default=900)
     BUNDLE_REF_TTL_SECONDS: int = Field(default=3600)
-
-    # Parse comma-separated CORS into list
-    @classmethod
-    def model_validate_env(cls, env: dict) -> dict:
-        # optional hook; or use a validator if you prefer
-        v = dict(env)
-        cors = v.get("CORS_ORIGINS")
-        if isinstance(cors, str):
-            v["CORS_ORIGINS"] = [o.strip() for o in cors.split(",") if o.strip()]
-        return v
+    # Force bundles registry to be overwritten from AGENTIC_BUNDLES_JSON at startup (processor only).
+    BUNDLES_FORCE_ENV_ON_STARTUP: bool = Field(default=False)
+    BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS: int = Field(default=60)
 
     def model_post_init(self, __context) -> None:
+        # Override tenant/project from GATEWAY_CONFIG_JSON if present.
+        cfg_json = os.getenv("GATEWAY_CONFIG_JSON")
+        if isinstance(cfg_json, str) and cfg_json.strip():
+            try:
+                import json
+                cfg = json.loads(cfg_json)
+                tenant = cfg.get("tenant_id") or cfg.get("tenant")
+                project = cfg.get("project_id") or cfg.get("project")
+                if tenant:
+                    self.TENANT = tenant
+                if project:
+                    self.PROJECT = project
+            except Exception:
+                # Keep env-derived values on parse failure
+                pass
+
+        # Parse CORS_CONFIG JSON (if provided)
+        if isinstance(self.CORS_CONFIG, str) and self.CORS_CONFIG.strip():
+            try:
+                import json
+                self.CORS_CONFIG_OBJ = CorsConfig.model_validate(json.loads(self.CORS_CONFIG))
+            except Exception:
+                # Leave None on parse failure
+                self.CORS_CONFIG_OBJ = None
+
         # If REDIS_URL is not explicitly set, build it from host/port/password/db.
         if not os.getenv("REDIS_URL"):
             auth = f":{self.REDIS_PASSWORD}@" if self.REDIS_PASSWORD else ""

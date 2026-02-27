@@ -65,7 +65,7 @@ python policy_testing_suite.py --test all
 **Interpretation:**
 - ✅ **Good:** 503s start appearing at reasonable load (20-50 concurrent users)
 - ⚠️ **Concerning:** System accepts unlimited load or fails immediately
-- 🔧 **Action:** Adjust `MAX_QUEUE_SIZE` and instance scaling
+- 🔧 **Action:** Adjust `limits.proc.max_queue_size` in `GATEWAY_CONFIG_JSON` and instance scaling
 
 ### 🌐 Mixed Load Test
 **Purpose:** Test realistic usage patterns with different user types.
@@ -188,7 +188,7 @@ Estimated Memory Utilization: 60%
 - Circuit breaker too sensitive
 
 **Solutions:**
-- Increase `MAX_QUEUE_SIZE`
+- Increase `limits.proc.max_queue_size` in `GATEWAY_CONFIG_JSON`
 - Scale up instances
 - Increase circuit breaker failure threshold
 
@@ -290,4 +290,3 @@ The load tests provide data that integrates with your monitoring dashboard:
 5. **Monitor system health:** Watch CPU, memory, and queue metrics during tests
 6. **Document changes:** Record configuration changes and their impact
 7. **Regular validation:** Rerun tests after any system changes
-

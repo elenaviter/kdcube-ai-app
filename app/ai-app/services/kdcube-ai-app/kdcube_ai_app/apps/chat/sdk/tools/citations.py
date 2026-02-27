@@ -29,12 +29,9 @@ from __future__ import annotations
 
 import json
 import re, unicodedata
-from urllib.parse import urlsplit
 from dataclasses import dataclass
 import os
 from typing import Dict, List, Tuple, Optional, Iterable, Any, Set
-
-from kdcube_ai_app.apps.chat.sdk.tools.web.favicon_cache import enrich_sources_pool_with_favicons
 
 # ---------------------------------------------------------------------------
 # Public regex / constants

@@ -4,10 +4,12 @@ Quick reference for configuring a single chat service instance (workers, capacit
 
 ## Source of Truth
 
-Runtime capacity is driven by `GATEWAY_CONFIG_JSON.service_capacity`:
-- `processes_per_instance` = number of Uvicorn workers for the chat service.
-- `concurrent_requests_per_process` = max concurrent chats per worker.
+Runtime capacity is driven by `GATEWAY_CONFIG_JSON.service_capacity.<component>`:
+- `processes_per_instance` = number of Uvicorn workers for that service.
+- `concurrent_requests_per_process` = max concurrent chats per worker (processor) or admission capacity (ingress).
 - `avg_processing_time_seconds` = expected average turn time for capacity calculations.
+
+Each service sets `GATEWAY_COMPONENT` at startup (`ingress` or `proc`) to select its slice.
 
 Admin updates are stored in Redis (tenant/project scoped) and override `GATEWAY_CONFIG_JSON` on restart.
 
@@ -21,7 +23,8 @@ If you want env to apply, clear the cached config first (Control Plane → Gatew
 
 ## Worker Count
 
-Worker count comes from `GATEWAY_CONFIG_JSON.service_capacity.processes_per_instance` when running `web_app.py` directly.
+Worker count comes from `GATEWAY_CONFIG_JSON.service_capacity.<component>.processes_per_instance`
+when running the service `web_app.py` directly.
 
 Changing `processes_per_instance` requires a service restart to take effect.
 
@@ -30,11 +33,12 @@ Changing `processes_per_instance` requires a service restart to take effect.
 Each worker creates its own asyncpg pool.
 
 Pool size rules:
-- `PGPOOL_MAX_SIZE` if set, else `service_capacity.concurrent_requests_per_process`.
-- `PGPOOL_MIN_SIZE` defaults to `0`.
+- `GATEWAY_CONFIG_JSON.pools.<component>.pg_pool_max_size` if set.
+- Else `service_capacity.<component>.concurrent_requests_per_process`.
+- `pg_pool_min_size` defaults to `0` if not set.
 
 Estimated DB connections:
-- Per instance: `processes_per_instance × PGPOOL_MAX_SIZE`
+- Per instance: `processes_per_instance × pg_pool_max_size`
 - Total system: `per_instance × instance_count`
 
 Keep `total_connections` comfortably below Postgres `max_connections`.
@@ -48,7 +52,7 @@ Safe guideline:
 
 Example:
 - `max_connections=80`
-- `processes_per_instance=4`, `PGPOOL_MAX_SIZE=8`
+- `processes_per_instance=4`, `pg_pool_max_size=8`
 - Chat uses ~32 connections → OK.
 
 ## Quick Checks
@@ -62,7 +66,7 @@ Confirm worker count:
 - Monitoring UI → Capacity Transparency → Configured/Actual/Healthy processes.
 
 Confirm DB pool sizing:
-- Set `PGPOOL_MAX_SIZE` explicitly and confirm in logs:
+- Set `pools.<component>.pg_pool_max_size` and confirm in logs:
   - `PG pool sizing: {'min_size': 0, 'max_size': N} ...`
 
 Confirm DB max connections:
@@ -73,22 +77,29 @@ Confirm DB max connections:
 ```json
 {
   "service_capacity": {
-    "concurrent_requests_per_process": 8,
-    "processes_per_instance": 4,
-    "avg_processing_time_seconds": 25
+    "ingress": {
+      "concurrent_requests_per_process": 5,
+      "processes_per_instance": 2,
+      "avg_processing_time_seconds": 25
+    },
+    "proc": {
+      "concurrent_requests_per_process": 8,
+      "processes_per_instance": 4,
+      "avg_processing_time_seconds": 25
+    }
   }
 }
 ```
 
 Result:
-- Workers = 4
-- Pool per worker = 8 (unless `PGPOOL_MAX_SIZE` set)
-- Total chat DB connections ≈ 32
+- Ingress workers = 2; processor workers = 4
+- Pool per worker = 8 (unless `pools.<component>.pg_pool_max_size` set)
+- Total chat DB connections ≈ 32 (processor side)
 
 ## If You See “Too Many Connections”
 
 Actions:
-1. Lower `PGPOOL_MAX_SIZE` or `concurrent_requests_per_process`.
+1. Lower `pools.<component>.pg_pool_max_size` or `concurrent_requests_per_process`.
 2. Lower `processes_per_instance`.
 3. Increase RDS `max_connections` (parameter group + reboot).
 4. Add a pooler (pgbouncer / RDS Proxy).

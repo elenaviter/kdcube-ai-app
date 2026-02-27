@@ -3,10 +3,11 @@
 This document summarizes **runtime configuration** for the chat service.  
 It focuses on tenant/project/bundle settings, instance identity, and parallelism.
 
-**Sample env files**
+**Sample env files (per service)**
 
-- Compose/env wiring: `deployment/docker/all_in_one/sample_env/.env`
-- Service runtime env: `deployment/docker/all_in_one/sample_env/.env.backend`
+- Ingress: `deployment/docker/devenv/sample_env/.env.ingress`
+- Proc: `deployment/docker/devenv/sample_env/.env.proc`
+- Metrics: `deployment/docker/devenv/sample_env/.env.metrics`
 
 **Short pitch (capacity + limits)**  
 The chat service is **rate‑limited and capacity‑limited** by design:
@@ -16,24 +17,116 @@ The chat service is **rate‑limited and capacity‑limited** by design:
 - Concurrency limits keep each processor stable under load.
 
 For gateway‑level rate limits and backpressure configuration, see `docs/gateway-README.md`.
-## Tenant / Project / Bundles
+## Gateway Config (Required)
 
-These values scope **Redis keys**, **bundle registries**, and **control‑plane events**.
+Tenant/project **must** be provided via `GATEWAY_CONFIG_JSON` (per tenant/project).
+There are no supported env fallbacks for tenant/project anymore.
 
-| Setting | Default | Purpose | Used by |
-| --- | --- | --- | --- |
-| `TENANT_ID` | `home` | Tenant scope for chat service and bundle registry | `apps/chat/sdk/config.py`, bundle registry/store |
-| `DEFAULT_PROJECT_NAME` | `default-project` | Project scope for chat service and bundle registry | `apps/chat/sdk/config.py`, bundle registry/store |
-| `AGENTIC_BUNDLES_JSON` | _(unset)_ | Seed bundle registry from JSON | `infra/plugin/bundle_store.py` |
-| `HOST_BUNDLES_PATH` | _(unset)_ | Host path for bundle roots (git‑cloned or manually provisioned). Often mounted into containers. | `infra/plugin/git_bundle.py` |
-| `AGENTIC_BUNDLES_ROOT` | _(unset)_ | Container‑visible bundles root (path used by runtime inside container). | `infra/plugin/git_bundle.py` |
-| `BUNDLE_GIT_ALWAYS_PULL` | `0` | Force refresh on resolve | `infra/plugin/bundle_registry.py` |
-| `BUNDLE_GIT_ATOMIC` | `1` | Atomic clone/update | `infra/plugin/git_bundle.py` |
-| `BUNDLE_GIT_SHALLOW` | `1` | Shallow clone mode | `infra/plugin/git_bundle.py` |
-| `BUNDLE_GIT_CLONE_DEPTH` | `50` | Shallow clone depth | `infra/plugin/git_bundle.py` |
-| `BUNDLE_GIT_KEEP` | `3` | Keep N old bundle dirs | `infra/plugin/git_bundle.py` |
-| `BUNDLE_GIT_TTL_HOURS` | `0` | TTL cleanup for old bundle dirs | `infra/plugin/git_bundle.py` |
-| `BUNDLE_REF_TTL_SECONDS` | `3600` | TTL for active bundle refs | `infra/plugin/bundle_refs.py` |
+### Top-level keys (required unless noted)
+
+| Key                     | Required | Purpose                                                           |
+|-------------------------|----------|-------------------------------------------------------------------|
+| `tenant`                | ✅        | Tenant scope for Redis keys, bundles, and control‑plane events    |
+| `project`               | ✅        | Project scope for Redis keys, bundles, and control‑plane events   |
+| `profile`               | ➖        | `development` / `production` (defaults to development)            |
+| `guarded_rest_patterns` | ➖        | Regexes for protected REST routes                                 |
+
+### Component-aware sections
+
+Each section can be **flat** or **component‑scoped** (`ingress`, `proc`).  
+When component‑scoped, each service reads its own subsection based on `GATEWAY_COMPONENT`.
+
+| Section              | Keys (examples)                                                                            | Purpose                                                     |
+|----------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------|
+| `service_capacity`   | `processes_per_instance`, `concurrent_requests_per_process`, `avg_processing_time_seconds` | Capacity sizing. Used for backpressure math and validation. |
+| `backpressure`       | `capacity_buffer`, `queue_depth_multiplier`, thresholds, `capacity_source_component`       | Queue/backpressure settings and capacity source selector.   |
+| `rate_limits`        | role limits (`hourly`, `burst`, `burst_window`)                                            | Per‑role rate limiting (per session).                       |
+| `pools`              | `pg_pool_min_size`, `pg_pool_max_size`, `redis_max_connections`, `pg_max_connections`      | Pool sizing per component; optional DB max for warnings.    |
+| `limits`             | `max_sse_connections_per_instance`, `max_integrations_ops_concurrency`, `max_queue_size`   | Soft limits for ingress/proc.                               |
+| `redis`              | `sse_stats_ttl_seconds`, `sse_stats_max_age_seconds`                                       | Redis‑based SSE stats retention.                            |
+
+### Example (readable, component‑scoped)
+
+```json
+{
+  "tenant": "tenant-id",
+  "project": "project-id",
+  "profile": "development",
+  "service_capacity": {
+    "ingress": {
+      "processes_per_instance": 2
+    },
+    "proc": {
+      "concurrent_requests_per_process": 8,
+      "processes_per_instance": 4,
+      "avg_processing_time_seconds": 25
+    }
+  },
+  "backpressure": {
+    "capacity_source_component": "proc",
+    "ingress": {
+      "capacity_buffer": 0.1,
+      "queue_depth_multiplier": 3,
+      "anonymous_pressure_threshold": 0.6,
+      "registered_pressure_threshold": 0.85,
+      "paid_pressure_threshold": 0.9,
+      "hard_limit_threshold": 0.98
+    },
+    "proc": {
+      "capacity_buffer": 0.1,
+      "queue_depth_multiplier": 3,
+      "anonymous_pressure_threshold": 0.6,
+      "registered_pressure_threshold": 0.85,
+      "paid_pressure_threshold": 0.9,
+      "hard_limit_threshold": 0.98
+    }
+  },
+  "rate_limits": {
+    "ingress": {
+      "anonymous": { "hourly": 120, "burst": 10, "burst_window": 60 },
+      "registered": { "hourly": 2000, "burst": 100, "burst_window": 60 },
+      "paid": { "hourly": 4000, "burst": 150, "burst_window": 60 },
+      "privileged": { "hourly": -1, "burst": 300, "burst_window": 60 }
+    },
+    "proc": {
+      "anonymous": { "hourly": 120, "burst": 10, "burst_window": 60 },
+      "registered": { "hourly": 2000, "burst": 100, "burst_window": 60 },
+      "paid": { "hourly": 4000, "burst": 150, "burst_window": 60 },
+      "privileged": { "hourly": -1, "burst": 300, "burst_window": 60 }
+    }
+  },
+  "pools": {
+    "ingress": { "pg_pool_min_size": 0, "pg_pool_max_size": 4, "redis_max_connections": 20 },
+    "proc": { "pg_pool_min_size": 0, "pg_pool_max_size": 8, "redis_max_connections": 40 },
+    "pg_max_connections": 100
+  },
+  "limits": {
+    "ingress": { "max_sse_connections_per_instance": 200 },
+    "proc": { "max_integrations_ops_concurrency": 200, "max_queue_size": 100 }
+  },
+  "redis": {
+    "sse_stats_ttl_seconds": 60,
+    "sse_stats_max_age_seconds": 120
+  }
+}
+```
+
+## Bundles
+
+These values scope **bundle registries** and **control‑plane events**.
+
+| Setting                  | Default   | Purpose                                                                                         | Used by                           |
+|--------------------------|-----------|-------------------------------------------------------------------------------------------------|-----------------------------------|
+| `AGENTIC_BUNDLES_JSON`   | _(unset)_ | Seed bundle registry from JSON                                                                  | `infra/plugin/bundle_store.py`    |
+| `HOST_BUNDLES_PATH`      | _(unset)_ | Host path for bundle roots (git‑cloned or manually provisioned). Often mounted into containers. | `infra/plugin/git_bundle.py`      |
+| `AGENTIC_BUNDLES_ROOT`   | _(unset)_ | Container‑visible bundles root (path used by runtime inside container).                         | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_ALWAYS_PULL` | `0`       | Force refresh on resolve                                                                        | `infra/plugin/bundle_registry.py` |
+| `BUNDLE_GIT_ATOMIC`      | `1`       | Atomic clone/update                                                                             | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_SHALLOW`     | `1`       | Shallow clone mode                                                                              | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_CLONE_DEPTH` | `50`      | Shallow clone depth                                                                             | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_KEEP`        | `3`       | Keep N old bundle dirs                                                                          | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_TTL_HOURS`   | `0`       | TTL cleanup for old bundle dirs                                                                 | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_REF_TTL_SECONDS` | `3600`    | TTL for active bundle refs                                                                      | `infra/plugin/bundle_refs.py`     |
 
 **Tenant/project scoped channels**
 
@@ -66,12 +159,14 @@ product‑level chatbot capabilities.
 
 ## Parallelism / Capacity
 
-| Setting                 | Default | Purpose | Used by                                                       |
-|-------------------------|---------| --- |---------------------------------------------------------------|
-| `GATEWAY_CONFIG_JSON.service_capacity.processes_per_instance`  | `1`     | Number of worker processes per instance | `infra/gateway/config.py`, monitoring/heartbeat expectations  |
-| `GATEWAY_CONFIG_JSON.service_capacity.concurrent_requests_per_process`   | `5`     | Max concurrent chat tasks per processor | `apps/chat/processor.py`                                      |
-| `CHAT_TASK_TIMEOUT_SEC` | `600`   | Per‑task timeout (seconds) | `apps/chat/processor.py`                                      |
-| `MAX_QUEUE_SIZE`        | `0`     | Hard queue size limit (0 = disabled) | `infra/gateway/backpressure.py`                               |
+| Setting                                                                     | Default | Purpose                                | Used by                                           |
+|-----------------------------------------------------------------------------|---------|----------------------------------------|---------------------------------------------------|
+| `GATEWAY_CONFIG_JSON.service_capacity.proc.processes_per_instance`          | `1`     | Proc worker processes per instance     | `infra/gateway/config.py`, heartbeat expectations |
+| `GATEWAY_CONFIG_JSON.service_capacity.proc.concurrent_requests_per_process` | `5`     | Max concurrent chat tasks per proc     | `apps/chat/processor.py`                          |
+| `GATEWAY_CONFIG_JSON.service_capacity.proc.avg_processing_time_seconds`     | `25`    | Capacity math / throughput estimate    | `infra/gateway/config.py`                         |
+| `GATEWAY_CONFIG_JSON.service_capacity.ingress.processes_per_instance`       | `1`     | Ingress worker processes per instance  | `infra/gateway/config.py`                         |
+| `GATEWAY_CONFIG_JSON.limits.proc.max_queue_size`                            | `0`     | Hard queue size limit (0 = disabled)   | `infra/gateway/backpressure.py`                   |
+| `CHAT_TASK_TIMEOUT_SEC`                                                     | `600`   | Per‑task timeout (seconds)             | `apps/chat/processor.py`                          |
 
 **Note:** The following are currently **not enforced** in the chat service (present only in examples):
 
@@ -87,11 +182,24 @@ returns a **system error** with:
 - `error_type`: `queue.enqueue_rejected`
 - `http_status`: `503`
 - `reason`: one of
-  - `queue_size_exceeded` (when `MAX_QUEUE_SIZE` is set and exceeded)
+  - `queue_size_exceeded` (when `GATEWAY_CONFIG_JSON.limits.proc.max_queue_size` is set and exceeded)
   - `hard_limit_exceeded` / `registered_threshold_exceeded` / `anonymous_threshold_exceeded`
 
 This is emitted from `apps/chat/api/ingress/chat_core.py` and handled in SSE at
 `apps/chat/api/sse/chat.py`.
+
+## Metrics & Rolling Windows
+
+The monitoring pipeline stores **rolling metrics** in Redis (tenant/project‑scoped):
+
+- SSE connections (1m/15m/1h/max)
+- Queue depth + pressure (1m/15m/1h/max)
+- Pool utilization + max in‑use (1m/15m/1h/max)
+- Task latency percentiles (queue wait + exec p50/p95/p99)
+- Ingress REST latency percentiles (p50/p95/p99)
+
+Retention is **1 hour**. Metrics are exposed via:
+`GET /monitoring/system` and the Metrics server (`docs/service/scale/metric-server-README.md`).
 
 ## Scheduling (OPEX + Bundle Cleanup)
 
@@ -125,25 +233,25 @@ Plan quota seeding
 
 Stripe configuration
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `STRIPE_SECRET_KEY` | _(unset)_ | Stripe API key (preferred) |
-| `STRIPE_API_KEY` | _(unset)_ | Fallback Stripe API key |
+| Setting                 | Default | Purpose                        |
+|-------------------------| --- |--------------------------------|
+| `STRIPE_SECRET_KEY`     | _(unset)_ | Stripe API key (preferred)     |
+| `STRIPE_API_KEY`        | _(unset)_ | Fallback Stripe API key        |
 | `STRIPE_WEBHOOK_SECRET` | _(unset)_ | Webhook signature verification |
 
 If `STRIPE_WEBHOOK_SECRET` is not set, webhook payloads are accepted without signature verification (not recommended).
 
 Admin email notifications
 
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `EMAIL_ENABLED` | `true` | Enable admin email notifications |
-| `EMAIL_HOST` | _(unset)_ | SMTP host |
-| `EMAIL_PORT` | `587` | SMTP port |
-| `EMAIL_USER` | _(unset)_ | SMTP username |
-| `EMAIL_PASSWORD` | _(unset)_ | SMTP password |
-| `EMAIL_FROM` | _(EMAIL_USER)_ | From address |
-| `EMAIL_TO` | `lena@nestlogic.com` | Default recipient |
-| `EMAIL_USE_TLS` | `true` | Enable TLS |
+| Setting          | Default              | Purpose                           |
+|------------------|----------------------|-----------------------------------|
+| `EMAIL_ENABLED`  | `true`               | Enable admin email notifications  |
+| `EMAIL_HOST`     | _(unset)_            | SMTP host                         |
+| `EMAIL_PORT`     | `587`                | SMTP port                         |
+| `EMAIL_USER`     | _(unset)_            | SMTP username                     |
+| `EMAIL_PASSWORD` | _(unset)_            | SMTP password                     |
+| `EMAIL_FROM`     | _(EMAIL_USER)_       | From address                      |
+| `EMAIL_TO`       | `lena@nestlogic.com` | Default recipient                 |
+| `EMAIL_USE_TLS`  | `true`               | Enable TLS                        |
 
 Admin emails are sent for wallet refunds and subscription cancels/reconciles.

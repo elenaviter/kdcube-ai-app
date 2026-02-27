@@ -47,9 +47,13 @@ async def opex_lifespan(app: FastAPI):
     if _scheduler_task is None:
         _scheduler_task = asyncio.create_task(routines.aggregation_scheduler_loop())
         logger.info("[OPEX Aggregator] Background scheduler task started")
-    if _bundle_cleanup_task is None:
-        _bundle_cleanup_task = asyncio.create_task(routines.bundle_cleanup_loop())
-        logger.info("[Bundles] Background cleanup task started")
+    component = (os.getenv("GATEWAY_COMPONENT") or "ingress").strip().lower()
+    if component == "proc":
+        if _bundle_cleanup_task is None:
+            _bundle_cleanup_task = asyncio.create_task(routines.bundle_cleanup_loop())
+            logger.info("[Bundles] Background cleanup task started")
+    else:
+        logger.info("[Bundles] Cleanup task skipped (component=%s)", component)
     if _subscription_rollover_task is None and routines.subscription_rollover_enabled():
         _subscription_rollover_task = asyncio.create_task(routines.subscription_rollover_scheduler_loop())
         logger.info("[Subscription Rollover] Background scheduler task started")

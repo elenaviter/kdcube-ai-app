@@ -433,6 +433,12 @@ Admin APIs:
 - `POST /admin/integrations/bundles/reset-env`
 - `POST /admin/integrations/bundles/cleanup`
 
+**CI/CD friendly alternative (no auth tokens):**
+
+- Set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on the **processor** during deploy.
+- On startup, the processor overwrites the Redis registry from `AGENTIC_BUNDLES_JSON`
+  and broadcasts the update to all replicas.
+
 ### CLI: delete bundle registry key (per tenant/project)
 
 `admin_reset_bundles_from_env` does **not** delete the registry; it overwrites Redis from `AGENTIC_BUNDLES_JSON`.  
@@ -509,6 +515,11 @@ export AGENTIC_BUNDLES_JSON='{
 
 **Where it is cloned**:  
 `HOST_BUNDLES_PATH` → `AGENTIC_BUNDLES_ROOT` → `/bundles` (fallback).
+
+**Important (current default):**
+
+- Set `BUNDLE_GIT_RESOLUTION_ENABLED=0` to **disable clone/pull**.
+- This keeps `git_*` fields for version tracking while using baked bundles.
 
 ---
 

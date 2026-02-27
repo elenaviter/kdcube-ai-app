@@ -12,6 +12,12 @@ It reflects the actual behavior in code (SSE/Socket.IO are gated; REST is sessio
 - **Process health**: heartbeat‑based detection of active chat processes
 - **Circuit breakers**: auth/rate/backpressure failure states
 - **Throttling analytics**: recent throttle events and per‑period summaries
+- **SSE connections**: current + rolling windows (tenant/project‑global)
+- **Connection pools**: Postgres + Redis utilization + max in‑use (aggregated across workers)
+- **Latency percentiles**:
+  - Processor queue wait + execution time (p50/p95/p99, 1m/15m/1h)
+  - Ingress REST latency (p50/p95/p99, 1m/15m/1h)
+- **Draining indicator**: instances that stopped heartbeating recently are marked as *draining* before becoming stale
 
 ```mermaid
 graph TD
@@ -41,7 +47,14 @@ If you want REST to be gated, update the policy in:
 ### System status
 `GET /monitoring/system`
 
-Returns gateway status + queue pressure + capacity transparency. Used by admin UI.
+Returns gateway status + queue pressure + capacity transparency, plus:
+- `components.ingress.sse` (current + rolling windows)
+- `components.proc.queue` (depth + pressure windows)
+- `components.proc.latency` (queue wait + exec percentiles)
+- `components.ingress.latency` (REST latency percentiles)
+- `components.*.pools_aggregate` (pool utilization + max in‑use windows)
+- `throttling_windows` (1m/15m/1h 429/503 counts)
+- `components.*.instances[*].draining` (true during a grace window after heartbeat stops)
 
 ### Circuit breakers
 - `GET /admin/circuit-breakers`
@@ -99,3 +112,5 @@ sequenceDiagram
 - Each service instance applies **only its own tenant/project config** (from env),
   but can publish updates for other tenants/projects via the admin API.
 - Update payload uses **role‑based rate limits** (see gateway README for schema).
+- Component‑aware configs (`ingress`/`proc`) are supported; each service selects its slice
+  based on `GATEWAY_COMPONENT`.

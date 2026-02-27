@@ -64,6 +64,11 @@ and picked up by all processors.
 - `POST /admin/integrations/bundles/reset-env`
   - Reloads from `AGENTIC_BUNDLES_JSON` and overwrites Redis + memory.
 
+**CI/CD friendly alternative (no admin tokens):**
+
+- Set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on the **processor** during deploy.
+- On startup, the processor overwrites Redis from `AGENTIC_BUNDLES_JSON` and broadcasts.
+
 ### Cache cleanup (retiring old bundle versions)
 
 - `POST /admin/integrations/bundles/cleanup`
@@ -118,6 +123,15 @@ On chat service startup, the registry is loaded from Redis and mirrored to the i
 
 Processors also subscribe to config updates:
 - [processor.py](../../processor.py)
+
+## Git bundles (optional)
+
+You may include `git_url`, `git_ref`, and `git_subdir` in `AGENTIC_BUNDLES_JSON`.
+
+**Important (current default):**
+
+- `BUNDLE_GIT_RESOLUTION_ENABLED=0` disables git clone/pull.
+- `git_*` fields are treated as **metadata only** until Git bundles are fully configured.
   - subscribes to `kdcube:config:bundles:update`
   - applies updates and clears agentic loader caches
 

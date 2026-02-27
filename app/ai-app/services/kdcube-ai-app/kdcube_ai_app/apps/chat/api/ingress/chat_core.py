@@ -32,7 +32,7 @@ from kdcube_ai_app.apps.middleware.token_extract import (
     resolve_socket_auth_tokens,
 )
 from kdcube_ai_app.apps.chat.api.resolvers import get_auth_manager
-from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
+from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async, get_default_id
 
 from kdcube_ai_app.auth.AuthManager import AuthenticationError, PRIVILEGED_ROLES
 
@@ -862,13 +862,22 @@ async def get_conversation_status(
         current_turn_id = payload_row.get("last_turn_id")
     if publish:
         spec_resolved = await resolve_bundle_async(bundle_id, override=None)
+        bundle_id_val = spec_resolved.id if spec_resolved else (bundle_id or get_default_id())
+        if not bundle_id_val:
+            bundle_id_val = "unknown"
+            logger.warning(
+                "conv_status.get: bundle_id missing; using placeholder (tenant=%s project=%s session=%s)",
+                tenant,
+                project,
+                session.session_id,
+            )
 
         routing = ChatTaskRouting(
             session_id=session.session_id,
             conversation_id=conv_id,
             turn_id=current_turn_id,
             socket_id=stream_id,
-            bundle_id=spec_resolved.id if spec_resolved else None,
+            bundle_id=bundle_id_val,
         )
         svc = ServiceCtx(request_id=str(uuid.uuid4()), user=session.user_id, tenant=tenant, project=project)
         conv = ConversationCtx(

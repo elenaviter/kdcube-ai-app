@@ -9,6 +9,7 @@ from enum import Enum
 from typing import Optional, Iterable, List
 
 from fastapi import Request
+import os
 
 from kdcube_ai_app.auth.AuthManager import RequirementBase
 
@@ -22,6 +23,7 @@ class GatewayPolicy:
     cls: EndpointClass
     bypass_throttling: bool
     bypass_gate: bool
+    bypass_backpressure: bool
     requirements: Optional[List[RequirementBase]] = None
 
 class GatewayPolicyResolver:
@@ -38,6 +40,7 @@ class GatewayPolicyResolver:
         r"^/conversations/[^/]+/[^/]+/turns-with-feedbacks$",
         r"^/conversations/[^/]+/[^/]+/feedback/conversations-in-period$",
         r"^/integrations/bundles/[^/]+/[^/]+/operations/[^/]+$",
+        r"^/api/integrations/bundles/[^/]+/[^/]+/operations/[^/]+$",
     )
 
     def __init__(self, guarded_rest_patterns: Optional[Iterable[str]] = None):
@@ -47,6 +50,7 @@ class GatewayPolicyResolver:
             re.compile(p) for p in (guarded_rest_patterns or self.DEFAULT_GUARDED_REST_PATTERNS)
             if isinstance(p, str) and p
         )
+        self._component = (os.getenv("GATEWAY_COMPONENT") or "ingress").strip().lower()
 
     def set_guarded_patterns(self, patterns: Iterable[str]) -> None:
         compiled = tuple(
@@ -56,6 +60,10 @@ class GatewayPolicyResolver:
         self._guarded_rest_patterns = compiled
 
     def classify(self, path: str) -> EndpointClass:
+        if self._component == "proc":
+            if path.startswith("/api/integrations/"):
+                return EndpointClass.CHAT_INGRESS
+            return EndpointClass.READ
         if path.startswith("/sse/stream"):
             return EndpointClass.CONNECT
         if path.startswith("/sse/chat"):
@@ -78,6 +86,7 @@ class GatewayPolicyResolver:
                 cls=cls,
                 bypass_throttling=True,
                 bypass_gate=True,
+                bypass_backpressure=True,
                 requirements=[],
             )
 
@@ -87,6 +96,7 @@ class GatewayPolicyResolver:
                 cls=cls,
                 bypass_throttling=False,
                 bypass_gate=False,
+                bypass_backpressure=False,
                 requirements=[],
             )
 
@@ -94,15 +104,17 @@ class GatewayPolicyResolver:
         if cls in (EndpointClass.CONNECT, EndpointClass.READ):
             return GatewayPolicy(
                 cls=cls,
-                bypass_throttling=True,
-                bypass_gate=True,
+                bypass_throttling=False,
+                bypass_gate=False,
+                bypass_backpressure=True,
                 requirements=[],
             )
 
         # fallback
         return GatewayPolicy(
             cls=EndpointClass.READ,
-            bypass_throttling=True,
-            bypass_gate=True,
+            bypass_throttling=False,
+            bypass_gate=False,
+            bypass_backpressure=True,
             requirements=[],
         )

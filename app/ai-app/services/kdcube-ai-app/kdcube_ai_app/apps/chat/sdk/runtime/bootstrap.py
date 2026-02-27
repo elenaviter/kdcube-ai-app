@@ -32,6 +32,19 @@ from kdcube_ai_app.storage.storage import IStorageBackend
 
 logger = logging.getLogger(__name__)
 
+# Execution/runtime processes should keep Redis pools tiny.
+if os.getenv("EXECUTION_MODE") or os.getenv("EXECUTION_ID") or os.getenv("EXECUTION_SANDBOX"):
+    try:
+        from kdcube_ai_app.infra.gateway.config import get_gateway_config, set_gateway_config
+        cfg = get_gateway_config()
+        pools_cfg = getattr(cfg, "pools", None)
+        if pools_cfg is not None:
+            # cap redis connections to 1 in execution runtimes
+            pools_cfg.redis_max_connections = 1
+            set_gateway_config(cfg)
+    except Exception:
+        pass
+
 try:
     import cloudpickle
 except Exception:  # pragma: no cover

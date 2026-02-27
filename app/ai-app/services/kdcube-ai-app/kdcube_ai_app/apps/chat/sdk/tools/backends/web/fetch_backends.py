@@ -7,13 +7,13 @@ from typing import List, Optional, Dict, Any, Annotated, Callable, Awaitable
 import logging, json, os, uuid, base64, asyncio
 from datetime import datetime, timezone
 
+from kdcube_ai_app.apps.chat.sdk.tools.web.favicon_cache import enrich_sources_pool_with_favicons
 from kdcube_ai_app.apps.chat.sdk.tools.web.web_extractors import WebContentFetcher
 from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import filter_fetch_results
 from kdcube_ai_app.apps.chat.sdk.solutions.widgets.fetch_url_contents import (
     FetchWebResourceWidget,
 )
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.inventory import _normalize_url
-from kdcube_ai_app.apps.chat.sdk.tools.citations import enrich_sources_pool_with_favicons
 from kdcube_ai_app.tools.content_type import fetch_url_with_content_type, guess_mime_from_url
 from kdcube_ai_app.tools.scrap_utils import build_content_blocks_from_html
 from kdcube_ai_app.infra.service_hub.multimodality import (

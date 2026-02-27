@@ -435,9 +435,18 @@ class RenderingTools:
                     f".mermaid svg {{ transform: scale({mermaid_scale}); transform-origin: 0 0; }}"
                 )
 
+            mermaid_css_bits.append(
+                ".mermaid svg { text-rendering: geometricPrecision; shape-rendering: geometricPrecision; }"
+            )
+
             mermaid_css = "\n            ".join(mermaid_css_bits)
 
             if format == "mermaid":
+                canvas_pad = max(int(padding_px or 0), 0) if fit == "content" else 0
+                if isinstance(background, str) and background.strip().lower() in {"transparent", "none"}:
+                    canvas_bg = "transparent"
+                else:
+                    canvas_bg = (background or "white")
                 html_content = f"""<!DOCTYPE html>
     <html>
     <head>
@@ -455,6 +464,8 @@ class RenderingTools:
             }}
             #canvas {{
                 display: inline-block;
+                padding: {canvas_pad}px;
+                background: {canvas_bg};
             }}
             .mermaid {{ display: inline-block; }}
             #error {{ color: red; white-space: pre-wrap; font-family: monospace; }}
@@ -520,6 +531,45 @@ class RenderingTools:
                     if zoom and zoom > 0:
                         await page.evaluate("z => { document.body.style.zoom = String(z); }", zoom)
 
+                async def _apply_mermaid_svg_scale():
+                    scale = 1.0
+                    if mermaid_scale and mermaid_scale > 0:
+                        scale *= float(mermaid_scale)
+                    if zoom and zoom > 0:
+                        scale *= float(zoom)
+                    if scale == 1.0:
+                        return
+                    await page.evaluate(
+                        """
+                        (scale) => {
+                          const svg = document.querySelector('.mermaid svg');
+                          if (!svg) return;
+                          const vb = svg.viewBox && svg.viewBox.baseVal;
+                          if (vb && vb.width && vb.height) {
+                            svg.setAttribute('width', vb.width * scale);
+                            svg.setAttribute('height', vb.height * scale);
+                            return;
+                          }
+                          const rect = svg.getBoundingClientRect();
+                          if (rect && rect.width && rect.height) {
+                            svg.setAttribute('width', rect.width * scale);
+                            svg.setAttribute('height', rect.height * scale);
+                          }
+                        }
+                        """,
+                        scale,
+                    )
+
+                async def _wait_for_fonts():
+                    try:
+                        await page.evaluate(
+                            """() => (document.fonts && document.fonts.ready)
+                                ? document.fonts.ready
+                                : Promise.resolve()"""
+                        )
+                    except Exception:
+                        pass
+
                 async def _apply_background():
                     if background and isinstance(background, str):
                         bg = background.strip()
@@ -574,15 +624,20 @@ class RenderingTools:
                         await page.wait_for_function("window.__RENDER_READY__ === true", timeout=30000)
                         await page.wait_for_timeout(max(int(render_delay_ms or 0), 0))
                         await _apply_background()
-                        await _apply_zoom()
+                        await _wait_for_fonts()
+                        await _apply_mermaid_svg_scale()
 
                         if fit == "content":
-                            box = await _compute_bbox(".mermaid svg")
-                            if box:
-                                screenshot_opts["clip"] = _clip_from_box(box)
-                                screenshot_opts["full_page"] = False
-                                await page.screenshot(**screenshot_opts)
+                            element = await page.query_selector("#canvas")
+                            if not element:
+                                element = await page.query_selector(".mermaid svg")
+                            if element:
+                                await element.screenshot(**screenshot_opts)
                             else:
+                                box = await _compute_bbox(".mermaid svg")
+                                if box:
+                                    screenshot_opts["clip"] = _clip_from_box(box)
+                                    screenshot_opts["full_page"] = False
                                 await page.screenshot(**screenshot_opts)
                         elif full_page:
                             await page.screenshot(**screenshot_opts)

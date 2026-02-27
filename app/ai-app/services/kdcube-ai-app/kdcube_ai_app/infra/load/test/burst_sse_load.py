@@ -252,8 +252,20 @@ async def run_load(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="SSE chat burst load generator (server-side)")
     p.add_argument("--base-url", default=os.getenv("CHAT_BASE_URL", "http://localhost:8010"))
-    p.add_argument("--tenant", default=os.getenv("TENANT_ID"))
-    p.add_argument("--project", default=os.getenv("PROJECT_ID"))
+    # Prefer tenant/project from GATEWAY_CONFIG_JSON; fall back to legacy envs or CLI.
+    gateway_cfg = os.getenv("GATEWAY_CONFIG_JSON")
+    tenant_default = None
+    project_default = None
+    if gateway_cfg:
+        try:
+            data = json.loads(gateway_cfg)
+            tenant_default = data.get("tenant") or data.get("tenant_id")
+            project_default = data.get("project") or data.get("project_id")
+        except Exception:
+            tenant_default = None
+            project_default = None
+    p.add_argument("--tenant", default=tenant_default or os.getenv("TENANT_ID"))
+    p.add_argument("--project", default=project_default or os.getenv("PROJECT_ID"))
     p.add_argument("--idp-path", default=os.getenv("IDP_DB_PATH"))
     p.add_argument("--admin", type=int, default=5, help="Number of admin users")
     p.add_argument("--registered", type=int, default=10, help="Number of registered users")

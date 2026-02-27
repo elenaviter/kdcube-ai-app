@@ -4,6 +4,7 @@
 # ops/deployment/sql/deploy_project.py
 from kdcube_ai_app.ops.deployment.sql.db_deployment import (run as provision, SYSTEM_COMPONENT, SYSTEM_SCHEMA,
                                                             PROJECT_COMPONENT, CONTROL_PLANE_COMPONENT)
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
 def ensure_control_plane():
     """
@@ -41,10 +42,11 @@ if __name__ == "__main__":
     load_dotenv(find_dotenv())
 
     import os
-    # 5435
-    # os.environ["POSTGRES_PORT"] = "5436"
-    project = os.environ.get("DEFAULT_PROJECT_NAME", None)
-    tenant = os.environ.get("DEFAULT_TENANT", None)
+    if not os.environ.get("POSTGRES_PORT"):
+        os.environ["POSTGRES_PORT"] = "5436"
+    settings = get_settings()
+    tenant = settings.TENANT
+    project = settings.PROJECT
 
     # Deploy control plane first (idempotent)
     ensure_control_plane()

@@ -1,7 +1,7 @@
 # Turn Data (Conversation Fetch)
 
 This document describes the `/conversations/{id}/fetch` payload and how it is constructed from
-turn logs and stream artifacts. It reflects the current UI expectations in the cisoteria client.
+turn logs and stream artifacts. It reflects the current UI expectations in the reference client.
 
 ## Fetch flow (server)
 Endpoint: `POST /api/cb/conversations/{tenant}/{project}/{conversation_id}/fetch`

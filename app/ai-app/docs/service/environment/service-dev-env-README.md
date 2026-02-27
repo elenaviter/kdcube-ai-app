@@ -2,9 +2,6 @@
 
 | Variable                             | Purpose                                                                                                                                                           | Default | File                                                  | Service/Scope                                      |
 |--------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------|-------------------------------------------------------|----------------------------------------------------|
-| `DEFAULT_PROJECT_NAME` | Default project name | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker (local) |
-| `DEFAULT_TENANT` | Default tenant id | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker (local) |
-| `TENANT_ID` | Tenant id (service identity) | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker (local) |
 | `POSTGRES_USER` | Postgres user | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `POSTGRES_PASSWORD` | Postgres password | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `POSTGRES_DATABASE` | Postgres database name | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
@@ -15,14 +12,12 @@
 | `SELF_HOSTED_SERVING_ENDPOINT` | Custom model serving endpoint | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `REDIS_PASSWORD` | Redis password | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `REDIS_URL` | Redis connection URL | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
-| `REDIS_MAX_CONNECTIONS` | Cap Redis client pool per process (applies to shared async/sync pools) | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `KDCUBE_STORAGE_PATH` | Storage backend path or S3 URI | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/worker |
 | `ORCHESTRATOR_WORKER_CONCURRENCY` | Worker concurrency for orchestrator | — | `deployment/docker/devenv/sample_env/.env.backend` | worker/orchestrator |
 | `CB_ORCHESTRATOR_TYPE` | Orchestrator name | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/worker |
 | `CB_RELAY_IDENTITY` | Redis pubsub identity | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/worker |
 | `DRAMATIQ_PROCESSES` | Dramatiq worker process count | — | `deployment/docker/devenv/sample_env/.env.backend` | worker |
-| `MAX_QUEUE_SIZE` | Hard cap for enqueue | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
-| `GATEWAY_CONFIG_JSON` | Full gateway config override. Set `service_capacity.processes_per_instance` and `service_capacity.concurrent_requests_per_process` here. | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
+| `GATEWAY_CONFIG_JSON` | Full gateway config override. **Required** `tenant` + `project`. Supports per-component slices: `service_capacity`, `backpressure`, `rate_limits`, `pools`, `limits` under `ingress`/`proc`. | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
 | `CHAT_TASK_TIMEOUT_SEC` | Per-task timeout (seconds) | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
 | `KB_PARALLELISM` | KB service parallelism | — | `deployment/docker/devenv/sample_env/.env.backend` | kb |
 | `UVICORN_RELOAD` | Enable Uvicorn auto-reload for `web_app.py` (dev only). Avoid with multi-worker in production. | `0` | `deployment/docker/devenv/sample_env/.env.backend` | chat |
@@ -58,6 +53,7 @@
 | `NO_PROXY` | No-proxy hosts | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb |
 | `AWS_EC2_METADATA_DISABLED` | Allow EC2 IMDS | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb |
 | `AWS_SDK_LOAD_CONFIG` | Load AWS config file | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb |
+| `AWS_PROFILE` | AWS shared config profile (local/dev) | — | `deployment/docker/devenv/sample_env/.env.backend` | chat/kb/metrics (optional) |
 | `TOOLS_WEB_SEARCH_FETCH_CONTENT` | Enable web fetch | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
 | `WEB_FETCH_RESOURCES_MEDIUM` | Medium cookies JSON | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
 | `WEB_SEARCH_AGENTIC_THINKING_BUDGET` | Web search thinking budget | — | `deployment/docker/devenv/sample_env/.env.backend` | chat |
@@ -113,3 +109,30 @@
 **Notes**
 These variables must be present in the local process environment (shell or IDE run config) for dev runs. Docker-only `.env` files are not automatically loaded by PyCharm.
 Uvicorn worker count is derived from `GATEWAY_CONFIG_JSON.service_capacity.processes_per_instance` when you run `web_app.py` directly (IDE/CLI). For CLI `uvicorn ...`, set `--workers` explicitly or keep using the Python entrypoint so the config is applied consistently.
+
+**Minimal `GATEWAY_CONFIG_JSON` (ingress vs proc)**
+```json
+{
+  "tenant": "<TENANT_ID>",
+  "project": "<PROJECT_ID>",
+  "service_capacity": {
+    "ingress": { "processes_per_instance": 2 },
+    "proc": { "concurrent_requests_per_process": 8, "processes_per_instance": 4, "avg_processing_time_seconds": 25 }
+  },
+  "backpressure": { "capacity_source_component": "proc" },
+  "rate_limits": {
+    "ingress": {
+      "anonymous": { "hourly": 120, "burst": 10, "burst_window": 60 },
+      "registered": { "hourly": 2000, "burst": 100, "burst_window": 60 },
+      "paid": { "hourly": 4000, "burst": 150, "burst_window": 60 },
+      "privileged": { "hourly": -1, "burst": 300, "burst_window": 60 }
+    },
+    "proc": {
+      "anonymous": { "hourly": 120, "burst": 10, "burst_window": 60 },
+      "registered": { "hourly": 2000, "burst": 100, "burst_window": 60 },
+      "paid": { "hourly": 4000, "burst": 150, "burst_window": 60 },
+      "privileged": { "hourly": -1, "burst": 300, "burst_window": 60 }
+    }
+  }
+}
+```

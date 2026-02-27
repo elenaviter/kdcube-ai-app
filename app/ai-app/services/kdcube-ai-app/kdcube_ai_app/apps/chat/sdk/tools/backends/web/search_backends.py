@@ -46,9 +46,10 @@ import aiohttp
 from kdcube_ai_app.apps.chat.sdk.tools.backends.web.inventory import compose_search_results_html, SearchRequest, \
     make_hit, clamp_max_results, SearchBackendError, _claim_sid_block, _normalize_url, dedup_round_robin_ranked, \
     PROVIDERS_AUTHORITY_RANK
+from kdcube_ai_app.apps.chat.sdk.tools.web.favicon_cache import enrich_sources_pool_with_favicons
 from kdcube_ai_app.apps.chat.sdk.tools.web.with_llm import sources_reconciler, \
     filter_search_results_by_content
-from kdcube_ai_app.apps.chat.sdk.tools.citations import enrich_sources_pool_with_favicons
+# from kdcube_ai_app.apps.chat.sdk.tools.citations import enrich_sources_pool_with_favicons
 from kdcube_ai_app.infra.accounting import track_web_search, with_accounting
 from kdcube_ai_app.infra.accounting.usage import ws_provider_extractor, ws_model_extractor, ws_usage_extractor, \
     ws_meta_extractor

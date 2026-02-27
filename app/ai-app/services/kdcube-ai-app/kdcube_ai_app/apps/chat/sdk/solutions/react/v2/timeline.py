@@ -19,16 +19,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.caching import (
     tail_rounds_from_path as cache_tail_rounds_from_path,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.proto import RuntimeCtx
-from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conv_progressive_summary import (
-    summarize_context_blocks_progressive,
-    summarize_turn_prefix_progressive,
-    build_compaction_digest,
-)
+
 from kdcube_ai_app.apps.chat.sdk.tools import citations as citations_module
-from kdcube_ai_app.apps.chat.sdk.tools.citations import (
-    dedupe_sources_by_url,
-    normalize_sources_any,
-)
 from kdcube_ai_app.apps.chat.sdk.util import token_count, isoz, ts_key
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.plan import build_active_plan_blocks
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.layout import build_sources_pool_text
@@ -610,10 +602,10 @@ def materialize_sources_by_sids(pool: List[Dict[str, Any]], sids: List[int]) -> 
 
 
 def ensure_sources_in_pool(pool: List[Dict[str, Any]], sources: Any) -> tuple[List[Dict[str, Any]], List[int]]:
-    normalized = normalize_sources_any(sources)
+    normalized = citations_module.normalize_sources_any(sources)
     if not normalized:
         return pool, []
-    merged = dedupe_sources_by_url(pool, normalized)
+    merged = citations_module.dedupe_sources_by_url(pool, normalized)
     return merged, extract_source_sids(merged)
 
 
@@ -1829,6 +1821,7 @@ class Timeline:
         if not history_blocks and previous_summary:
             summary = previous_summary
         elif history_blocks:
+            from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conv_progressive_summary import summarize_context_blocks_progressive
             summary = await summarize_context_blocks_progressive(
                 svc=self.svc,
                 blocks=history_blocks,
@@ -1842,6 +1835,7 @@ class Timeline:
 
         prefix_summary: Optional[str] = None
         if turn_prefix_blocks:
+            from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conv_progressive_summary import summarize_turn_prefix_progressive
             prefix_summary = await summarize_turn_prefix_progressive(
                 svc=self.svc,
                 blocks=turn_prefix_blocks,
@@ -1860,6 +1854,8 @@ class Timeline:
             summary = f"{summary}\n\n---\n\n**Turn Context (split turn):**\n\n{prefix_summary}"
 
         compacted_blocks = blocks[boundary_start:cut_index]
+
+        from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conv_progressive_summary import build_compaction_digest
         digest = build_compaction_digest(compacted_blocks)
         covered_turn_ids = extract_turn_ids_from_blocks(compacted_blocks)
         split_turn_id = ""

@@ -14,7 +14,7 @@ import redis.asyncio as aioredis
 from dotenv import load_dotenv, find_dotenv
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
-from kdcube_ai_app.infra.redis.client import get_async_redis_client, get_sync_redis_client
+from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 # Load environment
 # load_dotenv(find_dotenv())
@@ -62,9 +62,6 @@ class ServiceCommunicator:
             orchestrator_identity = ORCHESTRATOR_IDENTITY
 
         self.orchestrator_identity = orchestrator_identity
-
-        # sync client for publishing
-        self.redis = get_sync_redis_client(self.redis_url)
 
         # async client for subscribing
         self._aioredis: Optional[aioredis.Redis] = None
@@ -405,23 +402,23 @@ class ServiceCommunicator:
     #                           UTILITY FUNCTIONS
     # ==============================================================================
 
-    def get_queue_stats(self):
-        """Get queue statistics - matches what the orchestrator interface expects"""
-        redis_client = get_sync_redis_client(self.redis_url)
+    async def get_queue_stats(self):
+        """Get queue statistics (async)."""
+        await self._ensure_async()
         stats = {}
-
         queues = [
             f"{KDCUBE_ORCHESTRATOR_QUEUES_PREFIX}low_priority",
             f"{KDCUBE_ORCHESTRATOR_QUEUES_PREFIX}high_priority",
             f"{KDCUBE_ORCHESTRATOR_QUEUES_PREFIX}batch",
             "health_check"
         ]
-
         for queue in queues:
             queue_key = f"dramatiq:default.{queue}"
-            length = redis_client.llen(queue_key)
+            try:
+                length = await self._aioredis.llen(queue_key)
+            except Exception:
+                length = 0
             stats[queue] = length
-
         return stats
 
     def get_task_result(self,

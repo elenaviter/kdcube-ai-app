@@ -89,6 +89,11 @@ def _apply_git_resolution(reg: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str,
     Resolve git bundles to local paths (and optionally refresh).
     Keeps logic scoped to bundle registry, not processor.
     """
+    enabled = os.environ.get("BUNDLE_GIT_RESOLUTION_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        if any((entry.get("git_url") or entry.get("git_repo")) for entry in reg.values()):
+            logger.warning("Git bundle resolution disabled (BUNDLE_GIT_RESOLUTION_ENABLED=0); git_* fields kept as metadata only.")
+        return reg
     try:
         from kdcube_ai_app.infra.plugin.git_bundle import (
             ensure_git_bundle,
@@ -254,6 +259,10 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
 
     git_url = spec_dict.get("git_url") or spec_dict.get("git_repo")
     if git_url:
+        enabled = os.environ.get("BUNDLE_GIT_RESOLUTION_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+        if not enabled:
+            logger.warning("Git bundle resolution disabled (BUNDLE_GIT_RESOLUTION_ENABLED=0); using existing path for bundle_id=%s", spec_dict.get("id"))
+            return BundleSpec(**spec_dict)
         try:
             from kdcube_ai_app.infra.plugin.git_bundle import ensure_git_bundle, resolve_bundles_root
             from pathlib import Path as _Path

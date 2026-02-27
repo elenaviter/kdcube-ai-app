@@ -48,6 +48,11 @@ interface GatewayConfigurationView {
 }
 
 interface SystemMonitoringResponse {
+    gateway_config_source?: string;
+    gateway_config_raw?: any;
+    gateway_config_components?: Record<string, any> | null;
+    components?: Record<string, any>;
+    autoscaler?: Record<string, any>;
     instances?: Record<string, any>;
     global_stats?: Record<string, any>;
     queue_stats?: {
@@ -72,6 +77,7 @@ interface SystemMonitoringResponse {
     queue_utilization?: number;
     throttling_stats?: Record<string, any>;
     throttling_by_period?: Record<string, any>;
+    throttling_windows?: Record<string, any>;
     recent_throttling_events?: Array<any>;
     gateway_configuration?: GatewayConfigurationView;
     capacity_transparency?: Record<string, any>;
@@ -87,6 +93,14 @@ interface SystemMonitoringResponse {
         warning?: boolean;
         warning_reason?: string | null;
         warning_level?: string | null;
+    };
+    sse_connections?: {
+        total_connections?: number;
+        sessions?: number;
+        max_connections?: number;
+    };
+    connection_pools?: {
+        components?: Record<string, any>;
     };
     timestamp?: number;
 }
@@ -430,7 +444,13 @@ const Card: React.FC<{ children: React.ReactNode; className?: string }> = ({ chi
     </div>
 );
 
-const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: SystemMonitoringResponse["db_connections"] }> = ({ capacity, dbConnections }) => {
+const CapacityPanel: React.FC<{
+    capacity?: Record<string, any>;
+    dbConnections?: SystemMonitoringResponse["db_connections"];
+    capacitySource?: string;
+    capacitySourceActual?: number;
+    capacitySourceHealthy?: number;
+}> = ({ capacity, dbConnections, capacitySource, capacitySourceActual, capacitySourceHealthy }) => {
     if (!capacity) return null;
     const metrics = capacity.capacity_metrics || {};
     const scaling = capacity.instance_scaling || {};
@@ -438,11 +458,20 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
     const warnings: string[] = capacity.capacity_warnings || [];
     const hasActual = metrics.actual_runtime && metrics.health_metrics;
     const health = metrics.health_metrics || {};
+    const actualProcesses = capacitySourceActual ?? health.processes_vs_configured?.actual ?? 0;
+    const configuredProcesses = health.processes_vs_configured?.configured ?? 0;
+    const healthyProcesses = capacitySourceHealthy ?? health.processes_vs_configured?.healthy ?? 0;
 
     return (
         <Card>
-            <CardHeader title="Capacity Transparency" subtitle="Actual runtime vs configured capacity." />
+            <CardHeader
+                title="Capacity Transparency"
+                subtitle={`Capacity source: ${capacitySource || 'unknown'}. Actual runtime vs configured capacity.`}
+            />
             <CardBody className="space-y-4">
+                <Legend>
+                    Compares configured worker counts to live heartbeats from the capacity source component.
+                </Legend>
                 {dbConnections?.warning ? (
                     <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 text-sm">
                         <div className="font-semibold">DB connection capacity warning</div>
@@ -459,7 +488,12 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
                         </div>
                     </div>
                 ) : null}
-                {warnings.length > 0 && (
+                {actualProcesses === 0 ? (
+                    <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
+                        No capacity-source processes detected. Start the capacity source service (usually `proc`) or
+                        align configured worker counts with the running service.
+                    </div>
+                ) : warnings.length > 0 && (
                     <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-sm">
                         {warnings.map((w, i) => (
                             <div key={i}>• {w}</div>
@@ -467,21 +501,21 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
                     </div>
                 )}
 
-                {hasActual && (
+                {hasActual && actualProcesses > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Configured</div>
-                            <div className="text-sm font-semibold">{health.processes_vs_configured?.configured ?? '—'}</div>
+                            <div className="text-sm font-semibold">{configuredProcesses ?? '—'}</div>
                             <div className="text-xs text-gray-500">processes</div>
                         </div>
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Actual</div>
-                            <div className="text-sm font-semibold">{health.processes_vs_configured?.actual ?? '—'}</div>
+                            <div className="text-sm font-semibold">{actualProcesses ?? '—'}</div>
                             <div className="text-xs text-gray-500">running</div>
                         </div>
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Healthy</div>
-                            <div className="text-sm font-semibold">{health.processes_vs_configured?.healthy ?? '—'}</div>
+                            <div className="text-sm font-semibold">{healthyProcesses ?? '—'}</div>
                             <div className="text-xs text-gray-500">{Math.round((health.process_health_ratio ?? 0) * 100)}% health</div>
                         </div>
                         <div className="p-3 rounded-xl bg-gray-100">
@@ -492,7 +526,7 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
                     </div>
                 )}
 
-                {metrics.actual_runtime && metrics.configuration && (
+                {metrics.actual_runtime && metrics.configuration && actualProcesses > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Per Process</div>
@@ -517,7 +551,7 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
                     </div>
                 )}
 
-                {scaling && (
+                {scaling && actualProcesses > 0 && (
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                         <div className="p-3 rounded-xl bg-gray-100">
                             <div className="text-xs text-gray-600">Instances</div>
@@ -568,6 +602,48 @@ const CapacityPanel: React.FC<{ capacity?: Record<string, any>; dbConnections?: 
                 )}
             </CardBody>
         </Card>
+    );
+};
+
+const LatencyTable: React.FC<{ title: string; data?: Record<string, any>; compact?: boolean; showMax?: boolean; className?: string }> = ({
+    title,
+    data,
+    compact = false,
+    showMax = true,
+    className = '',
+}) => {
+    const windows = ["1m", "15m", "1h"] as const;
+    const padding = compact ? 'p-3' : 'p-4';
+    const titleClass = compact ? 'text-xs font-semibold mb-2' : 'text-sm font-semibold mb-2';
+    if (!data) {
+        return (
+            <div className={`${padding} rounded-xl bg-gray-100 ${className}`}>
+                <div className={titleClass}>{title}</div>
+                <div className="text-xs text-gray-500">No samples yet.</div>
+            </div>
+        );
+    }
+    return (
+        <div className={`${padding} rounded-xl bg-gray-100 ${className}`}>
+            <div className={titleClass}>{title}</div>
+            <div className="grid grid-cols-4 gap-2 text-[11px] text-gray-600">
+                <div className="font-semibold">Window</div>
+                <div className="font-semibold">p50</div>
+                <div className="font-semibold">p95</div>
+                <div className="font-semibold">p99</div>
+                {windows.map((w) => (
+                    <React.Fragment key={w}>
+                        <div>{w}</div>
+                        <div>{data?.[w]?.p50 ?? '—'}</div>
+                        <div>{data?.[w]?.p95 ?? '—'}</div>
+                        <div>{data?.[w]?.p99 ?? '—'}</div>
+                    </React.Fragment>
+                ))}
+            </div>
+            {showMax && (
+                <div className="text-[11px] text-gray-500 mt-2">max (1h): {data?.["1h"]?.max ?? '—'} ms</div>
+            )}
+        </div>
     );
 };
 
@@ -661,6 +737,10 @@ const Pill: React.FC<{ tone?: 'neutral' | 'success' | 'warning' | 'danger'; chil
     return <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${tones[tone]}`}>{children}</span>;
 };
 
+const Legend: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <div className="text-[11px] text-gray-500 mb-3">Legend: {children}</div>
+);
+
 // =============================================================================
 // App
 // =============================================================================
@@ -685,6 +765,7 @@ const MonitoringDashboard: React.FC = () => {
     const [tenant, setTenant] = useState(settings.getDefaultTenant());
     const [project, setProject] = useState(settings.getDefaultProject());
     const [dryRun, setDryRun] = useState(false);
+    const [selectedComponent, setSelectedComponent] = useState<'ingress' | 'proc'>('ingress');
     const [configJson, setConfigJson] = useState<string>('');
     const [validationResult, setValidationResult] = useState<any>(null);
     const [actionMessage, setActionMessage] = useState<string | null>(null);
@@ -773,44 +854,6 @@ const MonitoringDashboard: React.FC = () => {
         return () => clearInterval(t);
     }, [autoRefresh, refreshAll]);
 
-    useEffect(() => {
-        if (!system?.gateway_configuration) return;
-        const cfg = system.gateway_configuration;
-        const capacityCfg = system.capacity_transparency?.capacity_metrics?.configuration || {};
-        const payload = {
-            tenant,
-            project,
-            guarded_rest_patterns: cfg.guarded_rest_patterns || [],
-            service_capacity: {
-                concurrent_requests_per_process: capacityCfg.configured_concurrent_per_process ?? 5,
-                processes_per_instance: capacityCfg.configured_processes_per_instance ?? 1,
-                avg_processing_time_seconds: capacityCfg.configured_avg_processing_time_seconds ?? (cfg.service_capacity?.avg_processing_time_seconds ?? 25),
-            },
-            backpressure: {
-                capacity_buffer: cfg.backpressure_settings?.capacity_buffer ?? 0.2,
-                queue_depth_multiplier: cfg.backpressure_settings?.queue_depth_multiplier ?? 2.0,
-                anonymous_pressure_threshold: cfg.backpressure_settings?.anonymous_pressure_threshold ?? 0.6,
-                registered_pressure_threshold: cfg.backpressure_settings?.registered_pressure_threshold ?? 0.8,
-                paid_pressure_threshold: cfg.backpressure_settings?.paid_pressure_threshold ?? 0.8,
-                hard_limit_threshold: cfg.backpressure_settings?.hard_limit_threshold ?? 0.95,
-            },
-            rate_limits: cfg.rate_limits || {},
-        };
-        setConfigJson(JSON.stringify(payload, null, 2));
-    }, [system, tenant, project]);
-
-    useEffect(() => {
-        if (plannerInitializedRef.current) return;
-        if (!system) return;
-        const capacityCfg = system.capacity_transparency?.capacity_metrics?.configuration || {};
-        const instanceCount = system.queue_stats?.capacity_context?.instance_count ?? 1;
-        setPlannerConcurrentPerProcess(String(capacityCfg.configured_concurrent_per_process ?? 5));
-        setPlannerProcessesPerInstance(String(capacityCfg.configured_processes_per_instance ?? 1));
-        setPlannerAvgProcessing(String(capacityCfg.configured_avg_processing_time_seconds ?? 25));
-        setPlannerInstances(String(instanceCount));
-        plannerInitializedRef.current = true;
-    }, [system]);
-
     const queue = system?.queue_stats;
     const capacityCtx = system?.queue_stats?.capacity_context || {};
     const queueAnalytics = system?.queue_analytics;
@@ -820,6 +863,85 @@ const MonitoringDashboard: React.FC = () => {
     const lastThrottle = events.length ? events[0] : null;
     const gateway = system?.gateway_configuration;
     const throttlingByPeriod = system?.throttling_by_period || {};
+    const throttlingWindows = system?.throttling_windows || {};
+    const sseStats = system?.sse_connections;
+    const components = system?.components || {};
+    const autoscaler = system?.autoscaler || {};
+    const configSource = system?.gateway_config_source || 'unknown';
+    const configRaw = system?.gateway_config_raw;
+    const configComponents = system?.gateway_config_components || {};
+    const capacitySource =
+        configRaw?.backpressure?.capacity_source_component
+        || configComponents?.ingress?.backpressure?.capacity_source_component
+        || configComponents?.proc?.backpressure?.capacity_source_component
+        || configRaw?.capacity_source_component;
+    const capacitySourceKey = useMemo(() => {
+        const raw = (capacitySource || '').toLowerCase();
+        if (raw.includes('proc')) return 'proc';
+        if (raw.includes('rest') || raw.includes('ingress')) return 'ingress';
+        if (raw.startsWith('chat:proc')) return 'proc';
+        if (raw.startsWith('chat:rest')) return 'ingress';
+        return raw || 'proc';
+    }, [capacitySource]);
+    const capacitySourceActual = components?.[capacitySourceKey]?.actual_processes;
+    const capacitySourceHealthy = components?.[capacitySourceKey]?.healthy_processes;
+    const plannerComponentKey = capacitySourceKey || 'proc';
+    const poolAggregateEntries = useMemo(() => {
+        return Object.entries(components)
+            .map(([name, data]: [string, any]) => {
+                const poolsAgg = data?.pools_aggregate;
+                const pgUtil = poolsAgg?.postgres?.utilization_percent ?? 0;
+                const redisUtil = poolsAgg?.redis?.async?.utilization_percent ?? 0;
+                const sortKey = Math.max(pgUtil, redisUtil);
+                return { name, data, poolsAgg, sortKey };
+            })
+            .sort((a, b) => (b.sortKey ?? -1) - (a.sortKey ?? -1));
+    }, [components]);
+
+    useEffect(() => {
+        if (!system?.gateway_configuration) return;
+        const compCfg = (configComponents && configComponents[selectedComponent]) || system.gateway_configuration;
+        const sc = compCfg.service_capacity || {};
+        const bp = compCfg.backpressure || compCfg.backpressure_settings || {};
+        const payload = {
+            tenant,
+            project,
+            component: selectedComponent,
+            guarded_rest_patterns: compCfg.guarded_rest_patterns || [],
+            service_capacity: {
+                concurrent_requests_per_process: sc.concurrent_requests_per_process ?? sc.concurrent_requests_per_instance ?? 5,
+                processes_per_instance: sc.processes_per_instance ?? 1,
+                avg_processing_time_seconds: sc.avg_processing_time_seconds ?? 25,
+            },
+            backpressure: {
+                capacity_buffer: bp.capacity_buffer ?? 0.2,
+                queue_depth_multiplier: bp.queue_depth_multiplier ?? 2.0,
+                anonymous_pressure_threshold: bp.anonymous_pressure_threshold ?? 0.6,
+                registered_pressure_threshold: bp.registered_pressure_threshold ?? 0.8,
+                paid_pressure_threshold: bp.paid_pressure_threshold ?? 0.8,
+                hard_limit_threshold: bp.hard_limit_threshold ?? 0.95,
+            },
+            rate_limits: compCfg.rate_limits || {},
+        };
+        setConfigJson(JSON.stringify(payload, null, 2));
+    }, [system, tenant, project, selectedComponent, configComponents]);
+
+    useEffect(() => {
+        plannerInitializedRef.current = false;
+    }, [selectedComponent, system?.gateway_configuration]);
+
+    useEffect(() => {
+        if (plannerInitializedRef.current) return;
+        if (!system) return;
+        const compCfg = (configComponents && configComponents[plannerComponentKey]) || system.gateway_configuration;
+        const sc = compCfg?.service_capacity || {};
+        const instanceCount = components?.[plannerComponentKey]?.instance_count ?? system.queue_stats?.capacity_context?.instance_count ?? 1;
+        setPlannerConcurrentPerProcess(String(sc.concurrent_requests_per_process ?? 5));
+        setPlannerProcessesPerInstance(String(sc.processes_per_instance ?? 1));
+        setPlannerAvgProcessing(String(sc.avg_processing_time_seconds ?? 25));
+        setPlannerInstances(String(instanceCount));
+        plannerInitializedRef.current = true;
+    }, [system, selectedComponent, configComponents, components, plannerComponentKey]);
 
     const planner = useMemo(() => {
         const toNum = (value: string, fallback: number) => {
@@ -876,17 +998,38 @@ const MonitoringDashboard: React.FC = () => {
     ]);
 
     const recommendedConfigJson = useMemo(() => {
-        const roleLimits = gateway?.rate_limits || {};
+        const compCfg = (configComponents && configComponents[selectedComponent]) || gateway;
+        const roleLimits = compCfg?.rate_limits || {};
         const recommendedBurst = Math.max(1, planner.suggestedBurst || 1);
         const windowSeconds = Math.max(1, Math.round(planner.windowSeconds || 60));
-        const baseBackpressure = gateway?.backpressure_settings || {};
-        const suggested = {
-            tenant,
-            project,
-            service_capacity: {
+        const baseBackpressure = compCfg?.backpressure || compCfg?.backpressure_settings || {};
+        const poolsCfg = compCfg?.pools || {};
+        const limitsCfg = compCfg?.limits || {};
+        const currentServiceCapacity = compCfg?.service_capacity || {};
+        const usePlannerCapacity = selectedComponent === plannerComponentKey;
+        const serviceCapacityPayload = usePlannerCapacity
+            ? {
                 concurrent_requests_per_process: Math.max(1, Math.round(planner.concurrentPerProcess || 1)),
                 processes_per_instance: Math.max(1, Math.round(planner.processesPerInstance || 1)),
                 avg_processing_time_seconds: Math.max(1, Math.round(planner.avgSeconds || 25)),
+            }
+            : {
+                concurrent_requests_per_process: currentServiceCapacity.concurrent_requests_per_process ?? currentServiceCapacity.concurrent_requests_per_instance ?? 5,
+                processes_per_instance: currentServiceCapacity.processes_per_instance ?? 1,
+                avg_processing_time_seconds: currentServiceCapacity.avg_processing_time_seconds ?? 25,
+            };
+        const suggestedPgPoolMax = selectedComponent === 'proc'
+            ? Math.max(1, Math.round(planner.concurrentPerProcess || 1))
+            : (poolsCfg?.pg_pool_max_size ?? 4);
+        const suggestedRedisMax = selectedComponent === 'proc'
+            ? Math.max(20, Math.round((planner.concurrentPerProcess || 1) * 4))
+            : (poolsCfg?.redis_max_connections ?? 20);
+        const suggested = {
+            tenant,
+            project,
+            component: selectedComponent,
+            service_capacity: {
+                ...serviceCapacityPayload,
             },
             backpressure: {
                 capacity_buffer: baseBackpressure.capacity_buffer ?? 0.2,
@@ -919,14 +1062,26 @@ const MonitoringDashboard: React.FC = () => {
                         burst_window: windowSeconds,
                     },
                 }
-            }
+            },
+            pools: {
+                pg_pool_min_size: poolsCfg?.pg_pool_min_size ?? 0,
+                pg_pool_max_size: suggestedPgPoolMax,
+                redis_max_connections: suggestedRedisMax,
+            },
+            limits: selectedComponent === 'ingress'
+                ? { max_sse_connections_per_instance: limitsCfg?.max_sse_connections_per_instance ?? 200 }
+                : {
+                    max_integrations_ops_concurrency: limitsCfg?.max_integrations_ops_concurrency ?? 200,
+                    max_queue_size: limitsCfg?.max_queue_size ?? 0,
+                },
         };
         return JSON.stringify(suggested, null, 2);
-    }, [gateway, planner, tenant, project]);
+    }, [gateway, planner, tenant, project, selectedComponent, configComponents, plannerComponentKey]);
 
     const handleValidate = async () => {
         try {
             const payload = JSON.parse(configJson);
+            if (!payload.component) payload.component = selectedComponent;
             const res = await api.validateGatewayConfig(payload);
             setValidationResult(res);
             setActionMessage('Validation completed');
@@ -938,6 +1093,7 @@ const MonitoringDashboard: React.FC = () => {
     const handleUpdate = async () => {
         try {
             const payload = JSON.parse(configJson);
+            if (!payload.component) payload.component = selectedComponent;
             await api.updateGatewayConfig(payload);
             setActionMessage('Config updated');
             await refreshAll();
@@ -1156,39 +1312,289 @@ const MonitoringDashboard: React.FC = () => {
 
                 <Card>
                     <CardHeader
-                        title="System Summary"
+                        title="Tenant Summary"
                         subtitle={`Last update: ${lastUpdate || '—'}`}
                         action={gateway ? <Pill tone="success">{gateway.current_profile}</Pill> : null}
                     />
                     <CardBody>
+                        <Legend>
+                            Proc queue = backpressure queue depth; SSE = active ingress streams; Instances = heartbeat counts; throttled (1h) = 429/503 totals.
+                        </Legend>
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                             <div className="p-4 rounded-xl bg-gray-100">
-                                <div className="text-xs text-gray-600">Instance</div>
-                                <div className="text-sm font-semibold">{gateway?.instance_id || '—'}</div>
-                                <div className="text-xs text-gray-500">{gateway?.tenant_id || '—'}</div>
+                                <div className="text-xs text-gray-600">Tenant / Project</div>
+                                <div className="text-sm font-semibold">{configRaw?.tenant || gateway?.tenant_id || '—'}</div>
+                                <div className="text-xs text-gray-500">{configRaw?.project || gateway?.display_name || '—'}</div>
+                                <div className="text-[11px] text-gray-500">Config source: {configSource}</div>
                             </div>
                             <div className="p-4 rounded-xl bg-gray-100">
-                                <div className="text-xs text-gray-600">Total Queue</div>
+                                <div className="text-xs text-gray-600">Proc Queue</div>
                                 <div className="text-sm font-semibold">{queue?.total ?? 0}</div>
                                 <div className="text-xs text-gray-500">{Math.round((capacityCtx.pressure_ratio || 0) * 100)}% pressure</div>
                             </div>
                             <div className="p-4 rounded-xl bg-gray-100">
-                                <div className="text-xs text-gray-600">Instances</div>
-                                <div className="text-sm font-semibold">{capacityCtx.instance_count ?? 0}</div>
-                                <div className="text-xs text-gray-500">Weighted cap {capacityCtx.weighted_max_capacity ?? 0}</div>
+                                <div className="text-xs text-gray-600">Ingress SSE</div>
+                                <div className="text-sm font-semibold">
+                                    {sseStats?.global_total_connections ?? sseStats?.total_connections ?? 0}
+                                    {typeof (sseStats?.global_max_connections ?? sseStats?.max_connections) === 'number'
+                                        && (sseStats?.global_max_connections ?? sseStats?.max_connections) > 0
+                                        ? ` / ${(sseStats?.global_max_connections ?? sseStats?.max_connections)}`
+                                        : ''}
+                                </div>
+                                <div className="text-xs text-gray-500">sessions {sseStats?.global_sessions ?? sseStats?.sessions ?? 0}</div>
                             </div>
                             <div className="p-4 rounded-xl bg-gray-100">
-                                <div className="text-xs text-gray-600">Throttled (1h)</div>
-                                <div className="text-sm font-semibold">{throttling?.total_throttled ?? 0}</div>
-                                <div className="text-xs text-gray-500">{(throttling?.throttle_rate ?? 0).toFixed(1)}%</div>
+                                <div className="text-xs text-gray-600">Instances</div>
+                                <div className="text-sm font-semibold">
+                                    ingress {components?.ingress?.instance_count ?? 0} · proc {components?.proc?.instance_count ?? 0}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                    throttled (1h) {throttling?.total_throttled ?? 0} · {(throttling?.throttle_rate ?? 0).toFixed(1)}%
+                                </div>
                             </div>
                         </div>
                     </CardBody>
                 </Card>
 
                 <Card>
+                    <CardHeader title="Components & Autoscaler" subtitle="Ingress/proc health, capacity, and scaling signals." />
+                    <CardBody>
+                        <Legend>
+                            Utilization = current / max; decision is autoscaler suggestion; windows are rolling 1m/15m/1h.
+                        </Legend>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {(["ingress", "proc"] as const).map((comp) => {
+                                const data = components?.[comp];
+                                const auto = autoscaler?.[comp];
+                                const decision = auto?.decision || 'hold';
+                                const tone = decision === 'scale_up' ? 'danger' : decision === 'scale_down' ? 'warning' : 'success';
+                                return (
+                                    <div key={comp} className="p-4 rounded-xl bg-gray-100">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <div className="text-sm font-semibold">{comp}</div>
+                                            <Pill tone={tone}>{decision}</Pill>
+                                        </div>
+                                        {data ? (
+                                            <div className="space-y-1 text-xs text-gray-600">
+                                                <div>Instances: {data.instance_count ?? 0}</div>
+                                                <div>
+                                                    Processes: {data.healthy_processes ?? 0}/{data.actual_processes ?? 0}
+                                                    {typeof data.expected_processes === 'number' ? ` (expected ${data.expected_processes})` : ''}
+                                                </div>
+                                                <div>Utilization: {data.utilization_percent ?? 0}%</div>
+                                                {comp === 'ingress' && data.sse && (
+                                                    <div>
+                                                        SSE: {data.sse.total_connections ?? 0}
+                                                        {data.sse.max_connections ? ` / ${data.sse.max_connections}` : ''}
+                                                        {data.sse.utilization_percent ? ` (${data.sse.utilization_percent}%)` : ''}
+                                                        {data.sse.windows && (
+                                                            <div className="text-[11px] text-gray-500">
+                                                                windows: 1m {data.sse.windows["1m"] ?? '—'} · 15m {data.sse.windows["15m"] ?? '—'} · 1h {data.sse.windows["1h"] ?? '—'} · max {data.sse.windows["max"] ?? '—'}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {comp === 'ingress' && (
+                                                    <LatencyTable
+                                                        title="Ingress REST latency (ms)"
+                                                        data={data.latency?.rest_ms}
+                                                        compact
+                                                        className="mt-2"
+                                                    />
+                                                )}
+                                                {comp === 'proc' && data.queue && (
+                                                    <div>
+                                                        Queue: {data.queue.total ?? 0} · pressure {(data.queue.pressure_ratio ?? 0).toFixed(2)}
+                                                        {data.queue.windows && (
+                                                            <div className="text-[11px] text-gray-500">
+                                                                depth windows: 1m {data.queue.windows.depth?.["1m"] ?? '—'} · 15m {data.queue.windows.depth?.["15m"] ?? '—'} · 1h {data.queue.windows.depth?.["1h"] ?? '—'} · max {data.queue.windows.depth?.["max"] ?? '—'}
+                                                                <br />
+                                                                pressure windows: 1m {data.queue.windows.pressure_ratio?.["1m"] ?? '—'} · 15m {data.queue.windows.pressure_ratio?.["15m"] ?? '—'} · 1h {data.queue.windows.pressure_ratio?.["1h"] ?? '—'} · max {data.queue.windows.pressure_ratio?.["max"] ?? '—'}
+                                                            </div>
+                                                        )}
+                                                        {data.latency && (
+                                                            <div className="text-[11px] text-gray-500 mt-1">
+                                                                Latency: see Latency card.
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {data.pools && (
+                                                    <div className="text-[11px] text-gray-500">
+                                                        Pools: pg_max={data.pools.pg_pool_max_size ?? '—'} · redis_max={data.pools.redis_max_connections ?? '—'}
+                                                        {data.pools.estimated_pg_total ? ` · est_pg_total=${data.pools.estimated_pg_total}` : ''}
+                                                    </div>
+                                                )}
+                                                {auto?.reasons?.length ? (
+                                                    <div className="text-[11px] text-gray-500">Reasons: {auto.reasons.join('; ')}</div>
+                                                ) : (
+                                                    <div className="text-[11px] text-gray-500">Reasons: none</div>
+                                                )}
+                                                {Array.isArray(data.instances) && data.instances.length > 0 && (
+                                                    <div className="text-[11px] text-gray-500 mt-1">
+                                                        <div className="mb-1">Instances:</div>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {data.instances.map((i: any) => {
+                                                                const unhealthy = (i.healthy_processes ?? 0) < (i.processes ?? 0);
+                                                                return (
+                                                                    <span key={i.instance_id} className="flex items-center gap-1">
+                                                                        <span>{i.instance_id}</span>
+                                                                        {i.draining && <Pill tone="warning">draining</Pill>}
+                                                                        {!i.draining && unhealthy && <Pill tone="danger">unhealthy</Pill>}
+                                                                    </span>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : (
+                                            <div className="text-xs text-gray-500">No heartbeat data.</div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </CardBody>
+                </Card>
+
+                <Card>
+                    <CardHeader title="Latency (Rolling Windows)" subtitle="P50/P95/P99 in ms over 1m, 15m, 1h windows." />
+                    <CardBody>
+                        <Legend>
+                            Windows are rolling; max = 1h high-water mark.
+                        </Legend>
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <LatencyTable title="Ingress REST" data={components?.ingress?.latency?.rest_ms} />
+                            <LatencyTable title="Proc Queue Wait" data={components?.proc?.latency?.queue_wait_ms} />
+                            <LatencyTable title="Proc Execution" data={components?.proc?.latency?.exec_ms} />
+                        </div>
+                    </CardBody>
+                </Card>
+
+                <Card>
+                    <CardHeader title="Pools (Aggregated)" subtitle="Totals across all workers, sorted by utilization." />
+                    <CardBody>
+                        <Legend>
+                            Reported = number of workers reporting; max in-use = 1h high-water mark; totals are aggregated across the component.
+                        </Legend>
+                        {poolAggregateEntries.length ? (
+                            <div className="space-y-3">
+                                {poolAggregateEntries.map(({ name, poolsAgg }) => {
+                                    const pg = poolsAgg?.postgres || {};
+                                    const rAsync = poolsAgg?.redis?.async || {};
+                                    const rAsyncDecode = poolsAgg?.redis?.async_decode || {};
+                                    const rSync = poolsAgg?.redis?.sync || {};
+                                    const fmt = (val: any) => (val === null || val === undefined ? '—' : val);
+                                    const fmtMaybeZero = (val: any, fallbackZero: boolean) => {
+                                        if (val === null || val === undefined) {
+                                            return fallbackZero ? 0 : '—';
+                                        }
+                                        return val;
+                                    };
+                                    const pgReported = pg.reported_processes ?? 0;
+                                    const raReported = rAsync.reported_processes ?? 0;
+                                    const radReported = rAsyncDecode.reported_processes ?? 0;
+                                    const rsReported = rSync.reported_processes ?? 0;
+                                    const windows = poolsAgg?.utilization_windows || {};
+                                    const inUseWindows = poolsAgg?.in_use_windows || {};
+                                    const fmtWindow = (w: any) => {
+                                        if (!w) return '—';
+                                        const w1m = w["1m"] ?? '—';
+                                        const w15 = w["15m"] ?? '—';
+                                        const w1h = w["1h"] ?? '—';
+                                        const wMax = w["max"] ?? '—';
+                                        return `1m ${w1m}% · 15m ${w15}% · 1h ${w1h}% · max ${wMax}%`;
+                                    };
+                                    const fmtInUseMax = (w: any) => {
+                                        if (!w) return '—';
+                                        return w["max"] ?? '—';
+                                    };
+                                    return (
+                                        <div key={name} className="p-4 rounded-xl bg-gray-100">
+                                            <div className="text-sm font-semibold mb-2">{name}</div>
+                                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs text-gray-600">
+                                                <div>
+                                                    <div className="text-[11px] text-gray-500">PG</div>
+                                                    <div className="text-sm font-semibold">
+                                                        {pgReported ? `${fmtMaybeZero(pg.in_use_total, true)}/${fmt(pg.max_total ?? pg.size_total)}` : '—'}
+                                                        {pgReported && pg.utilization_percent != null ? ` (${pg.utilization_percent}%)` : ''}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        reported {pgReported}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        {fmtWindow(windows.postgres)}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        max in-use (1h): {fmtInUseMax(inUseWindows.postgres)}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[11px] text-gray-500">Redis (async)</div>
+                                                    <div className="text-sm font-semibold">
+                                                        {raReported ? `${fmt(rAsync.in_use_total)}/${fmt(rAsync.max_total ?? rAsync.total_total)}` : '—'}
+                                                        {raReported && rAsync.utilization_percent != null ? ` (${rAsync.utilization_percent}%)` : ''}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        reported {raReported}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        {fmtWindow(windows.redis_async)}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        max in-use (1h): {fmtInUseMax(inUseWindows.redis_async)}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[11px] text-gray-500">Redis (async decode)</div>
+                                                    <div className="text-sm font-semibold">
+                                                        {radReported ? `${fmt(rAsyncDecode.in_use_total)}/${fmt(rAsyncDecode.max_total ?? rAsyncDecode.total_total)}` : '—'}
+                                                        {radReported && rAsyncDecode.utilization_percent != null ? ` (${rAsyncDecode.utilization_percent}%)` : ''}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        reported {radReported}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        {fmtWindow(windows.redis_async_decode)}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        max in-use (1h): {fmtInUseMax(inUseWindows.redis_async_decode)}
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[11px] text-gray-500">Redis (sync)</div>
+                                                    <div className="text-sm font-semibold">
+                                                        {rsReported ? `${fmt(rSync.in_use_total)}/${fmt(rSync.max_total ?? rSync.total_total)}` : '—'}
+                                                        {rsReported && rSync.utilization_percent != null ? ` (${rSync.utilization_percent}%)` : ''}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        reported {rsReported}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        {fmtWindow(windows.redis_sync)}
+                                                    </div>
+                                                    <div className="text-[11px] text-gray-500">
+                                                        max in-use (1h): {fmtInUseMax(inUseWindows.redis_sync)}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        ) : (
+                            <div className="text-xs text-gray-500">No pool data reported yet.</div>
+                        )}
+                    </CardBody>
+                </Card>
+
+                <Card>
                     <CardHeader title="Traffic (Requests)" subtitle="Totals and average per minute by period." />
                     <CardBody>
+                        <Legend>
+                            Periods are rolling windows; values show totals and averages per minute.
+                        </Legend>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             {["1h", "3h", "24h"].map((key) => {
                                 const period = throttlingByPeriod[key] || {};
@@ -1207,12 +1613,34 @@ const MonitoringDashboard: React.FC = () => {
                                 );
                             })}
                         </div>
+                        {Object.keys(throttlingWindows).length > 0 && (
+                            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {["1m", "15m", "1h"].map((key) => {
+                                    const win = throttlingWindows[key] || {};
+                                    return (
+                                        <div key={key} className="p-4 rounded-xl bg-gray-100">
+                                            <div className="text-xs text-gray-600">{key} throttling</div>
+                                            <div className="text-sm font-semibold">{win.total_throttled ?? 0}</div>
+                                            <div className="text-xs text-gray-500">
+                                                429 {win.rate_limit_429 ?? 0} · 503 {win.backpressure_503 ?? 0}
+                                            </div>
+                                            <div className="text-xs text-gray-500">
+                                                {win.events_per_min != null ? `${win.events_per_min} / min` : '—'}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </CardBody>
                 </Card>
 
                 <Card>
                     <CardHeader title="Queues" subtitle="Current queue sizes and admission state." />
                     <CardBody>
+                        <Legend>
+                            Queue sizes are current backpressure queues; “accepting/blocked” is per-role admission status.
+                        </Legend>
                         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                             <div className="p-4 rounded-xl bg-gray-100">
                                 <div className="text-xs text-gray-600">Anonymous</div>
@@ -1254,6 +1682,9 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Queue Analytics" subtitle="Average wait time and throughput (last hour)." />
                     <CardBody>
+                        <Legend>
+                            Analytics are rolling (last hour) across proc workers.
+                        </Legend>
                         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                             {["anonymous", "registered", "paid", "privileged"].map((key) => {
                                 const q = queueAnalytics?.individual_queues?.[key] || {};
@@ -1283,6 +1714,9 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Burst Simulator" subtitle="Dev-only load generator using SimpleIDP tokens." />
                     <CardBody className="space-y-4">
+                        <Legend>
+                            Uses SimpleIDP tokens to open SSE streams and send synthetic chat bursts.
+                        </Legend>
                         {burstError && (
                             <div className="text-xs text-rose-700">{burstError}</div>
                         )}
@@ -1320,17 +1754,33 @@ const MonitoringDashboard: React.FC = () => {
                     </CardBody>
                 </Card>
 
-                <CapacityPanel capacity={system?.capacity_transparency} dbConnections={system?.db_connections} />
+                <CapacityPanel
+                    capacity={system?.capacity_transparency}
+                    dbConnections={system?.db_connections}
+                    capacitySource={capacitySource}
+                    capacitySourceActual={capacitySourceActual}
+                    capacitySourceHealthy={capacitySourceHealthy}
+                />
 
                 <Card>
                     <CardHeader
                         title="Capacity Planner (Rough)"
-                        subtitle="Estimate burst limits and compare expected peak traffic to capacity. Uses gateway config service_capacity fields."
+                        subtitle={`Estimate burst limits and compare expected peak traffic to capacity. Uses service_capacity for capacity source: ${plannerComponentKey}.`}
                     />
                     <CardBody className="space-y-4">
+                        <Legend>
+                            Rough sizing only; validate with real traffic and latency.
+                        </Legend>
                         <div className="text-xs text-gray-500">
-                            Source: `GATEWAY_CONFIG_JSON.service_capacity.*` (or admin update). Assumes all instances in the selected tenant/project share the same config.
+                            {`Source: GATEWAY_CONFIG_JSON.service_capacity.${plannerComponentKey} (or admin update). Assumes all instances in the selected tenant/project share the same config.`}
                         </div>
+                        {selectedComponent !== plannerComponentKey && (
+                            <div className="text-xs text-amber-700">
+                                Planner is anchored to capacity source <span className="font-semibold">{plannerComponentKey}</span>. Updating
+                                <span className="font-semibold"> {selectedComponent}</span> will keep its current service_capacity and only
+                                apply rate limits/limits for that component.
+                            </div>
+                        )}
                         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                             <Input label="Admins" value={plannerAdmins} onChange={(e) => setPlannerAdmins(e.target.value)} />
                             <Input label="Registered" value={plannerRegistered} onChange={(e) => setPlannerRegistered(e.target.value)} />
@@ -1341,8 +1791,8 @@ const MonitoringDashboard: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
                             <Input label="Page-load window (s)" value={plannerPageWindow} onChange={(e) => setPlannerPageWindow(e.target.value)} />
                             <Input label="Safety factor" value={plannerSafety} onChange={(e) => setPlannerSafety(e.target.value)} />
-                            <Input label="Concurrent / processor (service_capacity.concurrent_requests_per_process)" value={plannerConcurrentPerProcess} onChange={(e) => setPlannerConcurrentPerProcess(e.target.value)} />
-                            <Input label="Workers / instance (service_capacity.processes_per_instance)" value={plannerProcessesPerInstance} onChange={(e) => setPlannerProcessesPerInstance(e.target.value)} />
+                            <Input label={`Concurrent / processor (${plannerComponentKey}.service_capacity.concurrent_requests_per_process)`} value={plannerConcurrentPerProcess} onChange={(e) => setPlannerConcurrentPerProcess(e.target.value)} />
+                            <Input label={`Workers / instance (${plannerComponentKey}.service_capacity.processes_per_instance)`} value={plannerProcessesPerInstance} onChange={(e) => setPlannerProcessesPerInstance(e.target.value)} />
                             <Input label="Instances" value={plannerInstances} onChange={(e) => setPlannerInstances(e.target.value)} />
                             <Input label="Avg processing (s)" value={plannerAvgProcessing} onChange={(e) => setPlannerAvgProcessing(e.target.value)} />
                         </div>
@@ -1390,10 +1840,19 @@ const MonitoringDashboard: React.FC = () => {
 
                 <Card>
                     <CardHeader
-                        title="Recommended Config Draft"
+                        title={`Recommended Config Draft (${selectedComponent})`}
                         subtitle="Computed from the planner inputs. Copy into Gateway Configuration if desired."
                     />
                     <CardBody className="space-y-3">
+                        <Legend>
+                            Draft is component-scoped and preserves current hourly limits.
+                        </Legend>
+                        {selectedComponent !== plannerComponentKey && (
+                            <div className="text-xs text-amber-700">
+                                Service capacity stays anchored to <span className="font-semibold">{plannerComponentKey}</span>. This draft
+                                only changes rate limits/limits for <span className="font-semibold">{selectedComponent}</span>.
+                            </div>
+                        )}
                         <TextArea value={recommendedConfigJson} onChange={() => { /* read-only */ }} />
                         <div className="text-[11px] text-gray-500">
                             This draft keeps current hourly limits, updates burst/burst_window, and mirrors the planner’s service capacity values.
@@ -1404,6 +1863,9 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Circuit Breakers" subtitle="Live circuit states and resets." />
                     <CardBody>
+                        <Legend>
+                            States and counters are aggregated per circuit; reset clears the circuit’s rolling failure window.
+                        </Legend>
                         <div className="flex items-center gap-3 mb-4">
                             <Pill tone={circuitSummary?.open_circuits ? 'danger' : 'success'}>
                                 Open: {circuitSummary?.open_circuits ?? 0}
@@ -1432,6 +1894,9 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Reset Throttling / Backpressure" subtitle="Clear rate-limit counters and backpressure slots." />
                     <CardBody className="space-y-3">
+                        <Legend>
+                            Actions apply to the selected tenant/project. “All sessions” clears all rate-limit keys.
+                        </Legend>
                         <div className="text-xs text-gray-600">
                             Active scope: <span className="font-semibold">{tenant || '—'}</span> / <span className="font-semibold">{project || '—'}</span>
                         </div>
@@ -1527,6 +1992,9 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Gateway Configuration" subtitle="View, validate, update, or reset config." />
                     <CardBody className="space-y-4">
+                        <Legend>
+                            Updates are stored in Redis cache and broadcast to live replicas for this tenant/project.
+                        </Legend>
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <Input label="Tenant" value={tenant} onChange={(e) => setTenant(e.target.value)} />
                             <Input label="Project" value={project} onChange={(e) => setProject(e.target.value)} />
@@ -1537,6 +2005,29 @@ const MonitoringDashboard: React.FC = () => {
                                 </label>
                             </div>
                         </div>
+
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                            <label className="flex items-center gap-2">
+                                Component
+                                <select
+                                    className="border border-gray-200 rounded px-2 py-1 text-xs"
+                                    value={selectedComponent}
+                                    onChange={(e) => setSelectedComponent(e.target.value as 'ingress' | 'proc')}
+                                >
+                                    <option value="ingress">ingress</option>
+                                    <option value="proc">proc</option>
+                                </select>
+                            </label>
+                            <span>Config source: {configSource}</span>
+                        </div>
+
+                        {configRaw && (
+                            <TextArea
+                                label="Tenant/Project Config (read-only)"
+                                value={JSON.stringify(configRaw, null, 2)}
+                                onChange={() => {}}
+                            />
+                        )}
 
                         <TextArea label="Update Payload (JSON)" value={configJson} onChange={(e) => setConfigJson(e.target.value)} />
 
@@ -1549,6 +2040,10 @@ const MonitoringDashboard: React.FC = () => {
 
                         <div className="text-xs text-amber-700">
                             Note: changing `service_capacity.processes_per_instance` requires a service restart to affect worker count.
+                        </div>
+                        <div className="text-xs text-gray-600">
+                            Updates apply to the selected component and are persisted in the tenant/project cache. Other component
+                            settings are preserved if present in the cached config.
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3">
@@ -1568,6 +2063,9 @@ const MonitoringDashboard: React.FC = () => {
                 <Card>
                     <CardHeader title="Throttling (Recent)" subtitle="Last hour summary and recent events." />
                     <CardBody>
+                        <Legend>
+                            Counts are for the last hour. Events list the most recent throttles (429/503).
+                        </Legend>
                         {lastThrottle && (
                             <div className="mb-4 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs">
                                 <div className="font-semibold">Latest throttle</div>

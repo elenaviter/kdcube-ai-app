@@ -148,7 +148,8 @@ class RequestGateway:
                               requirements: List[RequirementBase] = None,
                               endpoint: str = "/api/chat",
                               bypass_throttling: bool = False,
-                              bypass_gate: bool = False) -> UserSession:
+                              bypass_gate: bool = False,
+                              bypass_backpressure: bool = False) -> UserSession:
         """Process request through all gateway layers with optional bypass"""
 
         # Check if this is a privileged admin/monitoring endpoint
@@ -214,7 +215,7 @@ class RequestGateway:
                     raise
 
             # Step 5: Backpressure (skip for privileged on admin endpoints)
-            if not (is_admin_endpoint and session.user_type == UserType.PRIVILEGED):
+            if not (is_admin_endpoint and session.user_type == UserType.PRIVILEGED) and not bypass_backpressure:
                 try:
                     await backpressure_circuit.check_request_allowed(session)
                     await self.backpressure_manager.check_capacity(session.user_type, session, context, endpoint)

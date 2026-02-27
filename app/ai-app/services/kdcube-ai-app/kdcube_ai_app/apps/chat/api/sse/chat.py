@@ -12,7 +12,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
@@ -22,6 +22,7 @@ from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.util import _iso
 from kdcube_ai_app.auth.AuthManager import AuthenticationError, RequireUser
 from kdcube_ai_app.auth.sessions import UserSession, UserType
+from kdcube_ai_app.infra.namespaces import REDIS, ns_key
 
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator
 from kdcube_ai_app.apps.chat.sdk.protocol import (
@@ -91,15 +92,94 @@ class Client:
     stream_id: Optional[str]
     queue: asyncio.Queue[str]      # queue of SSE frames (strings)
 
+class SSECapacityError(Exception):
+    """Raised when SSE instance capacity is exhausted."""
+    pass
+
 class SSEHub:
     """
     One Redis relay subscription per process -> fan out to all connected SSE clients.
     """
-    def __init__(self, chat_comm: ChatRelayCommunicator):
+    def __init__(
+        self,
+        chat_comm: ChatRelayCommunicator,
+        *,
+        redis=None,
+        instance_id: Optional[str] = None,
+        process_id: Optional[int] = None,
+        stats_ttl_sec: Optional[int] = None,
+    ):
         self.chat_comm = chat_comm
+        self.redis = redis
+        self.instance_id = instance_id or os.getenv("INSTANCE_ID", "unknown")
+        self.process_id = process_id or os.getpid()
+        self._stats_ttl_sec = stats_ttl_sec
         self._by_session: Dict[str, List[Client]] = {}
+        self._counts_by_tp: Dict[Tuple[str, str], int] = {}
+        self._sessions_by_tp: Dict[Tuple[str, str], int] = {}
+        self._session_tp: Dict[str, Tuple[str, str]] = {}
         self._lock = asyncio.Lock()
         self._relay_started = False
+
+    def _total_connections_locked(self) -> int:
+        if self._counts_by_tp:
+            return sum(self._counts_by_tp.values())
+        return sum(len(v) for v in self._by_session.values())
+
+    def _tp_key(self, client: Client) -> Tuple[str, str]:
+        tenant = client.tenant or "unknown"
+        project = client.project or "unknown"
+        return tenant, project
+
+    def _redis_stats_key(self, tenant: str, project: str) -> str:
+        base = f"{REDIS.CHAT.SSE_CONNECTIONS_PREFIX}:{self.instance_id}:{self.process_id}"
+        return ns_key(base, tenant=tenant, project=project)
+
+    def _resolve_stats_ttl(self) -> int:
+        if self._stats_ttl_sec:
+            return int(self._stats_ttl_sec)
+        try:
+            from kdcube_ai_app.infra.gateway.config import get_gateway_config
+            cfg = get_gateway_config()
+            ttl = getattr(getattr(cfg, "redis", None), "sse_stats_ttl_seconds", None)
+            if ttl is not None:
+                return int(ttl)
+        except Exception:
+            pass
+        # fallback to gateway defaults if config is unavailable
+        return 60
+
+    async def _publish_stats(self, tenant: str, project: str, count: int, sessions: int) -> None:
+        if not self.redis:
+            return
+        payload = {
+            "count": int(count),
+            "sessions": int(sessions),
+            "max": self._resolve_max_connections(),
+            "ts": time.time(),
+            "instance_id": self.instance_id,
+            "process_id": self.process_id,
+        }
+        try:
+            await self.redis.setex(
+                self._redis_stats_key(tenant, project),
+                self._resolve_stats_ttl(),
+                json.dumps(payload),
+            )
+        except Exception as e:
+            logger.warning("[SSEHub] Failed to publish SSE stats: %s", e)
+
+    def _resolve_max_connections(self) -> int:
+        # Prefer gateway config limits (component-aware), fallback to env.
+        try:
+            from kdcube_ai_app.infra.gateway.config import get_gateway_config
+            cfg = get_gateway_config()
+            limits_cfg = getattr(cfg, "limits", None)
+            if limits_cfg and limits_cfg.max_sse_connections_per_instance is not None:
+                return int(limits_cfg.max_sse_connections_per_instance)
+        except Exception:
+            pass
+        return 0
 
     async def start(self):
         # Just mark that the hub is ready. We'll start the Redis listener
@@ -118,23 +198,51 @@ class SSEHub:
             return
 
 
+        tp_payloads: List[Tuple[str, str, int, int]] = []
         # Unblock all generators by pushing a sentinel into their queues
         async with self._lock:
+            for tp_key, count in self._counts_by_tp.items():
+                sessions = self._sessions_by_tp.get(tp_key, 0)
+                tp_payloads.append((tp_key[0], tp_key[1], count, sessions))
             for clients in self._by_session.values():
                 for c in clients:
                     try:
                         c.queue.put_nowait(": shutdown\n\n")
                     except Exception:
                         pass
+            self._counts_by_tp.clear()
+            self._sessions_by_tp.clear()
+            self._session_tp.clear()
 
         await self.chat_comm.unsubscribe()
         self._relay_started = False
         logger.info("[SSEHub] unsubscribed from relay channel(s)")
+        for tenant, project, _count, _sessions in tp_payloads:
+            await self._publish_stats(tenant, project, 0, 0)
 
     async def register(self, client: Client):
+        tp_key = self._tp_key(client)
         async with self._lock:
+            max_conn = self._resolve_max_connections()
+            if max_conn > 0:
+                total_now = self._total_connections_locked()
+                if total_now >= max_conn:
+                    raise SSECapacityError(
+                        f"SSE instance capacity exceeded: {total_now}/{max_conn}"
+                    )
             lst = self._by_session.setdefault(client.session_id, [])
             lst.append(client)
+            self._counts_by_tp[tp_key] = self._counts_by_tp.get(tp_key, 0) + 1
+            if client.session_id not in self._session_tp:
+                self._session_tp[client.session_id] = tp_key
+                self._sessions_by_tp[tp_key] = self._sessions_by_tp.get(tp_key, 0) + 1
+            elif self._session_tp.get(client.session_id) != tp_key:
+                logger.warning(
+                    "[SSEHub] session mapped to different tenant/project: session=%s current=%s new=%s",
+                    client.session_id,
+                    self._session_tp.get(client.session_id),
+                    tp_key,
+                )
 
         # Acquire per-session channel via central refcounting
         await self.chat_comm.acquire_session_channel(
@@ -143,6 +251,12 @@ class SSEHub:
             tenant=client.tenant,
             project=client.project,
         )
+        await self._publish_stats(
+            tp_key[0],
+            tp_key[1],
+            self._counts_by_tp.get(tp_key, 0),
+            self._sessions_by_tp.get(tp_key, 0),
+        )
         logger.info(
             "[SSEHub] register session=%s stream_id=%s tenant=%s project=%s total_now=%s hub_id=%s relay_id=%s",
             client.session_id, client.stream_id, client.tenant, client.project,
@@ -150,18 +264,45 @@ class SSEHub:
             id(self), id(self.chat_comm)
         )
 
+    async def get_stats(self) -> Dict[str, int]:
+        async with self._lock:
+            total = self._total_connections_locked()
+            sessions = len(self._by_session)
+        return {
+            "total_connections": total,
+            "sessions": sessions,
+            "max_connections": self._resolve_max_connections(),
+        }
+
     async def unregister(self, client: Client):
+        tp_key = self._tp_key(client)
         async with self._lock:
             lst = self._by_session.get(client.session_id, [])
             self._by_session[client.session_id] = [c for c in lst if c is not client]
             if not self._by_session[client.session_id]:
                 self._by_session.pop(client.session_id, None)
+                prev_tp = self._session_tp.pop(client.session_id, None)
+                if prev_tp:
+                    self._sessions_by_tp[prev_tp] = max(0, self._sessions_by_tp.get(prev_tp, 0) - 1)
+                    if self._sessions_by_tp.get(prev_tp, 0) == 0:
+                        self._sessions_by_tp.pop(prev_tp, None)
+
+            if tp_key in self._counts_by_tp:
+                self._counts_by_tp[tp_key] = max(0, self._counts_by_tp.get(tp_key, 0) - 1)
+                if self._counts_by_tp.get(tp_key, 0) == 0:
+                    self._counts_by_tp.pop(tp_key, None)
 
         # IMPORTANT: release per client (not only last)
         await self.chat_comm.release_session_channel(client.session_id,
                                                      tenant=client.tenant,
                                                      project=client.project,
                                                      )
+        await self._publish_stats(
+            tp_key[0],
+            tp_key[1],
+            self._counts_by_tp.get(tp_key, 0),
+            self._sessions_by_tp.get(tp_key, 0),
+        )
 
         logger.info(
             "[SSEHub] unregister session=%s stream_id=%s tenant=%s project=%s total_now=%s hub_id=%s relay_id=%s",
@@ -279,7 +420,11 @@ def create_sse_router(
 
     # Ensure hub exists on app
     if not hasattr(app.state, "sse_hub"):
-        app.state.sse_hub = SSEHub(chat_comm)
+        app.state.sse_hub = SSEHub(
+            chat_comm,
+            redis=getattr(app.state, "redis_async", None),
+            instance_id=instance_id,
+        )
 
     settings = get_settings()
 
@@ -372,9 +517,14 @@ def create_sse_router(
                         project=project,)
 
         # Register client
-        await app.state.sse_hub.register(client)
+        try:
+            await app.state.sse_hub.register(client)
+        except SSECapacityError as e:
+            logger.warning("[sse_stream] SSE capacity reached: %s", e)
+            raise HTTPException(status_code=429, detail="SSE instance capacity reached. Try again later.")
 
         async def gen():
+            shutdown_notified = False
 
             # Initial ready
             hello = {
@@ -391,6 +541,18 @@ def create_sse_router(
                 while True:
                     # 1) if server is shutting down, exit
                     if getattr(app.state, "shutting_down", False):
+                        if not shutdown_notified:
+                            shutdown_notified = True
+                            yield _sse_frame(
+                                "server_shutdown",
+                                {
+                                    "timestamp": _iso(),
+                                    "reason": "draining",
+                                    "session_id": session.session_id,
+                                    **({"stream_id": stream_id} if stream_id else {}),
+                                },
+                                event_id=str(uuid.uuid4()),
+                            )
                         logger.info(f"[sse_stream] Server shutting down; closing SSE for session={session.session_id} stream_id={stream_id}")
                         break
 
@@ -410,6 +572,18 @@ def create_sse_router(
                     except asyncio.TimeoutError:
                         # On timeout, if shutting down, don't send keepalive, just break
                         if getattr(app.state, "shutting_down", False):
+                            if not shutdown_notified:
+                                shutdown_notified = True
+                                yield _sse_frame(
+                                    "server_shutdown",
+                                    {
+                                        "timestamp": _iso(),
+                                        "reason": "draining",
+                                        "session_id": session.session_id,
+                                        **({"stream_id": stream_id} if stream_id else {}),
+                                    },
+                                    event_id=str(uuid.uuid4()),
+                                )
                             logger.info(f"[sse_stream] Timeout during shutdown; closing SSE for session={session.session_id} stream_id={stream_id}")
                             break
                         # No frames in this window → send keepalive

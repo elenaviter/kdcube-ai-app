@@ -68,7 +68,8 @@ In the **Gateway Configuration** card:
 - **Clear Cached Config**: deletes the Redis key so the next restart falls back to env/`GATEWAY_CONFIG_JSON`.
 
 Important:
-- Changing `service_capacity.processes_per_instance` **requires a service restart** to affect worker count.
+- Changing `service_capacity.<component>.processes_per_instance` **requires a service restart**
+  to affect worker count (component is selected by `GATEWAY_COMPONENT`).
 - Logs will show which source was applied at startup (env vs cache).
 
 ## Redis Browser (Control Plane)
@@ -128,12 +129,13 @@ Examples:
 The Capacity panel shows a red warning when estimated DB connections exceed (or near) `max_connections`.
 
 How it is calculated:
-- `pool_max_per_worker` = `PGPOOL_MAX_SIZE` if set, otherwise `service_capacity.concurrent_requests_per_process`
-- `estimated_per_instance` = `pool_max_per_worker × processes_per_instance`
+- `pool_max_per_worker` = `pools.<component>.pg_pool_max_size` if set,
+  else `service_capacity.<component>.concurrent_requests_per_process`
+- `estimated_per_instance` = `pool_max_per_worker × service_capacity.<component>.processes_per_instance`
 - `estimated_total` = `estimated_per_instance × instance_count`
 
-Set one of these envs if you want to pin the DB limit without querying:
-- `PG_MAX_CONNECTIONS` or `POSTGRES_MAX_CONNECTIONS` or `DB_MAX_CONNECTIONS`
+Set this in gateway config if you want to pin the DB limit without querying:
+- `pools.pg_max_connections`
 
 ## Useful endpoints
 Use these for fast diagnostics:

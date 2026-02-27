@@ -4,7 +4,7 @@
 """
 Shared Redis client helpers (sync + async) with optional connection caps.
 
-Set REDIS_MAX_CONNECTIONS to cap per-process Redis pool size.
+Pool sizing is driven by gateway config: pools.redis_max_connections.
 """
 
 from __future__ import annotations
@@ -78,18 +78,19 @@ def _safe_redis_url(url: str) -> str:
         return url
 
 
-def _get_max_connections() -> Optional[int]:
-    raw = os.getenv("REDIS_MAX_CONNECTIONS")
-    if raw is None or raw == "":
-        return None
+def _resolve_max_connections(default: Optional[int] = None) -> Optional[int]:
+    if default is not None:
+        return default
     try:
-        value = int(raw)
-        if value <= 0:
-            return None
-        return value
+        from kdcube_ai_app.infra.gateway.config import get_gateway_config
+        cfg = get_gateway_config()
+        pools_cfg = getattr(cfg, "pools", None)
+        if pools_cfg and pools_cfg.redis_max_connections is not None:
+            value = int(pools_cfg.redis_max_connections)
+            return value if value > 0 else None
     except Exception:
-        logger.warning("Invalid REDIS_MAX_CONNECTIONS=%s; ignoring", raw)
         return None
+    return None
 
 
 def get_async_redis_client(
@@ -98,8 +99,7 @@ def get_async_redis_client(
     decode_responses: bool = False,
     max_connections: Optional[int] = None,
 ) -> AsyncRedis:
-    if max_connections is None:
-        max_connections = _get_max_connections()
+    max_connections = _resolve_max_connections(max_connections)
     key = (redis_url, decode_responses, max_connections)
     client = _ASYNC_CLIENTS.get(key)
     if client is not None:
@@ -131,8 +131,7 @@ def get_sync_redis_client(
     decode_responses: bool = False,
     max_connections: Optional[int] = None,
 ) -> redis.Redis:
-    if max_connections is None:
-        max_connections = _get_max_connections()
+    max_connections = _resolve_max_connections(max_connections)
     key = (redis_url, decode_responses, max_connections)
     client = _SYNC_CLIENTS.get(key)
     if client is not None:

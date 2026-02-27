@@ -711,15 +711,15 @@ def ts_key(ts) -> float:
                 return float("-inf")
     return float("-inf")
 
-import tiktoken
-
-# Get the tokenizer for text-embedding-3-small (uses cl100k_base encoding)
-encoding = tiktoken.get_encoding("cl100k_base")
-
 # Maximum tokens for text-embedding-3-small
 MAX_TOKENS = 8191
 
 def truncate_text_by_tokens(text, max_tokens=MAX_TOKENS):
+
+    import tiktoken
+
+    # Get the tokenizer for text-embedding-3-small (uses cl100k_base encoding)
+    encoding = tiktoken.get_encoding("cl100k_base")
     """Truncate text to fit within token limit"""
     tokens = encoding.encode(text)
     if len(tokens) > max_tokens:
@@ -729,6 +729,11 @@ def truncate_text_by_tokens(text, max_tokens=MAX_TOKENS):
 
 
 def token_count(text: str) -> int:
+
+    import tiktoken
+
+    # Get the tokenizer for text-embedding-3-small (uses cl100k_base encoding)
+    encoding = tiktoken.get_encoding("cl100k_base")
     """Return token count using cl100k_base encoding."""
     if not text:
         return 0

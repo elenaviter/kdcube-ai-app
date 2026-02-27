@@ -17,6 +17,8 @@ from typing import Optional, Dict, Any, Iterable
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 from kdcube_ai_app.infra.availability.health_and_heartbeat import MultiprocessDistributedMiddleware, logger
+from kdcube_ai_app.infra.metrics.rolling_stats import record_metric
+from kdcube_ai_app.infra.namespaces import REDIS
 from kdcube_ai_app.storage.storage import create_storage_backend
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload, ServiceCtx, ConversationCtx
 from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, ChatCommunicator
@@ -470,6 +472,7 @@ class EnhancedChatRequestProcessor:
 
         # 6) Execute with lock renew + timeout
         success = False
+        exec_started_at = time.monotonic()
         try:
             async with bind_accounting(envelope, storage_backend, enabled=True):
                 async with with_accounting("chat.orchestrator",
@@ -503,6 +506,11 @@ class EnhancedChatRequestProcessor:
             await comm.error(message=tb, data={"task_id": task_id})
             success = False
         finally:
+            exec_ms = None
+            try:
+                exec_ms = int((time.monotonic() - exec_started_at) * 1000)
+            except Exception:
+                exec_ms = None
             try:
                 if lock_key:
                     await self.redis.delete(lock_key)
@@ -515,6 +523,29 @@ class EnhancedChatRequestProcessor:
                         await self.queue_analytics_updater(user_type.lower(), wait_time=wait_seconds, processed=True)
                     except Exception:
                         logger.debug("Failed to update queue analytics", exc_info=True)
+                try:
+                    tenant_id = payload.actor.tenant_id
+                    project_id = payload.actor.project_id
+                    if queue_wait_ms is not None:
+                        await record_metric(
+                            self.redis,
+                            base=REDIS.METRICS.TASK_QUEUE_WAIT_MS,
+                            tenant=tenant_id,
+                            project=project_id,
+                            component="proc",
+                            value=float(queue_wait_ms),
+                        )
+                    if exec_ms is not None:
+                        await record_metric(
+                            self.redis,
+                            base=REDIS.METRICS.TASK_EXEC_MS,
+                            tenant=tenant_id,
+                            project=project_id,
+                            component="proc",
+                            value=float(exec_ms),
+                        )
+                except Exception:
+                    logger.debug("Failed to record task latency metrics", exc_info=True)
                 try:
                     res = await self.conversation_ctx.set_conversation_state(
                         tenant=payload.actor.tenant_id, project=payload.actor.project_id, user_id=payload.user.user_id, conversation_id=payload.routing.conversation_id,

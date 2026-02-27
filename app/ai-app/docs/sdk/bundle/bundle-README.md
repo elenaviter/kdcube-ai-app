@@ -63,6 +63,11 @@ export AGENTIC_BUNDLES_JSON='{
 Use `git_url` + optional `git_ref` and `git_subdir`.
 The bundle will be cloned into the **bundles root** and loaded from there.
 
+**Important (current default):**  
+Git resolution can be **disabled** with `BUNDLE_GIT_RESOLUTION_ENABLED=0`.  
+When disabled, `git_*` fields are treated as **metadata only** and no clone/pull happens.  
+This is recommended until Git bundles are fully configured (keys, creds, networking).
+
 ```bash
 export AGENTIC_BUNDLES_JSON='{
   "default_bundle_id": "demo.git",
@@ -107,6 +112,13 @@ If `git_ref` is omitted, the path is:
 
 ```
 <bundles_root>/<bundle_id>/<git_subdir?>
+
+**Git resolution toggle**
+
+```
+BUNDLE_GIT_RESOLUTION_ENABLED=0   # disable clone/pull (metadata only)
+BUNDLE_GIT_RESOLUTION_ENABLED=1   # enable clone/pull (requires git creds)
+```
 ```
 
 ### Bundles root

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 Elena Viter
+# Copyright (c) 2026 Elena Viter
 
 # infra/namespaces.py
 import os
@@ -20,6 +20,7 @@ def ns_key(base: str, *, tenant: str | None = None, project: str | None = None) 
 class REDIS:
     class CHAT:
         PROMPT_QUEUE_PREFIX = "kdcube:chat:prompt:queue"
+        SSE_CONNECTIONS_PREFIX = "kdcube:chat:sse:connections"
 
     class INSTANCE:
         HEARTBEAT_PREFIX = "kdcube:heartbeat:instance"
@@ -62,6 +63,16 @@ class REDIS:
         CAPACITY = "kdcube:system:capacity"
         RATE_LIMIT = "kdcube:system:ratelimit"
 
+    class METRICS:
+        POOL_UTILIZATION = "kdcube:metrics:pool_utilization"
+        POOL_IN_USE = "kdcube:metrics:pool_in_use"
+        QUEUE_PRESSURE = "kdcube:metrics:queue_pressure"
+        QUEUE_DEPTH = "kdcube:metrics:queue_depth"
+        SSE_CONNECTIONS = "kdcube:metrics:sse_connections"
+        TASK_QUEUE_WAIT_MS = "kdcube:metrics:task_queue_wait_ms"
+        TASK_EXEC_MS = "kdcube:metrics:task_exec_ms"
+        INGRESS_REST_MS = "kdcube:metrics:ingress_rest_ms"
+
     class CACHE:
         FAVICON = "kdcube:cache:favicon"
         MCP = "kdcube:cache:mcp"
@@ -86,6 +97,7 @@ class CONFIG:
         PROPS_UPDATE_CHANNEL = "kdcube:config:bundles:props:update:{tenant}:{project}"
         CLEANUP_CHANNEL = "kdcube:config:bundles:cleanup:{tenant}:{project}"
         ACTIVE_REFS_KEY_FMT = "kdcube:config:bundles:refs:{tenant}:{project}"
+        ENV_SYNC_LOCK_FMT = "kdcube:config:bundles:env-sync-lock:{tenant}:{project}"
 
     class GATEWAY:
         NAMESPACE = "kdcube:config:gateway"

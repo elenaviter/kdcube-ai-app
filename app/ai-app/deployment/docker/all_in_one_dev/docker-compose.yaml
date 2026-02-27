@@ -4,7 +4,7 @@ services:
     container_name: kdcube-postgres
     image: pgvector/pgvector:pg16
     env_file:
-      - path: ./.env.backend
+      - path: ./.env.postgres.setup
         required: false
     restart: unless-stopped
     volumes:
@@ -26,7 +26,7 @@ services:
     environment:
       PGADMIN_LISTEN_PORT: 80
     env_file:
-      - path: ./.env.backend
+      - path: ./.env.postgres.setup
         required: false
     ports:
       - "5050:80"
@@ -40,7 +40,7 @@ services:
       context: ../../..
       dockerfile: deployment/docker/all_in_one/Dockerfile_PostgresSetup
     env_file:
-      - path: ./.env.backend
+      - path: ./.env.postgres.setup
         required: false
     environment:
       - POSTGRES_HOST=postgres-db
@@ -55,7 +55,7 @@ services:
     container_name: kdcube-redis
     image: redis:latest
     env_file:
-      - path: ./.env.backend
+      - path: ./.env.postgres.setup
         required: false
     command: /bin/sh -c "redis-server --requirepass $$REDIS_PASSWORD"
     restart: unless-stopped
@@ -178,14 +178,14 @@ services:
   #    networks:
   #      - kdcube-internal
 
-  chat:
-    image: kdcube-chat:latest
-    container_name: kdcube-chat
+  chat-ingress:
+    image: kdcube-chat-ingress:latest
+    container_name: kdcube-chat-ingress
     build:
       context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Chat
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Ingress
     env_file:
-      - path: ./.env.backend
+      - path: ./.env.ingress
         required: false
     environment:
       - REDIS_HOST=redis
@@ -193,18 +193,12 @@ services:
       - APP_NEO4J_URI=bolt://neo4j:7687
       - CLAMAV_HOST=clamav
       - CLAMAV_PORT=3310
-      - LOG_FILE_PREFIX=chat
+      - LOG_FILE_PREFIX=chat-ingress
+      - GATEWAY_COMPONENT=ingress
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
-      - HOST_BUNDLES_PATH=${HOST_BUNDLES_PATH}
-      - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - ./data/kdcube-storage:/kdcube-storage
-      - ./data/exec-workspace:/exec-workspace
-      - ./logs/chat:/logs
-      - type: bind
-        source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
-        target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
+      - ./logs/chat-ingress:/logs
       - type: bind
         source: ${HOME}/.aws
         target: /home/appuser/.aws
@@ -219,7 +213,66 @@ services:
     networks:
       - kdcube-internal
     ports:
-      - "8010:8010"
+      - "${CHAT_APP_PORT:-8010}:8010"
+
+  chat-proc:
+    image: kdcube-chat-proc:latest
+    container_name: kdcube-chat-proc
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Chatproc
+    env_file:
+      - path: ./.env.proc
+        required: false
+    environment:
+      - REDIS_HOST=redis
+      - POSTGRES_HOST=postgres-db
+      - APP_NEO4J_URI=bolt://neo4j:7687
+      - LOG_FILE_PREFIX=chat-proc
+      - GATEWAY_COMPONENT=proc
+      - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
+      - HOST_BUNDLES_PATH=${HOST_BUNDLES_PATH}
+      - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/kdcube-storage:/kdcube-storage
+      - ./data/exec-workspace:/exec-workspace
+      - ./logs/chat-proc:/logs
+      - type: bind
+        source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
+        target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
+      - type: bind
+        source: ${HOME}/.aws
+        target: /home/appuser/.aws
+        read_only: true
+    depends_on:
+      postgres-setup:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks:
+      - kdcube-internal
+    ports:
+      - "${CHAT_PROCESSOR_PORT:-8020}:8020"
+
+  metrics:
+    image: kdcube-metrics:latest
+    container_name: kdcube-metrics
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one/Dockerfile_Metricservice
+    env_file:
+      - path: ./.env.metrics
+        required: false
+    environment:
+      - LOG_FILE_PREFIX=metrics
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - kdcube-internal
+    ports:
+      - "127.0.0.1:${METRICS_PORT:-8090}:8090"
 
   web-ui:
     image: kdcube-web-ui:latest
@@ -238,7 +291,7 @@ services:
     environment:
       - NODE_ENV=production
     depends_on:
-      chat:
+      chat-ingress:
         condition: service_started
     networks:
       - kdcube-internal
@@ -274,7 +327,7 @@ services:
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - ./nginx/webroot:/var/www/letsencrypt
     depends_on:
-      chat:
+      chat-ingress:
         condition: service_started
       web-ui:
         condition: service_started
