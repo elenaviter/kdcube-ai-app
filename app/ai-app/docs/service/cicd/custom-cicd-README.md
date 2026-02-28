@@ -76,17 +76,19 @@ flowchart LR
 
 ## 1.1) Image → Dockerfile Mapping
 
-**Platform repo (open source):**
+**Platform repo (open source):**  
+Use Dockerfiles from `deployment/docker/custom-ui-managed-infra`.  
+(They are identical to the local‑infra variants; keep one source of truth for CI.)
 
 | Image | Dockerfile |
 | --- | --- |
-| `kdcube-chat-ingress` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_Ingress` |
-| `kdcube-chat-proc` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_Chatproc` |
-| `kdcube-metrics` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_Metricservice` |
-| `kdcube-postgres-setup` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_PostgresSetup` |
-| `kdcube-web-proxy` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_ProxyOpenResty` |
-| `proxylogin` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_ProxyLogin` |
-| `py-code-exec` | `app/ai-app/deployment/docker/all_in_one/Dockerfile_Exec` |
+| `kdcube-chat-ingress` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_Ingress` |
+| `kdcube-chat-proc` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_Chatproc` |
+| `kdcube-metrics` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_Metricservice` |
+| `kdcube-postgres-setup` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_PostgresSetup` |
+| `kdcube-web-proxy` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_ProxyOpenResty` |
+| `proxylogin` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_ProxyLogin` |
+| `py-code-exec` | `app/ai-app/deployment/docker/custom-ui-managed-infra/Dockerfile_Exec` |
 
 **Customer repo (closed):**
 
@@ -226,13 +228,15 @@ This prevents image rebuilds on every commit while still baking bundles for ECS.
 
 We now split env per component:
 
+- `.env` (compose paths + build contexts)
 - `.env.ingress`
 - `.env.proc`
 - `.env.metrics`
 - `.env.postgres.setup`
-- `.env` (compose paths + build contexts)
+- `.env.proxylogin` (optional)
+- `.env.frontend` (optional)
 
-**Important:** Use the **same `GATEWAY_CONFIG_JSON`** for all components (tenant/project is shared).
+**Important:** Use the **same `GATEWAY_CONFIG_JSON`** for ingress/proc/metrics (tenant/project is shared).
 
 ---
 
