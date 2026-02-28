@@ -48,7 +48,6 @@ except Exception:
     logger.warning("Failed to enable faulthandler at import time", exc_info=True)
 
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
-from kdcube_ai_app.infra.plugin.agentic_loader import AgenticBundleSpec
 
 from kdcube_ai_app.infra.rendering.link_preview import close_shared_link_preview
 from kdcube_ai_app.infra.rendering.shared_browser import close_shared_browser
@@ -244,96 +243,6 @@ async def lifespan(app: FastAPI):
 
     port = CHAT_APP_PORT
     process_id = os.getpid()
-
-    async def agentic_app_func(comm_context: "ChatTaskPayload"):
-        """
-        Entry-point invoked by the processor. We do NOT bind a relay here.
-        We receive a ready-to-use ChatCommunicator and pass it into the workflow.
-        """
-        import inspect
-        from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async
-        from kdcube_ai_app.infra.plugin.agentic_loader import get_workflow_instance
-        from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, create_workflow_config
-
-        # config & bundle
-        cfg_req = ConfigRequest(**(comm_context.config.values or {}))
-        wf_config = create_workflow_config(cfg_req)
-        bundle_id = comm_context.routing.bundle_id
-        spec_resolved = await resolve_bundle_async(bundle_id, override=None)
-
-        wf_config.ai_bundle_spec = spec_resolved
-        spec = AgenticBundleSpec(
-            path=spec_resolved.path,
-            module=spec_resolved.module,
-            singleton=bool(spec_resolved.singleton),
-        )
-        try:
-            workflow, _ = get_workflow_instance(
-                spec=spec,
-                config=wf_config,
-                comm_context=comm_context,
-                pg_pool=app.state.pg_pool,
-                redis=app.state.redis_async
-            )
-        except Exception as e:
-            try:
-                admin_spec = await resolve_bundle_async("kdcube.admin", override=None)
-                if not admin_spec:
-                    raise e
-                wf_config.ai_bundle_spec = admin_spec
-                admin = AgenticBundleSpec(
-                    path=admin_spec.path,
-                    module=admin_spec.module,
-                    singleton=bool(admin_spec.singleton),
-                )
-                workflow, _ = get_workflow_instance(
-                    spec=admin,
-                    config=wf_config,
-                    comm_context=comm_context,
-                    pg_pool=app.state.pg_pool,
-                    redis=app.state.redis_async
-                )
-            except Exception:
-                raise
-
-        # set workflow state (no emits here; processor already announced start)
-        state = {
-            "request_id": comm_context.request.request_id,
-            "tenant": comm_context.actor.tenant_id,
-            "project": comm_context.actor.project_id,
-            "user": comm_context.user.user_id,
-            "user_type": comm_context.user.user_type,
-            "session_id": comm_context.routing.session_id,
-            "conversation_id": (comm_context.routing.conversation_id or comm_context.routing.session_id),
-            "text": comm_context.request.message or (comm_context.request.payload or {}).get("text") or "",
-            "attachments": (comm_context.request.payload or {}).get("attachments") or [],
-            "turn_id": comm_context.routing.turn_id,
-            "history": comm_context.request.chat_history or [],
-            "final_answer": "",
-            "followups": [],
-            "step_logs": [],
-            "start_time": comm_context.meta.created_at,
-        }
-        if hasattr(workflow, "set_state"):
-            maybe = workflow.set_state(state)
-            if inspect.isawaitable(maybe):
-                await maybe
-
-        params = dict(comm_context.request.payload or {})
-        if "text" not in params and comm_context.request.message:
-            params["text"] = comm_context.request.message
-        command = comm_context.request.operation or params.pop("command", None)
-
-        try:
-            result = await (getattr(workflow, command)(**params) if (command and hasattr(workflow, command))
-                            else workflow.run(**params))
-            return result or {}
-        except Exception as e:
-            # Let processor send the error envelope; we just surface the message up.
-            logger.error(traceback.format_exc())
-            if not isinstance(e, EconomicsLimitException):
-                return { "error_message": str(e), "final_answer": "An error occurred." }
-
 
     # ================================
     # SOCKET.IO SETUP
