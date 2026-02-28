@@ -70,6 +70,46 @@ Set this in the platform compose `.env` so bundles are mounted into chat‑proc:
 HOST_BUNDLES_PATH=<customer-repo>/path/to/bundles
 ```
 
+### Bundles delivery (mounted path vs git)
+
+**Mounted path (current EC2 default):**
+Bundles are mounted into `/bundles` inside chat‑proc.  
+In `.env.proc`, define `AGENTIC_BUNDLES_JSON` with `path=/bundles` and `module=<bundle_folder>.entrypoint`.  
+You can set `AGENTIC_BUNDLES_JSON` to a JSON/YAML file path mounted into the container.  
+Recommended mount:
+```
+HOST_BUNDLE_DESCRIPTOR_PATH=/path/to/release.yaml
+```
+Then inside the container:
+```
+AGENTIC_BUNDLES_JSON=/config/release.yaml
+```
+If `HOST_BUNDLE_DESCRIPTOR_PATH` is unset, compose mounts `/dev/null` and the loader
+falls back to inline `AGENTIC_BUNDLES_JSON` or Redis.
+Set `BUNDLE_GIT_RESOLUTION_ENABLED=0`.  
+Optionally set `BUNDLES_FORCE_ENV_ON_STARTUP=1` for one rollout.
+
+**Git‑defined bundles (optional):**
+Provide `repo/ref/subdir` in `AGENTIC_BUNDLES_JSON`.  
+Set `BUNDLE_GIT_RESOLUTION_ENABLED=1`.  
+Set `BUNDLE_GIT_REDIS_LOCK=1` (each instance pulls once).  
+Provide `GIT_SSH_KEY_PATH` / `GIT_SSH_KNOWN_HOSTS` for private repos.
+
+**Rule:** set `subdir` to the **parent bundles directory** and use `module: "<bundle_folder>.entrypoint"`.
+
+**Git prerequisites (proc container):**
+- `git` binary installed in the proc image (already included in KDCube proc image).
+- If using SSH: mount the private key and known_hosts into the container, e.g.:
+  ```
+  /run/secrets/git_ssh_key
+  /run/secrets/git_known_hosts
+  ```
+  and set:
+  ```
+  GIT_SSH_KEY_PATH=/run/secrets/git_ssh_key
+  GIT_SSH_KNOWN_HOSTS=/run/secrets/git_known_hosts
+  ```
+
 ---
 
 ## Nginx proxy config

@@ -204,10 +204,10 @@ async def _load_bundle_props_defaults(
     try:
         if getattr(spec_resolved, "git_commit", None):
             defaults["git_commit"] = str(spec_resolved.git_commit)
-        if getattr(spec_resolved, "git_ref", None):
-            defaults["git_ref"] = str(spec_resolved.git_ref)
-        if getattr(spec_resolved, "git_url", None):
-            defaults["git_url"] = str(spec_resolved.git_url)
+        if getattr(spec_resolved, "ref", None):
+            defaults["ref"] = str(spec_resolved.ref)
+        if getattr(spec_resolved, "repo", None):
+            defaults["repo"] = str(spec_resolved.repo)
     except Exception:
         pass
     return defaults
@@ -251,9 +251,9 @@ async def get_available_bundles(
                 "module": entry.module,
                 "singleton": bool(entry.singleton),
                 "version": getattr(entry, "version", None),
-                "git_url": getattr(entry, "git_url", None),
-                "git_ref": getattr(entry, "git_ref", None),
-                "git_subdir": getattr(entry, "git_subdir", None),
+                "repo": getattr(entry, "repo", None),
+                "ref": getattr(entry, "ref", None),
+                "subdir": getattr(entry, "subdir", None),
                 "git_commit": getattr(entry, "git_commit", None),
             }
             for bid, entry in reg.bundles.items()

@@ -13,6 +13,7 @@ from kdcube_ai_app.apps.chat.sdk.config import get_settings
 REDIS_KEY_FMT = namespaces.CONFIG.BUNDLES.BUNDLE_MAPPING_KEY_FMT
 REDIS_CHANNEL_FMT = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL
 ADMIN_BUNDLE_ID = "kdcube.admin"
+_EXAMPLES_REL_PATH = Path("apps/chat/sdk/examples/bundles")
 
 
 def _admin_bundle_entry() -> "BundleEntry":
@@ -25,6 +26,57 @@ def _admin_bundle_entry() -> "BundleEntry":
         singleton=True,
         description="Built-in admin-only bundle",
     )
+
+def _examples_root() -> Path:
+    return (Path(__file__).resolve().parents[2] / _EXAMPLES_REL_PATH).resolve()
+
+def _examples_enabled() -> bool:
+    try:
+        settings = get_settings()
+        return bool(settings.BUNDLES_INCLUDE_EXAMPLES)
+    except Exception:
+        raw = os.getenv("BUNDLES_INCLUDE_EXAMPLES", "1").lower()
+        return raw in {"1", "true", "yes", "on"}
+
+def _load_example_bundles() -> Dict[str, "BundleEntry"]:
+    if not _examples_enabled():
+        return {}
+    root = _examples_root()
+    if not root.exists():
+        return {}
+    bundles: Dict[str, BundleEntry] = {}
+    for item in root.iterdir():
+        if not item.is_dir():
+            continue
+        if item.name in {"data", "__pycache__"}:
+            continue
+        if not (item / "entrypoint.py").exists():
+            continue
+        bid = item.name
+        bundles[bid] = BundleEntry(
+            id=bid,
+            name=bid,
+            path=str(item),
+            module="entrypoint",
+            singleton=False,
+            description="Built-in example bundle",
+        )
+    return bundles
+
+def _merge_example_bundles(reg: "BundlesRegistry") -> tuple["BundlesRegistry", bool]:
+    examples = _load_example_bundles()
+    if not examples:
+        return reg, False
+    updated = False
+    merged = BundlesRegistry(
+        default_bundle_id=reg.default_bundle_id,
+        bundles=dict(reg.bundles),
+    )
+    for bid, entry in examples.items():
+        if bid not in merged.bundles:
+            merged.bundles[bid] = entry
+            updated = True
+    return merged, updated
 
 
 def _ensure_admin_bundle(reg: "BundlesRegistry") -> "BundlesRegistry":
@@ -45,9 +97,9 @@ class BundleEntry(BaseModel):
     module: Optional[str] = None
     singleton: Optional[bool] = False
     description: Optional[str] = None
-    git_url: Optional[str] = None
-    git_ref: Optional[str] = None
-    git_subdir: Optional[str] = None
+    repo: Optional[str] = None
+    ref: Optional[str] = None
+    subdir: Optional[str] = None
     git_commit: Optional[str] = None
 
 class BundlesRegistry(BaseModel):
@@ -97,16 +149,30 @@ async def load_registry(redis, tenant: Optional[str] = None, project: Optional[s
         if not reg.bundles or len(reg.bundles) == 0:
             seeded = await seed_from_env_if_any(redis, tenant, project)
             if seeded and seeded.bundles:
+                seeded, _ = _merge_example_bundles(seeded)
                 return _ensure_admin_bundle(seeded)
             # keep returning the empty registry if seeding didn't produce anything
-            return _ensure_admin_bundle(reg)
-        return _ensure_admin_bundle(reg)
+            reg, updated = _merge_example_bundles(reg)
+            reg = _ensure_admin_bundle(reg)
+            if updated:
+                await save_registry(redis, reg, tenant, project)
+            return reg
+        reg, updated = _merge_example_bundles(reg)
+        reg = _ensure_admin_bundle(reg)
+        if updated:
+            await save_registry(redis, reg, tenant, project)
+        return reg
 
     # Key absent -> try seeding once
     seeded = await seed_from_env_if_any(redis, tenant, project)
     if seeded:
+        seeded, _ = _merge_example_bundles(seeded)
         return _ensure_admin_bundle(seeded)
-    return _ensure_admin_bundle(BundlesRegistry())
+    reg, updated = _merge_example_bundles(BundlesRegistry())
+    reg = _ensure_admin_bundle(reg)
+    if updated:
+        await save_registry(redis, reg, tenant, project)
+    return reg
 
 async def save_registry(redis, reg: BundlesRegistry, tenant: Optional[str]=None, project: Optional[str]=None) -> None:
     key = redis_key(tenant, project)
@@ -129,15 +195,14 @@ async def seed_from_env_if_any(redis, tenant: Optional[str] = None, project: Opt
     """
     Seed Redis with bundles mapping from AGENTIC_BUNDLES_JSON env var, if present.
     Accepts either:
-      - legacy: {"mybundle": {...}, ...}
+      - flat mapping: {"mybundle": {...}, ...}
       - new: {"default_bundle_id": "...", "bundles": { ... }}
     """
-    json_env = os.getenv("AGENTIC_BUNDLES_JSON")
-    if not json_env:
+    data = _load_env_json(strict=False)
+    if not data:
         return None
 
     try:
-        data = json.loads(json_env)
         if "bundles" not in data:
             bundles_dict = data
             default_id = next(iter(bundles_dict.keys()), None)
@@ -151,6 +216,7 @@ async def seed_from_env_if_any(redis, tenant: Optional[str] = None, project: Opt
         )
         if not reg.bundles:
             return None
+        reg, _ = _merge_example_bundles(reg)
         reg = _ensure_admin_bundle(reg)
         await save_registry(redis, reg, tenant, project)
         return reg
@@ -163,11 +229,7 @@ async def reset_registry_from_env(redis, tenant: Optional[str] = None, project: 
     Force-reload from AGENTIC_BUNDLES_JSON and overwrite Redis for (tenant, project).
     Raise ValueError if env is missing or invalid.
     """
-    json_env = os.getenv("AGENTIC_BUNDLES_JSON")
-    if not json_env:
-        raise ValueError("AGENTIC_BUNDLES_JSON is not set")
-
-    data = json.loads(json_env)
+    data = _load_env_json(strict=True)
     if "bundles" not in data:
         bundles_dict = data
         default_id = next(iter(bundles_dict.keys()), None)
@@ -182,6 +244,7 @@ async def reset_registry_from_env(redis, tenant: Optional[str] = None, project: 
         default_bundle_id=default_id,
         bundles={bid: _to_entry(bid, b) for bid, b in bundles_dict.items()}
     )
+    reg, _ = _merge_example_bundles(reg)
     reg = _ensure_admin_bundle(reg)
     await save_registry(redis, reg, tenant, project)
     return reg
@@ -221,16 +284,21 @@ async def force_env_reset_if_requested(
 
 def _to_entry(bid: str, v: Dict[str, Any]) -> BundleEntry:
     """Normalize incoming dict -> BundleEntry."""
-    git_url = v.get("git_url") or v.get("git_repo")
+    unsupported_keys = {"git_url", "git_ref", "git_subdir", "git_repo"}
+    if any(k in v for k in unsupported_keys):
+        raise ValueError("Use repo/ref/subdir only; git_* keys are not supported.")
+    repo = v.get("repo")
     path_val = v.get("path") or ""
-    if not path_val and git_url:
+    ref = v.get("ref")
+    subdir = v.get("subdir")
+    if not path_val and repo:
         try:
             from kdcube_ai_app.infra.plugin.git_bundle import compute_git_bundle_paths
             paths = compute_git_bundle_paths(
                 bundle_id=bid,
-                git_url=git_url,
-                git_ref=v.get("git_ref"),
-                git_subdir=v.get("git_subdir"),
+                git_url=repo,
+                git_ref=ref,
+                git_subdir=subdir,
             )
             path_val = str(paths.bundle_root)
         except Exception:
@@ -242,11 +310,56 @@ def _to_entry(bid: str, v: Dict[str, Any]) -> BundleEntry:
         module=v.get("module"),
         singleton=bool(v.get("singleton", False)),
         description=v.get("description"),
-        git_url=git_url,
-        git_ref=v.get("git_ref"),
-        git_subdir=v.get("git_subdir"),
+        repo=repo,
+        ref=ref,
+        subdir=subdir,
         git_commit=v.get("git_commit"),
     )
+
+def _load_env_json(strict: bool) -> Optional[Dict[str, Any]]:
+    raw = os.getenv("AGENTIC_BUNDLES_JSON")
+    if not raw:
+        if strict:
+            raise ValueError("AGENTIC_BUNDLES_JSON is not set")
+        return None
+    raw = raw.strip()
+    if raw.startswith("{") or raw.startswith("["):
+        return json.loads(raw)
+    path = Path(raw).expanduser()
+    if not path.exists():
+        if strict:
+            raise ValueError(f"AGENTIC_BUNDLES_JSON file not found: {path}")
+        return None
+    text = path.read_text()
+    data: Optional[Dict[str, Any]]
+    if path.suffix.lower() in {".yml", ".yaml"}:
+        try:
+            import yaml  # type: ignore
+        except Exception as e:
+            raise ValueError("PyYAML is required to load YAML bundle descriptors.") from e
+        data = yaml.safe_load(text)
+    else:
+        data = json.loads(text)
+    if not data:
+        return None
+    # If a release descriptor is provided, extract the bundles section.
+    if isinstance(data, dict) and "bundles" in data:
+        bundles_block = data.get("bundles") or {}
+        if isinstance(bundles_block, dict) and "items" in bundles_block:
+            items = bundles_block.get("items") or []
+            bundles: Dict[str, Any] = {}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                bid = item.get("id")
+                if not bid:
+                    raise ValueError("Bundle item missing 'id' in release descriptor.")
+                bundles[bid] = dict(item)
+            return {
+                "default_bundle_id": bundles_block.get("default_bundle_id"),
+                "bundles": bundles,
+            }
+    return data
 
 def apply_update(
         current: BundlesRegistry,

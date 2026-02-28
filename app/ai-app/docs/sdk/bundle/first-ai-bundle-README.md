@@ -160,13 +160,13 @@ Markers commonly used:
 Configure in `AGENTIC_BUNDLES_JSON`:
 ```bash
 export AGENTIC_BUNDLES_JSON='{
-  "default_bundle_id": "react",
+  "default_bundle_id": "react@2026-02-10-02-44",
   "bundles": {
-    "react": {
-      "id": "react",
+    "react@2026-02-10-02-44": {
+      "id": "react@2026-02-10-02-44",
       "name": "React Bundle",
-      "path": "/bundles/react",
-      "module": "entrypoint",
+      "path": "/bundles",
+      "module": "react@2026-02-10-02-44.entrypoint",
       "singleton": false,
       "description": "Reference bundle"
     }
@@ -178,6 +178,31 @@ If running in Docker, also set:
 ```bash
 export AGENTIC_BUNDLES_ROOT=/bundles
 ```
+
+Git‑defined bundle option:
+
+```bash
+export AGENTIC_BUNDLES_JSON='{
+  "default_bundle_id": "react@2026-02-10-02-44",
+  "bundles": {
+    "react@2026-02-10-02-44": {
+      "id": "react@2026-02-10-02-44",
+      "name": "React Bundle",
+      "repo": "https://github.com/org/my-bundle.git",
+      "ref": "main",
+      "subdir": "bundles",
+      "module": "react@2026-02-10-02-44.entrypoint",
+      "singleton": false,
+      "description": "Reference bundle from Git"
+    }
+  }
+}'
+```
+
+Examples auto‑registration:
+
+`BUNDLES_INCLUDE_EXAMPLES=1` (default) auto‑adds example bundles from
+`apps/chat/sdk/examples/bundles`. Set `BUNDLES_INCLUDE_EXAMPLES=0` to disable.
 
 ---
 

@@ -55,6 +55,32 @@ kdcube-chat-ingress:8f3c9e1
 
 ---
 
+## 4.1) Bundle registry during release
+
+The processor consumes a **runtime bundle descriptor** (`AGENTIC_BUNDLES_JSON`).  
+During release, ensure one of these:
+
+- **Baked bundles:** CI generates `AGENTIC_BUNDLES_JSON` (path `/bundles/...`) and injects it into proc.
+- **Git bundles:** CI injects `AGENTIC_BUNDLES_JSON` with `repo/ref/subdir`.
+
+If you need to **override existing Redis registry**, deploy proc with:
+
+```
+BUNDLES_FORCE_ENV_ON_STARTUP=1
+```
+
+Then turn it off after rollout.
+
+For git bundles in multi‑replica deployments, enable:
+
+```
+BUNDLE_GIT_REDIS_LOCK=1
+```
+
+This makes each replica pull **once** on startup (no cross‑replica contention).
+
+---
+
 ## 5) Release Process (CI)
 
 Suggested CI logic:
@@ -73,4 +99,3 @@ Only split when:
 - Compatibility matrix is required
 
 Until then, **keep unified versioning**.
-

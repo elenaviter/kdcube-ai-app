@@ -104,6 +104,6 @@ flowchart TD
   based on cache state.
 - Announce lists only feedback **new or changed since last assessment**.
 - Backward compatibility:
-  - `artifact:turn.log.reaction` text can be JSON or legacy dict‑string; both are parsed.
+  - `artifact:turn.log.reaction` text can be JSON or a dict‑string; both are parsed.
   - Older `artifact:turn.log` index text (markdown header / old feedback‑only JSON) is ignored by
     feedback refresh logic and only affects semantic search results.

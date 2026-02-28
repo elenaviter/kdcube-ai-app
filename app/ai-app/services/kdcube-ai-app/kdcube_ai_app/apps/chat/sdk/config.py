@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     BUNDLE_CLEANUP_INTERVAL_SECONDS: int = Field(default=3600)
     BUNDLE_CLEANUP_LOCK_TTL_SECONDS: int = Field(default=900)
     BUNDLE_REF_TTL_SECONDS: int = Field(default=3600)
+    # Include built-in example bundles from sdk/examples/bundles
+    BUNDLES_INCLUDE_EXAMPLES: bool = Field(default=True)
     # Force bundles registry to be overwritten from AGENTIC_BUNDLES_JSON at startup (processor only).
     BUNDLES_FORCE_ENV_ON_STARTUP: bool = Field(default=False)
     BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS: int = Field(default=60)

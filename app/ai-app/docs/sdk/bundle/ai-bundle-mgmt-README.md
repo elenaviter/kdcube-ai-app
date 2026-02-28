@@ -35,6 +35,134 @@ graph TD
 
 ---
 
+## Deployment and Upgrade (runtime behavior)
+
+Choose one delivery mode per deployment:
+
+- **Mounted path** (EC2 compose, local dev). Bundles exist on disk and are mounted into proc.
+- **Git‑defined** (ECS or EC2). Proc clones bundles from git on startup/resolution.
+
+### Runtime env controls
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `AGENTIC_BUNDLES_JSON` | _(unset)_ | Bundle registry descriptor (inline JSON or path to a JSON/YAML file). |
+| `BUNDLES_FORCE_ENV_ON_STARTUP` | `0` | Force overwrite Redis registry from `AGENTIC_BUNDLES_JSON` at startup (processor only). |
+| `BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS` | `60` | Redis lock TTL for startup env reset. |
+| `BUNDLES_INCLUDE_EXAMPLES` | `1` | Auto‑add example bundles from `sdk/examples/bundles`. |
+| `BUNDLE_GIT_RESOLUTION_ENABLED` | `1` | Enable git clone/pull for bundles with `repo`. |
+| `BUNDLE_GIT_ALWAYS_PULL` | `0` | Always pull even if local path exists (useful for branch refs). |
+| `BUNDLE_GIT_REDIS_LOCK` | `0` | Redis lock for git pulls (per instance; key includes `INSTANCE_ID`). |
+| `BUNDLE_GIT_REDIS_LOCK_TTL_SECONDS` | `300` | Redis lock TTL for git pulls. |
+| `BUNDLE_GIT_REDIS_LOCK_WAIT_SECONDS` | `60` | Max wait to acquire git lock. |
+
+If you provide a `release.yaml`, the loader will read its `bundles` section automatically.
+Mount it to `/config/release.yaml` and set:
+```
+AGENTIC_BUNDLES_JSON=/config/release.yaml
+```
+
+### Bundles root resolution (git bundles)
+
+When cloning from git, the bundles root is resolved in this order:
+
+1. `HOST_BUNDLES_PATH`
+2. `AGENTIC_BUNDLES_ROOT`
+3. `/bundles`
+
+**Note:** in containers, prefer setting `AGENTIC_BUNDLES_ROOT` to a container‑visible path
+(`/bundles`). Only set `HOST_BUNDLES_PATH` if the same path is valid **inside** the container.
+
+### Example: git bundle → resulting path
+
+Descriptor:
+
+```json
+{
+  "default_bundle_id": "demo-react",
+  "bundles": {
+    "demo-react": {
+      "id": "demo-react",
+      "repo": "git@github.com:org/demo-react-bundle.git",
+      "ref": "v2.1.0",
+      "subdir": "bundles",
+      "module": "demo-react.entrypoint"
+    }
+  }
+}
+```
+
+**`ref` values (git)**
+- Tag (recommended for releases)
+- Commit SHA (also recommended, fully deterministic)
+- Branch name (allowed, but non‑deterministic unless you set `BUNDLE_GIT_ALWAYS_PULL=1`)
+
+Resolved path (default):
+
+```
+/bundles/demo-react-bundle__demo-react__v2.1.0/bundles
+```
+
+If `ref` is omitted:
+
+```
+/bundles/demo-react-bundle__demo-react/bundles
+```
+
+If `BUNDLE_GIT_ATOMIC=1`, the directory becomes:
+
+```
+/bundles/demo-react-bundle__demo-react__v2.1.0__<timestamp>/bundles
+```
+
+### Monorepo example (bundle deep in repo)
+
+If the bundle lives inside a monorepo, set `subdir` to the **bundles root**:
+
+```json
+{
+  "id": "react@2026-02-10-02-44",
+  "repo": "git@github.com:kdcube/kdcube-ai-app.git",
+  "ref": "v0.3.2",
+  "subdir": "app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles",
+  "module": "react@2026-02-10-02-44.entrypoint"
+}
+```
+
+This keeps module naming consistent with local paths: `<id>.entrypoint`.
+
+### Git prerequisites
+
+**Required:**
+- `git` binary available inside the proc image/container.
+
+**Private repo access (SSH):**
+- `GIT_SSH_KEY_PATH` (path to private key inside container)
+- `GIT_SSH_KNOWN_HOSTS` (known_hosts file)
+- `GIT_SSH_STRICT_HOST_KEY_CHECKING=yes|no` (optional)
+
+**Alternative:** set `GIT_SSH_COMMAND` directly (full ssh command).
+
+**Field naming (release + runtime):**
+
+Runtime descriptors and `release.yaml` use the same field names:
+- `repo` / `ref` / `subdir`
+
+### Upgrade steps (recommended)
+
+1. Update the bundle descriptor (`AGENTIC_BUNDLES_JSON`).
+1. If you must **override existing Redis registry**, set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on **proc**
+   for one rollout, then return it to `0` once all replicas are up.
+1. For repo bundles, prefer **pinned refs** (tag/commit) so the resolved path changes:
+   ```
+   <bundles_root>/<repo>__<bundle_id>__<ref>/<subdir?>
+   ```
+1. If you must follow a branch head, set `BUNDLE_GIT_ALWAYS_PULL=1`.
+1. Use `BUNDLE_GIT_REDIS_LOCK=1` so each instance pulls once.
+1. For mounted paths, leave `BUNDLE_GIT_RESOLUTION_ENABLED=0` to suppress git pulls.
+
+---
+
 ## Quickstart — Clone → Compose → Chat
 
 **Bundle authors (AI agent/chatbot quickstart):**  
@@ -56,6 +184,11 @@ export AGENTIC_BUNDLES_JSON='{
   }
 }'
 ```
+
+Module resolution is relative to `path`. If you keep `path` at a shared root (for example `/bundles`),
+then `module` must include the bundle folder name. For repo bundles, use `repo` + optional `ref`/`subdir`
+instead of `path` (the path is derived). Keep the same module semantics: `subdir` points to the parent
+bundles directory and `module` includes the bundle folder name.
 
 2. **Start services** (all-in-one):
 
@@ -100,6 +233,9 @@ Supported forms: directory, single `.py`, or wheel/zip (then set `module`).
 See also:
 - [Bundle Authoring Guide (Chat SDK)](../../apps/chat/sdk/examples/bundles/first-ai-bundle-README.md)
 - [Example bundles](../../apps/chat/sdk/examples/bundles/README.md)
+
+The processor auto‑adds the example bundles when `BUNDLES_INCLUDE_EXAMPLES=1` (default). Set
+`BUNDLES_INCLUDE_EXAMPLES=0` to disable.
 
 ---
 
@@ -436,8 +572,15 @@ Admin APIs:
 **CI/CD friendly alternative (no auth tokens):**
 
 - Set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on the **processor** during deploy.
-- On startup, the processor overwrites the Redis registry from `AGENTIC_BUNDLES_JSON`
-  and broadcasts the update to all replicas.
+- On startup, the **first** processor that acquires the Redis lock overwrites the registry
+  from `AGENTIC_BUNDLES_JSON` and broadcasts the update to all replicas.
+- Other replicas skip the reset and load from Redis.
+
+**Examples auto‑registration:**
+
+`BUNDLES_INCLUDE_EXAMPLES=1` (default) auto‑adds the example bundles from
+`apps/chat/sdk/examples/bundles` to the registry. Set `BUNDLES_INCLUDE_EXAMPLES=0`
+to disable.
 
 ### CLI: delete bundle registry key (per tenant/project)
 
@@ -500,9 +643,9 @@ export AGENTIC_BUNDLES_JSON='{
   "bundles": {
     "demo.git": {
       "id": "demo.git",
-      "git_url": "https://github.com/org/my-bundle.git",
-      "git_ref": "main",
-      "git_subdir": "bundle",
+      "repo": "https://github.com/org/my-bundle.git",
+      "ref": "main",
+      "subdir": "bundle",
       "module": "my_bundle.entrypoint",
       "singleton": false
     }
@@ -511,7 +654,7 @@ export AGENTIC_BUNDLES_JSON='{
 ```
 
 **Git fields**:
-`git_url` (required), `git_ref` (optional branch/tag/commit), `git_subdir` (optional path inside repo).
+`repo` (required), `ref` (optional branch/tag/commit), `subdir` (optional path inside repo).
 
 **Where it is cloned**:  
 `HOST_BUNDLES_PATH` → `AGENTIC_BUNDLES_ROOT` → `/bundles` (fallback).
@@ -554,44 +697,44 @@ export GIT_SSH_STRICT_HOST_KEY_CHECKING=yes
 The runtime hot-reloads this registry across workers and clears loader caches on change.
 
 **Admin UI fields**
-- `path` (local bundle path) or `git_url` (clone from Git)
-- `git_ref` (branch/tag/commit)
-- `git_subdir` (optional path inside repo)
+- `path` (parent bundles directory) or `repo` (clone from Git)
+- `ref` (branch/tag/commit)
+- `subdir` (optional path inside repo)
 
 **Bundle fields (summary)**
 
 | Field | Meaning |
 | --- | --- |
 | `id` | Bundle id used in routing/registry |
-| `path` | Filesystem path to bundle root |
-| `module` | Python entrypoint module |
+| `path` | Filesystem path to the **parent directory** containing the bundle folder |
+| `module` | Python entrypoint module **including bundle folder** |
 | `singleton` | Reuse workflow instance |
 | `version` | Bundle version (content hash) |
-| `git_url` | Git repo URL |
-| `git_ref` | Branch/tag/commit |
-| `git_subdir` | Subdirectory inside repo |
+| `repo` | Git repo URL |
+| `ref` | Branch/tag/commit |
+| `subdir` | Subdirectory inside repo |
 | `git_commit` | Current HEAD commit |
 
 **Source of truth**
-- If `git_url` is set → git is the source of truth and `path` is derived.
+- If `repo` is set → git is the source of truth and `path` is derived.
 - Otherwise `path` is the source of truth.
 
-**Git bundle path derivation**
+**Repo bundle path derivation**
 
 ```
-<bundles_root>/<bundle_id>__<git_ref>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>__<ref>/<subdir?>
 ```
 
-If `git_ref` is omitted:
+If `ref` is omitted:
 
 ```
-<bundles_root>/<bundle_id>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>/<subdir?>
 ```
 
 **Atomic updates (safe for in‑flight requests)**
 
 ```
-<bundles_root>/<bundle_id>__<git_ref>__<timestamp>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>__<ref>__<timestamp>/<subdir?>
 ```
 
 Controlled by:
@@ -813,3 +956,4 @@ docker compose up -d --build chat
   Set `module` to the inner module path that exports your decorated workflow.
 
 ---
+If you provide a `release.yaml`, the loader will read its `bundles` section automatically.

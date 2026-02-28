@@ -74,6 +74,16 @@ Backend API routes are **not** under `routesPrefix`:
 
 - `HOST_BUNDLES_PATH` (host) → `AGENTIC_BUNDLES_ROOT` (container)
 
+**Optional release descriptor (recommended):**
+
+- Set `HOST_BUNDLE_DESCRIPTOR_PATH` in `.env` (host path to `release.yaml`)
+- Inside container it mounts to `/config/release.yaml`
+- In `.env.proc`, set:
+  - `AGENTIC_BUNDLES_JSON=/config/release.yaml`
+
+If you leave `HOST_BUNDLE_DESCRIPTOR_PATH` unset, `/dev/null` is mounted and the loader
+falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.
+
 ## Notes
 
 - `postgres-setup` runs once to bootstrap schemas in the managed Postgres.

@@ -105,6 +105,49 @@ def _load_module_from_file(path: Path, name_hint: str) -> types.ModuleType:
     spec.loader.exec_module(mod)
     return mod
 
+def _ensure_virtual_package(root_name: str, path: Path) -> None:
+    if root_name in sys.modules:
+        return
+    pkg = types.ModuleType(root_name)
+    pkg.__path__ = [str(path.resolve())]
+    pkg.__package__ = root_name
+    sys.modules[root_name] = pkg
+
+def _ensure_virtual_subpackages(root_name: str, path: Path, sub_pkg: str) -> None:
+    if not sub_pkg:
+        return
+    curr = root_name
+    base = path.resolve()
+    for part in sub_pkg.split("."):
+        curr = f"{curr}.{part}"
+        base = base / part
+        if curr in sys.modules:
+            continue
+        pkg = types.ModuleType(curr)
+        pkg.__path__ = [str(base)]
+        pkg.__package__ = curr
+        sys.modules[curr] = pkg
+
+def _load_module_from_dir(container_path: Path, module: str) -> types.ModuleType:
+    root_pkg = f"kdcube_bundle_{abs(hash(str(container_path.resolve())))}"
+    _ensure_virtual_package(root_pkg, container_path)
+    sub_pkg = module.rsplit(".", 1)[0] if "." in module else ""
+    _ensure_virtual_subpackages(root_pkg, container_path, sub_pkg)
+
+    target = container_path / f"{module.replace('.', '/')}.py"
+    if not target.exists():
+        raise ImportError(f"Module file not found in bundle dir: {target}")
+
+    full_name = f"{root_pkg}.{module}"
+    spec = importlib.util.spec_from_file_location(full_name, str(target))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Cannot create module spec from file: {target}")
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = f"{root_pkg}.{sub_pkg}" if sub_pkg else root_pkg
+    sys.modules[full_name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
 def _load_package_root(pkg_dir: Path) -> types.ModuleType:
     if not (pkg_dir / "__init__.py").exists():
         raise ImportError(f"Directory is not a package (missing __init__.py): {pkg_dir}")
@@ -118,7 +161,19 @@ def _load_from_sys_with_path_on_syspath(container_path: Path, module: str) -> ty
     root = str(container_path.resolve())
     if root not in sys.path:
         sys.path.insert(0, root)
-    return importlib.import_module(module)
+    try:
+        return importlib.import_module(module)
+    except ModuleNotFoundError as e:
+        # Only fallback if the *requested* module is missing.
+        missing = (e.name or "").split(".")[0]
+        if missing != (module.split(".")[0] if module else ""):
+            raise
+        return _load_module_from_dir(container_path, module)
+    except ImportError as e:
+        # If module was imported as top-level, relative imports may fail.
+        if "attempted relative import with no known parent package" in str(e):
+            return _load_module_from_dir(container_path, module)
+        raise
 
 def _resolve_module(spec: AgenticBundleSpec) -> types.ModuleType:
     key = _cache_key(spec)

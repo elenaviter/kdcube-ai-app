@@ -51,7 +51,7 @@ All tools converge on this shape (subset is OK; fields are additive):
 ```
 
 Notes:
-- `physical_path` is the canonical file path for attachments/files. `local_path` is legacy.
+- `physical_path` is the canonical file path for attachments/files.
 - `content` is optional and should be used sparingly to control token usage.
 - Any extra fields are tolerated and preserved by normalizers.
 

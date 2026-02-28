@@ -195,6 +195,9 @@ These values scope **bundle registries** and **control‑plane events**.
 | Setting                  | Default   | Purpose                                                                                         | Used by                           |
 |--------------------------|-----------|-------------------------------------------------------------------------------------------------|-----------------------------------|
 | `AGENTIC_BUNDLES_JSON`   | _(unset)_ | Seed bundle registry from JSON                                                                  | `infra/plugin/bundle_store.py`    |
+| `BUNDLES_INCLUDE_EXAMPLES` | `1`     | Auto‑add example bundles from `sdk/examples/bundles`                                            | `infra/plugin/bundle_store.py`    |
+| `BUNDLES_FORCE_ENV_ON_STARTUP` | `0` | Force overwrite Redis registry from `AGENTIC_BUNDLES_JSON` (processor only)                     | `infra/plugin/bundle_store.py`    |
+| `BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS` | `60` | Redis lock TTL for startup env reset                                                     | `infra/plugin/bundle_store.py`    |
 | `HOST_BUNDLES_PATH`      | _(unset)_ | Host path for bundle roots (git‑cloned or manually provisioned). Often mounted into containers. | `infra/plugin/git_bundle.py`      |
 | `AGENTIC_BUNDLES_ROOT`   | _(unset)_ | Container‑visible bundles root (path used by runtime inside container).                         | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_GIT_ALWAYS_PULL` | `0`       | Force refresh on resolve                                                                        | `infra/plugin/bundle_registry.py` |
@@ -203,6 +206,9 @@ These values scope **bundle registries** and **control‑plane events**.
 | `BUNDLE_GIT_CLONE_DEPTH` | `50`      | Shallow clone depth                                                                             | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_GIT_KEEP`        | `3`       | Keep N old bundle dirs                                                                          | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_GIT_TTL_HOURS`   | `0`       | TTL cleanup for old bundle dirs                                                                 | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_REDIS_LOCK`  | `0`       | Use Redis lock to serialize git pulls **per instance** (key includes `INSTANCE_ID`)            | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_REDIS_LOCK_TTL_SECONDS` | `300` | Redis lock TTL for git pulls                                                             | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_REDIS_LOCK_WAIT_SECONDS` | `60` | Max wait to acquire git lock                                                            | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_REF_TTL_SECONDS` | `3600`    | TTL for active bundle refs                                                                      | `infra/plugin/bundle_refs.py`     |
 
 **Tenant/project scoped channels**

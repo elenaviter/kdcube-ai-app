@@ -81,6 +81,16 @@ chmod -R 0777 data
 
 This is how bundle code becomes available to the processor in this setup.
 
+**Optional release descriptor (recommended):**
+
+- Set `HOST_BUNDLE_DESCRIPTOR_PATH` in `.env` (host path to `release.yaml`)
+- Inside container it mounts to `/config/release.yaml`
+- In `.env.proc`, set:
+  - `AGENTIC_BUNDLES_JSON=/config/release.yaml`
+
+If you leave `HOST_BUNDLE_DESCRIPTOR_PATH` unset, `/dev/null` is mounted and the loader
+falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.
+
 ## Notes
 
 - `postgres-setup` runs once after Postgres is healthy and creates schemas.

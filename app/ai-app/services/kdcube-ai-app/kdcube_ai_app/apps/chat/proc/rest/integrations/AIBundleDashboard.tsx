@@ -37,9 +37,9 @@ interface BundleEntry {
     singleton?: boolean | null;
     description?: string | null;
     version?: string | null;
-    git_url?: string | null;
-    git_ref?: string | null;
-    git_subdir?: string | null;
+    repo?: string | null;
+    ref?: string | null;
+    subdir?: string | null;
     git_commit?: string | null;
 }
 
@@ -572,39 +572,48 @@ const AIBundleDashboard: React.FC = () => {
         module: '',
         singleton: false,
         description: '',
-        git_url: '',
-        git_ref: '',
-        git_subdir: ''
+        repo: '',
+        ref: '',
+        subdir: ''
     });
     const formRef = useRef<HTMLDivElement | null>(null);
 
     const bundleList = useMemo(() => Object.values(bundles).sort((a, b) => a.id.localeCompare(b.id)), [bundles]);
+    const deriveRepoName = (repoUrl: string): string => {
+        const trimmed = (repoUrl || '').trim().replace(/\/+$/, '');
+        if (!trimmed) return '';
+        const last = trimmed.split('/').pop() || '';
+        return last.endsWith('.git') ? last.slice(0, -4) : last;
+    };
     const derivedGitPath = useMemo(() => {
-        if (!form.git_url) return '';
+        if (!form.repo) return '';
         const id = form.id || '<bundle_id>';
-        const ref = (form.git_ref || '').trim();
-        const subdir = (form.git_subdir || '').trim();
-        const base = `<bundles_root>/${id}${ref ? `__${ref}` : ''}`;
+        const ref = (form.ref || '').trim();
+        const subdir = (form.subdir || '').trim();
+        const repo = deriveRepoName(form.repo) || '<repo>';
+        const base = `<bundles_root>/${repo}__${id}${ref ? `__${ref}` : ''}`;
         return subdir ? `${base}/${subdir}` : base;
-    }, [form.git_url, form.git_ref, form.git_subdir, form.id]);
+    }, [form.repo, form.ref, form.subdir, form.id]);
     const derivedHostPath = useMemo(() => {
-        if (!form.git_url) return '';
+        if (!form.repo) return '';
         const root = settings.getHostBundlesPath() || '<HOST_BUNDLES_PATH>';
         const id = form.id || '<bundle_id>';
-        const ref = (form.git_ref || '').trim();
-        const subdir = (form.git_subdir || '').trim();
-        const base = `${root.replace(/\/+$/, '')}/${id}${ref ? `__${ref}` : ''}`;
+        const ref = (form.ref || '').trim();
+        const subdir = (form.subdir || '').trim();
+        const repo = deriveRepoName(form.repo) || '<repo>';
+        const base = `${root.replace(/\/+$/, '')}/${repo}__${id}${ref ? `__${ref}` : ''}`;
         return subdir ? `${base}/${subdir}` : base;
-    }, [form.git_url, form.git_ref, form.git_subdir, form.id]);
+    }, [form.repo, form.ref, form.subdir, form.id]);
     const derivedAgenticPath = useMemo(() => {
-        if (!form.git_url) return '';
+        if (!form.repo) return '';
         const root = settings.getAgenticBundlesRoot() || '<AGENTIC_BUNDLES_ROOT>';
         const id = form.id || '<bundle_id>';
-        const ref = (form.git_ref || '').trim();
-        const subdir = (form.git_subdir || '').trim();
-        const base = `${root.replace(/\/+$/, '')}/${id}${ref ? `__${ref}` : ''}`;
+        const ref = (form.ref || '').trim();
+        const subdir = (form.subdir || '').trim();
+        const repo = deriveRepoName(form.repo) || '<repo>';
+        const base = `${root.replace(/\/+$/, '')}/${repo}__${id}${ref ? `__${ref}` : ''}`;
         return subdir ? `${base}/${subdir}` : base;
-    }, [form.git_url, form.git_ref, form.git_subdir, form.id]);
+    }, [form.repo, form.ref, form.subdir, form.id]);
 
     const loadBundles = async (scopeOverride?: Scope) => {
         try {
@@ -681,12 +690,12 @@ const AIBundleDashboard: React.FC = () => {
 
     const resetForm = () => {
         setEditingId(null);
-        setForm({ id: '', name: '', path: '', module: '', singleton: false, description: '', git_url: '', git_ref: '', git_subdir: '' });
+        setForm({ id: '', name: '', path: '', module: '', singleton: false, description: '', repo: '', ref: '', subdir: '' });
     };
 
     const saveBundle = async () => {
-        if (!form.id || (!form.path && !form.git_url)) {
-            setError('Bundle id is required. Provide either a path or a git URL.');
+        if (!form.id || (!form.path && !form.repo)) {
+            setError('Bundle id is required. Provide either a path or a repo.');
             return;
         }
         try {
@@ -728,9 +737,9 @@ const AIBundleDashboard: React.FC = () => {
             module: entry.module || '',
             singleton: !!entry.singleton,
             description: entry.description || '',
-            git_url: entry.git_url || '',
-            git_ref: entry.git_ref || '',
-            git_subdir: entry.git_subdir || ''
+            repo: entry.repo || '',
+            ref: entry.ref || '',
+            subdir: entry.subdir || ''
         });
         setTimeout(() => formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
     };
@@ -914,7 +923,9 @@ const AIBundleDashboard: React.FC = () => {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-200/70">
-                                    {bundleList.map(b => (
+                                    {bundleList.map(b => {
+                                        const isAdminBundle = b.id === 'kdcube.admin';
+                                        return (
                                         <tr key={b.id} className="hover:bg-gray-50/70 transition-colors">
                                             <td className="px-4 py-3 font-semibold text-gray-900">{b.id}</td>
                                             <td className="px-4 py-3 text-gray-700">{b.name || '—'}</td>
@@ -924,22 +935,37 @@ const AIBundleDashboard: React.FC = () => {
                                             <td className="px-4 py-3 text-gray-600">{b.description || '—'}</td>
                                             <td className="px-4 py-3 text-gray-600">{b.version || '—'}</td>
                                             <td className="px-4 py-3 text-gray-600">
-                                                {b.git_url ? (
+                                                {b.repo ? (
                                                     <div className="space-y-1">
-                                                        <div className="truncate max-w-[220px]" title={b.git_url || ''}>{b.git_url}</div>
-                                                        {b.git_ref && <div>ref: {b.git_ref}</div>}
+                                                        <div className="truncate max-w-[220px]" title={b.repo || ''}>{b.repo}</div>
+                                                        {b.ref && <div>ref: {b.ref}</div>}
                                                         {b.git_commit && <div className="text-xs text-gray-500">commit: {b.git_commit.slice(0, 12)}</div>}
                                                     </div>
                                                 ) : '—'}
                                             </td>
                                             <td className="px-4 py-3 text-right">
                                                 <div className="flex justify-end gap-2">
-                                                    <Button variant="secondary" onClick={() => editBundle(b)}>Edit</Button>
-                                                    <Button variant="danger" onClick={() => deleteBundle(b.id)}>Delete</Button>
+                                                    <Button
+                                                        variant="secondary"
+                                                        onClick={() => editBundle(b)}
+                                                        disabled={isAdminBundle}
+                                                        title={isAdminBundle ? 'Admin bundle is protected' : undefined}
+                                                    >
+                                                        Edit
+                                                    </Button>
+                                                    <Button
+                                                        variant="danger"
+                                                        onClick={() => deleteBundle(b.id)}
+                                                        disabled={isAdminBundle}
+                                                        title={isAdminBundle ? 'Admin bundle is protected' : undefined}
+                                                    >
+                                                        Delete
+                                                    </Button>
                                                 </div>
                                             </td>
                                         </tr>
-                                    ))}
+                                        );
+                                    })}
                                     {bundleList.length === 0 && (
                                         <tr>
                                             <td colSpan={9} className="px-4 py-6 text-center text-gray-500">
@@ -1032,21 +1058,21 @@ const AIBundleDashboard: React.FC = () => {
                 <Card>
                     <CardHeader
                         title={editingId ? `Edit bundle: ${editingId}` : 'Add bundle'}
-                        subtitle="Provide id and either path or git URL; module is optional unless using zip/whl."
+                        subtitle="Provide id and either path or repo; module is optional unless using zip/whl."
                         action={editingId ? <Button variant="secondary" onClick={resetForm}>Cancel edit</Button> : undefined}
                     />
                     <CardBody className="space-y-5">
                         <div ref={formRef} />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <InputField label="Bundle ID" value={form.id} onChange={v => setForm({ ...form, id: v })} placeholder="kdcube.demo.1" />
+                            <InputField label="Bundle ID" value={form.id} onChange={v => setForm({ ...form, id: v })} placeholder="demo.react@1.0.0" />
                             <InputField label="Name" value={form.name || ''} onChange={v => setForm({ ...form, name: v })} placeholder="Demo bundle" />
-                            <InputField label="Path" value={form.path} onChange={v => setForm({ ...form, path: v })} placeholder="/bundles/demo" />
-                            <InputField label="Module" value={form.module || ''} onChange={v => setForm({ ...form, module: v })} placeholder="demo.entrypoint" />
+                            <InputField label="Path" value={form.path} onChange={v => setForm({ ...form, path: v })} placeholder="/bundles" />
+                            <InputField label="Module" value={form.module || ''} onChange={v => setForm({ ...form, module: v })} placeholder="demo.react@1.0.0.entrypoint" />
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <InputField label="Git URL" value={form.git_url || ''} onChange={v => setForm({ ...form, git_url: v })} placeholder="https://github.com/org/repo.git" />
-                            <InputField label="Git Ref" value={form.git_ref || ''} onChange={v => setForm({ ...form, git_ref: v })} placeholder="main | v1.2.3 | <commit>" />
-                            <InputField label="Git Subdir" value={form.git_subdir || ''} onChange={v => setForm({ ...form, git_subdir: v })} placeholder="optional/subdir/inside/repo" />
+                            <InputField label="Repo" value={form.repo || ''} onChange={v => setForm({ ...form, repo: v })} placeholder="git@github.com:org/repo.git" />
+                            <InputField label="Ref" value={form.ref || ''} onChange={v => setForm({ ...form, ref: v })} placeholder="main | v1.2.3 | <commit>" />
+                            <InputField label="Subdir" value={form.subdir || ''} onChange={v => setForm({ ...form, subdir: v })} placeholder="path/to/bundles" />
                         </div>
                         <div className="rounded-xl border border-slate-200/70 bg-slate-50 px-4 py-3 text-xs text-slate-700">
                             <div className="font-semibold mb-1">Resolved path preview</div>
@@ -1069,7 +1095,7 @@ const AIBundleDashboard: React.FC = () => {
                                 </div>
                                 {derivedGitPath ? (
                                     <div>
-                                        <span className="font-medium">Derived path (git template):</span>{' '}
+                                        <span className="font-medium">Derived path (repo/ref template):</span>{' '}
                                         <code className="px-1 py-0.5 rounded bg-white border border-slate-200">{derivedGitPath}</code>
                                     </div>
                                 ) : null}
@@ -1087,7 +1113,7 @@ const AIBundleDashboard: React.FC = () => {
                                 ) : null}
                             </div>
                             <div className="mt-2 text-[11px] text-slate-600">
-                                Updates take effect when the bundle path changes. For git bundles, use a new <code>git_ref</code>.
+                                Updates take effect when the bundle path changes. For repo bundles, use a new <code>ref</code>.
                                 For local bundles, deploy to a new path and update <code>path</code>.
                             </div>
                         </div>

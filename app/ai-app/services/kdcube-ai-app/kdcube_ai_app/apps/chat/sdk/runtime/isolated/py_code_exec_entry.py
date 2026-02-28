@@ -155,23 +155,23 @@ def _maybe_restore_bundle_from_git(
     Uses git clone/fetch if git fields are provided in runtime_globals or env.
     """
     bundle_spec = runtime_globals.get("BUNDLE_SPEC") or {}
-    git_url = (
-        runtime_globals.get("BUNDLE_GIT_URL")
-        or (bundle_spec.get("git_url") if isinstance(bundle_spec, dict) else None)
-        or os.environ.get("BUNDLE_GIT_URL")
+    repo = (
+        runtime_globals.get("BUNDLE_REPO")
+        or (bundle_spec.get("repo") if isinstance(bundle_spec, dict) else None)
+        or os.environ.get("BUNDLE_REPO")
     )
-    if not git_url:
+    if not repo:
         return runtime_globals
-    git_ref = (
-        runtime_globals.get("BUNDLE_GIT_REF")
-        or (bundle_spec.get("git_ref") if isinstance(bundle_spec, dict) else None)
-        or os.environ.get("BUNDLE_GIT_REF")
+    ref = (
+        runtime_globals.get("BUNDLE_REF")
+        or (bundle_spec.get("ref") if isinstance(bundle_spec, dict) else None)
+        or os.environ.get("BUNDLE_REF")
         or ""
     )
-    git_subdir = (
-        runtime_globals.get("BUNDLE_GIT_SUBDIR")
-        or (bundle_spec.get("git_subdir") if isinstance(bundle_spec, dict) else None)
-        or os.environ.get("BUNDLE_GIT_SUBDIR")
+    subdir = (
+        runtime_globals.get("BUNDLE_SUBDIR")
+        or (bundle_spec.get("subdir") if isinstance(bundle_spec, dict) else None)
+        or os.environ.get("BUNDLE_SUBDIR")
         or ""
     )
 
@@ -197,9 +197,9 @@ def _maybe_restore_bundle_from_git(
         bundles_root = pathlib.Path(exec_root_env).parent if exec_root_env else None
         paths = ensure_git_bundle(
             bundle_id=bundle_dir,
-            git_url=git_url,
-            git_ref=git_ref or None,
-            git_subdir=git_subdir or None,
+            git_url=repo,
+            git_ref=ref or None,
+            git_subdir=subdir or None,
             bundles_root=bundles_root,
             logger=logger,
         )

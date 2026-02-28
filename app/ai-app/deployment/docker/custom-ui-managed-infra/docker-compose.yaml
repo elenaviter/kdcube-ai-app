@@ -86,6 +86,10 @@ services:
       - ./data/exec-workspace:/exec-workspace
       - ./logs/chat-proc:/logs
       - type: bind
+        source: ${HOST_BUNDLE_DESCRIPTOR_PATH:-/dev/null}
+        target: /config/release.yaml
+        read_only: true
+      - type: bind
         source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
         target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
       - type: bind
@@ -124,7 +128,6 @@ services:
       dockerfile: ${UI_DOCKERFILE_PATH}
       args:
         - UI_SOURCE_PATH=${UI_SOURCE_PATH}
-        - UI_ENV_BUILD_RELATIVE=${UI_ENV_BUILD_RELATIVE}
         - NGINX_UI_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
     env_file:
       - path: ${UI_ENV_FILE_PATH}

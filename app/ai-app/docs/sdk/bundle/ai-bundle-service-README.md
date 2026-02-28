@@ -37,11 +37,16 @@ Accepted shape:
 Fields:
 - `id` (string, required): bundle id.
 - `name` (string, optional): friendly name.
-- `path` (string, required): container-visible path to bundle root (dir, .py, .zip, .whl).
-- `module` (string, optional): dotted module name inside the path (required for zip/whl).
+- `path` (string, required): container-visible path to the **parent directory** that contains the bundle folder (dir, .py, .zip, .whl).
+- `module` (string, optional): dotted module name **including the bundle folder** (required for zip/whl).
 - `singleton` (bool, optional): if true, the workflow instance is cached and reused.
 - `description` (string, optional).
 - `version` (string, optional): bundle version (computed content hash prefix).
+
+Local vs git:
+- Local bundles use `path` + `module` (module is resolved relative to `path`).
+- Repo bundles use `repo` + `ref` + `subdir`.
+  The loader derives `path` from the clone and still uses `module` relative to that resolved path.
 
 ### 2) Redis registry (source of truth at runtime)
 
@@ -67,7 +72,14 @@ and picked up by all processors.
 **CI/CD friendly alternative (no admin tokens):**
 
 - Set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on the **processor** during deploy.
-- On startup, the processor overwrites Redis from `AGENTIC_BUNDLES_JSON` and broadcasts.
+- On startup, the **first** processor that acquires the Redis lock overwrites Redis
+  from `AGENTIC_BUNDLES_JSON` and broadcasts. Other replicas skip the reset and read Redis.
+
+**Examples auto‑registration:**
+
+`BUNDLES_INCLUDE_EXAMPLES=1` (default) auto‑adds the example bundles from
+`apps/chat/sdk/examples/bundles` to the registry. Set `BUNDLES_INCLUDE_EXAMPLES=0`
+to disable.
 
 ### Cache cleanup (retiring old bundle versions)
 
@@ -126,7 +138,7 @@ Processors also subscribe to config updates:
 
 ## Git bundles (optional)
 
-You may include `git_url`, `git_ref`, and `git_subdir` in `AGENTIC_BUNDLES_JSON`.
+You may include `repo`, `ref`, and `subdir` in `AGENTIC_BUNDLES_JSON`.
 
 **Important (current default):**
 

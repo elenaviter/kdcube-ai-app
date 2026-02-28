@@ -48,7 +48,7 @@ services:
     container_name: kdcube-postgres-setup
     build:
       context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_PostgresSetup
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_PostgresSetup
     env_file:
       - path: ./.env.postgres.setup
         required: false
@@ -138,7 +138,7 @@ services:
   #    container_name: kdcube-kb
   #    build:
   #      context: ../../..
-  #      dockerfile: deployment/docker/all_in_one/Dockerfile_KB
+  #      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_KB
   #    profiles:
   #      - optional  # Not started by default
   #    env_file:
@@ -165,7 +165,7 @@ services:
   #    container_name: kdcube-dramatiq
   #    build:
   #      context: ../../..
-  #      dockerfile: deployment/docker/all_in_one/Dockerfile_Dramatiq
+  #      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Dramatiq
   #    profiles:
   #      - optional  # Not started by default
   #    env_file:
@@ -193,7 +193,7 @@ services:
     container_name: kdcube-chat-ingress
     build:
       context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Ingress
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Ingress
     env_file:
       - path: ./.env.ingress
         required: false
@@ -230,7 +230,7 @@ services:
     container_name: kdcube-chat-proc
     build:
       context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Chatproc
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Chatproc
     env_file:
       - path: ./.env.proc
         required: false
@@ -248,6 +248,10 @@ services:
       - ./data/kdcube-storage:/kdcube-storage
       - ./data/exec-workspace:/exec-workspace
       - ./logs/chat-proc:/logs
+      - type: bind
+        source: ${HOST_BUNDLE_DESCRIPTOR_PATH:-/dev/null}
+        target: /config/release.yaml
+        read_only: true
       - type: bind
         source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
         target: ${AGENTIC_BUNDLES_ROOT?}       # e.g. /bundles inside the container
@@ -270,7 +274,7 @@ services:
     container_name: kdcube-metrics
     build:
       context: ../../..
-      dockerfile: deployment/docker/all_in_one/Dockerfile_Metricservice
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Metricservice
     env_file:
       - path: ./.env.metrics
         required: false

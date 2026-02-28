@@ -353,12 +353,17 @@ async def lifespan(app: FastAPI):
             from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
             from kdcube_ai_app.infra.plugin.bundle_store import force_env_reset_if_requested
             from kdcube_ai_app.infra.plugin.bundle_registry import set_registry as _set_mem_registry
-            reg = await force_env_reset_if_requested(
-                redis_async,
-                tenant=settings.TENANT,
-                project=settings.PROJECT,
-                actor="startup-env",
-            )
+            reg = None
+            try:
+                reg = await force_env_reset_if_requested(
+                    redis_async,
+                    tenant=settings.TENANT,
+                    project=settings.PROJECT,
+                    actor="startup-env",
+                )
+            except Exception as e:
+                logger.warning("Bundle env reset failed; falling back to Redis. %s", e)
+                reg = None
             if not reg:
                 reg = await _load_store_registry(redis_async)
             bundles_dict = {bid: entry.model_dump() for bid, entry in reg.bundles.items()}

@@ -61,6 +61,6 @@ Each service has its own `.env.*` file. See the samples for the complete set:
 - **Same `GATEWAY_CONFIG_JSON`** for ingress/proc/metrics.
 - `tenant` + `project` are required and must be in `GATEWAY_CONFIG_JSON`.
 - Use `POSTGRES_HOST` / `REDIS_HOST` for managed services; omit for local‑infra if compose provides them.
-- No legacy `TENANT_ID` / `DEFAULT_PROJECT_NAME` envs.
+- `TENANT_ID` / `DEFAULT_PROJECT_NAME` are not supported.
 
 For the full config schema, see `docs/service/gateway-README.md`.

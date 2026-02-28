@@ -44,13 +44,34 @@ Bundles are registered via `AGENTIC_BUNDLES_JSON` or through the Admin UI (Bundl
 
 ```bash
 export AGENTIC_BUNDLES_JSON='{
+  "default_bundle_id": "demo-react@2-1",
+  "bundles": {
+    "demo-react@2-1": {
+      "id": "demo-react@2-1",
+      "name": "ReAct Demo",
+      "path": "/bundles",
+      "module": "demo-react@2-1.entrypoint",
+      "singleton": false,
+      "description": "ReAct agent demo bundle"
+    }
+  }
+}'
+```
+
+**Rule (recommended):**
+Keep `path` at the parent bundles root (`/bundles`) and set
+`module` to `<bundle_folder>.entrypoint`.  
+This keeps **local** and **git** definitions consistent and avoids relative‑import issues.
+
+```bash
+export AGENTIC_BUNDLES_JSON='{
   "default_bundle_id": "demo.react",
   "bundles": {
     "demo.react": {
       "id": "demo.react",
       "name": "ReAct Demo",
-      "path": "/bundles/react_bundle",
-      "module": "react_bundle.entrypoint",
+      "path": "/bundles",
+      "module": "react@2026-02-10-02-44.entrypoint",
       "singleton": false,
       "description": "ReAct agent demo bundle"
     }
@@ -60,7 +81,7 @@ export AGENTIC_BUNDLES_JSON='{
 
 ### 2) Git‑defined bundle (new)
 
-Use `git_url` + optional `git_ref` and `git_subdir`.
+Use `repo` + optional `ref` and `subdir`.
 The bundle will be cloned into the **bundles root** and loaded from there.
 
 **Important (current default):**  
@@ -75,10 +96,10 @@ export AGENTIC_BUNDLES_JSON='{
     "demo.git": {
       "id": "demo.git",
       "name": "Git bundle",
-      "git_url": "https://github.com/org/my-bundle.git",
-      "git_ref": "main",
-      "git_subdir": "bundle",
-      "module": "my_bundle.entrypoint",
+      "repo": "https://github.com/org/my-bundle.git",
+      "ref": "main",
+      "subdir": "bundles",
+      "module": "demo.git.entrypoint",
       "singleton": false,
       "description": "Bundle loaded from Git"
     }
@@ -92,26 +113,40 @@ export AGENTIC_BUNDLES_JSON='{
 | --- | --- |
 | `id` | Stable bundle id used in routing and registry. |
 | `name` | Human‑friendly name (UI only). |
-| `path` | Filesystem path to the bundle root (required for local bundles). |
-| `module` | Python module entrypoint (e.g. `my_bundle.entrypoint`). |
+| `path` | Filesystem path to the **parent directory** that contains the bundle folder (required for local bundles). |
+| `module` | Python module entrypoint **including the bundle folder** (e.g. `my_bundle.entrypoint`). |
 | `singleton` | If `true`, reuse the workflow instance across requests. |
 | `description` | Free‑text description shown in admin UI. |
 | `version` | Bundle version (often content hash); used for snapshots. |
-| `git_url` | Git repo URL (enables git bundle). |
-| `git_ref` | Git branch/tag/commit. Also used to derive the local folder name. |
-| `git_subdir` | Optional subdirectory inside repo that contains the bundle. |
+| `repo` | Git repo URL (enables git bundle). |
+| `ref` | Git branch/tag/commit. Also used to derive the local folder name. |
+| `subdir` | Optional subdirectory inside repo that contains the bundles root (parent folder). |
 | `git_commit` | Current HEAD commit (populated after clone/fetch). |
 
-**Path derivation for git bundles**
+## Built-in example bundles
+
+The processor auto‑adds the example bundles under `apps/chat/sdk/examples/bundles` when
+`BUNDLES_INCLUDE_EXAMPLES=1` (default). Set `BUNDLES_INCLUDE_EXAMPLES=0` to disable them.
+
+**Path derivation for repo bundles**
 
 ```
-<bundles_root>/<bundle_id>__<git_ref>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>__<ref>/<subdir?>
 ```
 
-If `git_ref` is omitted, the path is:
+If `ref` is omitted, the path is:
 
 ```
-<bundles_root>/<bundle_id>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>/<subdir?>
+```
+
+`repo` is derived from the repo URL (last path segment without `.git`).
+
+**Module resolution**
+
+Keep the same module semantics for local and repo bundles:
+- `path` / `subdir` points to the **parent** bundles directory.
+- `module` includes the bundle folder name (e.g. `react@2026-02-10-02-44.entrypoint`).
 
 **Git resolution toggle**
 
@@ -137,7 +172,7 @@ Resolution order:
 **Computed path**:
 
 ```
-<bundles_root>/<bundle_id>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>/<subdir?>
 ```
 
 ## Admin bundle
@@ -185,19 +220,19 @@ Configuration updates propagate to all replicas; each replica applies the regist
 pulls the git bundle (atomic by default), so in‑flight requests keep using the old path safely.
 
 **Source of truth**
-- If `git_url` is set → git is the source of truth. `path` is derived.
-- If `git_url` is not set → `path` is the source of truth (no git actions).
+- If `repo` is set → git is the source of truth. `path` is derived.
+- If `repo` is not set → `path` is the source of truth (no git actions).
 
 ## Typical bundle update procedure
 
 ### A) Git‑defined bundle update (recommended)
 
 1. **Tag or commit** your new version in Git.
-2. **Update the registry** to point to the new `git_ref` (tag/branch/commit).
-3. The resolved path changes because the path includes `git_ref`:
+2. **Update the registry** to point to the new `ref` (tag/branch/commit).
+3. The resolved path changes because the path includes `ref`:
 
 ```
-<bundles_root>/<bundle_id>__<git_ref>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>__<ref>/<subdir?>
 ```
 
 **Example**
@@ -205,30 +240,31 @@ pulls the git bundle (atomic by default), so in‑flight requests keep using the
 Old config:
 ```
 bundle_id: demo.react
-git_ref: v1.0.0
-git_subdir: bundle
+repo: git@github.com:org/demo-react.git
+ref: v1.0.0
+subdir: bundle
 ```
 
 Old path:
 ```
-/bundles/demo.react__v1.0.0/bundle
+/bundles/demo-react__demo.react__v1.0.0/bundle
 ```
 
 New config:
 ```
-git_ref: v1.1.0
+ref: v1.1.0
 ```
 
 New path:
 ```
-/bundles/demo.react__v1.1.0/bundle
+/bundles/demo-react__demo.react__v1.1.0/bundle
 ```
 
 4. The new path is treated as a **new bundle version**, so caches are refreshed safely.
 5. Old paths remain until cleanup (atomic updates).
 
-**Important:** if `git_ref` stays the same and the path doesn’t change, **existing running processes will keep
-their already‑loaded module**. For a deterministic update, always use a new `git_ref` (tag/commit or new branch
+**Important:** if `ref` stays the same and the path doesn’t change, **existing running processes will keep
+their already‑loaded module**. For a deterministic update, always use a new `ref` (tag/commit or new branch
 name).
 
 ### B) Manual filesystem update (local path)
@@ -246,7 +282,7 @@ name).
 ### Summary: when does an update take effect?
 
 Updates are guaranteed when the **bundle path changes**.  
-This is why git updates should use a **new `git_ref`** and manual updates should use a **new path**.
+This is why git updates should use a **new `ref`** and manual updates should use a **new path**.
 
 ## Git credentials (private repos)
 
@@ -286,7 +322,7 @@ export GIT_SSH_STRICT_HOST_KEY_CHECKING=yes
 Atomic folder shape:
 
 ```
-<bundles_root>/<bundle_id>__<git_ref>__<timestamp>/<git_subdir?>
+<bundles_root>/<repo>__<bundle_id>__<ref>__<timestamp>/<subdir?>
 ```
 
 ## Ref tracking & cleanup
@@ -330,7 +366,7 @@ During isolated execution:
 1. A lightweight **workspace snapshot** is sent (workdir/outdir).
 2. If bundle tools are required:
    - `BUNDLE_SNAPSHOT_URI` is used (preferred), or
-   - Git clone is used if `git_url` is provided.
+   - Git clone is used if `repo` is provided.
 
 ## Admin UI
 

@@ -1,4 +1,4 @@
-# Multi-stage build for production Python application
+# Multi-stage build for metrics service
 
 # Stage 1: Build stage
 FROM python:3.12-slim as builder
@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-COPY services/kdcube-ai-app/requirements-chat.txt requirements.txt
+COPY services/kdcube-ai-app/requirements-metric-service.txt requirements.txt
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
@@ -31,44 +31,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install Docker CLI from official Docker repository
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
-    gnupg \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-    && chmod a+r /etc/apt/keyrings/docker.asc \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        docker-ce-cli \
-        fonts-noto \
-        fonts-noto-cjk \
-        fonts-noto-color-emoji \
-        libmagic1 \
-        file \
-        gosu \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Verify docker CLI is installed
-RUN which docker && docker --version
-
 COPY --from=builder /opt/venv /opt/venv
-
-RUN python -m playwright install --with-deps chromium
 
 # Create non-root user
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser
 
-# Create exec-workspace directory with correct ownership
-RUN mkdir -p /exec-workspace && \
-    chown -R appuser:appuser /exec-workspace
-
 COPY --chown=appuser:appuser services/kdcube-ai-app/ .
-
 RUN chown -R appuser:appuser /app
 
 COPY deployment/docker/all_in_one/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -76,4 +51,4 @@ RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/docker-entrypoint.sh"]
-CMD ["python", "kdcube_ai_app/apps/chat/api/web_app.py"]
+CMD ["python", "kdcube_ai_app/apps/metrics/web_app.py"]

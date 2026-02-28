@@ -26,9 +26,9 @@ class BundleSpec:
     singleton: bool = False
     description: Optional[str] = None
     version: Optional[str] = None
-    git_url: Optional[str] = None
-    git_ref: Optional[str] = None
-    git_subdir: Optional[str] = None
+    repo: Optional[str] = None
+    ref: Optional[str] = None
+    subdir: Optional[str] = None
     git_commit: Optional[str] = None
 
 ENV_JSON = "AGENTIC_BUNDLES_JSON"
@@ -59,18 +59,19 @@ def _normalize(d: Dict[str, Any]) -> Dict[str, Any]:
     d["id"] = d.get("id") or d.get("key") or d.get("name")
     if not d.get("id"):
         raise ValueError("BundleSpec missing 'id'")
-    git_url = d.get("git_url") or d.get("git_repo")
-    if git_url:
-        d["git_url"] = git_url
+    unsupported_keys = {"git_url", "git_ref", "git_subdir", "git_repo"}
+    if any(k in d for k in unsupported_keys):
+        raise ValueError("Use repo/ref/subdir only; git_* keys are not supported.")
+    repo = d.get("repo")
     if not d.get("path"):
-        if git_url:
+        if repo:
             try:
                 from kdcube_ai_app.infra.plugin.git_bundle import compute_git_bundle_paths
                 paths = compute_git_bundle_paths(
                     bundle_id=d["id"],
-                    git_url=git_url,
-                    git_ref=d.get("git_ref"),
-                    git_subdir=d.get("git_subdir"),
+                    git_url=repo,
+                    git_ref=d.get("ref"),
+                    git_subdir=d.get("subdir"),
                 )
                 d["path"] = str(paths.bundle_root)
             except Exception:
@@ -91,8 +92,8 @@ def _apply_git_resolution(reg: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str,
     """
     enabled = os.environ.get("BUNDLE_GIT_RESOLUTION_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
     if not enabled:
-        if any((entry.get("git_url") or entry.get("git_repo")) for entry in reg.values()):
-            logger.warning("Git bundle resolution disabled (BUNDLE_GIT_RESOLUTION_ENABLED=0); git_* fields kept as metadata only.")
+        if any(entry.get("repo") for entry in reg.values()):
+            logger.warning("Git bundle resolution disabled (BUNDLE_GIT_RESOLUTION_ENABLED=0); repo/ref/subdir kept as metadata only.")
         return reg
     try:
         from kdcube_ai_app.infra.plugin.git_bundle import (
@@ -108,15 +109,15 @@ def _apply_git_resolution(reg: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str,
     atomic = os.environ.get("BUNDLE_GIT_ATOMIC", "1").lower() in {"1", "true", "yes"}
     out = dict(reg)
     for bid, entry in reg.items():
-        git_url = entry.get("git_url") or entry.get("git_repo")
-        if not git_url:
+        repo = entry.get("repo")
+        if not repo:
             continue
         try:
             paths = ensure_git_bundle(
                 bundle_id=bid,
-                git_url=git_url,
-                git_ref=entry.get("git_ref"),
-                git_subdir=entry.get("git_subdir"),
+                git_url=repo,
+                git_ref=entry.get("ref"),
+                git_subdir=entry.get("subdir"),
                 bundles_root=resolve_bundles_root(),
                 atomic=atomic,
             )
@@ -136,7 +137,7 @@ def _apply_git_resolution(reg: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str,
                 pass
             out[bid] = entry
             if atomic:
-                base_dir = bundle_dir_for_git(bid, entry.get("git_ref"))
+                base_dir = bundle_dir_for_git(bid, entry.get("ref"))
                 cleanup_old_git_bundles(
                     bundle_id=base_dir,
                     bundles_root=resolve_bundles_root(),
@@ -150,23 +151,21 @@ def load_from_env() -> None:
     """
     Accept both shapes:
       1) {"default_bundle_id": "...", "bundles": { "<id>": {...}, ... }}
-      2) legacy flat dict: { "<id>": {...}, ... }
+      2) flat dict: { "<id>": {...}, ... }
     """
     global _REGISTRY, _DEFAULT_ID
     with _REG_LOCK:
-        raw = os.getenv(ENV_JSON)
-        if not raw:
+        data = _load_env_json(strict=False)
+        if not data:
             _REGISTRY = {}
             _DEFAULT_ID = None
             return
-
-        data = json.loads(raw)
 
         if isinstance(data, dict) and "bundles" in data:
             default_bundle_id = data.get("default_bundle_id")
             raw_bundles = data.get("bundles") or {}
         else:
-            # legacy: env was just a mapping
+            # env was just a mapping
             default_bundle_id = None
             raw_bundles = data or {}
 
@@ -237,7 +236,7 @@ def upsert_bundles(partial: Dict[str, Dict[str, Any]], default_id: Optional[str]
 
 def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] = None) -> Optional[BundleSpec]:
     """Return the effective BundleSpec from (id OR override)."""
-    if override and (override.get("path") or override.get("git_url") or override.get("git_repo")):
+    if override and (override.get("path") or override.get("repo")):
         d = _normalize({
             "id": override.get("id") or "override",
             "path": override.get("path") or "",
@@ -245,9 +244,9 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
             "singleton": bool(override.get("singleton", False)),
             "name": override.get("name"),
             "description": override.get("description"),
-            "git_url": override.get("git_url") or override.get("git_repo"),
-            "git_ref": override.get("git_ref"),
-            "git_subdir": override.get("git_subdir"),
+            "repo": override.get("repo"),
+            "ref": override.get("ref"),
+            "subdir": override.get("subdir"),
         })
         return BundleSpec(**d)
 
@@ -257,8 +256,8 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
             return None
         spec_dict = dict(_REGISTRY[bid])
 
-    git_url = spec_dict.get("git_url") or spec_dict.get("git_repo")
-    if git_url:
+    repo = spec_dict.get("repo")
+    if repo:
         enabled = os.environ.get("BUNDLE_GIT_RESOLUTION_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
         if not enabled:
             logger.warning("Git bundle resolution disabled (BUNDLE_GIT_RESOLUTION_ENABLED=0); using existing path for bundle_id=%s", spec_dict.get("id"))
@@ -273,9 +272,9 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
             if need_pull:
                 paths = ensure_git_bundle(
                     bundle_id=spec_dict.get("id"),
-                    git_url=git_url,
-                    git_ref=spec_dict.get("git_ref"),
-                    git_subdir=spec_dict.get("git_subdir"),
+                    git_url=repo,
+                    git_ref=spec_dict.get("ref"),
+                    git_subdir=spec_dict.get("subdir"),
                     bundles_root=resolve_bundles_root(),
                     atomic=atomic,
                 )
@@ -295,6 +294,22 @@ def resolve_bundle(bundle_id: Optional[str], override: Optional[Dict[str, Any]] 
             logger.debug("resolve_bundle git resolution failed: %s", e)
 
     return BundleSpec(**spec_dict)
+
+def _load_env_json(strict: bool) -> Optional[Dict[str, Any]]:
+    raw = os.getenv(ENV_JSON)
+    if not raw:
+        if strict:
+            raise ValueError(f"{ENV_JSON} is not set")
+        return None
+    raw = raw.strip()
+    if raw.startswith("{") or raw.startswith("["):
+        return json.loads(raw)
+    path = Path(raw).expanduser()
+    if not path.exists():
+        if strict:
+            raise ValueError(f"{ENV_JSON} file not found: {path}")
+        return None
+    return json.loads(path.read_text())
 
 
 async def resolve_bundle_async(bundle_id: Optional[str], override: Optional[Dict[str, Any]] = None) -> Optional[BundleSpec]:

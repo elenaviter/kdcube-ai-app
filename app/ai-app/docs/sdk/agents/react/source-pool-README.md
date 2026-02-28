@@ -62,7 +62,7 @@ Optional metadata for web sources:
 - `provider_rank`, `weighted_rank`, `objective_relevance`, `query_relevance`, `authority`
 
 Notes:
-- `local_path` is legacy; prefer `physical_path`.
+- Prefer `physical_path` for attachments/files.
 - `content` is expensive and should be used sparingly.
 
 ## Accessing sources

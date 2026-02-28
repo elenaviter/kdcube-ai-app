@@ -325,10 +325,10 @@ class EnhancedChatRequestProcessor:
                             )
                             bundles = get_all() or {}
                             for _bid, entry in bundles.items():
-                                git_url = entry.get("git_url") or entry.get("git_repo")
-                                if not git_url:
+                                repo = entry.get("repo")
+                                if not repo:
                                     continue
-                                base_dir = bundle_dir_for_git(_bid, entry.get("git_ref"))
+                                base_dir = bundle_dir_for_git(_bid, entry.get("ref"))
                                 await cleanup_old_git_bundles_async(
                                     bundle_id=base_dir,
                                     bundles_root=resolve_bundles_root(),

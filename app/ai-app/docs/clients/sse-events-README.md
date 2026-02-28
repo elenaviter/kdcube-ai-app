@@ -253,7 +253,6 @@ Additional metadata is in `extra`:
 | `canvas`        | Artifact stream            | documents, rendered content   |
 | `timeline_text` | Timeline stream            | timeline panel / activity log |
 | `subsystem`     | Structured JSON payloads   | widgets + tools               |
-| `tool`          | legacy alias               | historical web‑search UI      |
 
 ### Canvas / artifact streaming
 Canvas chunks are usually emitted with:

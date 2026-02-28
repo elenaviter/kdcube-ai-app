@@ -146,7 +146,7 @@ Here’s a safe starting point that should handle 15 registered + 15 paid + 10 a
 
 service_capacity.processes_per_instance=4
 service_capacity.concurrent_requests_per_process=8
-MAX_QUEUE_SIZE=200     # optional safety cap; 0 = unlimited
+limits.proc.max_queue_size=200     # optional safety cap; 0 = unlimited
 
 This gives:
 

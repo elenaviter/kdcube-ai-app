@@ -5,7 +5,7 @@ This document describes how the session view is derived from the timeline when c
 ## Overview
 
 - The session view is the list of timeline blocks rendered for the React agent.
-- When `RuntimeCtx.session.cache_ttl_seconds` (or legacy `RuntimeCtx.cache_ttl_seconds`) is set, the timeline render path applies TTL-based pruning before the final render.
+- When `RuntimeCtx.session.cache_ttl_seconds` is set, the timeline render path applies TTL-based pruning before the final render.
 - The last touch timestamp is stored on the timeline payload as `cache_last_touch_at` and updated on each render.
 - The last TTL used is stored as `cache_last_ttl_seconds`.
   - **Bootstrap rule**: on the first render after loading a timeline, the stored TTL is used to decide pruning.

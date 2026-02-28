@@ -8,8 +8,11 @@ import os
 import pathlib
 import subprocess
 from dataclasses import dataclass
-from typing import Optional, Dict
+from typing import Optional, Dict, Iterator
 import time
+from contextlib import contextmanager
+import uuid
+import fcntl
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
@@ -44,12 +47,126 @@ def _atomic_dir_name(base_dir: str) -> str:
     ts = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     return f"{base_dir}__{ts}"
 
+def _lock_dir(root: pathlib.Path) -> pathlib.Path:
+    lock_dir = root / ".bundle-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir
+
+def _lock_file_name(bundle_id: str, git_ref: Optional[str]) -> str:
+    base = _bundle_dir_name(bundle_id, git_ref)
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in base)
+    return f"{safe}.lock"
+
+@contextmanager
+def _bundle_lock(*, bundle_id: str, git_ref: Optional[str], bundles_root: pathlib.Path) -> Iterator[None]:
+    """
+    Cross-process lock for git operations on the same bundle_id/git_ref.
+    Scope: local host/container (advisory file lock).
+    """
+    lock_path = _lock_dir(bundles_root) / _lock_file_name(bundle_id, git_ref)
+    with open(lock_path, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+def _redis_lock_enabled() -> bool:
+    return os.environ.get("BUNDLE_GIT_REDIS_LOCK", "0").lower() in {"1", "true", "yes", "on"}
+
+def _redis_lock_ttl() -> int:
+    try:
+        return int(os.environ.get("BUNDLE_GIT_REDIS_LOCK_TTL_SECONDS", "300") or "300")
+    except Exception:
+        return 300
+
+def _redis_lock_wait() -> int:
+    try:
+        return int(os.environ.get("BUNDLE_GIT_REDIS_LOCK_WAIT_SECONDS", "60") or "60")
+    except Exception:
+        return 60
+
+def _redis_client():
+    if not _redis_lock_enabled():
+        return None
+    try:
+        import redis  # type: ignore
+    except Exception:
+        return None
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        return None
+    try:
+        return redis.Redis.from_url(redis_url, decode_responses=True)
+    except Exception:
+        return None
+
+def _redis_lock_key(bundle_id: str, git_ref: Optional[str]) -> str:
+    tenant = "default"
+    project = "default"
+    instance_id = os.environ.get("INSTANCE_ID") or os.environ.get("HOSTNAME") or "unknown"
+    try:
+        from kdcube_ai_app.apps.chat.sdk.config import get_settings
+        settings = get_settings()
+        tenant = settings.TENANT
+        project = settings.PROJECT
+        if settings.INSTANCE_ID:
+            instance_id = settings.INSTANCE_ID
+    except Exception:
+        pass
+    ref = _sanitize_ref(git_ref or "head")
+    return f"kdcube:bundles:git-lock:{tenant}:{project}:{instance_id}:{bundle_id}:{ref}"
+
+@contextmanager
+def _redis_bundle_lock(*, bundle_id: str, git_ref: Optional[str]) -> Iterator[None]:
+    client = _redis_client()
+    if not client:
+        yield
+        return
+    key = _redis_lock_key(bundle_id, git_ref)
+    token = uuid.uuid4().hex
+    ttl = _redis_lock_ttl()
+    wait_seconds = _redis_lock_wait()
+    acquired = False
+    start = time.time()
+    while time.time() - start < wait_seconds:
+        try:
+            acquired = bool(client.set(key, token, nx=True, ex=ttl))
+        except Exception:
+            acquired = False
+        if acquired:
+            break
+        time.sleep(0.5)
+    try:
+        yield
+    finally:
+        if acquired:
+            # best-effort compare-and-del
+            try:
+                client.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+                    1,
+                    key,
+                    token,
+                )
+            except Exception:
+                pass
+
 
 def _bundle_dir_name(bundle_id: str, git_ref: Optional[str]) -> str:
     ref = (git_ref or "").strip()
     if not ref:
         return bundle_id
     return f"{bundle_id}__{_sanitize_ref(ref)}"
+
+def _bundle_dir_name_for_git(bundle_id: Optional[str], git_url: str, git_ref: Optional[str]) -> str:
+    repo = _repo_name_from_url(git_url)
+    bid = (bundle_id or "").strip() or repo
+    base = f"{repo}__{bid}" if bid and bid != repo else repo
+    ref = (git_ref or "").strip()
+    if not ref:
+        return base
+    return f"{base}__{_sanitize_ref(ref)}"
 
 
 def bundle_dir_for_git(bundle_id: str, git_ref: Optional[str] = None) -> str:
@@ -68,8 +185,8 @@ def compute_git_bundle_paths(
     bundles_root: Optional[pathlib.Path] = None,
 ) -> GitBundlePaths:
     root = bundles_root or resolve_bundles_root()
-    bid = (bundle_id or "").strip() or _repo_name_from_url(git_url)
-    folder = _bundle_dir_name(bid, git_ref)
+    bid = (bundle_id or "").strip()
+    folder = _bundle_dir_name_for_git(bid or None, git_url, git_ref)
     repo_root = (root / folder).resolve()
     if git_subdir:
         bundle_root = (repo_root / git_subdir).resolve()
@@ -147,84 +264,87 @@ def ensure_git_bundle(
     """
     log = logger or AgentLogger("git.bundle")
     bundle_id = (bundle_id or "").strip() or _repo_name_from_url(git_url)
-    base_dir = _bundle_dir_name(bundle_id, git_ref)
-    bundle_dir = _atomic_dir_name(base_dir) if atomic else base_dir
-    paths = compute_git_bundle_paths(
-        bundle_id=bundle_dir,
-        git_url=git_url,
-        git_ref=git_ref,
-        git_subdir=git_subdir,
-        bundles_root=bundles_root,
-    )
-    repo_root = paths.repo_root
-    repo_root.parent.mkdir(parents=True, exist_ok=True)
-    env = _build_git_env()
-    depth = _git_depth()
-
-    git_dir = repo_root / ".git"
-    if not git_dir.exists():
-        log.log(f"[git.bundle] cloning {git_url} -> {repo_root}", level="INFO")
-        clone_args = ["git", "clone"]
-        if depth:
-            clone_args += ["--depth", str(depth)]
-        clone_args += [git_url, str(repo_root)]
-        _run_git(clone_args, logger=log, env=env)
-    else:
-        try:
-            # Verify remote URL matches
-            proc = subprocess.run(
-                ["git", "-C", str(repo_root), "config", "--get", "remote.origin.url"],
-                check=True, capture_output=True, text=True,
-            )
-            remote_url = (proc.stdout or "").strip()
-            if remote_url and remote_url != git_url:
-                log.log(
-                    f"[git.bundle] remote mismatch for {repo_root}: {remote_url} != {git_url}",
-                    level="WARNING",
-                )
-        except Exception:
-            pass
-        log.log(f"[git.bundle] fetching updates in {repo_root}", level="INFO")
-        fetch_args = ["git", "-C", str(repo_root), "fetch", "--all", "--tags", "--prune"]
-        if depth:
-            fetch_args += ["--depth", str(depth)]
-        _run_git(fetch_args, logger=log, env=env)
-
-    if git_ref:
-        log.log(f"[git.bundle] checkout {git_ref}", level="INFO")
-        try:
-            _run_git(["git", "-C", str(repo_root), "checkout", git_ref], logger=log, env=env)
-        except Exception:
-            if depth:
-                try:
-                    _run_git(["git", "-C", str(repo_root), "fetch", "--unshallow"], logger=log, env=env)
-                    _run_git(["git", "-C", str(repo_root), "checkout", git_ref], logger=log, env=env)
-                except Exception:
-                    raise
-            else:
-                raise
-        # If ref is a branch, attempt fast-forward pull
-        try:
-            _run_git(["git", "-C", str(repo_root), "pull", "--ff-only"], logger=log, env=env)
-        except Exception:
-            pass
-
-    # Log current commit (best-effort)
-    try:
-        proc = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
-            check=True, capture_output=True, text=True, env=env,
+    root = bundles_root or resolve_bundles_root()
+    with _redis_bundle_lock(bundle_id=bundle_id, git_ref=git_ref):
+        with _bundle_lock(bundle_id=bundle_id, git_ref=git_ref, bundles_root=root):
+            base_dir = _bundle_dir_name_for_git(bundle_id, git_url, git_ref)
+            bundle_dir = _atomic_dir_name(base_dir) if atomic else base_dir
+        paths = compute_git_bundle_paths(
+            bundle_id=bundle_dir,
+            git_url=git_url,
+            git_ref=git_ref,
+            git_subdir=git_subdir,
+            bundles_root=root,
         )
-        commit = (proc.stdout or "").strip()
-        if commit:
-            log.log(f"[git.bundle] HEAD={commit}", level="INFO")
-    except Exception:
-        pass
+        repo_root = paths.repo_root
+        repo_root.parent.mkdir(parents=True, exist_ok=True)
+        env = _build_git_env()
+        depth = _git_depth()
 
-    if not paths.bundle_root.exists():
-        raise FileNotFoundError(f"Bundle subdir not found: {paths.bundle_root}")
+        git_dir = repo_root / ".git"
+        if not git_dir.exists():
+            log.log(f"[git.bundle] cloning {git_url} -> {repo_root}", level="INFO")
+            clone_args = ["git", "clone"]
+            if depth:
+                clone_args += ["--depth", str(depth)]
+            clone_args += [git_url, str(repo_root)]
+            _run_git(clone_args, logger=log, env=env)
+        else:
+            try:
+                # Verify remote URL matches
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_root), "config", "--get", "remote.origin.url"],
+                    check=True, capture_output=True, text=True,
+                )
+                remote_url = (proc.stdout or "").strip()
+                if remote_url and remote_url != git_url:
+                    log.log(
+                        f"[git.bundle] remote mismatch for {repo_root}: {remote_url} != {git_url}",
+                        level="WARNING",
+                    )
+            except Exception:
+                pass
+            log.log(f"[git.bundle] fetching updates in {repo_root}", level="INFO")
+            fetch_args = ["git", "-C", str(repo_root), "fetch", "--all", "--tags", "--prune"]
+            if depth:
+                fetch_args += ["--depth", str(depth)]
+            _run_git(fetch_args, logger=log, env=env)
 
-    return paths
+        if git_ref:
+            log.log(f"[git.bundle] checkout {git_ref}", level="INFO")
+            try:
+                _run_git(["git", "-C", str(repo_root), "checkout", git_ref], logger=log, env=env)
+            except Exception:
+                if depth:
+                    try:
+                        _run_git(["git", "-C", str(repo_root), "fetch", "--unshallow"], logger=log, env=env)
+                        _run_git(["git", "-C", str(repo_root), "checkout", git_ref], logger=log, env=env)
+                    except Exception:
+                        raise
+                else:
+                    raise
+            # If ref is a branch, attempt fast-forward pull
+            try:
+                _run_git(["git", "-C", str(repo_root), "pull", "--ff-only"], logger=log, env=env)
+            except Exception:
+                pass
+
+        # Log current commit (best-effort)
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            commit = (proc.stdout or "").strip()
+            if commit:
+                log.log(f"[git.bundle] HEAD={commit}", level="INFO")
+        except Exception:
+            pass
+
+        if not paths.bundle_root.exists():
+            raise FileNotFoundError(f"Bundle subdir not found: {paths.bundle_root}")
+
+        return paths
 
 
 def cleanup_old_git_bundles(
