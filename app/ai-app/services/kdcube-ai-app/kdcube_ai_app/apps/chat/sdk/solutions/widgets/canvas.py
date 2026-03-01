@@ -89,15 +89,36 @@ class ToolContentStreamerBase:
 
         self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
         self.citation_state = citations_module.CitationStreamState()
+        self._sources_sig = self._sources_signature(sources_list or [])
+
+    def _sources_signature(self, sources_list: List[Dict[str, object]]) -> tuple[int, int, int]:
+        if not sources_list:
+            return (0, 0, 0)
+        sids: List[int] = []
+        for row in sources_list:
+            if not isinstance(row, dict):
+                continue
+            try:
+                sid = int(row.get("sid") or 0)
+            except Exception:
+                sid = 0
+            if sid > 0:
+                sids.append(sid)
+        if not sids:
+            return (0, 0, 0)
+        return (len(sids), min(sids), max(sids))
 
     def _maybe_refresh_sources(self) -> None:
-        if self.citation_map or not self.sources_getter:
+        if not self.sources_getter:
             return
         try:
             sources = self.sources_getter() or []
         except Exception:
             sources = []
-        if sources:
+        if not sources:
+            return
+        sig = self._sources_signature(sources)
+        if sig != self._sources_sig:
             self.update_sources(sources)
 
     def _channel_allowed(self) -> bool:
@@ -139,7 +160,9 @@ class ToolContentStreamerBase:
     def update_sources(self, sources_list: Optional[List[Dict[str, object]]] = None) -> None:
         """Refresh citation map for streaming outputs."""
         try:
-            self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
+            sources = sources_list or []
+            self.citation_map = citations_module.build_citation_map_from_sources(sources)
+            self._sources_sig = self._sources_signature(sources)
             if self.citation_state is None:
                 self.citation_state = citations_module.CitationStreamState()
         except Exception:
@@ -632,21 +655,44 @@ class TimelineStreamer:
         for t in self.targets:
             if t.get("use_citations"):
                 self.citation_states[t["name"]] = citations_module.CitationStreamState()
+        self._sources_sig = self._sources_signature(sources_list or [])
+
+    def _sources_signature(self, sources_list: List[Dict[str, object]]) -> tuple[int, int, int]:
+        if not sources_list:
+            return (0, 0, 0)
+        sids: List[int] = []
+        for row in sources_list:
+            if not isinstance(row, dict):
+                continue
+            try:
+                sid = int(row.get("sid") or 0)
+            except Exception:
+                sid = 0
+            if sid > 0:
+                sids.append(sid)
+        if not sids:
+            return (0, 0, 0)
+        return (len(sids), min(sids), max(sids))
 
     def _maybe_refresh_sources(self) -> None:
-        if self.citation_map or not self.sources_getter:
+        if not self.sources_getter:
             return
         try:
             sources = self.sources_getter() or []
         except Exception:
             sources = []
-        if sources:
+        if not sources:
+            return
+        sig = self._sources_signature(sources)
+        if sig != self._sources_sig:
             self.update_sources(sources)
 
     def update_sources(self, sources_list: Optional[List[Dict[str, object]]] = None) -> None:
         """Refresh citation map for streaming outputs."""
         try:
-            self.citation_map = citations_module.build_citation_map_from_sources(sources_list or [])
+            sources = sources_list or []
+            self.citation_map = citations_module.build_citation_map_from_sources(sources)
+            self._sources_sig = self._sources_signature(sources)
             for t in self.targets:
                 if t.get("use_citations") and t.get("name") not in self.citation_states:
                     self.citation_states[t["name"]] = citations_module.CitationStreamState()

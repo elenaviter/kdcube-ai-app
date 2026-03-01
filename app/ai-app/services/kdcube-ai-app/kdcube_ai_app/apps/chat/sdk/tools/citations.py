@@ -600,7 +600,37 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
     Returns sorted by sid ascending.
     """
     by_url: Dict[str, Dict[str, Any]] = {}
+    used_sids: Set[int] = set()
     max_sid = 0
+
+    # Preserve existing SIDs from prior; avoid collisions for new entries.
+    for row in prior or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            sid = int(row.get("sid") or 0)
+        except Exception:
+            sid = 0
+        if sid > 0:
+            used_sids.add(sid)
+            max_sid = max(max_sid, sid)
+
+    def _reserve_sid(candidate: Optional[int]) -> int:
+        nonlocal max_sid
+        sid = None
+        try:
+            if candidate is not None:
+                sid = int(candidate)
+        except Exception:
+            sid = None
+        if not sid or sid in used_sids:
+            sid = max_sid + 1
+            while sid in used_sids:
+                sid += 1
+        used_sids.add(sid)
+        if sid > max_sid:
+            max_sid = sid
+        return sid
 
     def _key_for(row: Dict[str, Any]) -> str:
         url = normalize_url(row.get("url",""))
@@ -609,7 +639,7 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
             return f"local:{physical_path}"
         return url
 
-    def _touch(row: Dict[str, Any]):
+    def _touch(row: Dict[str, Any], *, is_prior: bool = False):
         nonlocal max_sid
         url = normalize_url(row.get("url",""))
         physical_path = _get_physical_path(row)
@@ -654,21 +684,27 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
                     )
             except Exception:
                 pass
-            if isinstance(row.get("sid"), int):
-                existing["sid"] = existing.get("sid") or row["sid"]
-                max_sid = max(max_sid, int(existing["sid"]))
+            try:
+                existing_sid = int(existing.get("sid") or 0)
+            except Exception:
+                existing_sid = 0
+            if existing_sid <= 0:
+                existing["sid"] = _reserve_sid(row.get("sid"))
             return
         # NEW URL path
-        sid = row.get("sid")
-        try:
-            sid = int(sid) if sid is not None and sid > 0 else None
-        except Exception:
-            sid = None
-        if not sid:
-            max_sid += 1
-            sid = max_sid
+        sid: Optional[int]
+        if is_prior:
+            try:
+                sid = int(row.get("sid") or 0)
+            except Exception:
+                sid = 0
+            if sid <= 0:
+                sid = _reserve_sid(None)
+            else:
+                used_sids.add(sid)
+                max_sid = max(max_sid, sid)
         else:
-            max_sid = max(max_sid, sid)
+            sid = _reserve_sid(row.get("sid"))
 
         kept = {"sid": sid, "url": url, "title": row.get("title",""), "text": row.get("text","")}
         if row.get("content"):
@@ -680,9 +716,9 @@ def dedupe_sources_by_url(prior: List[Dict[str, Any]], new: List[Dict[str, Any]]
         by_url[key] = kept
 
     for r in prior or []:
-        _touch(r)
+        _touch(r, is_prior=True)
     for r in new or []:
-        _touch(r)
+        _touch(r, is_prior=False)
 
     return sorted(by_url.values(), key=lambda x: x["sid"])
 
@@ -963,6 +999,16 @@ class _LegacyOpts:
     first_only: bool = True
     keep_unresolved: bool = False
 
+def _escape_md_link_text(text: str) -> str:
+    if not isinstance(text, str):
+        return ""
+    # Escape characters that break markdown link text or tables.
+    text = text.replace("\\", "\\\\")
+    text = text.replace("[", "\\[").replace("]", "\\]")
+    text = text.replace("|", "\\|")
+    text = text.replace("\r", " ").replace("\n", " ")
+    return text
+
 def _render_links(ids: List[int], cmap: Dict[int, Dict[str, str]], opts: CitationRenderOptions) -> str:
     if not ids:
         return ""
@@ -977,7 +1023,8 @@ def _render_links(ids: List[int], cmap: Dict[int, Dict[str, str]], opts: Citatio
             continue
 
         url = (rec.get("url") or "").strip()
-        title = (rec.get("title") or url or f"Source {sid}").replace('"', "'")
+        title_raw = (rec.get("title") or url or f"Source {sid}").replace('"', "'")
+        title = _escape_md_link_text(title_raw)
 
         if not url:
             # no URL: in links mode → just title; in superscript mode → superscript numeral

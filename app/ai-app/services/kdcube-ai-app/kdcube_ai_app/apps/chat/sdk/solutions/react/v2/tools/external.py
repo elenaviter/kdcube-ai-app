@@ -36,9 +36,95 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.sources import (
     ensure_rendering_assets,
     merge_sources_pool_for_attachment_rows,
     merge_sources_pool_for_file_rows,
+    merge_sources_pool_with_map,
+    _bump_sources_pool_next_sid,
 )
 import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.tools.content_type import is_text_mime_type
+
+
+def _format_sources_pool_path(sids: List[int]) -> str:
+    sids = sorted({int(s) for s in (sids or []) if isinstance(s, int) and s > 0})
+    if not sids:
+        return ""
+    ranges: List[tuple[int, int]] = []
+    start = prev = sids[0]
+    for sid in sids[1:]:
+        if sid == prev + 1:
+            prev = sid
+            continue
+        ranges.append((start, prev))
+        start = prev = sid
+    ranges.append((start, prev))
+    parts = [str(a) if a == b else f"{a}-{b}" for a, b in ranges]
+    return f"so:sources_pool[{', '.join(parts)}]"
+
+
+def _extract_tool_source_rows(output: Any) -> List[Dict[str, Any]]:
+    data = output
+    if isinstance(data, dict) and "ret" in data:
+        data = data.get("ret")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            return []
+    if not isinstance(data, list):
+        return []
+    return [r for r in data if isinstance(r, dict) and r.get("url")]
+
+
+def _remap_tool_sources(
+    *,
+    ctx_browser: Any,
+    rows: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[int]]:
+    if not rows:
+        return [], []
+    prior = list(ctx_browser.sources_pool or [])
+    merged, sid_map = merge_sources_pool_with_map(prior=prior, new=rows)
+    if merged:
+        ctx_browser.set_sources_pool(sources_pool=merged)
+        _bump_sources_pool_next_sid(merged)
+
+    from kdcube_ai_app.apps.chat.sdk.tools.citations import normalize_url, _get_physical_path
+
+    def _key_for(row: Dict[str, Any]) -> str:
+        phys = _get_physical_path(row)
+        if phys:
+            return f"local:{phys}"
+        return normalize_url(row.get("url", ""))
+
+    key_to_sid: Dict[str, int] = {}
+    for r in merged:
+        if not isinstance(r, dict):
+            continue
+        key = _key_for(r)
+        if key:
+            try:
+                key_to_sid[key] = int(r.get("sid") or 0)
+            except Exception:
+                continue
+
+    remapped: List[Dict[str, Any]] = []
+    used_sids: List[int] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        new_row = dict(row)
+        try:
+            old_sid = int(row.get("sid") or 0)
+        except Exception:
+            old_sid = 0
+        new_sid = sid_map.get(old_sid)
+        if not new_sid:
+            key = _key_for(row)
+            new_sid = key_to_sid.get(key)
+        if new_sid:
+            new_row["sid"] = int(new_sid)
+            used_sids.append(int(new_sid))
+        remapped.append(new_row)
+    return remapped, used_sids
 
 TOOL_SPEC = None  # external tools are dynamic
 
@@ -324,6 +410,22 @@ async def handle_external_tool(*,
     output = tool_response.get("output") if isinstance(tool_response, dict) else None
     summary = tool_response.get("summary") if isinstance(tool_response, dict) else ""
     tool_err = tool_response.get("error") if isinstance(tool_response, dict) else None
+
+    merged_sources_inline = False
+    remapped_source_sids: List[int] = []
+    if tools_insights.is_search_tool(tool_id) or tools_insights.is_fetch_uri_content_tool(tool_id):
+        try:
+            rows = _extract_tool_source_rows(output)
+            if rows:
+                remapped_rows, remapped_source_sids = _remap_tool_sources(
+                    ctx_browser=ctx_browser,
+                    rows=rows,
+                )
+                if remapped_rows:
+                    output = remapped_rows
+                    merged_sources_inline = True
+        except Exception:
+            pass
     if not is_exec:
         items = [
             {
@@ -532,14 +634,16 @@ async def handle_external_tool(*,
         physical_path = phys_path if (turn_id and rel_path and visibility == "external") else ""
         if tools_insights.is_search_tool(tool_id) or tools_insights.is_fetch_uri_content_tool(tool_id):
             try:
-                data = output
-                if isinstance(data, dict) and "ret" in data:
-                    data = data.get("ret")
-                if isinstance(data, list):
-                    sids = [int(r.get("sid") or 0) for r in data if isinstance(r, dict) and r.get("sid") is not None]
-                    sids = [s for s in sids if s > 0]
-                    if sids:
-                        artifact_path = f"so:sources_pool[{sids[0]}-{sids[-1]}]"
+                sids = remapped_source_sids
+                if not sids:
+                    data = output
+                    if isinstance(data, dict) and "ret" in data:
+                        data = data.get("ret")
+                    if isinstance(data, list):
+                        sids = [int(r.get("sid") or 0) for r in data if isinstance(r, dict) and r.get("sid") is not None]
+                        sids = [s for s in sids if s > 0]
+                if sids:
+                    artifact_path = _format_sources_pool_path(sids)
             except Exception:
                 pass
         edited = detect_edit(
@@ -628,29 +732,30 @@ async def handle_external_tool(*,
                 "meta": meta_extra,
             })
 
-        if tools_insights.is_search_tool(tool_id):
-            data = output
-            if isinstance(data, dict) and "ret" in data:
-                data = data.get("ret")
-            if isinstance(data, list):
-                srcs = [r for r in data if isinstance(r, dict) and r.get("url")]
-                if srcs:
-                    pending = state.setdefault("pending_sources", [])
-                    pending.extend(srcs)
-        elif tools_insights.is_fetch_uri_content_tool(tool_id):
-            data = output
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                except Exception:
-                    data = None
-            if isinstance(data, dict) and "ret" in data:
-                data = data.get("ret")
-            if isinstance(data, list):
-                rows = [r for r in data if isinstance(r, dict) and r.get("url")]
-                if rows:
-                    pending = state.setdefault("pending_sources", [])
-                    pending.extend(rows)
+        if not merged_sources_inline:
+            if tools_insights.is_search_tool(tool_id):
+                data = output
+                if isinstance(data, dict) and "ret" in data:
+                    data = data.get("ret")
+                if isinstance(data, list):
+                    srcs = [r for r in data if isinstance(r, dict) and r.get("url")]
+                    if srcs:
+                        pending = state.setdefault("pending_sources", [])
+                        pending.extend(srcs)
+            elif tools_insights.is_fetch_uri_content_tool(tool_id):
+                data = output
+                if isinstance(data, str):
+                    try:
+                        data = json.loads(data)
+                    except Exception:
+                        data = None
+                if isinstance(data, dict) and "ret" in data:
+                    data = data.get("ret")
+                if isinstance(data, list):
+                    rows = [r for r in data if isinstance(r, dict) and r.get("url")]
+                    if rows:
+                        pending = state.setdefault("pending_sources", [])
+                        pending.extend(rows)
 
     state["last_tool_result"] = items
     state["last_tool_id"] = tool_id

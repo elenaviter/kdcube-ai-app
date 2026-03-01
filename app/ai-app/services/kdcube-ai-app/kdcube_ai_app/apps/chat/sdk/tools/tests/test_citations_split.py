@@ -4,6 +4,8 @@ import pytest
 
 from kdcube_ai_app.apps.chat.sdk.tools.citations import (
     CitationStreamState,
+    dedupe_sources_by_url,
+    replace_citation_tokens_batch,
     replace_citation_tokens_streaming_stateful,
     split_safe_citation_prefix,
     split_safe_stream_prefix,
@@ -90,3 +92,48 @@ def test_streaming_replacement_handles_all_token_splits():
             rendered = _run_chunks(chunks)
             assert "[[S:" not in rendered
             assert "https://example.com/only" in rendered
+
+
+def test_dedupe_sources_by_url_reassigns_colliding_sids():
+    prior = [
+        {"sid": 1, "url": "https://example.com/a", "title": "A"},
+        {"sid": 2, "url": "https://example.com/b", "title": "B"},
+    ]
+    new = [
+        {"sid": 1, "url": "https://example.com/c", "title": "C"},
+        {"sid": 2, "url": "https://example.com/d", "title": "D"},
+    ]
+    merged = dedupe_sources_by_url(prior, new)
+    sids = [row["sid"] for row in merged]
+    assert len(sids) == len(set(sids))
+    assert set(r["url"] for r in merged) == {
+        "https://example.com/a",
+        "https://example.com/b",
+        "https://example.com/c",
+        "https://example.com/d",
+    }
+
+
+def test_replace_citation_tokens_escapes_pipes_in_titles():
+    text = "| A | [[S:1]] |"
+    citation_map = {1: {"url": "https://example.com", "title": "vCISO | CISOteria"}}
+    out = replace_citation_tokens_batch(text, citation_map)
+    assert "vCISO \\| CISOteria" in out
+
+
+def test_dedupe_sources_preserves_prior_sids():
+    prior = [
+        {"sid": 1, "url": "https://example.com/a", "title": "A"},
+        {"sid": 2, "url": "https://example.com/b", "title": "B"},
+        {"sid": 3, "url": "https://example.com/c", "title": "C"},
+    ]
+    new = [
+        {"sid": 1, "url": "https://example.com/new1", "title": "N1"},
+        {"sid": 2, "url": "https://example.com/new2", "title": "N2"},
+    ]
+    merged = dedupe_sources_by_url(prior, new)
+    # Prior URLs keep their SIDs
+    prior_map = {row["url"]: row["sid"] for row in merged if row["url"].startswith("https://example.com/")}
+    assert prior_map["https://example.com/a"] == 1
+    assert prior_map["https://example.com/b"] == 2
+    assert prior_map["https://example.com/c"] == 3
