@@ -51,6 +51,11 @@ class GatewayPolicyResolver:
             if isinstance(p, str) and p
         )
         self._component = (os.getenv("GATEWAY_COMPONENT") or "ingress").strip().lower()
+        bypass_raw = os.getenv("GATEWAY_BYPASS_THROTTLING_PATTERNS", "")
+        self._bypass_throttling_patterns = tuple(
+            re.compile(p.strip()) for p in bypass_raw.split(",")
+            if isinstance(p, str) and p.strip()
+        )
 
     def set_guarded_patterns(self, patterns: Iterable[str]) -> None:
         compiled = tuple(
@@ -102,13 +107,22 @@ class GatewayPolicyResolver:
 
         # default: session resolution only; no counters
         if cls in (EndpointClass.CONNECT, EndpointClass.READ):
-            return GatewayPolicy(
+            pol = GatewayPolicy(
                 cls=cls,
                 bypass_throttling=False,
                 bypass_gate=False,
                 bypass_backpressure=True,
                 requirements=[],
             )
+            if any(p.match(path) for p in self._bypass_throttling_patterns):
+                return GatewayPolicy(
+                    cls=pol.cls,
+                    bypass_throttling=True,
+                    bypass_gate=pol.bypass_gate,
+                    bypass_backpressure=pol.bypass_backpressure,
+                    requirements=pol.requirements,
+                )
+            return pol
 
         # fallback
         return GatewayPolicy(

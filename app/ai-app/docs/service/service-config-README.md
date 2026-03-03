@@ -229,6 +229,7 @@ These values scope **bundle registries** and **control‑plane events**.
 | `GIT_SSH_KNOWN_HOSTS`    | _(unset)_ | Path to `known_hosts` file (SSH)                                                                | `infra/plugin/git_bundle.py`      |
 | `GIT_SSH_STRICT_HOST_KEY_CHECKING` | _(unset)_ | `yes` / `no`                                                                              | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_REF_TTL_SECONDS` | `3600`    | TTL for active bundle refs                                                                      | `infra/plugin/bundle_refs.py`     |
+| `GATEWAY_BYPASS_THROTTLING_PATTERNS` | _(unset)_ | Comma‑separated regex patterns for endpoints that should skip gateway rate limiting (e.g., Stripe webhooks). | `apps/middleware/gateway_policy.py` |
 
 **Tenant/project scoped channels**
 
