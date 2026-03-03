@@ -29,6 +29,7 @@ interface GatewayConfigurationView {
     tenant_id: string;
     display_name: string;
     guarded_rest_patterns?: string[];
+    bypass_throttling_patterns?: string[];
     rate_limits: Record<string, GatewayRoleLimits>;
     service_capacity: {
         concurrent_requests_per_instance: number;
@@ -908,6 +909,7 @@ const MonitoringDashboard: React.FC = () => {
             project,
             component: selectedComponent,
             guarded_rest_patterns: compCfg.guarded_rest_patterns || [],
+            bypass_throttling_patterns: compCfg.bypass_throttling_patterns || [],
             service_capacity: {
                 concurrent_requests_per_process: sc.concurrent_requests_per_process ?? sc.concurrent_requests_per_instance ?? 5,
                 processes_per_instance: sc.processes_per_instance ?? 1,

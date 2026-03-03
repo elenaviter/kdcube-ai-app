@@ -348,6 +348,7 @@ def _extract_gateway_config_for_frontend(gateway_status: Dict[str, Any]) -> Dict
         "tenant_id": config["tenant_id"],
         "display_name": config["display_name"],
         "guarded_rest_patterns": config.get("guarded_rest_patterns", []),
+        "bypass_throttling_patterns": config.get("bypass_throttling_patterns", []),
         "rate_limits": roles or {},
         "service_capacity": {
             # Use actual runtime data if available, otherwise fall back to config
