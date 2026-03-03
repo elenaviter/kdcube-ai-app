@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_URL="https://github.com/elenaviter/kdcube-ai-app.git"
+REPO_URL="https://github.com/kdcube/kdcube-ai-app.git"
 TARGET_DIR="${KDCUBE_APPS_PATH:-$HOME/.kdcube/kdcube-ai-app}"
 
 mkdir -p "$(dirname "$TARGET_DIR")"

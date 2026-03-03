@@ -11,7 +11,7 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
 
-DEFAULT_REPO = "https://github.com/elenaviter/kdcube-ai-app.git"
+DEFAULT_REPO = "https://github.com/kdcube/kdcube-ai-app.git"
 DEFAULT_DIR = Path.home() / ".kdcube" / "kdcube-ai-app"
 
 
