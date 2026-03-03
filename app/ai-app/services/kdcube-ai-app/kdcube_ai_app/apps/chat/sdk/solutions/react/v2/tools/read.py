@@ -9,12 +9,16 @@ import pathlib
 
 import json
 import hashlib
+import re
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.artifacts import (
     build_artifact_meta_block,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.solution_workspace import (
     read_artifact_for_react,
+    _safe_relpath,
+    _guess_mime_from_path,
+    _read_local_file,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.common import (
     tool_call_block,
@@ -23,15 +27,47 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.common import (
     tc_result_path,
 )
 
+_CODE_REF_RE = re.compile(r'`(kdcube_ai_app/[^`\s\)\]]+)`')
+
+
+def _normalize_code_ref(ref: str) -> str:
+    ref = ref.strip().rstrip(").,;")
+    if "#L" in ref:
+        ref = ref.split("#L", 1)[0]
+    if "::" in ref:
+        ref = ref.split("::", 1)[0]
+    if ".py:" in ref:
+        ref = ref.split(".py:", 1)[0] + ".py"
+    ref = ref.lstrip("/")
+    if ref.startswith("kdcube_ai_app/"):
+        ref = ref[len("kdcube_ai_app/"):]
+    return ref
+
+
+def _extract_code_refs(text: str) -> List[str]:
+    refs = []
+    for match in _CODE_REF_RE.finditer(text or ""):
+        ref = _normalize_code_ref(match.group(1))
+        if ref and ref not in refs:
+            refs.append(ref)
+    return refs
+
 TOOL_SPEC = {
     "id": "react.read",
     "purpose": (
         "Read artifacts or skills into the visible context so you can use them. "
-        "Paths must be context paths (fi:/ar:/so:/sk:), not physical paths. "
-        "Each path you read becomes visible in the timeline; skills are shown with ACTIVE 💡 banner."
+        "Paths must be context paths (fi:/ar:/so:/sk:/ks:), not physical paths. "
+        "Each path you read becomes visible in the timeline; skills are shown with ACTIVE 💡 banner. "
+        "Use ks:<relpath> to read files from the knowledge space (read-only reference files prepared by the system)."
     ),
     "args": {
-        "paths": "list[str] context paths to read (files via fi:<turn_id>.files/<filepath>, sources via so:sources_pool[...], skills via sk:<skill_id or num>)",
+        "paths": (
+            "list[str] context paths to read: "
+            "files via fi:<turn_id>.files/<filepath>, "
+            "sources via so:sources_pool[...], "
+            "skills via sk:<skill_id or num>, "
+            "knowledge space via ks:<relpath> (read-only reference files)."
+        ),
     },
     "returns": "ok",
 }
@@ -62,6 +98,9 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
 
     skill_paths = [p for p in paths if p.startswith("sk:") or p.startswith("SK") or p.startswith("skill:") or p.startswith("skills.")]
     artifact_paths = [p for p in paths if p not in skill_paths]
+    ks_paths = [p for p in artifact_paths if isinstance(p, str) and p.startswith("ks:")]
+    if ks_paths:
+        artifact_paths = [p for p in artifact_paths if p not in ks_paths]
     pending_blocks: List[Dict[str, Any]] = []
     missing_skills: List[str] = []
     exists_paths: List[str] = []
@@ -251,6 +290,7 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
     items_by_path = {item.get("context_path"): item for item in (items or []) if item.get("context_path")}
 
     async def _emit_fi_path(ctx_path: str) -> None:
+        nonlocal total_tokens
         outdir = pathlib.Path(state.get("outdir") or "")
         res = {}
         if outdir and outdir.exists():
@@ -348,6 +388,206 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         if tokens:
             per_path_entry["tokens"] = tokens
         per_path.append(per_path_entry)
+
+    async def _emit_ks_path(ctx_path: str) -> None:
+        nonlocal total_tokens
+        runtime_ctx = getattr(ctx_browser, "runtime_ctx", None)
+        resolver_fn = getattr(runtime_ctx, "knowledge_read_fn", None)
+        root_raw = getattr(runtime_ctx, "bundle_storage", None)
+        if not root_raw:
+            missing_artifacts.append(ctx_path)
+            per_path.append({"path": ctx_path, "missing": True, "status": "knowledge_storage_missing"})
+            return
+
+        text = None
+        base64 = None
+        mime = ""
+        abs_path = None
+
+        if resolver_fn is None:
+            # If a bundle provides knowledge space, it must expose a resolver.
+            # Do not silently fall back to filesystem here.
+            missing_artifacts.append(ctx_path)
+            per_path.append({
+                "path": ctx_path,
+                "missing": True,
+                "status": "knowledge_resolver_missing",
+            })
+            return
+
+        try:
+            result = resolver_fn(path=ctx_path)
+            if hasattr(result, "__await__"):
+                result = await result
+            if isinstance(result, dict):
+                if result.get("missing"):
+                    missing_artifacts.append(ctx_path)
+                    per_path.append({
+                        "path": ctx_path,
+                        "missing": True,
+                        "status": "knowledge_path_missing",
+                    })
+                    return
+                text = result.get("text")
+                base64 = result.get("base64")
+                mime = result.get("mime") or ""
+                abs_path_val = result.get("physical_path")
+                abs_path = pathlib.Path(abs_path_val).resolve() if abs_path_val else None
+        except Exception:
+            missing_artifacts.append(ctx_path)
+            per_path.append({
+                "path": ctx_path,
+                "missing": True,
+                "status": "knowledge_resolver_error",
+            })
+            return
+
+        if text is None and base64 is None:
+            missing_artifacts.append(ctx_path)
+            per_path.append({
+                "path": ctx_path,
+                "missing": True,
+                "status": "knowledge_unreadable",
+            })
+            return
+
+        meta_block = build_artifact_meta_block(
+            turn_id=turn_id,
+            tool_call_id=tool_call_id,
+            artifact={"mime": mime, "kind": "knowledge.space", "visibility": "internal"},
+            artifact_path=ctx_path,
+            physical_path=str(abs_path) if abs_path else "",
+        )
+        pending_blocks.append(meta_block)
+        meta_extra = {
+            "tool_call_id": tool_call_id,
+            "turn_id": turn_id,
+            "tool_id": tool_id,
+            "physical_path": str(abs_path) if abs_path else "",
+        }
+        if isinstance(text, str) and text.strip():
+            tokens = 0
+            try:
+                from kdcube_ai_app.apps.chat.sdk.util import token_count
+                tokens = token_count(text)
+                total_tokens += tokens
+            except Exception:
+                tokens = 0
+            blk = {
+                "turn": turn_id,
+                "type": "react.tool.result",
+                "call_id": tool_call_id,
+                "mime": mime or "text/markdown",
+                "path": ctx_path,
+                "text": text,
+                "meta": meta_extra,
+            }
+            if _maybe_add_block(blk):
+                entry = {"path": ctx_path}
+                if tokens:
+                    entry["tokens"] = tokens
+                per_path.append(entry)
+            else:
+                exists_paths.append(ctx_path)
+                entry = {"path": ctx_path, "status": "exists_in_visible_context"}
+                if tokens:
+                    entry["tokens"] = tokens
+                per_path.append(entry)
+
+            # If this is a knowledge doc, surface resolvable source references.
+            try:
+                if ctx_path.startswith("ks:"):
+                    refs = _extract_code_refs(text)
+                    if refs:
+                        src_root = pathlib.Path(root_raw) / "src"
+                        resolved = []
+                        missing = []
+                        if src_root.exists():
+                            for ref in refs:
+                                candidate = (src_root / ref).resolve()
+                                if candidate.exists():
+                                    resolved.append(f"ks:src/{ref}")
+                                else:
+                                    missing.append(ref)
+                        if resolved or missing:
+                            lines = ["[SOURCE REFERENCES]"]
+                            if resolved:
+                                lines.append("Resolvable paths:")
+                                for r in resolved:
+                                    lines.append(f"- {r}")
+                            if missing:
+                                lines.append("Missing paths:")
+                                for m in missing:
+                                    lines.append(f"- {m}")
+                                lines.append("If these should exist, check knowledge source mapping.")
+                            ref_block = {
+                                "turn": turn_id,
+                                "type": "react.tool.result",
+                                "call_id": tool_call_id,
+                                "mime": "text/markdown",
+                                "path": f"{ctx_path}#refs",
+                                "text": "\n".join(lines),
+                                "meta": {
+                                    "tool_call_id": tool_call_id,
+                                    "turn_id": turn_id,
+                                    "tool_id": tool_id,
+                                },
+                            }
+                            _maybe_add_block(ref_block)
+            except Exception:
+                pass
+            return
+        if isinstance(base64, str) and base64:
+            blk = {
+                "turn": turn_id,
+                "type": "react.tool.result",
+                "call_id": tool_call_id,
+                "mime": mime or "application/octet-stream",
+                "path": ctx_path,
+                "base64": base64,
+                "meta": meta_extra,
+            }
+            if _maybe_add_block(blk):
+                per_path.append({"path": ctx_path})
+            else:
+                exists_paths.append(ctx_path)
+                per_path.append({"path": ctx_path, "status": "exists_in_visible_context"})
+            return
+        if isinstance(base64, str) and base64:
+            blk = {
+                "turn": turn_id,
+                "type": "react.tool.result",
+                "call_id": tool_call_id,
+                "mime": mime or "application/octet-stream",
+                "path": ctx_path,
+                "base64": base64,
+                "meta": meta_extra,
+            }
+            if _maybe_add_block(blk):
+                per_path.append({"path": ctx_path})
+            else:
+                exists_paths.append(ctx_path)
+                per_path.append({"path": ctx_path, "status": "exists_in_visible_context"})
+            return
+
+        blk = {
+            "turn": turn_id,
+            "type": "react.tool.result",
+            "call_id": tool_call_id,
+            "mime": "text/markdown",
+            "path": ctx_path,
+            "text": "[knowledge path resolved but is not readable as text/base64]",
+            "meta": meta_extra,
+        }
+        if _maybe_add_block(blk):
+            per_path.append({"path": ctx_path, "status": "binary"})
+        else:
+            exists_paths.append(ctx_path)
+            per_path.append({"path": ctx_path, "status": "exists_in_visible_context"})
+    if ks_paths:
+        for ks_path in ks_paths:
+            await _emit_ks_path(ks_path)
+
     for raw_path in artifact_paths:
         if isinstance(raw_path, str) and raw_path.startswith("fi:"):
             await _emit_fi_path(raw_path)

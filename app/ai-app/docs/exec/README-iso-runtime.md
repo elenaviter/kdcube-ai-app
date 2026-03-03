@@ -1,10 +1,21 @@
+---
+id: ks:docs/exec/README-iso-runtime.md
+title: "ISO Runtime"
+summary: "Design and operations of the ISO runtime: docker executor wiring, data paths, and isolation model."
+tags: ["exec", "iso-runtime", "runtime", "docker", "architecture", "operations"]
+keywords: ["ISO runtime", "executor container", "out_dir", "exec-workspace", "network isolation", "privilege separation"]
+see_also:
+  - ks:docs/exec/runtime-README.md
+  - ks:docs/exec/run-py-README.md
+  - ks:docs/exec/README-runtime-modes-builtin-tools.md
+---
 # Isolated Runtime (ISO) - Design and Operations
 
 This document explains how isolated execution works in the chat runtime, when it is used, how the Docker executor is wired, and where data is stored.
-It is aligned with `kdcube_ai_app/apps/chat/doc/execution/operations.md` and the current implementation in:
+It is aligned with `exec/operations.md` and the current implementation in:
 
-- `kdcube_ai_app/apps/chat/sdk/runtime/solution/react/react.py`
-- `kdcube_ai_app/apps/chat/sdk/runtime/solution/react/execution.py`
+- `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/runtime.py`
+- `kdcube_ai_app/apps/chat/sdk/runtime/execution.py`
 - `kdcube_ai_app/apps/chat/sdk/runtime/iso_runtime.py`
 - `kdcube_ai_app/apps/chat/sdk/runtime/external/docker.py`
 - `kdcube_ai_app/apps/chat/sdk/runtime/isolated/py_code_exec_entry.py`
@@ -34,7 +45,7 @@ We execute untrusted, LLM-generated Python (codegen + exec tools). To keep the s
 ## When ISO runtime is used
 
 The React solver routes tool calls through `execute_tool` in
-`kdcube_ai_app/apps/chat/sdk/runtime/solution/react/execution.py`.
+`kdcube_ai_app/apps/chat/sdk/runtime/execution.py`.
 
 1) **Codegen tool** (`codegen_tools.codegen_python`)
    - Generates a `main.py` and runs it in isolation.
@@ -213,7 +224,7 @@ If parallel execs are added later:
 
 ## Where to look for troubleshooting
 
-- `kdcube_ai_app/apps/chat/doc/execution/operations.md`
+- `exec/operations.md`
 - `.../out/logs/errors.log` and `.../out/logs/runtime.err.log`
 - `.../out/delta_aggregates.json` (supervisor deltas)
 - `.../out/tool_calls_index.json` (tool call record)

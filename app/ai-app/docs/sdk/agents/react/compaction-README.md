@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/compaction-README.md
+title: "Compaction"
+summary: "Context hard‑ceiling behavior: compaction blocks and visibility rules."
+tags: ["sdk", "agents", "react", "compaction", "context"]
+keywords: ["conv.range.summary", "hard ceiling", "visible stream", "context length", "pruning"]
+see_also:
+  - ks:docs/sdk/agents/react/feedback-README.md
+  - ks:docs/sdk/agents/react/context-caching-README.md
+  - ks:docs/sdk/agents/react/context-layout.md
+---
 # Context Compaction (v2)
 
 Compaction is the **hard ceiling** protection for context length. It inserts a

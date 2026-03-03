@@ -1,3 +1,14 @@
+---
+id: ks:docs/aggregations/README-AGGREGATIONS.md
+title: "Aggregations"
+summary: "Pre‑computed accounting aggregates used by the OPEX API."
+tags: ["aggregations", "accounting", "opex", "metrics"]
+keywords: ["daily aggregates", "accounting events", "OPEX API", "storage layout"]
+see_also:
+  - ks:docs/sdk/storage/sdk-store-README.md
+  - ks:docs/README.md
+  - ks:docs/citations-system.md
+---
 # OPEX Aggregations
 
 This module provides **pre-computed accounting aggregates** that sit on top of the raw `accounting` events and are used by the OPEX API to avoid rescanning logs on every request.

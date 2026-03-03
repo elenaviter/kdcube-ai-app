@@ -1,3 +1,14 @@
+---
+id: ks:docs/README.md
+title: "Index"
+summary: "Main index of platform, service, SDK, and ops documentation."
+tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
+keywords: ["docs index", "architecture", "gateway", "react", "bundles", "ops", "execution", "economics"]
+see_also:
+  - ks:docs/sdk/agents/react/artifact-storage-README.md
+  - ks:docs/sdk/agents/react/external-exec-README.md
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+---
 # Docs Index
 
 Curated index of platform, service, and SDK documentation.
@@ -34,12 +45,11 @@ Curated index of platform, service, and SDK documentation.
 
 ## SDK Bundles
 
-* Agentic App Bundles — Developer Guide (canonical): [ai-bundle-mgmt-README.md](sdk/bundle/ai-bundle-mgmt-README.md)
-* AI Bundles — Overview & Setup: [bundle-README.md](sdk/bundle/bundle-README.md)
-* Bundle Authoring Guide (Chat SDK): [first-ai-bundle-README.md](sdk/bundle/first-ai-bundle-README.md)
-* Chatbot SDK: [README-ai-bundle-sdk.md](sdk/bundle/README-ai-bundle-sdk.md)
-* AI Bundle Storage integration (localfs or S3): [README-ai-bundle-storage.md](sdk/bundle/README-ai-bundle-storage.md)
-* Bundle service guide (moved; points to canonical guide): [ai-bundle-service-README.md](sdk/bundle/ai-bundle-service-README.md)
+* Bundle docs index: [bundle-index-README.md](sdk/bundle/bundle-index-README.md)
+* Bundle developer guide: [bundle-dev-README.md](sdk/bundle/bundle-dev-README.md)
+* Bundle ops guide: [bundle-ops-README.md](sdk/bundle/bundle-ops-README.md)
+* Bundle interfaces: [bundle-interfaces-README.md](sdk/bundle/bundle-interfaces-README.md)
+* Bundle storage + cache: [bundle-storage-cache-README.md](sdk/bundle/bundle-storage-cache-README.md)
 
 ## SDK Agents (ReAct v2)
 
@@ -96,7 +106,7 @@ Curated index of platform, service, and SDK documentation.
 ## Hosting & Storage
 
 * Artifacts Limits: [artifacts-limits-README.md](hosting/artifacts-limits-README.md)
-* Managed Infra. S3: [s3.md](ops/s3.md)
+* Managed Infra. S3: [s3-README.md](ops/s3-README.md)
 
 ## Safety & Governance
 

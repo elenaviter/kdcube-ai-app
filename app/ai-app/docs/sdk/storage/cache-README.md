@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/storage/cache-README.md
+title: "Cache"
+summary: "Redis KV cache abstraction for the SDK, including namespaced (tenant/project) caches."
+tags: ["sdk", "storage", "cache", "redis"]
+keywords: ["KVCache", "NamespacedKVCache", "tenant/project scope", "ServiceHub cache", "redis"]
+see_also:
+  - ks:docs/sdk/bundle/bundle-storage-cache-README.md
+  - ks:docs/sdk/storage/sdk-store-README.md
+  - ks:docs/README.md
+---
 # KV Cache (Service Hub)
 
 This module provides a platform‑level Redis KV cache abstraction used across the SDK.

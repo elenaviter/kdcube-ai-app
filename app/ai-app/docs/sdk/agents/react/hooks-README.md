@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/hooks-README.md
+title: "Hooks"
+summary: "Runtime hooks available in the v2 flow."
+tags: ["sdk", "agents", "react", "hooks"]
+keywords: ["before/after hooks", "ContextBrowser hooks", "compaction hooks"]
+see_also:
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/artifact-storage-README.md
+  - ks:docs/sdk/agents/react/compaction-README.md
+---
 # Hooks (v2)
 
 This doc lists runtime hooks available in the v2 flow.

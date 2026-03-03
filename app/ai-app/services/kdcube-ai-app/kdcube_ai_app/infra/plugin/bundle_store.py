@@ -4,8 +4,9 @@
 
 from __future__ import annotations
 import json, os, time
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Set
 from pathlib import Path
+from functools import lru_cache
 from pydantic import BaseModel, Field, ValidationError
 import kdcube_ai_app.infra.namespaces as namespaces
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
@@ -62,6 +63,166 @@ def _load_example_bundles() -> Dict[str, "BundleEntry"]:
             description="Built-in example bundle",
         )
     return bundles
+
+def _discover_example_bundle_ids() -> Set[str]:
+    root = _examples_root()
+    if not root.exists():
+        return set()
+    ids: Set[str] = set()
+    for item in root.iterdir():
+        if not item.is_dir():
+            continue
+        if item.name in {"data", "__pycache__"}:
+            continue
+        if not (item / "entrypoint.py").exists():
+            continue
+        ids.add(item.name)
+    return ids
+
+@lru_cache(maxsize=1)
+def _reserved_bundle_ids() -> Set[str]:
+    # Always reserve built-in admin bundle and example bundle ids.
+    ids = {ADMIN_BUNDLE_ID}
+    try:
+        ids.update(_discover_example_bundle_ids())
+    except Exception:
+        pass
+    return ids
+
+def _reserved_bundle_entry(bid: str) -> Optional["BundleEntry"]:
+    if bid == ADMIN_BUNDLE_ID:
+        return _admin_bundle_entry()
+    root = _examples_root()
+    if not root.exists():
+        return None
+    candidate = root / bid
+    if not candidate.is_dir():
+        return None
+    if not (candidate / "entrypoint.py").exists():
+        return None
+    return BundleEntry(
+        id=bid,
+        name=bid,
+        path=str(candidate),
+        module="entrypoint",
+        singleton=False,
+        description="Built-in example bundle",
+    )
+
+def _norm_str(val: Optional[str]) -> Optional[str]:
+    if val is None:
+        return None
+    val = str(val).strip()
+    return val or None
+
+
+def _resolve_secret_ref(ref: Any) -> Any:
+    """
+    Resolve a secret reference to a concrete value.
+    Supported forms:
+      - "env:NAME" -> os.environ["NAME"]
+      - "file:/path/to/secret" -> file contents (stripped)
+      - "NAME" -> os.environ["NAME"]
+    """
+    if ref is None:
+        return None
+    ref_str = str(ref).strip()
+    if not ref_str:
+        return None
+    if ref_str.startswith("env:"):
+        key = ref_str[len("env:"):].strip()
+        val = os.getenv(key)
+        if val is None:
+            raise ValueError(f"Secret ref could not be resolved: {ref_str}")
+        return val
+    if ref_str.startswith("file:"):
+        path = Path(ref_str[len("file:"):].strip()).expanduser()
+        if not path.exists():
+            raise ValueError(f"Secret ref could not be resolved: {ref_str}")
+        return path.read_text().strip()
+    raise ValueError(f"Secret ref must start with 'env:' or 'file:': {ref_str}")
+
+
+def _resolve_props_node(node: Any) -> Any:
+    """
+    Resolve typed props leaves:
+      {"type": "value", "value": ...} -> literal
+      {"type": "ref", "value": "..."} -> resolved via _resolve_secret_ref
+    Recurses through dicts/lists.
+    """
+    if isinstance(node, dict):
+        node_type = str(node.get("type", "")).strip().lower()
+        if node_type in {"value", "ref"} and "value" in node:
+            if node_type == "value":
+                return node.get("value")
+            return _resolve_secret_ref(node.get("value"))
+        return {k: _resolve_props_node(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_resolve_props_node(v) for v in node]
+    if isinstance(node, str):
+        s = node.strip()
+        if s.startswith("env:") or s.startswith("file:"):
+            return _resolve_secret_ref(s)
+        return node
+    return node
+
+
+def _split_bundles_and_props(
+    bundles_dict: Dict[str, Any],
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """
+    Extract bundle-level props from descriptor entries.
+    Returns (bundles_without_props, props_by_bundle).
+    """
+    cleaned: Dict[str, Dict[str, Any]] = {}
+    props_map: Dict[str, Dict[str, Any]] = {}
+    for bid, raw in (bundles_dict or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        entry = dict(raw)
+        props_raw = entry.pop("props", None)
+        if props_raw is not None:
+            props_map[str(bid)] = _resolve_props_node(props_raw)
+        cleaned[str(bid)] = entry
+    return cleaned, props_map
+
+
+def _props_key(*, tenant: str, project: str, bundle_id: str) -> str:
+    return namespaces.CONFIG.BUNDLES.PROPS_KEY_FMT.format(
+        tenant=tenant,
+        project=project,
+        bundle_id=bundle_id,
+    )
+
+
+async def _apply_bundle_props(
+    redis,
+    *,
+    tenant: str,
+    project: str,
+    props_map: Dict[str, Dict[str, Any]],
+) -> None:
+    if not props_map:
+        return
+    for bid, props in props_map.items():
+        if props is None:
+            continue
+        key = _props_key(tenant=tenant, project=project, bundle_id=bid)
+        await redis.set(key, json.dumps(props, ensure_ascii=False))
+
+def _entries_equivalent(a: "BundleEntry", b: "BundleEntry") -> bool:
+    return (
+        _norm_str(a.id) == _norm_str(b.id)
+        and _norm_str(a.name) == _norm_str(b.name)
+        and _norm_str(a.path) == _norm_str(b.path)
+        and _norm_str(a.module) == _norm_str(b.module)
+        and bool(a.singleton) == bool(b.singleton)
+        and _norm_str(a.description) == _norm_str(b.description)
+        and _norm_str(a.repo) == _norm_str(b.repo)
+        and _norm_str(a.ref) == _norm_str(b.ref)
+        and _norm_str(a.subdir) == _norm_str(b.subdir)
+        and _norm_str(a.git_commit) == _norm_str(b.git_commit)
+    )
 
 def _merge_example_bundles(reg: "BundlesRegistry") -> tuple["BundlesRegistry", bool]:
     examples = _load_example_bundles()
@@ -210,6 +371,8 @@ async def seed_from_env_if_any(redis, tenant: Optional[str] = None, project: Opt
             bundles_dict = data.get("bundles") or {}
             default_id = data.get("default_bundle_id") or (next(iter(bundles_dict.keys()), None))
 
+        bundles_dict, props_map = _split_bundles_and_props(bundles_dict)
+
         reg = BundlesRegistry(
             default_bundle_id=default_id,
             bundles={bid: _to_entry(bid, b) for bid, b in bundles_dict.items()}
@@ -219,6 +382,11 @@ async def seed_from_env_if_any(redis, tenant: Optional[str] = None, project: Opt
         reg, _ = _merge_example_bundles(reg)
         reg = _ensure_admin_bundle(reg)
         await save_registry(redis, reg, tenant, project)
+        if props_map:
+            t, p = tenant, project
+            if not t or not p:
+                t, p = _tp_from_env()
+            await _apply_bundle_props(redis, tenant=t, project=p, props_map=props_map)
         return reg
 
     except Exception:
@@ -237,6 +405,8 @@ async def reset_registry_from_env(redis, tenant: Optional[str] = None, project: 
         bundles_dict = data.get("bundles") or {}
         default_id = data.get("default_bundle_id") or (next(iter(bundles_dict.keys()), None))
 
+    bundles_dict, props_map = _split_bundles_and_props(bundles_dict)
+
     if not bundles_dict:
         raise ValueError("AGENTIC_BUNDLES_JSON has no bundles")
 
@@ -247,6 +417,11 @@ async def reset_registry_from_env(redis, tenant: Optional[str] = None, project: 
     reg, _ = _merge_example_bundles(reg)
     reg = _ensure_admin_bundle(reg)
     await save_registry(redis, reg, tenant, project)
+    if props_map:
+        t, p = tenant, project
+        if not t or not p:
+            t, p = _tp_from_env()
+        await _apply_bundle_props(redis, tenant=t, project=p, props_map=props_map)
     return reg
 
 
@@ -287,10 +462,10 @@ def _to_entry(bid: str, v: Dict[str, Any]) -> BundleEntry:
     unsupported_keys = {"git_url", "git_ref", "git_subdir", "git_repo"}
     if any(k in v for k in unsupported_keys):
         raise ValueError("Use repo/ref/subdir only; git_* keys are not supported.")
-    repo = v.get("repo")
-    path_val = v.get("path") or ""
-    ref = v.get("ref")
-    subdir = v.get("subdir")
+    repo = _norm_str(v.get("repo"))
+    path_val = _norm_str(v.get("path")) or ""
+    ref = _norm_str(v.get("ref"))
+    subdir = _norm_str(v.get("subdir"))
     if not path_val and repo:
         try:
             from kdcube_ai_app.infra.plugin.git_bundle import compute_git_bundle_paths
@@ -303,18 +478,24 @@ def _to_entry(bid: str, v: Dict[str, Any]) -> BundleEntry:
             path_val = str(paths.bundle_root)
         except Exception:
             path_val = ""
-    return BundleEntry(
+    candidate = BundleEntry(
         id=bid,
-        name=v.get("name"),
+        name=_norm_str(v.get("name")),
         path=path_val or v.get("path") or "",
-        module=v.get("module"),
+        module=_norm_str(v.get("module")),
         singleton=bool(v.get("singleton", False)),
-        description=v.get("description"),
+        description=_norm_str(v.get("description")),
         repo=repo,
         ref=ref,
         subdir=subdir,
-        git_commit=v.get("git_commit"),
+        git_commit=_norm_str(v.get("git_commit")),
     )
+    reserved = _reserved_bundle_entry(bid) if bid in _reserved_bundle_ids() else None
+    if reserved:
+        if _entries_equivalent(candidate, reserved):
+            return reserved
+        raise ValueError(f"Bundle id '{bid}' is reserved (built-in/admin example). Choose a different id.")
+    return candidate
 
 def _load_env_json(strict: bool) -> Optional[Dict[str, Any]]:
     raw = os.getenv("AGENTIC_BUNDLES_JSON")

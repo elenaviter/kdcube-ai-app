@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/react-round-README.md
+title: "React Round"
+summary: "ReactRound representation for tool calls and results."
+tags: ["sdk", "agents", "react", "tool-calls"]
+keywords: ["ReactRound", "tool call blocks", "results mapping"]
+see_also:
+  - ks:docs/sdk/agents/react/tool-call-blocks-README.md
+  - ks:docs/sdk/agents/react/event-blocks-README.md
+  - ks:docs/sdk/agents/react/react-tools-README.md
+---
 # React Round (Tool Call) Model
 
 This document describes the ReactRound concept and how tool calls are represented.

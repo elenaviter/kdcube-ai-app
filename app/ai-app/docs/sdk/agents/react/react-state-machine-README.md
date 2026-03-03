@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/react-state-machine-README.md
+title: "React State Machine"
+summary: "React v2 state machine and decision loop control gates."
+tags: ["sdk", "agents", "react", "state-machine"]
+keywords: ["runtime loop", "decision gate", "state machine", "mermaid"]
+see_also:
+  - ks:docs/sdk/agents/react/react-budget-README.md
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/artifact-storage-README.md
+---
 # ReAct v2 State Machine
 
 This describes the **v2** runtime loop and its control gates.

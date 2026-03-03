@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/plan-README.md
+title: "Plan"
+summary: "Plan snapshots stored in timeline and surfaced via announce."
+tags: ["sdk", "agents", "react", "plan"]
+keywords: ["plan blocks", "announce", "plan lifecycle", "active plan"]
+see_also:
+  - ks:docs/sdk/agents/react/react-announce-README.md
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/react-round-README.md
+---
 # Plan tracking (react v2)
 
 This system treats plans as **explicit snapshots** persisted to the timeline and surfaced in the announce section when active.  

@@ -1,3 +1,14 @@
+---
+id: ks:docs/arch/architecture-long.md
+title: "Architecture Long"
+summary: "End‑to‑end system architecture: transports, gateway, processing, relay, storage, and economics."
+tags: ["arch", "architecture", "system", "services", "dataflow"]
+keywords: ["ingress", "proc", "gateway", "SSE", "redis", "storage", "economics", "auth"]
+see_also:
+  - ks:docs/arch/architecture-short.md
+  - ks:docs/service/comm/README-comm.md
+  - ks:docs/service/auth/auth-README.md
+---
 # KDCube AI App — System Architecture (Long)
 
 This document captures the **end‑to‑end architecture**: transports, gateway, processing, relay, storage, economics, and integrations.
@@ -98,7 +109,7 @@ sequenceDiagram
 Hosted UI for 2FA is available in both modes; infra exchange adds cookie-only auth for the client.
 
 References:
-- [auth-README.md](../../../auth/auth-README.md)
+- [auth-README.md](../service/auth/auth-README.md)
 - [token_extract.py](../../middleware/token_extract.py)
 
 ---
@@ -125,7 +136,7 @@ The gateway enforces **authentication**, **rate limits**, and **backpressure** b
 
 Key modules:
 - [gateway.py](../../../apps/middleware/gateway.py)
-- [infra/gateway](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md)
+- [gateway-README.md](../service/gateway-README.md)
 
 ---
 
@@ -151,9 +162,9 @@ Design goals:
 - Transport symmetry (SSE + Socket.IO)
 
 References:
-- [comm-system.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
-- [README-comm.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/README-comm.md)
-- [SSE relay deep dive](../../api/sse/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
+- [comm-system.md](../service/comm/comm-system.md)
+- [README-comm.md](../service/comm/README-comm.md)
+- [SSE relay deep dive](../service/comm/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
 
 ---
 
@@ -190,7 +201,7 @@ Key worker: [apps/chat/processor.py](../../processor.py)
 
 Bundles are **runtime‑loadable workflows** with custom logic and optional endpoints.
 
-- Registry + loader: [infra/plugin/README.md](../../../infra/plugin/README.md)
+- Registry + loader: [bundle-ops-README.md](../sdk/bundle/bundle-ops-README.md)
 - Example bundle entrypoint: [streaming_and_storage entrypoint](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/streaming_and_storage@2026-02-01-22-53/entrypoint.py)
 
 Bundles can:
@@ -231,8 +242,8 @@ Key points:
 - Quotas can be enforced **per user across projects** (control‑plane scope).
 
 References:
-- [economics-usage.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md)
-- [control-plane-management.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md)
+- [economics-usage.md](../economics/economics-usage.md)
+- [instance-config-README.md](../service/maintenance/instance-config-README.md)
 
 ---
 
@@ -267,7 +278,7 @@ References:
 
 ## 13) Observability & reporting
 
-- **Monitoring/observability**: [README-monitoring-observability.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)
+- **Monitoring/observability**: [README-monitoring-observability.md](../service/README-monitoring-observability.md)
 - **Accounting & spending**: usage envelopes + spend reporting (per tenant/project/user)
 
 ---
@@ -277,7 +288,7 @@ References:
 ### Knowledge Base (KB)
 - REST + Socket.IO
 - Postgres + pgvector, optional S3 storage
-- [KB README](../../../apps/knowledge_base/README.md)
+- [KB README](../../services/kdcube-ai-app/kdcube_ai_app/apps/knowledge_base/README.md)
 
 ### Runtime tools & LLM providers
 - Centralized service hub for models, embeddings, and tool adapters.
@@ -295,5 +306,5 @@ References:
 - SSE transport: [sse/chat.py](../../api/sse/chat.py)
 - Socket.IO transport: [socketio/chat.py](../../api/socketio/chat.py)
 - Processor: [apps/chat/processor.py](../../processor.py)
-- Comm subsystem: [comm-system.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
-- Comm integrations: [README-comm.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/README-comm.md)
+- Comm subsystem: [comm-system.md](../service/comm/comm-system.md)
+- Comm integrations: [README-comm.md](../service/comm/README-comm.md)

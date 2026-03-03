@@ -1,9 +1,20 @@
+---
+id: ks:docs/service/comm/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md
+title: "Chat Relay Session Subscr SSE Socketio Funout"
+summary: "SSE/Socket.IO relay design: session subscriptions and fan‑out via Redis."
+tags: ["service", "comm", "relay", "sse", "redis"]
+keywords: ["session subscription", "fanout", "redis pubsub", "SSE relay", "Socket.IO"]
+see_also:
+  - ks:docs/service/comm/comm-system.md
+  - ks:docs/service/comm/README-comm.md
+  - ks:docs/service/README-monitoring-observability.md
+---
 # Redis-based Chat Relay & SSE Fan-Out
 
 > Note: This document focuses on SSE fan-out, but the same relay/channeling
 > design is used by Socket.IO as well. See:
 > - [Socket.IO transport](../socketio/chat.py)
-> - [Comm integrations overview](../../sdk/comm/README-comm.md)
+> - [Comm integrations overview](README-comm.md)
 
 This document describes the architecture of the **chat relay** in the KDCube AI App, specifically:
 

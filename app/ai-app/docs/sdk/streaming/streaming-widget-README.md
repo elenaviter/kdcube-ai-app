@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/streaming/streaming-widget-README.md
+title: "Streaming Widget"
+summary: "Live exec streaming widget used by ReAct v2 for code execution status and output."
+tags: ["sdk", "streaming", "widgets", "exec", "react"]
+keywords: ["live exec widget", "code execution status", "react v2", "streamer channels", "status events"]
+see_also:
+  - ks:docs/sdk/streaming/channeled-streamer-README.md
+  - ks:docs/README.md
+  - ks:docs/sdk/agents/react/external-exec-README.md
+---
 # Streaming Exec Widget (Live Code + Execution Status)
 
 This document describes the **live exec streaming widget** used by the ReAct v2 decision loop. It supersedes the older code‑exec widget notes and reflects the current runtime wiring.

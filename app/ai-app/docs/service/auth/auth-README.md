@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/auth/auth-README.md
+title: "Auth"
+summary: "Authentication providers and token transport across REST/SSE/Socket.IO."
+tags: ["service", "auth", "security", "tokens"]
+keywords: ["delegated auth", "cookie auth", "JWT", "SSE auth", "Socket.IO"]
+see_also:
+  - ks:docs/service/comm/README-comm.md
+  - ks:docs/arch/architecture-long.md
+  - ks:docs/service/README-monitoring-observability.md
+---
 # Auth Overview
 
 This module supports multiple authentication providers and several token transport

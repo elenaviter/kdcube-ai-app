@@ -10,11 +10,14 @@ import sys
 import inspect
 import types
 import asyncio
+import threading
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, Tuple, Any, Dict, List
 
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
+from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
 # --------------------------------------------------------------------------------------
 # Public decorators — the ONLY way to mark workflow factory/class and optional init
@@ -84,12 +87,111 @@ class AgenticBundleSpec:
 
 _module_cache: Dict[str, types.ModuleType] = {}
 _singleton_cache: Dict[str, Tuple[Any, types.ModuleType]] = {}
+_bundle_load_done: set[str] = set()
+_bundle_load_inflight: set[str] = set()
+_bundle_load_lock = threading.Lock()
 
 def _cache_key(spec: AgenticBundleSpec) -> str:
     return f"{Path(spec.path).resolve()}::{spec.module or ''}"
 
 def cache_key_for_spec(spec: AgenticBundleSpec) -> str:
     return _cache_key(spec)
+
+def _tp_from_ctx(ctx: ChatTaskPayload) -> tuple[Optional[str], Optional[str]]:
+    t = getattr(getattr(ctx, "actor", None), "tenant_id", None)
+    p = getattr(getattr(ctx, "actor", None), "project_id", None)
+    if not t or not p:
+        t = t or getattr(getattr(ctx, "meta", None), "tenant", None)
+        p = p or getattr(getattr(ctx, "meta", None), "project", None)
+    return t, p
+
+def _bundle_load_key(spec: AgenticBundleSpec, comm_context: ChatTaskPayload) -> str:
+    t, p = _tp_from_ctx(comm_context)
+    return f"{_cache_key(spec)}::{t or 'default'}::{p or 'default'}"
+
+def _maybe_run_bundle_on_load(
+    *,
+    instance: Any,
+    mod: types.ModuleType,
+    spec: AgenticBundleSpec,
+    config: Any,
+    comm_context: ChatTaskPayload,
+    pg_pool: Optional[Any],
+    redis: Optional[Any],
+) -> None:
+    hook = None
+    if hasattr(instance, "on_bundle_load") and callable(getattr(instance, "on_bundle_load")):
+        hook = getattr(instance, "on_bundle_load")
+    elif hasattr(mod, "on_bundle_load") and callable(getattr(mod, "on_bundle_load")):
+        hook = getattr(mod, "on_bundle_load")
+    if hook is None:
+        return
+
+    key = _bundle_load_key(spec, comm_context)
+    with _bundle_load_lock:
+        if key in _bundle_load_done or key in _bundle_load_inflight:
+            return
+        _bundle_load_inflight.add(key)
+
+    logger = AgentLogger("bundle.on_load", getattr(config, "log_level", "INFO"))
+    try:
+        from kdcube_ai_app.infra.plugin.bundle_storage import storage_for_spec
+    except Exception:
+        storage_for_spec = None
+
+    bundle_spec = getattr(config, "ai_bundle_spec", None)
+    tenant, project = _tp_from_ctx(comm_context)
+    bundle_id = getattr(bundle_spec, "id", None) or getattr(bundle_spec, "name", None) or spec.path
+    storage_root = None
+    if storage_for_spec is not None:
+        try:
+            storage_root = storage_for_spec(
+                spec=bundle_spec,
+                tenant=tenant,
+                project=project,
+                ensure=True,
+            )
+        except Exception:
+            storage_root = None
+
+    kwargs = {
+        "bundle_spec": bundle_spec,
+        "agentic_spec": spec,
+        "storage_root": storage_root,
+        "config": config,
+        "comm_context": comm_context,
+        "pg_pool": pg_pool,
+        "redis": redis,
+        "logger": logger,
+    }
+    call_kwargs = _select_supported_kwargs(hook, kwargs)
+    try:
+        logger.log(
+            f"[bundle.on_load] start: bundle={bundle_id} tenant={tenant} project={project} storage={storage_root}",
+            level="INFO",
+        )
+        res = hook(**call_kwargs)
+        if asyncio.iscoroutine(res):
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(res)
+            else:
+                # avoid blocking the request; warn that the hook should be sync
+                loop.create_task(res)
+                logger.log("[bundle.on_load] async hook scheduled in background (prefer sync)", level="WARNING")
+        with _bundle_load_lock:
+            _bundle_load_done.add(key)
+        logger.log(
+            f"[bundle.on_load] done: bundle={bundle_id} tenant={tenant} project={project}",
+            level="INFO",
+        )
+    except Exception:
+        logger.log("[bundle.on_load] hook failed:\n" + traceback.format_exc(), level="ERROR")
+        raise
+    finally:
+        with _bundle_load_lock:
+            _bundle_load_inflight.discard(key)
 
 # --------------------------------------------------------------------------------------
 # Module loading
@@ -135,6 +237,15 @@ def _load_module_from_dir(container_path: Path, module: str) -> types.ModuleType
     _ensure_virtual_subpackages(root_pkg, container_path, sub_pkg)
 
     target = container_path / f"{module.replace('.', '/')}.py"
+    if not target.exists() and "." in module:
+        # Allow "folder.name.entrypoint" where folder contains dots or other separators.
+        # Fallback: treat only the last segment as the module filename.
+        alt_module = module.rsplit(".", 1)[-1]
+        alt_target = container_path / f"{alt_module.replace('.', '/')}.py"
+        if alt_target.exists():
+            module = alt_module
+            sub_pkg = ""
+            target = alt_target
     if not target.exists():
         raise ImportError(f"Module file not found in bundle dir: {target}")
 
@@ -301,14 +412,6 @@ def get_workflow_instance(
     try:
         from kdcube_ai_app.infra.plugin.bundle_refs import touch_bundle_ref
 
-        def _tp_from_ctx(ctx: ChatTaskPayload) -> tuple[Optional[str], Optional[str]]:
-            t = getattr(getattr(ctx, "actor", None), "tenant_id", None)
-            p = getattr(getattr(ctx, "actor", None), "project_id", None)
-            if not t or not p:
-                t = t or getattr(getattr(ctx, "meta", None), "tenant", None)
-                p = p or getattr(getattr(ctx, "meta", None), "project", None)
-            return t, p
-
         if redis is not None and spec.path:
             t, p = _tp_from_ctx(comm_context)
             coro = touch_bundle_ref(redis, path=spec.path, tenant=t, project=p)
@@ -350,6 +453,17 @@ def get_workflow_instance(
     else:
         instance = _instantiate_symbol("class", symbol, config, extra_kwargs)
         final_singleton = bool(spec.singleton)
+
+    # Optional bundle on-load hook (runs once per spec/tenant/project)
+    _maybe_run_bundle_on_load(
+        instance=instance,
+        mod=mod,
+        spec=spec,
+        config=config,
+        comm_context=comm_context,
+        pg_pool=pg_pool,
+        redis=redis,
+    )
 
     if final_singleton:
         _singleton_cache[key] = (instance, mod)

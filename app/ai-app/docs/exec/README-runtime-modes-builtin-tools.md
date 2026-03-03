@@ -1,3 +1,14 @@
+---
+id: ks:docs/exec/README-runtime-modes-builtin-tools.md
+title: "Runtime Modes Builtin Tools"
+summary: "Where built‑in tools execute (in‑proc vs isolated vs Docker) and how to configure default modes."
+tags: ["exec", "tools", "runtime-modes", "isolation", "configuration"]
+keywords: ["builtin tools", "tool runtime", "isolated subprocess", "docker mode", "tool_id", "default mode"]
+see_also:
+  - ks:docs/exec/runtime-README.md
+  - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/exec/distributed-exec.md
+---
 # Runtime modes for built-in tools
 
 This document explains where built-in tools run (in-process vs isolated subprocess vs Docker), how to change the default, and how to wire new tools.

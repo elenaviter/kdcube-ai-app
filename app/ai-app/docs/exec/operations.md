@@ -1,3 +1,14 @@
+---
+id: ks:docs/exec/operations.md
+title: "Operations"
+summary: "Operations guide for isolated Python execution: Docker setup, host paths, and security constraints."
+tags: ["exec", "operations", "docker", "security", "deployment"]
+keywords: ["exec-workspace", "docker socket", "host paths", "ISO runtime", "network isolation"]
+see_also:
+  - ks:docs/exec/runtime-README.md
+  - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/exec/run-py-README.md
+---
 # Isolated Code Execution - Operations Guide
 
 This guide covers setup and configuration for running [AI-]generated Python code in isolated Docker containers with network isolation and privilege separation.
@@ -35,8 +46,8 @@ The isolated execution system allows running untrusted AI-generated code safely 
 
 For implementation details (runtime flow, supervisor/executor roles, mounts, permissions, env vars, and parallel-exec notes), see:
 
-- [README-iso-runtime.md](../../sdk/runtime/isolated/README-iso-runtime.md)
-- [README-runtime-modes-builtin-tools.md](../../sdk/runtime/isolated/README-runtime-modes-builtin-tools.md)
+- [README-iso-runtime.md](README-iso-runtime.md)
+- [README-runtime-modes-builtin-tools.md](README-runtime-modes-builtin-tools.md)
 
 ---
 

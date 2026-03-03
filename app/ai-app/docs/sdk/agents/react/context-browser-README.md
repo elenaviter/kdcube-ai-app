@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/context-browser-README.md
+title: "Context Browser"
+summary: "ContextBrowser builds the per‑turn timeline view and collects new blocks."
+tags: ["sdk", "agents", "react", "context", "timeline"]
+keywords: ["ContextBrowser", "timeline", "blocks", "turn_id", "agent contributions"]
+see_also:
+  - ks:docs/sdk/agents/react/context-layout.md
+  - ks:docs/sdk/agents/react/context-progression.md
+  - ks:docs/sdk/agents/react/react-context-README.md
+---
 # Context Browser (v2)
 
 `ContextBrowser` owns the **timeline** used by all agents in a turn.

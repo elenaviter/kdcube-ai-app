@@ -1,3 +1,14 @@
+---
+id: ks:docs/exec/distributed-exec.md
+title: "Distributed Exec"
+summary: "Planned distributed execution model (Fargate/external) when Docker on node is unavailable."
+tags: ["exec", "distributed", "fargate", "external", "architecture"]
+keywords: ["distributed exec", "snapshot zip", "bundle", "outdir", "workdir", "remote executor"]
+see_also:
+  - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/exec/README-runtime-modes-builtin-tools.md
+  - ks:docs/exec/runtime-README.md
+---
 # Distributed Execution (Fargate/External)
 
 This document defines the plan to support **distributed code execution** (Fargate, Prefect, etc.)

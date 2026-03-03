@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/environment/service-dev-env-README.md
+title: "Service Dev Env"
+summary: "Local IDE/CLI runs of ingress/proc/metrics with external infra."
+tags: ["service", "environment", "dev", "local"]
+keywords: ["local dev", "ingress", "proc", "metrics", "local-infra-stack"]
+see_also:
+  - ks:docs/service/environment/service-compose-env-README.md
+  - ks:docs/service/environment/setup-dev-env-README.md
+  - ks:docs/service/environment/service-ecs-env-README.md
+---
 # Service Dev Env (Local Run)
 
 This document covers **local IDE/CLI runs** of `chat-ingress`, `chat-proc`, and `metrics`
@@ -67,6 +78,8 @@ Do not use `TENANT_ID`, `PROJECT_ID`, or `DEFAULT_PROJECT_NAME`.
 | `BUNDLE_CLEANUP_*` | Bundle cleanup loop settings |
 | `BUNDLES_FORCE_ENV_ON_STARTUP` | Force registry overwrite from env on startup |
 | `BUNDLE_GIT_RESOLUTION_ENABLED` | Enable/disable git bundle resolution |
+| `BUNDLE_GIT_*` | Git clone behavior (atomic, shallow, keep/ttl, locks, always‑pull) |
+| `GIT_SSH_*` / `GIT_SSH_COMMAND` | SSH auth for private git repos |
 | `TOOLS_WEB_SEARCH_FETCH_CONTENT`, `WEB_*`, `MCP_CACHE_TTL_SECONDS` | Web fetch/search tooling |
 
 ## Metrics‑Only

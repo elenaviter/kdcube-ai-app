@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/artifact-storage-README.md
+title: "Artifact Storage"
+summary: "Where artifacts are stored and how artifact files/attachments are organized."
+tags: ["sdk", "agents", "react", "artifacts", "storage"]
+keywords: ["artifact storage", "attachments", "turn artifacts", "timeline files", "storage rules"]
+see_also:
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/conversation-artifacts-README.md
+  - ks:docs/sdk/agents/react/react-tools-README.md
+---
 # Artifact Storage Rules
 
 ## Files vs Tool Results

@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/tools/tool-subsystem-README.md
+title: "Tool Subsystem"
+summary: "Tool subsystem internals: tool definitions, IDs, loaders, and runtime selection."
+tags: ["sdk", "tools", "subsystem", "runtime", "execution"]
+keywords: ["ToolSubsystem", "tool id", "tool descriptor", "runtime mode", "isolation", "bundle tools"]
+see_also:
+  - ks:docs/sdk/tools/custom-tools-README.md
+  - ks:docs/sdk/tools/mcp-README.md
+  - ks:docs/exec/README-runtime-modes-builtin-tools.md
+---
 # Tool Subsystem
 
 This document explains how tools are defined, loaded, and executed by the SDK. It covers custom tool modules, tool IDs, and runtime selection (in‑process vs isolation).

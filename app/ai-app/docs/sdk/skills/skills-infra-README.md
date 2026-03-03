@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/skills/skills-infra-README.md
+title: "Skills Infra"
+summary: "Infrastructure wiring for skills across React runtime and isolated execution."
+tags: ["sdk", "skills", "infra", "runtime", "react", "isolated"]
+keywords: ["skills registry", "skill descriptors", "react instructions", "iso runtime", "skills loader"]
+see_also:
+  - ks:docs/sdk/skills/custom-skills-README.md
+  - ks:docs/sdk/skills/skills-README.md
+  - ks:docs/README.md
+---
 # Skills Infrastructure
 
 This document explains how skills are configured, loaded, and made available in

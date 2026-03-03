@@ -1,0 +1,4 @@
+tools:
+  - id: web_tools.web_search
+    role: external product discovery
+    why: Search the public web (including kdcube.tech) for product details and updates.

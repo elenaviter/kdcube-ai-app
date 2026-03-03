@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/environment/service-ecs-env-README.md
+title: "Service ECS Env"
+summary: "Common AWS env vars used by ECS tasks (CloudWatch, AWS APIs)."
+tags: ["service", "environment", "ecs", "aws"]
+keywords: ["AWS_REGION", "AWS_ROLE_ARN", "CloudWatch", "task env"]
+see_also:
+  - ks:docs/service/environment/service-compose-env-README.md
+  - ks:docs/service/environment/service-dev-env-README.md
+  - ks:docs/service/environment/setup-dev-env-README.md
+---
 # Service ECS Env (AWS Runtime)
 
 Common AWS env vars used by services that export to CloudWatch or access AWS APIs.
@@ -33,3 +44,19 @@ Use one of these credential sources:
 ## Notes
 - For CloudWatch export, services must have `cloudwatch:PutMetricData` permissions.
 - Prefer IAM roles in ECS/EC2 instead of static keys.
+
+## Proc Git Bundles (ECS)
+
+If you use git‑defined bundles in **chat‑proc**:
+
+| Variable                           | Purpose                                                  |
+|------------------------------------|----------------------------------------------------------|
+| `BUNDLE_GIT_RESOLUTION_ENABLED`    | Enable git clone/pull for bundles with `repo`            |
+| `BUNDLE_GIT_ALWAYS_PULL`           | Always pull (useful for branch refs)                     |
+| `BUNDLE_GIT_ATOMIC`                | Atomic checkout (clone to temp dir then rename)          |
+| `BUNDLE_GIT_*`                     | Shallow/keep/ttl/lock settings (see bundle docs)         |
+| `GIT_SSH_KEY_PATH`                 | Path to SSH private key (mount from Secrets Manager/SSM) |
+| `GIT_SSH_KNOWN_HOSTS`              | Known hosts file (mount)                                 |
+| `GIT_SSH_STRICT_HOST_KEY_CHECKING` | `yes`/`no`                                               |
+| `GIT_SSH_COMMAND`                  | Full SSH command override (optional)                     |
+| `AGENTIC_BUNDLES_ROOT`             | Bundles root inside container (e.g. `/bundles`)          |

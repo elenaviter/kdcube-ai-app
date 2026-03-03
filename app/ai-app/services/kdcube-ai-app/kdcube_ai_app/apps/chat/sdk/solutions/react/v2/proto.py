@@ -5,7 +5,30 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, List, Callable, Awaitable
+from typing import Any, Dict, Optional, List, Callable, Awaitable, Protocol
+
+
+class KnowledgeSearchFn(Protocol):
+    def __call__(
+        self,
+        *,
+        query: str,
+        root: str = "",
+        max_hits: int = 20,
+        keywords: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        ...
+
+
+class KnowledgeReadFn(Protocol):
+    def __call__(
+        self,
+        *,
+        path: str,
+        **kwargs: Any,
+    ) -> Any:
+        ...
 
 
 @dataclass
@@ -71,6 +94,14 @@ class RuntimeCtx:
     max_iterations: Optional[int] = None
     workdir: Optional[str] = None
     outdir: Optional[str] = None
+    bundle_storage: Optional[str] = None
+    # Expected signature:
+    #   (query: str, root: str = "", max_hits: int = 20, keywords: Optional[List[str]] = None, **kwargs) -> List[Dict]
+    # Implementations may be sync or async; callers will await if needed.
+    knowledge_search_fn: Optional[KnowledgeSearchFn] = None
+    # Expected signature:
+    #   (path: str, **kwargs) -> Dict with optional keys: text, base64, mime, physical_path, missing
+    knowledge_read_fn: Optional[KnowledgeReadFn] = None
     model_service: Optional[Any] = None
     on_before_compaction: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     on_after_compaction: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
@@ -113,6 +144,7 @@ class RuntimeCtx:
             "max_iterations": self.max_iterations,
             "workdir": self.workdir,
             "outdir": self.outdir,
+            "bundle_storage": self.bundle_storage,
             "started_at": self.started_at,
             "debug_log_announce": bool(self.debug_log_announce),
             "debug_log_sources_pool": bool(self.debug_log_sources_pool),
@@ -285,3 +317,14 @@ class ToolCallView:
         cfg: Optional[Any] = None,
     ) -> str:
         raise NotImplementedError
+class KnowledgeSearchFn(Protocol):
+    def __call__(
+        self,
+        *,
+        query: str,
+        root: str = "",
+        max_hits: int = 20,
+        keywords: Optional[List[str]] = None,
+        **kwargs: Any,
+    ) -> Any:
+        ...

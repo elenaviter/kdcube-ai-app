@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/source-pool-README.md
+title: "Source Pool"
+summary: "Sources pool population, storage, and access patterns."
+tags: ["sdk", "agents", "react", "sources", "citations"]
+keywords: ["sources_pool", "citations", "dedupe", "source entries"]
+see_also:
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/artifact-storage-README.md
+  - ks:docs/sdk/agents/react/compaction-README.md
+---
 # Sources Pool
 
 This document describes how the **sources pool** is populated, stored, and accessed in the ReAct runtime.

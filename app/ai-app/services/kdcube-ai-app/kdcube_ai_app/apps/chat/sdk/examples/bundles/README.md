@@ -3,7 +3,7 @@
 This folder contains versioned, runnable bundle examples.
 
 ## Getting started
-- [first-ai-bundle-README.md](../../../../../../../../docs/sdk/bundle/first-ai-bundle-README.md)
+- [bundle-dev-README.md](../../../../../../../../docs/sdk/bundle/bundle-dev-README.md)
 
 ## Examples
 - [ReAct Agent](react%402026-02-10-02-44): General purpose ReAct agent equipped with [react-tools-README.md](../../../../../../../../docs/sdk/agents/react/react-tools-README.md) tools (read/write/memsearch/hide/file_search/patch), web tools (search/fetch) and rendering tools (write_pdf|docx|png|pptx). More on it [react](../../../../../../../../docs/sdk/agents/react)

@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/cicd/custom-cicd-README.md
+title: "Custom CICD"
+summary: "Two‑repo CI/CD plan covering build outputs, image mapping, release.yaml flow, and ECS/EC2 deployment steps."
+tags: ["service", "cicd", "deployment", "ecs", "ec2", "docker-compose", "images", "bundles", "release", "frontend"]
+keywords: ["two-repo", "platform repo", "customer repo", "release.yaml", "bundle packaging", "image mapping", "ecs task definitions", "compose envs", "AGENTIC_BUNDLES_JSON"]
+see_also:
+  - ks:docs/service/cicd/release-bundle-README.md
+  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/release-README.md
+---
 # Custom CI/CD (Open Source + Customer Repo)
 
 This document is a practical plan for a **two‑repo** CI/CD setup:
@@ -58,6 +69,7 @@ flowchart LR
 - `BUNDLES_INCLUDE_EXAMPLES=0` to disable example bundles.
 - `BUNDLE_GIT_RESOLUTION_ENABLED=0` when using mounted paths only.
 - `BUNDLE_GIT_REDIS_LOCK=1` to serialize git pulls per instance.
+- `GIT_SSH_KEY_PATH` / `GIT_SSH_KNOWN_HOSTS` for private git repos.
 
 ---
 
@@ -181,6 +193,21 @@ docker compose -f docker-compose-decentralized-infra-data.yaml up -d
 - `metrics` can be enabled without user impact.
 - Use `.env.postgres.setup` for `postgres-setup`, not `.env.ingress/.env.proc`.
 
+### Git bundle auth (EC2 / docker‑compose)
+
+If you use git‑defined bundles from **private repos**, ops must provide:
+
+1. A private SSH key + known_hosts on the **host**.
+2. Host paths in the compose `.env`:
+   - `HOST_GIT_SSH_KEY_PATH=/path/to/id_ed25519`
+   - `HOST_GIT_KNOWN_HOSTS_PATH=/path/to/known_hosts`
+3. Proc env (inside container) to point at the mounted files:
+   - `GIT_SSH_KEY_PATH=/run/secrets/git_ssh_key`
+   - `GIT_SSH_KNOWN_HOSTS=/run/secrets/git_known_hosts`
+   - `GIT_SSH_STRICT_HOST_KEY_CHECKING=yes`
+
+These are mounted into the proc container via docker‑compose.
+
 ---
 
 ## 7) ECS (Target State)
@@ -197,6 +224,21 @@ docker compose -f docker-compose-decentralized-infra-data.yaml up -d
 - `/chatbot/api/*` → ingress
 - `/chatbot/api/integrations/*` → processor
 - `/metrics/*` (if exposed) → metrics (usually internal)
+
+### Git bundle auth (ECS)
+
+If using private git repos:
+
+- Store SSH key + known_hosts in **AWS Secrets Manager** (or SSM).
+- Mount them into the **proc task** (e.g. `/run/secrets/git_ssh_key`, `/run/secrets/git_known_hosts`).
+- Set:
+  - `GIT_SSH_KEY_PATH=/run/secrets/git_ssh_key`
+  - `GIT_SSH_KNOWN_HOSTS=/run/secrets/git_known_hosts`
+  - `GIT_SSH_STRICT_HOST_KEY_CHECKING=yes`
+  - `BUNDLE_GIT_RESOLUTION_ENABLED=1`
+
+**Ownership:** DevOps owns secret provisioning and task definition wiring. Release manager owns
+`release.yaml` (bundle list + refs).
 
 ---
 

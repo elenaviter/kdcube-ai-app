@@ -32,6 +32,8 @@ cp sample_env/.env.frontend ./.env.frontend
 
 - `HOST_BUNDLES_PATH` = host folder that contains all bundles
 - `AGENTIC_BUNDLES_ROOT` = bundle root inside container (usually `/bundles`)
+- `HOST_BUNDLE_STORAGE_PATH` = host folder for shared bundle local storage
+- `BUNDLE_STORAGE_ROOT` = shared bundle local storage root inside container (e.g. `/bundle-storage`)
 - `HOST_EXEC_WORKSPACE_PATH` = host exec workspace
 
 3. Pick the OpenResty config you want (set in `.env.frontend`):
@@ -58,7 +60,7 @@ docker compose up -d --build
 ## Prepare data directories
 
 ```shell
-mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import}}
+mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import},bundle-storage}
 ```
 
 ```shell
@@ -79,6 +81,10 @@ chmod -R 0777 logs
 `chat-proc` **mounts bundles from the host**:
 
 - `HOST_BUNDLES_PATH` (host) → `AGENTIC_BUNDLES_ROOT` (container)
+
+**Knowledge space storage (doc/knowledge bundles):**
+
+- `HOST_BUNDLE_STORAGE_PATH` (host) → `BUNDLE_STORAGE_ROOT` (container)
 
 This is how bundle code becomes available to the processor in this setup.
 

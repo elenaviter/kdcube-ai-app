@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/ecs/metrics-autoscaling-README.md
+title: "Metrics Autoscaling"
+summary: "How metrics service supports autoscaling for ingress and proc."
+tags: ["service", "ecs", "autoscaling", "metrics"]
+keywords: ["CloudWatch", "HPA", "metrics endpoints", "scale policies"]
+see_also:
+  - ks:docs/service/scale/metrics-README.md
+  - ks:docs/service/ecs/custom-ecs-README.md
+  - ks:docs/service/environment/service-compose-env-README.md
+---
 # Metrics + Autoscaling (ECS)
 
 This document explains how the **metrics service** supports autoscaling for ingress and processor.

@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/artifact-discovery-README.md
+title: "Artifact Discovery"
+summary: "How artifacts are discovered from timeline blocks and how logical/physical paths resolve for tools."
+tags: ["sdk", "agents", "react", "artifacts", "paths"]
+keywords: ["logical paths", "physical paths", "react.read", "attachments", "artifact resolution", "timeline blocks"]
+see_also:
+  - ks:docs/sdk/agents/react/artifact-storage-README.md
+  - ks:docs/sdk/agents/react/react-tools-README.md
+  - ks:docs/sdk/agents/react/timeline-README.md
+---
 # Artifact Discovery (Logical/Physical Paths)
 
 This document defines how artifacts are discovered from timeline blocks and how logical/physical paths

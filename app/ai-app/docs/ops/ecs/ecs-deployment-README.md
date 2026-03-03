@@ -1,3 +1,14 @@
+---
+id: ks:docs/ops/ecs/ecs-deployment-README.md
+title: "ECS Deployment"
+summary: "ECS deployment templates: env files for ingress, proc, and metrics tasks."
+tags: ["ops", "ecs", "deployment", "templates", "env", "tasks"]
+keywords: ["task definition", "env.template", "ingress", "proc", "metrics", "CloudWatch", "EFS", "AWS"]
+see_also:
+  - ks:docs/ops/ec2/dockercompose-deployment-README.md
+  - ks:docs/ops/ecs/components/metric-server-README.md
+  - ks:docs/ops/ops-overview-README.md
+---
 # ECS Deployment Templates
 
 This folder contains **environment templates** for ECS tasks/services.
@@ -71,6 +82,19 @@ For git‑defined bundles, ensure:
   AGENTIC_BUNDLES_ROOT=/bundles
   BUNDLE_GIT_RESOLUTION_ENABLED=1
   ```
+
+**Bundle shared local storage (optional)**
+
+If you use bundles that expose `ks:` (doc/knowledge or any shared local data),
+mount a shared local store and set:
+
+```
+BUNDLE_STORAGE_ROOT=/bundle-storage
+```
+
+Recommended:
+- Use the same EFS file system (or a separate EFS access point).
+- Mount it to `/bundle-storage`.
 
 **Private repos (SSH):**
 Provide these envs and mount the key/known_hosts into the container:

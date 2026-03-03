@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/session-view-README.md
+title: "Session View"
+summary: "Session view derived from timeline under TTL pruning."
+tags: ["sdk", "agents", "react", "session", "ttl"]
+keywords: ["cache TTL", "session view", "pruning", "visible context"]
+see_also:
+  - ks:docs/sdk/agents/react/context-browser-README.md
+  - ks:docs/sdk/agents/react/context-layout.md
+  - ks:docs/sdk/agents/react/context-progression.md
+---
 # Session View (Cache TTL)
 
 This document describes how the session view is derived from the timeline when cache TTL pruning is enabled. The goal is to keep the visible context small and stable after an Anthropic prompt cache TTL expires.

@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/streaming/channeled-streamer-README.md
+title: "Channeled Streamer"
+summary: "Channeled streaming protocol used by the SDK (versatile_streamer) and how to emit channelized output."
+tags: ["sdk", "streaming", "channels", "protocol", "communicator"]
+keywords: ["versatile_streamer.py", "channel schema", "delta", "answer", "status", "event routing"]
+see_also:
+  - ks:docs/sdk/streaming/streaming-widget-README.md
+  - ks:docs/sdk/agents/react/event-blocks-README.md
+  - ks:docs/sdk/agents/react/external-exec-README.md
+---
 # Channeled Streamer (Versatile Streamer)
 
 This document describes the SDK channeled streamer implemented in

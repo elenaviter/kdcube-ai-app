@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/context-layout.md
+title: "Context Layout"
+summary: "Rendered block stream format that agents receive each turn."
+tags: ["sdk", "agents", "react", "context", "layout"]
+keywords: ["block stream", "rendered context", "agent view", "blocks order"]
+see_also:
+  - ks:docs/sdk/agents/react/context-browser-README.md
+  - ks:docs/sdk/agents/react/context-progression.md
+  - ks:docs/sdk/agents/react/react-context-README.md
+---
 # Context Layout (Blocks)
 
 This document describes the **rendered block stream** that agents receive and how it is

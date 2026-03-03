@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/README-monitoring-observability.md
+title: "Monitoring Observability"
+summary: "Monitoring endpoints and access patterns for gateway/ingress/proc and metrics."
+tags: ["service", "monitoring", "observability", "metrics", "gateway"]
+keywords: ["monitoring endpoints", "gateway status", "queue metrics", "SSE", "admin access"]
+see_also:
+  - ks:docs/service/maintenance/requests-monitoring-README.md
+  - ks:docs/service/gateway-README.md
+  - ks:docs/service/auth/auth-README.md
+---
 # Monitoring & Observability (Gateway / Chat)
 
 This document describes the **current monitoring endpoints** for the gateway and chat ingress.
@@ -28,7 +39,7 @@ graph TD
   ENQ --> Q[Queues]
 ```
 
-Reference: [gateway-README.md](../../../infra/gateway/gateway-README.md)
+Reference: [gateway-README.md](gateway-README.md)
 
 ---
 

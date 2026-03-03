@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/flow-README.md
+title: "Flow"
+summary: "High‑level turn lifecycle and runtime flow for React v2."
+tags: ["sdk", "agents", "react", "flow", "timeline"]
+keywords: ["turn lifecycle", "gate", "single agent loop", "timeline flow"]
+see_also:
+  - ks:docs/sdk/agents/react/feedback-README.md
+  - ks:docs/sdk/agents/react/react-announce-README.md
+  - ks:docs/sdk/agents/react/react-context-README.md
+---
 # End‑to‑end flow (react v2)
 
 This document provides a high‑level view of the turn lifecycle and how the React runtime

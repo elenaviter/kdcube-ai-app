@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/timeline-README.md
+title: "Timeline"
+summary: "Timeline as single source of truth for context and artifacts."
+tags: ["sdk", "agents", "react", "timeline", "blocks"]
+keywords: ["timeline blocks", "ordered events", "artifacts", "turn context"]
+see_also:
+  - ks:docs/sdk/agents/react/structure-README.md
+  - ks:docs/sdk/agents/react/turn-log-README.md
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+---
 # Timeline (react v2)
 
 The **timeline** is the single source of truth for turn context. It stores:

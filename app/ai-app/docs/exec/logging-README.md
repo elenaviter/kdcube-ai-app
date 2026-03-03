@@ -1,3 +1,14 @@
+---
+id: ks:docs/exec/logging-README.md
+title: "Logging"
+summary: "Executor logging model: separate user/program logs from infra/runtime logs."
+tags: ["exec", "logging", "observability", "runtime"]
+keywords: ["executor logs", "user logs", "infra logs", "stdout", "stderr", "separation"]
+see_also:
+  - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/exec/README-runtime-modes-builtin-tools.md
+  - ks:docs/exec/distributed-exec.md
+---
 ## Executor log streams
 
 The isolated executor produces **two distinct log streams**:

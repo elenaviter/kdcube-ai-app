@@ -516,7 +516,7 @@ class ReactSolverV2:
             elif tool_id == "react.patch":
                 allowed_params.update({"path", "channel", "patch", "kind"})
             elif tool_id == "react.search_files":
-                allowed_params.update({"name_regex", "content_regex", "max_files", "max_bytes", "max_hits"})
+                allowed_params.update({"root", "name_regex", "content_regex", "max_files", "max_bytes", "max_hits"})
             else:
                 allowed_params.update({"path", "channel", "content", "kind"})
         else:

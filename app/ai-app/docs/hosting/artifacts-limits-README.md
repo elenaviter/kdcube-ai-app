@@ -1,3 +1,14 @@
+---
+id: ks:docs/hosting/artifacts-limits-README.md
+title: "Artifacts Limits"
+summary: "Hard limits and truncation policies for artifacts, sources, and tool outputs."
+tags: ["hosting", "artifacts", "limits", "truncation", "sources"]
+keywords: ["base64 limits", "timeline limits", "tool output truncation", "artifact size"]
+see_also:
+  - ks:docs/hosting/attachments-system.md
+  - ks:docs/citations-system.md
+  - ks:docs/economics/eco-kickoff-README.md
+---
 # Artifacts Limits
 
 This document summarizes the hard limits and truncation policies applied to artifacts, sources, and tool outputs.

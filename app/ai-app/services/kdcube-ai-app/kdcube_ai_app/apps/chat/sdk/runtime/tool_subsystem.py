@@ -92,11 +92,8 @@ class ToolSubsystem:
         # --- compute bundle_root once ---
         self.bundle_root: pathlib.Path | None = None
         if bundle_spec and bundle_spec.path and bundle_spec.module:
-            # Extract first segment of module (e.g., 'codegen' from 'codegen.entrypoint')
-            module_first_segment = bundle_spec.module.split('.')[0]
-            self.bundle_root = pathlib.Path(bundle_spec.path).joinpath(
-                module_first_segment
-            ).resolve()
+            from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_root
+            self.bundle_root = resolve_bundle_root(bundle_spec.path, bundle_spec.module)
 
         # If resolved tool_specs are not provided, resolve from raw_tool_specs + bundle_root
         if tools_specs is None and self.raw_tool_specs:

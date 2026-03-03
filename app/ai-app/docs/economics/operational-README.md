@@ -1,3 +1,14 @@
+---
+id: ks:docs/economics/operational-README.md
+title: "Operational"
+summary: "Operational requirements for economics: schemas, jobs, and configuration."
+tags: ["economics", "operations", "maintenance", "control-plane"]
+keywords: ["database schema", "maintenance jobs", "emailing", "plan policies", "runtime config"]
+see_also:
+  - ks:docs/economics/economic-README.md
+  - ks:docs/economics/stripe-README.md
+  - ks:docs/economics/eco-admin-README.md
+---
 # Economics Operations (Schema + Jobs + Config)
 
 This document describes the tables, maintenance jobs, emailing, and runtime configuration required for the economics subsystem to operate safely.
@@ -121,7 +132,7 @@ Required env vars are listed in the service config doc.
 
 See the service configuration document and ensure these sections are set:
 
-- [service-config-README.md](docs/service/service-config-README.md)
+- [service-config-README.md](../service/service-config-README.md)
 
 At minimum, economics requires:
 

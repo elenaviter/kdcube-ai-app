@@ -1,3 +1,14 @@
+---
+id: ks:docs/exec/runtime-README.md
+title: "Runtime"
+summary: "Architecture of the isolated execution runtime (Docker + external modes)."
+tags: ["exec", "runtime", "architecture", "docker", "supervisor"]
+keywords: ["execution architecture", "runtime supervisor", "executor", "external modes", "isolation"]
+see_also:
+  - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/exec/README-runtime-modes-builtin-tools.md
+  - ks:docs/exec/operations.md
+---
 # **Isolated Code Execution Architecture (Docker + External Modes)**
 
 ## **Diagram 1: Detailed Execution Flow (Docker Mode)**
@@ -350,5 +361,5 @@ cb/tenants/<tenant>/projects/<project>/executions/<user_type>/<user_or_fp>/<conv
 
 ### Notes
 - Tool call files are timestamp-suffixed; index file is still used for grouping.
-- Bundle snapshot is restored when tools are bundle-local (see `external-execution-notes.md`).
-- Additional implementation notes: [external-execution-notes.md](external/external-execution-notes.md)
+- Bundle snapshot is restored when tools are bundle-local (see `external-exec-README.md`).
+- Additional implementation notes: [external-exec-README.md](../sdk/agents/react/external-exec-README.md)

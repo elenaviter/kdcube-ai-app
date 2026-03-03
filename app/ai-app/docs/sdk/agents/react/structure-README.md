@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/structure-README.md
+title: "Structure"
+summary: "Module layout of React v2 runtime."
+tags: ["sdk", "agents", "react", "structure"]
+keywords: ["react/v2", "modules", "runtime layout", "core files"]
+see_also:
+  - ks:docs/sdk/agents/react/timeline-README.md
+  - ks:docs/sdk/agents/react/context-browser-README.md
+  - ks:docs/sdk/agents/react/context-progression.md
+---
 # React v2 Structure
 
 All v2 runtime code lives under `react/v2/`.

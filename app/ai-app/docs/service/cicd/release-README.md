@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/cicd/release-README.md
+title: "Release"
+summary: "Monorepo release and versioning guide: VERSION file, git tags, image tags, and bundle-registry behavior during releases."
+tags: ["service", "cicd", "release", "versioning", "git", "images", "bundles", "registry"]
+keywords: ["VERSION file", "vX.Y.Z", "git tag", "image tags", "git sha", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLE_GIT_REDIS_LOCK", "monorepo versioning"]
+see_also:
+  - ks:docs/service/cicd/release-bundle-README.md
+  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/custom-cicd-README.md
+---
 # Release + Versioning
 
 We use **one unified version** for the monorepo (platform + SDK) until the SDK is split.

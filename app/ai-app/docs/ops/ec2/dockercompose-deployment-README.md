@@ -1,3 +1,14 @@
+---
+id: ks:docs/ops/ec2/dockercompose-deployment-README.md
+title: "Dockercompose Deployment"
+summary: "EC2 docker‑compose deployment for platform + custom UI + bundles (customer‑repo driven)."
+tags: ["ops", "ec2", "docker-compose", "deployment", "custom-ui", "bundles"]
+keywords: ["docker compose", "dc-infra", "release.yaml", "frontend config", "nginx", "bundles mount", "env files", "host folders"]
+see_also:
+  - ks:docs/ops/ecs/ecs-deployment-README.md
+  - ks:docs/ops/deployment-options-index-README.md
+  - ks:docs/ops/ops-overview-README.md
+---
 # EC2 Docker‑Compose Deployment (Custom UI + Bundles)
 
 This doc consolidates the **customer‑repo EC2 compose** notes into a single platform‑side reference.
@@ -70,6 +81,22 @@ Set this in the platform compose `.env` so bundles are mounted into chat‑proc:
 HOST_BUNDLES_PATH=<customer-repo>/path/to/bundles
 ```
 
+### Bundle shared local storage (optional)
+
+Bundles can use a shared local filesystem to store read‑only assets, indexes,
+or any bundle‑specific data that should be reused across instances. If you use
+`ks:` resolvers, this is where they read from.
+
+In docker‑compose, mount it explicitly and set:
+
+```
+HOST_BUNDLE_STORAGE_PATH=/path/to/bundle-storage
+BUNDLE_STORAGE_ROOT=/bundle-storage
+```
+
+This path must be writable by the proc container if the bundle builds
+indexes or prepares data on startup.
+
 ### Bundles delivery (mounted path vs git)
 
 **Mounted path (current EC2 default):**
@@ -135,7 +162,7 @@ cd <platform-repo>/app/ai-app/deployment/docker/custom-ui-managed-infra
 alias dc-infra='docker compose -f docker-compose.yaml'
 
 # Create required data dirs (if using local paths)
-mkdir -p data/{kdcube-storage,exec-workspace}
+mkdir -p data/{kdcube-storage,exec-workspace,bundle-storage}
 chmod -R 0777 data
 
 # If using OpenResty + ACME

@@ -1,3 +1,14 @@
+---
+id: ks:docs/clients/sse-events-README.md
+title: "SSE Events"
+summary: "SSE protocol reference: envelope, lifecycle events, and full event catalog from ingress, proc, and bundles."
+tags: ["clients", "sse", "protocol", "events", "streaming", "chat"]
+keywords: ["event envelope", "chat_step", "delta", "server_shutdown", "conv_status", "rate_limit", "backpressure", "bundle events"]
+see_also:
+  - ks:docs/clients/frontend-awareness-on-service-state-README.md
+  - ks:docs/service/comm/comm-system.md
+  - ks:docs/arch/architecture-long.md
+---
 # SSE Events (Chat)
 
 This document describes the **SSE protocol** used by the chat system, including connection lifecycle events, the common event envelope, and all out‑of‑the‑box event types emitted by ingress + processor + bundles.

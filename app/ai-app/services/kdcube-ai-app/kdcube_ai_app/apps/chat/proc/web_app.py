@@ -67,6 +67,12 @@ from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
 from kdcube_ai_app.apps.chat.proc.rest.integrations import mount_integrations_routers
 from kdcube_ai_app.infra.namespaces import CONFIG
+from kdcube_ai_app.infra.plugin.bundle_registry import get_all as _get_bundle_registry
+from kdcube_ai_app.infra.plugin.git_bundle import (
+    ensure_git_bundle_async,
+    GitBundleCooldown,
+    compute_git_bundle_paths,
+)
 
 # Ensure per-replica instance id is set (do not override explicit env)
 os.environ.setdefault("INSTANCE_ID", f"proc-{uuid.uuid4().hex[:8]}")
@@ -103,6 +109,70 @@ def _get_uvicorn_workers_from_config() -> int:
     except Exception:
         logger.exception("Failed to resolve Uvicorn workers from gateway config; using 1")
         return 1
+
+
+def _git_prefetch_enabled() -> bool:
+    return os.environ.get("BUNDLE_GIT_PREFETCH_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _git_resolution_enabled() -> bool:
+    return os.environ.get("BUNDLE_GIT_RESOLUTION_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+
+
+async def _prefetch_git_bundles_loop(app) -> None:
+    """
+    Prefetch git bundles once on startup to gate readiness.
+    No retries here; config updates or restarts trigger a new resolution.
+    """
+    errors: dict[str, str] = {}
+    try:
+        reg = _get_bundle_registry()
+        force_pull = os.environ.get("BUNDLE_GIT_ALWAYS_PULL", "0").lower() in {"1", "true", "yes"}
+        for bid, entry in reg.items():
+            repo = entry.get("repo")
+            if not repo:
+                continue
+            # If a path already exists and we are not forcing pulls, skip.
+            path_val = (entry.get("path") or "").strip()
+            if not path_val:
+                try:
+                    paths = compute_git_bundle_paths(
+                        bundle_id=bid,
+                        git_url=repo,
+                        git_ref=entry.get("ref"),
+                        git_subdir=entry.get("subdir"),
+                    )
+                    path_val = str(paths.bundle_root)
+                except Exception:
+                    path_val = ""
+            if path_val and not force_pull:
+                try:
+                    if Path(path_val).exists():
+                        continue
+                except Exception:
+                    pass
+            try:
+                await ensure_git_bundle_async(
+                    bundle_id=bid,
+                    git_url=repo,
+                    git_ref=entry.get("ref"),
+                    git_subdir=entry.get("subdir"),
+                    bundles_root=None,
+                    atomic=os.environ.get("BUNDLE_GIT_ATOMIC", "1").lower() in {"1", "true", "yes"},
+                )
+            except GitBundleCooldown as e:
+                errors[bid] = str(e)
+            except Exception as e:
+                errors[bid] = str(e)
+        if not errors:
+            app.state.bundle_git_ready = True
+            app.state.bundle_git_errors = {}
+            return
+        app.state.bundle_git_ready = False
+        app.state.bundle_git_errors = errors
+    except Exception as e:
+        app.state.bundle_git_ready = False
+        app.state.bundle_git_errors = {"_internal": str(e)}
 
 
 async def _safe_shutdown_step(name: str, coro, timeout: float = 5.0) -> None:
@@ -379,6 +449,16 @@ async def lifespan(app: FastAPI):
                 e,
             )
 
+        # Git bundle readiness: prefetch git bundles once and mark readiness when done
+        app.state.bundle_git_ready = True
+        app.state.bundle_git_errors = {}
+        app.state.bundle_git_task = None
+        if _git_prefetch_enabled() and _git_resolution_enabled():
+            reg_now = _get_bundle_registry()
+            if any(entry.get("repo") for entry in reg_now.values()):
+                app.state.bundle_git_ready = False
+                app.state.bundle_git_task = asyncio.create_task(_prefetch_git_bundles_loop(app))
+
         await processor.start_processing()
     except Exception:
         logger.exception("Could not start processor service")
@@ -410,6 +490,13 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         app.state.bundle_cleanup_task = None
+    if getattr(app.state, "bundle_git_task", None):
+        app.state.bundle_git_task.cancel()
+        try:
+            await app.state.bundle_git_task
+        except asyncio.CancelledError:
+            pass
+        app.state.bundle_git_task = None
     if hasattr(app.state, "redis_monitor"):
         await _safe_shutdown_step("redis_monitor.stop", app.state.redis_monitor.stop(), timeout=5.0)
     if hasattr(app.state, "pg_pool"):
@@ -481,13 +568,17 @@ async def gateway_middleware(request: Request, call_next):
 @app.get("/health")
 async def health():
     draining = getattr(app.state, "draining", False)
+    bundles_ready = getattr(app.state, "bundle_git_ready", True)
+    bundle_errors = getattr(app.state, "bundle_git_errors", {}) or {}
     payload = {
-        "status": "draining" if draining else "ok",
+        "status": "draining" if draining else ("ok" if bundles_ready else "not_ready"),
         "draining": draining,
         "service": "chat-proc",
         "instance_id": INSTANCE_ID,
+        "bundles_git_ready": bundles_ready,
+        "bundles_git_errors": bundle_errors,
     }
-    if draining:
+    if draining or not bundles_ready:
         return JSONResponse(status_code=503, content=payload)
     return payload
 

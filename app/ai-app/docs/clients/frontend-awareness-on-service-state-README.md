@@ -1,3 +1,14 @@
+---
+id: ks:docs/clients/frontend-awareness-on-service-state-README.md
+title: "Frontend Awareness On Service State"
+summary: "Frontend guidance for multi‑replica, serverless‑like backend: SSE lifecycle, retries, rate limits, and multi‑tab coordination."
+tags: ["clients", "frontend", "sse", "retries", "rate-limits", "backpressure", "scaling"]
+keywords: ["serverless behavior", "multi-replica", "backoff", "jitter", "draining", "http-429", "http-503", "multi-tab", "ingress", "proc"]
+see_also:
+  - ks:docs/clients/sse-events-README.md
+  - ks:docs/service/README-monitoring-observability.md
+  - ks:docs/service/auth/auth-README.md
+---
 # Frontend Awareness Guide (Ingress/Proc, Rate Limits, and Serverless Behavior)
 
 This guide is for **frontend developers** integrating with the chat platform.
@@ -130,4 +141,3 @@ This avoids duplicate SSE streams and rate‑limit bursts.
 - 503 spikes? → capacity pressure, wait and retry.
 - SSE drops? → check for `server_shutdown` and reconnect.
 - No SSE events? → verify stream is open and user/session is valid.
-

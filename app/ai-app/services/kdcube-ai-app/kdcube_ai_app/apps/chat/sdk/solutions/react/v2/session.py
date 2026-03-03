@@ -911,12 +911,12 @@ def apply_cache_ttl_pruning(
             continue
 
         if (
-            tool_id == "react.memsearch"
+            tool_id in {"react.memsearch", "react.search_knowledge"}
             or tools_insights.is_search_tool(tool_id)
             or tools_insights.is_fetch_uri_content_tool(tool_id)
         ):
             try:
-                if tool_id == "react.memsearch" and not path.startswith(("tc:", "so:")):
+                if tool_id in {"react.memsearch", "react.search_knowledge"} and not path.startswith(("tc:", "so:")):
                     rep = _build_skill_prune_message(path)
                 else:
                     view = _get_view(tool_id)

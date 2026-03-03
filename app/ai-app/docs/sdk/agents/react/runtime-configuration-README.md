@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/runtime-configuration-README.md
+title: "Runtime Configuration"
+summary: "RuntimeCtx and session configuration fields for React v2, including knowledge hooks."
+tags: ["sdk", "agents", "react", "configuration"]
+keywords: ["RuntimeCtx", "RuntimeSessionConfig", "cache config", "pruning settings", "knowledge_search_fn", "knowledge_read_fn", "bundle_storage"]
+see_also:
+  - ks:docs/sdk/agents/react/compaction-README.md
+  - ks:docs/sdk/agents/react/context-caching-README.md
+  - ks:docs/sdk/agents/react/feedback-README.md
+---
 # Runtime Configuration
 
 This document summarizes runtime configuration fields for the React runtime (`RuntimeCtx`) and its session-level settings.
@@ -16,7 +27,10 @@ This document summarizes runtime configuration fields for the React runtime (`Ru
 - `max_iterations`: max React iterations.
 - `workdir`: working directory for this run.
 - `outdir`: output directory for this run.
+- `bundle_storage`: bundle shared storage root (read‑only knowledge space root).
 - `model_service`: model service handle.
+- `knowledge_search_fn`: bundle‑supplied search function for `react.search_knowledge`.
+- `knowledge_read_fn`: bundle‑supplied resolver for `react.read(ks:...)` paths.
 - `on_before_compaction`: async hook before compaction.
 - `on_after_compaction`: async hook after compaction.
 - `save_summary`: async hook to persist compaction summaries.

@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/ecs/custom-ecs-README.md
+title: "Custom ECS"
+summary: "Target ECS layout for split services and migration from compose."
+tags: ["service", "ecs", "deployment", "migration"]
+keywords: ["ingress", "proc", "metrics", "bundles", "ECS migration"]
+see_also:
+  - ks:docs/service/ecs/metrics-autoscaling-README.md
+  - ks:docs/service/cicd/custom-cicd-README.md
+  - ks:docs/service/environment/service-compose-env-README.md
+---
 # ECS Deployment Plan (Ingress + Proc + Metrics)
 
 This document describes a **target ECS layout** for the split services and how to transition from docker‑compose.

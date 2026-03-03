@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/scale/metrics-README.md
+title: "Metrics"
+summary: "What to measure and how to scale ingress and proc."
+tags: ["service", "autoscaling", "metrics", "ingress", "proc"]
+keywords: ["queue depth", "SSE connections", "backpressure", "p95 latency", "scale-up"]
+see_also:
+  - ks:docs/service/ecs/metrics-autoscaling-README.md
+  - ks:docs/service/scale/metric-server-README.md
+  - ks:docs/service/environment/service-compose-env-README.md
+---
 # Metrics & Autoscaling Guide (Ingress + Processor)
 
 This document defines **what to measure** and **how to scale** the chat system in ECS/Kubernetes.

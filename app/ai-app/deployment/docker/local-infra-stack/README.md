@@ -1,6 +1,23 @@
-## Compose to run local infra services used by KDCube APP
+---
+id: ks:deploy/docker/local-infra-stack/README.md
+title: "Local Infra Stack (Docker Compose)"
+summary: "Run Postgres, Redis, ClamAV, and proxylogin locally for KDCube development."
+tags: ["deployment", "docker", "infra", "postgres", "redis", "clamav", "proxylogin"]
+keywords: ["local infra", "docker compose", "postgres-setup", "schema bootstrap", "redis password", "clamav", "proxylogin"]
+see_also:
+  - ks:docs/ops/deployment-options-index-README.md
+  - ks:docs/service/environment/service-dev-env-README.md
+---
+# Local Infra Stack (Docker Compose)
 
-Before running, copy the sample envs:
+This compose stack runs **infra services only** (Postgres, Redis, ClamAV, proxylogin).  
+Use it when you run KDCube services locally (IDE/venv) or in a separate stack.
+
+---
+
+## Quick start
+
+1. Copy sample envs:
 
 ```shell
 cp sample_env/.env ./.env
@@ -8,48 +25,60 @@ cp sample_env/.env.postgres.setup ./.env.postgres.setup
 cp sample_env/.env.proxylogin ./.env.proxylogin
 ```
 
-Set at minimum in `.env`:
+2. Edit `.env` (required):
+
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`
-- `POSTGRES_MAX_CONNECTIONS`
 - `REDIS_PASSWORD`
 
-Set in `.env.postgres.setup` (for schema bootstrap):
+Optional (compose‑only):
+- `POSTGRES_MAX_CONNECTIONS` (override Postgres `max_connections`; default `200`)
+
+3. Edit `.env.postgres.setup` (one‑shot schema bootstrap):
+
 - `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DATABASE`
 - `TENANT_ID`, `PROJECT_ID`
-```shell
-mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import}}
-```
+- `POSTGRES_PORT`, `POSTGRES_SSL` if you need non‑default connection settings
+
+4. Prepare data folders:
 
 ```shell
-chmod -R 0777 data
+mkdir -p ./data/{postgres,redis,clamav-db}
+chmod -R 0777 ./data
 ```
+
+5. Start infra:
 
 ```shell
 docker compose up -d
 ```
 
-### Postgres setup job (one‑shot)
+---
 
-The `postgres-setup` service runs a one‑time bootstrap (schemas/tenant/project).
-It uses `sample_env/.env.postgres.setup` for configuration.
+## Postgres setup job (one‑shot)
 
-Run it explicitly if needed:
+The `postgres-setup` service bootstraps schemas and tenant/project rows.  
+It uses `.env.postgres.setup` for connection + target tenant/project.
+
+Run explicitly when needed:
+
+```shell
 docker compose run --rm postgres-setup
-
-```shell
-
-
-docker compose stop postgres-setup && docker compose rm postgres-setup -f && docker compose build postgres-setup --no-cache && docker compose up postgres-setup -d
 ```
 
-```shell
-docker compose stop proxylogin && docker compose rm proxylogin -f && docker compose build proxylogin --no-cache && docker compose up proxylogin -d
-```
+---
+
+## Common maintenance
 
 ```shell
-docker compose stop redis && docker compose rm redis -f && docker compose up redis -d --build
-```
+# Rebuild postgres-setup
+docker compose stop postgres-setup && docker compose rm -f postgres-setup
+docker compose build postgres-setup --no-cache && docker compose up -d postgres-setup
 
-```shell
-docker compose stop proxylogin && docker compose rm proxylogin -f && docker compose build --no-cache && docker compose up proxylogin -d
+# Rebuild proxylogin
+docker compose stop proxylogin && docker compose rm -f proxylogin
+docker compose build proxylogin --no-cache && docker compose up -d proxylogin
+
+# Restart redis
+docker compose stop redis && docker compose rm -f redis
+docker compose up -d --build redis
 ```

@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/gateway-README.md
+title: "Gateway"
+summary: "Gateway behavior and configuration: rate limits, backpressure, and admission control."
+tags: ["service", "gateway", "admission-control", "rate-limits", "backpressure"]
+keywords: ["rate limits", "backpressure", "tenant/project config", "gateway config JSON"]
+see_also:
+  - ks:docs/service/environment/service-dev-env-README.md
+  - ks:docs/service/README-monitoring-observability.md
+  - ks:docs/service/service-and-infrastructure-index-README.md
+---
 # Gateway & Admission Control (Current)
 
 This document describes **how the gateway actually runs today** in this codebase and how to configure it.
@@ -191,7 +202,7 @@ Admin endpoints for config validation/update:
 - `POST /admin/gateway/update-config`
 - `POST /admin/gateway/reset-config`
 
-See: [README-monitoring-observability.md](../../apps/chat/api/monitoring/README-monitoring-observability.md)
+See: [README-monitoring-observability.md](README-monitoring-observability.md)
 
 **Config persistence + propagation**
 - Gateway config is stored in Redis (per tenant/project) using the KV cache abstraction.

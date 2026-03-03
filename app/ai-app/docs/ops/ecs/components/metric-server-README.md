@@ -1,3 +1,14 @@
+---
+id: ks:docs/ops/ecs/components/metric-server-README.md
+title: "Metric Server"
+summary: "Sample ECS task definitions for the metrics service (templates to customize)."
+tags: ["ops", "ecs", "metrics", "task-definition", "templates"]
+keywords: ["metrics service", "task definition", "CloudWatch", "Prometheus", "ECS", "JSON template"]
+see_also:
+  - ks:docs/ops/ecs/ecs-deployment-README.md
+  - ks:docs/ops/s3-README.md
+  - ks:docs/service/environment/service-ecs-env-README.md
+---
 # Metrics Service (ECS) – Sample Task Definitions
 
 This folder contains **sample ECS task definitions** for the metrics service.

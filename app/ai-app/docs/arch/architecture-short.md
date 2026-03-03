@@ -1,3 +1,14 @@
+---
+id: ks:docs/arch/architecture-short.md
+title: "Architecture Short"
+summary: "Concise system architecture overview with key components and integrations."
+tags: ["arch", "architecture", "overview"]
+keywords: ["high-level architecture", "ingress", "proc", "gateway", "SSE", "redis"]
+see_also:
+  - ks:docs/arch/architecture-long.md
+  - ks:docs/service/comm/README-comm.md
+  - ks:docs/hosting/attachments-system.md
+---
 # KDCube AI App — System Architecture (Short)
 
 This is a **concise overview** of the current system and integrations.
@@ -129,9 +140,9 @@ sequenceDiagram
 
 ## 7) Key docs
 
-- Comm integrations: [README-comm.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/README-comm.md)
-- Comm architecture: [comm-system.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/doc/comm-system.md)
-- Gateway: [gateway-README.md](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway-README.md)
-- Economics: [economics-usage.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/economics-usage.md)
-- Control plane: [control-plane-management.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/control_plane/control-plane-management.md)
-- Monitoring: [README-monitoring-observability.md](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/README-monitoring-observability.md)
+- Comm integrations: [README-comm.md](../service/comm/README-comm.md)
+- Comm architecture: [comm-system.md](../service/comm/comm-system.md)
+- Gateway: [gateway-README.md](../service/gateway-README.md)
+- Economics: [economics-usage.md](../economics/economics-usage.md)
+- Control plane: [instance-config-README.md](../service/maintenance/instance-config-README.md)
+- Monitoring: [README-monitoring-observability.md](../service/README-monitoring-observability.md)

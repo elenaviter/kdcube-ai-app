@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/ecs/iam-README.md
+title: "IAM"
+summary: "Minimum IAM permissions for ECS tasks and CI/CD."
+tags: ["service", "ecs", "iam", "security"]
+keywords: ["task execution role", "ECR", "CloudWatch logs", "IAM policy"]
+see_also:
+  - ks:docs/service/ecs/custom-ecs-README.md
+  - ks:docs/service/ecs/metrics-autoscaling-README.md
+  - ks:docs/service/environment/service-ecs-env-README.md
+---
 # ECS IAM Guide
 
 This document lists **minimum IAM permissions** for ECS tasks and CI/CD.

@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/cicd/release-bundle-README.md
+title: "Release Bundle"
+summary: "Step‑by‑step bundle release workflow: tagging, release.yaml updates, delivery mode, props, and validation."
+tags: ["service", "cicd", "release", "bundles", "delivery", "git", "baked", "props", "redis"]
+keywords: ["bundle id", "tag", "commit", "release.yaml", "subdir", "module", "baked bundles", "git-defined bundles", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLES_INCLUDE_EXAMPLES"]
+see_also:
+  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/custom-cicd-README.md
+  - ks:docs/service/cicd/release-README.md
+---
 ## Bundle Release Process
 
 This doc describes how to release a bundle and update the **release descriptor**
@@ -23,7 +34,8 @@ git tag <bundle-tag>
 git push origin <bundle-tag>
 ```
 
-Use that tag/commit as `ref` in the release descriptor.
+Use that tag/commit as `ref` in the release descriptor.  
+**Branch refs are for dev only** and require `BUNDLE_GIT_ALWAYS_PULL=1`.
 
 ---
 
@@ -50,7 +62,50 @@ bundles:
 
 ---
 
-## 4) Decide delivery mode
+## 4) Configure bundle props (optional)
+
+Bundles may require **runtime props** (for example: knowledge repo + docs root).
+You can define props directly in `release.yaml` **per bundle item**:
+
+```yaml
+bundles:
+  items:
+    - id: "react@2026-02-10-02-44"
+      repo: "git@github.com:kdcube/kdcube-ai-app.git"
+      ref: "v0.3.2"
+      subdir: "app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles"
+      module: "react@2026-02-10-02-44.entrypoint"
+      props:
+        knowledge:
+          repo: "git@github.com:kdcube/kdcube-ai-app.git"
+          ref: "v0.3.2"
+          docs_root: "app/ai-app/docs"
+          src_root: "app/ai-app/services/kdcube-ai-app/kdcube_ai_app"
+          deploy_root: "app/ai-app/deployment"
+          validate_refs: true
+```
+
+**Ref props** are resolved at deployment time:
+- `env:NAME` → environment variable `NAME`
+- `file:/path/to/secret` → file contents
+
+Any string **without** these prefixes is treated as a literal value.
+
+You can also override props at runtime via the Admin API:
+
+```
+POST /admin/integrations/bundles/<bundle_id>/props
+{
+  "tenant": "<tenant>",
+  "project": "<project>",
+  "op": "merge",
+  "props": { ... }
+}
+```
+
+---
+
+## 5) Decide delivery mode
 
 ### A) Baked bundles (copy into image)
 - CI copies `<subdir>/<id>` into `/bundles/<id>`.
@@ -65,7 +120,7 @@ bundles:
 
 ---
 
-## 5) Deploy with env reset (optional)
+## 6) Deploy with env reset (optional)
 
 If you need to **override existing Redis registry** on deploy:
 
@@ -75,9 +130,25 @@ BUNDLES_FORCE_ENV_ON_STARTUP=1
 
 Apply for one rollout, then return to `0`.
 
+### What is the source of truth?
+
+- **Redis is the runtime source of truth.**
+- The release/bundle descriptor is **only applied to Redis** when
+  `BUNDLES_FORCE_ENV_ON_STARTUP=1` (one‑time overwrite, guarded by a Redis lock).
+- If `BUNDLES_FORCE_ENV_ON_STARTUP=0`, Redis stays as‑is; the descriptor is only
+  used to seed Redis when no registry exists.
+
+### Do admin + example bundles stay even if not in the descriptor?
+
+Yes:
+
+- **Admin bundle** is always injected and cannot be removed.
+- **Example bundles** are merged if `BUNDLES_INCLUDE_EXAMPLES=1` (default).
+  Set `BUNDLES_INCLUDE_EXAMPLES=0` to suppress them.
+
 ---
 
-## 6) Validate
+## 7) Validate
 
 - Check the bundle registry in `/admin/integrations/bundles`.
 - Run a test chat with `agentic_bundle_id=<your bundle id>`.

@@ -146,7 +146,31 @@ def _guess_mime_from_path(path: str) -> str:
     try:
         import mimetypes
         guess, _ = mimetypes.guess_type(path)
-        return (guess or "").strip()
+        if guess:
+            return guess.strip()
+        # Fallback for common text formats (mimetypes is often incomplete on macOS).
+        ext = pathlib.Path(path).suffix.lower().lstrip(".")
+        text_exts = {
+            "md": "text/markdown",
+            "markdown": "text/markdown",
+            "txt": "text/plain",
+            "rst": "text/plain",
+            "yaml": "text/plain",
+            "yml": "text/plain",
+            "json": "application/json",
+            "toml": "text/plain",
+            "ini": "text/plain",
+            "cfg": "text/plain",
+            "py": "text/x-python",
+            "js": "text/javascript",
+            "ts": "text/plain",
+            "tsx": "text/plain",
+            "jsx": "text/plain",
+            "html": "text/html",
+            "css": "text/css",
+            "sh": "text/x-shellscript",
+        }
+        return text_exts.get(ext, "")
     except Exception:
         return ""
 

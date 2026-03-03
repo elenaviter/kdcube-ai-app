@@ -202,3 +202,4 @@ articles/
 /app/ai-app/deployment/docker/local-infra-stack/data_/
 /app/ai-app/deployment/docker/all_in_one_kdcube/config.hardcoded.json
 /app/ai-app/deployment/docker/all_in_one_kdcube/data/
+/app/ai-app/deployment/docker/local-infra-stack/issues/

@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/turn-log-README.md
+title: "Turn Log"
+summary: "Turn log structure used to reconstruct a turn."
+tags: ["sdk", "agents", "react", "turn-log"]
+keywords: ["turn log", "timeline blocks", "reconstruct turn", "block order"]
+see_also:
+  - ks:docs/sdk/agents/react/context-progression.md
+  - ks:docs/sdk/agents/react/react-context-README.md
+  - ks:docs/sdk/agents/react/timeline-README.md
+---
 # Turn Log Structure (Current)
 
 The turn log is the single source of truth for reconstructing a turn.

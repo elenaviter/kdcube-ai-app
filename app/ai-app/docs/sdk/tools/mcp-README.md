@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/tools/mcp-README.md
+title: "MCP"
+summary: "MCP tool integration: transports, server config, and runtime wiring."
+tags: ["sdk", "tools", "mcp", "integration", "transport"]
+keywords: ["MCP_SERVICES", "stdio", "http", "SSE", "tool gateway", "runtime config"]
+see_also:
+  - ks:docs/sdk/tools/tool-subsystem-README.md
+  - ks:docs/sdk/tools/custom-tools-README.md
+  - ks:docs/sdk/agents/react/react-tools-README.md
+---
 # MCP Integration (Runtime)
 
 This document describes how MCP (Model Context Protocol) tools are wired into the SDK runtime, how to configure servers, and what is supported.
@@ -152,7 +163,7 @@ export MCP_SERVICES='{
 ## Local MCP server: web_search
 
 This repo provides a built‑in MCP server wrapper for web search:
-`kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search_server.py`
+`kdcube_ai_app/apps/chat/sdk/tools/mcp/web_search/web_search_server.py`
 
 It can run:
 - **stdio** (on‑demand)
@@ -161,7 +172,7 @@ It can run:
 
 ### Run locally (stdio)
 ```
-python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search_server --transport stdio
+python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server --transport stdio
 ```
 
 ### Run as SSE server

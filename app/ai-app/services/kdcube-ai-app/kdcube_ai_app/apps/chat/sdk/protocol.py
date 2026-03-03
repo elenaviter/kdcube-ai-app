@@ -17,24 +17,6 @@ class ChatHistoryMessage(BaseModel):
     content: str
     timestamp: Optional[str] = None
 
-
-class ClientRequest(BaseModel):
-    """
-    Client-intent block.
-
-    operation: optional generic method to call on the bundle (e.g., "suggestions")
-    invocation: "sync" | "async" (advisory, used by REST route to enqueue or run inline)
-    message: primary text input (for chat-style workflows)
-    payload: arbitrary JSON payload for generic operations
-    chat_history: optional conversational history (normalized)
-    """
-    operation: Optional[str] = None
-    invocation: Optional[str] = None
-    message: Optional[str] = None
-    payload: Optional[Dict[str, Any]] = None
-    chat_history: List[ChatHistoryMessage] = Field(default_factory=list)
-
-
 def _iso_now() -> str:
     return datetime.utcnow().isoformat() + "Z"
 

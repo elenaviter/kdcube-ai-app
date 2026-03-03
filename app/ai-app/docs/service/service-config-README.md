@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/service-config-README.md
+title: "Service Config"
+summary: "Runtime configuration for chat services: tenant/project, instance identity, bundles, gateway."
+tags: ["service", "configuration", "env", "bundles", "gateway"]
+keywords: ["INSTANCE_ID", "AGENTIC_BUNDLES_JSON", "gateway config", "tenant/project"]
+see_also:
+  - ks:docs/service/README-monitoring-observability.md
+  - ks:docs/service/gateway-README.md
+  - ks:docs/service/service-and-infrastructure-index-README.md
+---
 # Service Configuration — Chat Platform
 
 This document summarizes **runtime configuration** for the chat service.  
@@ -200,6 +211,7 @@ These values scope **bundle registries** and **control‑plane events**.
 | `BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS` | `60` | Redis lock TTL for startup env reset                                                     | `infra/plugin/bundle_store.py`    |
 | `HOST_BUNDLES_PATH`      | _(unset)_ | Host path for bundle roots (git‑cloned or manually provisioned). Often mounted into containers. | `infra/plugin/git_bundle.py`      |
 | `AGENTIC_BUNDLES_ROOT`   | _(unset)_ | Container‑visible bundles root (path used by runtime inside container).                         | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_STORAGE_ROOT` | _(unset)_ | Shared local filesystem root for bundle data (used by ks:), default: `<bundles_root>/_bundle_storage`. | `infra/plugin/bundle_storage.py` |
 | `BUNDLE_GIT_ALWAYS_PULL` | `0`       | Force refresh on resolve                                                                        | `infra/plugin/bundle_registry.py` |
 | `BUNDLE_GIT_ATOMIC`      | `1`       | Atomic clone/update                                                                             | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_GIT_SHALLOW`     | `1`       | Shallow clone mode                                                                              | `infra/plugin/git_bundle.py`      |
@@ -209,6 +221,13 @@ These values scope **bundle registries** and **control‑plane events**.
 | `BUNDLE_GIT_REDIS_LOCK`  | `0`       | Use Redis lock to serialize git pulls **per instance** (key includes `INSTANCE_ID`)            | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_GIT_REDIS_LOCK_TTL_SECONDS` | `300` | Redis lock TTL for git pulls                                                             | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_GIT_REDIS_LOCK_WAIT_SECONDS` | `60` | Max wait to acquire git lock                                                            | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_PREFETCH_ENABLED` | `1` | Prefetch git bundles once on startup to gate readiness                         | `apps/chat/proc/web_app.py`       |
+| `BUNDLE_GIT_FAIL_BACKOFF_SECONDS` | `60` | Initial backoff after git failure (cooldown)                                        | `infra/plugin/git_bundle.py`      |
+| `BUNDLE_GIT_FAIL_MAX_BACKOFF_SECONDS` | `300` | Max backoff after repeated failures                                         | `infra/plugin/git_bundle.py`      |
+| `GIT_SSH_COMMAND`        | _(unset)_ | Full SSH command override (optional)                                                            | `infra/plugin/git_bundle.py`      |
+| `GIT_SSH_KEY_PATH`       | _(unset)_ | Path to private SSH key (for private repos)                                                     | `infra/plugin/git_bundle.py`      |
+| `GIT_SSH_KNOWN_HOSTS`    | _(unset)_ | Path to `known_hosts` file (SSH)                                                                | `infra/plugin/git_bundle.py`      |
+| `GIT_SSH_STRICT_HOST_KEY_CHECKING` | _(unset)_ | `yes` / `no`                                                                              | `infra/plugin/git_bundle.py`      |
 | `BUNDLE_REF_TTL_SECONDS` | `3600`    | TTL for active bundle refs                                                                      | `infra/plugin/bundle_refs.py`     |
 
 **Tenant/project scoped channels**

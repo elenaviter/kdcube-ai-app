@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/context-caching-README.md
+title: "Context Caching"
+summary: "Dual checkpoint caching strategy for stable prefixes and growing tails."
+tags: ["sdk", "agents", "react", "context", "caching"]
+keywords: ["cache checkpoints", "prefix", "tail", "Anthropic cache", "cache TTL"]
+see_also:
+  - ks:docs/sdk/agents/react/compaction-README.md
+  - ks:docs/sdk/agents/react/context-browser-README.md
+  - ks:docs/sdk/agents/react/context-layout.md
+---
 # Context Caching (Dual Checkpoints, Round-Based)
 
 The context browser uses **two cache checkpoints** to keep stable prefixes cached while allowing

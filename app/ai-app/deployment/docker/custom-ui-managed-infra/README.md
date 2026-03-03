@@ -1,3 +1,13 @@
+---
+id: ks:deploy/docker/custom-ui-managed-infra/README.md
+title: "Custom UI + Managed Infra (Docker Compose)"
+summary: "Run KDCube services with a custom UI and OpenResty proxy against managed Postgres/Redis."
+tags: ["deployment", "docker", "compose", "custom-ui", "managed-infra", "nginx", "openresty"]
+keywords: ["custom frontend", "managed postgres", "managed redis", "openresty", "proxylogin", "bundles", "release descriptor"]
+see_also:
+  - ks:docs/ops/deployment-options-index-README.md
+  - ks:docs/service/environment/service-compose-env-README.md
+---
 # Custom UI + Managed Infra (Docker Compose)
 
 This compose stack runs **KDCube services** plus a **custom frontend** and **OpenResty proxy**, while using **managed Postgres/Redis** (no local DB/Redis containers).
@@ -34,6 +44,7 @@ cp sample_env/.env.proxylogin ./.env.proxylogin
 
 - Edit `.env` paths for `UI_BUILD_CONTEXT`, `UI_SOURCE_PATH`, `PATH_TO_FRONTEND_CONFIG_JSON`, etc.
 - Choose an OpenResty config template under `nginx/` and set `NGINX_PROXY_CONFIG_FILE_PATH` in `.env`.
+  - If a path is **relative**, it is interpreted relative to `UI_BUILD_CONTEXT`.
 
 Available templates:
 - `nginx/nginx_proxy_ssl_hardcoded.conf`
@@ -49,7 +60,7 @@ docker compose up -d --build
 ## Prepare local data directories
 
 ```shell
-mkdir -p ./data/{clamav,kdcube-storage,exec-workspace} ./logs/{chat-ingress,chat-proc}
+mkdir -p ./data/{clamav,kdcube-storage,exec-workspace,bundle-storage} ./logs/{chat-ingress,chat-proc}
 ```
 
 ```shell
@@ -77,6 +88,11 @@ Backend API routes are **not** under `routesPrefix`:
 `chat-proc` mounts bundles from the host:
 
 - `HOST_BUNDLES_PATH` (host) → `AGENTIC_BUNDLES_ROOT` (container)
+
+**Knowledge space storage (for doc/knowledge bundles):**
+
+- `HOST_BUNDLE_STORAGE_PATH` (host) → `BUNDLE_STORAGE_ROOT` (container)
+- Set `BUNDLE_STORAGE_ROOT=/bundle-storage` in `.env.proc`
 
 **Optional release descriptor (recommended):**
 

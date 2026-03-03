@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/react-tools-README.md
+title: "React Tools"
+summary: "React‑only tools catalog injected into the decision runtime."
+tags: ["sdk", "agents", "react", "tools"]
+keywords: ["react.read", "react.write", "react.search_files", "react.memsearch", "react.search_knowledge"]
+see_also:
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/event-blocks-README.md
+  - ks:docs/sdk/agents/react/react-round-README.md
+---
 # React Tools (react.*)
 
 This document describes the react-only tools injected into the decision tool catalog. These tools
@@ -14,6 +25,12 @@ Common behaviors
   - fi:<turn_id>.files/<relative_path>
   - ar:<turn_id>.artifacts.<artifact_path>
   - tc:<turn_id>.<id>.call / .result
+  - ks:<relpath> (knowledge space; read-only)
+
+Data spaces (quick guide)
+- Knowledge Space (`ks:`): read-only reference files prepared by the system (docs, indexes, repos).
+- OUT_DIR (`fi:`): per‑turn output artifacts (read/write during the turn).
+- Conversation Workspace (future): shared writable workspace across turns (not implemented yet).
 
 react.read
 - Purpose: load an existing artifact into the timeline for inspection.
@@ -29,6 +46,7 @@ Params:
 Behavior by path:
 - `fi:` → rehost file locally, emit metadata digest block + file content (text or base64 if pdf/image;
   binary files emit metadata only).
+- `ks:` → read from knowledge space (read‑only reference files).
 - `so:sources_pool[...]` → if rows contain file/attachment sources, they are resolved as `fi:`; other rows
   are rendered as sources_pool text.
 Example result (simplified):
@@ -98,12 +116,26 @@ Example result block (simplified):
 }
 ```
 
+react.search_knowledge (bundle‑provided)
+- Purpose: search knowledge space (read‑only reference materials).
+- Availability: only when the active bundle registers this tool (e.g., `react.doc`).
+- Use when you need docs/KB, not conversation history.
+Params:
+- query: str (FIRST FIELD). Search query.
+- root: str (optional). `ks:<relpath>` or namespace like `kb` (treated as `ks:kb`).
+- keywords: list[str] (optional). Extra tags/keywords to bias ranking.
+- top_k: int (optional). Default 20.
+Example result (simplified):
+```json
+{ "type": "react.tool.result", "path": "tc:turn_123.abc.result", "mime": "application/json", "text": "{ \"hits\": [ {\"path\": \"ks:docs/intro.md\"} ] }" }
+```
+
 react.hide
 - Purpose: replace a large snippet in the visible timeline with a short placeholder.
 - Use only when the snippet is near the tail and clearly no longer needed.
 - The original content remains retrievable via react.read(path).
 - Enforced tail window: only paths within `RuntimeCtx.cache.editable_tail_size_in_tokens` from the static tail are allowed.
-- Uses a logical path (ar: fi: tc: so:), not a search query.
+- Uses a logical path (ar: fi: tc: so: ks:), not a search query.
 Params:
 - path: str (FIRST FIELD). Block path to hide.
 - replacement: str (SECOND FIELD). Replacement text.
@@ -113,9 +145,10 @@ Example result (simplified):
 ```
 
 react.search_files
-- Purpose: safely search files under the current workspace without shell execution.
+- Purpose: safely search files under OUT_DIR or workdir without shell execution.
 - Returns: list of matching file paths.
 Params:
+- root: str (optional). `fi:<relpath>` to search under OUT_DIR subpath; `workdir` or `wd:<relpath>` for workdir; default is OUT_DIR.
 - name_regex: str (FIRST FIELD). Regex for filenames (optional).
 - content_regex: str (SECOND FIELD). Regex for file content (optional).
 - max_hits: int (optional). Default 200.

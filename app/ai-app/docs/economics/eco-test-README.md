@@ -1,3 +1,14 @@
+---
+id: ks:docs/economics/eco-test-README.md
+title: "Eco Test"
+summary: "QA test plan for the economics subsystem and expected behaviors."
+tags: ["economics", "testing", "qa", "budgets", "plans"]
+keywords: ["test plan", "wallets", "shortfall", "rate limits", "admin UI"]
+see_also:
+  - ks:docs/economics/eco-admin-README.md
+  - ks:docs/economics/eco-kickoff-README.md
+  - ks:docs/economics/economic-README.md
+---
 # Economics QA Test Guide
 
 This document is for QA. It explains expected economics behavior (as designed), how to validate it using the Admin UI, and a short test plan for tomorrow.

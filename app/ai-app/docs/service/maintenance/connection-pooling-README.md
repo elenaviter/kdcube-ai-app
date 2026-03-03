@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/maintenance/connection-pooling-README.md
+title: "Connection Pooling"
+summary: "Connection pooling guidance for Redis and Postgres in chat services."
+tags: ["service", "maintenance", "pools", "redis", "postgres"]
+keywords: ["pool size", "max connections", "health", "pool limits"]
+see_also:
+  - ks:docs/service/maintenance/requests-monitoring-README.md
+  - ks:docs/service/maintenance/instance-config-README.md
+  - ks:docs/arch/architecture-long.md
+---
 **Connection Pooling (Chat Services)**
 
 This doc describes how **Redis** and **Postgres** pools are created, shared, and closed **per worker (process)** in the chat services (ingress + processor).

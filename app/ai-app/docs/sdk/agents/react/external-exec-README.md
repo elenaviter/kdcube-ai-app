@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/external-exec-README.md
+title: "External Exec"
+summary: "External execution flow for React (snapshots, remote runners)."
+tags: ["sdk", "agents", "react", "exec", "external"]
+keywords: ["snapshot", "external exec", "fargate", "distributed execution"]
+see_also:
+  - ks:docs/sdk/agents/react/event-blocks-README.md
+  - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/artifact-storage-README.md
+---
 ## External execution notes (Fargate / distributed)
 
 ### Snapshot + merge flow
@@ -53,4 +64,4 @@
 
 ### Exec context propagation
 - `EXEC_CONTEXT` contains tenant/project/user/conversation/turn/session/run_id.
-- Set in `kdcube_ai_app/apps/chat/sdk/runtime/solution/react/execution.py`.
+- Set in `kdcube_ai_app/apps/chat/sdk/runtime/execution.py`.

@@ -1,3 +1,14 @@
+---
+id: ks:docs/citations-system.md
+title: "Citations System"
+summary: "Citations and sources system: normalization, sources_pool, and sources_used tracking."
+tags: ["citations", "sources", "tracking", "runtime"]
+keywords: ["sources_pool", "citations tokens", "sources_used", "canonical sources", "source ids"]
+see_also:
+  - ks:docs/feedback-system.md
+  - ks:docs/README.md
+  - ks:docs/sdk/agents/react/source-pool-README.md
+---
 # Citations & Sources System
 
 Scope: sources normalization, sources_pool, citation tokens, and sources_used tracking across tools.

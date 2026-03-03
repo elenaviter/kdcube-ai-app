@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/skills/skills-README.md
+title: "Skills"
+summary: "Skills subsystem overview: definitions, discovery, and how skills are injected into prompts."
+tags: ["sdk", "skills", "subsystem", "sources", "instructions"]
+keywords: ["skills.md", "sources.yaml", "skills loader", "skill catalog", "react integration", "tools mapping"]
+see_also:
+  - ks:docs/sdk/skills/custom-skills-README.md
+  - ks:docs/sdk/skills/skills-infra-README.md
+  - ks:docs/sdk/agents/react/react-tools-README.md
+---
 # Skills Subsystem
 
 This document describes how skills are defined, discovered, selected, and injected into generators.

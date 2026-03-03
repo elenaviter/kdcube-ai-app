@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/react-context-README.md
+title: "React Context"
+summary: "Single source of truth for what React agents see in v2."
+tags: ["sdk", "agents", "react", "context"]
+keywords: ["context blocks", "agent view", "timeline source"]
+see_also:
+  - ks:docs/sdk/agents/react/context-layout.md
+  - ks:docs/sdk/agents/react/context-progression.md
+  - ks:docs/sdk/agents/react/turn-log-README.md
+---
 # ReAct v2 — Context + Turn Data
 
 This doc is the single source of truth for what ReAct agents see and how context is built in v2.
@@ -44,6 +55,29 @@ Final timeline order:
 
 Block formatting lives in:
 - `react/v2/layout.py`
+
+---
+
+## 2.5) Data Spaces (Knowledge vs OUT_DIR vs Future Workspace)
+
+ReAct interacts with **three data spaces**. Only two exist today:
+
+- **Knowledge Space** (`ks:`) — read‑only reference files prepared by the system (docs, indexes, cloned repos).
+- **OUT_DIR** (`fi:`) — per‑turn execution output and hosted artifacts (read/write during the turn).
+- **Conversation Workspace** (future) — shared, writable workspace across turns (not implemented yet).
+
+```mermaid
+flowchart LR
+  Agent[ReAct Agent] -->|react.read ks:...| KS[Knowledge Space (read-only)]
+  Agent -->|react.read fi:...| OUT[OUT_DIR (per-turn)]
+  Agent -->|react.write / react.patch| OUT
+  Agent -. future: read/write .-> WK[Conversation Workspace (future, RW)]
+```
+
+Notes:
+- **Knowledge Space** is **read‑only** and accessed via `ks:<relpath>`.
+- **OUT_DIR** is where tools write artifacts during a turn; it maps to `fi:<turn_id>.files/...`.
+- **Conversation Workspace** will be the long‑lived, writable project state for copilot‑style flows.
 
 ---
 

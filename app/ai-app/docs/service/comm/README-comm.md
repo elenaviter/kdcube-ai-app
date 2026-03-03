@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/comm/README-comm.md
+title: "Comm"
+summary: "Entry point for communication transports and integrations."
+tags: ["service", "comm", "transports", "sse", "socketio"]
+keywords: ["SSE", "Socket.IO", "REST", "relay", "transports"]
+see_also:
+  - ks:docs/service/comm/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md
+  - ks:docs/service/comm/comm-system.md
+  - ks:docs/service/auth/auth-README.md
+---
 # Communication Integrations (External + Internal)
 
 This README is the entry point for **communication integrations**:
@@ -39,7 +50,7 @@ If you are implementing a UI, API client, or a new transport, start here.
 
 **Code references**
 - SSE transport: [sse/chat.py](../../api/sse/chat.py)
-- SSE relay: [CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md](../../api/sse/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
+- SSE relay: [CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md](CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
 
 ### C) Socket.IO (stream + send)
 
@@ -139,8 +150,8 @@ All transports subscribe to the same internal event bus via **session-scoped** R
 - The relay subscribes only when at least one active connection for that session exists.
 
 **Docs**
-- System overview: [comm-system.md](../../doc/comm-system.md)
-- SSE relay deep dive: [CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md](../../api/sse/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
+- System overview: [comm-system.md](comm-system.md)
+- SSE relay deep dive: [CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md](CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
 
 ---
 
@@ -174,7 +185,7 @@ Supported by default in the platform:
 - `timeline_text` — compact timeline entries
 
 Custom markers are allowed, but the client must know how to render them.
-See [comm-system.md](../../doc/comm-system.md) for the envelope details.
+See [comm-system.md](comm-system.md) for the envelope details.
 
 ### Examples (per marker)
 
@@ -213,5 +224,5 @@ await emit.delta(text="Loaded 3 prior turns", index=0, marker="timeline_text", a
 ## 8) Producer API (bundles)
 
 If you are a bundle author, see:
-- [comm-system.md](../../doc/comm-system.md) (producer API + filters)
+- [comm-system.md](comm-system.md) (producer API + filters)
 - [emitters.py](emitters.py) and [agentic_app.py](../../default_app/agentic_app.py)

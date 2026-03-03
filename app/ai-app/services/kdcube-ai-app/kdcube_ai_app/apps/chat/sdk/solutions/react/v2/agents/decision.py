@@ -50,7 +50,7 @@ CODEGEN_BEST_PRACTICES_V2 = """
   However, if the source artifacts have complex structure and reusing them programmatically is error prone, 
   make sure the needed, for code generation, artifacts are visible in the context so you can properly write the needed content in code.  
 - For programmatic access to those artifacts inside the snippet, use ctx_tools.fetch_ctx with the SAME paths
-  you would pass to react.read (fi:<turn_id>.files/<path>, ar:<turn_id>..., tc:<turn_id>..., so:sources_pool[...]).
+  you would pass to react.read (fi:<turn_id>.files/<path>, ar:<turn_id>..., tc:<turn_id>..., so:sources_pool[...], ks:<relpath>).
   fetch_ctx returns a canonical artifact dict: {path, kind, mime, sources_used, filepath?, text|base64}.
 - The code must be optimal: if programmatic editing/synthesis is possible and best, do it.
 - If some data must be generated, generate it — no guessing. Do not regenerate data that already exists in context;
@@ -115,7 +115,7 @@ EXEC_SNIPPET_RULES = f"""
 - `io_tools.tool_call` is ONLY for generated code to invoke catalog tools. Do NOT call it directly in decision.
 [ ctx_tools.fetch_ctx or read file?]
 - You MAY use ctx_tools.fetch_ctx inside your snippet to load context (generated code only; never in tool_call rounds).
-- fetch_ctx only supports ar:, tc:, so: paths. It does NOT support fi:. For files/attachments use physical OUT_DIR paths. 
+- fetch_ctx only supports ar:, tc:, so: paths. It does NOT support fi: or ks:. For files/attachments use physical OUT_DIR paths. 
 - fetch_ctx only returns the object of shape {{path: logical path (ar:, so:..), mime, sources_used:[sid, sid, ...], text or base64 depending on mime}} so you may only read the text or base64 with this tool into code snippet.
   If you need files, you access them directly with OUT_DIR-relative paths.
 """
@@ -190,7 +190,7 @@ CRITICAL: You never use the filesystem paths in these cases
 CRITICAL: Filesystem paths can be used in exec snippets, in react.write, react.patch, rendering_tools.write_*
 
 #### Path usage (Decision-only)
-- react.read (react) / ctx_tools.fetch_ctx (code) **require logical paths** (ar:/fi:/tc:/so:/su:).  
+- react.read (react) / ctx_tools.fetch_ctx (code) **require logical paths** (ar:/fi:/tc:/so:/su:/ks:).  
   Example: `react.read(path="fi:<turn_id>.files/reports/summary.md")`
 - Tools that **write or patch files** expect **physical paths**:  
   - `react.write(path="turn_<id>/files/draft.md", channel=..., content=..., kind=...)`  
@@ -377,10 +377,10 @@ You have following tools to capture content which you produce in the named and d
   Do NOT use react.memsearch if the needed artifact or text is already visible in the current context.
   If you can see the needed content (or its logical path), use it directly or call react.read on that path.
   Only use react.memsearch when you cannot identify a path and suspect the info exists in older turns.
-- react.hide: hide a large snippet by logical path (ar:/fi:/tc:/so:), not a query. Use only when the large barely useful snippet is near the tail of your visible context, and clearly no longer needed. The original content remains retrievable via react.read(path).
+- react.hide: hide a large snippet by logical path (ar:/fi:/tc:/so:/ks:), not a query. Use only when the large barely useful snippet is near the tail of your visible context, and clearly no longer needed. The original content remains retrievable via react.read(path).
   This is very useful tool when results retrieved by react.read, react.memsearch or web_tools.web_search / web_tools/web_fetch are irrelevant. In that case you can hide the, to avoid spending tokens, and provide the replacement_text which explains the irrelevance and helps later to correlate the retrieval query (path or semantic query) 
   to result it returned so do not repeat the same irrelevant retrieval later. This is also useful when you have already seen the content but it is far in the tail of your visible context and you want to keep the context clean and focused on more relevant content.
-- react.search_files: safe file search under the current workdir (no shell). Use to locate files by name_regex/content_regex when needed.
+- react.search_files: safe file search under OUT_DIR or workdir (no shell). Use to locate files by name_regex/content_regex when needed.
   Use when you suspect the needed info exists but is not visible. This does NOT load full artifacts; follow up with react.read.
 
 - Use rendering_tools.write_* to render and write the special formats (pdf, pptx, docx, png).

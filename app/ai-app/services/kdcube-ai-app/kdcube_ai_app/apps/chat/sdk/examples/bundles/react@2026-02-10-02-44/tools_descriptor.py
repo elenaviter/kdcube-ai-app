@@ -46,14 +46,7 @@ TOOLS_SPECS: List[Dict[str, Any]] = [
         "module": "kdcube_ai_app.apps.chat.sdk.tools.rendering_tools",
         "alias": "rendering_tools",
         "use_sk": True,
-    },
-
-    # # bundle-local tools (relative to bundle root)
-    # {
-    #     "ref": "tools/my_private_tools.py",
-    #     "alias": "private_tools",
-    #     "use_sk": True,
-    # },
+    }
 ]
 
 # MCP tool sources (server_id + optional alias + optional tool allowlist).

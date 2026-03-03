@@ -32,41 +32,34 @@ from kdcube_ai_app.apps.middleware.token_extract import (
     resolve_socket_auth_tokens,
 )
 from kdcube_ai_app.apps.chat.api.resolvers import get_auth_manager
-from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_async, get_default_id
+from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
 
 from kdcube_ai_app.auth.AuthManager import AuthenticationError, PRIVILEGED_ROLES
 
 logger = logging.getLogger(__name__)
 
-async def _sync_bundles_from_redis(app, tenant: str, project: str) -> bool:
+async def _load_registry_from_redis(app, tenant: str, project: str):
     """
-    Ingress should always source bundle defaults from Redis.
-    This syncs the in-memory registry from Redis before resolving.
-    Returns True when a registry was loaded and applied.
+    Ingress must never update bundles. It only reads registry from Redis
+    to validate bundle IDs and fetch the default bundle id.
     """
     redis_client = getattr(app.state, "redis_async", None)
     if not redis_client:
-        logger.error("Ingress has no redis_async; cannot sync bundles (tenant=%s project=%s)", tenant, project)
-        return False
+        logger.error("Ingress has no redis_async; cannot load bundles (tenant=%s project=%s)", tenant, project)
+        return None
     try:
-        from kdcube_ai_app.infra.plugin.bundle_store import load_registry as _load_store_registry
-        from kdcube_ai_app.infra.plugin.bundle_registry import set_registry_async
         reg = await _load_store_registry(redis_client, tenant, project)
         if reg and reg.bundles:
-            await set_registry_async(
-                {bid: be.model_dump() for bid, be in reg.bundles.items()},
-                reg.default_bundle_id,
-            )
-            return True
+            return reg
         logger.error(
             "Bundle registry missing/empty in Redis (tenant=%s project=%s)",
             tenant,
             project,
         )
-        return False
+        return None
     except Exception as e:
-        logger.warning("Failed to sync bundles from Redis. %s", e)
-        return False
+        logger.warning("Failed to load bundles from Redis. %s", e)
+        return None
 
 
 TransportKind = Literal["sse", "socket"]
@@ -242,8 +235,8 @@ async def process_chat_message(
     request_id = str(uuid.uuid4())
     provided_bundle_id = message_data.get("bundle_id")
 
-    # Always sync bundle defaults from Redis before resolving
-    bundles_synced = await _sync_bundles_from_redis(app, tenant_id, project_id)
+    # Ingress only reads registry from Redis (no updates).
+    reg = await _load_registry_from_redis(app, tenant_id, project_id)
 
     svc = ServiceCtx(request_id=request_id, user=session.user_id, project=project_id, tenant=tenant_id)
     conv = ConversationCtx(
@@ -264,7 +257,7 @@ async def process_chat_message(
     )
 
     # If registry is not available from Redis, fail early to avoid stale defaults.
-    if not bundles_synced:
+    if not reg:
         err = "Bundle registry unavailable (Redis not ready)"
         await chat_comm.emit_error(
             svc,
@@ -321,9 +314,25 @@ async def process_chat_message(
             http_status=413,
         )
 
-    spec_resolved = await resolve_bundle_async(provided_bundle_id, override=None)
+    bundle_id_val = provided_bundle_id or (reg.default_bundle_id if reg else None)
+    if not reg or not bundle_id_val or bundle_id_val not in (reg.bundles or {}):
+        err = f"Unknown bundle_id '{bundle_id_val or provided_bundle_id}'"
+        await chat_comm.emit_error(
+            svc,
+            conv,
+            error=err,
+            target_sid=ingress.stream_id,
+            session_id=session.session_id,
+        )
+        return IngressResult(
+            ok=False,
+            error_type="unknown_bundle",
+            error=err,
+            http_status=400,
+        )
+    spec_resolved = reg.bundles.get(bundle_id_val)
     if not spec_resolved:
-        err = f"Unknown bundle_id '{provided_bundle_id}'"
+        err = f"Bundle spec missing for bundle_id '{bundle_id_val}'"
         await chat_comm.emit_error(
             svc,
             conv,
@@ -884,8 +893,7 @@ async def get_conversation_status(
     """
     Shared implementation for conv_status.get for SSE + WS.
     """
-    # Always sync bundle defaults from Redis before resolving
-    bundles_synced = await _sync_bundles_from_redis(app, tenant, project)
+    reg = await _load_registry_from_redis(app, tenant, project)
     conv_id = conversation_id or session.session_id
     row = None
     try:
@@ -913,7 +921,7 @@ async def get_conversation_status(
         payload_row = row.get("payload") or {}
         current_turn_id = payload_row.get("last_turn_id")
     if publish:
-        if not bundles_synced:
+        if not reg:
             logger.warning(
                 "conv_status.get: bundle registry unavailable; falling back to provided bundle_id/default placeholder "
                 "(tenant=%s project=%s session=%s)",
@@ -921,12 +929,7 @@ async def get_conversation_status(
                 project,
                 session.session_id,
             )
-        spec_resolved = None
-        if bundles_synced:
-            spec_resolved = await resolve_bundle_async(bundle_id, override=None)
-            bundle_id_val = spec_resolved.id if spec_resolved else (bundle_id or get_default_id())
-        else:
-            bundle_id_val = bundle_id or "unknown"
+        bundle_id_val = bundle_id or (reg.default_bundle_id if reg else "unknown")
         if not bundle_id_val:
             bundle_id_val = "unknown"
             logger.warning(

@@ -1,3 +1,14 @@
+---
+id: ks:docs/economics/stripe-README.md
+title: "Stripe"
+summary: "Stripe integration guide for the economics subsystem (subscriptions, webhooks, refunds)."
+tags: ["economics", "stripe", "payments", "webhooks", "subscriptions"]
+keywords: ["stripe webhooks", "subscription sync", "refunds", "billing", "payment events"]
+see_also:
+  - ks:docs/economics/eco-admin-README.md
+  - ks:docs/economics/eco-kickoff-README.md
+  - ks:docs/economics/operational-README.md
+---
 # Stripe Integration Guide
 
 This document explains how Stripe is integrated into the economics subsystem and how to operate it safely.
@@ -159,7 +170,7 @@ Email configuration (for refund/cancel alerts):
 
 See the service configuration doc for details:
 
-- [service-config-README.md](docs/service/service-config-README.md)
+- [service-config-README.md](../service/service-config-README.md)
 
 ## Operational Checklist (Stripe)
 

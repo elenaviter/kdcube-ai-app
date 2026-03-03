@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/context-progression.md
+title: "Context Progression"
+summary: "How context is built and updated during a turn."
+tags: ["sdk", "agents", "react", "context", "progression"]
+keywords: ["turn progression", "fetch_ctx", "tool calls", "context updates"]
+see_also:
+  - ks:docs/sdk/agents/react/context-layout.md
+  - ks:docs/sdk/agents/react/react-context-README.md
+  - ks:docs/sdk/agents/react/turn-log-README.md
+---
 # Context Progression & Compaction
 
 This describes how context is built and updated during a turn.

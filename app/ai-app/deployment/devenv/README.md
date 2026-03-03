@@ -1,3 +1,13 @@
+---
+id: ks:deploy/devenv/README.md
+title: "DevEnv (Run Services Locally)"
+summary: "Run ingress/proc/metrics/frontend on the host while infra runs in a separate stack."
+tags: ["deployment", "devenv", "local", "development", "env"]
+keywords: ["local dev", "host services", "sample env", "frontend configs", "infra stack", "proxylogin"]
+see_also:
+  - ks:docs/ops/deployment-options-index-README.md
+  - ks:deploy/docker/local-infra-stack/README.md
+---
 # DevEnv (run services locally)
 
 This setup is for **platform developers** who run services directly on the host (venv / IDE), while infra (Postgres/Redis/ClamAV/proxylogin) runs elsewhere — e.g. via `deployment/docker/local-infra-stack`.
@@ -49,3 +59,4 @@ docker compose up -d
 
 - `REDIS_HOST`/`POSTGRES_HOST` should point to your infra stack (often `localhost`).
 - `KDCUBE_STORAGE_PATH` and `EXEC_WORKSPACE_ROOT` should be absolute paths on your host.
+- `BUNDLE_STORAGE_ROOT` should be an absolute path if you use knowledge/doc bundles (ks:).

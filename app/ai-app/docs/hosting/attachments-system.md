@@ -1,3 +1,14 @@
+---
+id: ks:docs/hosting/attachments-system.md
+title: "Attachments System"
+summary: "Attachments pipeline: upload, storage, access, and scanning."
+tags: ["hosting", "attachments", "storage", "api", "security"]
+keywords: ["upload", "download", "clamav", "attachments API", "storage backend"]
+see_also:
+  - ks:docs/sdk/bundle/bundle-dev-README.md
+  - ks:docs/hosting/artifacts-limits-README.md
+  - ks:docs/arch/architecture-long.md
+---
 # Attachments System
 
 ## 1) Architecture overview
@@ -11,9 +22,9 @@ Key components:
 - Storage: `kdcube_ai_app/apps/chat/sdk/storage/conversation_store.py`
 - Preflight/AV: `kdcube_ai_app/infra/gateway/safe_preflight.py`
 - Attachment ingestion and conversion: `kdcube_ai_app/apps/chat/sdk/runtime/user_inputs.py`
-- Multimodal message composition: `kdcube_ai_app/apps/chat/sdk/runtime/solution/context/journal.py`
-- Rehosting to execution workspace: `kdcube_ai_app/apps/chat/sdk/runtime/solution/solution_workspace.py`
-- Codegen runtime usage: `kdcube_ai_app/apps/chat/sdk/runtime/solution/react/react.py`
+- Multimodal message composition: `kdcube_ai_app/apps/chat/sdk/runtime/files_and_attachments.py`
+- Rehosting to execution workspace: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/solution_workspace.py`
+- Codegen runtime usage: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/runtime.py`
 
 ```mermaid
 flowchart LR
@@ -45,7 +56,7 @@ Both flows:
 
 ### 2.2 Multimodal LLM usage (base64 artifacts)
 
-In the workflow (example: `kdcube_ai_app/apps/chat/sdk/examples/bundles/with_context@2026-02-01-23-25/orchestrator/workflow.py`):
+In the workflow (example: `kdcube_ai_app/apps/chat/sdk/examples/bundles/eco@2026-02-18-15-06/entrypoint.py`):
 - Attachments are retrieved from storage and converted by
   `ingest_user_attachments(...)` in `kdcube_ai_app/apps/chat/sdk/runtime/user_inputs.py`.
 - The function resolves mime, optionally extracts text, and adds base64 only for
@@ -63,17 +74,16 @@ Ingress enforces both per-file and total-message caps, sourced from
 - Per-PDF cap: `MODALITY_MAX_DOC_BYTES` (10 MB)
 - Total message cap (text + attachments): `MESSAGE_MAX_BYTES` (25 MB)
 
-When composing messages, `_messages_with_context(...)` in
-`kdcube_ai_app/apps/chat/sdk/runtime/solution/context/journal.py` uses
-`attachment_blocks(...)` to create multimodal content blocks for LLMs.
-These appear in tools such as `llm_tools.py` and the React toolchain.
+When composing messages, `build_attachment_message_blocks(...)` in
+`kdcube_ai_app/apps/chat/sdk/runtime/files_and_attachments.py` produces
+multimodal content blocks for LLMs. These appear in the React toolchain.
 
 ### 2.3 Rehosting for code-generated execution
 
 For code-generated programs, attachments are rehosted into the execution
 workspace so generated code can read them as files:
-- `kdcube_ai_app/apps/chat/sdk/runtime/solution/react/react.py`
-- `kdcube_ai_app/apps/chat/sdk/runtime/solution/solution_workspace.py`
+- `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/runtime.py`
+- `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/solution_workspace.py`
 
 Rehosted structure:
 ```

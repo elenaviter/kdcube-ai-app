@@ -1,0 +1,302 @@
+---
+id: ks:docs/sdk/bundle/bundle-ops-README.md
+title: "Bundle Ops"
+summary: "Ops guide for bundle registry, delivery modes, git resolution, env controls, and runtime props."
+tags: ["sdk", "bundle", "ops", "registry", "git", "env", "release", "props"]
+keywords: ["AGENTIC_BUNDLES_JSON", "bundles registry", "Redis", "BUNDLES_FORCE_ENV_ON_STARTUP", "git bundles", "BUNDLE_GIT_RESOLUTION_ENABLED", "BUNDLE_GIT_REDIS_LOCK", "release.yaml", "props"]
+see_also:
+  - ks:docs/sdk/bundle/bundle-dev-README.md
+  - ks:docs/sdk/bundle/bundle-index-README.md
+  - ks:docs/sdk/bundle/bundle-interfaces-README.md
+---
+# Bundle Ops Guide (Registry, Delivery, Git)
+
+This guide is for **ops/deployment** owners who configure bundle registries, delivery, and upgrades.
+
+If you need **authoring** guidance, see:
+`docs/sdk/bundle/bundle-dev-README.md`.
+
+---
+
+## Registry + runtime flow (overview)
+
+```mermaid
+graph TD
+  ENV[AGENTIC_BUNDLES_JSON] --> REG[Redis bundle registry<br/>per tenant/project]
+  API[Admin Integrations API] -->|update/merge| REG
+  REG -->|pubsub update| PROC[Processor config listener]
+  PROC -->|apply + clear caches| REGMEM[In‑process registry]
+
+  INGRESS[Ingress SSE/WS] -->|bundle_id| RESOLVE[resolve_bundle]
+  RESOLVE --> LOADER[agentic_loader<br/>load + instantiate]
+  LOADER --> WF[Workflow.run/execute_core]
+  WF --> STREAM[ChatCommunicator streams]
+```
+
+Notes:
+- Registry is tenant/project scoped.
+- Updates are published to a tenant/project channel; each processor listens only to its own channel.
+- Only **new requests** use the updated bundle path.
+
+Runtime touchpoints:
+- Task runner: `apps/chat/processor.py` (loads bundle + calls `run`)
+- Config listener: `apps/chat/processor.py` (subscribes to bundles update channel)
+- Integrations API: `apps/chat/proc/rest/integrations/integrations.py`
+  - `POST /bundles/{tenant}/{project}/operations/{operation}` invokes `workflow.<operation>(...)`
+
+---
+
+## Delivery modes
+
+Choose one delivery mode per deployment:
+- **Mounted path** (EC2 compose, local dev): bundles exist on disk and are mounted into proc.
+- **Git‑defined** (ECS or EC2): proc clones bundles from git at startup/config update.
+
+**Git pull policy (runtime):**
+- Git pulls happen **only during registry sync** (processor startup or a bundle config update).
+- Request‑time `resolve_bundle()` **never** pulls from git.
+
+---
+
+## Registry source of truth
+
+At runtime, the source of truth is Redis:
+- key: `kdcube:config:bundles:mapping:{tenant}:{project}`
+- channel: `kdcube:config:bundles:update:{tenant}:{project}`
+
+Processors load Redis on startup and subscribe to the channel.
+
+---
+
+## Configuration sources
+
+### 1) `AGENTIC_BUNDLES_JSON`
+
+Accepted shape:
+```json
+{
+  "default_bundle_id": "with.codegen",
+  "bundles": {
+    "with.codegen": {
+      "id": "with.codegen",
+      "name": "Codegen Agentic App",
+      "path": "/bundles",
+      "module": "with.codegen.entrypoint",
+      "singleton": false,
+      "description": "Codegen Agentic App"
+    }
+  }
+}
+```
+
+Fields:
+- `id` (required)
+- `name` (optional)
+- `path` (required for local bundles, parent dir)
+- `module` (required for local bundles, includes bundle folder)
+- `singleton` (optional)
+- `description` (optional)
+- `version` (optional)
+- `repo` / `ref` / `subdir` (git bundles)
+- `git_commit` (optional, filled after clone)
+
+### 2) Admin APIs (update registry + broadcast)
+
+- `GET /admin/integrations/bundles`
+- `POST /admin/integrations/bundles`
+  - `{ op: "replace"|"merge", bundles: {...}, default_bundle_id?: "..." }`
+- `POST /admin/integrations/bundles/reset-env`
+
+**CI/CD friendly option (no admin tokens):**
+Set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on **processor**.
+
+---
+
+## Runtime env controls
+
+| Setting                               | Default   | Purpose                                                                 |
+|---------------------------------------|-----------|-------------------------------------------------------------------------|
+| `AGENTIC_BUNDLES_JSON`                | _(unset)_ | Bundle registry descriptor (inline JSON or path to JSON/YAML file).     |
+| `BUNDLE_STORAGE_ROOT`                | _(unset)_ | Shared local filesystem root for bundle data (used by ks:), default: `<bundles_root>/_bundle_storage`. |
+| `BUNDLES_FORCE_ENV_ON_STARTUP`        | `0`       | Force overwrite Redis registry from `AGENTIC_BUNDLES_JSON` at startup.  |
+| `BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS`  | `60`      | Redis lock TTL for startup env reset.                                   |
+| `BUNDLES_INCLUDE_EXAMPLES`            | `1`       | Auto‑add example bundles from `sdk/examples/bundles`.                   |
+| `BUNDLE_GIT_RESOLUTION_ENABLED`       | `1`       | Enable git clone/pull for bundles with `repo`.                          |
+| `BUNDLE_GIT_ALWAYS_PULL`              | `0`       | Always pull even if local path exists (useful for branch refs).         |
+| `BUNDLE_GIT_ATOMIC`                   | `1`       | Use atomic checkout (clone to temp dir then rename).                    |
+| `BUNDLE_GIT_PREFETCH_ENABLED`         | `1`       | Prefetch git bundles once on startup to gate readiness.                 |
+| `BUNDLE_GIT_REDIS_LOCK`               | `0`       | Redis lock for git pulls (per instance; key includes `INSTANCE_ID`).    |
+| `BUNDLE_GIT_REDIS_LOCK_TTL_SECONDS`   | `300`     | Redis lock TTL for git pulls.                                           |
+| `BUNDLE_GIT_REDIS_LOCK_WAIT_SECONDS`  | `60`      | Max wait to acquire git lock.                                           |
+| `BUNDLE_GIT_FAIL_BACKOFF_SECONDS`     | `60`      | Initial backoff after git failure (cooldown).                           |
+| `BUNDLE_GIT_FAIL_MAX_BACKOFF_SECONDS` | `300`     | Max backoff after repeated failures.                                    |
+| `BUNDLE_GIT_CLONE_DEPTH`              | _(unset)_ | Git clone depth (shallow clone).                                        |
+| `BUNDLE_GIT_SHALLOW`                  | _(unset)_ | Shallow clone (depth=50) when clone depth is unset.                     |
+| `BUNDLE_GIT_KEEP`                     | `3`       | Number of old git bundle folders to keep (cleanup).                     |
+| `BUNDLE_GIT_TTL_HOURS`                | `0`       | If >0, delete git bundle folders older than this TTL (hours).           |
+| `GIT_SSH_COMMAND`                     | _(unset)_ | Full SSH command for git (overrides other SSH envs).                    |
+| `GIT_SSH_KEY_PATH`                    | _(unset)_ | Path to private SSH key used for git clone/pull.                        |
+| `GIT_SSH_KNOWN_HOSTS`                 | _(unset)_ | Path to `known_hosts` for SSH host verification.                        |
+| `GIT_SSH_STRICT_HOST_KEY_CHECKING`    | _(unset)_ | `yes`/`no` for StrictHostKeyChecking.                                   |
+
+---
+
+## Shared bundle local storage (compose / ECS)
+
+If you use bundles that expose `ks:` (doc/knowledge or any shared local data),
+mount a shared local store and set:
+
+```
+BUNDLE_STORAGE_ROOT=/bundle-storage
+```
+
+Examples:
+- **Docker compose**: bind a host dir to `/bundle-storage`.
+- **ECS**: mount EFS to `/bundle-storage` (access point `uid=1000`, `gid=1000`).
+
+## Bundles root resolution
+
+Bundles are stored under a root directory. Resolution order:
+1. `HOST_BUNDLES_PATH`
+2. `AGENTIC_BUNDLES_ROOT`
+3. `/bundles`
+
+In containers, prefer `AGENTIC_BUNDLES_ROOT=/bundles`.
+
+---
+
+## Git bundle path derivation
+
+```
+<bundles_root>/<repo>__<bundle_id>__<ref>/<subdir?>
+```
+
+If `ref` is omitted:
+```
+<bundles_root>/<repo>__<bundle_id>/<subdir?>
+```
+
+**Ref policy (recommended):**
+- Tag (release)
+- Commit SHA (deterministic)
+- Branch name (dev only, requires `BUNDLE_GIT_ALWAYS_PULL=1`)
+
+---
+
+## Built‑in bundles and reserved IDs
+
+These IDs are reserved and cannot be overridden:
+- `kdcube.admin`
+- example bundles from `apps/chat/sdk/examples/bundles` (when enabled)
+
+To disable example bundles:
+```
+BUNDLES_INCLUDE_EXAMPLES=0
+```
+
+---
+
+## Bundle props (runtime overrides)
+
+Bundles can expose runtime props stored per tenant/project/bundle in Redis.
+These props can be provided in the release descriptor **or** updated at runtime.
+
+Admin APIs:
+- `GET /admin/integrations/bundles/{bundle_id}/props`
+- `POST /admin/integrations/bundles/{bundle_id}/props`
+- `POST /admin/integrations/bundles/{bundle_id}/props/reset-code`
+
+Example: set knowledge repo + docs roots for a bundle that uses knowledge search:
+
+```
+POST /admin/integrations/bundles/<bundle_id>/props
+{
+  "tenant": "<tenant>",
+  "project": "<project>",
+  "op": "merge",
+  "props": {
+    "knowledge": {
+      "repo": "git@github.com:kdcube/kdcube-ai-app.git",
+      "ref": "v0.3.2",
+      "docs_root": "app/ai-app/docs",
+      "src_root": "app/ai-app/services/kdcube-ai-app/kdcube_ai_app",
+      "deploy_root": "app/ai-app/deployment",
+      "validate_refs": true
+    }
+  }
+}
+```
+
+### Props in release.yaml
+
+You can also set props per bundle item in `release.yaml`:
+
+```yaml
+bundles:
+  items:
+    - id: "react@2026-02-10-02-44"
+      repo: "git@github.com:kdcube/kdcube-ai-app.git"
+      ref: "v0.3.2"
+      subdir: "app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles"
+      module: "react@2026-02-10-02-44.entrypoint"
+      props:
+        knowledge:
+          repo: "git@github.com:kdcube/kdcube-ai-app.git"
+          ref: "v0.3.2"
+          docs_root: "app/ai-app/docs"
+          src_root: "app/ai-app/services/kdcube-ai-app/kdcube_ai_app"
+          deploy_root: "app/ai-app/deployment"
+          validate_refs: true
+```
+
+**Ref resolution (default):**
+- `env:NAME` → environment variable `NAME`
+- `file:/path/to/secret` → file contents
+
+Any string **without** these prefixes is treated as a literal value.
+
+Resolved values are stored in Redis as runtime props.
+
+---
+
+## Release descriptors
+
+Release descriptors define bundle versions for CI/CD.
+Canonical docs:
+- `docs/service/cicd/release-descriptor-README.md`
+- `docs/service/cicd/release-bundle-README.md`
+
+Use `repo/ref/subdir/module` in the release descriptor and set:
+```
+AGENTIC_BUNDLES_JSON=/config/release.yaml
+```
+
+Release descriptors define **bundle versions** and can include **bundle props**.
+
+---
+
+## Cleanup of old git bundles
+
+Use cleanup to drop old git bundle folders:
+- automatic cleanup via `BUNDLE_GIT_KEEP` and `BUNDLE_GIT_TTL_HOURS`
+- admin cleanup endpoint (if enabled) for module cache eviction
+
+---
+
+## Bundle cache cleanup loop (proc)
+
+These control the periodic cleanup that removes stale bundle module caches:
+- `BUNDLE_CLEANUP_ENABLED`
+- `BUNDLE_CLEANUP_INTERVAL_SECONDS`
+- `BUNDLE_CLEANUP_LOCK_TTL_SECONDS`
+- `BUNDLE_REF_TTL_SECONDS`
+
+---
+
+## References (code)
+
+- Bundle registry: `services/kdcube-ai-app/kdcube_ai_app/infra/plugin/bundle_registry.py`
+- Git bundle resolver: `services/kdcube-ai-app/kdcube_ai_app/infra/plugin/git_bundle.py`
+- Bundle store (Redis): `services/kdcube-ai-app/kdcube_ai_app/infra/plugin/bundle_store.py`
+- Task processor + config listener: `services/kdcube-ai-app/kdcube_ai_app/apps/chat/processor.py`
+- Integrations API: `services/kdcube-ai-app/kdcube_ai_app/apps/chat/proc/rest/integrations/integrations.py`

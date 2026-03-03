@@ -1,3 +1,14 @@
+---
+id: ks:docs/exec/run-py-README.md
+title: "Run Py"
+summary: "Minimal setup to run Python via the ISO runtime in Docker (exec tools quickstart)."
+tags: ["exec", "python", "iso-runtime", "quickstart", "docker"]
+keywords: ["run python", "exec_tools", "ISO runtime", "docker executor", "bundle example", "out_dir"]
+see_also:
+  - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/exec/runtime-README.md
+  - ks:docs/exec/operations.md
+---
 # Run Python in ISO Runtime (Docker) — Minimal Developer Guide
 
 This guide explains the **minimal configuration** needed to run Python via the
@@ -151,4 +162,3 @@ Summary:
 ---
 
 ## Side-effects vs contract selection
-

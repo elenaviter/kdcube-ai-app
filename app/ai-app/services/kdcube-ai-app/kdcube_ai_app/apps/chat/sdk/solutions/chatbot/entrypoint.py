@@ -116,6 +116,42 @@ class BaseEntrypoint:
     def bundle_props_defaults(self) -> Dict[str, Any]:
         return {}
 
+    def on_bundle_load(self, **kwargs) -> None:
+        """
+        Optional one-time hook called when the bundle is first loaded
+        (per process, per tenant/project). Override in bundles that need
+        to prepare local assets or indexes.
+
+        Supported kwargs (pass only what you accept):
+          - bundle_spec
+          - agentic_spec
+          - storage_root
+          - config
+          - comm_context
+          - pg_pool
+          - redis
+          - logger
+        """
+        return None
+
+    def bundle_storage_root(self) -> Optional[pathlib.Path]:
+        """
+        Resolve the shared storage root for this bundle (if configured).
+        Uses tenant/project if available so storage is isolated per tenant/project.
+        """
+        try:
+            from kdcube_ai_app.infra.plugin.bundle_storage import storage_for_spec
+            tenant = getattr(getattr(self.comm_context, "actor", None), "tenant_id", None)
+            project = getattr(getattr(self.comm_context, "actor", None), "project_id", None)
+            return storage_for_spec(
+                spec=getattr(self.config, "ai_bundle_spec", None),
+                tenant=tenant,
+                project=project,
+                ensure=True,
+            )
+        except Exception:
+            return None
+
     async def refresh_bundle_props(self, *, state: Dict[str, Any]) -> Dict[str, Any]:
         defaults = dict(self.bundle_props_defaults or {})
         if not self.kv_cache and not self.redis:
@@ -249,7 +285,8 @@ class BaseEntrypoint:
     def _bundle_root(self) -> Optional[str]:
         spec = getattr(self.config, "ai_bundle_spec", None)
         if spec and spec.module and spec.path:
-            return os.path.join(spec.path, "/".join(spec.module.split(".")[:-1]))
+            from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_root
+            return str(resolve_bundle_root(spec.path, spec.module))
         return None
 
     def _ensure_privileged(self, *, user_id: Optional[str], feature: str) -> Optional[str]:

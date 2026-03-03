@@ -126,6 +126,17 @@ class BaseWorkflow():
         self.answer_system_prompt = answer_system_prompt
         # Runtime context + context browser are constructed once per workflow instance
         try:
+            bundle_ws = None
+            try:
+                from kdcube_ai_app.infra.plugin.bundle_storage import storage_for_spec
+                bundle_ws = storage_for_spec(
+                    spec=self.config.ai_bundle_spec,
+                    tenant=self.comm_context.actor.tenant_id,
+                    project=self.comm_context.actor.project_id,
+                    ensure=True,
+                )
+            except Exception:
+                bundle_ws = None
             self.runtime_ctx = RuntimeCtx(
                 tenant=self.comm_context.actor.tenant_id,
                 project=self.comm_context.actor.project_id,
@@ -136,6 +147,7 @@ class BaseWorkflow():
                 turn_id=self.comm_context.routing.turn_id,
                 bundle_id=self.config.ai_bundle_spec.id,
                 max_tokens=getattr(self.config, "max_tokens", None),
+                bundle_storage=str(bundle_ws) if bundle_ws else None,
             )
             self.ctx_browser = ContextBrowser(
                 ctx_client=self.ctx_client,
@@ -746,10 +758,8 @@ class BaseWorkflow():
     def bundle_root(self):
         spec = self.config.ai_bundle_spec
         if spec and spec.module and spec.path:
-            # This is how you compute bundle_root elsewhere
-            bundle_root = pathlib.Path(spec.path).joinpath(
-                "/".join(spec.module.split(".")[:-1])
-            )
+            from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_root
+            bundle_root = resolve_bundle_root(spec.path, spec.module)
         else:
             # Fallback: directory above orchestrator/ (the bundle root)
             bundle_root = pathlib.Path(__file__).resolve().parents[1]

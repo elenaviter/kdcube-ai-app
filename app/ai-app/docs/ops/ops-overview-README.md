@@ -1,3 +1,14 @@
+---
+id: ks:docs/ops/ops-overview-README.md
+title: "Ops Overview"
+summary: "Operations entry point: deployment options, service topology, and near‑term ECS/EKS plans."
+tags: ["ops", "overview", "deployment", "topology", "services", "ecs", "ec2"]
+keywords: ["ingress", "proc", "metrics", "redis", "postgres", "clamav", "proxylogin", "deployment options", "ecs", "ec2"]
+see_also:
+  - ks:docs/service/environment/service-compose-env-README.md
+  - ks:docs/ops/deployment-options-index-README.md
+  - ks:docs/ops/ecs/ecs-deployment-README.md
+---
 # Ops Overview
 
 This section is the **operations entry point** for KDCube: deployment options, service topology, and near‑term plans (ECS/EKS).

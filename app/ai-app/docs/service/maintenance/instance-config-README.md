@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/maintenance/instance-config-README.md
+title: "Instance Config"
+summary: "Instance configuration for workers, capacity, and DB pools."
+tags: ["service", "maintenance", "instance", "capacity"]
+keywords: ["workers", "processes_per_instance", "pg_max_connections", "capacity settings"]
+see_also:
+  - ks:docs/service/maintenance/connection-pooling-README.md
+  - ks:docs/service/maintenance/requests-monitoring-README.md
+  - ks:docs/service/service-config-README.md
+---
 # Instance Config Maintenance
 
 Quick reference for configuring a single chat service instance (workers, capacity, DB pools) and keeping it stable in dev/EC2.

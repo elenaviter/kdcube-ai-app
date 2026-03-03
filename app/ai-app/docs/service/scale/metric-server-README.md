@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/scale/metric-server-README.md
+title: "Metric Server"
+summary: "Metrics server architecture and exports for autoscaling."
+tags: ["service", "metrics", "autoscaling", "observability"]
+keywords: ["metrics server", "CloudWatch", "Prometheus", "redis metrics", "autoscaler"]
+see_also:
+  - ks:docs/service/scale/metrics-README.md
+  - ks:docs/ops/ops-overview-README.md
+  - ks:docs/service/ecs/custom-ecs-README.md
+---
 # Metrics Server (Autoscaling Source of Truth)
 
 This document explains **what the Metrics server is**, how it collects data,

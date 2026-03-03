@@ -1,3 +1,14 @@
+---
+id: ks:docs/ops/deployment-options-index-README.md
+title: "Deployment Options Index"
+summary: "Index of deployment options and folders for dev, local, and managed infra setups."
+tags: ["ops", "deployment", "options", "index", "devenv", "docker"]
+keywords: ["devenv", "local-infra-stack", "all_in_one_kdcube", "custom-ui-managed-infra", "docker compose", "platform dev"]
+see_also:
+  - ks:docs/ops/ops-overview-README.md
+  - ks:docs/ops/health-README.md
+  - ks:docs/ops/s3-README.md
+---
 # Deployment options (index)
 
 Choose the path that matches your workflow.

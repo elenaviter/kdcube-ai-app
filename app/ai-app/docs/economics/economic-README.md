@@ -1,3 +1,14 @@
+---
+id: ks:docs/economics/economic-README.md
+title: "Economic"
+summary: "Authoritative economics model and runtime enforcement rules."
+tags: ["economics", "model", "runtime", "control-plane"]
+keywords: ["plans", "wallets", "lanes", "rate limits", "charging", "project scope"]
+see_also:
+  - ks:docs/economics/eco-test-README.md
+  - ks:docs/economics/eco-admin-README.md
+  - ks:docs/economics/eco-kickoff-README.md
+---
 # Economics Model (Control Plane)
 
 This document is the authoritative description of the current economics model and how it is enforced at runtime.

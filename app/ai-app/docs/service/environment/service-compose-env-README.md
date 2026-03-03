@@ -1,3 +1,14 @@
+---
+id: ks:docs/service/environment/service-compose-env-README.md
+title: "Service Compose Env"
+summary: "Compose env file guide; source of truth is sample_env in deployment folders."
+tags: ["service", "environment", "compose", "env"]
+keywords: ["sample_env", "docker-compose", "ingress env", "proc env", "metrics env"]
+see_also:
+  - ks:docs/service/environment/service-dev-env-README.md
+  - ks:docs/service/environment/setup-for-dockercompose-README.md
+  - ks:docs/service/environment/service-ecs-env-README.md
+---
 # Service Compose Env (Docker Compose)
 
 This document describes env files used by docker‑compose deployments.  
@@ -55,6 +66,9 @@ Each service has its own `.env.*` file. See the samples for the complete set:
 - `sample_env/.env.ingress`
 - `sample_env/.env.proc`
 - `sample_env/.env.metrics`
+
+**Note (proc only):** Git‑defined bundles require `BUNDLE_GIT_*` and optional `GIT_SSH_*`
+env vars in `.env.proc`. See `docs/sdk/bundle/bundle-ops-README.md`.
 
 ## Shared Requirements
 

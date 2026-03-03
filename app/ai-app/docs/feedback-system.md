@@ -1,3 +1,14 @@
+---
+id: ks:docs/feedback-system.md
+title: "Feedback System"
+summary: "Feedback pipeline and storage: reactions, turn logs, and feedback artifacts."
+tags: ["feedback", "system", "timeline", "turns", "artifacts"]
+keywords: ["reaction", "feedback blocks", "turn_log", "feedback artifacts", "v2 feedback"]
+see_also:
+  - ks:docs/sdk/agents/react/feedback-README.md
+  - ks:docs/sdk/agents/react/turn-data-README.md
+  - ks:docs/sdk/agents/react/turn-log-README.md
+---
 # Feedback System – Complete Architecture & Design (v2.2)
 
 **Last Updated:** 2025-11-06

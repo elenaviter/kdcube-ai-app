@@ -18,9 +18,9 @@ CUSTOM_SKILLS_ROOT: Optional[pathlib.Path] = BUNDLE_ROOT / "skills"
 # Use fully qualified ids: "<namespace>.<skill_id>".
 AGENTS_CONFIG: Dict[str, Dict[str, Any]] = {
     "solver.react.decision.v2": {
+        # Optional filter example:
         # "enabled": [
         #     "public.url-gen",
         # ]
-        "disabled": ["product.*"],
     }
 }

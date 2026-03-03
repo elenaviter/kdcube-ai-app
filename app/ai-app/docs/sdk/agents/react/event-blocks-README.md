@@ -1,3 +1,14 @@
+---
+id: ks:docs/sdk/agents/react/event-blocks-README.md
+title: "Event Blocks"
+summary: "Block schema and event types emitted in the React timeline."
+tags: ["sdk", "agents", "react", "events", "blocks"]
+keywords: ["block types", "mime", "path", "tool results", "timeline events"]
+see_also:
+  - ks:docs/sdk/agents/react/tool-call-blocks-README.md
+  - ks:docs/sdk/agents/react/context-progression.md
+  - ks:docs/sdk/agents/react/react-round-README.md
+---
 # React Event Blocks
 
 React emits a block-based event log (chronological, oldest -> newest).
@@ -175,6 +186,7 @@ Blocks can be hidden with `react.hide(path, replacement_text)` (path is a logica
 - `fi:<turn_id>.code.<call_id>`
 - `tc:<turn_id>.<call_id>.call` / `.result`
 - `so:sources_pool[...]`
+- `ks:<relpath>` (knowledge space; read‑only)
 
 Physical (OUT_DIR‑relative):
 - attachments: `turn_<id>/attachments/<name>`
@@ -247,7 +259,7 @@ Artifacts:
   (metadata: kind/visibility/channel/tokens/sources_used)
 
 [TOOL RESULT tc_...].result <tool_id>      # non-artifact tools
-logical_path: so:... / tc:... / ar:... / sk:...
+logical_path: so:... / tc:... / ar:... / sk:... / ks:...
 <result payload>
 
 [TOOL RESULT tc_...].artifact <tool_id>    # each artifact
