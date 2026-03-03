@@ -1,4 +1,6 @@
-# KDCube — Agentic AI Platform & SDK
+# KDCube — safer way to build AI
+
+Empower your customers with an AI assistant.
 
 > **The enforcement layer between AI agents and production systems.**
 
