@@ -19,18 +19,7 @@ and operations.
 
 *For engineering teams shipping AI agents to production.*
 
-### Why teams choose KDCube
-
-| Pain point | KDCube answer |
-|---|---|
-| "Our agent can call anything — we can't control it" | Executor runs isolated; all tool calls proxied through a privileged supervisor |
-| "We glued 8 services together and it's fragile" | Full stack from streaming to ops in one platform |
-| "A runaway agent blew our budget" | Hard spending caps enforced per user, project, and org — outside agent reasoning |
-| "We're locked into one LLM provider's tool‑calling" | Runs on plain prompt/completion — no tool‑calling lock‑in |
-| "We need this for multiple customers, not just us" | Tenant namespacing enforced across gateway, storage, database, and accounting |
-| "We can't prove where answers came from" | Source pools + citations by default (Perplexity‑style) |
-
-### Get running
+### Quick Start
 
 ```bash
 git clone https://github.com/kdcube/kdcube-ai-app && cd kdcube-ai-app
