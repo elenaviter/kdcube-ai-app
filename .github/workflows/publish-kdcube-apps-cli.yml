@@ -1,9 +1,7 @@
 name: Publish kdcube-apps-cli
 
 on:
-  push:
-    tags:
-      - 'kdcube-apps-cli-v*'
+  workflow_dispatch:
 
 jobs:
   build-and-publish:
@@ -17,11 +15,11 @@ jobs:
         with:
           python-version: '3.11'
       - name: Build package
-        working-directory: kdcube_apps_cli
+        working-directory: app/ai-app/services/kdcube-ai-app/kdcube_apps_cli
         run: |
           python -m pip install --upgrade pip build
           python -m build
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: kdcube_apps_cli/dist
+          packages-dir: app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/dist

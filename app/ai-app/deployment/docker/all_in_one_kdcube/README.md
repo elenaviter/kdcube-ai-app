@@ -16,16 +16,17 @@ This compose stack runs a full local KDCube environment with **managed local inf
 
 ## Quick start
 
-1. Copy sample envs and edit as needed:
+1. Copy sample envs and edit as needed (recommended layout: `config/`):
 
 ```bash
-cp sample_env/.env.postgres.setup ./.env.postgres.setup
-cp sample_env/.env.ingress ./.env.ingress
-cp sample_env/.env.proc ./.env.proc
-cp sample_env/.env.metrics ./.env.metrics
-cp sample_env/.env.frontend ./.env.frontend
+mkdir -p ./config
+cp sample_env/.env ./config/.env
+cp sample_env/.env.postgres.setup ./config/.env.postgres.setup
+cp sample_env/.env.ingress ./config/.env.ingress
+cp sample_env/.env.proc ./config/.env.proc
+cp sample_env/.env.metrics ./config/.env.metrics
 # Optional (if you enable proxylogin):
-# cp sample_env/.env.proxylogin ./.env.proxylogin
+# cp sample_env/.env.proxylogin ./config/.env.proxylogin
 ```
 
 2. Ensure bundle/exec paths are set (used by `chat-proc`):
@@ -54,7 +55,7 @@ These are mounted at runtime as `/usr/share/nginx/html/config.json` via
 4. Start the stack:
 
 ```bash
-docker compose up -d --build
+docker compose --env-file ./config/.env up -d --build
 ```
 
 ## Prepare data directories

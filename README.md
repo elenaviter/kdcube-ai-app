@@ -1,9 +1,10 @@
 # KDCube — Agentic AI Platform & SDK
 
+
 KDCube is a **self‑hosted multi‑tenant, multi‑user platform + SDK** for building **custom AI assistants, copilots, and agentic apps**.
 **Run a copilot for your customers, not just for yourself** — use the built‑in ReAct workflow or bring your own.
 It provides the **runtime, streaming protocol, tools, memory, and operations stack** so you can ship AI products with production‑grade reliability.
-
+![cubes.png](assets/cubes.png)
 **Highlights**
 - **Full stack**: from streaming protocols to tool execution, memory, economics, and ops.
 - **Agent‑first**: a ready‑made, versatile ReAct‑style agent that can be extended or replaced.
@@ -157,9 +158,9 @@ graph TD
 
 ## Status & Roadmap (near‑term)
 
-- **Bundles from Git** (dynamic bundle loading, no baked images)
 - **ECS deployment** with proper autoscaling (in progress)
 - **Copilot‑style workspace UX** (new timeline/announce events/workspace organization)
+- **Modeling external processes and ontologies** with tools/skills/runtime and ReAct
 
 Planned deployment options (next steps):
 - **AWS ECS/Fargate** (first‑class)
@@ -171,7 +172,7 @@ Docker Compose is already supported for local and small‑scale (with EC2) setup
 ## Quickstart
 
 - CLI installer: `app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/README.md`
-- Docker Compose (all‑in‑one): `app/ai-app/deployment/docker/all_in_one/README.md`
+- Docker Compose (all‑in‑one): `app/ai-app/deployment/docker/all_in_one_kdcube/README.md`
 
 ---
 

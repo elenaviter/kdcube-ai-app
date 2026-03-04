@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -55,6 +56,9 @@ class PathsContext:
     ai_app_root: Path
     docker_dir: Path
     sample_env_dir: Path
+    workdir: Path
+    config_dir: Path
+    data_dir: Path
 
 
 def is_placeholder(value: Optional[str]) -> bool:
@@ -64,6 +68,8 @@ def is_placeholder(value: Optional[str]) -> bool:
     if not stripped:
         return True
     if "<" in stripped and ">" in stripped:
+        return True
+    if "/absolute/path" in stripped or "absolute/path" in stripped:
         return True
     if "..." in stripped:
         return True
@@ -94,6 +100,50 @@ def update_env_value(env_file: EnvFile, key: str, value: str) -> None:
     env_file.entries = parse_env(env_file.lines)
 
 
+def update_if_placeholder(env_file: EnvFile, key: str, value: str) -> None:
+    current = env_file.entries.get(key, (None, None))[1]
+    if is_placeholder(current):
+        update_env_value(env_file, key, value)
+
+
+def patch_gateway_config_json(env: EnvFile, tenant: str, project: str) -> None:
+    current = env.entries.get("GATEWAY_CONFIG_JSON", (None, None))[1]
+    if current:
+        if "<TENANT_ID>" in current or "<PROJECT_ID>" in current:
+            updated = current.replace("<TENANT_ID>", tenant).replace("<PROJECT_ID>", project)
+            update_env_value(env, "GATEWAY_CONFIG_JSON", updated)
+            return
+        updated = re.sub(r'"tenant"\s*:\s*"[^"]*"', f'"tenant":"{tenant}"', current)
+        updated = re.sub(r'"project"\s*:\s*"[^"]*"', f'"project":"{project}"', updated)
+        if updated != current:
+            update_env_value(env, "GATEWAY_CONFIG_JSON", updated)
+
+
+def write_frontend_config(path: Path, tenant: str, project: str, token: str = "test-admin-token-123") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            data = {}
+    else:
+        data = {}
+
+    if data.get("tenant") in (None, "", "TENANT_ID"):
+        data["tenant"] = tenant
+    if data.get("project") in (None, "", "PROJECT_ID"):
+        data["project"] = project
+    data.setdefault("routesPrefix", "/chatbot")
+
+    auth = data.get("auth") if isinstance(data.get("auth"), dict) else {}
+    auth.setdefault("authType", "hardcoded")
+    if auth.get("token") in (None, "", "test-admin-token-123"):
+        auth["token"] = token
+    data["auth"] = auth
+
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
 def replace_multiline_block(env_file: EnvFile, key: str, new_lines: List[str]) -> None:
     start_idx = None
     for idx, line in enumerate(env_file.lines):
@@ -117,15 +167,31 @@ def replace_multiline_block(env_file: EnvFile, key: str, new_lines: List[str]) -
     env_file.entries = parse_env(env_file.lines)
 
 
-def ensure_env_files(docker_dir: Path, sample_env_dir: Path) -> None:
+def ensure_env_files(target_dir: Path, sample_env_dir: Path) -> None:
     for env_name in ENV_FILES:
-        target = docker_dir / env_name
+        target = target_dir / env_name
         if target.exists():
             continue
         sample = sample_env_dir / env_name
         if not sample.exists():
             raise FileNotFoundError(f"Missing sample env file: {sample}")
+        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(sample, target)
+
+
+def ensure_local_dirs(data_dir: Path, logs_dir: Path) -> None:
+    for path in [
+        data_dir / "kdcube-storage",
+        data_dir / "exec-workspace",
+        data_dir / "bundle-storage",
+        data_dir / "bundles",
+        data_dir / "postgres",
+        data_dir / "redis",
+        data_dir / "clamav-db",
+    ]:
+        path.mkdir(parents=True, exist_ok=True)
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "chat-proc").mkdir(parents=True, exist_ok=True)
 
 
 def load_env_file(path: Path) -> EnvFile:
@@ -137,6 +203,23 @@ def load_env_file(path: Path) -> EnvFile:
 def save_env_file(env_file: EnvFile) -> None:
     text = "\n".join(env_file.lines).rstrip() + "\n"
     env_file.path.write_text(text)
+
+def missing_build_keys(env_main: EnvFile) -> List[str]:
+    keys = [
+        "UI_BUILD_CONTEXT",
+        "UI_DOCKERFILE_PATH",
+        "UI_SOURCE_PATH",
+        "NGINX_UI_CONFIG_FILE_PATH",
+        "PROXY_BUILD_CONTEXT",
+        "PROXY_DOCKERFILE_PATH",
+        "NGINX_PROXY_CONFIG_FILE_PATH",
+    ]
+    missing = []
+    for key in keys:
+        val = env_main.entries.get(key, (None, None))[1]
+        if is_placeholder(val):
+            missing.append(key)
+    return missing
 
 
 def discover_lib_root() -> Optional[Path]:
@@ -190,19 +273,20 @@ def ensure_absolute(console: Console, label: str, current: Optional[str], defaul
         return str(resolved)
 
 
-def compute_paths(ai_app_root: Path, lib_root: Path) -> Dict[str, str]:
+def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str, str]:
     docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
     repo_root = ai_app_root
     defaults: Dict[str, str] = {
         "docker_dir": str(docker_dir),
-        "host_kb_storage": str(docker_dir / "data/kdcube-storage"),
-        "host_exec_workspace": str(docker_dir / "data/exec-workspace"),
+        "host_kb_storage": str(workdir / "data/kdcube-storage"),
+        "host_bundle_storage": str(workdir / "data/bundle-storage"),
+        "host_exec_workspace": str(workdir / "data/exec-workspace"),
         "host_bundles": str(lib_root / "kdcube_ai_app/apps/chat/sdk/examples/bundles"),
         "ui_dockerfile_path": "app/ai-app/deployment/docker/all_in_one_kdcube/Dockerfile_UI",
-        "ui_source_path": "app/ai-app/ui/chat-web-app",
+        "ui_source_path": "ui/chat-web-app",
         "ui_env_build_relative": "app/ai-app/ui/chat-web-app/.env.sample",
-        "nginx_ui_config": "app/ai-app/deployment/docker/all_in_one_kdcube/nginx_ui.conf",
-        "frontend_config_json": "app/ai-app/ui/chat-web-app/public/config.hardcoded.json",
+        "nginx_ui_config": "deployment/docker/all_in_one_kdcube/nginx_ui.conf",
+        "frontend_config_json": str((workdir / "config/frontend.config.hardcoded.json").resolve()),
     }
 
     common_parent = repo_root
@@ -219,28 +303,27 @@ def compute_paths(ai_app_root: Path, lib_root: Path) -> Dict[str, str]:
 def should_replace_bundles_config(value: Optional[str]) -> bool:
     if is_placeholder(value):
         return True
+    if value and "/config/release.yaml" in value:
+        return False
     if value and ("kdcube.demo.1" in value or "<project>" in value):
         return True
     return False
 
 
 def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
-    env_main = load_env_file(ctx.docker_dir / ".env")
-    env_ingress = load_env_file(ctx.docker_dir / ".env.ingress")
-    env_proc = load_env_file(ctx.docker_dir / ".env.proc")
-    env_metrics = load_env_file(ctx.docker_dir / ".env.metrics")
-    env_pg = load_env_file(ctx.docker_dir / ".env.postgres.setup")
+    env_main = load_env_file(ctx.config_dir / ".env")
+    env_ingress = load_env_file(ctx.config_dir / ".env.ingress")
+    env_proc = load_env_file(ctx.config_dir / ".env.proc")
+    env_metrics = load_env_file(ctx.config_dir / ".env.metrics")
+    env_pg = load_env_file(ctx.config_dir / ".env.postgres.setup")
+    env_proxy = load_env_file(ctx.config_dir / ".env.proxylogin")
 
-    defaults = compute_paths(ctx.ai_app_root, ctx.lib_root)
+    defaults = compute_paths(ctx.ai_app_root, ctx.lib_root, ctx.workdir)
 
     tenant = Prompt.ask("Tenant ID", default="demo-tenant")
     project = Prompt.ask("Project name", default="demo-project")
-    minimal_gateway_json = (
-        f'{{"tenant":"{tenant}","project":"{project}","profile":"development"}}'
-    )
     for env in (env_ingress, env_proc, env_metrics):
-        if is_placeholder(env.entries.get("GATEWAY_CONFIG_JSON", (None, None))[1]):
-            update_env_value(env, "GATEWAY_CONFIG_JSON", f"'{minimal_gateway_json}'")
+        patch_gateway_config_json(env, tenant, project)
 
     if is_placeholder(env_pg.entries.get("POSTGRES_USER", (None, None))[1]):
         pg_user = Prompt.ask("Postgres user", default="postgres")
@@ -255,12 +338,16 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]):
         redis_pass = Prompt.ask("Redis password", password=True)
         update_env_value(env_main, "REDIS_PASSWORD", redis_pass)
-        update_env_value(env_ingress, "REDIS_PASSWORD", redis_pass)
-        update_env_value(env_proc, "REDIS_PASSWORD", redis_pass)
-        update_env_value(env_metrics, "REDIS_PASSWORD", redis_pass)
-        update_env_value(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_env_value(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_env_value(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+    else:
+        redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
+
+    update_if_placeholder(env_ingress, "REDIS_PASSWORD", redis_pass)
+    update_if_placeholder(env_proc, "REDIS_PASSWORD", redis_pass)
+    update_if_placeholder(env_metrics, "REDIS_PASSWORD", redis_pass)
+    update_if_placeholder(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+    update_if_placeholder(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+    update_if_placeholder(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+    update_if_placeholder(env_proxy, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
 
     if is_placeholder(env_ingress.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_ingress, "POSTGRES_HOST", "postgres-db")
@@ -279,6 +366,12 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         env_main.entries.get("HOST_BUNDLES_PATH", (None, None))[1],
         defaults.get("host_bundles"),
     )
+    host_bundle_storage = ensure_absolute(
+        console,
+        "Host bundle local storage path",
+        env_main.entries.get("HOST_BUNDLE_STORAGE_PATH", (None, None))[1],
+        defaults.get("host_bundle_storage"),
+    )
     host_exec = ensure_absolute(
         console,
         "Host exec workspace path",
@@ -288,22 +381,47 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     update_env_value(env_main, "HOST_KDCUBE_STORAGE_PATH", host_storage)
     update_env_value(env_main, "HOST_BUNDLES_PATH", host_bundles)
+    update_env_value(env_main, "HOST_BUNDLE_STORAGE_PATH", host_bundle_storage)
     update_env_value(env_main, "HOST_EXEC_WORKSPACE_PATH", host_exec)
+    update_if_placeholder(env_main, "KDCUBE_CONFIG_DIR", str(ctx.config_dir))
+    update_if_placeholder(env_main, "KDCUBE_DATA_DIR", str(ctx.data_dir))
+    update_if_placeholder(env_main, "KDCUBE_LOGS_DIR", str(ctx.workdir / "logs"))
     if is_placeholder(env_main.entries.get("AGENTIC_BUNDLES_ROOT", (None, None))[1]):
         update_env_value(env_main, "AGENTIC_BUNDLES_ROOT", "/bundles")
+    if is_placeholder(env_main.entries.get("BUNDLE_STORAGE_ROOT", (None, None))[1]):
+        update_env_value(env_main, "BUNDLE_STORAGE_ROOT", "/bundle-storage")
 
-    if should_replace_bundles_config(env_proc.entries.get("AGENTIC_BUNDLES_JSON", (None, None))[1]):
-        replace_multiline_block(env_proc, "AGENTIC_BUNDLES_JSON", DEFAULT_BUNDLES_JSON)
+    if is_placeholder(env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]):
+        descriptor = prompt_optional(console, "Host bundle descriptor path (release.yaml)")
+        update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", descriptor or "/dev/null")
+
+    if is_placeholder(env_main.entries.get("HOST_GIT_SSH_KEY_PATH", (None, None))[1]):
+        ssh_key = prompt_optional(console, "Host SSH key path for git bundles")
+        update_env_value(env_main, "HOST_GIT_SSH_KEY_PATH", ssh_key or "/dev/null")
+    if is_placeholder(env_main.entries.get("HOST_GIT_KNOWN_HOSTS_PATH", (None, None))[1]):
+        known_hosts = prompt_optional(console, "Host known_hosts path for git bundles")
+        update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", known_hosts or "/dev/null")
+
+    bundles_json = env_proc.entries.get("AGENTIC_BUNDLES_JSON", (None, None))[1]
+    if should_replace_bundles_config(bundles_json):
+        update_env_value(env_proc, "AGENTIC_BUNDLES_JSON", "/config/release.yaml")
+
+    if is_placeholder(env_proc.entries.get("KDCUBE_STORAGE_PATH", (None, None))[1]):
+        update_env_value(env_proc, "KDCUBE_STORAGE_PATH", "/kdcube-storage")
+    if is_placeholder(env_proc.entries.get("CB_BUNDLE_STORAGE_URL", (None, None))[1]):
+        update_env_value(env_proc, "CB_BUNDLE_STORAGE_URL", "/kdcube-storage")
+    if is_placeholder(env_proc.entries.get("BUNDLE_STORAGE_ROOT", (None, None))[1]):
+        update_env_value(env_proc, "BUNDLE_STORAGE_ROOT", "/bundle-storage")
+    if is_placeholder(env_proc.entries.get("AGENTIC_BUNDLES_ROOT", (None, None))[1]):
+        update_env_value(env_proc, "AGENTIC_BUNDLES_ROOT", "/bundles")
+    if is_placeholder(env_proc.entries.get("HOST_BUNDLES_PATH", (None, None))[1]):
+        update_env_value(env_proc, "HOST_BUNDLES_PATH", host_bundles)
+    if is_placeholder(env_proc.entries.get("HOST_BUNDLE_STORAGE_PATH", (None, None))[1]):
+        update_env_value(env_proc, "HOST_BUNDLE_STORAGE_PATH", host_bundle_storage)
 
     ui_build_context = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
     if is_placeholder(ui_build_context):
-        ui_build_context = ensure_absolute(
-            console,
-            "UI build context (platform repo root)",
-            ui_build_context,
-            defaults.get("ui_build_context"),
-        )
-        update_env_value(env_main, "UI_BUILD_CONTEXT", ui_build_context)
+        update_env_value(env_main, "UI_BUILD_CONTEXT", str(ctx.ai_app_root))
 
     for key, default_key in [
         ("UI_DOCKERFILE_PATH", "ui_dockerfile_path"),
@@ -314,18 +432,17 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         if is_placeholder(value):
             update_env_value(env_main, key, defaults.get(default_key, ""))
 
+    compose_ui_config = ctx.config_dir / "frontend.config.hardcoded.json"
+    write_frontend_config(compose_ui_config, tenant, project)
     if is_placeholder(env_main.entries.get("PATH_TO_FRONTEND_CONFIG_JSON", (None, None))[1]):
-        update_env_value(env_main, "PATH_TO_FRONTEND_CONFIG_JSON", defaults.get("frontend_config_json", ""))
+        update_env_value(env_main, "PATH_TO_FRONTEND_CONFIG_JSON", str(compose_ui_config))
+
+    dev_ui_config = ctx.ai_app_root / "ui/chat-web-app/public/private/config.hardcoded.json"
+    write_frontend_config(dev_ui_config, tenant, project)
 
     proxy_build_context = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
     if is_placeholder(proxy_build_context):
-        proxy_build_context = ensure_absolute(
-            console,
-            "Proxy build context (platform repo root)",
-            proxy_build_context,
-            defaults.get("proxy_build_context"),
-        )
-        update_env_value(env_main, "PROXY_BUILD_CONTEXT", proxy_build_context)
+        update_env_value(env_main, "PROXY_BUILD_CONTEXT", str(ctx.ai_app_root))
 
     for key, default_key in [
         ("PROXY_DOCKERFILE_PATH", "proxy_dockerfile_path"),
@@ -344,6 +461,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     save_env_file(env_proc)
     save_env_file(env_metrics)
     save_env_file(env_pg)
+    save_env_file(env_proxy)
 
     return {
         ".env": str(env_main.path),
@@ -351,6 +469,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         ".env.proc": str(env_proc.path),
         ".env.metrics": str(env_metrics.path),
         ".env.postgres.setup": str(env_pg.path),
+        ".env.proxylogin": str(env_proxy.path),
     }
 
 
@@ -377,46 +496,64 @@ def main() -> None:
     if not sample_env_dir.exists():
         raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
 
+    default_workdir = os.getenv("KDCUBE_WORKDIR") or str(docker_dir)
+    workdir = Path(
+        Prompt.ask("Compose workdir (config+data root)", default=default_workdir)
+    ).expanduser().resolve()
+    config_dir = workdir / "config"
+    data_dir = workdir / "data"
+    logs_dir = workdir / "logs"
+
     ctx = PathsContext(
         lib_root=lib_root,
         ai_app_root=ai_app_root,
         docker_dir=docker_dir,
         sample_env_dir=sample_env_dir,
+        workdir=workdir,
+        config_dir=config_dir,
+        data_dir=data_dir,
     )
 
-    ensure_env_files(docker_dir, sample_env_dir)
+    ensure_env_files(config_dir, sample_env_dir)
+    ensure_local_dirs(data_dir, logs_dir)
     env_paths = gather_configuration(console, ctx)
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("File")
-    table.add_column("Location")
+    console.print("\n[bold]Env files:[/bold]")
     for name, path in env_paths.items():
-        table.add_row(name, path)
-    console.print(table)
+        console.print(f"  {name}: {path}")
 
-    if Confirm.ask("Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=True):
-        try:
-            subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "build",
-                    "chat-ingress",
-                    "chat-proc",
-                    "metrics",
-                    "web-ui",
-                    "web-proxy",
-                    "postgres-setup",
-                ],
-                cwd=ctx.docker_dir,
-                check=True,
-            )
-        except FileNotFoundError:
-            console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
-        except subprocess.CalledProcessError:
-            console.print("[red]Docker compose build failed. Check the output and retry.[/red]")
+    if Confirm.ask("Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=False):
+        missing = missing_build_keys(env_main)
+        if missing:
+            console.print("[yellow]Skipping build — missing required build settings in .env:[/yellow]")
+            for key in missing:
+                console.print(f"  - {key}")
+            console.print("[yellow]Fill these in .env and rerun the build step.[/yellow]")
+        else:
+            try:
+                subprocess.run(
+                    [
+                        "docker",
+                        "compose",
+                        "--env-file",
+                        str(config_dir / ".env"),
+                        "build",
+                        "chat-ingress",
+                        "chat-proc",
+                        "metrics",
+                        "web-ui",
+                        "web-proxy",
+                        "postgres-setup",
+                    ],
+                    cwd=ctx.docker_dir,
+                    check=True,
+                )
+            except FileNotFoundError:
+                console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
+            except subprocess.CalledProcessError:
+                console.print("[red]Docker compose build failed. Check the output and retry.[/red]")
 
-    if Confirm.ask("Build the code execution image (py-code-exec:latest)?", default=True):
+    if Confirm.ask("Build the code execution image (py-code-exec:latest)?", default=False):
         try:
             subprocess.run(
                 ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
@@ -431,7 +568,7 @@ def main() -> None:
     if Confirm.ask("Run docker compose now?", default=False):
         console.print("Run this from the docker folder:")
         console.print(f"  cd {docker_dir}")
-        console.print("  docker compose up -d --build")
+        console.print(f"  docker compose --env-file {config_dir / '.env'} up -d --build")
 
 
 if __name__ == "__main__":

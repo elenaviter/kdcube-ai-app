@@ -10,6 +10,8 @@ from pathlib import Path
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
+from kdcube_apps_cli.banner import print_cli_banner
+
 
 DEFAULT_REPO = "https://github.com/kdcube/kdcube-ai-app.git"
 DEFAULT_DIR = Path.home() / ".kdcube" / "kdcube-ai-app"
@@ -32,7 +34,7 @@ def ensure_repo(console: Console, repo: str, target: Path) -> None:
 
 
 def run_installer(console: Console, repo_root: Path) -> None:
-    installer = repo_root / "app/ai-app/deployment/docker/all_in_one/kdcube-cli.py"
+    installer = repo_root / "app/ai-app/deployment/docker/all_in_one_kdcube/kdcube-cli.py"
     if not installer.exists():
         raise SystemExit(f"Installer not found at {installer}")
     console.print("Launching setup wizard...")
@@ -41,6 +43,7 @@ def run_installer(console: Console, repo_root: Path) -> None:
 
 def main() -> None:
     console = Console()
+    print_cli_banner()
     parser = argparse.ArgumentParser(description="KDCube Apps bootstrap CLI")
     parser.add_argument("--repo", default=DEFAULT_REPO, help="Git repo URL")
     parser.add_argument(

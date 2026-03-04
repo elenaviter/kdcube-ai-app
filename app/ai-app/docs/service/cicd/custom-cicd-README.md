@@ -20,6 +20,32 @@ Goal: keep **docker‑compose (EC2)** working during transition, while preparing
 
 ---
 
+## Product CI Prerequisites (Platform Repo)
+
+Before GitHub Actions can build and publish releases, ensure these are set:
+
+1. **DockerHub account + repo namespace**
+   - Create a DockerHub user (or org) and repositories
+   - Add secrets in GitHub:
+     - `DOCKERHUB_USERNAME`
+     - `DOCKERHUB_TOKEN`
+     - `DOCKERHUB_NAMESPACE` (optional; defaults to username)
+
+2. **PyPI publishing**
+   - Create a PyPI project: `kdcube-apps-cli`
+   - Configure **Trusted Publisher** (recommended) for this repo/workflow  
+     OR set a `PYPI_API_TOKEN` secret if using API token auth
+
+3. **GitHub Actions permissions**
+   - `contents: write` (to create tags)
+   - `id-token: write` (for PyPI trusted publisher)
+
+4. **Release file**
+   - `release.yaml` must exist and contain:
+     - `platform.ref` (PEP440‑compatible; used as tag + CLI version)
+
+---
+
 ## TL;DR (1‑page CI/CD Flow)
 
 **Inputs (single release file in customer repo):**
