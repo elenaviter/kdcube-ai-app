@@ -106,17 +106,56 @@ def update_if_placeholder(env_file: EnvFile, key: str, value: str) -> None:
         update_env_value(env_file, key, value)
 
 
+def _extract_multiline_value(env: EnvFile, key: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    start_idx = None
+    for idx, line in enumerate(env.lines):
+        if line.startswith(f"{key}="):
+            start_idx = idx
+            break
+    if start_idx is None:
+        return None, None, None
+    value = env.lines[start_idx].split("=", 1)[1]
+    end_idx = start_idx
+    if value.count("'") % 2 == 1:
+        while end_idx + 1 < len(env.lines):
+            end_idx += 1
+            value += "\n" + env.lines[end_idx]
+            if env.lines[end_idx].count("'") % 2 == 1:
+                break
+    return value, start_idx, end_idx
+
+
+def _format_json_multiline(key: str, data: Dict[str, object]) -> List[str]:
+    json_text = json.dumps(data, indent=2)
+    lines = json_text.splitlines()
+    lines[0] = f"{key}='" + lines[0]
+    lines[-1] = lines[-1] + "'"
+    return lines
+
+
 def patch_gateway_config_json(env: EnvFile, tenant: str, project: str) -> None:
-    current = env.entries.get("GATEWAY_CONFIG_JSON", (None, None))[1]
-    if current:
-        if "<TENANT_ID>" in current or "<PROJECT_ID>" in current:
-            updated = current.replace("<TENANT_ID>", tenant).replace("<PROJECT_ID>", project)
-            update_env_value(env, "GATEWAY_CONFIG_JSON", updated)
-            return
-        updated = re.sub(r'"tenant"\s*:\s*"[^"]*"', f'"tenant":"{tenant}"', current)
+    raw, start_idx, end_idx = _extract_multiline_value(env, "GATEWAY_CONFIG_JSON")
+    if raw is None:
+        return
+
+    stripped = raw.strip()
+    if stripped.startswith("'") and stripped.endswith("'"):
+        json_text = stripped[1:-1]
+    else:
+        json_text = stripped
+
+    try:
+        data = json.loads(json_text)
+    except json.JSONDecodeError:
+        updated = re.sub(r'"tenant"\s*:\s*"[^"]*"', f'"tenant":"{tenant}"', json_text)
         updated = re.sub(r'"project"\s*:\s*"[^"]*"', f'"project":"{project}"', updated)
-        if updated != current:
-            update_env_value(env, "GATEWAY_CONFIG_JSON", updated)
+        if updated != json_text:
+            replace_multiline_block(env, "GATEWAY_CONFIG_JSON", [f"GATEWAY_CONFIG_JSON='{updated}'"])
+        return
+
+    data["tenant"] = tenant
+    data["project"] = project
+    replace_multiline_block(env, "GATEWAY_CONFIG_JSON", _format_json_multiline("GATEWAY_CONFIG_JSON", data))
 
 
 def write_frontend_config(path: Path, tenant: str, project: str, token: str = "test-admin-token-123") -> None:
@@ -275,7 +314,7 @@ def ensure_absolute(console: Console, label: str, current: Optional[str], defaul
 
 def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str, str]:
     docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
-    repo_root = ai_app_root
+    repo_root = ai_app_root.parent.parent
     defaults: Dict[str, str] = {
         "docker_dir": str(docker_dir),
         "host_kb_storage": str(workdir / "data/kdcube-storage"),
@@ -421,7 +460,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     ui_build_context = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
     if is_placeholder(ui_build_context):
-        update_env_value(env_main, "UI_BUILD_CONTEXT", str(ctx.ai_app_root))
+        update_env_value(env_main, "UI_BUILD_CONTEXT", defaults.get("ui_build_context", ""))
 
     for key, default_key in [
         ("UI_DOCKERFILE_PATH", "ui_dockerfile_path"),
@@ -442,7 +481,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     proxy_build_context = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
     if is_placeholder(proxy_build_context):
-        update_env_value(env_main, "PROXY_BUILD_CONTEXT", str(ctx.ai_app_root))
+        update_env_value(env_main, "PROXY_BUILD_CONTEXT", defaults.get("proxy_build_context", ""))
 
     for key, default_key in [
         ("PROXY_DOCKERFILE_PATH", "proxy_dockerfile_path"),
@@ -496,7 +535,7 @@ def main() -> None:
     if not sample_env_dir.exists():
         raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
 
-    default_workdir = os.getenv("KDCUBE_WORKDIR") or str(docker_dir)
+    default_workdir = os.getenv("KDCUBE_WORKDIR") or str(Path.home() / ".kdcube" / "kdcube-runtime")
     workdir = Path(
         Prompt.ask("Compose workdir (config+data root)", default=default_workdir)
     ).expanduser().resolve()
@@ -523,8 +562,13 @@ def main() -> None:
     for name, path in env_paths.items():
         console.print(f"  {name}: {path}")
     console.print("\n[dim]Review/edit these files before building images if needed.[/dim]")
+    console.print("[dim]Build contexts (from .env):[/dim]")
+    ui_ctx = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
+    proxy_ctx = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
+    console.print(f"  UI_BUILD_CONTEXT={ui_ctx}")
+    console.print(f"  PROXY_BUILD_CONTEXT={proxy_ctx}")
 
-    console.print("\n[dim]Small coffee break:[/dim] [#C6F3F1]( ( ) )[/] [#01BEB2].-.-.[/] [#4372C3]`-.-'[/]\n")
+    console.print("\n[dim]Small coffee break:[/dim] ☕\n")
 
     if Confirm.ask("Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=False):
         missing = missing_build_keys(env_main)
