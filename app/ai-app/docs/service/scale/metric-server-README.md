@@ -80,6 +80,7 @@ Same pattern: choose either **push** (CloudWatch/Pushgateway) or **pull** (`/met
 | `METRICS_PORT` | `8090` | Metrics server port. |
 | `METRICS_ENABLE_PG_POOL` | `0` | If `1`, create Postgres pool to query `max_connections`. |
 | `GATEWAY_CONFIG_JSON` | — | Required: provides `tenant` + `project` (used for Redis namespacing). |
+| `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | `0` | If `1`, overwrite cached gateway config from env on startup. |
 
 ### Redis mode
 Redis mode uses standard app env:

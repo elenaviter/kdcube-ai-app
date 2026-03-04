@@ -29,12 +29,15 @@ Use the sample envs below as the authoritative list and copy into your IDE run c
 
 **Important:** `tenant` + `project` are now **only** read from `GATEWAY_CONFIG_JSON`.
 Do not use `TENANT_ID`, `PROJECT_ID`, or `DEFAULT_PROJECT_NAME`.
+For CI/CD or reproducible restarts, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1`
+to overwrite cached gateway config from env on each start.
 
 ## Shared Core (Ingress + Proc + Metrics)
 
 | Variable | Purpose |
 | --- | --- |
 | `GATEWAY_CONFIG_JSON` | Shared gateway config (tenant+project required). See sample JSON in `.env.ingress`/`.env.proc`/`.env.metrics`. |
+| `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | If `1`, overwrite cached gateway config from env on startup (CI/CD). |
 | `GATEWAY_COMPONENT` | Component identity: `ingress`, `proc`, or `metrics`. |
 | `POSTGRES_HOST` | Postgres host |
 | `POSTGRES_PORT` | Postgres port |

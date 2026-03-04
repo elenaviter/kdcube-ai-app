@@ -43,6 +43,8 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.infra.gateway.config import (
     apply_gateway_config_from_cache,
+    apply_gateway_config_from_env,
+    should_force_gateway_config_from_env,
     subscribe_gateway_config_updates,
     gateway_config_cache_key,
 )
@@ -391,12 +393,21 @@ async def _run_once() -> int:
             tmp.redis_async, tmp.redis_async_decode, tmp.redis_sync = await get_redis_clients()
             tmp.gateway_adapter = get_fastapi_adapter()
             settings = get_settings()
-            await apply_gateway_config_from_cache(
-                gateway_adapter=tmp.gateway_adapter,
-                tenant=settings.TENANT,
-                project=settings.PROJECT,
-                redis_url=REDIS_URL,
-            )
+            if should_force_gateway_config_from_env():
+                await apply_gateway_config_from_env(
+                    gateway_adapter=tmp.gateway_adapter,
+                    tenant=settings.TENANT,
+                    project=settings.PROJECT,
+                    redis_url=REDIS_URL,
+                    publish=False,
+                )
+            else:
+                await apply_gateway_config_from_cache(
+                    gateway_adapter=tmp.gateway_adapter,
+                    tenant=settings.TENANT,
+                    project=settings.PROJECT,
+                    redis_url=REDIS_URL,
+                )
             tmp.middleware, _ = get_heartbeats_mgr_and_middleware(
                 service_type="metrics",
                 service_name="metrics",
@@ -467,31 +478,46 @@ async def lifespan(app: FastAPI):
         # Gateway adapter + config cache
         app.state.gateway_adapter = get_fastapi_adapter()
         settings = get_settings()
-        cache_applied = await apply_gateway_config_from_cache(
-            gateway_adapter=app.state.gateway_adapter,
-            tenant=settings.TENANT,
-            project=settings.PROJECT,
-            redis_url=REDIS_URL,
-        )
-        if cache_applied:
-            app.state.gateway_config_source = "redis-cache"
+        if should_force_gateway_config_from_env():
+            await apply_gateway_config_from_env(
+                gateway_adapter=app.state.gateway_adapter,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                redis_url=REDIS_URL,
+                publish=False,
+            )
+            app.state.gateway_config_source = "env (forced)"
             logger.info(
-                "Gateway config source: redis-cache tenant=%s project=%s key=%s",
+                "Gateway config source: env (forced) tenant=%s project=%s",
                 settings.TENANT,
                 settings.PROJECT,
-                gateway_config_cache_key(tenant=settings.TENANT, project=settings.PROJECT),
             )
         else:
-            source = "env"
-            if os.getenv("GATEWAY_CONFIG_JSON"):
-                source = "env (GATEWAY_CONFIG_JSON)"
-            app.state.gateway_config_source = source
-            logger.info(
-                "Gateway config source: %s tenant=%s project=%s",
-                source,
-                settings.TENANT,
-                settings.PROJECT,
+            cache_applied = await apply_gateway_config_from_cache(
+                gateway_adapter=app.state.gateway_adapter,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                redis_url=REDIS_URL,
             )
+            if cache_applied:
+                app.state.gateway_config_source = "redis-cache"
+                logger.info(
+                    "Gateway config source: redis-cache tenant=%s project=%s key=%s",
+                    settings.TENANT,
+                    settings.PROJECT,
+                    gateway_config_cache_key(tenant=settings.TENANT, project=settings.PROJECT),
+                )
+            else:
+                source = "env"
+                if os.getenv("GATEWAY_CONFIG_JSON"):
+                    source = "env (GATEWAY_CONFIG_JSON)"
+                app.state.gateway_config_source = source
+                logger.info(
+                    "Gateway config source: %s tenant=%s project=%s",
+                    source,
+                    settings.TENANT,
+                    settings.PROJECT,
+                )
         app.state.gateway_config_stop = asyncio.Event()
         app.state.gateway_config_task = asyncio.create_task(
             subscribe_gateway_config_updates(

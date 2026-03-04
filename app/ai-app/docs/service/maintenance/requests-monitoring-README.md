@@ -77,6 +77,7 @@ On startup, the service loads gateway config in this order:
 In the **Gateway Configuration** card:
 - **Reset to Env**: writes the env‑derived config into Redis (overrides cache on all instances).
 - **Clear Cached Config**: deletes the Redis key so the next restart falls back to env/`GATEWAY_CONFIG_JSON`.
+- **CICD**: set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to overwrite Redis on every start.
 
 Important:
 - Changing `service_capacity.<component>.processes_per_instance` **requires a service restart**
@@ -85,6 +86,7 @@ Important:
 - Endpoint policy lists live in gateway config:
   - `guarded_rest_patterns` (rate limit + backpressure for REST)
   - `bypass_throttling_patterns` (skip rate limiting for public endpoints like Stripe)
+  - Configure via `GATEWAY_CONFIG_JSON` (component‑aware) or `/admin/gateway/update-config`.
 
 ## Redis Browser (Control Plane)
 Use the quick prefix buttons to inspect keys fast:

@@ -1080,6 +1080,27 @@ def gateway_config_cache_key(*, tenant: str, project: str) -> str:
     return f"{ns_key(CONFIG.GATEWAY.NAMESPACE, tenant=tenant, project=project)}:{CONFIG.GATEWAY.CURRENT_KEY}"
 
 
+def _env_truthy(name: str) -> bool:
+    raw = os.getenv(name, "")
+    if raw is None:
+        return False
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def should_force_gateway_config_from_env() -> bool:
+    return _env_truthy("GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP")
+
+
+def load_gateway_config_raw_from_env() -> Dict[str, Any]:
+    cfg_json = os.getenv("GATEWAY_CONFIG_JSON")
+    if isinstance(cfg_json, str) and cfg_json.strip():
+        try:
+            return json.loads(cfg_json)
+        except Exception as e:
+            logger.warning("Failed to parse GATEWAY_CONFIG_JSON: %s", e)
+    return _serialize_gateway_config(GatewayConfigFactory.create_from_env())
+
+
 async def load_gateway_config_from_cache(
         *,
         tenant: str,
@@ -1300,6 +1321,53 @@ async def apply_gateway_config_from_cache(
     return True
 
 
+async def apply_gateway_config_from_env(
+        *,
+        gateway_adapter,
+        tenant: str,
+        project: str,
+        redis_url: Optional[str] = None,
+        publish: bool = True,
+) -> bool:
+    raw_config = load_gateway_config_raw_from_env()
+    if not isinstance(raw_config, dict):
+        return False
+    raw_config = json.loads(json.dumps(raw_config))
+    raw_config["tenant"] = tenant
+    raw_config["project"] = project
+    raw_config["tenant_id"] = tenant
+    raw_config["project_id"] = project
+    component = _normalize_component_name(os.getenv("GATEWAY_COMPONENT") or "ingress")
+    cfg = parse_gateway_config_for_component(raw_config, component)
+    apply_gateway_config_snapshot(gateway_adapter.gateway, cfg)
+    set_gateway_config(gateway_adapter.gateway.gateway_config)
+    if hasattr(gateway_adapter, "policy") and getattr(gateway_adapter.policy, "set_guarded_patterns", None):
+        gateway_adapter.policy.set_guarded_patterns(gateway_adapter.gateway.gateway_config.guarded_rest_patterns)
+    if hasattr(gateway_adapter, "policy") and getattr(gateway_adapter.policy, "set_bypass_throttling_patterns", None):
+        gateway_adapter.policy.set_bypass_throttling_patterns(
+            gateway_adapter.gateway.gateway_config.bypass_throttling_patterns
+        )
+    if redis_url:
+        try:
+            await save_gateway_config_raw_to_cache(
+                tenant=tenant,
+                project=project,
+                redis_url=redis_url,
+                raw_config=raw_config,
+            )
+            if publish:
+                await publish_gateway_config_update_raw(
+                    raw_config=raw_config,
+                    tenant=tenant,
+                    project=project,
+                    redis_url=redis_url,
+                    actor="env.startup",
+                )
+        except Exception:
+            pass
+    return True
+
+
 async def subscribe_gateway_config_updates(
         *,
         gateway_adapter,
@@ -1410,11 +1478,117 @@ class GatewayConfigurationManager:
         section[comp_key] = merged
         raw[key] = section
 
+    def _merge_component_list(self, raw: Dict[str, Any], key: str, component: Optional[str], values: list[str]) -> None:
+        if values is None or not isinstance(values, list):
+            return
+        comp_key = self._component_key(component)
+        # Preserve component-aware layout if already present; otherwise create it.
+        section = raw.get(key)
+        if not isinstance(section, dict) or not any(k in section for k in ("ingress", "proc", "processor", "worker")):
+            section = {}
+        section[comp_key] = values
+        raw[key] = section
+
+    @staticmethod
+    def _looks_like_raw_config(payload: Dict[str, Any]) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("raw_config") or payload.get("gateway_config") or payload.get("config"):
+            return True
+        if "profile" in payload:
+            return True
+        for key in ("service_capacity", "backpressure", "rate_limits", "pools", "limits"):
+            value = payload.get(key)
+            if isinstance(value, dict) and any(k in value for k in ("ingress", "proc", "processor", "worker")):
+                return True
+        return False
+
+    @staticmethod
+    def _resolve_target_ids(
+        raw_config: Optional[Dict[str, Any]],
+        target_tenant: Optional[str],
+        target_project: Optional[str],
+        base_config: "GatewayConfiguration",
+    ) -> tuple[str, str]:
+        raw = raw_config or {}
+        tenant = target_tenant or raw.get("tenant") or raw.get("tenant_id") or base_config.tenant_id
+        project = target_project or raw.get("project") or raw.get("project_id") or base_config.project_id
+        return str(tenant), str(project)
+
+    async def _apply_raw_config(
+        self,
+        raw_config: Dict[str, Any],
+        *,
+        target_tenant: Optional[str],
+        target_project: Optional[str],
+        component: Optional[str],
+    ):
+        base_config = get_gateway_config()
+        target_tenant, target_project = self._resolve_target_ids(raw_config, target_tenant, target_project, base_config)
+        if not isinstance(raw_config, dict):
+            raw_config = {}
+        raw_config = json.loads(json.dumps(raw_config))
+        raw_config["tenant"] = target_tenant
+        raw_config["project"] = target_project
+        raw_config["tenant_id"] = target_tenant
+        raw_config["project_id"] = target_project
+
+        is_local_target = (
+            (target_tenant == base_config.tenant_id) and
+            (target_project == base_config.project_id)
+        )
+        local_component = self._component_key(component)
+        if is_local_target:
+            applied_cfg = parse_gateway_config_for_component(raw_config, local_component)
+            apply_gateway_config_snapshot(self.gateway, applied_cfg)
+            set_gateway_config(self.gateway.gateway_config)
+            if hasattr(self.gateway_adapter, "policy"):
+                policy = self.gateway_adapter.policy
+                if getattr(policy, "set_guarded_patterns", None):
+                    policy.set_guarded_patterns(self.gateway.gateway_config.guarded_rest_patterns)
+                if getattr(policy, "set_bypass_throttling_patterns", None):
+                    policy.set_bypass_throttling_patterns(self.gateway.gateway_config.bypass_throttling_patterns)
+            applied = self.gateway.gateway_config
+        else:
+            applied = parse_gateway_config_for_component(raw_config, local_component)
+
+        try:
+            await save_gateway_config_raw_to_cache(
+                tenant=target_tenant,
+                project=target_project,
+                redis_url=self.gateway.gateway_config.redis_url,
+                raw_config=raw_config,
+            )
+            await publish_gateway_config_update_raw(
+                raw_config=raw_config,
+                tenant=target_tenant,
+                project=target_project,
+                redis_url=self.gateway.gateway_config.redis_url,
+                actor="admin",
+            )
+        except Exception:
+            pass
+
+        logger.info("Gateway configuration updated - persisted for tenant/project")
+        return applied
+
     async def update_capacity_settings(self, **kwargs):
         """Update capacity settings and refresh all dependent calculations"""
+        payload = dict(kwargs)
+        raw_payload = payload.get("raw_config") or payload.get("gateway_config") or payload.get("config")
+        if raw_payload is None and self._looks_like_raw_config(payload):
+            raw_payload = payload
+
         target_tenant = kwargs.pop("tenant", None) or kwargs.pop("tenant_id", None)
         target_project = kwargs.pop("project", None) or kwargs.pop("project_id", None)
         component = kwargs.pop("component", None)
+        if raw_payload is not None:
+            return await self._apply_raw_config(
+                raw_payload,
+                target_tenant=target_tenant,
+                target_project=target_project,
+                component=component,
+            )
         service_capacity_payload = kwargs.pop("service_capacity", None) or {}
         backpressure_payload = kwargs.pop("backpressure", None) or {}
         rate_limits_payload = kwargs.pop("rate_limits", None) or {}
@@ -1458,11 +1632,19 @@ class GatewayConfigurationManager:
 
         if isinstance(guarded_rest_patterns, list):
             patterns = [str(p) for p in guarded_rest_patterns if p]
-            raw_config["guarded_rest_patterns"] = patterns or list(DEFAULT_GUARDED_REST_PATTERNS)
+            if component:
+                self._merge_component_list(raw_config, "guarded_rest_patterns",
+                                           component, patterns or list(DEFAULT_GUARDED_REST_PATTERNS))
+            else:
+                raw_config["guarded_rest_patterns"] = patterns or list(DEFAULT_GUARDED_REST_PATTERNS)
 
         if isinstance(bypass_throttling_patterns, list):
             patterns = [str(p) for p in bypass_throttling_patterns if p]
-            raw_config["bypass_throttling_patterns"] = patterns
+            if component:
+                self._merge_component_list(raw_config, "bypass_throttling_patterns",
+                                           component, patterns)
+            else:
+                raw_config["bypass_throttling_patterns"] = patterns
 
         is_local_target = (
             (target_tenant == base_config.tenant_id) and
@@ -1594,13 +1776,32 @@ class GatewayConfigurationManager:
 
     async def validate_proposed_changes(self, **kwargs):
         """Validate proposed configuration changes before applying"""
+        payload = dict(kwargs)
+        raw_payload = payload.get("raw_config") or payload.get("gateway_config") or payload.get("config")
+        if raw_payload is None and self._looks_like_raw_config(payload):
+            raw_payload = payload
+
         target_tenant = kwargs.pop("tenant", None) or kwargs.pop("tenant_id", None)
         target_project = kwargs.pop("project", None) or kwargs.pop("project_id", None)
         component = kwargs.pop("component", None)
+        if raw_payload is not None:
+            base_config = get_gateway_config()
+            target_tenant, target_project = self._resolve_target_ids(raw_payload, target_tenant, target_project, base_config)
+            if not isinstance(raw_payload, dict):
+                raw_payload = {}
+            raw_payload = json.loads(json.dumps(raw_payload))
+            raw_payload["tenant"] = target_tenant
+            raw_payload["project"] = target_project
+            raw_payload["tenant_id"] = target_tenant
+            raw_payload["project_id"] = target_project
+            temp_config = parse_gateway_config_for_component(raw_payload, self._component_key(component))
+            validation = get_validation_summary(temp_config)
+            return validation
         service_capacity_payload = kwargs.pop("service_capacity", None) or {}
         backpressure_payload = kwargs.pop("backpressure", None) or {}
         rate_limits_payload = kwargs.pop("rate_limits", None) or {}
         guarded_rest_patterns = kwargs.pop("guarded_rest_patterns", None)
+        bypass_throttling_patterns = kwargs.pop("bypass_throttling_patterns", None)
         base_config = get_gateway_config()
         target_tenant = target_tenant or base_config.tenant_id
         target_project = target_project or base_config.project_id
@@ -1625,7 +1826,22 @@ class GatewayConfigurationManager:
 
         if isinstance(guarded_rest_patterns, list):
             patterns = [str(p) for p in guarded_rest_patterns if p]
-            raw_config["guarded_rest_patterns"] = patterns or list(DEFAULT_GUARDED_REST_PATTERNS)
+            if component:
+                self._merge_component_list(
+                    raw_config,
+                    "guarded_rest_patterns",
+                    component,
+                    patterns or list(DEFAULT_GUARDED_REST_PATTERNS),
+                )
+            else:
+                raw_config["guarded_rest_patterns"] = patterns or list(DEFAULT_GUARDED_REST_PATTERNS)
+
+        if isinstance(bypass_throttling_patterns, list):
+            patterns = [str(p) for p in bypass_throttling_patterns if p]
+            if component:
+                self._merge_component_list(raw_config, "bypass_throttling_patterns", component, patterns)
+            else:
+                raw_config["bypass_throttling_patterns"] = patterns
 
         temp_config = parse_gateway_config_for_component(raw_config, self._component_key(component))
         validation = get_validation_summary(temp_config)

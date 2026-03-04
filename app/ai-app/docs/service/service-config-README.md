@@ -33,6 +33,54 @@ For gateway‑level rate limits and backpressure configuration, see `docs/gatewa
 Tenant/project **must** be provided via `GATEWAY_CONFIG_JSON` (per tenant/project).
 There are no supported env fallbacks for tenant/project anymore.
 
+### Guarded REST endpoints (current defaults)
+The gateway uses **guarded REST patterns** to decide which REST endpoints are
+treated as ingress (rate limit + backpressure) vs read‑only (session only).
+
+**Ingress (chat REST)**
+- `^/resources/link-preview$`
+- `^/resources/by-rn$`
+- `^/conversations/[^/]+/[^/]+/[^/]+/fetch$`
+- `^/conversations/[^/]+/[^/]+/turns-with-feedbacks$`
+- `^/conversations/[^/]+/[^/]+/feedback/conversations-in-period$`
+
+**Processor (integrations)**
+- `^/integrations/bundles/[^/]+/[^/]+/operations/[^/]+$`
+
+These defaults are used when no `guarded_rest_patterns` are provided in
+`GATEWAY_CONFIG_JSON`.
+
+### Where the patterns come from (and why you see the same list)
+If Redis already contains a **flat** `guarded_rest_patterns` list (legacy), the UI
+will show the same list for all components. To make it component‑specific,
+store a **component‑scoped** object (see example below) and then:
+1. Set `GATEWAY_CONFIG_JSON` with the component‑scoped lists.
+2. Use **Reset to Env** in the admin UI (or clear cached config + restart).
+
+### Precedence (critical)
+On startup, gateway config is loaded in this order:
+1. **Redis cache** for the tenant/project (if present)
+2. **Env defaults** / `GATEWAY_CONFIG_JSON`
+
+To enforce env config during deployment, **clear cached config** or call
+`/admin/gateway/reset-config` after setting `GATEWAY_CONFIG_JSON`.
+
+**CICD / forced env mode:** set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to
+overwrite the cached config on every service start. This forces the
+effective config to match `GATEWAY_CONFIG_JSON` in CI/CD (and broadcasts
+the update to other replicas).
+
+### Admin update payloads (env shape vs component patch)
+`/admin/gateway/update-config` and `/admin/gateway/validate-config` accept:
+
+- **Full gateway config** (same shape as `GATEWAY_CONFIG_JSON`).
+  Include `profile` and the component‑scoped sections (`service_capacity`,
+  `backpressure`, `rate_limits`, `pools`, `limits`, and optional pattern lists).
+- **Component patch** with `component` + partial sections (used by the admin UI).
+
+If you send a full config, omit `component` (or wrap the config in
+`raw_config`) to avoid patch semantics.
+
 ### Top-level keys (required unless noted)
 
 | Key                     | Required | Purpose                                                           |
@@ -48,16 +96,19 @@ There are no supported env fallbacks for tenant/project anymore.
 Each section can be **flat** or **component‑scoped** (`ingress`, `proc`).  
 When component‑scoped, each service reads its own subsection based on `GATEWAY_COMPONENT`.
 
-| Section              | Keys (examples)                                                                            | Purpose                                                     |
-|----------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------|
-| `service_capacity`   | `processes_per_instance`, `concurrent_requests_per_process`, `avg_processing_time_seconds` | Capacity sizing. Used for backpressure math and validation. |
-| `backpressure`       | `capacity_buffer`, `queue_depth_multiplier`, thresholds, `capacity_source_component`       | Queue/backpressure settings and capacity source selector.   |
-| `rate_limits`        | role limits (`hourly`, `burst`, `burst_window`)                                            | Per‑role rate limiting (per session).                       |
-| `pools`              | `pg_pool_min_size`, `pg_pool_max_size`, `redis_max_connections`, `pg_max_connections`      | Pool sizing per component; optional DB max for warnings.    |
-| `limits`             | `max_sse_connections_per_instance`, `max_integrations_ops_concurrency`, `max_queue_size`   | Soft limits for ingress/proc.                               |
-| `guarded_rest_patterns` | regex list                                                                           | REST endpoints gated by gateway (rate limit + backpressure). |
-| `bypass_throttling_patterns` | regex list                                                                    | REST endpoints that skip rate limiting (still routed + logged). |
-| `redis`              | `sse_stats_ttl_seconds`, `sse_stats_max_age_seconds`                                       | Redis‑based SSE stats retention.                            |
+| Section                       | Keys (examples)                                                                            | Purpose                                                     |
+|-------------------------------|--------------------------------------------------------------------------------------------|-------------------------------------------------------------|
+| `service_capacity`            | `processes_per_instance`, `concurrent_requests_per_process`, `avg_processing_time_seconds` | Capacity sizing. Used for backpressure math and validation. |
+| `backpressure`                | `capacity_buffer`, `queue_depth_multiplier`, thresholds, `capacity_source_component`       | Queue/backpressure settings and capacity source selector.   |
+| `rate_limits`                 | role limits (`hourly`, `burst`, `burst_window`)                                            | Per‑role rate limiting (per session).                       |
+| `pools`                       | `pg_pool_min_size`, `pg_pool_max_size`, `redis_max_connections`, `pg_max_connections`      | Pool sizing per component; optional DB max for warnings.    |
+| `limits`                      | `max_sse_connections_per_instance`, `max_integrations_ops_concurrency`, `max_queue_size`   | Soft limits for ingress/proc.                               |
+| `guarded_rest_patterns`       | regex list                                                                           | REST endpoints gated by gateway (rate limit + backpressure). |
+| `bypass_throttling_patterns`  | regex list                                                                    | REST endpoints that skip rate limiting (still routed + logged). |
+| `redis`                       | `sse_stats_ttl_seconds`, `sse_stats_max_age_seconds`                                       | Redis‑based SSE stats retention.                            |
+
+Pattern styles (strict vs prefix‑tolerant) are documented in
+`docs/service/gateway-README.md`.
 
 ### Example (readable, component‑scoped)
 
@@ -66,12 +117,24 @@ When component‑scoped, each service reads its own subsection based on `GATEWAY
   "tenant": "tenant-id",
   "project": "project-id",
   "profile": "development",
-  "guarded_rest_patterns": [
-    "^/integrations/bundles/[^/]+/[^/]+/operations/[^/]+$"
-  ],
-  "bypass_throttling_patterns": [
-    "^/webhooks/stripe$"
-  ],
+  "guarded_rest_patterns": {
+    "ingress": [
+      "^/resources/link-preview$",
+      "^/resources/by-rn$",
+      "^/conversations/[^/]+/[^/]+/[^/]+/fetch$",
+      "^/conversations/[^/]+/[^/]+/turns-with-feedbacks$",
+      "^/conversations/[^/]+/[^/]+/feedback/conversations-in-period$"
+    ],
+    "proc": [
+      "^/integrations/bundles/[^/]+/[^/]+/operations/[^/]+$"
+    ]
+  },
+  "bypass_throttling_patterns": {
+    "ingress": [
+      "^/webhooks/stripe$"
+    ],
+    "proc": []
+  },
   "service_capacity": {
     "ingress": {
       "processes_per_instance": 2

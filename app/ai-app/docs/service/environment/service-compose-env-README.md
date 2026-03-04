@@ -73,6 +73,7 @@ env vars in `.env.proc`. See `docs/sdk/bundle/bundle-ops-README.md`.
 ## Shared Requirements
 
 - **Same `GATEWAY_CONFIG_JSON`** for ingress/proc/metrics.
+- For CI/CD, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to overwrite cached config on startup.
 - `tenant` + `project` are required and must be in `GATEWAY_CONFIG_JSON`.
 - Use `POSTGRES_HOST` / `REDIS_HOST` for managed services; omit for local‑infra if compose provides them.
 - `TENANT_ID` / `DEFAULT_PROJECT_NAME` are not supported.

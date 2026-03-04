@@ -53,6 +53,34 @@ class GatewayPolicyResolver:
         self._component = (os.getenv("GATEWAY_COMPONENT") or "ingress").strip().lower()
         self._bypass_throttling_patterns: tuple[re.Pattern, ...] = tuple()
 
+    def _path_candidates(self, path: str) -> tuple[str, ...]:
+        """
+        Return path variants for suffix matching.
+        We match against the full path and against suffixes obtained by
+        progressively stripping leading path segments.
+        """
+        if not path:
+            return (path,)
+        clean = path if path.startswith("/") else f"/{path}"
+        segments = [seg for seg in clean.split("/") if seg]
+        if not segments:
+            return ("/",)
+        candidates: list[str] = []
+        # Full path first
+        candidates.append(clean)
+        # Then suffixes by dropping leading segments
+        for i in range(1, len(segments)):
+            candidates.append("/" + "/".join(segments[i:]))
+        # de-dup while preserving order
+        seen = set()
+        unique: list[str] = []
+        for item in candidates:
+            if item in seen:
+                continue
+            seen.add(item)
+            unique.append(item)
+        return tuple(unique)
+
     def set_guarded_patterns(self, patterns: Iterable[str]) -> None:
         compiled = tuple(
             re.compile(p) for p in (patterns or self.DEFAULT_GUARDED_REST_PATTERNS)
@@ -79,13 +107,15 @@ class GatewayPolicyResolver:
         if path.startswith("/socket.io"):
             # connect + events share prefix; let Socket handler decide
             return EndpointClass.CONNECT
+        candidates = self._path_candidates(path)
         for pattern in self._guarded_rest_patterns:
-            if pattern.match(path):
+            if any(pattern.match(candidate) for candidate in candidates):
                 return EndpointClass.CHAT_INGRESS
         return EndpointClass.READ
 
     def resolve(self, request: Request) -> GatewayPolicy:
         path = request.url.path
+        candidates = self._path_candidates(path)
         cls = self.classify(path)
 
         # chat ingress for SSE/Socket.IO is gated inside transport handlers
@@ -117,7 +147,11 @@ class GatewayPolicyResolver:
                 bypass_backpressure=True,
                 requirements=[],
             )
-            if self._bypass_throttling_patterns and any(p.match(path) for p in self._bypass_throttling_patterns):
+            if self._bypass_throttling_patterns and any(
+                p.match(candidate)
+                for p in self._bypass_throttling_patterns
+                for candidate in candidates
+            ):
                 return GatewayPolicy(
                     cls=pol.cls,
                     bypass_throttling=True,

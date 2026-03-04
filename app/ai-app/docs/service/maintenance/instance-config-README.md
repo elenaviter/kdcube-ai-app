@@ -31,6 +31,7 @@ On startup the gateway config is loaded in this order:
 2. Env defaults / `GATEWAY_CONFIG_JSON`.
 
 If you want env to apply, clear the cached config first (Control Plane → Gateway Configuration → “Clear Cached Config”), then restart.
+For CI/CD, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to overwrite Redis on each start.
 
 Endpoint policy lists are part of the gateway config:
 - `guarded_rest_patterns` (REST endpoints that should be gated)

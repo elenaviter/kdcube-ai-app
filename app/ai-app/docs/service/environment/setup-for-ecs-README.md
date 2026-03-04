@@ -92,4 +92,6 @@ For git pulls, the bundles root must be writable:
 
 - Redis remains the runtime source of truth.
 - Use `BUNDLES_FORCE_ENV_ON_STARTUP=1` only for a single rollout.
+- To enforce gateway config from env on each deploy, set
+  `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` on ingress/proc/metrics tasks.
 - Public repos don’t require SSH key/known_hosts.

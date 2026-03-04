@@ -149,6 +149,7 @@ internal endpoints without being dropped.
   (or update via `/admin/gateway/update-config`).
 - To allow **public endpoints** that should skip rate limiting, set
   `bypass_throttling_patterns` in `GATEWAY_CONFIG_JSON`.
+- Both lists are **component‑aware** (`ingress` / `proc`) and are read from gateway config.
 
 Current guarded endpoints (exact patterns):
 - `/resources/link-preview`
@@ -160,6 +161,23 @@ Current guarded endpoints (exact patterns):
 
 Example public webhook bypass:
 - `bypass_throttling_patterns = ["^/webhooks/stripe$"]`
+
+### Pattern styles (regex)
+Endpoint lists are **regex patterns**. Patterns are matched against the request
+path and (with suffix‑matching enabled) against **path suffixes** created by
+stripping leading segments. This allows short patterns to work across different
+API base prefixes.
+
+You can choose strict or tolerant patterns explicitly:
+- **Exact full path:** `^/api/admin/control-plane/webhooks/stripe$`
+- **Prefix‑tolerant:** `^.*/webhooks/stripe$`
+- **Optional admin prefix:** `^(/api/admin/control-plane)?/webhooks/stripe$`
+- **Segment prefix (match `/webhooks/stripe` and anything below it):**
+  `^.*/webhooks/stripe(/.*)?$`
+
+Note: with suffix‑matching enabled, an “exact” pattern can still match when the
+full path appears as a suffix (e.g., `/v2/api/admin/...`). Use a stricter regex
+if you need to pin a specific base path.
 
 ---
 
@@ -239,6 +257,8 @@ See: `docs/service/scale/metrics-README.md`.
 - Each service instance **applies only its own tenant/project config** (from env),
   but it can **publish updates for any tenant/project** via the admin API.
 - On startup, the service **loads Redis config first** (if present) and falls back to env defaults.
+- For CI/CD, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to **overwrite Redis**
+  with `GATEWAY_CONFIG_JSON` on every start (and broadcast to replicas).
 
 Redis keys/channels (per tenant/project):
 - `"<tenant>:<project>:kdcube:config:gateway:current"`
@@ -247,8 +267,28 @@ Redis keys/channels (per tenant/project):
 Subscriber wiring:
 - Chat API subscribes on startup in [web_app.py](../../apps/chat/api/web_app.py).
 
-### Update-config payload (component-aware)
+### Update-config payloads
 `POST /admin/gateway/update-config`
+
+**Option A: full config (same shape as `GATEWAY_CONFIG_JSON`)**
+
+```json
+{
+  "tenant": "tenant-a",
+  "project": "project-a",
+  "profile": "development",
+  "service_capacity": {
+    "ingress": { "processes_per_instance": 2 },
+    "proc": { "concurrent_requests_per_process": 8, "processes_per_instance": 2 }
+  },
+  "backpressure": { "capacity_source_component": "proc", "ingress": {}, "proc": {} },
+  "rate_limits": { "ingress": {}, "proc": {} },
+  "pools": { "ingress": {}, "proc": {} },
+  "limits": { "ingress": {}, "proc": {} }
+}
+```
+
+**Option B: component patch**
 
 ```json
 {

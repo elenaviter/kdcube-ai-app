@@ -120,6 +120,22 @@ interface CircuitBreakerStats {
     opened_at?: number;
 }
 
+const isRawGatewayConfigPayload = (payload: any): boolean => {
+    if (!payload || typeof payload !== 'object') return false;
+    if (payload.raw_config || payload.gateway_config || payload.config) return true;
+    if (payload.profile) return true;
+    const sections = ['service_capacity', 'backpressure', 'rate_limits', 'pools', 'limits'];
+    for (const key of sections) {
+        const value = payload[key];
+        if (value && typeof value === 'object') {
+            if ('ingress' in value || 'proc' in value || 'processor' in value || 'worker' in value) {
+                return true;
+            }
+        }
+    }
+    return false;
+};
+
 interface CircuitBreakerSummary {
     total_circuits: number;
     open_circuits: number;
@@ -901,6 +917,10 @@ const MonitoringDashboard: React.FC = () => {
 
     useEffect(() => {
         if (!system?.gateway_configuration) return;
+        if (configRaw) {
+            setConfigJson(JSON.stringify(configRaw, null, 2));
+            return;
+        }
         const compCfg = (configComponents && configComponents[selectedComponent]) || system.gateway_configuration;
         const sc = compCfg.service_capacity || {};
         const bp = compCfg.backpressure || compCfg.backpressure_settings || {};
@@ -926,7 +946,7 @@ const MonitoringDashboard: React.FC = () => {
             rate_limits: compCfg.rate_limits || {},
         };
         setConfigJson(JSON.stringify(payload, null, 2));
-    }, [system, tenant, project, selectedComponent, configComponents]);
+    }, [system, tenant, project, selectedComponent, configComponents, configRaw]);
 
     useEffect(() => {
         plannerInitializedRef.current = false;
@@ -1083,7 +1103,9 @@ const MonitoringDashboard: React.FC = () => {
     const handleValidate = async () => {
         try {
             const payload = JSON.parse(configJson);
-            if (!payload.component) payload.component = selectedComponent;
+            if (!isRawGatewayConfigPayload(payload) && !payload.component) {
+                payload.component = selectedComponent;
+            }
             const res = await api.validateGatewayConfig(payload);
             setValidationResult(res);
             setActionMessage('Validation completed');
@@ -1095,7 +1117,9 @@ const MonitoringDashboard: React.FC = () => {
     const handleUpdate = async () => {
         try {
             const payload = JSON.parse(configJson);
-            if (!payload.component) payload.component = selectedComponent;
+            if (!isRawGatewayConfigPayload(payload) && !payload.component) {
+                payload.component = selectedComponent;
+            }
             await api.updateGatewayConfig(payload);
             setActionMessage('Config updated');
             await refreshAll();
@@ -1773,6 +1797,20 @@ const MonitoringDashboard: React.FC = () => {
                         <Legend>
                             Rough sizing only; validate with real traffic and latency.
                         </Legend>
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
+                            <label className="flex items-center gap-2">
+                                Draft target
+                                <select
+                                    className="border border-gray-200 rounded px-2 py-1 text-xs"
+                                    value={selectedComponent}
+                                    onChange={(e) => setSelectedComponent(e.target.value as 'ingress' | 'proc')}
+                                >
+                                    <option value="ingress">ingress</option>
+                                    <option value="proc">proc</option>
+                                </select>
+                            </label>
+                            <span>Config source: {configSource}</span>
+                        </div>
                         <div className="text-xs text-gray-500">
                             {`Source: GATEWAY_CONFIG_JSON.service_capacity.${plannerComponentKey} (or admin update). Assumes all instances in the selected tenant/project share the same config.`}
                         </div>
@@ -2009,29 +2047,18 @@ const MonitoringDashboard: React.FC = () => {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3 text-xs text-gray-600">
-                            <label className="flex items-center gap-2">
-                                Component
-                                <select
-                                    className="border border-gray-200 rounded px-2 py-1 text-xs"
-                                    value={selectedComponent}
-                                    onChange={(e) => setSelectedComponent(e.target.value as 'ingress' | 'proc')}
-                                >
-                                    <option value="ingress">ingress</option>
-                                    <option value="proc">proc</option>
-                                </select>
-                            </label>
                             <span>Config source: {configSource}</span>
                         </div>
 
                         {configRaw && (
                             <TextArea
-                                label="Tenant/Project Config (read-only)"
+                                label="Current Gateway Config (read-only)"
                                 value={JSON.stringify(configRaw, null, 2)}
                                 onChange={() => {}}
                             />
                         )}
 
-                        <TextArea label="Update Payload (JSON)" value={configJson} onChange={(e) => setConfigJson(e.target.value)} />
+                        <TextArea label="Gateway Config JSON (editable)" value={configJson} onChange={(e) => setConfigJson(e.target.value)} />
 
                         <div className="flex flex-wrap gap-3">
                             <Button variant="secondary" onClick={handleValidate}>Validate</Button>
@@ -2044,8 +2071,8 @@ const MonitoringDashboard: React.FC = () => {
                             Note: changing `service_capacity.processes_per_instance` requires a service restart to affect worker count.
                         </div>
                         <div className="text-xs text-gray-600">
-                            Updates apply to the selected component and are persisted in the tenant/project cache. Other component
-                            settings are preserved if present in the cached config.
+                            Updates are persisted in the tenant/project cache and broadcast to running replicas.
+                            Paste the full `GATEWAY_CONFIG_JSON` to replace the cached config.
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3">

@@ -197,6 +197,76 @@ class GatewayLoadTester:
                 fingerprint=fingerprint_suffix if user_type == "anonymous" else None
             )
 
+    async def send_endpoint_request(self,
+                                    method: str,
+                                    endpoint: str,
+                                    user_type: str = "anonymous",
+                                    session_id: Optional[str] = None,
+                                    fingerprint_suffix: str = "",
+                                    headers_override: Optional[Dict[str, str]] = None,
+                                    json_payload: Optional[Dict[str, Any]] = None,
+                                    raw_body: Optional[bytes] = None) -> RequestResult:
+        """Send a request to an arbitrary endpoint (for policy testing)."""
+        request_id = str(uuid.uuid4())[:8]
+        start_time = time.time()
+
+        # Prepare headers based on user type
+        headers = {}
+        if user_type == "registered":
+            headers["Authorization"] = f"Bearer {self.config.chat_user_token}"
+        elif user_type == "admin":
+            headers["Authorization"] = f"Bearer {self.config.admin_token}"
+
+        if user_type == "anonymous":
+            fake_ip = f"192.168.1.{hash(fingerprint_suffix) % 254 + 1}"
+            user_agent = f"LoadTester-{fingerprint_suffix}"
+            headers.update({
+                "X-Forwarded-For": fake_ip,
+                "User-Agent": user_agent
+            })
+
+        if headers_override:
+            headers.update(headers_override)
+
+        url = endpoint if endpoint.startswith("http") else f"{self.config.base_url}{endpoint}"
+
+        try:
+            response = await self.client.request(
+                method.upper(),
+                url,
+                json=json_payload,
+                content=raw_body,
+                headers=headers,
+            )
+            response_time = time.time() - start_time
+
+            try:
+                response_data = response.json()
+            except Exception:
+                response_data = {"raw_response": response.text}
+
+            return RequestResult(
+                request_id=request_id,
+                user_type=user_type,
+                status_code=response.status_code,
+                response_time=response_time,
+                timestamp=start_time,
+                response_data=response_data,
+                fingerprint=fingerprint_suffix if user_type == "anonymous" else None
+            )
+
+        except Exception as e:
+            response_time = time.time() - start_time
+            return RequestResult(
+                request_id=request_id,
+                user_type=user_type,
+                status_code=0,
+                response_time=response_time,
+                timestamp=start_time,
+                error=str(e),
+                fingerprint=fingerprint_suffix if user_type == "anonymous" else None
+            )
+
     def analyze_results(self, test_name: str, results: List[RequestResult],
                         duration: float, system_before: Dict, system_after: Dict) -> TestResult:
         """Analyze test results and generate report"""
@@ -462,6 +532,69 @@ class GatewayLoadTester:
         return self.analyze_results("Mixed load test", results, duration,
                                     system_before, system_after)
 
+    async def test_guarded_vs_bypass(self,
+                                     guarded_endpoint: str,
+                                     bypass_endpoint: str,
+                                     method: str = "POST",
+                                     user_type: str = "registered",
+                                     total_requests: int = 50,
+                                     concurrency: int = 10,
+                                     guarded_payload: Optional[Dict[str, Any]] = None,
+                                     bypass_payload: Optional[Dict[str, Any]] = None,
+                                     guarded_headers: Optional[Dict[str, str]] = None,
+                                     bypass_headers: Optional[Dict[str, str]] = None) -> Dict[str, TestResult]:
+        """Demonstrate 429 on guarded endpoints vs bypass throttling endpoints."""
+        print(f"\n🧪 Testing guarded vs bypass throttling")
+        print(f"  Guarded: {guarded_endpoint}")
+        print(f"  Bypass:  {bypass_endpoint}")
+
+        system_before = await self.reset_system_state()
+        session_id = str(uuid.uuid4())
+        fingerprint = str(uuid.uuid4())[:8]
+
+        async def run_burst(name: str, endpoint: str, payload: Optional[Dict[str, Any]], headers: Optional[Dict[str, str]]):
+            sem = asyncio.Semaphore(max(1, concurrency))
+            results: List[RequestResult] = []
+
+            async def _one(idx: int):
+                async with sem:
+                    return await self.send_endpoint_request(
+                        method=method,
+                        endpoint=endpoint,
+                        user_type=user_type,
+                        session_id=session_id,
+                        fingerprint_suffix=fingerprint,
+                        headers_override=headers,
+                        json_payload=payload,
+                    )
+
+            tasks = [asyncio.create_task(_one(i)) for i in range(total_requests)]
+            results.extend(await asyncio.gather(*tasks))
+            return results
+
+        start_time = time.time()
+        guarded_results = await run_burst("guarded", guarded_endpoint, guarded_payload, guarded_headers)
+        bypass_results = await run_burst("bypass", bypass_endpoint, bypass_payload, bypass_headers)
+        duration = time.time() - start_time
+        system_after = await self.get_system_stats()
+
+        guarded_result = self.analyze_results(
+            "Guarded endpoint burst",
+            guarded_results,
+            duration,
+            system_before,
+            system_after,
+        )
+        bypass_result = self.analyze_results(
+            "Bypass endpoint burst",
+            bypass_results,
+            duration,
+            system_before,
+            system_after,
+        )
+
+        return {"guarded": guarded_result, "bypass": bypass_result}
+
     async def test_capacity_planning(self) -> Dict[str, TestResult]:
         """Run comprehensive capacity planning tests"""
         print(f"\n📊 COMPREHENSIVE CAPACITY PLANNING TESTS")
@@ -496,11 +629,28 @@ async def main():
     parser = argparse.ArgumentParser(description="Gateway Load Testing Suite")
     parser.add_argument("--test", choices=[
         "burst-anon", "burst-reg", "concurrent-anon", "concurrent-reg",
-        "mixed", "capacity", "all"
+        "mixed", "capacity", "guarded-bypass", "all"
     ], default="all", help="Test to run")
     parser.add_argument("--base-url", default=BASE_URL, help="Base URL for testing")
     parser.add_argument("--admin-token", default=ADMIN_TOKEN, help="Admin token")
     parser.add_argument("--user-token", default=CHAT_USER_TOKEN, help="User token")
+    parser.add_argument("--guarded-endpoint", default="/api/cb/resources/by-rn",
+                        help="Endpoint expected to be guarded by rate limiting")
+    parser.add_argument("--bypass-endpoint", default="/webhooks/stripe",
+                        help="Endpoint expected to bypass throttling")
+    parser.add_argument("--requests", type=int, default=50, help="Total requests per endpoint")
+    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent requests per endpoint")
+    parser.add_argument("--user-type", default="registered",
+                        choices=["anonymous", "registered", "admin"],
+                        help="User type for the guarded/bypass test")
+    parser.add_argument("--guarded-payload", default="",
+                        help="JSON payload for guarded endpoint (string)")
+    parser.add_argument("--bypass-payload", default="",
+                        help="JSON payload for bypass endpoint (string)")
+    parser.add_argument("--guarded-headers", default="",
+                        help="JSON headers for guarded endpoint (string)")
+    parser.add_argument("--bypass-headers", default="",
+                        help="JSON headers for bypass endpoint (string)")
 
     args = parser.parse_args()
 
@@ -528,6 +678,24 @@ async def main():
             tester.print_test_result(result)
         elif args.test == "capacity":
             await tester.test_capacity_planning()
+        elif args.test == "guarded-bypass":
+            guarded_payload = json.loads(args.guarded_payload) if args.guarded_payload else None
+            bypass_payload = json.loads(args.bypass_payload) if args.bypass_payload else None
+            guarded_headers = json.loads(args.guarded_headers) if args.guarded_headers else None
+            bypass_headers = json.loads(args.bypass_headers) if args.bypass_headers else None
+            results = await tester.test_guarded_vs_bypass(
+                guarded_endpoint=args.guarded_endpoint,
+                bypass_endpoint=args.bypass_endpoint,
+                user_type=args.user_type,
+                total_requests=args.requests,
+                concurrency=args.concurrency,
+                guarded_payload=guarded_payload,
+                bypass_payload=bypass_payload,
+                guarded_headers=guarded_headers,
+                bypass_headers=bypass_headers,
+            )
+            tester.print_test_result(results["guarded"])
+            tester.print_test_result(results["bypass"])
         elif args.test == "all":
             await tester.test_capacity_planning()
 

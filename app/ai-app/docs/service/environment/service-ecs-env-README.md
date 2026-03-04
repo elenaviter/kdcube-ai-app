@@ -44,6 +44,8 @@ Use one of these credential sources:
 ## Notes
 - For CloudWatch export, services must have `cloudwatch:PutMetricData` permissions.
 - Prefer IAM roles in ECS/EC2 instead of static keys.
+- To enforce env gateway config on every deploy, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1`
+  on ingress/proc/metrics tasks.
 
 ## Proc Git Bundles (ECS)
 

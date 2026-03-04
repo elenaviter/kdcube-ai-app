@@ -87,6 +87,7 @@ Use a **single shared `GATEWAY_CONFIG_JSON`** for all components:
 - `tenant` + `project`
 - capacity + rate limits
 - `limits.proc.max_queue_size`
+- For CI/CD, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` on ingress/proc/metrics tasks.
 
 Keep secrets in AWS Secrets Manager / SSM.
 

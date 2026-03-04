@@ -37,6 +37,8 @@ from kdcube_ai_app.apps.middleware.token_extract import extract_auth_tokens_from
 from kdcube_ai_app.infra.gateway.config import (
     get_gateway_config,
     apply_gateway_config_from_cache,
+    apply_gateway_config_from_env,
+    should_force_gateway_config_from_env,
     subscribe_gateway_config_updates,
     GatewayConfigFactory,
     gateway_config_cache_key,
@@ -219,31 +221,45 @@ async def lifespan(app: FastAPI):
         # Gateway adapter (used by integrations auth)
         app.state.gateway_adapter = get_fastapi_adapter()
         settings = get_settings()
-        cache_applied = await apply_gateway_config_from_cache(
-            gateway_adapter=app.state.gateway_adapter,
-            tenant=settings.TENANT,
-            project=settings.PROJECT,
-            redis_url=REDIS_URL,
-        )
-        if cache_applied:
-            app.state.gateway_config_source = "redis-cache"
+        if should_force_gateway_config_from_env():
+            await apply_gateway_config_from_env(
+                gateway_adapter=app.state.gateway_adapter,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                redis_url=REDIS_URL,
+            )
+            app.state.gateway_config_source = "env (forced)"
             logger.info(
-                "Gateway config source: redis-cache tenant=%s project=%s key=%s",
+                "Gateway config source: env (forced) tenant=%s project=%s",
                 settings.TENANT,
                 settings.PROJECT,
-                gateway_config_cache_key(tenant=settings.TENANT, project=settings.PROJECT),
             )
         else:
-            source = "env"
-            if os.getenv("GATEWAY_CONFIG_JSON"):
-                source = "env (GATEWAY_CONFIG_JSON)"
-            app.state.gateway_config_source = source
-            logger.info(
-                "Gateway config source: %s tenant=%s project=%s",
-                source,
-                settings.TENANT,
-                settings.PROJECT,
+            cache_applied = await apply_gateway_config_from_cache(
+                gateway_adapter=app.state.gateway_adapter,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                redis_url=REDIS_URL,
             )
+            if cache_applied:
+                app.state.gateway_config_source = "redis-cache"
+                logger.info(
+                    "Gateway config source: redis-cache tenant=%s project=%s key=%s",
+                    settings.TENANT,
+                    settings.PROJECT,
+                    gateway_config_cache_key(tenant=settings.TENANT, project=settings.PROJECT),
+                )
+            else:
+                source = "env"
+                if os.getenv("GATEWAY_CONFIG_JSON"):
+                    source = "env (GATEWAY_CONFIG_JSON)"
+                app.state.gateway_config_source = source
+                logger.info(
+                    "Gateway config source: %s tenant=%s project=%s",
+                    source,
+                    settings.TENANT,
+                    settings.PROJECT,
+                )
         app.state.gateway_config_stop = asyncio.Event()
         app.state.gateway_config_task = asyncio.create_task(
             subscribe_gateway_config_updates(

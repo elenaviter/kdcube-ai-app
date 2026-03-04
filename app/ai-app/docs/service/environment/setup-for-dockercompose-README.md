@@ -75,4 +75,6 @@ BUNDLES_FORCE_ENV_ON_STARTUP=0
 - The processor reads the `bundles` section directly from `release.yaml`.
 - Redis is the runtime source of truth; `BUNDLES_FORCE_ENV_ON_STARTUP=1`
   performs a one‑time overwrite.
+- To enforce gateway config from env on every restart, set
+  `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` in ingress/proc/metrics env.
 - If using **public repos**, you can omit the SSH variables.

@@ -101,3 +101,5 @@ GIT_SSH_KNOWN_HOSTS=~/.ssh/known_hosts
 - The processor reads the `bundles` section from `release.yaml`.
 - Redis remains the runtime source of truth; the env only overwrites it when
   `BUNDLES_FORCE_ENV_ON_STARTUP=1`.
+- For gateway config enforcement in local dev, set
+  `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` in ingress/proc/metrics env.

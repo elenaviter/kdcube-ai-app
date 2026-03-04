@@ -199,8 +199,8 @@ class RequestGateway:
                 await self.throttling_monitor.record_request(session)
                 return session
 
-            # Step 4: Rate Limiting (skip for privileged on admin endpoints)
-            if not (is_admin_endpoint and session.user_type == UserType.PRIVILEGED):
+            # Step 4: Rate Limiting (skip when policy bypasses throttling)
+            if not bypass_throttling and not (is_admin_endpoint and session.user_type == UserType.PRIVILEGED):
                 try:
                     await rate_limit_circuit.check_request_allowed(session)
                     await self.rate_limiter.check_and_record(session, context, endpoint)

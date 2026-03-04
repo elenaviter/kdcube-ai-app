@@ -80,6 +80,50 @@ python policy_testing_suite.py --test all
 - ⚠️ **Concerning:** No differentiation between user types
 - 🔧 **Action:** Review rate limiting configurations and queue prioritization
 
+### 🧪 Guarded vs Bypass Throttling
+**Purpose:** Prove that **guarded endpoints** produce 429s under load, while
+**bypass endpoints** do not (even with the same request burst).
+
+**What it does:**
+- Sends a burst to a guarded endpoint (rate limiting should trigger).
+- Sends the same burst to a bypass endpoint (rate limiting should **not** trigger).
+
+**Prerequisites (gateway config):**
+- Add the guarded endpoint to `guarded_rest_patterns`.
+- Add the bypass endpoint to `bypass_throttling_patterns`.
+- Use lower rate limits for testing if your defaults are high.
+
+**Example config snippet:**
+```json
+{
+  "guarded_rest_patterns": {
+    "ingress": ["^/api/cb/resources/by-rn$"]
+  },
+  "bypass_throttling_patterns": {
+    "ingress": ["^/api/admin/control-plane/webhooks/stripe$"]
+  }
+}
+```
+
+**Run:**
+```bash
+python load_tests.py \
+  --test guarded-bypass \
+  --guarded-endpoint /api/cb/resources/by-rn \
+  --bypass-endpoint /api/admin/control-plane/webhooks/stripe \
+  --guarded-payload '{"rn":"ef:tenant:project:chatbot:stage:user:conv:turn:role"}' \
+  --bypass-headers '{"Stripe-Signature":"t=0,v1=fake"}' \
+  --requests 50 \
+  --concurrency 10 \
+  --user-type anonymous
+```
+
+**Interpretation:**
+- ✅ **Good:** Guarded endpoint shows **429s**, bypass endpoint shows **0** 429s.
+- ⚠️ **Concerning:** 429s on bypass endpoint → check `bypass_throttling_patterns`.
+- ⚠️ **Concerning:** No 429s on guarded endpoint → rate limits too high or endpoint not in guarded list.
+Note: bypass endpoints may still return 4xx/5xx if payload/signature is invalid; the key is **no 429s**.
+
 ### ⚡ Circuit Breaker Test
 **Purpose:** Validate circuit breaker functionality and recovery.
 

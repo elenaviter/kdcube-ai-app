@@ -48,8 +48,12 @@ Reference: [gateway-README.md](gateway-README.md)
 - **SSE / Socket.IO chat ingress** → full gateway checks + atomic enqueue
 - **REST APIs** → session resolution by default, with **guarded heavy endpoints gated** via policy
 
-If you want REST to be gated, update the policy in:
-- [gateway_policy.py](../../middleware/gateway_policy.py)
+If you want REST to be gated or exempted, configure **endpoint policy lists** in gateway config:
+- `guarded_rest_patterns` (rate limit + backpressure)
+- `bypass_throttling_patterns` (skip rate limiting for public endpoints like webhooks)
+
+These lists are component‑aware (`ingress` / `proc`) and live in `GATEWAY_CONFIG_JSON`
+or are updated via `/admin/gateway/update-config`.
 
 ---
 

@@ -170,6 +170,7 @@ We now split env per component:
 - `.env.frontend` (optional)
 
 **Important:** Use the **same `GATEWAY_CONFIG_JSON`** for ingress/proc/metrics (tenant/project is shared).
+For CI/CD, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to enforce env on each deploy.
 
 ---
 
@@ -279,6 +280,7 @@ See: `docs/service/cicd/release-descriptor-README.md`
 **ECS (recommended):**
 - Each service has its own **task definition** with env vars + secrets.
 - Use the **same `GATEWAY_CONFIG_JSON`** across ingress/proc/metrics.
+- For deterministic deploys, set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1`.
 - Inject `AGENTIC_BUNDLES_JSON` **only** for the processor service.
 
 **Compose (transition):**

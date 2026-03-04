@@ -87,7 +87,6 @@ Scale by **SSE connections + 429 rate**:
 
 ## 6) Notes for Ops
 
-- If `GATEWAY_CONFIG_JSON` changes, **restart** services.
+- If `GATEWAY_CONFIG_JSON` changes, **restart** services (or set `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` to enforce env on each start).
 - Keep the same `GATEWAY_CONFIG_JSON` on ingress/proc/metrics.
 - Do not scale processor beyond Postgres/Redis connection limits.
-
