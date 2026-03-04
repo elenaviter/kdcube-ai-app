@@ -1,5 +1,21 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
+#
+# ── tools/local_tools.py ──
+# Bundle-local tool module. Tools defined here are available ONLY to this bundle.
+#
+# How to create a bundle-local tool:
+#   1. Create a class with methods decorated with @kernel_function (Semantic Kernel)
+#   2. Each method becomes a tool the LLM agent can call
+#   3. At module level, create a Kernel + register the class as a plugin
+#   4. Reference this file in tools_descriptor.py via "ref": "tools/local_tools.py"
+#
+# The @kernel_function decorator exposes the method to the LLM with:
+#   - name:        tool ID (used as "<alias>.<name>", e.g. "local_tools.write_note")
+#   - description: shown to the LLM so it knows when/how to use the tool
+#
+# Method parameters use Annotated[type, "description"] so the LLM
+# knows what each parameter expects.
 
 from __future__ import annotations
 
@@ -25,6 +41,10 @@ class LocalTools:
         self,
         text: Annotated[str, "Note text to write"],
     ) -> Dict[str, Any]:
+        """
+        Example tool: writes a timestamped text note to the output directory.
+        The OUTPUT_DIR env var is injected by the iso-runtime sandbox.
+        """
         out_dir = Path(os.environ.get("OUTPUT_DIR", "."))
         notes_dir = out_dir / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
@@ -33,6 +53,7 @@ class LocalTools:
         path = notes_dir / filename
         path.write_text(text or "", encoding="utf-8")
 
+        # Return relative path so the caller doesn't depend on absolute paths
         rel_path = None
         try:
             rel_path = str(path.relative_to(out_dir))
@@ -47,7 +68,8 @@ class LocalTools:
         }
 
 
-# module-level exports for SK
+# ── Module-level exports for Semantic Kernel ──
+# The tool subsystem imports this module and picks up `kernel` to discover tools.
 kernel = sk.Kernel()
 tools = LocalTools()
 kernel.add_plugin(tools, "local_tools")
