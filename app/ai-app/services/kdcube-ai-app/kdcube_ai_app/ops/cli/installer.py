@@ -312,6 +312,26 @@ def ensure_absolute(console: Console, label: str, current: Optional[str], defaul
         return str(resolved)
 
 
+def prompt_secret(
+    console: Console,
+    env_file: EnvFile,
+    key: str,
+    label: str,
+    required: bool = False,
+) -> Optional[str]:
+    current = env_file.entries.get(key, (None, None))[1]
+    if not is_placeholder(current):
+        return current
+    if required:
+        value = Prompt.ask(label, password=True)
+    else:
+        value = prompt_optional(console, label, secret=True)
+    if value:
+        update_env_value(env_file, key, value)
+        return value
+    return None
+
+
 def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str, str]:
     docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
     repo_root = ai_app_root.parent.parent
@@ -392,6 +412,18 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         update_env_value(env_ingress, "POSTGRES_HOST", "postgres-db")
     if is_placeholder(env_proc.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_proc, "POSTGRES_HOST", "postgres-db")
+
+    openai_key = prompt_secret(console, env_ingress, "OPENAI_API_KEY", "OpenAI API key", required=False)
+    if openai_key:
+        update_if_placeholder(env_proc, "OPENAI_API_KEY", openai_key)
+
+    anthropic_key = prompt_secret(console, env_ingress, "ANTHROPIC_API_KEY", "Anthropic API key", required=False)
+    if anthropic_key:
+        update_if_placeholder(env_proc, "ANTHROPIC_API_KEY", anthropic_key)
+
+    brave_key = prompt_secret(console, env_ingress, "BRAVE_API_KEY", "Brave Search API key", required=False)
+    if brave_key:
+        update_if_placeholder(env_proc, "BRAVE_API_KEY", brave_key)
 
     host_storage = ensure_absolute(
         console,
