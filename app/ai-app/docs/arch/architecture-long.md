@@ -110,7 +110,7 @@ Hosted UI for 2FA is available in both modes; infra exchange adds cookie-only au
 
 References:
 - [auth-README.md](../service/auth/auth-README.md)
-- [token_extract.py](../../middleware/token_extract.py)
+- [token_extract.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/token_extract.py)
 
 ---
 
@@ -121,7 +121,7 @@ References:
 - **Socket.IO**: `/socket.io` handshake + `chat_message`, `conv_status.get`
 - **REST**: `/profile`, admin/monitoring/control‑plane routes
 
-Key entrypoint: [web_app.py](../../api/web_app.py)
+Key entrypoint: [web_app.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/web_app.py)
 
 ---
 
@@ -135,7 +135,7 @@ The gateway enforces **authentication**, **rate limits**, and **backpressure** b
 - **Session resolution** (anonymous → registered/privileged upgrade)
 
 Key modules:
-- [gateway.py](../../../apps/middleware/gateway.py)
+- [gateway.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway.py)
 - [gateway-README.md](../service/gateway-README.md)
 
 ---
@@ -185,7 +185,7 @@ sequenceDiagram
   W->>RQ: release lock / update metrics
 ```
 
-Key worker: [apps/chat/processor.py](../../processor.py)
+Key worker: [apps/chat/processor.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/processor.py)
 
 ---
 
@@ -202,7 +202,7 @@ Key worker: [apps/chat/processor.py](../../processor.py)
 Bundles are **runtime‑loadable workflows** with custom logic and optional endpoints.
 
 - Registry + loader: [bundle-ops-README.md](../sdk/bundle/bundle-ops-README.md)
-- Example bundle entrypoint: [streaming_and_storage entrypoint](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/streaming_and_storage@2026-02-01-22-53/entrypoint.py)
+- Example bundle entrypoint: [react bundle entrypoint](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44/entrypoint.py)
 
 Bundles can:
 - Define workflows (agentic graphs)
@@ -271,8 +271,8 @@ References:
 - Socket.IO limits are configured via max buffer size; SSE uses server‑side validation.
 
 References:
-- [Socket.IO transport](../../api/socketio/chat.py)
-- [SSE transport](../../api/sse/chat.py)
+- [Socket.IO transport](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
+- [SSE transport](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/sse/chat.py)
 
 ---
 
@@ -302,9 +302,9 @@ References:
 
 ## 15) Appendix — key files
 
-- Chat API entrypoint: [web_app.py](../../api/web_app.py)
-- SSE transport: [sse/chat.py](../../api/sse/chat.py)
-- Socket.IO transport: [socketio/chat.py](../../api/socketio/chat.py)
-- Processor: [apps/chat/processor.py](../../processor.py)
+- Chat API entrypoint: [web_app.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/web_app.py)
+- SSE transport: [sse/chat.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/sse/chat.py)
+- Socket.IO transport: [socketio/chat.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
+- Processor: [apps/chat/processor.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/processor.py)
 - Comm subsystem: [comm-system.md](../service/comm/comm-system.md)
 - Comm integrations: [README-comm.md](../service/comm/README-comm.md)

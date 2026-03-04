@@ -49,7 +49,7 @@ If you are implementing a UI, API client, or a new transport, start here.
   - multipart/form-data for attachments
 
 **Code references**
-- SSE transport: [sse/chat.py](../../api/sse/chat.py)
+- SSE transport: [sse/chat.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/sse/chat.py)
 - SSE relay: [CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md](CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md)
 
 ### C) Socket.IO (stream + send)
@@ -67,7 +67,7 @@ If you are implementing a UI, API client, or a new transport, start here.
 - Payload: JSON (message + metadata) + optional binary frames for attachments
 
 **Code reference**
-- Socket.IO transport: [socketio/chat.py](../../api/socketio/chat.py)
+- Socket.IO transport: [socketio/chat.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
 
 ---
 
@@ -93,9 +93,9 @@ The gateway/auth adapters accept tokens from multiple sources, so clients can ch
 3) Cookies (fallback)
 
 **Server entrypoints**
-- Gateway adapter: [middleware/gateway.py](../../middleware/gateway.py)
-- Auth adapter: [middleware/auth.py](../../middleware/auth.py)
-- Socket/SSE helpers: [middleware/token_extract.py](../../middleware/token_extract.py)
+- Gateway adapter: [middleware/gateway.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway.py)
+- Auth adapter: [middleware/auth.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/auth.py)
+- Socket/SSE helpers: [middleware/token_extract.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/token_extract.py)
 
 ---
 
@@ -113,7 +113,7 @@ The gateway/auth adapters accept tokens from multiple sources, so clients can ch
   - `registered` or `privileged` depending on roles.
 
 **Upgrade implementation**
-- [ingress/chat_core.py](../../api/ingress/chat_core.py)
+- [ingress/chat_core.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/ingress/chat_core.py)
 
 ---
 
@@ -131,8 +131,8 @@ The gateway/auth adapters accept tokens from multiple sources, so clients can ch
   - binary frames follow the JSON payload (one per attachment)
 
 **Code references**
-- SSE attachments: [sse/chat.py](../../api/sse/chat.py)
-- Socket.IO attachments: [socketio/chat.py](../../api/socketio/chat.py)
+- SSE attachments: [sse/chat.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/sse/chat.py)
+- Socket.IO attachments: [socketio/chat.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
 
 ---
 
@@ -225,4 +225,5 @@ await emit.delta(text="Loaded 3 prior turns", index=0, marker="timeline_text", a
 
 If you are a bundle author, see:
 - [comm-system.md](comm-system.md) (producer API + filters)
-- [emitters.py](emitters.py) and [agentic_app.py](../../default_app/agentic_app.py)
+- [emitters.py](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/comm/emitters.py) and
+  [agentic_app (proc web_app.py)](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/proc/web_app.py)

@@ -15,7 +15,7 @@ This document is the authoritative description of the current economics model an
 It replaces the older usage notes and reflects the production bundle flow and control‑plane schema.
 
 Runtime entrypoint:
-- [entrypoint_with_economic.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/chatbot/entrypoint_with_economic.py)
+- [entrypoint_with_economic.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/chatbot/entrypoint_with_economic.py)
 
 ## Scope
 
@@ -231,7 +231,7 @@ Maintenance entry points:
 
 Authoritative schema:
 
-- [deploy-kdcube-control-plane.sql](services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/deploy-kdcube-control-plane.sql)
+- [deploy-kdcube-control-plane.sql](../../services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/deploy-kdcube-control-plane.sql)
 
 Key tables:
 

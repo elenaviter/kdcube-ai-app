@@ -17,7 +17,7 @@ This document describes the tables, maintenance jobs, emailing, and runtime conf
 
 The authoritative schema is defined here:
 
-- [deploy-kdcube-control-plane.sql](services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/deploy-kdcube-control-plane.sql)
+- [deploy-kdcube-control-plane.sql](../../services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/deploy-kdcube-control-plane.sql)
 
 Key table groups:
 
@@ -124,7 +124,7 @@ Admin alerts are sent for:
 
 Implementation:
 
-- [email.py](services/kdcube-ai-app/kdcube_ai_app/infra/channel/email.py)
+- [email.py](../../services/kdcube-ai-app/kdcube_ai_app/infra/channel/email.py)
 
 Required env vars are listed in the service config doc.
 
@@ -160,6 +160,6 @@ Redis note:
 
 If you need a clean reset of the control‑plane schema:
 
-- Standard drop script: [drop-kdcube-control-plane.sql](services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/drop-kdcube-control-plane.sql)
+- Standard drop script: [drop-kdcube-control-plane.sql](../../services/kdcube-ai-app/kdcube_ai_app/ops/deployment/sql/control_plane/drop-kdcube-control-plane.sql)
 
 Always re‑deploy using the authoritative schema file linked at the top.

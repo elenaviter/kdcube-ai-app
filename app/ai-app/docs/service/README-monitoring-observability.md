@@ -83,7 +83,7 @@ Returns gateway status + queue pressure + capacity transparency, plus:
 - `GET /debug/capacity-calculation`
 - `GET /debug/environment`
 
-See implementation: [monitoring.py](./monitoring.py)
+See implementation: [monitoring.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/monitoring/monitoring.py)
 
 ---
 
@@ -107,12 +107,12 @@ sequenceDiagram
 
 ## 5) Key files
 
-- Gateway middleware: [web_app.py](../web_app.py)
-- Gateway policy: [gateway_policy.py](../../middleware/gateway_policy.py)
-- Gateway core: [infra/gateway](../../../infra/gateway/gateway.py)
-- Backpressure + queue: [backpressure.py](../../../infra/gateway/backpressure.py)
-- SSE transport: [sse/chat.py](../sse/chat.py)
-- Socket.IO transport: [socketio/chat.py](../socketio/chat.py)
+- Gateway middleware: [web_app.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/web_app.py)
+- Gateway policy: [gateway_policy.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway_policy.py)
+- Gateway core: [infra/gateway](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/gateway.py)
+- Backpressure + queue: [backpressure.py](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/backpressure.py)
+- SSE transport: [sse/chat.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/sse/chat.py)
+- Socket.IO transport: [socketio/chat.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
 
 ---
 

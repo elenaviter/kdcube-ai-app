@@ -93,7 +93,7 @@ For implementation details (runtime flow, supervisor/executor roles, mounts, per
 
 
 #### 1. Build py-code-exec Image
-[Image Dockerfile_Exec is here](../../../../../../../deployment/docker/all_in_one/Dockerfile_Exec)
+[Image Dockerfile_Exec is here](../../deployment/docker/custom-ui-managed-infra/Dockerfile_Exec)
 ```bash
 cd /path/to/project/deployment/docker/py-code-exec
 docker build -t py-code-exec:latest .

@@ -13,7 +13,7 @@ see_also:
 
 > Note: This document focuses on SSE fan-out, but the same relay/channeling
 > design is used by Socket.IO as well. See:
-> - [Socket.IO transport](../socketio/chat.py)
+> - [Socket.IO transport](../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
 > - [Comm integrations overview](README-comm.md)
 
 This document describes the architecture of the **chat relay** in the KDCube AI App, specifically:

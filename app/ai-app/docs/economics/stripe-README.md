@@ -28,12 +28,12 @@ Project budget is increased only by admin actions or by subscription rollovers.
 
 Key modules:
 
-- [stripe.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/stripe.py)
-- [control_plane.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/control_plane.py)
+- [stripe.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/infra/economics/stripe.py)
+- [control_plane.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/control_plane.py)
 
 Current routing:
 
-- Stripe HTTP endpoints are defined in [control_plane.py](services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/control_plane.py).
+- Stripe HTTP endpoints are defined in [control_plane.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/control_plane/control_plane.py).
 
 Planned refactor:
 
@@ -146,7 +146,7 @@ The Stripe admin service sends email notifications for:
 - subscription cancel requested, completed, failed
 - reconcile results
 
-Email sender is implemented in [email.py](services/kdcube-ai-app/kdcube_ai_app/infra/channel/email.py).
+Email sender is implemented in [email.py](../../services/kdcube-ai-app/kdcube_ai_app/infra/channel/email.py).
 
 ## Configuration Required
 

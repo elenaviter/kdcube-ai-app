@@ -69,9 +69,9 @@ The HTTP middleware in `apps/chat/api/web_app.py` resolves the session and appli
   to the authenticated user**. Mismatches are rejected (401/403).
 
 Key files:
-- [web_app.py](../../apps/chat/api/web_app.py)
-- [gateway_policy.py](../../apps/middleware/gateway_policy.py)
-- [gateway.py](../../apps/middleware/gateway.py)
+- [web_app.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/web_app.py)
+- [gateway_policy.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway_policy.py)
+- [gateway.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway.py)
 
 ### Auth requirements (non‑anonymous access)
 Endpoints using `require_auth(RequireUser())` **must be authenticated**:
@@ -89,10 +89,10 @@ After admission, the task is enqueued via **atomic enqueue** with backpressure:
 - `AtomicChatQueueManager.enqueue_chat_task_atomic(...)`
 
 Key files:
-- [chat_core.py](../../apps/chat/api/ingress/chat_core.py)
-- [sse/chat.py](../../apps/chat/api/sse/chat.py)
-- [socketio/chat.py](../../apps/chat/api/socketio/chat.py)
-- [backpressure.py](./backpressure.py)
+- [chat_core.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/ingress/chat_core.py)
+- [sse/chat.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/sse/chat.py)
+- [socketio/chat.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/socketio/chat.py)
+- [backpressure.py](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/backpressure.py)
 
 ---
 
@@ -132,7 +132,7 @@ You can explicitly **skip rate limiting** for public endpoints (e.g., Stripe web
 Currently, REST APIs are **session‑only** by default. To apply gateway limits:
 
 Option A (recommended): **update the policy**
-- Edit [gateway_policy.py](../../apps/middleware/gateway_policy.py)
+- Edit [gateway_policy.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway_policy.py)
 - Classify the REST endpoints you want as `CHAT_INGRESS` or add a new class
 - Set `bypass_throttling=False` and `bypass_gate=False`
 
@@ -144,7 +144,7 @@ internal endpoints without being dropped.
 
 ### Activation note (current code)
 - The policy includes an **explicit guarded REST pattern list** in
-  [gateway_policy.py](../../apps/middleware/gateway_policy.py).
+  [gateway_policy.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/middleware/gateway_policy.py).
 - To activate or tune it, set `guarded_rest_patterns` in `GATEWAY_CONFIG_JSON`
   (or update via `/admin/gateway/update-config`).
 - To allow **public endpoints** that should skip rate limiting, set
@@ -184,8 +184,8 @@ if you need to pin a specific base path.
 ## 5) Configuration
 
 Gateway configuration is centralized in:
-- [config.py](./config.py)
-- [resolvers.py](../../apps/chat/api/resolvers.py)
+- [config.py](../../services/kdcube-ai-app/kdcube_ai_app/infra/gateway/config.py)
+- [resolvers.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/resolvers.py)
 
 Key environment variables:
 - `GATEWAY_COMPONENT` (`ingress` | `proc`). Each service sets this at startup; it selects the component slice.
@@ -265,7 +265,7 @@ Redis keys/channels (per tenant/project):
 - `"<tenant>:<project>:kdcube:config:gateway:update"`
 
 Subscriber wiring:
-- Chat API subscribes on startup in [web_app.py](../../apps/chat/api/web_app.py).
+- Chat API subscribes on startup in [web_app.py](../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/api/web_app.py).
 
 ### Update-config payloads
 `POST /admin/gateway/update-config`
