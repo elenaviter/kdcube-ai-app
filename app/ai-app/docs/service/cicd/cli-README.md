@@ -18,7 +18,7 @@ This document defines the **initial CLI surface** and behavior. The CLI is for:
 - **Compose users** running the all‑in‑one stack.
 - **Release tooling** (validate and render release descriptors).
 
-CLI root (code): `services/kdcube-ai-app/kdcube_apps_cli`
+CLI root (code): `services/kdcube-ai-app/kdcube_cli`
 
 ---
 

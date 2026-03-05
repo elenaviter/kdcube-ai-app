@@ -1,7 +1,7 @@
 ---
 id: ks:docs/service/cicd/release-README.md
 title: "Release"
-summary: "Monorepo release guide driven by release.yaml: git tags, image tags, CLI publish, and bundle-registry behavior."
+summary: "Monorepo release guide driven by release.yaml: CI build/publish and deployment-time descriptor usage."
 tags: ["service", "cicd", "release", "versioning", "git", "images", "bundles", "registry"]
 keywords: ["release.yaml", "platform.ref", "git tag", "image tags", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLE_GIT_REDIS_LOCK", "monorepo versioning", "PyPI"]
 see_also:
@@ -22,7 +22,7 @@ We use **one unified version** for the monorepo (platform + SDK) until the SDK i
 
 ```
 platform:
-  ref: "2026-03-04T17.16"
+  ref: "2026.3.4.1716"
 ```
 
 Notes:
@@ -39,7 +39,7 @@ Release tags use **exactly** the value of `platform.ref`.
 Example:
 
 ```
-2026-03-04T17.16
+2026.3.4.1716
 ```
 
 ---
@@ -54,28 +54,63 @@ kdcube-chat-ingress:2026.3.4.1716
 
 ---
 
-## 4) Release Process (GitHub Actions)
+## 4) CI: Build + Publish (GitHub Actions)
 
 Suggested flow (platform team):
 
-1. Create a release branch (e.g. `release/2026-03-04T17.16`)
+1. Create a release branch (e.g. `release/2026.3.4.1716`)
 2. Update `release.yaml` and set `platform.ref`
    - Bundles can be empty; the CLI can seed sample bundles on install
 3. Open PR and merge to `main`
 4. GitHub Actions does the rest:
    - Reads `platform.ref`
+   - Validates `platform.ref` as **PEP440** (required by PyPI)
    - Creates git tag `platform.ref`
    - Builds & pushes images to dockerhub with that tag
-   - Builds & publishes the CLI with that version
-   - Pushes git tag `platform.ref`
+   - Builds & publishes the CLI with that exact version
 
 ---
 
-## 4.1) Bundle registry during release
+### CI Prerequisites (Secrets + Permissions)
+
+**GitHub Secrets (Repo Settings → Secrets and variables → Actions):**
+- `DOCKERHUB_USERNAME`
+- `DOCKERHUB_TOKEN`
+- `DOCKERHUB_NAMESPACE` (optional; defaults to username)
+- `PYPI_API_TOKEN` (only if not using Trusted Publisher)
+
+**Where to get them:**
+- DockerHub: Account Settings → Security → New Access Token
+- PyPI: Account Settings → API tokens → New token
+
+**PyPI Trusted Publisher (recommended):**
+- PyPI project → Publishing → Add Trusted Publisher
+- Select GitHub, repo, workflow
+- This removes the need for `PYPI_API_TOKEN` (uses `id-token: write`)
+
+---
+
+## 5) Deployment-Time Descriptor Usage
 
 The processor consumes a **runtime bundle descriptor** (`AGENTIC_BUNDLES_JSON`).
 That descriptor has the shape which resembles the release.yaml descriptor (its `bundles` vertical).
-During release, ensure one of these:
+Example of the release descriptor shape 
+```yaml
+platform:
+  repo: "kdcube-ai-app"
+  ref: "2026.3.4.1716"          # tag
+
+bundles:
+  default_bundle_id: "react@2026-02-10-02-44"
+  items:
+    - id: "app@2-0"
+      name: "Customer App"
+      repo: "git@github.com:org/customer-repo.git"
+      ref: "bundle-v2026.02.22"
+      subdir: "service/bundles"
+      module: "app@2-0.entrypoint"
+```
+During deployment, ensure one of these:
 
 - **Baked bundles:** CI generates `AGENTIC_BUNDLES_JSON` (path `/bundles/...`) and injects it into proc.
 - **Git bundles:** CI injects `AGENTIC_BUNDLES_JSON` with `repo/ref/subdir`.
@@ -98,52 +133,9 @@ This makes each replica pull **once** on startup (no cross‑replica contention)
 
 ---
 
-## 5) Release Process (CI)
+## 6) Build Inputs (What CI Builds)
 
-CI logic (automated on merge to `main` when `release.yaml` changes):
-
-1. Read `platform.ref` from `release.yaml`
-2. Validate it is a valid git tag and **PEP440** (for PyPI)
-3. Create and push git tag `platform.ref`
-4. Build & push images tagged with `platform.ref` only.
-5. Build & publish CLI version = `platform.ref`
-
-### What changed
-
-1. Release process now uses `release.yaml:platform.ref` as the **single source of truth**.
-2. CI now:
-   1. Reads `platform.ref` from `release.yaml`
-   2. Validates it as **PEP440** for PyPI
-   3. Creates git tag `platform.ref`
-   4. Builds/pushes images with that tag
-   5. Builds/publishes the CLI with that exact version
-3. Product CI prerequisites were added to `custom-cicd-README.md`.
-
-### Next steps
-
-1. Update `release.yaml` to a **PEP440‑compatible** `platform.ref`.
-2. Ensure GitHub secrets exist:
-   - `DOCKERHUB_USERNAME`
-   - `DOCKERHUB_TOKEN`
-   - `DOCKERHUB_NAMESPACE` (optional)
-3. Configure PyPI Trusted Publisher for `kdcube-apps-cli` or add `PYPI_API_TOKEN`.
-
-### Where to configure secrets (and how to obtain them)
-
-**GitHub Secrets:**
-- Repo → **Settings → Secrets and variables → Actions → New repository secret**
-- Add:
-  - `DOCKERHUB_USERNAME` = your DockerHub username (or org bot user)
-  - `DOCKERHUB_TOKEN` = DockerHub access token (Account Settings → Security → New Access Token)
-  - `DOCKERHUB_NAMESPACE` = DockerHub org/namespace (optional; defaults to username)
-  - `PYPI_API_TOKEN` = PyPI token (Account Settings → API tokens → New token)
-
-**PyPI Trusted Publisher (recommended):**
-- PyPI project → **Publishing → Add Trusted Publisher**
-- Select GitHub, repo, workflow
-- This removes the need for `PYPI_API_TOKEN` (uses `id-token: write`).
-
-Images built from:
+Images are built from:
 `deployment/docker/all_in_one_kdcube`
 
 Dockerfiles:
@@ -158,7 +150,7 @@ Dockerfiles:
 
 ---
 
-## 6) When to Split SDK Versioning
+## 7) When to Split SDK Versioning
 
 Only split when:
 
@@ -169,10 +161,10 @@ Until then, **keep unified versioning**.
 
 ---
 
-## 7) CLI (immediate use cases)
+## 8) CLI (immediate use cases)
 
 The CLI lives at:
-`services/kdcube-ai-app/kdcube_apps_cli`
+`services/kdcube-ai-app/kdcube_cli`
 
 Immediate use cases to support:
 

@@ -171,7 +171,7 @@ Docker Compose is already supported for local and small‑scale (with EC2) setup
 
 ## Quickstart
 
-- CLI installer: `app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/README.md`
+- CLI installer: `app/ai-app/services/kdcube-ai-app/kdcube_cli/README.md`
 - Docker Compose (all‑in‑one): `app/ai-app/deployment/docker/all_in_one_kdcube/README.md`
 
 ---
