@@ -9,6 +9,7 @@ see_also:
   - ks:docs/sdk/tools/mcp-README.md
   - ks:docs/exec/README-runtime-modes-builtin-tools.md
   - ks:docs/exec/README-iso-runtime.md
+  - ks:docs/sdk/agents/react/react-tools-README.md
 ---
 # Tool Subsystem
 
