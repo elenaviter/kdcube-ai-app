@@ -1,5 +1,27 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
+#
+# ── bootstrap.py ──
+# FILE-LEVEL sandbox lifecycle for iso-runtime execution.
+#
+# This is the first layer of isolation (file layer). The second layer
+# (process-level) is handled by _InProcessRuntime which runs the code
+# in a subprocess with Linux namespace isolation or in a Docker container.
+#
+# The file-level sandbox ensures the original user workspace is never
+# modified directly during execution. The flow is:
+#
+#   1. bootstrap_user_sandbox() — copy user workspace → sandbox (clean slate)
+#   2. ... workflow.py passes sandbox paths to run_exec_tool() which
+#          launches _InProcessRuntime to execute code inside sandbox/ ...
+#   3. sync_user_sandbox()      — copy sandbox results → user workspace
+#
+# This ensures that failed executions don't corrupt the user workspace,
+# and only after execution completes are results persisted back.
+#
+# Key env vars:
+#   ISO_RUNTIME_USER_WORKSPACE_ROOT — root of all user workspaces
+#   ISO_RUNTIME_SANDBOX_ROOT        — root of all sandboxes
 
 from __future__ import annotations
 
@@ -11,17 +33,19 @@ from typing import Optional
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
+# Default paths used when env vars are not set (local dev fallback)
 DEFAULT_USER_WORKSPACE_ROOT = (
-    "/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/services/"
+    "/Users/evgen/PycharmProjects/kdcube-ai-app/app/ai-app/services/"
     "kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/data/workspace"
 )
 DEFAULT_SANDBOX_ROOT = (
-    "/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/services/"
+    "/Users/evgen/PycharmProjects/kdcube-ai-app/app/ai-app/services/"
     "kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/data/sandbox"
 )
 
 
 def _safe_user_id(user_id: str) -> str:
+    """Sanitize user ID to be safe for filesystem paths (alphanumeric + _ . -)."""
     uid = (user_id or "").strip()
     if not uid:
         return "anonymous"
@@ -30,9 +54,14 @@ def _safe_user_id(user_id: str) -> str:
 
 
 def resolve_user_id(*, runtime_ctx_user_id: Optional[str], fallback_user: Optional[str]) -> str:
+    """Pick the best available user ID: runtime context → fallback → "anonymous"."""
     return _safe_user_id(runtime_ctx_user_id or fallback_user or "anonymous")
 
 def _sandbox_ignore_patterns() -> Optional[callable]:
+    """
+    Returns a shutil.copytree ignore function that skips log files,
+    infra artifacts, and previous exec results during sandbox copy.
+    """
     ignore_names = {
         "logs",
         "infra.log",
@@ -74,13 +103,16 @@ def bootstrap_user_sandbox(
     user_workspace_root = user_workspace_root.expanduser().resolve()
     sandbox_root = sandbox_root.expanduser().resolve()
 
+    # Paths: workspace/<user_id>/out → sandbox/<user_id>/out
     src = user_workspace_root / user_id
     dest = sandbox_root / user_id
 
+    # Full overwrite: wipe old sandbox and start fresh
     if dest.exists():
         shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True, exist_ok=True)
 
+    # Only copy the "out" subdirectory (user outputs), ignoring logs/artifacts
     src_out = src / "out"
     dest_out = dest / "out"
     dest_out.mkdir(parents=True, exist_ok=True)
@@ -108,6 +140,7 @@ def sync_user_sandbox(
     user_workspace_root = user_workspace_root.expanduser().resolve()
     sandbox_root = sandbox_root.expanduser().resolve()
 
+    # Reverse direction: sandbox/<user_id>/out → workspace/<user_id>/out
     src = sandbox_root / user_id
     dest = user_workspace_root / user_id
     src_out = src / "out"
@@ -124,6 +157,7 @@ def sync_user_sandbox(
 
 
 def resolve_roots() -> tuple[pathlib.Path, pathlib.Path]:
+    """Read workspace and sandbox root paths from env vars (or use defaults)."""
     user_workspace_root = pathlib.Path(
         os.environ.get("ISO_RUNTIME_USER_WORKSPACE_ROOT", DEFAULT_USER_WORKSPACE_ROOT)
     )
