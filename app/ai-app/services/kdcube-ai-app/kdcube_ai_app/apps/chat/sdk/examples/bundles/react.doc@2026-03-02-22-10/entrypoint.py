@@ -207,7 +207,7 @@ class ReactWorkflow(BaseEntrypoint):
                             continue
                         if child.resolve() == repo_root.resolve():
                             continue
-                        if child.name == base_prefix or child.name.startswith(f\"{base_prefix}__\"):
+                        if child.name == base_prefix or child.name.startswith(f"{base_prefix}__"):
                             shutil.rmtree(child, ignore_errors=True)
                 except Exception:
                     self.logger.log(traceback.format_exc(), "WARNING")
