@@ -84,7 +84,12 @@ def run_installer(console: Console, repo_root: Path) -> None:
     if not installer.exists():
         raise SystemExit(f"Installer not found at {installer}")
     console.print("Launching setup wizard...")
-    run([sys.executable, str(installer)])
+    result = subprocess.run([sys.executable, str(installer)])
+    if result.returncode == 130:
+        console.print("[yellow]Setup cancelled.[/yellow]")
+        raise SystemExit(130)
+    if result.returncode != 0:
+        raise SystemExit(f"Installer failed with exit code {result.returncode}.")
 
 
 def main() -> None:
@@ -105,6 +110,9 @@ def main() -> None:
         run_installer(console, repo_path)
     except FileNotFoundError as exc:
         raise SystemExit("Missing dependency. Please install Git and Python.") from exc
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup cancelled.[/yellow]")
+        raise SystemExit(130)
     except subprocess.CalledProcessError as exc:
         raise SystemExit(f"Command failed with exit code {exc.returncode}.") from exc
 

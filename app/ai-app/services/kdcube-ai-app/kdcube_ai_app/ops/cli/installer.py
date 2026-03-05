@@ -796,6 +796,9 @@ def main() -> None:
                 console.print("[red]Docker compose up failed. Check the output and retry.[/red]")
     except SystemExit as exc:
         console.print(f"[yellow]{exc}[/yellow]")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup cancelled.[/yellow]")
+        raise SystemExit(130)
 
 
 if __name__ == "__main__":
