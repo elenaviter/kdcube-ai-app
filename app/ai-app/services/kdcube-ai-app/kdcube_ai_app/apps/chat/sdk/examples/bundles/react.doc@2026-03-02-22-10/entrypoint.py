@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import traceback
 import pathlib
+import os
 from typing import Any, Dict
 
 from langgraph.graph import StateGraph, START, END
@@ -161,6 +162,23 @@ class ReactWorkflow(BaseEntrypoint):
         deploy_root_raw = (knowledge_def.get("deploy_root") or "").strip()
         validate = knowledge_def.get("validate_refs")
         validate_refs = True if validate is None else bool(validate)
+
+        # If nothing is configured, try to use local repo (host dev) or fall back
+        # to the public platform repo (container/compose).
+        if not repo and not docs_root_raw and not src_root_raw and not deploy_root_raw:
+            for parent in bundle_root.resolve().parents:
+                if (parent / "docs").is_dir() and (parent / "services").is_dir():
+                    docs_root_raw = str((parent / "docs").resolve())
+                    src_root_raw = str((parent / "services" / "kdcube-ai-app" / "kdcube_ai_app").resolve())
+                    deploy_root_raw = str((parent / "deployment").resolve())
+                    break
+            if not docs_root_raw:
+                repo = (os.getenv("KDCUBE_KNOWLEDGE_REPO") or "https://github.com/kdcube/kdcube-ai-app.git").strip()
+                if not ref:
+                    ref = (os.getenv("KDCUBE_KNOWLEDGE_REF") or "").strip()
+                docs_root_raw = "app/ai-app/docs"
+                src_root_raw = "app/ai-app/services/kdcube-ai-app/kdcube_ai_app"
+                deploy_root_raw = "app/ai-app/deployment"
 
         repo_root = None
         if repo:
