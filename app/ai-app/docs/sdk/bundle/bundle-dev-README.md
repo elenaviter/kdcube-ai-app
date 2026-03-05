@@ -253,14 +253,15 @@ Common markers:
 
 ## Event filtering (per‑bundle)
 
-Bundles can define an **event filter** to control which events are visible to
-non‑privileged users.
+Bundles can define an **event filter** (bundle‑level outbound firewall) to control
+which events are visible to non‑privileged users.
 
 Example:
 - `services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44/event_filter.py`
 
 Docs:
 - `docs/service/comm/comm-system.md` (event types + filtering)
+- `docs/sdk/bundle/firewall-README.md` (bundle outbound firewall)
 
 ---
 

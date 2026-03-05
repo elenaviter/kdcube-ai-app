@@ -8,6 +8,7 @@ see_also:
   - ks:docs/service/comm/CHAT-RELAY-SESSION-SUBSCR-SSE-SOCKETIO-FUNOUT.README.md
   - ks:docs/service/comm/comm-system.md
   - ks:docs/service/auth/auth-README.md
+  - ks:docs/sdk/bundle/firewall-README.md
 ---
 # Communication Integrations (External + Internal)
 
@@ -186,6 +187,16 @@ Supported by default in the platform:
 
 Custom markers are allowed, but the client must know how to render them.
 See [comm-system.md](comm-system.md) for the envelope details.
+
+---
+
+## 7) Bundle‑level outbound firewall
+
+Bundles can define an **event filter** (`IEventFilter`) that acts as an outbound firewall.
+It sees the event metadata + user/session details and can **suppress** events before
+they reach Redis/SSE/Socket.IO.
+
+See: `docs/sdk/bundle/firewall-README.md`
 
 ### Examples (per marker)
 
