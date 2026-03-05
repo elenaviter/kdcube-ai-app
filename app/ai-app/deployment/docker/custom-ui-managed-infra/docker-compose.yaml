@@ -140,6 +140,7 @@ services:
       dockerfile: ${UI_DOCKERFILE_PATH}
       args:
         - UI_SOURCE_PATH=${UI_SOURCE_PATH}
+        - UI_ENV_BUILD_RELATIVE=${UI_ENV_BUILD_RELATIVE}
         - NGINX_UI_CONFIG_FILE_PATH=${NGINX_UI_CONFIG_FILE_PATH}
     restart: unless-stopped
     environment:

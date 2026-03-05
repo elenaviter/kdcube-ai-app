@@ -137,3 +137,23 @@ docker compose stop redis && docker compose rm redis -f && docker compose up red
 ```shell
 docker compose stop proxylogin && docker compose rm proxylogin -f && docker compose build --no-cache && docker compose up proxylogin -d
 ```
+
+```bash
+# Rebuild ingress (no deps)
+ dc-infra build chat-ingress && dc-infra up -d --no-deps chat-ingress
+
+# Rebuild processor (no deps)
+ dc-infra build chat-proc && dc-infra up -d --no-deps chat-proc
+
+# Rebuild UI (no deps)
+ dc-infra build web-ui && dc-infra up -d --no-deps web-ui
+
+# Rebuild proxylogin (no deps)
+ dc-infra build proxylogin --no-cache && dc-infra up -d --no-deps proxylogin
+
+# Rebuild proxy (no deps)
+ dc-infra build web-proxy && dc-infra up -d --no-deps web-proxy
+
+# Logs
+ dc-infra logs -f chat-proc
+```
