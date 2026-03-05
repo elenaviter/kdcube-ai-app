@@ -205,10 +205,12 @@ def write_frontend_config(path: Path, tenant: str, project: str, token: str = "t
     else:
         data = {}
 
-    if data.get("tenant") in (None, "", "TENANT_ID"):
-        data["tenant"] = tenant
-    if data.get("project") in (None, "", "PROJECT_ID"):
-        data["project"] = project
+    data["tenant"] = tenant
+    data["project"] = project
+    if "tenant_id" in data:
+        data["tenant_id"] = tenant
+    if "project_id" in data:
+        data["project_id"] = project
     data.setdefault("routesPrefix", "/chatbot")
 
     auth = data.get("auth") if isinstance(data.get("auth"), dict) else {}

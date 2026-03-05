@@ -6,7 +6,7 @@
 from typing import Optional, List, Dict, Any
 import json
 
-from kdcube_ai_app.ops.deployment.sql.db_deployment import SYSTEM_SCHEMA, PROJECT_DEFAULT_SCHEMA
+from kdcube_ai_app.ops.deployment.sql.db_deployment import SYSTEM_SCHEMA, PROJECT_DEFAULT_SCHEMA, safe_schema_name
 from kdcube_ai_app.infra.relational.psql.psql_base import PostgreSqlDbMgr
 from kdcube_ai_app.infra.relational.psql.utilities import (
     transactional, to_pgvector_str
@@ -32,12 +32,18 @@ class KnowledgeBaseSearch:
         self.dbmgr = PostgreSqlDbMgr()
 
         self.tenant = tenant
-        if schema_name and not schema_name.startswith(tenant):
-            schema_name = f"{tenant}_{schema_name}"
-        if schema_name and not schema_name.startswith("kdcube_"):
-            schema_name = f"kdcube_{schema_name}"
+        tenant_safe = safe_schema_name(tenant) if tenant else tenant
+        schema = schema_name or PROJECT_DEFAULT_SCHEMA
+        if tenant_safe:
+            if schema_name:
+                if not schema.startswith(tenant_safe) and not schema.startswith(f"kdcube_{tenant_safe}"):
+                    schema = f"{tenant_safe}_{schema}"
+            else:
+                schema = f"{tenant_safe}_{schema}"
+        if schema and not schema.startswith("kdcube_"):
+            schema = f"kdcube_{schema}"
 
-        self.schema = schema_name or PROJECT_DEFAULT_SCHEMA
+        self.schema = safe_schema_name(schema) if schema else PROJECT_DEFAULT_SCHEMA
         self.system_schema = system_schema_name or SYSTEM_SCHEMA
 
     # ================================
@@ -1073,4 +1079,3 @@ class KnowledgeBaseSearch:
             reranked = [r for r in reranked if r.get("rerank_score", 0.0) >= params.rerank_threshold]
 
         return reranked[: (params.rerank_top_k or params.top_n)]
-
