@@ -324,8 +324,16 @@ def prompt_for_ai_app_root(console: Console) -> Path:
         console.print("[red]Could not find docker-compose.yaml under that path.[/red]")
 
 
+def _label(text: str) -> str:
+    return f"[bold blue]{text}[/]"
+
+
+def _mask(value: str) -> str:
+    return "*" * len(value)
+
+
 def prompt_optional(console: Console, label: str, secret: bool = False) -> str:
-    console.print(f"{label} [dim](leave blank to skip)[/dim]")
+    console.print(f"{_label(label)} [dim](leave blank to skip)[/dim]")
     return console.input("> ", password=secret).strip()
 
 
@@ -334,7 +342,7 @@ def ensure_absolute(console: Console, label: str, current: Optional[str], defaul
     if current_value and Path(current_value).is_absolute():
         return current_value
     while True:
-        value = Prompt.ask(label, default=default or "")
+        value = Prompt.ask(_label(label), default=default or "")
         if not value:
             console.print("[red]Please provide a value.[/red]")
             continue
@@ -353,11 +361,12 @@ def prompt_secret(
     if not is_placeholder(current):
         return current
     if required:
-        value = Prompt.ask(label, password=True)
+        value = Prompt.ask(_label(label), password=True)
     else:
         value = prompt_optional(console, label, secret=True)
     if value:
         update_env_value(env_file, key, value)
+        console.print(f"{_label(label)}: [dim]{_mask(value)}[/]")
         return value
     return None
 
@@ -419,23 +428,25 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         existing_tenant = existing_tenant or alt_tenant
         existing_project = existing_project or alt_project
 
-    tenant = Prompt.ask("Tenant ID", default=existing_tenant or "demo-tenant")
-    project = Prompt.ask("Project name", default=existing_project or "demo-project")
+    tenant = Prompt.ask(_label("Tenant ID"), default=existing_tenant or "demo-tenant")
+    project = Prompt.ask(_label("Project name"), default=existing_project or "demo-project")
     for env in (env_ingress, env_proc, env_metrics):
         patch_gateway_config_json(env, tenant, project)
 
     if is_placeholder(env_pg.entries.get("POSTGRES_USER", (None, None))[1]):
-        pg_user = Prompt.ask("Postgres user", default="postgres")
+        pg_user = Prompt.ask(_label("Postgres user"), default="postgres")
         update_env_value(env_pg, "POSTGRES_USER", pg_user)
         update_env_value(env_ingress, "POSTGRES_USER", pg_user)
         update_env_value(env_proc, "POSTGRES_USER", pg_user)
     if is_placeholder(env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]):
-        pg_pass = Prompt.ask("Postgres password", password=True)
+        pg_pass = Prompt.ask(_label("Postgres password"), password=True)
+        console.print(f"{_label('Postgres password')}: [dim]{_mask(pg_pass)}[/]")
         update_env_value(env_pg, "POSTGRES_PASSWORD", pg_pass)
         update_env_value(env_ingress, "POSTGRES_PASSWORD", pg_pass)
         update_env_value(env_proc, "POSTGRES_PASSWORD", pg_pass)
     if is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]):
-        redis_pass = Prompt.ask("Redis password", password=True)
+        redis_pass = Prompt.ask(_label("Redis password"), password=True)
+        console.print(f"{_label('Redis password')}: [dim]{_mask(redis_pass)}[/]")
         update_env_value(env_main, "REDIS_PASSWORD", redis_pass)
     else:
         redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
@@ -453,17 +464,9 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_proc.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_proc, "POSTGRES_HOST", "postgres-db")
 
-    openai_key = prompt_secret(console, env_ingress, "OPENAI_API_KEY", "OpenAI API key", required=False)
-    if openai_key:
-        update_if_placeholder(env_proc, "OPENAI_API_KEY", openai_key)
-
-    anthropic_key = prompt_secret(console, env_ingress, "ANTHROPIC_API_KEY", "Anthropic API key", required=False)
-    if anthropic_key:
-        update_if_placeholder(env_proc, "ANTHROPIC_API_KEY", anthropic_key)
-
-    brave_key = prompt_secret(console, env_ingress, "BRAVE_API_KEY", "Brave Search API key", required=False)
-    if brave_key:
-        update_if_placeholder(env_proc, "BRAVE_API_KEY", brave_key)
+    prompt_secret(console, env_proc, "OPENAI_API_KEY", "OpenAI API key", required=False)
+    prompt_secret(console, env_proc, "ANTHROPIC_API_KEY", "Anthropic API key", required=False)
+    prompt_secret(console, env_proc, "BRAVE_API_KEY", "Brave Search API key", required=False)
 
     host_storage = ensure_absolute(
         console,
