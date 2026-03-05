@@ -150,6 +150,9 @@ Point to it via:
 NGINX_PROXY_CONFIG_FILE_PATH=<customer-repo>/ops/<...>/nginx_proxy.conf
 ```
 
+For non‑SSL dev, prefer the HTTP‑only config. For SSL deployments, use the
+SSL templates (cognito/delegated auth) and ensure certs are mounted.
+
 ---
 
 ## First‑time setup on EC2

@@ -78,6 +78,13 @@ def is_placeholder(value: Optional[str]) -> bool:
     return False
 
 
+def is_default_tenant_project(value: Optional[str]) -> bool:
+    if value is None:
+        return True
+    stripped = value.strip().strip("'\"").lower()
+    return stripped in {"default", "demo-tenant", "demo-project"}
+
+
 def parse_env(lines: List[str]) -> Dict[str, Tuple[int, str]]:
     entries: Dict[str, Tuple[int, str]] = {}
     for idx, line in enumerate(lines):
@@ -472,6 +479,14 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     project = ask(console, "Project name", default=existing_project or "demo-project")
     for env in (env_ingress, env_proc, env_metrics):
         patch_gateway_config_json(env, tenant, project)
+    if is_placeholder(env_pg.entries.get("TENANT_ID", (None, None))[1]) or is_default_tenant_project(
+        env_pg.entries.get("TENANT_ID", (None, None))[1]
+    ):
+        update_env_value(env_pg, "TENANT_ID", tenant)
+    if is_placeholder(env_pg.entries.get("PROJECT_ID", (None, None))[1]) or is_default_tenant_project(
+        env_pg.entries.get("PROJECT_ID", (None, None))[1]
+    ):
+        update_env_value(env_pg, "PROJECT_ID", project)
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
     if is_placeholder(pg_user):

@@ -25,6 +25,9 @@ cp sample_env/.env.postgres.setup ./config/.env.postgres.setup
 cp sample_env/.env.ingress ./config/.env.ingress
 cp sample_env/.env.proc ./config/.env.proc
 cp sample_env/.env.metrics ./config/.env.metrics
+# Nginx configs (mounted into containers at runtime)
+cp nginx/conf/nginx_ui.conf ./config/nginx_ui.conf
+cp nginx/conf/nginx_proxy.conf ./config/nginx_proxy.conf
 # Optional (if you enable proxylogin):
 # cp sample_env/.env.proxylogin ./config/.env.proxylogin
 ```
@@ -37,11 +40,14 @@ cp sample_env/.env.metrics ./config/.env.metrics
 - `BUNDLE_STORAGE_ROOT` = shared bundle local storage root inside container (e.g. `/bundle-storage`)
 - `HOST_EXEC_WORKSPACE_PATH` = host exec workspace
 
-3. Pick the OpenResty config you want (set in `.env.frontend`):
+3. Pick the OpenResty config you want (set in `.env`):
 
 - `nginx/conf/nginx_proxy.conf` (no TLS, no proxylogin)
 - `nginx/conf/nginx_proxy_ssl.conf` (TLS, no proxylogin)
 - `nginx/conf/nginx_proxy_ssl_delegated_auth.conf` (TLS + proxylogin)
+
+You can swap the proxy config by copying the desired file into
+`./config/nginx_proxy.conf` (no rebuild required).
 
 4. Frontend config examples live in:
 
@@ -52,11 +58,15 @@ cp sample_env/.env.metrics ./config/.env.metrics
 These are mounted at runtime as `/usr/share/nginx/html/config.json` via
 `PATH_TO_FRONTEND_CONFIG_JSON` in `.env`.
 
-4. Start the stack:
+5. Start the stack:
 
 ```bash
 docker compose --env-file ./config/.env up -d --build
 ```
+
+Open the UI:
+- `http://localhost/chatbot/chat` (via proxy)
+- `http://localhost:5173/chatbot/chat` (direct web-ui)
 
 ## Prepare data directories
 
@@ -102,13 +112,17 @@ falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.
 ## Notes
 
 - `postgres-setup` runs once after Postgres is healthy and creates schemas.
+- `pgadmin` requires `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD`
+  in `.env.postgres.setup` (sample env provides defaults).
 - Data persists under `./data/*`.
 - Proxylogin is disabled by default in compose; enable it if you use delegated auth.
 
 
+```bash
+alias dc-infra='docker compose -f docker-compose.yaml'
+```
+
 ```shell
-
-
 docker compose stop postgres-setup && docker compose rm postgres-setup -f && docker compose build postgres-setup --no-cache && docker compose up postgres-setup -d
 ```
 

@@ -22,9 +22,13 @@ kdcube-apps-cli
 ## What the wizard does
 
 - Creates a **workdir** with `config/`, `data/`, and `logs/` folders
-- Writes the compose env files into `config/`
+- Writes the compose env files into `config/` (only if missing; it won’t overwrite existing files)
+- Copies nginx configs into `config/` for runtime overrides:
+  - `nginx_ui.conf`
+  - `nginx_proxy.conf`
 - Generates frontend runtime config
 - Creates local data folders for Postgres/Redis/exec workspace/bundle storage
+- Optionally builds images and runs `docker compose up -d --build`
 
 ## Compose usage (recommended)
 
@@ -37,11 +41,17 @@ kdcube-apps-cli
    - `/srv/kdcube-local/config/.env.postgres.setup`
    - `/srv/kdcube-local/config/.env.proxylogin`
    - `/srv/kdcube-local/config/frontend.config.hardcoded.json`
+   - `/srv/kdcube-local/config/nginx_ui.conf`
+   - `/srv/kdcube-local/config/nginx_proxy.conf`
 3) Start compose from `deployment/docker/all_in_one_kdcube`:
 
 ```bash
 docker compose --env-file /srv/kdcube-local/config/.env up -d --build
 ```
+
+Open the UI:
+- `http://localhost/chatbot/chat` (via proxy)
+- `http://localhost:5173/chatbot/chat` (direct web‑ui)
 
 ## Dev‑host usage (run services on host)
 
@@ -52,6 +62,9 @@ You can still use the CLI to bootstrap a workdir and then run services locally:
 3) The CLI also writes a dev UI config to:
    - `app/ai-app/ui/chat-web-app/public/private/config.hardcoded.json`
 4) Start local infra via `deployment/docker/local-infra-stack` if needed.
+
+Tip: you can edit `workdir/config/nginx_ui.conf` and `workdir/config/nginx_proxy.conf`
+without rebuilding images (they are mounted into the containers at runtime).
 
 See `app/ai-app/docs/service/environment/setup-dev-env-README.md` for the full
 dev‑host flow.

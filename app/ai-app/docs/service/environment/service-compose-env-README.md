@@ -28,6 +28,8 @@ Folder: `deployment/docker/all_in_one_kdcube`
 | `sample_env/.env.postgres.setup` | DB setup job env |
 | `sample_env/.env.proxylogin` | Proxylogin env (optional) |
 | `sample_env/.env.frontend` | Frontend env (optional) |
+| `nginx/conf/nginx_ui.conf` | UI nginx config (mounted at runtime) |
+| `nginx/conf/nginx_proxy.conf` | Proxy nginx config (mounted at runtime) |
 
 ### 2) `custom-ui-managed-infra` (custom UI + managed DB/Redis)
 Folder: `deployment/docker/custom-ui-managed-infra`
@@ -58,6 +60,8 @@ These are used by compose for mounts/builds. See `sample_env/.env` in the target
 | `PROXY_BUILD_CONTEXT` | Proxy build context |
 | `PROXY_DOCKERFILE_PATH` | Proxy Dockerfile path |
 | `NGINX_PROXY_CONFIG_FILE_PATH` | Proxy nginx config used at runtime |
+| `KDCUBE_CONFIG_DIR/nginx_ui.conf` | UI nginx config mount (all_in_one_kdcube) |
+| `KDCUBE_CONFIG_DIR/nginx_proxy.conf` | Proxy nginx config mount (all_in_one_kdcube) |
 
 ## Per‑Service Env (ingress/proc/metrics)
 
@@ -77,5 +81,7 @@ env vars in `.env.proc`. See `docs/sdk/bundle/bundle-ops-README.md`.
 - `tenant` + `project` are required and must be in `GATEWAY_CONFIG_JSON`.
 - Use `POSTGRES_HOST` / `REDIS_HOST` for managed services; omit for local‑infra if compose provides them.
 - `TENANT_ID` / `DEFAULT_PROJECT_NAME` are not supported.
+- If you enable `pgadmin`, set `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD`
+  in `.env.postgres.setup` (samples provide defaults).
 
 For the full config schema, see `docs/service/gateway-README.md`.

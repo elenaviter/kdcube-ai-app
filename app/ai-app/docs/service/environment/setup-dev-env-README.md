@@ -15,6 +15,9 @@ This guide shows the **minimal env variables** needed to load bundles from a
 `release.yaml` descriptor during local development, and how to prepare SSH
 credentials for private git repos.
 
+If you already use `kdcube-apps-cli`, you can reuse the generated env files
+from `workdir/config` instead of copying sample envs manually.
+
 ---
 
 ## 1) Minimal env for bundles (proc)
