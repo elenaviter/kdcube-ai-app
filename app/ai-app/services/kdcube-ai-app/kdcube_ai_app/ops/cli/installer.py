@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 from rich.table import Table
 
 
@@ -316,7 +316,7 @@ def find_ai_app_root(lib_root: Optional[Path]) -> Optional[Path]:
 
 def prompt_for_ai_app_root(console: Console) -> Path:
     while True:
-        raw = Prompt.ask("Path to ai-app root (contains deployment/docker/all_in_one_kdcube)")
+        raw = ask(console, "Path to ai-app root (contains deployment/docker/all_in_one_kdcube)")
         candidate = Path(raw).expanduser().resolve()
         compose = candidate / "deployment/docker/all_in_one_kdcube/docker-compose.yaml"
         if compose.exists():
@@ -331,10 +331,37 @@ def _label(text: str) -> str:
 def _mask(value: str) -> str:
     return "*" * len(value)
 
+def _abort_if_quit(value: str) -> None:
+    if value.strip().lower() in {"q", "quit", "exit"}:
+        raise SystemExit("Setup cancelled by user.")
+
+
+def ask(console: Console, label: str, default: Optional[str] = None, secret: bool = False) -> str:
+    value = Prompt.ask(_label(label), default=default or "", password=secret)
+    _abort_if_quit(value)
+    return value
+
+
+def ask_confirm(console: Console, label: str, default: bool = False) -> bool:
+    default_hint = "y" if default else "n"
+    while True:
+        raw = console.input(f"{label} [y/n] ({default_hint}): ").strip().lower()
+        if not raw:
+            return default
+        if raw in {"q", "quit", "exit"}:
+            raise SystemExit("Setup cancelled by user.")
+        if raw in {"y", "yes"}:
+            return True
+        if raw in {"n", "no"}:
+            return False
+        console.print("[red]Please enter y/n or q to quit.[/red]")
+
 
 def prompt_optional(console: Console, label: str, secret: bool = False) -> str:
     console.print(f"{_label(label)} [dim](leave blank to skip)[/dim]")
-    return console.input("> ", password=secret).strip()
+    value = console.input("> ", password=secret).strip()
+    _abort_if_quit(value)
+    return value
 
 
 def ensure_absolute(console: Console, label: str, current: Optional[str], default: Optional[str]) -> str:
@@ -342,7 +369,7 @@ def ensure_absolute(console: Console, label: str, current: Optional[str], defaul
     if current_value and Path(current_value).is_absolute():
         return current_value
     while True:
-        value = Prompt.ask(_label(label), default=default or "")
+        value = ask(console, label, default=default or "")
         if not value:
             console.print("[red]Please provide a value.[/red]")
             continue
@@ -361,7 +388,7 @@ def prompt_secret(
     if not is_placeholder(current):
         return current
     if required:
-        value = Prompt.ask(_label(label), password=True)
+        value = ask(console, label, secret=True)
     else:
         value = prompt_optional(console, label, secret=True)
     if value:
@@ -428,24 +455,24 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         existing_tenant = existing_tenant or alt_tenant
         existing_project = existing_project or alt_project
 
-    tenant = Prompt.ask(_label("Tenant ID"), default=existing_tenant or "demo-tenant")
-    project = Prompt.ask(_label("Project name"), default=existing_project or "demo-project")
+    tenant = ask(console, "Tenant ID", default=existing_tenant or "demo-tenant")
+    project = ask(console, "Project name", default=existing_project or "demo-project")
     for env in (env_ingress, env_proc, env_metrics):
         patch_gateway_config_json(env, tenant, project)
 
     if is_placeholder(env_pg.entries.get("POSTGRES_USER", (None, None))[1]):
-        pg_user = Prompt.ask(_label("Postgres user"), default="postgres")
+        pg_user = ask(console, "Postgres user", default="postgres")
         update_env_value(env_pg, "POSTGRES_USER", pg_user)
         update_env_value(env_ingress, "POSTGRES_USER", pg_user)
         update_env_value(env_proc, "POSTGRES_USER", pg_user)
     if is_placeholder(env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]):
-        pg_pass = Prompt.ask(_label("Postgres password"), password=True)
+        pg_pass = ask(console, "Postgres password", secret=True)
         console.print(f"{_label('Postgres password')}: [dim]{_mask(pg_pass)}[/]")
         update_env_value(env_pg, "POSTGRES_PASSWORD", pg_pass)
         update_env_value(env_ingress, "POSTGRES_PASSWORD", pg_pass)
         update_env_value(env_proc, "POSTGRES_PASSWORD", pg_pass)
     if is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]):
-        redis_pass = Prompt.ask(_label("Redis password"), password=True)
+        redis_pass = ask(console, "Redis password", secret=True)
         console.print(f"{_label('Redis password')}: [dim]{_mask(redis_pass)}[/]")
         update_env_value(env_main, "REDIS_PASSWORD", redis_pass)
     else:
@@ -568,7 +595,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
             if default_value:
                 update_env_value(env_main, key, default_value)
             else:
-                update_env_value(env_main, key, Prompt.ask(f"{key} (relative to PROXY_BUILD_CONTEXT)"))
+                update_env_value(env_main, key, ask(console, f"{key} (relative to PROXY_BUILD_CONTEXT)"))
 
     save_env_file(env_main)
     save_env_file(env_ingress)
@@ -595,103 +622,107 @@ def main() -> None:
             title="kdcube-cli",
         )
     )
+    console.print("[dim]Tip: type 'q' at any prompt to exit.[/dim]\n")
 
-    lib_root = discover_lib_root()
-    ai_app_root = find_ai_app_root(lib_root)
-    if ai_app_root is None:
-        ai_app_root = prompt_for_ai_app_root(console)
+    try:
+        lib_root = discover_lib_root()
+        ai_app_root = find_ai_app_root(lib_root)
+        if ai_app_root is None:
+            ai_app_root = prompt_for_ai_app_root(console)
 
-    if lib_root is None:
-        console.print("[yellow]Could not infer lib root; using ai-app root instead.[/yellow]")
-        lib_root = ai_app_root
+        if lib_root is None:
+            console.print("[yellow]Could not infer lib root; using ai-app root instead.[/yellow]")
+            lib_root = ai_app_root
 
-    docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
-    sample_env_dir = docker_dir / "sample_env"
-    if not sample_env_dir.exists():
-        raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
+        docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
+        sample_env_dir = docker_dir / "sample_env"
+        if not sample_env_dir.exists():
+            raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
 
-    default_workdir = os.getenv("KDCUBE_WORKDIR") or str(Path.home() / ".kdcube" / "kdcube-runtime")
-    workdir = Path(
-        Prompt.ask("Compose workdir (config+data root)", default=default_workdir)
-    ).expanduser().resolve()
-    config_dir = workdir / "config"
-    data_dir = workdir / "data"
-    logs_dir = workdir / "logs"
+        default_workdir = os.getenv("KDCUBE_WORKDIR") or str(Path.home() / ".kdcube" / "kdcube-runtime")
+        workdir = Path(
+            ask(console, "Compose workdir (config+data root)", default=default_workdir)
+        ).expanduser().resolve()
+        config_dir = workdir / "config"
+        data_dir = workdir / "data"
+        logs_dir = workdir / "logs"
 
-    ctx = PathsContext(
-        lib_root=lib_root,
-        ai_app_root=ai_app_root,
-        docker_dir=docker_dir,
-        sample_env_dir=sample_env_dir,
-        workdir=workdir,
-        config_dir=config_dir,
-        data_dir=data_dir,
-    )
+        ctx = PathsContext(
+            lib_root=lib_root,
+            ai_app_root=ai_app_root,
+            docker_dir=docker_dir,
+            sample_env_dir=sample_env_dir,
+            workdir=workdir,
+            config_dir=config_dir,
+            data_dir=data_dir,
+        )
 
-    ensure_env_files(config_dir, sample_env_dir)
-    ensure_local_dirs(data_dir, logs_dir)
-    env_paths = gather_configuration(console, ctx)
-    env_main = load_env_file(config_dir / ".env")
+        ensure_env_files(config_dir, sample_env_dir)
+        ensure_local_dirs(data_dir, logs_dir)
+        env_paths = gather_configuration(console, ctx)
+        env_main = load_env_file(config_dir / ".env")
 
-    console.print("\n[bold]Env files:[/bold]")
-    for name, path in env_paths.items():
-        console.print(f"  {name}: {path}")
-    console.print("\n[dim]Review/edit these files before building images if needed.[/dim]")
-    console.print("[dim]Build contexts (from .env):[/dim]")
-    ui_ctx = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
-    proxy_ctx = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
-    console.print(f"  UI_BUILD_CONTEXT={ui_ctx}")
-    console.print(f"  PROXY_BUILD_CONTEXT={proxy_ctx}")
+        console.print("\n[bold]Env files:[/bold]")
+        for name, path in env_paths.items():
+            console.print(f"  {name}: {path}")
+        console.print("\n[dim]Review/edit these files before building images if needed.[/dim]")
+        console.print("[dim]Build contexts (from .env):[/dim]")
+        ui_ctx = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
+        proxy_ctx = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
+        console.print(f"  UI_BUILD_CONTEXT={ui_ctx}")
+        console.print(f"  PROXY_BUILD_CONTEXT={proxy_ctx}")
 
-    console.print("\n[dim]Small coffee break:[/dim] ☕\n")
+        console.print("\n[dim]Small coffee break:[/dim] ☕\n")
 
-    if Confirm.ask("Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=False):
-        missing = missing_build_keys(env_main)
-        if missing:
-            console.print("[yellow]Skipping build — missing required build settings in .env:[/yellow]")
-            for key in missing:
-                console.print(f"  - {key}")
-            console.print("[yellow]Fill these in .env and rerun the build step.[/yellow]")
-        else:
+        if ask_confirm(console, "Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=False):
+            missing = missing_build_keys(env_main)
+            if missing:
+                console.print("[yellow]Skipping build — missing required build settings in .env:[/yellow]")
+                for key in missing:
+                    console.print(f"  - {key}")
+                console.print("[yellow]Fill these in .env and rerun the build step.[/yellow]")
+            else:
+                try:
+                    subprocess.run(
+                        [
+                            "docker",
+                            "compose",
+                            "--env-file",
+                            str(config_dir / ".env"),
+                            "build",
+                            "chat-ingress",
+                            "chat-proc",
+                            "metrics",
+                            "web-ui",
+                            "web-proxy",
+                            "postgres-setup",
+                        ],
+                        cwd=ctx.docker_dir,
+                        check=True,
+                    )
+                except FileNotFoundError:
+                    console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
+                except subprocess.CalledProcessError:
+                    console.print("[red]Docker compose build failed. Check the output and retry.[/red]")
+
+        if ask_confirm(console, "Build the code execution image (py-code-exec:latest)?", default=False):
             try:
                 subprocess.run(
-                    [
-                        "docker",
-                        "compose",
-                        "--env-file",
-                        str(config_dir / ".env"),
-                        "build",
-                        "chat-ingress",
-                        "chat-proc",
-                        "metrics",
-                        "web-ui",
-                        "web-proxy",
-                        "postgres-setup",
-                    ],
+                    ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
                     cwd=ctx.docker_dir,
                     check=True,
                 )
             except FileNotFoundError:
                 console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
             except subprocess.CalledProcessError:
-                console.print("[red]Docker compose build failed. Check the output and retry.[/red]")
+                console.print("[red]Docker build failed. Check the output and retry.[/red]")
 
-    if Confirm.ask("Build the code execution image (py-code-exec:latest)?", default=False):
-        try:
-            subprocess.run(
-                ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
-                cwd=ctx.docker_dir,
-                check=True,
-            )
-        except FileNotFoundError:
-            console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
-        except subprocess.CalledProcessError:
-            console.print("[red]Docker build failed. Check the output and retry.[/red]")
-
-    if Confirm.ask("Run docker compose now?", default=False):
-        console.print("Run this from the docker folder:")
-        console.print(f"  cd {docker_dir}")
-        console.print(f"  docker compose --env-file {config_dir / '.env'} up -d --build")
+        if ask_confirm(console, "Run docker compose now?", default=False):
+            console.print("Run this from the docker folder:")
+            console.print(f"  cd {docker_dir}")
+            console.print(f"  docker compose --env-file {config_dir / '.env'} up -d --build")
+    except SystemExit as exc:
+        console.print(f"[yellow]{exc}[/yellow]")
 
 
 if __name__ == "__main__":
