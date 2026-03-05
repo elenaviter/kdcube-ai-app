@@ -718,9 +718,28 @@ def main() -> None:
                 console.print("[red]Docker build failed. Check the output and retry.[/red]")
 
         if ask_confirm(console, "Run docker compose now?", default=False):
-            console.print("Run this from the docker folder:")
-            console.print(f"  cd {docker_dir}")
-            console.print(f"  docker compose --env-file {config_dir / '.env'} up -d --build")
+            try:
+                subprocess.run(
+                    [
+                        "docker",
+                        "compose",
+                        "--env-file",
+                        str(config_dir / ".env"),
+                        "up",
+                        "-d",
+                        "--build",
+                    ],
+                    cwd=ctx.docker_dir,
+                    check=True,
+                )
+                console.print("[green]Docker compose started.[/green]")
+                console.print("Open the UI:")
+                console.print("  http://localhost/chatbot/chat  (via proxy)")
+                console.print("  http://localhost:5173/chatbot/chat  (direct web-ui)")
+            except FileNotFoundError:
+                console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
+            except subprocess.CalledProcessError:
+                console.print("[red]Docker compose up failed. Check the output and retry.[/red]")
     except SystemExit as exc:
         console.print(f"[yellow]{exc}[/yellow]")
 
