@@ -86,7 +86,6 @@ def run_installer(console: Console, repo_root: Path) -> None:
     console.print("Launching setup wizard...")
     result = subprocess.run([sys.executable, str(installer)])
     if result.returncode == 130:
-        console.print("[yellow]Setup cancelled.[/yellow]")
         raise SystemExit(130)
     if result.returncode != 0:
         raise SystemExit(f"Installer failed with exit code {result.returncode}.")
