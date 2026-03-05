@@ -761,8 +761,10 @@ def main() -> None:
                 )
                 console.print("[green]Docker compose started.[/green]")
                 console.print("Open the UI:")
-                console.print("  http://localhost/chatbot/chat  (via proxy)")
-                console.print("  http://localhost:5173/chatbot/chat  (direct web-ui)")
+                proxy_url = "http://localhost/chatbot/chat"
+                direct_url = "http://localhost:5173/chatbot/chat"
+                console.print(f"  [link={proxy_url}]{proxy_url}[/link]  (via proxy)")
+                console.print(f"  [link={direct_url}]{direct_url}[/link]  (direct web-ui)")
             except FileNotFoundError:
                 console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
             except subprocess.CalledProcessError:
