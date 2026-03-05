@@ -65,13 +65,13 @@ docker compose --env-file ./config/.env up -d --build
 ```
 
 Open the UI:
-- `http://localhost/chatbot/chat` (via proxy)
-- `http://localhost:5173/chatbot/chat` (direct web-ui)
+- `http://localhost:${KDCUBE_UI_PORT}/chatbot/chat` (via proxy, omit `:${KDCUBE_UI_PORT}` if it is `80`)
 
-## Prepare data directories
+## Prepare data + logs directories
 
 ```shell
-mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import},bundle-storage}
+mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import},bundle-storage} \
+  ./logs/{chat-ingress,chat-proc}
 ```
 
 ```shell
@@ -79,12 +79,27 @@ chmod -R 0777 data
 chmod -R 0777 logs
 ```
 
+### Linux permissions (multi‑user hosts)
+
+Both `chat-ingress` and `chat-proc` write logs to `/logs` inside the container.
+That path is a **bind mount** to `./logs` on the host. On Linux, the container
+user (UID 1000) must have write access to that host folder.
+
+**Recommended options:**
+
+1. **Per‑user workdir (best):** keep `./logs` under your own home directory.
+2. **Shared group:** set SGID + group write on the logs dir.
+3. **Simple:** `chmod -R 0777 ./logs` (good enough for dev).
+
+If you use the CLI installer, it pre‑creates `./logs/chat-ingress` and
+`./logs/chat-proc` and makes them writable.
+
 ## Ports (defaults)
 
 - Ingress API: `8010`
 - Processor API: `8020`
 - Metrics: `8090` (bound to localhost)
-- Web UI: `5173`
+- Web UI: `${KDCUBE_UI_PORT}` (default `5174` in sample env)
 - OpenResty: `80` / `443`
 
 ## Bundles
@@ -116,6 +131,8 @@ falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.
   in `.env.postgres.setup` (sample env provides defaults).
 - Data persists under `./data/*`.
 - Proxylogin is disabled by default in compose; enable it if you use delegated auth.
+- `docker-entrypoint.sh` is used by **chat‑proc only** (it configures Docker socket
+  access and ensures the exec workspace is writable). Ingress does **not** use it.
 
 
 ```bash

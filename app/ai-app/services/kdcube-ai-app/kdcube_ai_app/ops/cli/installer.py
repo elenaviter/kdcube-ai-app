@@ -280,7 +280,13 @@ def ensure_local_dirs(data_dir: Path, logs_dir: Path) -> None:
     ]:
         path.mkdir(parents=True, exist_ok=True)
     logs_dir.mkdir(parents=True, exist_ok=True)
-    (logs_dir / "chat-proc").mkdir(parents=True, exist_ok=True)
+    for subdir in ("chat-ingress", "chat-proc"):
+        (logs_dir / subdir).mkdir(parents=True, exist_ok=True)
+    for path in (logs_dir, logs_dir / "chat-ingress", logs_dir / "chat-proc"):
+        try:
+            os.chmod(path, 0o777)
+        except Exception:
+            pass
 
 
 def load_env_file(path: Path) -> EnvFile:
@@ -776,10 +782,12 @@ def main() -> None:
                 )
                 console.print("[green]Docker compose started.[/green]")
                 console.print("Open the UI:")
-                proxy_url = "http://localhost/chatbot/chat"
-                direct_url = "http://localhost:5173/chatbot/chat"
-                console.print(f"  [link={proxy_url}]{proxy_url}[/link]  (via proxy)")
-                console.print(f"  [link={direct_url}]{direct_url}[/link]  (direct web-ui)")
+                ui_port = env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1] or "80"
+                if ui_port == "80":
+                    proxy_url = "http://localhost/chatbot/chat"
+                else:
+                    proxy_url = f"http://localhost:{ui_port}/chatbot/chat"
+                console.print(f"  [link={proxy_url}]{proxy_url}[/link]")
             except FileNotFoundError:
                 console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
             except subprocess.CalledProcessError:
