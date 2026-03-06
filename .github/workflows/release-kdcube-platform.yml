@@ -177,3 +177,31 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: app/ai-app/services/kdcube-ai-app/kdcube_cli/dist
+
+  github-release:
+    runs-on: ubuntu-latest
+    needs: [resolve-version, tag-release, build-and-push, publish-cli]
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release (if missing)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ needs.resolve-version.outputs.tag }}';
+            const { owner, repo } = context.repo;
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const existing = releases.find(r => r.tag_name === tag);
+            if (existing) {
+              core.info(`Release ${tag} already exists: ${existing.html_url}`);
+              return;
+            }
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              name: tag,
+              generate_release_notes: true,
+              draft: false,
+              prerelease: false
+            });

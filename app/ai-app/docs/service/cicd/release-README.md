@@ -66,8 +66,9 @@ Suggested flow (platform team):
    - Reads `platform.ref`
    - Validates `platform.ref` as **PEP440** (required by PyPI)
    - Creates git tag `platform.ref`
-   - Builds & pushes images to dockerhub with that tag
-   - Builds & publishes the CLI with that exact version
+    - Builds & pushes images to dockerhub with that tag
+    - Builds & publishes the CLI with that exact version
+    - Creates a GitHub Release for the tag (if missing)
 
 Notes:
 - The release branch name is a **convention only** (e.g., `release/<version>`). CI does not require it.
