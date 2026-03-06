@@ -141,7 +141,7 @@ def handle_service_error(error: ServiceError) -> str:
         "quota_exceeded": "usage_limit",
         "too_many_requests": "rate_limit",
         "timeout": "timeout",
-        "internal_error": "server_error",
+        "internal_error": "service_error",
         "server_error": "server_error",
     }
 

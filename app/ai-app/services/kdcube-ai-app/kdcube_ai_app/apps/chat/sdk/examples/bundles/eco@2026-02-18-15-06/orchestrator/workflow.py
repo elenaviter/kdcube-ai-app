@@ -107,7 +107,7 @@ class WithReactWorkflow(BaseWorkflow):
                         on_thinking_delta=self.mk_thinking_streamer("gate"),
                         ctx_browser=self.ctx_browser,
                         render_params={
-                            "include_sources": False,   # gate doesn't need KB sources
+                            "include_sources": False,   # gate doesn't use sources block
                             "include_announce": False,   # gate doesn't need announce block
                         },
                     )
@@ -174,7 +174,7 @@ class WithReactWorkflow(BaseWorkflow):
 
             # ── Node 2: Solver (ReAct) agent ──
             async def _react_node(state: Dict[str, Any]) -> Dict[str, Any]:
-                # Build ReAct agent with tools/skills from bundle descriptors
+                # Build ReAct agent and optionally extend it with the tools/skills defined in this bundle
                 react = self.build_react(
                     tools_runtime=getattr(tools_descriptor, "TOOL_RUNTIME", None),
                     mod_tools_spec=tools_descriptor.TOOLS_SPECS,
@@ -183,7 +183,7 @@ class WithReactWorkflow(BaseWorkflow):
                     skills_visibility_agents_config=skills_descriptor.AGENTS_CONFIG or {},
                     scratchpad=scratchpad
                 )
-                # Collect allowed tool aliases — solver only sees tools declared by this bundle
+                # Collect allowed tool aliases — solver only sees tools that we allow here
                 allowed_plugins = [
                     s.get("alias")
                     for s in (tools_descriptor.TOOLS_SPECS or [])
@@ -198,7 +198,13 @@ class WithReactWorkflow(BaseWorkflow):
                 sr = await react.run(
                     allowed_plugins=allowed_plugins,
                 )
-                # Persist workspace artifacts (files, images) created by tools
+                # Capture workspace snapshot for diagnostics (does not host tool artifacts)
+                #
+                # Workspace contains per-turn sandbox data: attachments, execution logs,
+                # materialized artifacts, and timeline snapshot. Actual files/images/docs
+                # created by tools are hosted immediately via the ReAct tool layer.
+                # Workspace persistence can be disabled with REACT_PERSIST_WORKSPACE=0.
+
                 try:
                     await react.persist_workspace()
                 except Exception as ex:

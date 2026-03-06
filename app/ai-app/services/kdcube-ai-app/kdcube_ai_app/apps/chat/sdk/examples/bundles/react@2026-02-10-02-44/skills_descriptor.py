@@ -1,18 +1,19 @@
 # ── skills_descriptor.py ──
-# Declares which skills (prompt templates) are available to the solver.
+# Declares skills available to the solver agent.
 #
-# A skill is a reusable prompt template that appears in the chat UI gallery
-# (e.g. "Summarise this page", "Write a SQL query"). Skills live as
-# SKILL.md files in a folder hierarchy:
-#   <skills_root>/<namespace>/<skill_id>/SKILL.md
-#
-# The solver agent can invoke skills just like tools, but instead of
-# running code they inject a curated prompt into the conversation.
-#
+# A skill is more than a SKILL.md prompt template:
+#   - May include sources added to the sources pool
+#   - Can reference recommended tools
+#   - Provides hints / best practices to guide the agent when relevant
+
+# Skills are read by the agent and incorporated into its context
+# (e.g., in ReAct agent, added directly to the timeline). Presentation
+# of the skill catalog depends on the agent (flat list, tree by category, etc.).
+
 # To add a custom skill:
-#   1. Create a directory under skills/ (e.g. skills/custom/my_skill/)
-#   2. Add a SKILL.md file with the prompt template
-#   3. (Optional) Restrict visibility per agent in AGENTS_CONFIG
+#   1. Create a folder under skills/ (e.g. skills/custom/my_skill/)
+#   2. Add SKILL.md with prompt template and optional metadata
+#   3. Optionally restrict visibility via AGENTS_CONFIG
 
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
@@ -22,7 +23,6 @@ from __future__ import annotations
 import pathlib
 from typing import Optional, Dict, Any
 
-# Bundle root = directory containing this file
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parent
 
 # Root directory for custom skills shipped with this bundle.

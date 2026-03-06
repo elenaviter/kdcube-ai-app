@@ -114,7 +114,7 @@ class WithReactWorkflow(BaseWorkflow):
                         on_thinking_delta=self.mk_thinking_streamer("gate"),
                         ctx_browser=self.ctx_browser,
                         render_params={
-                            "include_sources": False,   # gate doesn't need KB sources
+                            "include_sources": False,   # gate node does not require sources from the sources pool
                             "include_announce": False,   # gate doesn't need announce block
                         },
                     )

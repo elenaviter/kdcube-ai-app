@@ -114,7 +114,6 @@ class ReactWorkflow(BaseEntrypoint):
                 ctx_client=ctx_client,
             )
 
-            # Execute the workflow, passing the full turn state
             try:
                 res = await orch.process({
                     "request_id": state["request_id"],

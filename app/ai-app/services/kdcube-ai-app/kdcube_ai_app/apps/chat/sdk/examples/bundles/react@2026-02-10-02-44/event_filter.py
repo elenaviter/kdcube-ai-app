@@ -1,12 +1,8 @@
-# ── event_filter.py ──
-# Controls which real-time events (SSE/WebSocket) reach the end user.
+# The platform emits many events during a turn (thinking steps, tool
+# calls, citations, status updates, etc.). Not all of them should be
+# visible to every user tier, so bundles can implement heuristics here.
 #
-# The platform emits events as a turn progresses: thinking steps, tool calls,
-# citations, status updates, etc. Not every event should be visible to every
-# user tier. This module implements IEventFilter which the base entrypoint
-# calls on every outgoing event — return True to send, False to suppress.
-#
-# How it works (two-list model):
+# How it works in this bundle (two-list model):
 #   LIST_1 — blocklist: event types suppressed for regular users
 #   LIST_2 — allowlist: overrides the blocklist (always delivered)
 #
@@ -15,11 +11,10 @@
 #   2. If event type IN LIST_1 but ALSO in LIST_2 → allow (override)
 #   3. Otherwise → block
 #
-# Privileged users bypass all filtering (see everything).
+# Privileged users bypass all filtering and receive all events.
 #
-# To customise:
-#   - Add internal/debug event types to LIST_1
-#   - Add user-facing event types to LIST_2
+# This firewall only controls outbound events (bundle → client).
+# It does not replace gateway/auth checks on inbound requests.
 
 from typing import Set, Optional, Dict, Any
 
