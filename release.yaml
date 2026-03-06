@@ -1,4 +1,8 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.6.314"
-  description: "First release for KDCube AI Platform + SDK"
+  ref: "2026.3.6.1513"
+  description: "Multi-arch kdcube images. Install from upstream, last release or a specific version"
+  config:
+    version: "2026.3.6.1513"
+
+
