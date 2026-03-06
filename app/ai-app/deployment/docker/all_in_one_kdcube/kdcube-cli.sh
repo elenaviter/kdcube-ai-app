@@ -19,4 +19,4 @@ else
   git clone "$REPO_URL" "$TARGET_DIR"
 fi
 
-python3 "$TARGET_DIR/app/ai-app/deployment/docker/all_in_one/kdcube-cli.py"
+python3 "$TARGET_DIR/app/ai-app/deployment/docker/all_in_one_kdcube/kdcube-cli.py"

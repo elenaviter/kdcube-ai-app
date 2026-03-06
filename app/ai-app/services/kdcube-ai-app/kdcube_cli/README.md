@@ -62,8 +62,17 @@ python -m kdcube_cli.cli
 Current scope: the wizard is **optimized for docker‑compose** (all‑in‑one).
 It creates a workdir (default: `~/.kdcube/kdcube-runtime`) and lets you:
 - generate config/data/log folders
-- build images (optional)
+- choose **release** (pull from DockerHub) or **upstream** (build locally)
 - start `docker compose` (optional)
+
+Install source options:
+- `release-latest`: pull prebuilt images for the latest release
+- `release-installed`: pull prebuilt images for the last installed release (if known)
+- `release-tag`: pull prebuilt images for a specific version (platform.ref)
+- `upstream`: build images from the current git checkout
+- `skip`: keep current repo/workdir without pulling or changing versions
+
+Tip: you can select the install source using the ↑/↓ arrow keys and Enter.
 
 Example workdir layout:
 

@@ -4,9 +4,9 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import json
 import subprocess
 from dataclasses import dataclass
-import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -663,67 +663,133 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     }
 
 
-def main() -> None:
-    console = Console()
-    console.print(
-        Panel.fit(
-            "KDCube Platform Setup\nQuick-start Docker Compose wizard",
-            title="kdcube-cli",
-        )
-    )
-    console.print("[dim]Tip: type 'q' at any prompt to exit.[/dim]\n")
+def run_setup(
+    console: Console,
+    *,
+    repo_root: Optional[Path] = None,
+    workdir: Optional[Path] = None,
+    install_mode: Optional[str] = None,
+    release_ref: Optional[str] = None,
+    docker_namespace: Optional[str] = None,
+) -> None:
+    install_mode = (install_mode or os.getenv("KDCUBE_INSTALL_MODE", "upstream")).strip().lower()
+    env_release_ref = os.getenv("KDCUBE_RELEASE_REF", "").strip()
+    env_docker_namespace = os.getenv("KDCUBE_DOCKER_NAMESPACE", "").strip()
+    if not release_ref and env_release_ref:
+        release_ref = env_release_ref
+    if not docker_namespace and env_docker_namespace:
+        docker_namespace = env_docker_namespace
 
-    try:
+    if repo_root is not None:
+        repo_root = repo_root.expanduser().resolve()
+        ai_app_root = repo_root / "app/ai-app"
+        if not (ai_app_root / "deployment/docker/all_in_one_kdcube/docker-compose.yaml").exists():
+            raise FileNotFoundError(
+                f"Could not find deployment/docker/all_in_one_kdcube under {ai_app_root}"
+            )
+        lib_root = ai_app_root / "services/kdcube-ai-app"
+        if not (lib_root / "kdcube_ai_app").exists():
+            raise FileNotFoundError(f"Could not locate kdcube_ai_app under {lib_root}")
+    else:
         lib_root = discover_lib_root()
         ai_app_root = find_ai_app_root(lib_root)
         if ai_app_root is None:
             ai_app_root = prompt_for_ai_app_root(console)
-
         if lib_root is None:
             console.print("[yellow]Could not infer lib root; using ai-app root instead.[/yellow]")
             lib_root = ai_app_root
 
-        docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
-        sample_env_dir = docker_dir / "sample_env"
-        if not sample_env_dir.exists():
-            raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
+    docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
+    sample_env_dir = docker_dir / "sample_env"
+    if not sample_env_dir.exists():
+        raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
 
-        default_workdir = os.getenv("KDCUBE_WORKDIR") or str(Path.home() / ".kdcube" / "kdcube-runtime")
-        workdir = Path(
-            ask(console, "Compose workdir (config+data root)", default=default_workdir)
-        ).expanduser().resolve()
-        config_dir = workdir / "config"
-        data_dir = workdir / "data"
-        logs_dir = workdir / "logs"
+    if workdir is None:
+        workdir_env = os.getenv("KDCUBE_WORKDIR", "").strip()
+        if workdir_env:
+            workdir = Path(workdir_env).expanduser().resolve()
+            console.print(f"[dim]Using workdir from environment:[/dim] {workdir}")
+        else:
+            default_workdir = str(Path.home() / ".kdcube" / "kdcube-runtime")
+            workdir = Path(
+                ask(console, "Compose workdir (config+data root)", default=default_workdir)
+            ).expanduser().resolve()
+    else:
+        workdir = workdir.expanduser().resolve()
 
-        ctx = PathsContext(
-            lib_root=lib_root,
-            ai_app_root=ai_app_root,
-            docker_dir=docker_dir,
-            sample_env_dir=sample_env_dir,
-            workdir=workdir,
-            config_dir=config_dir,
-            data_dir=data_dir,
-        )
+    config_dir = workdir / "config"
+    data_dir = workdir / "data"
+    logs_dir = workdir / "logs"
 
-        ensure_env_files(config_dir, sample_env_dir)
-        ensure_nginx_configs(config_dir, ai_app_root)
-        ensure_local_dirs(data_dir, logs_dir)
-        env_paths = gather_configuration(console, ctx)
-        env_main = load_env_file(config_dir / ".env")
+    ctx = PathsContext(
+        lib_root=lib_root,
+        ai_app_root=ai_app_root,
+        docker_dir=docker_dir,
+        sample_env_dir=sample_env_dir,
+        workdir=workdir,
+        config_dir=config_dir,
+        data_dir=data_dir,
+    )
 
-        console.print("\n[bold]Env files:[/bold]")
-        for name, path in env_paths.items():
-            console.print(f"  {name}: {path}")
-        console.print("\n[dim]Review/edit these files before building images if needed.[/dim]")
-        console.print("[dim]Build contexts (from .env):[/dim]")
-        ui_ctx = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
-        proxy_ctx = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
-        console.print(f"  UI_BUILD_CONTEXT={ui_ctx}")
-        console.print(f"  PROXY_BUILD_CONTEXT={proxy_ctx}")
+    ensure_env_files(config_dir, sample_env_dir)
+    ensure_nginx_configs(config_dir, ai_app_root)
+    ensure_local_dirs(data_dir, logs_dir)
+    # Record installer metadata for future runs.
+    try:
+        meta = {
+            "install_mode": install_mode or "upstream",
+            "platform_ref": release_ref or "",
+            "dockerhub_namespace": docker_namespace or "",
+        }
+        (config_dir / "install-meta.json").write_text(json.dumps(meta, indent=2))
+    except Exception:
+        pass
+    env_paths = gather_configuration(console, ctx)
+    env_main = load_env_file(config_dir / ".env")
 
-        console.print("\n[dim]Small coffee break:[/dim] ☕\n")
+    console.print("\n[bold]Env files:[/bold]")
+    for name, path in env_paths.items():
+        console.print(f"  {name}: {path}")
+    console.print("\n[dim]Review/edit these files before building images if needed.[/dim]")
+    console.print("[dim]Build contexts (from .env):[/dim]")
+    ui_ctx = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
+    proxy_ctx = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
+    console.print(f"  UI_BUILD_CONTEXT={ui_ctx}")
+    console.print(f"  PROXY_BUILD_CONTEXT={proxy_ctx}")
 
+    console.print("\n[dim]Small coffee break:[/dim] ☕\n")
+
+    if install_mode == "release":
+        console.print("[bold]Release mode[/bold]: pull prebuilt images from DockerHub.")
+        if not docker_namespace:
+            docker_namespace = "kdcube"
+        tag = release_ref or ask(console, "Release version (platform.ref)")
+        if ask_confirm(console, f"Pull platform images ({docker_namespace}, tag {tag})?", default=True):
+            images = [
+                "kdcube-chat-ingress",
+                "kdcube-chat-proc",
+                "kdcube-metrics",
+                "kdcube-postgres-setup",
+                "kdcube-web-ui",
+                "kdcube-web-proxy",
+                "proxylogin",
+                "py-code-exec",
+            ]
+            try:
+                for image in images:
+                    subprocess.run(
+                        ["docker", "pull", f"{docker_namespace}/{image}:{tag}"],
+                        check=True,
+                    )
+                    subprocess.run(
+                        ["docker", "tag", f"{docker_namespace}/{image}:{tag}", f"{image}:latest"],
+                        check=True,
+                    )
+            except FileNotFoundError:
+                console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
+            except subprocess.CalledProcessError:
+                console.print("[red]Docker pull/tag failed. Check the output and retry.[/red]")
+    else:
         if ask_confirm(console, "Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=False):
             missing = missing_build_keys(env_main)
             if missing:
@@ -755,45 +821,61 @@ def main() -> None:
                 except subprocess.CalledProcessError:
                     console.print("[red]Docker compose build failed. Check the output and retry.[/red]")
 
-        if ask_confirm(console, "Build the code execution image (py-code-exec:latest)?", default=False):
-            try:
-                subprocess.run(
-                    ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
-                    cwd=ctx.docker_dir,
-                    check=True,
-                )
-            except FileNotFoundError:
-                console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
-            except subprocess.CalledProcessError:
-                console.print("[red]Docker build failed. Check the output and retry.[/red]")
+    if ask_confirm(console, "Build the code execution image (py-code-exec:latest)?", default=False):
+        try:
+            subprocess.run(
+                ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
+                cwd=ctx.docker_dir,
+                check=True,
+            )
+        except FileNotFoundError:
+            console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
+        except subprocess.CalledProcessError:
+            console.print("[red]Docker build failed. Check the output and retry.[/red]")
 
-        if ask_confirm(console, "Run docker compose now?", default=False):
-            try:
-                subprocess.run(
-                    [
-                        "docker",
-                        "compose",
-                        "--env-file",
-                        str(config_dir / ".env"),
-                        "up",
-                        "-d",
-                        "--build",
-                    ],
-                    cwd=ctx.docker_dir,
-                    check=True,
-                )
-                console.print("[green]Docker compose started.[/green]")
-                console.print("Open the UI:")
-                ui_port = env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1] or "80"
-                if ui_port == "80":
-                    proxy_url = "http://localhost/chatbot/chat"
-                else:
-                    proxy_url = f"http://localhost:{ui_port}/chatbot/chat"
-                console.print(f"  [link={proxy_url}]{proxy_url}[/link]")
-            except FileNotFoundError:
-                console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
-            except subprocess.CalledProcessError:
-                console.print("[red]Docker compose up failed. Check the output and retry.[/red]")
+    if ask_confirm(console, "Run docker compose now?", default=False):
+        try:
+            compose_cmd = [
+                "docker",
+                "compose",
+                "--env-file",
+                str(config_dir / ".env"),
+                "up",
+                "-d",
+            ]
+            if install_mode != "release":
+                compose_cmd.append("--build")
+            subprocess.run(
+                compose_cmd,
+                cwd=ctx.docker_dir,
+                check=True,
+            )
+            console.print("[green]Docker compose started.[/green]")
+            console.print("Open the UI:")
+            ui_port = env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1] or "80"
+            if ui_port == "80":
+                proxy_url = "http://localhost/chatbot/chat"
+            else:
+                proxy_url = f"http://localhost:{ui_port}/chatbot/chat"
+            console.print(f"  [link={proxy_url}]{proxy_url}[/link]")
+        except FileNotFoundError:
+            console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
+        except subprocess.CalledProcessError:
+            console.print("[red]Docker compose up failed. Check the output and retry.[/red]")
+
+
+def main() -> None:
+    console = Console()
+    console.print(
+        Panel.fit(
+            "KDCube Platform Setup\nQuick-start Docker Compose wizard",
+            title="kdcube-cli",
+        )
+    )
+    console.print("[dim]Tip: type 'q' at any prompt to exit.[/dim]\n")
+
+    try:
+        run_setup(console)
     except SystemExit as exc:
         console.print(f"[yellow]{exc}[/yellow]")
     except KeyboardInterrupt:
