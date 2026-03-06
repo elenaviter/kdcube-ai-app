@@ -42,6 +42,12 @@ python -m pip install --user kdcube-cli
 kdcube-setup
 ```
 
+Re-run prompts (edit existing values):
+
+```bash
+kdcube-setup --reset
+```
+
 Tip: if `kdcube-setup` is not on your PATH, run:
 
 ```bash
@@ -124,6 +130,7 @@ Open the UI:
 
 - The wizard **does not overwrite** existing config files in your workdir. It only fills
   placeholders in newly created files.
+- Use `kdcube-setup --reset` to re-enter values without deleting files.
 - Config upgrades/migrations will be added later when configs are versioned.
 
 Tip: you can edit `workdir/config/nginx_ui.conf` and `workdir/config/nginx_proxy.conf`

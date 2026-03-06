@@ -392,12 +392,19 @@ def prompt_optional(console: Console, label: str, secret: bool = False) -> str:
     return value
 
 
-def ensure_absolute(console: Console, label: str, current: Optional[str], default: Optional[str]) -> str:
+def ensure_absolute(
+    console: Console,
+    label: str,
+    current: Optional[str],
+    default: Optional[str],
+    *,
+    force_prompt: bool = False,
+) -> str:
     current_value = None if is_placeholder(current) else current
-    if current_value and Path(current_value).is_absolute():
+    if not force_prompt and current_value and Path(current_value).is_absolute():
         return current_value
     while True:
-        value = ask(console, label, default=default or "")
+        value = ask(console, label, default=current_value or default or "")
         if not value:
             console.print("[red]Please provide a value.[/red]")
             continue
@@ -410,12 +417,20 @@ def prompt_secret(
     env_file: EnvFile,
     key: str,
     label: str,
+    *,
     required: bool = False,
+    force_prompt: bool = False,
 ) -> Optional[str]:
     current = env_file.entries.get(key, (None, None))[1]
-    if not is_placeholder(current):
+    if not force_prompt and not is_placeholder(current):
         return current
-    if required:
+    if force_prompt and current and not is_placeholder(current):
+        console.print(f"{_label(label)} [dim](press Enter to keep current)[/dim]")
+        value = console.input("> ", password=True).strip()
+        _abort_if_quit(value)
+        if not value:
+            return current
+    elif required:
         value = ask(console, label, secret=True)
     else:
         value = prompt_optional(console, label, secret=True)
@@ -423,7 +438,7 @@ def prompt_secret(
         update_env_value(env_file, key, value)
         console.print(f"{_label(label)}: [dim]{_mask(value)}[/]")
         return value
-    return None
+    return current if force_prompt else None
 
 
 def prompt_choice(console: Console, label: str, choices: List[str], default: str) -> str:
@@ -470,6 +485,7 @@ def should_replace_bundles_config(value: Optional[str]) -> bool:
 
 
 def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
+    force_prompt = os.getenv("KDCUBE_RESET_CONFIG", "").lower() in {"1", "true", "yes", "on"}
     env_main = load_env_file(ctx.config_dir / ".env")
     env_ingress = load_env_file(ctx.config_dir / ".env.ingress")
     env_proc = load_env_file(ctx.config_dir / ".env.proc")
@@ -503,14 +519,14 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         update_env_value(env_pg, "PROJECT_ID", project)
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
-    if is_placeholder(pg_user):
+    if force_prompt or is_placeholder(pg_user):
         pg_user = ask(console, "Postgres user", default="postgres")
         update_env_value(env_pg, "POSTGRES_USER", pg_user)
     update_if_placeholder(env_ingress, "POSTGRES_USER", pg_user or "postgres")
     update_if_placeholder(env_proc, "POSTGRES_USER", pg_user or "postgres")
 
     pg_pass = env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]
-    if is_placeholder(pg_pass):
+    if force_prompt or is_placeholder(pg_pass):
         pg_pass = ask(console, "Postgres password", secret=True)
         console.print(f"{_label('Postgres password')}: [dim]{_mask(pg_pass)}[/]")
         update_env_value(env_pg, "POSTGRES_PASSWORD", pg_pass)
@@ -518,7 +534,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     update_if_placeholder(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
 
     pg_db = env_pg.entries.get("POSTGRES_DATABASE", (None, None))[1]
-    if is_placeholder(pg_db):
+    if force_prompt or is_placeholder(pg_db):
         pg_db = "kdcube"
         update_env_value(env_pg, "POSTGRES_DATABASE", pg_db)
     update_if_placeholder(env_ingress, "POSTGRES_DATABASE", pg_db or "kdcube")
@@ -526,7 +542,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     update_if_placeholder(env_main, "PGUSER", pg_user or "postgres")
     update_if_placeholder(env_main, "PGPASSWORD", pg_pass or "postgres")
     update_if_placeholder(env_main, "PGDATABASE", pg_db or "kdcube")
-    if is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]):
+    if force_prompt or is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]):
         redis_pass = ask(console, "Redis password", secret=True)
         console.print(f"{_label('Redis password')}: [dim]{_mask(redis_pass)}[/]")
         update_env_value(env_main, "REDIS_PASSWORD", redis_pass)
@@ -546,33 +562,37 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_proc.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_proc, "POSTGRES_HOST", "postgres-db")
 
-    prompt_secret(console, env_proc, "OPENAI_API_KEY", "OpenAI API key", required=False)
-    prompt_secret(console, env_proc, "ANTHROPIC_API_KEY", "Anthropic API key", required=False)
-    prompt_secret(console, env_proc, "BRAVE_API_KEY", "Brave Search API key", required=False)
+    prompt_secret(console, env_proc, "OPENAI_API_KEY", "OpenAI API key", required=False, force_prompt=force_prompt)
+    prompt_secret(console, env_proc, "ANTHROPIC_API_KEY", "Anthropic API key", required=False, force_prompt=force_prompt)
+    prompt_secret(console, env_proc, "BRAVE_API_KEY", "Brave Search API key", required=False, force_prompt=force_prompt)
 
     host_storage = ensure_absolute(
         console,
         "Host KB storage path",
         env_main.entries.get("HOST_KDCUBE_STORAGE_PATH", (None, None))[1],
         defaults.get("host_kb_storage"),
+        force_prompt=force_prompt,
     )
     host_bundles = ensure_absolute(
         console,
         "Host bundles path",
         env_main.entries.get("HOST_BUNDLES_PATH", (None, None))[1],
         defaults.get("host_bundles"),
+        force_prompt=force_prompt,
     )
     host_bundle_storage = ensure_absolute(
         console,
         "Host bundle local storage path",
         env_main.entries.get("HOST_BUNDLE_STORAGE_PATH", (None, None))[1],
         defaults.get("host_bundle_storage"),
+        force_prompt=force_prompt,
     )
     host_exec = ensure_absolute(
         console,
         "Host exec workspace path",
         env_main.entries.get("HOST_EXEC_WORKSPACE_PATH", (None, None))[1],
         defaults.get("host_exec_workspace"),
+        force_prompt=force_prompt,
     )
 
     update_env_value(env_main, "HOST_KDCUBE_STORAGE_PATH", host_storage)
@@ -587,7 +607,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_main.entries.get("BUNDLE_STORAGE_ROOT", (None, None))[1]):
         update_env_value(env_main, "BUNDLE_STORAGE_ROOT", "/bundle-storage")
 
-    if is_placeholder(env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]):
+    if force_prompt or is_placeholder(env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]):
         descriptor = prompt_optional(console, "Host bundle descriptor path (release.yaml)")
         update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", descriptor or "/dev/null")
 
@@ -607,12 +627,12 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         default=default_auth,
     )
     if auth_choice == "ssh":
-        if is_placeholder(env_main.entries.get("HOST_GIT_SSH_KEY_PATH", (None, None))[1]):
-            ssh_key = prompt_optional(console, "Host SSH key path for git bundles")
-            update_env_value(env_main, "HOST_GIT_SSH_KEY_PATH", ssh_key or "/dev/null")
-        if is_placeholder(env_main.entries.get("HOST_GIT_KNOWN_HOSTS_PATH", (None, None))[1]):
-            known_hosts = prompt_optional(console, "Host known_hosts path for git bundles")
-            update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", known_hosts or "/dev/null")
+    if force_prompt or is_placeholder(env_main.entries.get("HOST_GIT_SSH_KEY_PATH", (None, None))[1]):
+        ssh_key = prompt_optional(console, "Host SSH key path for git bundles")
+        update_env_value(env_main, "HOST_GIT_SSH_KEY_PATH", ssh_key or "/dev/null")
+    if force_prompt or is_placeholder(env_main.entries.get("HOST_GIT_KNOWN_HOSTS_PATH", (None, None))[1]):
+        known_hosts = prompt_optional(console, "Host known_hosts path for git bundles")
+        update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", known_hosts or "/dev/null")
 
         update_if_placeholder(env_proc, "GIT_SSH_KEY_PATH", "/run/secrets/git_ssh_key")
         update_if_placeholder(env_proc, "GIT_SSH_KNOWN_HOSTS", "/run/secrets/git_known_hosts")

@@ -191,6 +191,16 @@ def main() -> None:
         default=str(DEFAULT_DIR),
         help="Install directory for the repo",
     )
+    parser.add_argument(
+        "--reset-config",
+        action="store_true",
+        help="Re-run config prompts and allow editing existing values",
+    )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Alias for --reset-config",
+    )
     args = parser.parse_args()
 
     repo_path = Path(os.path.expanduser(args.path)).resolve()
@@ -245,6 +255,8 @@ def main() -> None:
             else:
                 release_ref = remote_ref or Prompt.ask("Release version (platform.ref)")
 
+        if args.reset_config or args.reset:
+            os.environ["KDCUBE_RESET_CONFIG"] = "1"
         run_installer(console, repo_path, workdir, mode, release_ref, docker_namespace)
     except FileNotFoundError as exc:
         raise SystemExit("Missing dependency. Please install Git and Python.") from exc
