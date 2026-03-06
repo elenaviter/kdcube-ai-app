@@ -7,13 +7,16 @@ import shutil
 import json
 import subprocess
 from dataclasses import dataclass
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
+from rich.text import Text
 
 
 ENV_FILES = [
@@ -392,6 +395,18 @@ def prompt_optional(console: Console, label: str, secret: bool = False) -> str:
     return value
 
 
+def prompt_optional_keep(console: Console, label: str, current: Optional[str]) -> Optional[str]:
+    if current and not is_placeholder(current):
+        console.print(f"{_label(label)} [dim](press Enter to keep current)[/dim]")
+    else:
+        console.print(f"{_label(label)} [dim](leave blank to skip)[/dim]")
+    value = console.input("> ").strip()
+    _abort_if_quit(value)
+    if not value:
+        return current if current and not is_placeholder(current) else None
+    return value
+
+
 def ensure_absolute(
     console: Console,
     label: str,
@@ -424,27 +439,68 @@ def prompt_secret(
     current = env_file.entries.get(key, (None, None))[1]
     if not force_prompt and not is_placeholder(current):
         return current
-    if force_prompt and current and not is_placeholder(current):
-        console.print(f"{_label(label)} [dim](press Enter to keep current)[/dim]")
-        value = console.input("> ", password=True).strip()
-        _abort_if_quit(value)
-        if not value:
-            return current
-    elif required:
-        value = ask(console, label, secret=True)
-    else:
-        value = prompt_optional(console, label, secret=True)
-    if value:
-        update_env_value(env_file, key, value)
-        console.print(f"{_label(label)}: [dim]{_mask(value)}[/]")
-        return value
-    return current if force_prompt else None
+    while True:
+        if force_prompt and current and not is_placeholder(current):
+            console.print(f"{_label(label)} [dim](press Enter to keep current)[/dim]")
+            value = console.input("> ", password=True).strip()
+            _abort_if_quit(value)
+            if not value:
+                return current
+        elif required:
+            value = ask(console, label, secret=True)
+        else:
+            value = prompt_optional(console, label, secret=True)
+        if value:
+            update_env_value(env_file, key, value)
+            console.print(f"{_label(label)}: [dim]{_mask(value)}[/]")
+            return value
+        if required:
+            console.print("[red]This value is required. Please enter a value.[/red]")
+            continue
+        return current if force_prompt else None
 
 
 def prompt_choice(console: Console, label: str, choices: List[str], default: str) -> str:
     value = Prompt.ask(_label(label), choices=choices, default=default)
     _abort_if_quit(value)
     return value
+
+
+def select_option(console: Console, title: str, options: List[str], default_index: int = 0) -> str:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return prompt_choice(console, title, options, options[default_index])
+    try:
+        from readchar import readkey, key
+    except Exception:
+        return prompt_choice(console, title, options, options[default_index])
+
+    idx = max(0, min(default_index, len(options) - 1))
+
+    def _render() -> Panel:
+        text = Text()
+        text.append(title + "\n\n", style="bold")
+        for i, option in enumerate(options):
+            if i == idx:
+                text.append("➤ ", style="bold cyan")
+                text.append(option, style="bold cyan")
+            else:
+                text.append("  " + option)
+            text.append("\n")
+        text.append("\nUse ↑/↓ and Enter.", style="dim")
+        return Panel(text, title="Select")
+
+    with Live(_render(), console=console, refresh_per_second=30, transient=True) as live:
+        while True:
+            k = readkey()
+            if k in (key.UP, "k"):
+                idx = (idx - 1) % len(options)
+            elif k in (key.DOWN, "j"):
+                idx = (idx + 1) % len(options)
+            elif k in (key.ENTER, "\r"):
+                return options[idx]
+            elif k in (key.CTRL_C, "\x03"):
+                raise KeyboardInterrupt
+            live.update(_render())
 
 
 def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str, str]:
@@ -455,7 +511,7 @@ def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str,
         "host_kb_storage": str(workdir / "data/kdcube-storage"),
         "host_bundle_storage": str(workdir / "data/bundle-storage"),
         "host_exec_workspace": str(workdir / "data/exec-workspace"),
-        "host_bundles": str(lib_root / "kdcube_ai_app/apps/chat/sdk/examples/bundles"),
+        "host_bundles": str(workdir / "data/bundles"),
         "ui_dockerfile_path": "deployment/docker/all_in_one_kdcube/Dockerfile_UI",
         "ui_source_path": "ui/chat-web-app",
         "ui_env_build_relative": "ui/chat-web-app/.env.sample",
@@ -520,42 +576,87 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
     if force_prompt or is_placeholder(pg_user):
-        pg_user = ask(console, "Postgres user", default="postgres")
+        pg_user_default = pg_user if not is_placeholder(pg_user) else "postgres"
+        pg_user = ask(console, "Postgres user", default=pg_user_default)
         update_env_value(env_pg, "POSTGRES_USER", pg_user)
-    update_if_placeholder(env_ingress, "POSTGRES_USER", pg_user or "postgres")
-    update_if_placeholder(env_proc, "POSTGRES_USER", pg_user or "postgres")
+    if force_prompt:
+        update_env_value(env_ingress, "POSTGRES_USER", pg_user or "postgres")
+        update_env_value(env_proc, "POSTGRES_USER", pg_user or "postgres")
+    else:
+        update_if_placeholder(env_ingress, "POSTGRES_USER", pg_user or "postgres")
+        update_if_placeholder(env_proc, "POSTGRES_USER", pg_user or "postgres")
 
-    pg_pass = env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]
-    if force_prompt or is_placeholder(pg_pass):
-        pg_pass = ask(console, "Postgres password", secret=True)
-        console.print(f"{_label('Postgres password')}: [dim]{_mask(pg_pass)}[/]")
-        update_env_value(env_pg, "POSTGRES_PASSWORD", pg_pass)
-    update_if_placeholder(env_ingress, "POSTGRES_PASSWORD", pg_pass or "postgres")
-    update_if_placeholder(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
+    # If .env.postgres.setup is empty, fall back to .env values
+    pg_pass_env = env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]
+    if is_placeholder(pg_pass_env):
+        fallback_pg = env_main.entries.get("POSTGRES_PASSWORD", (None, None))[1]
+        if is_placeholder(fallback_pg):
+            fallback_pg = env_main.entries.get("PGPASSWORD", (None, None))[1]
+        if not is_placeholder(fallback_pg):
+            update_env_value(env_pg, "POSTGRES_PASSWORD", fallback_pg)
+
+    pg_pass = prompt_secret(
+        console,
+        env_pg,
+        "POSTGRES_PASSWORD",
+        "Postgres password",
+        required=True,
+        force_prompt=force_prompt,
+    )
+    if not pg_pass:
+        pg_pass = env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1] or ""
+    if force_prompt:
+        update_env_value(env_ingress, "POSTGRES_PASSWORD", pg_pass or "postgres")
+        update_env_value(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
+    else:
+        update_if_placeholder(env_ingress, "POSTGRES_PASSWORD", pg_pass or "postgres")
+        update_if_placeholder(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
 
     pg_db = env_pg.entries.get("POSTGRES_DATABASE", (None, None))[1]
     if force_prompt or is_placeholder(pg_db):
-        pg_db = "kdcube"
+        pg_db_default = pg_db if not is_placeholder(pg_db) else "kdcube"
+        pg_db = ask(console, "Postgres database", default=pg_db_default)
         update_env_value(env_pg, "POSTGRES_DATABASE", pg_db)
-    update_if_placeholder(env_ingress, "POSTGRES_DATABASE", pg_db or "kdcube")
-    update_if_placeholder(env_proc, "POSTGRES_DATABASE", pg_db or "kdcube")
-    update_if_placeholder(env_main, "PGUSER", pg_user or "postgres")
-    update_if_placeholder(env_main, "PGPASSWORD", pg_pass or "postgres")
-    update_if_placeholder(env_main, "PGDATABASE", pg_db or "kdcube")
-    if force_prompt or is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]):
-        redis_pass = ask(console, "Redis password", secret=True)
-        console.print(f"{_label('Redis password')}: [dim]{_mask(redis_pass)}[/]")
-        update_env_value(env_main, "REDIS_PASSWORD", redis_pass)
+    if force_prompt:
+        update_env_value(env_ingress, "POSTGRES_DATABASE", pg_db or "kdcube")
+        update_env_value(env_proc, "POSTGRES_DATABASE", pg_db or "kdcube")
+        update_env_value(env_main, "PGUSER", pg_user or "postgres")
+        update_env_value(env_main, "PGPASSWORD", pg_pass or "postgres")
+        update_env_value(env_main, "PGDATABASE", pg_db or "kdcube")
     else:
+        update_if_placeholder(env_ingress, "POSTGRES_DATABASE", pg_db or "kdcube")
+        update_if_placeholder(env_proc, "POSTGRES_DATABASE", pg_db or "kdcube")
+        update_if_placeholder(env_main, "PGUSER", pg_user or "postgres")
+        update_if_placeholder(env_main, "PGPASSWORD", pg_pass or "postgres")
+        update_if_placeholder(env_main, "PGDATABASE", pg_db or "kdcube")
+
+    redis_pass = prompt_secret(
+        console,
+        env_main,
+        "REDIS_PASSWORD",
+        "Redis password",
+        required=True,
+        force_prompt=force_prompt,
+    )
+    if not redis_pass:
         redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
 
-    update_if_placeholder(env_ingress, "REDIS_PASSWORD", redis_pass)
-    update_if_placeholder(env_proc, "REDIS_PASSWORD", redis_pass)
-    update_if_placeholder(env_metrics, "REDIS_PASSWORD", redis_pass)
-    update_if_placeholder(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-    update_if_placeholder(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-    update_if_placeholder(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-    update_if_placeholder(env_proxy, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+    if force_prompt:
+        update_env_value(env_ingress, "REDIS_PASSWORD", redis_pass)
+        update_env_value(env_proc, "REDIS_PASSWORD", redis_pass)
+        update_env_value(env_metrics, "REDIS_PASSWORD", redis_pass)
+        update_env_value(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_env_value(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_env_value(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_env_value(env_proxy, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+    else:
+        update_if_placeholder(env_ingress, "REDIS_PASSWORD", redis_pass)
+        update_if_placeholder(env_proc, "REDIS_PASSWORD", redis_pass)
+        update_if_placeholder(env_metrics, "REDIS_PASSWORD", redis_pass)
+        update_if_placeholder(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_if_placeholder(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_if_placeholder(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_if_placeholder(env_proxy, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
 
     if is_placeholder(env_ingress.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_ingress, "POSTGRES_HOST", "postgres-db")
@@ -568,18 +669,22 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     host_storage = ensure_absolute(
         console,
-        "Host KB storage path",
+        "Host system storage path",
         env_main.entries.get("HOST_KDCUBE_STORAGE_PATH", (None, None))[1],
         defaults.get("host_kb_storage"),
         force_prompt=force_prompt,
     )
-    host_bundles = ensure_absolute(
-        console,
-        "Host bundles path",
-        env_main.entries.get("HOST_BUNDLES_PATH", (None, None))[1],
-        defaults.get("host_bundles"),
-        force_prompt=force_prompt,
-    )
+    host_bundles_current = env_main.entries.get("HOST_BUNDLES_PATH", (None, None))[1]
+    if force_prompt or not is_placeholder(host_bundles_current):
+        host_bundles = ensure_absolute(
+            console,
+            "Host bundles root (git clones)",
+            host_bundles_current,
+            defaults.get("host_bundles"),
+            force_prompt=force_prompt,
+        )
+    else:
+        host_bundles = defaults.get("host_bundles", "")
     host_bundle_storage = ensure_absolute(
         console,
         "Host bundle local storage path",
@@ -607,9 +712,16 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_main.entries.get("BUNDLE_STORAGE_ROOT", (None, None))[1]):
         update_env_value(env_main, "BUNDLE_STORAGE_ROOT", "/bundle-storage")
 
-    if force_prompt or is_placeholder(env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]):
-        descriptor = prompt_optional(console, "Host bundle descriptor path (release.yaml)")
-        update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", descriptor or "/dev/null")
+    current_descriptor = env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]
+    if force_prompt or is_placeholder(current_descriptor):
+        if force_prompt:
+            descriptor = prompt_optional_keep(console, "Host bundle descriptor path (release.yaml)", current_descriptor)
+        else:
+            descriptor = prompt_optional(console, "Host bundle descriptor path (release.yaml)")
+        if descriptor:
+            update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", descriptor)
+        else:
+            update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", "/dev/null")
 
     existing_http = env_proc.entries.get("GIT_HTTP_TOKEN", (None, None))[1]
     existing_ssh = env_proc.entries.get("GIT_SSH_KEY_PATH", (None, None))[1]
@@ -620,19 +732,24 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     else:
         default_auth = "skip"
 
-    auth_choice = prompt_choice(
+    auth_options = ["ssh", "https-token", "skip"]
+    try:
+        default_idx = auth_options.index(default_auth)
+    except ValueError:
+        default_idx = 0
+    auth_choice = select_option(
         console,
         "Git auth method for private bundles",
-        choices=["ssh", "https-token", "skip"],
-        default=default_auth,
+        options=auth_options,
+        default_index=default_idx,
     )
     if auth_choice == "ssh":
-    if force_prompt or is_placeholder(env_main.entries.get("HOST_GIT_SSH_KEY_PATH", (None, None))[1]):
-        ssh_key = prompt_optional(console, "Host SSH key path for git bundles")
-        update_env_value(env_main, "HOST_GIT_SSH_KEY_PATH", ssh_key or "/dev/null")
-    if force_prompt or is_placeholder(env_main.entries.get("HOST_GIT_KNOWN_HOSTS_PATH", (None, None))[1]):
-        known_hosts = prompt_optional(console, "Host known_hosts path for git bundles")
-        update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", known_hosts or "/dev/null")
+        if force_prompt or is_placeholder(env_main.entries.get("HOST_GIT_SSH_KEY_PATH", (None, None))[1]):
+            ssh_key = prompt_optional(console, "Host SSH key path for git bundles")
+            update_env_value(env_main, "HOST_GIT_SSH_KEY_PATH", ssh_key or "/dev/null")
+        if force_prompt or is_placeholder(env_main.entries.get("HOST_GIT_KNOWN_HOSTS_PATH", (None, None))[1]):
+            known_hosts = prompt_optional(console, "Host known_hosts path for git bundles")
+            update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", known_hosts or "/dev/null")
 
         update_if_placeholder(env_proc, "GIT_SSH_KEY_PATH", "/run/secrets/git_ssh_key")
         update_if_placeholder(env_proc, "GIT_SSH_KNOWN_HOSTS", "/run/secrets/git_known_hosts")
@@ -644,7 +761,14 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
             update_env_value(env_proc, "GIT_HTTP_USER", "")
     elif auth_choice == "https-token":
         console.print("[dim]Create a GitHub token at https://github.com/settings/tokens[/dim]")
-        token = prompt_secret(console, env_proc, "GIT_HTTP_TOKEN", "Git HTTPS token", required=True)
+        token = prompt_secret(
+            console,
+            env_proc,
+            "GIT_HTTP_TOKEN",
+            "Git HTTPS token",
+            required=True,
+            force_prompt=force_prompt,
+        )
         if token:
             update_if_placeholder(env_proc, "GIT_HTTP_USER", "x-access-token")
         # Avoid dangling SSH placeholders if user chose token
