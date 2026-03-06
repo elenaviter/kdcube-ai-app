@@ -70,6 +70,8 @@ def is_placeholder(value: Optional[str]) -> bool:
     stripped = value.strip().strip("'\"")
     if not stripped:
         return True
+    if stripped.upper() in {"TENANT_ID", "PROJECT_ID"}:
+        return True
     if "<" in stripped and ">" in stripped:
         return True
     if "/absolute/path" in stripped or "absolute/path" in stripped:
@@ -156,9 +158,9 @@ def _extract_tenant_project(env: EnvFile) -> Tuple[Optional[str], Optional[str]]
         data = json.loads(json_text)
         tenant = data.get("tenant")
         project = data.get("project")
-        if tenant == "<TENANT_ID>":
+        if tenant in {"<TENANT_ID>", "TENANT_ID"}:
             tenant = None
-        if project == "<PROJECT_ID>":
+        if project in {"<PROJECT_ID>", "PROJECT_ID"}:
             project = None
         return tenant, project
     except json.JSONDecodeError:
@@ -166,9 +168,9 @@ def _extract_tenant_project(env: EnvFile) -> Tuple[Optional[str], Optional[str]]
         project_match = re.search(r'"project"\s*:\s*"([^"]+)"', json_text)
         tenant = tenant_match.group(1) if tenant_match else None
         project = project_match.group(1) if project_match else None
-        if tenant == "<TENANT_ID>":
+        if tenant in {"<TENANT_ID>", "TENANT_ID"}:
             tenant = None
-        if project == "<PROJECT_ID>":
+        if project in {"<PROJECT_ID>", "PROJECT_ID"}:
             project = None
         return tenant, project
 
@@ -563,6 +565,10 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     tenant = ask(console, "Tenant ID", default=existing_tenant or "demo-tenant")
     project = ask(console, "Project name", default=existing_project or "demo-project")
+    if is_placeholder(tenant):
+        tenant = "demo-tenant"
+    if is_placeholder(project):
+        project = "demo-project"
     for env in (env_ingress, env_proc, env_metrics):
         patch_gateway_config_json(env, tenant, project)
     if is_placeholder(env_pg.entries.get("TENANT_ID", (None, None))[1]) or is_default_tenant_project(

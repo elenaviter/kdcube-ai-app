@@ -30,7 +30,7 @@ kdcube-setup
 Alternative (pip):
 
 ```bash
-python -m pip install --user kdcube-cli
+pip install -kdcube-cli
 kdcube-setup
 ```
 
@@ -108,7 +108,7 @@ This is not a thin wrapper around tool calls — it’s a full **stateful operat
 - **Source pools + citations**: Perplexity‑style traceability with stable source IDs.
 - **Artifact paths & rehydration**: `fi:/ar:/so:/tc:` logical paths + rehosting on demand.
 - **Tool‑aware UX**: widgets stream into timeline banners (web search, fetch, exec, panels).
-- **Memory tools**: `react.read`, `react.hide`, `react.memsearch`, `react.patch` to recover or reshape context.
+- **ReAct tools**: `react.read`, `react.write`, `react.hide`, `react.memsearch`, `react.patch` to recover or reshape context.
 - **Turn snapshots & versioning**: each turn persists a timeline snapshot + data snapshot; edits produce a new version in the *current turn namespace*, making state **recoverable** and **replayable**.
 
 The timeline is **temporal** and **single‑source‑of‑truth**:

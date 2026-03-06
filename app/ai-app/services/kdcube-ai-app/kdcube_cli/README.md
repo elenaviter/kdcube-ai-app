@@ -48,6 +48,12 @@ Re-run prompts (edit existing values):
 kdcube-setup --reset
 ```
 
+Clean local Docker images/cache:
+
+```bash
+kdcube-setup --clean
+```
+
 Tip: if `kdcube-setup` is not on your PATH, run:
 
 ```bash
