@@ -790,7 +790,11 @@ def run_setup(
             except subprocess.CalledProcessError:
                 console.print("[red]Docker pull/tag failed. Check the output and retry.[/red]")
     else:
-        if ask_confirm(console, "Build core platform images (ingress/proc/metrics/ui/proxy/postgres-setup)?", default=False):
+        if ask_confirm(
+            console,
+            "Build core platform images (includes py-code-exec)?",
+            default=False,
+        ):
             missing = missing_build_keys(env_main)
             if missing:
                 console.print("[yellow]Skipping build — missing required build settings in .env:[/yellow]")
@@ -820,18 +824,16 @@ def run_setup(
                     console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
                 except subprocess.CalledProcessError:
                     console.print("[red]Docker compose build failed. Check the output and retry.[/red]")
-
-    if ask_confirm(console, "Build the code execution image (py-code-exec:latest)?", default=False):
-        try:
-            subprocess.run(
-                ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
-                cwd=ctx.docker_dir,
-                check=True,
-            )
-        except FileNotFoundError:
-            console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
-        except subprocess.CalledProcessError:
-            console.print("[red]Docker build failed. Check the output and retry.[/red]")
+                try:
+                    subprocess.run(
+                        ["docker", "build", "-t", "py-code-exec:latest", "-f", "Dockerfile_Exec", "../../.."],
+                        cwd=ctx.docker_dir,
+                        check=True,
+                    )
+                except FileNotFoundError:
+                    console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
+                except subprocess.CalledProcessError:
+                    console.print("[red]Docker build failed. Check the output and retry.[/red]")
 
     if ask_confirm(console, "Run docker compose now?", default=False):
         try:

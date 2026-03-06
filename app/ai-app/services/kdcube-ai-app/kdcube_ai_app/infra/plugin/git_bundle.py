@@ -82,7 +82,29 @@ def resolve_bundles_root() -> pathlib.Path:
     Resolve bundles root on the current host.
     Prefer HOST_BUNDLES_PATH (host filesystem), then AGENTIC_BUNDLES_ROOT.
     """
-    root = os.environ.get("HOST_BUNDLES_PATH") or os.environ.get("AGENTIC_BUNDLES_ROOT") or "/bundles"
+    host_root = os.environ.get("HOST_BUNDLES_PATH")
+    agentic_root = os.environ.get("AGENTIC_BUNDLES_ROOT")
+    if host_root:
+        host_path = pathlib.Path(host_root).expanduser()
+        try:
+            host_path = host_path.resolve()
+        except Exception:
+            pass
+        if host_path.exists():
+            return host_path
+        log = AgentLogger("git.bundle")
+        if agentic_root:
+            log.log(
+                f"HOST_BUNDLES_PATH points to missing path {host_path}; "
+                f"using AGENTIC_BUNDLES_ROOT={agentic_root}",
+                level="WARNING",
+            )
+        else:
+            log.log(
+                f"HOST_BUNDLES_PATH points to missing path {host_path}; falling back to /bundles",
+                level="WARNING",
+            )
+    root = agentic_root or "/bundles"
     return pathlib.Path(root).expanduser().resolve()
 
 
