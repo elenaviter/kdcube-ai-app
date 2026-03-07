@@ -118,6 +118,15 @@ def update_if_placeholder(env_file: EnvFile, key: str, value: str) -> None:
         update_env_value(env_file, key, value)
 
 
+def _normalize_path(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        return str(Path(value).expanduser().resolve())
+    except Exception:
+        return value
+
+
 def _extract_multiline_value(env: EnvFile, key: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
     start_idx = None
     for idx, line in enumerate(env.lines):
@@ -200,31 +209,49 @@ def patch_gateway_config_json(env: EnvFile, tenant: str, project: str) -> None:
     replace_multiline_block(env, "GATEWAY_CONFIG_JSON", _format_json_multiline("GATEWAY_CONFIG_JSON", data))
 
 
-def write_frontend_config(path: Path, tenant: str, project: str, token: str = "test-admin-token-123") -> None:
+def _load_json_file(path: Path) -> Dict[str, object]:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def write_frontend_config(
+    path: Path,
+    tenant: str,
+    project: str,
+    token: str = "test-admin-token-123",
+    *,
+    template_path: Optional[Path] = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    template_data: Dict[str, object] = {}
+    if template_path and template_path.exists():
+        template_data = _load_json_file(template_path)
+
+    data: Dict[str, object] = {}
     if path.exists():
-        try:
-            data = json.loads(path.read_text())
-        except Exception:
-            data = {}
-    else:
-        data = {}
+        data = _load_json_file(path)
 
-    data["tenant"] = tenant
-    data["project"] = project
-    if "tenant_id" in data:
-        data["tenant_id"] = tenant
-    if "project_id" in data:
-        data["project_id"] = project
-    data.setdefault("routesPrefix", "/chatbot")
+    merged: Dict[str, object] = {}
+    merged.update(template_data)
+    merged.update(data)
 
-    auth = data.get("auth") if isinstance(data.get("auth"), dict) else {}
+    merged["tenant"] = tenant
+    merged["project"] = project
+    if "tenant_id" in merged:
+        merged["tenant_id"] = tenant
+    if "project_id" in merged:
+        merged["project_id"] = project
+    merged.setdefault("routesPrefix", "/chatbot")
+
+    auth = merged.get("auth") if isinstance(merged.get("auth"), dict) else {}
     auth.setdefault("authType", "hardcoded")
     if auth.get("token") in (None, "", "test-admin-token-123"):
         auth["token"] = token
-    data["auth"] = auth
+    merged["auth"] = auth
 
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    path.write_text(json.dumps(merged, indent=2) + "\n")
 
 
 def replace_multiline_block(env_file: EnvFile, key: str, new_lines: List[str]) -> None:
@@ -712,7 +739,8 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     update_env_value(env_main, "HOST_EXEC_WORKSPACE_PATH", host_exec)
     update_if_placeholder(env_main, "KDCUBE_CONFIG_DIR", str(ctx.config_dir))
     update_if_placeholder(env_main, "KDCUBE_DATA_DIR", str(ctx.data_dir))
-    update_if_placeholder(env_main, "KDCUBE_LOGS_DIR", str(ctx.workdir / "logs"))
+    # Always keep logs in the workdir for compose mounts.
+    update_env_value(env_main, "KDCUBE_LOGS_DIR", str(ctx.workdir / "logs"))
     if is_placeholder(env_main.entries.get("AGENTIC_BUNDLES_ROOT", (None, None))[1]):
         update_env_value(env_main, "AGENTIC_BUNDLES_ROOT", "/bundles")
     if is_placeholder(env_main.entries.get("BUNDLE_STORAGE_ROOT", (None, None))[1]):
@@ -805,9 +833,20 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_proc.entries.get("HOST_BUNDLE_STORAGE_PATH", (None, None))[1]):
         update_env_value(env_proc, "HOST_BUNDLE_STORAGE_PATH", host_bundle_storage)
 
+    # For compose installs, always use the container log path.
+    update_env_value(env_ingress, "LOG_DIR", "/logs")
+    update_env_value(env_proc, "LOG_DIR", "/logs")
+
     ui_build_context = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
+    default_ui_context = defaults.get("ui_build_context", "")
     if is_placeholder(ui_build_context):
-        update_env_value(env_main, "UI_BUILD_CONTEXT", defaults.get("ui_build_context", ""))
+        update_env_value(env_main, "UI_BUILD_CONTEXT", default_ui_context)
+    else:
+        normalized_current = _normalize_path(ui_build_context)
+        normalized_default = _normalize_path(default_ui_context)
+        if normalized_default and normalized_current and normalized_current != normalized_default:
+            if ".kdcube/kdcube-ai-app" in normalized_current:
+                update_env_value(env_main, "UI_BUILD_CONTEXT", default_ui_context)
 
     for key, default_key in [
         ("UI_DOCKERFILE_PATH", "ui_dockerfile_path"),
@@ -818,17 +857,38 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         if is_placeholder(value):
             update_env_value(env_main, key, defaults.get(default_key, ""))
 
+    frontend_template = ctx.ai_app_root / "deployment/docker/all_in_one_kdcube/frontend/config.hardcoded.json"
     compose_ui_config = ctx.config_dir / "frontend.config.hardcoded.json"
-    write_frontend_config(compose_ui_config, tenant, project)
-    if is_placeholder(env_main.entries.get("PATH_TO_FRONTEND_CONFIG_JSON", (None, None))[1]):
-        update_env_value(env_main, "PATH_TO_FRONTEND_CONFIG_JSON", str(compose_ui_config))
+    write_frontend_config(compose_ui_config, tenant, project, template_path=frontend_template)
+    current_frontend_path = env_main.entries.get("PATH_TO_FRONTEND_CONFIG_JSON", (None, None))[1]
+    if is_placeholder(current_frontend_path):
+        current_frontend_path = str(compose_ui_config)
+        update_env_value(env_main, "PATH_TO_FRONTEND_CONFIG_JSON", current_frontend_path)
+    # Keep the configured frontend config in sync, even if user pointed elsewhere.
+    try:
+        if current_frontend_path:
+            write_frontend_config(
+                Path(current_frontend_path).expanduser(),
+                tenant,
+                project,
+                template_path=frontend_template,
+            )
+    except Exception:
+        pass
 
     dev_ui_config = ctx.ai_app_root / "ui/chat-web-app/public/private/config.hardcoded.json"
-    write_frontend_config(dev_ui_config, tenant, project)
+    write_frontend_config(dev_ui_config, tenant, project, template_path=frontend_template)
 
     proxy_build_context = env_main.entries.get("PROXY_BUILD_CONTEXT", (None, None))[1]
+    default_proxy_context = defaults.get("proxy_build_context", "")
     if is_placeholder(proxy_build_context):
-        update_env_value(env_main, "PROXY_BUILD_CONTEXT", defaults.get("proxy_build_context", ""))
+        update_env_value(env_main, "PROXY_BUILD_CONTEXT", default_proxy_context)
+    else:
+        normalized_current = _normalize_path(proxy_build_context)
+        normalized_default = _normalize_path(default_proxy_context)
+        if normalized_default and normalized_current and normalized_current != normalized_default:
+            if ".kdcube/kdcube-ai-app" in normalized_current:
+                update_env_value(env_main, "PROXY_BUILD_CONTEXT", default_proxy_context)
 
     for key, default_key in [
         ("PROXY_DOCKERFILE_PATH", "proxy_dockerfile_path"),

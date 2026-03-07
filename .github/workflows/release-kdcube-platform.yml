@@ -104,7 +104,6 @@ jobs:
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_UI
             build_args: |
               UI_SOURCE_PATH=ui/chat-web-app
-              UI_ENV_BUILD_RELATIVE=ui/chat-web-app/.env.sample
               NGINX_UI_CONFIG_FILE_PATH=deployment/docker/all_in_one_kdcube/nginx/conf/nginx_ui.conf
 
     steps:

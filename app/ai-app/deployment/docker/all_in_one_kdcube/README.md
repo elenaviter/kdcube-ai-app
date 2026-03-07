@@ -58,6 +58,18 @@ You can swap the proxy config by copying the desired file into
 These are mounted at runtime as `/usr/share/nginx/html/config.json` via
 `PATH_TO_FRONTEND_CONFIG_JSON` in `.env`.
 
+## UI config source of truth
+
+The web UI always loads its runtime config from `/config.json` inside the
+`web-ui` container. Docker compose mounts the host file defined by
+`PATH_TO_FRONTEND_CONFIG_JSON` to:
+
+`/usr/share/nginx/html/config.json`
+
+If the UI is calling the wrong tenant/project, verify:
+- `PATH_TO_FRONTEND_CONFIG_JSON` in your `.env`
+- `curl http://localhost:<ui_port>/config.json`
+
 5. Start the stack:
 
 ```bash
