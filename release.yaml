@@ -1,8 +1,8 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.6.2011"
-  description: "CLI: add reset flag for refreshing the config"
+  ref: "2026.3.7.326"
+  description: "CLI: verify for default config"
   config:
-    version: "2026.3.6.2011"
+    version: "2026.3.7.326"
 
 
