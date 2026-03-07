@@ -21,10 +21,72 @@ from kdcube_cli import installer as installer_mod
 DEFAULT_REPO = "https://github.com/kdcube/kdcube-ai-app.git"
 DEFAULT_DIR = Path.home() / ".kdcube" / "kdcube-ai-app"
 DEFAULT_WORKDIR = Path.home() / ".kdcube" / "kdcube-runtime"
+KDCUBE_REPOS = {
+    "kdcube-chat-ingress",
+    "kdcube-chat-proc",
+    "kdcube-metrics",
+    "kdcube-postgres-setup",
+    "kdcube-web-ui",
+    "kdcube-web-proxy",
+    "proxylogin",
+    "py-code-exec",
+}
 
 
 def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def _docker_output(cmd: list[str]) -> str:
+    return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+
+
+def clean_docker_images(console: Console) -> None:
+    console.print("[bold]Cleaning Docker cache and unused KDCube images...[/bold]")
+    try:
+        # Remove dangling images + build cache
+        subprocess.run(["docker", "image", "prune", "-f"], check=True)
+        subprocess.run(["docker", "builder", "prune", "-f"], check=True)
+
+        running_ids = {
+            line.strip()
+            for line in _docker_output(["docker", "ps", "--format", "{{.ImageID}}"]).splitlines()
+            if line.strip()
+        }
+
+        images = _docker_output(
+            ["docker", "image", "ls", "--no-trunc", "--format", "{{.ID}} {{.Repository}} {{.Tag}}"]
+        ).splitlines()
+
+        to_remove: list[str] = []
+        for line in images:
+            parts = line.split(" ", 2)
+            if len(parts) != 3:
+                continue
+            image_id, repo, tag = parts
+            if tag in {"<none>", "latest"}:
+                continue
+            if repo.startswith("kdcube/"):
+                pass
+            elif repo in KDCUBE_REPOS or repo.startswith("kdcube-"):
+                pass
+            else:
+                continue
+            if image_id in running_ids:
+                continue
+            to_remove.append(f"{repo}:{tag}")
+
+        if to_remove:
+            console.print("[dim]Removing old KDCube image tags:[/dim]")
+            for ref in to_remove:
+                console.print(f"  {ref}")
+            subprocess.run(["docker", "rmi", *to_remove], check=False)
+        else:
+            console.print("[dim]No old KDCube image tags to remove.[/dim]")
+    except FileNotFoundError:
+        raise SystemExit("Docker not found. Please install Docker and retry.")
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"Docker cleanup failed with exit code {exc.returncode}.") from exc
 
 
 def _select_option(console: Console, title: str, options: list[str], default_index: int = 0) -> str:
@@ -201,10 +263,18 @@ def main() -> None:
         action="store_true",
         help="Alias for --reset-config",
     )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clean dangling images, build cache, and old KDCube image tags",
+    )
     args = parser.parse_args()
 
     repo_path = Path(os.path.expanduser(args.path)).resolve()
     try:
+        if args.clean:
+            clean_docker_images(console)
+            return
         workdir = Path(
             Prompt.ask("Compose workdir (config+data root)", default=str(DEFAULT_WORKDIR))
         ).expanduser().resolve()

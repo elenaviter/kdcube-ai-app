@@ -42,10 +42,37 @@ python -m pip install --user kdcube-cli
 kdcube-setup
 ```
 
+### Quick start (new users)
+
+1) Run `kdcube-setup`
+2) Choose **release-latest** (pull prebuilt images)
+3) Answer **yes** to “Run docker compose now?”
+
+That will bring up the stack with no local build required.
+
+### Use a local checkout (dev)
+
+```bash
+kdcube-setup --path /Users/you/src/kdcube/kdcube-ai-app
+```
+
+At “Install source”:
+- **upstream** → build images from your local repo
+- **skip** → keep the repo as-is (no pull) and use it for build/run
+
+If you choose **upstream**, answer **yes** to “Build core platform images?”
+to rebuild from your local changes.
+
 Re-run prompts (edit existing values):
 
 ```bash
 kdcube-setup --reset
+```
+
+Clean local Docker images/cache:
+
+```bash
+kdcube-setup --clean
 ```
 
 Tip: if `kdcube-setup` is not on your PATH, run:
@@ -135,6 +162,18 @@ Open the UI:
 
 Tip: you can edit `workdir/config/nginx_ui.conf` and `workdir/config/nginx_proxy.conf`
 without rebuilding images (they are mounted into the containers at runtime).
+
+## UI config source of truth
+
+The web UI loads its runtime config from `/config.json` inside the `web-ui`
+container. Docker compose mounts the host file defined by
+`PATH_TO_FRONTEND_CONFIG_JSON` to:
+
+`/usr/share/nginx/html/config.json`
+
+If the UI is calling the wrong tenant/project, check:
+- `PATH_TO_FRONTEND_CONFIG_JSON` in the generated `.env`
+- `curl http://localhost:<ui_port>/config.json`
 
 See the dev‑host guide on GitHub:
 https://github.com/kdcube/kdcube-ai-app/blob/main/app/ai-app/docs/service/environment/setup-dev-env-README.md
