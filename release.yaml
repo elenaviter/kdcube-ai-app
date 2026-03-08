@@ -1,8 +1,8 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.7.326"
-  description: "CLI: verify for default config"
+  ref: "2026.3.8.351"
+  description: "This release introduces a local secrets sidecar that keeps LLM keys in memory only and injects them at runtime, so keys are no longer stored in .env files. The CLI now guides secret injection and refreshes services automatically, with updated docs covering the new flow and storage model."
   config:
-    version: "2026.3.7.326"
+    version: "2026.3.8.351"
 
 
