@@ -1,5 +1,27 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
+#
+# ── exec.py ──
+# Scenario definitions and dynamic code generation for iso-runtime testing.
+#
+# This file defines 13 test scenarios that simulate different execution outcomes:
+#   - Happy path, timeouts, crashes, memory errors, partial results, side-effects, etc.
+#
+# Each scenario produces:
+#   - Python source code to be executed in the sandbox
+#   - An output contract (list of expected output files)
+#   - A timeout value
+#
+# Flow:
+#   1. select_scenario(user_text) — parses user message to pick a scenario
+#   2. build_scenario(turn_id, scenario) — generates code + contract for it
+#   3. The generated code is passed to exec_contract / exec_side_effects
+#      which delegate to run_exec_tool() → _InProcessRuntime
+#
+# Note: the generated code references `agent_io_tools` and `local_tools` —
+# these are NOT imported by the code itself. Instead, _InProcessRuntime's
+# injected header auto-imports all tool modules from tools_descriptor.py
+# and binds them into the script's global namespace before execution.
 
 from __future__ import annotations
 
@@ -18,6 +40,7 @@ def collect_exec_diagnostics(
     outdir: Path,
     exec_id: str,
 ) -> Dict[str, str]:
+    """Thin wrapper around the SDK diagnostic collector (reads logs, finds errors)."""
     return _collect(
         sandbox_root=sandbox_root,
         outdir=outdir,
@@ -26,16 +49,19 @@ def collect_exec_diagnostics(
 
 
 def scenarios():
+    """Return scenario labels for UI suggestions."""
     return [s.label for s in SCENARIOS]
 
 
 @dataclass(frozen=True)
 class ScenarioSpec:
+    """Immutable definition of a test scenario."""
     id: str
     label: str
     description: str
 
 
+# All available test scenarios — each exercises a different execution path
 SCENARIOS: List[ScenarioSpec] = [
     ScenarioSpec("0", "0. Happy path (writes file + note)", "writes expected output"),
     ScenarioSpec("1", "1. Runtime timeout (no progress)", "infinite loop without output"),
@@ -54,6 +80,10 @@ SCENARIOS: List[ScenarioSpec] = [
 
 
 def select_scenario(text: str) -> ScenarioSpec:
+    """
+    Parse user text to pick a scenario. Supports formats:
+      "0", "0.", "scenario 0", etc. Falls back to scenario 0 (happy path).
+    """
     raw = (text or "").strip()
     if raw:
         for spec in SCENARIOS:
@@ -63,6 +93,16 @@ def select_scenario(text: str) -> ScenarioSpec:
 
 
 def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]:
+    """
+    Generate Python source code + output contract for a given scenario.
+
+    Returns dict with keys:
+      - "code":         Python source code string to execute
+      - "contract":     list of expected output files [{filename, description}]
+      - "timeout_s":    execution timeout in seconds
+      - "use_contract": whether to use contract-based execution (False for side-effects mode)
+    """
+    # Default contract: one expected output file
     contract = [
         {
             "filename": f"{turn_id}/files/hello-iso-runtime.txt",
@@ -70,6 +110,9 @@ def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]
         }
     ]
     timeout_s = 10
+
+    # Common preamble: all scenarios start with these lines
+    # OUTPUT_DIR env var is injected by the runtime and points to the sandbox out/ dir
     lines = [
         "from pathlib import Path",
         "import os, time",
@@ -78,7 +121,9 @@ def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]
         f"out_path = out_dir / '{turn_id}/files/hello-iso-runtime.txt'",
         "out_path.parent.mkdir(parents=True, exist_ok=True)",
     ]
-    if scenario.id == "0":
+
+    # Each branch appends scenario-specific code to the preamble
+    if scenario.id == "0":  # Happy path: write file + call a tool
         lines += [
             "out_path.write_text('hello from iso-runtime', encoding='utf-8')",
             "await agent_io_tools.tool_call(",
@@ -88,15 +133,15 @@ def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]
             "    tool_id='local_tools.write_note'",
             ")",
         ]
-    elif scenario.id == "1":
+    elif scenario.id == "1":  # Timeout with no output at all
         lines += ["while True: pass"]
         timeout_s = 3
-    elif scenario.id == "2":
+    elif scenario.id == "2":  # Timeout after some stdout output
         lines += ["print('progress before timeout')", "while True: pass"]
         timeout_s = 3
-    elif scenario.id == "3":
+    elif scenario.id == "3":  # Clean crash via exception
         lines += ["raise RuntimeError('simulated program crash')"]
-    elif scenario.id == "4":
+    elif scenario.id == "4":  # Partial success: only 1 of 2 contracted files produced
         contract = contract + [
             {
                 "filename": f"{turn_id}/files/missing-output.txt",
@@ -104,26 +149,26 @@ def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]
             }
         ]
         lines += ["out_path.write_text('partial output', encoding='utf-8')"]
-    elif scenario.id == "5":
+    elif scenario.id == "5":  # MemoryError
         lines += ["raise MemoryError('simulated memory error')"]
-    elif scenario.id == "6":
+    elif scenario.id == "6":  # Stack overflow via infinite recursion
         lines += [
             "def _recurse():",
             "    return _recurse()",
             "_recurse()",
         ]
-    elif scenario.id == "7":
+    elif scenario.id == "7":  # Timeout via sleep (blocked on I/O)
         lines += ["print('sleeping...')", "time.sleep(999)"]
         timeout_s = 3
-    elif scenario.id == "8":
+    elif scenario.id == "8":  # Timeout via busy loop (CPU-bound)
         lines += ["print('looping...')", "while True: pass"]
         timeout_s = 3
-    elif scenario.id == "9":
+    elif scenario.id == "9":  # Stdout output followed by crash
         lines += [
             "print('hello from print before crash')",
             "raise RuntimeError('simulated crash after print')",
         ]
-    elif scenario.id == "10":
+    elif scenario.id == "10":  # Successful write + logging at INFO and ERROR levels
         lines += [
             "import logging",
             "out_path.write_text('log-only success', encoding='utf-8')",
@@ -131,12 +176,12 @@ def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]
             "logger.info('info from program logger')",
             "logger.error('error from program logger')",
         ]
-    elif scenario.id == "11":
+    elif scenario.id == "11":  # File written successfully, then crash (partial artifact)
         lines += [
             "out_path.write_text('written before crash', encoding='utf-8')",
             "raise RuntimeError('simulated crash after write')",
         ]
-    elif scenario.id == "12":
+    elif scenario.id == "12":  # Side-effects mode: no contract, just diff the output dir
         contract = []
         lines += [
             "out_path.write_text('side-effects output', encoding='utf-8')",
@@ -147,6 +192,6 @@ def build_scenario(*, turn_id: str, scenario: ScenarioSpec) -> Dict[str, object]
     return {
         "contract": contract,
         "timeout_s": timeout_s,
-        "code": "\n".join(lines),
-        "use_contract": scenario.id != "12",
+        "code": "\n".join(lines),               # Join all lines into a single Python script
+        "use_contract": scenario.id != "12",     # Scenario 12 uses side-effects mode
     }

@@ -1,13 +1,25 @@
+# ── resources/service_messages/resources.py ──
+# User-facing error messages for the bundle.
+#
+# Instead of showing raw error codes to the user, this module maps
+# error categories (usage_limit, rate_limit, server_error, timeout) to
+# pools of friendly messages. A random message is selected each time
+# to avoid repetitive UX.
+#
+# Usage:
+#   msg = get_friendly_error_message("usage_limit")
+#   msg = handle_service_error(some_service_error)
+
 import random
 from typing import Dict, List
 
 from kdcube_ai_app.infra.service_hub.errors import ServiceError
 
 SUPPORT_ADDRESS = "info@nestlogic.com"
-# Friendly error messages for different scenarios
+# Pool of friendly messages keyed by error category
 FRIENDLY_ERROR_MESSAGES: Dict[str, List[str]] = {
     "usage_limit": [
-        """I apologize, but I'm temporarily unable to process requests due to high usage. 
+        """I apologize, but I'm temporarily unable to process requests due to high usage.
 
 Our team has been notified and we expect service to resume within the hour.
 
@@ -20,7 +32,7 @@ We're sorry for the inconvenience!""",
 
         f"""Oops! I seem to be getting a bit overloaded right now.
 
-I've let the team know, and they're on it. Please try again in a few minutes - 
+I've let the team know, and they're on it. Please try again in a few minutes -
 I should be back to my usual helpful self shortly!
 
 Need immediate help? Reach out to {SUPPORT_ADDRESS}""",
@@ -62,7 +74,7 @@ Try again in a moment, and I'll be happy to help."""
     ],
 
     "server_error": [
-        f"""Oops! Something unexpected happened on my end. 
+        f"""Oops! Something unexpected happened on my end.
 
 This isn't your fault - I've logged the error and our team will investigate.
 
@@ -70,7 +82,7 @@ Please try again, or contact {SUPPORT_ADDRESS} if the issue persists.""",
 
         f"""I've encountered an unexpected error while processing your request.
 
-Our team has been automatically notified and will investigate. 
+Our team has been automatically notified and will investigate.
 Please try again - if the problem continues, reach out to {SUPPORT_ADDRESS}""",
 
         """Something went wrong on our end, and I couldn't complete your request.
