@@ -253,7 +253,7 @@ The gateway emits signals consumed by `/monitoring/system` and the Metrics serve
   - Pool utilization + max in‑use windows
 
 These signals are **tenant/project‑global** and safe for autoscaling.
-See: `docs/service/scale/metrics-README.md`.
+See: [docs/service/scale/metrics-README.md](scale/metrics-README.md).
 - Each service instance **applies only its own tenant/project config** (from env),
   but it can **publish updates for any tenant/project** via the admin API.
 - On startup, the service **loads Redis config first** (if present) and falls back to env defaults.

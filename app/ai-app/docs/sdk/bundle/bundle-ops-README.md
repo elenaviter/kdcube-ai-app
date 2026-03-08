@@ -14,7 +14,7 @@ see_also:
 This guide is for **ops/deployment** owners who configure bundle registries, delivery, and upgrades.
 
 If you need **authoring** guidance, see:
-`docs/sdk/bundle/bundle-dev-README.md`.
+[docs/sdk/bundle/bundle-dev-README.md](bundle-dev-README.md).
 
 ---
 
@@ -138,6 +138,10 @@ Set `BUNDLES_FORCE_ENV_ON_STARTUP=1` on **processor**.
 | `GIT_SSH_KEY_PATH`                    | _(unset)_ | Path to private SSH key used for git clone/pull.                        |
 | `GIT_SSH_KNOWN_HOSTS`                 | _(unset)_ | Path to `known_hosts` for SSH host verification.                        |
 | `GIT_SSH_STRICT_HOST_KEY_CHECKING`    | _(unset)_ | `yes`/`no` for StrictHostKeyChecking.                                   |
+| `GIT_HTTP_TOKEN`                      | _(unset)_ | HTTPS token for private repos (uses GIT_ASKPASS).                       |
+| `GIT_HTTP_USER`                       | _(unset)_ | HTTPS username (defaults to `x-access-token`).                          |
+
+**Auth precedence:** if `GIT_HTTP_TOKEN` is set, HTTPS token auth is used and SSH settings are ignored (a warning is logged when both are set).
 
 ---
 
@@ -263,8 +267,8 @@ Resolved values are stored in Redis as runtime props.
 
 Release descriptors define bundle versions for CI/CD.
 Canonical docs:
-- `docs/service/cicd/release-descriptor-README.md`
-- `docs/service/cicd/release-bundle-README.md`
+- [docs/service/cicd/release-descriptor-README.md](../../service/cicd/release-descriptor-README.md)
+- [docs/service/cicd/release-bundle-README.md](../../service/cicd/release-bundle-README.md)
 
 Use `repo/ref/subdir/module` in the release descriptor and set:
 ```

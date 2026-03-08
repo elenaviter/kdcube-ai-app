@@ -1,0 +1,215 @@
+name: Release KDCube Platform (Images + CLI)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - release.yaml
+  workflow_dispatch:
+
+env:
+  DOCKERHUB_NAMESPACE: ${{ secrets.DOCKERHUB_NAMESPACE || secrets.DOCKERHUB_USERNAME }}
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Read release.yaml
+        id: version
+        run: |
+          python -m pip install --upgrade pip pyyaml packaging
+          python - "$GITHUB_OUTPUT" <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+          from packaging.version import Version, InvalidVersion
+
+          data = yaml.safe_load(Path("release.yaml").read_text())
+          ref = (data or {}).get("platform", {}).get("ref", "")
+          if not ref:
+              print("platform.ref is missing in release.yaml", file=sys.stderr)
+              sys.exit(1)
+          try:
+              Version(ref)
+          except InvalidVersion as exc:
+              print(f"platform.ref is not PEP440 compatible: {ref}", file=sys.stderr)
+              raise SystemExit(1) from exc
+
+          print(f"version={ref}")
+          print(f"tag={ref}")
+          with open(sys.argv[1], "a") as fh:
+              fh.write(f"version={ref}\n")
+              fh.write(f"tag={ref}\n")
+          PY
+
+  tag-release:
+    runs-on: ubuntu-latest
+    needs: resolve-version
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create git tag (if missing)
+        env:
+          TAG: ${{ needs.resolve-version.outputs.tag }}
+        run: |
+          git fetch --tags
+          if git rev-parse "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists."
+            exit 0
+          fi
+          git tag "${TAG}"
+          git push origin "${TAG}"
+
+  build-and-push:
+    runs-on: ubuntu-latest
+    needs: [resolve-version, tag-release]
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: kdcube-chat-ingress
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Ingress
+          - image: kdcube-chat-proc
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Chatproc
+          - image: py-code-exec
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Exec
+          - image: kdcube-metrics
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Metricservice
+          - image: kdcube-postgres-setup
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_PostgresSetup
+          - image: kdcube-secrets
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
+          - image: proxylogin
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_ProxyLogin
+          - image: kdcube-web-proxy
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_ProxyOpenResty
+            build_args: |
+              NGINX_CONFIG_FILE_PATH=deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf
+          - image: kdcube-web-ui
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_UI
+            build_args: |
+              UI_SOURCE_PATH=ui/chat-web-app
+              NGINX_UI_CONFIG_FILE_PATH=deployment/docker/all_in_one_kdcube/nginx/conf/nginx_ui.conf
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Validate DockerHub namespace
+        run: |
+          if [ -z "${DOCKERHUB_NAMESPACE}" ]; then
+            echo "DOCKERHUB_NAMESPACE is empty. Set DOCKERHUB_NAMESPACE or DOCKERHUB_USERNAME secrets."
+            exit 1
+          fi
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKERHUB_NAMESPACE }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=${{ needs.resolve-version.outputs.tag }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: app/ai-app
+          file: app/ai-app/${{ matrix.dockerfile }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ matrix.build_args }}
+
+  publish-cli:
+    runs-on: ubuntu-latest
+    needs: [resolve-version, tag-release]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Set CLI version
+        env:
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          version = os.environ.get("VERSION", "")
+          if not version:
+              raise SystemExit("VERSION is not set")
+          path = Path("app/ai-app/services/kdcube-ai-app/kdcube_cli/pyproject.toml")
+          text = path.read_text()
+          text = re.sub(r'version = ".*"', f'version = "{version}"', text, count=1)
+          path.write_text(text)
+          PY
+      - name: Build CLI package
+        working-directory: app/ai-app/services/kdcube-ai-app/kdcube_cli
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+      - name: Publish CLI to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: app/ai-app/services/kdcube-ai-app/kdcube_cli/dist
+
+  github-release:
+    runs-on: ubuntu-latest
+    needs: [resolve-version, tag-release, build-and-push, publish-cli]
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release (if missing)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ needs.resolve-version.outputs.tag }}';
+            const { owner, repo } = context.repo;
+            const releases = await github.paginate(github.rest.repos.listReleases, { owner, repo, per_page: 100 });
+            const existing = releases.find(r => r.tag_name === tag);
+            if (existing) {
+              core.info(`Release ${tag} already exists: ${existing.html_url}`);
+              return;
+            }
+            await github.rest.repos.createRelease({
+              owner,
+              repo,
+              tag_name: tag,
+              name: tag,
+              generate_release_notes: true,
+              draft: false,
+              prerelease: false
+            });

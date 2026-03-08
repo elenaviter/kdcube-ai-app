@@ -4,9 +4,9 @@ services:
     container_name: kdcube-postgres
     image: pgvector/pgvector:pg16
     env_file:
-      - path: ./.env
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env
         required: false
-      - path: ./.env.postgres.setup
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.postgres.setup
         required: false
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -18,9 +18,10 @@ services:
       - max_connections=${POSTGRES_MAX_CONNECTIONS:-200}
     restart: unless-stopped
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - ${KDCUBE_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -36,12 +37,13 @@ services:
     environment:
       PGADMIN_LISTEN_PORT: 80
     env_file:
-      - path: ./.env.postgres.setup
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.postgres.setup
         required: false
     ports:
       - "5050:80"
     networks:
       - kdcube-internal
+      - kdcube-secrets
 
   postgres-setup:
     image: kdcube-postgres-setup:latest
@@ -50,7 +52,7 @@ services:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_PostgresSetup
     env_file:
-      - path: ./.env.postgres.setup
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.postgres.setup
         required: false
     environment:
       - POSTGRES_HOST=postgres-db
@@ -65,12 +67,12 @@ services:
     container_name: kdcube-redis
     image: redis:latest
     env_file:
-      - path: ./.env
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env
         required: false
     command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}"]
     restart: unless-stopped
     volumes:
-      - ./data/redis:/data
+      - ${KDCUBE_DATA_DIR:-./data}/redis:/data
     networks:
       - kdcube-internal
     ports:
@@ -81,11 +83,29 @@ services:
       timeout: 3s
       retries: 5
 
+  kdcube-secrets:
+    image: kdcube-secrets:latest
+    container_name: kdcube-secrets
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
+    env_file:
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env
+        required: false
+    environment:
+      - SECRETS_ADMIN_TOKEN=${SECRETS_ADMIN_TOKEN:-}
+      - SECRETS_READ_TOKENS=${SECRETS_READ_TOKENS:-}
+    restart: unless-stopped
+    tmpfs:
+      - /run/kdcube-secrets
+    networks:
+      - kdcube-secrets
+
 #  neo4j:
 #    image: neo4j:5
 #    container_name: kdcube-neo4j
 #    env_file:
-#      - path: ./.env.backend
+#      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.backend
 #        required: false
 #    environment:
 #      NEO4J_AUTH: "${N4J_USER:-neo4j}/${N4J_PASSWORD:-neo4jpassword}"
@@ -96,10 +116,10 @@ services:
 #      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
 #      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
 #    volumes:
-#      - ./data/neo4j/data:/data
-#      - ./data/neo4j/logs:/logs
-#      - ./data/neo4j/plugins:/plugins
-#      - ./data/neo4j/import:/var/lib/neo4j/import
+#      - ${KDCUBE_DATA_DIR:-./data}/neo4j/data:/data
+#      - ${KDCUBE_DATA_DIR:-./data}/neo4j/logs:/logs
+#      - ${KDCUBE_DATA_DIR:-./data}/neo4j/plugins:/plugins
+#      - ${KDCUBE_DATA_DIR:-./data}/neo4j/import:/var/lib/neo4j/import
 #    healthcheck:
 #      # Uses container env (note the $$ for compose escaping)
 #      test: [ "CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u $$N4J_USER -p $$N4J_PASSWORD 'RETURN 1' || exit 1" ]
@@ -129,7 +149,7 @@ services:
       timeout: 10s
       retries: 10
     volumes:
-      - ./data/clamav:/var/lib/clamav
+      - ${KDCUBE_DATA_DIR:-./data}/clamav:/var/lib/clamav
     ports:
       - "127.0.0.1:3310:3310"
 
@@ -142,16 +162,16 @@ services:
   #    profiles:
   #      - optional  # Not started by default
   #    env_file:
-  #      - path: ./.env.backend
+  #      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.backend
   #        required: false
   #    environment:
   #      - REDIS_HOST=redis
   #      - POSTGRES_HOST=postgres-db
   #      - LOG_FILE_PREFIX=kb
   #    volumes:
-  #      - ./data/kdcube-storage:/kdcube-storage
-  #      - ./data/exec-workspace:/exec-workspace
-  #      - ./logs/kb:/logs
+  #      - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
+  #      - ${KDCUBE_DATA_DIR:-./data}/exec-workspace:/exec-workspace
+  #      - ${KDCUBE_LOGS_DIR:-./logs}/kb:/logs
   #    depends_on:
   #      postgres-setup:
   #        condition: service_completed_successfully
@@ -169,15 +189,15 @@ services:
   #    profiles:
   #      - optional  # Not started by default
   #    env_file:
-  #      - path: ./.env.backend
+  #      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.backend
   #        required: false
   #    environment:
   #      - REDIS_HOST=redis
   #      - POSTGRES_HOST=postgres-db
   #      - LOG_FILE_PREFIX=dramatiq
   #    volumes:
-  #      - ./data/kdcube-storage:/kdcube-storage
-  #      - ./logs/dramatiq:/logs
+  #      - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
+  #      - ${KDCUBE_LOGS_DIR:-./logs}/dramatiq:/logs
   #    depends_on:
   #      postgres-setup:
   #        condition: service_completed_successfully
@@ -195,7 +215,7 @@ services:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Ingress
     env_file:
-      - path: ./.env.ingress
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.ingress
         required: false
     environment:
       - REDIS_HOST=redis
@@ -206,9 +226,10 @@ services:
       - LOG_FILE_PREFIX=chat-ingress
       - GATEWAY_COMPONENT=ingress
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
+      - SECRETS_TOKEN=${SECRETS_TOKEN_INGRESS:-}
     volumes:
-      - ./data/kdcube-storage:/kdcube-storage
-      - ./logs/chat-ingress:/logs
+      - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
+      - ${KDCUBE_LOGS_DIR:-./logs}/chat-ingress:/logs
       - type: bind
         source: ${HOME}/.aws
         target: /home/appuser/.aws
@@ -218,10 +239,13 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      kdcube-secrets:
+        condition: service_started
       clamav:
         condition: service_healthy
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "${CHAT_APP_PORT:-8010}:8010"
 
@@ -232,7 +256,7 @@ services:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Chatproc
     env_file:
-      - path: ./.env.proc
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.proc
         required: false
     environment:
       - REDIS_HOST=redis
@@ -241,14 +265,14 @@ services:
       - LOG_FILE_PREFIX=chat-proc
       - GATEWAY_COMPONENT=proc
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
-      - HOST_BUNDLES_PATH=${HOST_BUNDLES_PATH}
       - HOST_BUNDLE_STORAGE_PATH=${HOST_BUNDLE_STORAGE_PATH}
       - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
+      - SECRETS_TOKEN=${SECRETS_TOKEN_PROC:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./data/kdcube-storage:/kdcube-storage
-      - ./data/exec-workspace:/exec-workspace
-      - ./logs/chat-proc:/logs
+      - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
+      - ${KDCUBE_DATA_DIR:-./data}/exec-workspace:/exec-workspace
+      - ${KDCUBE_LOGS_DIR:-./logs}/chat-proc:/logs
       - type: bind
         source: ${HOST_BUNDLE_DESCRIPTOR_PATH:-/dev/null}
         target: /config/release.yaml
@@ -278,6 +302,7 @@ services:
         condition: service_healthy
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "${CHAT_PROCESSOR_PORT:-8020}:8020"
 
@@ -288,7 +313,7 @@ services:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Metricservice
     env_file:
-      - path: ./.env.metrics
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.metrics
         required: false
     environment:
       - LOG_FILE_PREFIX=metrics
@@ -319,8 +344,7 @@ services:
       - kdcube-internal
     volumes:
       - ${PATH_TO_FRONTEND_CONFIG_JSON}:/usr/share/nginx/html/config.json:ro
-    ports:
-      - "5173:80"
+      - ${KDCUBE_CONFIG_DIR:-./config}/nginx_ui.conf:/etc/nginx/nginx.conf:ro
 
 #  proxylogin:
 #    image: proxylogin:latest
@@ -328,7 +352,7 @@ services:
 #      no_cache: true
 #      dockerfile: Dockerfile_ProxyLogin
 #    env_file:
-#      - path: ./.env.proxylogin
+#      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env.proxylogin
 #        required: false
 #    networks:
 #      - kdcube-internal
@@ -348,8 +372,7 @@ services:
         - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
     restart: unless-stopped
     volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
-      - ./nginx/webroot:/var/www/letsencrypt
+      - ${KDCUBE_CONFIG_DIR:-./config}/nginx_proxy.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
     depends_on:
       chat-ingress:
         condition: service_started
@@ -361,11 +384,13 @@ services:
       - kdcube-external
       - kdcube-internal
     ports:
-      - "80:80"
-      - "443:443"
+      - "${KDCUBE_UI_PORT:-80}:80"
 
 networks:
   kdcube-external:
     driver: bridge
   kdcube-internal:
     driver: bridge
+  kdcube-secrets:
+    driver: bridge
+    internal: true

@@ -1,0 +1,125 @@
+<svg width="370" height="262" viewBox="0 0 370 262"
+     xmlns="http://www.w3.org/2000/svg">
+    <defs>
+        <!-- Large robot front-face: light-cyan → blue -->
+        <linearGradient id="lg_body" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#C6F3F1"/>
+            <stop offset="100%" stop-color="#4372C3"/>
+        </linearGradient>
+        <!-- Large robot right side-face: teal → dark-blue -->
+        <linearGradient id="lg_side" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#01BEB2"/>
+            <stop offset="100%" stop-color="#2B4B8A"/>
+        </linearGradient>
+        <!-- Small robot body: same front gradient -->
+        <linearGradient id="sm_body" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%"   stop-color="#C6F3F1"/>
+            <stop offset="100%" stop-color="#4372C3"/>
+        </linearGradient>
+    </defs>
+
+    <!-- ╔══════════════════════════════════════════════════════════╗
+         ║  SMALL ROBOT  ·  companion  ·  LEFT                     ║
+         ║  translate(52, 70) scale(0.76)                           ║
+         ║  x = 52–128  ·  ant-top ≈ y61  ·  feet-bot ≈ y192       ║
+         ╚══════════════════════════════════════════════════════════╝ -->
+    <g transform="translate(52, 70) scale(0.76)">
+
+        <!-- Antenna shaft (straight up) -->
+        <line x1="40" y1="40" x2="40" y2="0"
+              stroke="#2B4B8A" stroke-width="6" stroke-linecap="round"/>
+        <!-- Antenna ball — purple, matches robos.svg -->
+        <circle cx="40" cy="0" r="12" fill="#6B63FE" stroke="#06101E" stroke-width="2.5"/>
+
+        <!-- Body -->
+        <rect x="0" y="40" width="100" height="100"
+              fill="url(#sm_body)" stroke="#06101E" stroke-width="4" rx="4"/>
+
+        <!-- Left eye -->
+        <circle cx="30" cy="85" r="20" fill="white"   stroke="#06101E" stroke-width="2.5"/>
+        <circle cx="30" cy="85" r="7"  fill="#06101E"/>
+
+        <!-- Right eye -->
+        <circle cx="70" cy="85" r="20" fill="white"   stroke="#06101E" stroke-width="2.5"/>
+        <circle cx="70" cy="85" r="7"  fill="#06101E"/>
+
+        <!-- Smile -->
+        <path d="M 33 118 Q 50 130 67 118"
+              stroke="#06101E" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+
+        <!-- Feet -->
+        <rect x="18" y="140" width="22" height="22"
+              fill="#4372C3" stroke="#06101E" stroke-width="3" rx="2"/>
+        <rect x="60" y="140" width="22" height="22"
+              fill="#4372C3" stroke="#06101E" stroke-width="3" rx="2"/>
+    </g>
+
+    <!-- ╔══════════════════════════════════════════════════════════╗
+         ║  LARGE ROBOT  ·  main character  ·  RIGHT               ║
+         ║  translate(143, 14)                                      ║
+         ║  x = 143–315  ·  ant-top ≈ y24  ·  body-bot ≈ y194      ║
+         ║  TWO antennas (2nd added from new-cubes.svg style)       ║
+         ╚══════════════════════════════════════════════════════════╝ -->
+    <g transform="translate(143, 14)">
+
+        <!-- Antenna LEFT — leans upper-left (original from robos.svg) -->
+        <path d="M 55 40 L 35 10"
+              stroke="#2B4B8A" stroke-width="4" fill="none" stroke-linecap="round"/>
+        <circle cx="35" cy="10" r="8"
+                fill="url(#lg_body)" stroke="#2B4B8A" stroke-width="2"/>
+
+        <!-- Antenna RIGHT — leans upper-right (mirrored, from new-cubes.svg) -->
+        <path d="M 85 40 L 105 10"
+              stroke="#2B4B8A" stroke-width="4" fill="none" stroke-linecap="round"/>
+        <circle cx="105" cy="10" r="8"
+                fill="url(#lg_body)" stroke="#2B4B8A" stroke-width="2"/>
+
+        <!-- Top 3-D face -->
+        <path d="M 0 40 L 20 30 L 160 30 L 140 40 Z"
+              fill="#C6F3F1" stroke="#06101E" stroke-width="2.5"/>
+
+        <!-- Front body -->
+        <rect x="0" y="40" width="140" height="140"
+              fill="url(#lg_body)" stroke="#06101E" stroke-width="2.5" rx="5"/>
+
+        <!-- Right side-face -->
+        <path d="M 140 40 L 160 30 L 160 170 L 140 180 Z"
+              fill="url(#lg_side)" stroke="#06101E" stroke-width="2.5"/>
+
+        <!-- Left eye: white ring · teal iris · pupil -->
+        <circle cx="45"  cy="100" r="28" fill="white"   stroke="#06101E" stroke-width="2"/>
+        <circle cx="45"  cy="100" r="12" fill="#01BEB2" stroke="#06101E" stroke-width="1.5"/>
+        <circle cx="45"  cy="100" r="6"  fill="#06101E"/>
+
+        <!-- Right eye: white ring · blue iris · pupil -->
+        <circle cx="105" cy="100" r="28" fill="white"   stroke="#06101E" stroke-width="2"/>
+        <circle cx="105" cy="100" r="12" fill="#4372C3" stroke="#06101E" stroke-width="1.5"/>
+        <circle cx="105" cy="100" r="6"  fill="#06101E"/>
+
+        <!-- Mouth bar -->
+        <rect x="50" y="150" width="45" height="6" fill="#06101E" rx="3"/>
+
+        <!-- Ear (right side knob) -->
+        <circle cx="160" cy="100" r="12"
+                fill="url(#lg_body)" stroke="#06101E" stroke-width="2"/>
+    </g>
+
+    <!-- ╔══════════════════════════════════════════════════════════╗
+         ║  KDCube LABEL  ·  centered under both robots            ║
+         ║  comp span x=52–315  →  center x=184                    ║
+         ╚══════════════════════════════════════════════════════════╝ -->
+    <!-- Teal glow fill -->
+    <text x="184" y="248"
+          font-family="Arial Black, Arial, sans-serif"
+          font-weight="900" font-size="48"
+          text-anchor="middle"
+          fill="#C6F3F1" stroke="#01BEB2" stroke-width="1.5"
+          stroke-linejoin="round">KDCube</text>
+    <!-- Subtle dark shadow -->
+    <text x="187" y="251"
+          font-family="Arial Black, Arial, sans-serif"
+          font-weight="900" font-size="48"
+          text-anchor="middle"
+          fill="none" stroke="#06101E" stroke-width="1"
+          opacity="0.22">KDCube</text>
+</svg>

@@ -57,15 +57,28 @@ Available templates:
 docker compose up -d --build
 ```
 
-## Prepare local data directories
+## Prepare local data + logs directories
 
 ```shell
-mkdir -p ./data/{clamav,kdcube-storage,exec-workspace,bundle-storage} ./logs/{chat-ingress,chat-proc}
+mkdir -p ./data/{clamav,kdcube-storage,exec-workspace,bundle-storage} \
+  ./logs/{chat-ingress,chat-proc}
 ```
 
 ```shell
 chmod -R 0777 ./logs
 ```
+
+### Linux permissions (multi‑user hosts)
+
+Both `chat-ingress` and `chat-proc` write logs to `/logs` inside the container.
+That path is a **bind mount** to `./logs` on the host. On Linux, the container
+user (UID 1000) must have write access to that host folder.
+
+**Recommended options:**
+
+1. **Per‑user workdir (best):** keep `./logs` under your own home directory.
+2. **Shared group:** set SGID + group write on the logs dir.
+3. **Simple:** `chmod -R 0777 ./logs` (good enough for dev).
 
 ## UI integration notes
 
@@ -109,6 +122,8 @@ falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.
 - `postgres-setup` runs once to bootstrap schemas in the managed Postgres.
 - This stack assumes Redis/Postgres are reachable from containers (VPC/SG/localhost).
 - If you don’t use delegated auth, you can leave `proxylogin` unused or comment it out in compose.
+- `docker-entrypoint.sh` is used by **chat‑proc only** (it configures Docker socket
+  access and ensures the exec workspace is writable). Ingress does **not** use it.
 
 ## 3) Common operations
 

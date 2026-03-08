@@ -106,9 +106,10 @@ def run(op, component, tenant=None, project=None, app=None):
 
     # Handle tenant/project-specific components (existing logic)
     schema_name = safe_schema_name(project or "default-project")
+    tenant_safe = safe_schema_name(tenant) if tenant else None
     if tenant:
         substitutions = {
-            "SCHEMA": f"kdcube_{tenant}_{schema_name}",
+            "SCHEMA": f"kdcube_{tenant_safe}_{schema_name}",
             "SYSTEM_SCHEMA": SYSTEM_SCHEMA
         }
     else:

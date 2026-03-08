@@ -35,6 +35,14 @@ HOST_GIT_KNOWN_HOSTS_PATH=/absolute/path/to/.ssh/known_hosts
 
 These are mounted by compose into the **chat‑proc** container.
 
+If you use `all_in_one_kdcube`, nginx configs are mounted from
+`KDCUBE_CONFIG_DIR` (defaults to `./config`). Copy these once:
+
+```bash
+cp nginx/conf/nginx_ui.conf ./config/nginx_ui.conf
+cp nginx/conf/nginx_proxy.conf ./config/nginx_proxy.conf
+```
+
 ---
 
 ## 2) Proc env (.env.proc)
@@ -56,10 +64,17 @@ AGENTIC_BUNDLES_ROOT=/bundles
 # Optional (branch refs)
 # BUNDLE_GIT_ALWAYS_PULL=1
 
+# Optional (turn workspace snapshot; diagnostics only)
+# REACT_PERSIST_WORKSPACE=0
+
 # SSH inside container (matches the mounted paths)
 GIT_SSH_KEY_PATH=/run/secrets/git_ssh_key
 GIT_SSH_KNOWN_HOSTS=/run/secrets/git_known_hosts
 GIT_SSH_STRICT_HOST_KEY_CHECKING=yes
+
+# OR use HTTPS token auth (SSH settings ignored if token is set)
+# GIT_HTTP_TOKEN=ghp_xxx
+# GIT_HTTP_USER=x-access-token
 ```
 
 After the first successful startup, set:
@@ -78,3 +93,5 @@ BUNDLES_FORCE_ENV_ON_STARTUP=0
 - To enforce gateway config from env on every restart, set
   `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP=1` in ingress/proc/metrics env.
 - If using **public repos**, you can omit the SSH variables.
+- For `postgres-setup`, keep `TENANT_ID` / `PROJECT_ID` in `.env.postgres.setup`
+  aligned with the tenant/project in `GATEWAY_CONFIG_JSON`.

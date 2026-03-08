@@ -616,9 +616,9 @@ async def _call_bundle_op_inner(
     if not cfg_req.selected_embedder:
         cfg_req.selected_embedder = (namespaces.CONFIG.AGENTIC.DEFAULT_EMBEDDING_MODEL_CONFIG or {}).get("model_name", "gpt-4o-mini")
     if not cfg_req.openai_api_key:
-        cfg_req.openai_api_key = os.getenv("OPENAI_API_KEY")
+        cfg_req.openai_api_key = settings.OPENAI_API_KEY
     if not cfg_req.claude_api_key:
-        cfg_req.claude_api_key = os.getenv("ANTHROPIC_API_KEY")
+        cfg_req.claude_api_key = settings.ANTHROPIC_API_KEY
 
     if payload.bundle_id:
         cfg_req.agentic_bundle_id = payload.bundle_id

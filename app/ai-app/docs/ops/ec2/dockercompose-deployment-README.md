@@ -121,6 +121,7 @@ Provide `repo/ref/subdir` in `AGENTIC_BUNDLES_JSON`.
 Set `BUNDLE_GIT_RESOLUTION_ENABLED=1`.  
 Set `BUNDLE_GIT_REDIS_LOCK=1` (each instance pulls once).  
 Provide `GIT_SSH_KEY_PATH` / `GIT_SSH_KNOWN_HOSTS` for private repos.
+Alternatively, use `GIT_HTTP_TOKEN` for HTTPS auth.
 
 **Rule:** set `subdir` to the **parent bundles directory** and use `module: "<bundle_folder>.entrypoint"`.
 
@@ -136,6 +137,11 @@ Provide `GIT_SSH_KEY_PATH` / `GIT_SSH_KNOWN_HOSTS` for private repos.
   GIT_SSH_KEY_PATH=/run/secrets/git_ssh_key
   GIT_SSH_KNOWN_HOSTS=/run/secrets/git_known_hosts
   ```
+  or use HTTPS token auth:
+  ```
+  GIT_HTTP_TOKEN=ghp_xxx
+  GIT_HTTP_USER=x-access-token
+  ```
 
 ---
 
@@ -149,6 +155,9 @@ Point to it via:
 ```
 NGINX_PROXY_CONFIG_FILE_PATH=<customer-repo>/ops/<...>/nginx_proxy.conf
 ```
+
+For non‑SSL dev, prefer the HTTP‑only config. For SSL deployments, use the
+SSL templates (cognito/delegated auth) and ensure certs are mounted.
 
 ---
 
@@ -208,7 +217,7 @@ dc-infra up -d
 
 ECS deployment and env templates live in the platform repo:
 
-- `docs/ops/ecs/ecs-deployment-README.md`
+- [docs/ops/ecs/ecs-deployment-README.md](../ecs/ecs-deployment-README.md)
 - `deployment/ecs/`
 
 When moving to ECS, prefer **baked bundle images** (no host mounts).

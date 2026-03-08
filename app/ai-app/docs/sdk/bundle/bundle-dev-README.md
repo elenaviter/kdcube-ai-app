@@ -14,7 +14,7 @@ see_also:
 This guide is for **bundle developers** who build workflows, tools, and UI experiences on top of the KDCube Chat SDK.
 
 If you need **ops/runtime config** (registry, env vars, git bundles, release descriptors), see:
-`docs/sdk/bundle/bundle-ops-README.md`.
+[docs/sdk/bundle/bundle-ops-README.md](bundle-ops-README.md).
 
 ---
 
@@ -143,7 +143,7 @@ Bundles have **two distinct storage options**:
    (indexes, repos, caches, datasets).  
    The **knowledge space** is just one optional use of this storage.
 
-See: `docs/sdk/bundle/bundle-storage-cache-README.md`.
+See: [docs/sdk/bundle/bundle-storage-cache-README.md](bundle-storage-cache-README.md).
 
 ---
 
@@ -170,7 +170,7 @@ ks:deploy/docker/all_in_one_kdcube/docker-compose.yaml
 ```
 
 See:
-- `docs/sdk/bundle/bundle-knowledge-space-README.md`
+- [docs/sdk/bundle/bundle-knowledge-space-README.md](bundle-knowledge-space-README.md)
 
 ---
 
@@ -253,14 +253,15 @@ Common markers:
 
 ## Event filtering (per‑bundle)
 
-Bundles can define an **event filter** to control which events are visible to
-non‑privileged users.
+Bundles can define an **event filter** (bundle‑level outbound firewall) to control
+which events are visible to non‑privileged users.
 
 Example:
 - `services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/react@2026-02-10-02-44/event_filter.py`
 
 Docs:
-- `docs/service/comm/comm-system.md` (event types + filtering)
+- [docs/service/comm/comm-system.md](../../service/comm/comm-system.md) (event types + filtering)
+- [docs/sdk/bundle/bundle-firewall-README.md](bundle-firewall-README.md) (bundle outbound firewall)
 
 ---
 
@@ -271,8 +272,8 @@ stores and serves them; the timeline includes references so the client can show
 downloads and previews.
 
 Docs:
-- Attachments system: `docs/hosting/attachments-system.md`
-- SSE events (attachments/artifacts): `docs/clients/sse-events-README.md`
+- Attachments system: [docs/hosting/attachments-system.md](../../hosting/attachments-system.md)
+- SSE events (attachments/artifacts): [docs/clients/sse-events-README.md](../../clients/sse-events-README.md)
 ---
 
 ## Bundle UI panels and operations
@@ -285,7 +286,7 @@ Bundles can expose **React panels** and **operations**:
   - `POST /bundles/{tenant}/{project}/operations/{operation}` calls `workflow.<operation>(...)`.
 
 Docs:
-- `docs/sdk/bundle/bundle-interfaces-README.md`
+- [docs/sdk/bundle/bundle-interfaces-README.md](bundle-interfaces-README.md)
 
 ---
 
@@ -295,12 +296,12 @@ Docs:
 |---|---|---|
 | Streaming | deltas, steps, widgets | `docs/sdk/comm/README-comm.md` |
 | Timeline + context | read/write, search, attachments | `docs/sdk/runtime/solution/context/browser-README.md` |
-| Tools | local + isolated + MCP | `docs/sdk/tools/tool-subsystem-README.md`, `docs/sdk/tools/mcp-README.md` |
-| Skills | prompt-time skills registry | `docs/sdk/skills/skills-README.md`, `docs/sdk/skills/skills-infra-README.md` |
-| Storage | per‑bundle storage (file/S3) | `docs/sdk/bundle/bundle-storage-cache-README.md` |
-| Knowledge space | bundle‑defined `ks:` docs + search | `docs/sdk/bundle/bundle-knowledge-space-README.md` |
-| Cache | Redis KV cache | `docs/sdk/bundle/bundle-storage-cache-README.md` |
-| Custom UI | widgets + React panels | `docs/sdk/bundle/bundle-interfaces-README.md` |
+| Tools | local + isolated + MCP | [docs/sdk/tools/tool-subsystem-README.md](../tools/tool-subsystem-README.md), [docs/sdk/tools/mcp-README.md](../tools/mcp-README.md) |
+| Skills | prompt-time skills registry | [docs/sdk/skills/skills-README.md](../skills/skills-README.md), [docs/sdk/skills/skills-infra-README.md](../skills/skills-infra-README.md) |
+| Storage | per‑bundle storage (file/S3) | [docs/sdk/bundle/bundle-storage-cache-README.md](bundle-storage-cache-README.md) |
+| Knowledge space | bundle‑defined `ks:` docs + search | [docs/sdk/bundle/bundle-knowledge-space-README.md](bundle-knowledge-space-README.md) |
+| Cache | Redis KV cache | [docs/sdk/bundle/bundle-storage-cache-README.md](bundle-storage-cache-README.md) |
+| Custom UI | widgets + React panels | [docs/sdk/bundle/bundle-interfaces-README.md](bundle-interfaces-README.md) |
 | Economics | budgets/usage tracking | `docs/sdk/infra/economics/economics-usage.md` |
 
 ---
@@ -313,9 +314,9 @@ Use `tools_descriptor.py` to expose tools to the runtime. Example:
 - Descriptor: `apps/chat/sdk/examples/bundles/with-isoruntime@2026-02-16-14-00/tools_descriptor.py`
 
 Docs:
-- `docs/sdk/tools/tool-subsystem-README.md`
-- `docs/sdk/tools/mcp-README.md`
-- `docs/sdk/tools/custom-tools-README.md`
+- [docs/sdk/tools/tool-subsystem-README.md](../tools/tool-subsystem-README.md)
+- [docs/sdk/tools/mcp-README.md](../tools/mcp-README.md)
+- [docs/sdk/tools/custom-tools-README.md](../tools/custom-tools-README.md)
 
 ---
 
@@ -327,9 +328,9 @@ Use `skills_descriptor.py` to register bundle‑specific skills. Example:
 - Descriptor: `skills_descriptor.py`
 
 Docs:
-- `docs/sdk/skills/skills-README.md`
-- `docs/sdk/skills/skills-infra-README.md`
-- `docs/sdk/skills/custom-skills-README.md`
+- [docs/sdk/skills/skills-README.md](../skills/skills-README.md)
+- [docs/sdk/skills/skills-infra-README.md](../skills/skills-infra-README.md)
+- [docs/sdk/skills/custom-skills-README.md](../skills/custom-skills-README.md)
 
 ## Cache and bundle lifetime
 
@@ -342,7 +343,7 @@ Docs:
 
 ## Storage + cache
 
-See: `docs/sdk/bundle/bundle-storage-cache-README.md`
+See: [docs/sdk/bundle/bundle-storage-cache-README.md](bundle-storage-cache-README.md)
 
 ---
 
@@ -386,9 +387,9 @@ export AGENTIC_BUNDLES_ROOT=/bundles
 ## Related SDK docs
 
 - ReAct agent docs:
-  `docs/sdk/agents/react`
+  [docs/sdk/agents/react](../agents/react)
 - Tool subsystem:
-  `docs/sdk/tools/tool-subsystem-README.md`
+  [docs/sdk/tools/tool-subsystem-README.md](../tools/tool-subsystem-README.md)
 - Comm system:
   `docs/sdk/comm/README-comm.md`
 - Context browser:

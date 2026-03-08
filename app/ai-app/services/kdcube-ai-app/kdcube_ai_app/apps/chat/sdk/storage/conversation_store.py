@@ -39,11 +39,11 @@ class ConversationStore:
     """
     Root: ${KDCUBE_STORAGE_PATH}/cb
     Messages:
-      cb/tenants/{tenant}/projects/{project}/conversation/{anonymous|registered}/{user_or_fp}/{conversation_id}/{turn_id}/{message_id}.json
+      cb/tenants/{tenant}/projects/{project}/conversation/{user_or_fp}/{conversation_id}/{turn_id}/{message_id}.json
     Attachments:
-      cb/tenants/{tenant}/projects/{project}/attachments/{anonymous|registered}/{user_or_fp}/{conversation_id}/{turn_id}/{timestamp-filename}
+      cb/tenants/{tenant}/projects/{project}/attachments/{user_or_fp}/{conversation_id}/{turn_id}/{timestamp-filename}
     Executions:
-      cb/tenants/{tenant}/projects/{project}/executions/{anonymous|registered}/{user_or_fp}/{conversation_id}/{turn_id}/{out|pkg}/...
+      cb/tenants/{tenant}/projects/{project}/executions/{user_or_fp}/{conversation_id}/{turn_id}/{out|pkg}/...
     """
 
     def __init__(self, storage_uri: Optional[str] = None):
@@ -110,11 +110,11 @@ class ConversationStore:
         """
         msg_ts = msg_ts or time.strftime("%Y-%m-%dT%H-%M-%S", time.gmtime())
         message_id = f"{_mid(role, msg_ts)}{'-' + id if id else ''}"
-        who, user_or_fp = self._who_and_id(user, fingerprint)
+        _, user_or_fp = self._who_and_id(user, fingerprint)
 
         rel = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "conversation", user_type, user_or_fp, conversation_id, turn_id,
+            "conversation", user_or_fp, conversation_id, turn_id,
             f"{message_id}.json"
         )
 
@@ -161,8 +161,15 @@ class ConversationStore:
         """
         base_conv = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "conversation", user_type, user_or_fp, conversation_id
+            "conversation", user_or_fp, conversation_id
         )
+        legacy_bases = [
+            self._join(
+                self.root_prefix, "tenants", tenant, "projects", project,
+                "conversation", who, user_or_fp, conversation_id
+            )
+            for who in ("registered", "anonymous", "privileged", "paid")
+        ]
 
         def _as_child(base: str, name: str) -> str:
             return name if name.startswith(base) else self._join(base, name)
@@ -177,11 +184,15 @@ class ConversationStore:
                         obj = json.loads(raw)
                         obj.setdefault("meta", {})["hosted_uri"] = self._uri_for_path(child)
                         if "turn_id" not in obj:
-                            # .../conversation/<who>/<user>/<conv>/<turn>/<message>.json
+                            # .../conversation/<user>/<conv>/<turn>/<message>.json
+                            # legacy: .../conversation/<who>/<user>/<conv>/<turn>/<message>.json
                             parts = child.strip("/").split("/")
                             try:
                                 i = parts.index("conversation")
-                                obj["turn_id"] = parts[i+4]
+                                if parts[i+1] in ("registered", "anonymous", "privileged", "paid"):
+                                    obj["turn_id"] = parts[i+4]
+                                else:
+                                    obj["turn_id"] = parts[i+3]
                                 obj.setdefault("meta", {})["turn_id"] = obj["turn_id"]
                             except Exception:
                                 pass
@@ -192,21 +203,30 @@ class ConversationStore:
             return out
 
         if turn_id:
-            return _collect_turn(self._join(base_conv, turn_id))
+            out_turn: List[dict] = []
+            for base in [base_conv] + legacy_bases:
+                out_turn.extend(_collect_turn(self._join(base, turn_id)))
+            out_turn.sort(key=lambda x: x.get("timestamp", ""))
+            return out_turn
 
         out_all: List[dict] = []
-        for item in self.backend.list_dir(base_conv):
-            child = _as_child(base_conv, item)
-            if child.endswith(".json"):
-                try:
-                    raw = self.backend.read_text(child)
-                    obj = json.loads(raw)
-                    obj.setdefault("meta", {})["hosted_uri"] = self._uri_for_path(child)
-                    out_all.append(obj)
-                except Exception:
-                    pass
-            else:
-                out_all.extend(_collect_turn(child))
+        for base in [base_conv] + legacy_bases:
+            try:
+                items = self.backend.list_dir(base)
+            except Exception:
+                continue
+            for item in items:
+                child = _as_child(base, item)
+                if child.endswith(".json"):
+                    try:
+                        raw = self.backend.read_text(child)
+                        obj = json.loads(raw)
+                        obj.setdefault("meta", {})["hosted_uri"] = self._uri_for_path(child)
+                        out_all.append(obj)
+                    except Exception:
+                        pass
+                else:
+                    out_all.extend(_collect_turn(child))
         out_all.sort(key=lambda x: x.get("timestamp", ""))
         return out_all
 
@@ -245,26 +265,41 @@ class ConversationStore:
         Delete all blobs for a given conversation: messages, attachments, executions.
 
         Layout:
-          cb/tenants/{tenant}/projects/{project}/conversation/{user_type}/{user_or_fp}/{conversation_id}
-          cb/tenants/{tenant}/projects/{project}/attachments/{user_type}/{user_or_fp}/{conversation_id}
-          cb/tenants/{tenant}/projects/{project}/executions/{user_type}/{user_or_fp}/{conversation_id}
+          cb/tenants/{tenant}/projects/{project}/conversation/{user_or_fp}/{conversation_id}
+          cb/tenants/{tenant}/projects/{project}/attachments/{user_or_fp}/{conversation_id}
+          cb/tenants/{tenant}/projects/{project}/executions/{user_or_fp}/{conversation_id}
         """
-        conv_base = self._join(
-            self.root_prefix, "tenants", tenant, "projects", project,
-            "conversation", user_type, user_or_fp, conversation_id
-        )
-        att_base = self._join(
-            self.root_prefix, "tenants", tenant, "projects", project,
-            "attachments", user_type, user_or_fp, conversation_id
-        )
-        exec_base = self._join(
-            self.root_prefix, "tenants", tenant, "projects", project,
-            "executions", user_type, user_or_fp, conversation_id
-        )
+        conv_bases = [
+            self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                       "conversation", user_or_fp, conversation_id),
+            *[
+                self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                           "conversation", who, user_or_fp, conversation_id)
+                for who in ("registered", "anonymous", "privileged", "paid")
+            ],
+        ]
+        att_bases = [
+            self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                       "attachments", user_or_fp, conversation_id),
+            *[
+                self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                           "attachments", who, user_or_fp, conversation_id)
+                for who in ("registered", "anonymous", "privileged", "paid")
+            ],
+        ]
+        exec_bases = [
+            self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                       "executions", user_or_fp, conversation_id),
+            *[
+                self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                           "executions", who, user_or_fp, conversation_id)
+                for who in ("registered", "anonymous", "privileged", "paid")
+            ],
+        ]
 
-        messages_deleted = await self._delete_tree(conv_base)
-        attachments_deleted = await self._delete_tree(att_base)
-        executions_deleted = await self._delete_tree(exec_base)
+        messages_deleted = sum([await self._delete_tree(b) for b in conv_bases])
+        attachments_deleted = sum([await self._delete_tree(b) for b in att_bases])
+        executions_deleted = sum([await self._delete_tree(b) for b in exec_bases])
 
         return {
             "messages": messages_deleted,
@@ -289,26 +324,41 @@ class ConversationStore:
           - executions for that turn
 
         Layout:
-          cb/tenants/{tenant}/projects/{project}/conversation/{user_type}/{user_or_fp}/{conversation_id}/{turn_id}
-          cb/tenants/{tenant}/projects/{project}/attachments/{user_type}/{user_or_fp}/{conversation_id}/{turn_id}
-          cb/tenants/{tenant}/projects/{project}/executions/{user_type}/{user_or_fp}/{conversation_id}/{turn_id}
+          cb/tenants/{tenant}/projects/{project}/conversation/{user_or_fp}/{conversation_id}/{turn_id}
+          cb/tenants/{tenant}/projects/{project}/attachments/{user_or_fp}/{conversation_id}/{turn_id}
+          cb/tenants/{tenant}/projects/{project}/executions/{user_or_fp}/{conversation_id}/{turn_id}
         """
-        conv_base = self._join(
-            self.root_prefix, "tenants", tenant, "projects", project,
-            "conversation", user_type, user_or_fp, conversation_id, turn_id
-        )
-        att_base = self._join(
-            self.root_prefix, "tenants", tenant, "projects", project,
-            "attachments", user_type, user_or_fp, conversation_id, turn_id
-        )
-        exec_base = self._join(
-            self.root_prefix, "tenants", tenant, "projects", project,
-            "executions", user_type, user_or_fp, conversation_id, turn_id
-        )
+        conv_bases = [
+            self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                       "conversation", user_or_fp, conversation_id, turn_id),
+            *[
+                self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                           "conversation", who, user_or_fp, conversation_id, turn_id)
+                for who in ("registered", "anonymous", "privileged", "paid")
+            ],
+        ]
+        att_bases = [
+            self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                       "attachments", user_or_fp, conversation_id, turn_id),
+            *[
+                self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                           "attachments", who, user_or_fp, conversation_id, turn_id)
+                for who in ("registered", "anonymous", "privileged", "paid")
+            ],
+        ]
+        exec_bases = [
+            self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                       "executions", user_or_fp, conversation_id, turn_id),
+            *[
+                self._join(self.root_prefix, "tenants", tenant, "projects", project,
+                           "executions", who, user_or_fp, conversation_id, turn_id)
+                for who in ("registered", "anonymous", "privileged", "paid")
+            ],
+        ]
 
-        messages_deleted = await self._delete_tree(conv_base)
-        attachments_deleted = await self._delete_tree(att_base)
-        executions_deleted = await self._delete_tree(exec_base)
+        messages_deleted = sum([await self._delete_tree(b) for b in conv_bases])
+        attachments_deleted = sum([await self._delete_tree(b) for b in att_bases])
+        executions_deleted = sum([await self._delete_tree(b) for b in exec_bases])
 
         return {
             "messages": messages_deleted,
@@ -344,11 +394,11 @@ class ConversationStore:
             raise ValueError("turn_id is required for attachments")
 
         # ts = time.strftime("%Y%m%d%H%M%S", time.gmtime())
-        who, user_or_fp = self._who_and_id(user, fingerprint)
+        _, user_or_fp = self._who_and_id(user, fingerprint)
 
         base = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "attachments", user_type, user_or_fp, conversation_id, turn_id
+            "attachments", user_or_fp, conversation_id, turn_id
         )
         # safe_name = os.path.basename(filename) or "file.bin"
         # rel_name = f"{ts}-{safe_name}"
@@ -395,10 +445,10 @@ class ConversationStore:
         Copy /out and /pkg trees under /executions/.../{turn_id}/.
         Returns a manifest with RN per file.
         """
-        who, user_or_fp = self._who_and_id(user, fingerprint)
+        _, user_or_fp = self._who_and_id(user, fingerprint)
         base = self._join(
             self.root_prefix, "tenants", tenant, "projects", project,
-            "executions", user_type, user_or_fp, conversation_id, turn_id, codegen_run_id
+            "executions", user_or_fp, conversation_id, turn_id, codegen_run_id
         )
 
         async def _zip_tree(src: Optional[str], kind: str) -> Tuple[Optional[str], List[dict], int]:

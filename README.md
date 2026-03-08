@@ -1,8 +1,12 @@
 # KDCube — Agentic AI Platform & SDK
 
+
 KDCube is a **self‑hosted multi‑tenant, multi‑user platform + SDK** for building **custom AI assistants, copilots, and agentic apps**.
+
 **Run a copilot for your customers, not just for yourself** — use the built‑in ReAct workflow or bring your own.
-It provides the **runtime, streaming protocol, tools, memory, and operations stack** so you can ship AI products with production‑grade reliability.
+
+KDCube provides the **runtime, streaming protocol, tools, memory, and operations stack** so you can ship AI products with production‑grade reliability.
+![cubes.png](assets/cubes.png)
 
 **Highlights**
 - **Full stack**: from streaming protocols to tool execution, memory, economics, and ops.
@@ -12,6 +16,29 @@ It provides the **runtime, streaming protocol, tools, memory, and operations sta
 - **Channeled streaming + live widgets**: animate UX with streaming channels and custom widgets.
 - **Provenance by default**: source pools and citations to prove how answers were built.
 - **Feedback‑aware**: user feedback is captured and can be fed back into workflows.
+
+---
+## Quickstart
+
+Install the bootstrap CLI and launch the setup wizard:
+
+```bash
+pipx install kdcube-cli
+kdcube-setup
+```
+
+Alternative (pip):
+
+```bash
+pip install -kdcube-cli
+kdcube-setup
+```
+
+Prerequisites: Python 3.9+, Git, and Docker (Docker Desktop on macOS/Windows).
+
+#### Docs:
+- [CLI installer](app/ai-app/services/kdcube-ai-app/kdcube_cli/README.md)
+- [Docker Compose (all‑in‑one)](app/ai-app/deployment/docker/custom-ui-managed-infra/README.md)
 
 ---
 
@@ -81,7 +108,7 @@ This is not a thin wrapper around tool calls — it’s a full **stateful operat
 - **Source pools + citations**: Perplexity‑style traceability with stable source IDs.
 - **Artifact paths & rehydration**: `fi:/ar:/so:/tc:` logical paths + rehosting on demand.
 - **Tool‑aware UX**: widgets stream into timeline banners (web search, fetch, exec, panels).
-- **Memory tools**: `react.read`, `react.hide`, `react.memsearch`, `react.patch` to recover or reshape context.
+- **ReAct tools**: `react.read`, `react.write`, `react.hide`, `react.memsearch`, `react.patch` to recover or reshape context.
 - **Turn snapshots & versioning**: each turn persists a timeline snapshot + data snapshot; edits produce a new version in the *current turn namespace*, making state **recoverable** and **replayable**.
 
 The timeline is **temporal** and **single‑source‑of‑truth**:
@@ -157,21 +184,14 @@ graph TD
 
 ## Status & Roadmap (near‑term)
 
-- **Bundles from Git** (dynamic bundle loading, no baked images)
 - **ECS deployment** with proper autoscaling (in progress)
 - **Copilot‑style workspace UX** (new timeline/announce events/workspace organization)
+- **Modeling external processes and ontologies** with tools/skills/runtime and ReAct
 
 Planned deployment options (next steps):
 - **AWS ECS/Fargate** (first‑class)
 - **Kubernetes** (EKS / GKE / AKS)
 Docker Compose is already supported for local and small‑scale (with EC2) setups.
-
----
-
-## Quickstart
-
-- CLI installer: `app/ai-app/services/kdcube-ai-app/kdcube_apps_cli/README.md`
-- Docker Compose (all‑in‑one): `app/ai-app/deployment/docker/all_in_one/README.md`
 
 ---
 

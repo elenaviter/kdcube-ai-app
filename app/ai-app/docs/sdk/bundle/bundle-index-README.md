@@ -15,14 +15,15 @@ Use this index to find the right doc by persona.
 
 ## Bundle developers
 
-- Authoring + SDK usage: `docs/sdk/bundle/bundle-dev-README.md`
-- Storage + cache: `docs/sdk/bundle/bundle-storage-cache-README.md`
-- Interfaces (widgets + ops): `docs/sdk/bundle/bundle-interfaces-README.md`
-- Custom tools (bundle‑local): `docs/sdk/tools/custom-tools-README.md`
-- Custom skills (bundle‑local): `docs/sdk/skills/custom-skills-README.md`
+- Authoring + SDK usage: [[docs/sdk/bundle/bundle-dev-README.md](bundle-dev-README.md)](bundle-dev-README.md)
+- Bundle outbound firewall: [[docs/sdk/bundle/bundle-firewall-README.md](bundle-firewall-README.md)](bundle-firewall-README.md)
+- Storage + cache: [[docs/sdk/bundle/bundle-storage-cache-README.md](bundle-storage-cache-README.md)](bundle-storage-cache-README.md)
+- Interfaces (widgets + ops): [[docs/sdk/bundle/bundle-interfaces-README.md](bundle-interfaces-README.md)](bundle-interfaces-README.md)
+- Custom tools (bundle‑local): [[docs/sdk/tools/custom-tools-README.md](../tools/custom-tools-README.md)](../tools/custom-tools-README.md)
+- Custom skills (bundle‑local): [[docs/sdk/skills/custom-skills-README.md](../skills/custom-skills-README.md)](../skills/custom-skills-README.md)
 
 ## Ops / deployment
 
-- Registry, env vars, git delivery: `docs/sdk/bundle/bundle-ops-README.md`
-- Release descriptor + CI/CD: `docs/service/cicd/release-descriptor-README.md`
-- Bundle release workflow: `docs/service/cicd/release-bundle-README.md`
+- Registry, env vars, git delivery: [[docs/sdk/bundle/bundle-ops-README.md](bundle-ops-README.md)](bundle-ops-README.md)
+- Release descriptor + CI/CD: [[docs/service/cicd/release-descriptor-README.md](../../service/cicd/release-descriptor-README.md)](../../service/cicd/release-descriptor-README.md)
+- Bundle release workflow: [[docs/service/cicd/release-bundle-README.md](../../service/cicd/release-bundle-README.md)](../../service/cicd/release-bundle-README.md)

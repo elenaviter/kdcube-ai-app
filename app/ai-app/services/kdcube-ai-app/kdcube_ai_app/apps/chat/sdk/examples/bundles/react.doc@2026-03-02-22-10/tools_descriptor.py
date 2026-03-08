@@ -30,8 +30,24 @@ BUNDLE_ROOT = pathlib.Path(__file__).resolve().parent
 # ──────────────────────────────────────────────────────────────
 # 1. Tool specs — SDK-provided and bundle-local tool modules
 # ──────────────────────────────────────────────────────────────
+# This is the *portable* descriptor.
+# - Workflow imports this file and passes TOOLS_SPECS/MCP_TOOL_SPECS/TOOL_RUNTIME
+#   into create_tool_subsystem_with_mcp(...).
+# - ToolSubsystem does not auto-scan this descriptor file on disk.
+# - "module" entries are import names resolved dynamically to module files at runtime.
+# - "ref" entries are bundle-relative paths and work in host + iso/docker runtime
+#   because bundle paths are rewritten during runtime bootstrap.
+# - Tool IDs are resolved as: "<alias>.<tool_name>" (alias comes from this file).
+#   Example: alias "generic_tools" + function "web_search" => "generic_tools.web_search".
+# - Optional runtime mapping can be provided per-tool; if missing, tool runs in-memory.
+#   Example:
+#     TOOL_RUNTIME = {
+#         "generic_tools.web_search": "local",
+#         "generic_tools.fetch_url_contents": "local",
+#     }
+
 TOOLS_SPECS: List[Dict[str, Any]] = [
-    # SDK tools (installed packages, same in host + Docker)
+     # SDK tool modules (import-by-name, dynamically resolved in each runtime, host + Docker)
     {
         "module": "kdcube_ai_app.apps.chat.sdk.tools.io_tools",    # File read/write tools
         "alias": "io_tools",
@@ -59,7 +75,7 @@ TOOLS_SPECS: List[Dict[str, Any]] = [
         "use_sk": True,
     },
 
-    # Bundle-local tools (relative path from bundle root)
+    # Bundle-local tools (bundle-relative refs, relative path from bundle root.  Portable across host and iso/docker)
     # {
     #     "ref": "tools/local_tools.py",       # site-scoped web search (disabled)
     #     "alias": "doc",

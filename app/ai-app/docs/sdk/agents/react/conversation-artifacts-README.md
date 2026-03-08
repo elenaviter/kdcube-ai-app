@@ -8,6 +8,7 @@ see_also:
   - ks:docs/sdk/agents/react/turn-data-README.md
   - ks:docs/sdk/agents/react/turn-log-README.md
   - ks:docs/sdk/agents/react/artifact-discovery-README.md
+  - ks:docs/sdk/agents/react/react-turn-workspace-README.md
 ---
 # Conversation Artifacts (v2)
 
@@ -101,7 +102,7 @@ See: `storage/sdk-store-README.md`
   (conv.thinking.stream is no longer persisted; it is synthesized during fetch)
   <attachment files...>
 
-<kdcube>/cb/tenants/<tenant>/projects/<project>/executions/privileged/<user_id>/<conversation_id>/<turn_id>/<exec_id>/
+<kdcube>/cb/tenants/<tenant>/projects/<project>/executions/<user_id>/<conversation_id>/<turn_id>/<exec_id>/
   out.zip
   pkg.zip
 

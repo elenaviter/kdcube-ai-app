@@ -54,7 +54,7 @@ NO_PROXY=169.254.169.254,localhost,127.0.0.1
 ```
 
 ## Component docs
-- Metrics scheduled task example: `docs/ops/ecs/components/metric-server-README.md`
+- Metrics scheduled task example: [docs/ops/ecs/components/metric-server-README.md](components/metric-server-README.md)
 
 ## Bundles from Git (proc)
 

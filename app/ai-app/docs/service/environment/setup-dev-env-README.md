@@ -15,6 +15,9 @@ This guide shows the **minimal env variables** needed to load bundles from a
 `release.yaml` descriptor during local development, and how to prepare SSH
 credentials for private git repos.
 
+If you already use `kdcube-setup` (PyPI package: `kdcube-cli`), you can reuse the generated env files
+from `workdir/config` instead of copying sample envs manually.
+
 ---
 
 ## 1) Minimal env for bundles (proc)
@@ -41,6 +44,9 @@ BUNDLE_GIT_ATOMIC=1
 
 # Where bundles are stored on disk
 AGENTIC_BUNDLES_ROOT=/absolute/path/to/bundles
+
+# Optional (turn workspace snapshot; diagnostics only)
+# REACT_PERSIST_WORKSPACE=0
 ```
 
 Optional (if using branch refs):

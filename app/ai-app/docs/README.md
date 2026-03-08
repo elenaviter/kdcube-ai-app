@@ -12,7 +12,7 @@ see_also:
 # Docs Index
 
 Curated index of platform, service, and SDK documentation.
-
+![pixel-cubes.svg](../../../assets/pixel-cubes.svg)
 ## Architecture
 
 * System Architecture (Short): [architecture-short.md](arch/architecture-short.md)

@@ -20,6 +20,33 @@ Goal: keep **docker‑compose (EC2)** working during transition, while preparing
 
 ---
 
+## Product CI Prerequisites (Platform Repo)
+
+Before GitHub Actions can build and publish releases, ensure these are set:
+
+1. **DockerHub account + repo namespace**
+   - Create a DockerHub user (or org) and repositories
+   - Add secrets in GitHub:
+     - `DOCKERHUB_USERNAME`
+     - `DOCKERHUB_TOKEN`
+     - `DOCKERHUB_NAMESPACE` (optional; defaults to username)
+
+2. **PyPI publishing**
+   - Create a PyPI project: `kdcube-cli`
+   - Configure **Trusted Publisher** (recommended) for this repo/workflow  
+     (workflow file: `.github/workflows/publish-kdcube-cli.yml`)
+   OR set a `PYPI_API_TOKEN` secret if using API token auth
+
+3. **GitHub Actions permissions**
+   - `contents: write` (to create tags)
+   - `id-token: write` (for PyPI trusted publisher)
+
+4. **Release file**
+   - `release.yaml` must exist and contain:
+     - `platform.ref` (PEP440‑compatible; used as tag + CLI version)
+
+---
+
 ## TL;DR (1‑page CI/CD Flow)
 
 **Inputs (single release file in customer repo):**
@@ -135,7 +162,7 @@ Use Dockerfiles from `deployment/docker/custom-ui-managed-infra`.
 
 ## 3) Release Descriptor (Single Source of Truth)
 
-See: `docs/service/cicd/release-descriptor-README.md`
+See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
 
 This file (`release.yaml` in the customer repo) pins platform + frontend + bundles
 and is the only release input CI should need.
@@ -145,7 +172,7 @@ and is the only release input CI should need.
 ## 4) Bundle Descriptor (Derived by CI)
 
 CI derives `AGENTIC_BUNDLES_JSON` from the release descriptor.
-See: `docs/service/cicd/release-descriptor-README.md`
+See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
 
 **Optional shortcut (EC2/dev):** mount the `release.yaml` directly and set:
 
@@ -271,7 +298,7 @@ If using private git repos:
 ## 8.1) Bundle Descriptor Generation
 
 CI derives `AGENTIC_BUNDLES_JSON` from the release descriptor.
-See: `docs/service/cicd/release-descriptor-README.md`
+See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
 
 ---
 

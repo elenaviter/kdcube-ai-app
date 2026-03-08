@@ -6,7 +6,7 @@
 from dataclasses import dataclass
 from typing import Optional, Literal, List, Dict
 from urllib.parse import urlparse
-import base64, asyncio, sys
+import base64, asyncio, sys, os
 from kdcube_ai_app.infra.rendering.shared_browser import SharedBrowserService
 
 PreviewMode = Literal["minimal", "standard", "full"]
@@ -29,6 +29,9 @@ async def get_shared_link_preview() -> 'AsyncLinkPreview':
         Shared AsyncLinkPreview instance (already started)
     """
     global _SHARED_INSTANCE
+
+    if os.getenv("LINK_PREVIEW_ENABLED", "1").lower() in ("0", "false", "no"):
+        raise RuntimeError("Link preview is disabled (LINK_PREVIEW_ENABLED=0)")
 
     if _SHARED_INSTANCE is None:
         async with _SHARED_INSTANCE_LOCK:

@@ -16,16 +16,20 @@ This compose stack runs a full local KDCube environment with **managed local inf
 
 ## Quick start
 
-1. Copy sample envs and edit as needed:
+1. Copy sample envs and edit as needed (recommended layout: `config/`):
 
 ```bash
-cp sample_env/.env.postgres.setup ./.env.postgres.setup
-cp sample_env/.env.ingress ./.env.ingress
-cp sample_env/.env.proc ./.env.proc
-cp sample_env/.env.metrics ./.env.metrics
-cp sample_env/.env.frontend ./.env.frontend
+mkdir -p ./config
+cp sample_env/.env ./config/.env
+cp sample_env/.env.postgres.setup ./config/.env.postgres.setup
+cp sample_env/.env.ingress ./config/.env.ingress
+cp sample_env/.env.proc ./config/.env.proc
+cp sample_env/.env.metrics ./config/.env.metrics
+# Nginx configs (mounted into containers at runtime)
+cp nginx/conf/nginx_ui.conf ./config/nginx_ui.conf
+cp nginx/conf/nginx_proxy.conf ./config/nginx_proxy.conf
 # Optional (if you enable proxylogin):
-# cp sample_env/.env.proxylogin ./.env.proxylogin
+# cp sample_env/.env.proxylogin ./config/.env.proxylogin
 ```
 
 2. Ensure bundle/exec paths are set (used by `chat-proc`):
@@ -36,11 +40,14 @@ cp sample_env/.env.frontend ./.env.frontend
 - `BUNDLE_STORAGE_ROOT` = shared bundle local storage root inside container (e.g. `/bundle-storage`)
 - `HOST_EXEC_WORKSPACE_PATH` = host exec workspace
 
-3. Pick the OpenResty config you want (set in `.env.frontend`):
+3. Pick the OpenResty config you want (set in `.env`):
 
 - `nginx/conf/nginx_proxy.conf` (no TLS, no proxylogin)
 - `nginx/conf/nginx_proxy_ssl.conf` (TLS, no proxylogin)
 - `nginx/conf/nginx_proxy_ssl_delegated_auth.conf` (TLS + proxylogin)
+
+You can swap the proxy config by copying the desired file into
+`./config/nginx_proxy.conf` (no rebuild required).
 
 4. Frontend config examples live in:
 
@@ -51,16 +58,32 @@ cp sample_env/.env.frontend ./.env.frontend
 These are mounted at runtime as `/usr/share/nginx/html/config.json` via
 `PATH_TO_FRONTEND_CONFIG_JSON` in `.env`.
 
-4. Start the stack:
+## UI config source of truth
+
+The web UI always loads its runtime config from `/config.json` inside the
+`web-ui` container. Docker compose mounts the host file defined by
+`PATH_TO_FRONTEND_CONFIG_JSON` to:
+
+`/usr/share/nginx/html/config.json`
+
+If the UI is calling the wrong tenant/project, verify:
+- `PATH_TO_FRONTEND_CONFIG_JSON` in your `.env`
+- `curl http://localhost:<ui_port>/config.json`
+
+5. Start the stack:
 
 ```bash
-docker compose up -d --build
+docker compose --env-file ./config/.env up -d --build
 ```
 
-## Prepare data directories
+Open the UI:
+- `http://localhost:${KDCUBE_UI_PORT}/chatbot/chat` (via proxy, omit `:${KDCUBE_UI_PORT}` if it is `80`)
+
+## Prepare data + logs directories
 
 ```shell
-mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import},bundle-storage}
+mkdir -p ./data/{postgres,redis,clamav-db,neo4j/{data,logs,plugins,import},bundle-storage} \
+  ./logs/{chat-ingress,chat-proc}
 ```
 
 ```shell
@@ -68,12 +91,27 @@ chmod -R 0777 data
 chmod -R 0777 logs
 ```
 
+### Linux permissions (multi‑user hosts)
+
+Both `chat-ingress` and `chat-proc` write logs to `/logs` inside the container.
+That path is a **bind mount** to `./logs` on the host. On Linux, the container
+user (UID 1000) must have write access to that host folder.
+
+**Recommended options:**
+
+1. **Per‑user workdir (best):** keep `./logs` under your own home directory.
+2. **Shared group:** set SGID + group write on the logs dir.
+3. **Simple:** `chmod -R 0777 ./logs` (good enough for dev).
+
+If you use the CLI installer, it pre‑creates `./logs/chat-ingress` and
+`./logs/chat-proc` and makes them writable.
+
 ## Ports (defaults)
 
 - Ingress API: `8010`
 - Processor API: `8020`
 - Metrics: `8090` (bound to localhost)
-- Web UI: `5173`
+- Web UI: `${KDCUBE_UI_PORT}` (default `5174` in sample env)
 - OpenResty: `80` / `443`
 
 ## Bundles
@@ -101,13 +139,19 @@ falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.
 ## Notes
 
 - `postgres-setup` runs once after Postgres is healthy and creates schemas.
+- `pgadmin` requires `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD`
+  in `.env.postgres.setup` (sample env provides defaults).
 - Data persists under `./data/*`.
 - Proxylogin is disabled by default in compose; enable it if you use delegated auth.
+- `docker-entrypoint.sh` is used by **chat‑proc only** (it configures Docker socket
+  access and ensures the exec workspace is writable). Ingress does **not** use it.
 
+
+```bash
+alias dc-infra='docker compose -f docker-compose.yaml'
+```
 
 ```shell
-
-
 docker compose stop postgres-setup && docker compose rm postgres-setup -f && docker compose build postgres-setup --no-cache && docker compose up postgres-setup -d
 ```
 
@@ -121,4 +165,24 @@ docker compose stop redis && docker compose rm redis -f && docker compose up red
 
 ```shell
 docker compose stop proxylogin && docker compose rm proxylogin -f && docker compose build --no-cache && docker compose up proxylogin -d
+```
+
+```bash
+# Rebuild ingress (no deps)
+ dc-infra build chat-ingress && dc-infra up -d --no-deps chat-ingress
+
+# Rebuild processor (no deps)
+ dc-infra build chat-proc && dc-infra up -d --no-deps chat-proc
+
+# Rebuild UI (no deps)
+ dc-infra build web-ui && dc-infra up -d --no-deps web-ui
+
+# Rebuild proxylogin (no deps)
+ dc-infra build proxylogin --no-cache && dc-infra up -d --no-deps proxylogin
+
+# Rebuild proxy (no deps)
+ dc-infra build web-proxy && dc-infra up -d --no-deps web-proxy
+
+# Logs
+ dc-infra logs -f chat-proc
 ```

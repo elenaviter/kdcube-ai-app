@@ -31,7 +31,7 @@ Use the compose options above. Each component has its own env file:
 - `custom-ui-managed-infra`: same layout, but points to managed DB/Redis
 
 **ECS**  
-See `docs/ops/ecs/ecs-deployment-README.md`. Templates live under `deployment/ecs/`:
+See [docs/ops/ecs/ecs-deployment-README.md](ecs/ecs-deployment-README.md). Templates live under `deployment/ecs/`:
 
 - `ingress/env.template`
 - `proc/env.template`
@@ -99,9 +99,9 @@ flowchart TB
 
 ## Config entry points
 
-- Service configuration: `docs/service/service-config-README.md`
-- Gateway configuration and capacity logic: `docs/service/gateway-README.md`
-- Metrics & autoscaling: `docs/service/scale/metric-server-README.md` and `docs/service/scale/metrics-README.md`
+- Service configuration: [docs/service/service-config-README.md](../service/service-config-README.md)
+- Gateway configuration and capacity logic: [docs/service/gateway-README.md](../service/gateway-README.md)
+- Metrics & autoscaling: [docs/service/scale/metric-server-README.md](../service/scale/metric-server-README.md) and [docs/service/scale/metrics-README.md](../service/scale/metrics-README.md)
 
 ## Roadmap (ops‑facing)
 

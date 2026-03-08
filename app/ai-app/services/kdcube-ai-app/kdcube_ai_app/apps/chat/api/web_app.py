@@ -26,10 +26,19 @@ from dotenv import load_dotenv, find_dotenv
 os.environ.setdefault("GATEWAY_COMPONENT", "ingress")
 
 _ENV_DIR = Path(__file__).resolve().parent
-load_dotenv(_ENV_DIR / ".env.ingress", override=True)
-load_dotenv(find_dotenv(usecwd=False))
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
-get_settings.cache_clear()
+_CONFIG_DIR = os.environ.get("KDCUBE_CONFIG_DIR")
+_IN_CONTAINER = Path("/.dockerenv").exists()
+
+if _CONFIG_DIR:
+    _CONFIG_ENV = Path(_CONFIG_DIR) / ".env.ingress"
+    if _CONFIG_ENV.exists():
+        load_dotenv(_CONFIG_ENV, override=True)
+elif not _IN_CONTAINER:
+    # Local dev only (avoid overriding compose envs in containers).
+    load_dotenv(_ENV_DIR / ".env.ingress", override=True)
+
+if not _IN_CONTAINER:
+    load_dotenv(find_dotenv(usecwd=False))
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
@@ -41,6 +50,9 @@ os.environ.setdefault("INSTANCE_ID", f"ingress-{uuid.uuid4().hex[:8]}")
 
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, log_secret_statuses
+get_settings.cache_clear()
+log_secret_statuses(force=True)
 try:
     # Ensure faulthandler is enabled in all processes (including Uvicorn workers).
     faulthandler.enable()
@@ -362,14 +374,11 @@ async def lifespan(app: FastAPI):
         # Start heartbeats for ingress processes
         await heartbeat_manager.start_heartbeat(interval=10)
 
+        # Link-preview is lazy-initialized on first use; no pre-warm at ingress startup.
+        app.state.link_preview_instance = None
         try:
-            from kdcube_ai_app.infra.rendering.link_preview import get_shared_link_preview
-            app.state.link_preview_instance = await get_shared_link_preview()
-
-            await socketio_handler.start() # communicator subscribes internally
+            await socketio_handler.start()  # communicator subscribes internally
         except Exception as e:
-            app.state.shared_browser_instance = None
-            app.state.link_preview_instance = None
             logger.error(f"Failed to start chat relay listener: {e}")
 
         # Bundles registry is always sourced from Redis by request-time sync in ingress.
@@ -417,9 +426,9 @@ async def lifespan(app: FastAPI):
         await _safe_shutdown_step("redis_monitor.stop", app.state.redis_monitor.stop(), timeout=5.0)
 
     await _safe_shutdown_step("redis.close_all", close_redis_clients(), timeout=5.0)
+    await _safe_shutdown_step("link_preview.close", close_shared_link_preview(), timeout=5.0)
+    await _safe_shutdown_step("shared_browser.close", close_shared_browser(), timeout=5.0)
 
-    await close_shared_link_preview()
-    await close_shared_browser()
 
     logger.info("Chat service stopped")
 

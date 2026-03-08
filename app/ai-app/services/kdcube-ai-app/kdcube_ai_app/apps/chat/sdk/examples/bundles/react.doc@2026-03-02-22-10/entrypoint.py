@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import traceback
 import pathlib
+import os
+import shutil
 from typing import Any, Dict
 
 from langgraph.graph import StateGraph, START, END
@@ -218,11 +220,29 @@ class ReactWorkflow(BaseEntrypoint):
         validate = knowledge_def.get("validate_refs")
         validate_refs = True if validate is None else bool(validate)
 
+        # If nothing is configured, try to use local repo (host dev) or fall back
+        # to the public platform repo (container/compose).
+        if not repo and not docs_root_raw and not src_root_raw and not deploy_root_raw:
+            for parent in bundle_root.resolve().parents:
+                if (parent / "docs").is_dir() and (parent / "services").is_dir():
+                    docs_root_raw = str((parent / "docs").resolve())
+                    src_root_raw = str((parent / "services" / "kdcube-ai-app" / "kdcube_ai_app").resolve())
+                    deploy_root_raw = str((parent / "deployment").resolve())
+                    break
+            if not docs_root_raw:
+                repo = (os.getenv("KDCUBE_KNOWLEDGE_REPO") or "https://github.com/kdcube/kdcube-ai-app.git").strip()
+                if not ref:
+                    ref = (os.getenv("KDCUBE_KNOWLEDGE_REF") or "").strip()
+                docs_root_raw = "app/ai-app/docs"
+                src_root_raw = "app/ai-app/services/kdcube-ai-app/kdcube_ai_app"
+                deploy_root_raw = "app/ai-app/deployment"
+
         repo_root = None
         if repo:
             try:
-                from kdcube_ai_app.infra.plugin.git_bundle import ensure_git_bundle
+                from kdcube_ai_app.infra.plugin.git_bundle import ensure_git_bundle, bundle_dir_for_git
                 repos_root = (storage_root / "repos").resolve()
+                # Git auth is handled by git_bundle (SSH or HTTPS token via GIT_HTTP_TOKEN).
                 paths = ensure_git_bundle(
                     bundle_id=f"{BUNDLE_ID}.knowledge",
                     git_url=repo,
@@ -232,6 +252,22 @@ class ReactWorkflow(BaseEntrypoint):
                     logger=self.logger,
                 )
                 repo_root = paths.repo_root
+                # Cleanup older clones for this knowledge repo (keep current).
+                try:
+                    base_prefix = bundle_dir_for_git(
+                        bundle_id=f"{BUNDLE_ID}.knowledge",
+                        git_url=repo,
+                        git_ref=None,
+                    )
+                    for child in repos_root.iterdir():
+                        if not child.is_dir():
+                            continue
+                        if child.resolve() == repo_root.resolve():
+                            continue
+                        if child.name == base_prefix or child.name.startswith(f"{base_prefix}__"):
+                            shutil.rmtree(child, ignore_errors=True)
+                except Exception:
+                    self.logger.log(traceback.format_exc(), "WARNING")
             except Exception:
                 self.logger.log(traceback.format_exc(), "WARNING")
 

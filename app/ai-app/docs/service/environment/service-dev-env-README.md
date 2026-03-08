@@ -18,6 +18,8 @@ while infra (Postgres/Redis/ClamAV/proxylogin) runs separately (for example via
 ## Source‑Of‑Truth Env Files
 
 Use the sample envs below as the authoritative list and copy into your IDE run config.
+You can also use `kdcube-setup` (PyPI package: `kdcube-cli`) to generate a workdir and then point your IDE
+to the generated env files in `workdir/config`.
 
 | File | Purpose |
 | --- | --- |
@@ -84,6 +86,7 @@ to overwrite cached gateway config from env on each start.
 | `BUNDLE_GIT_*` | Git clone behavior (atomic, shallow, keep/ttl, locks, always‑pull) |
 | `GIT_SSH_*` / `GIT_SSH_COMMAND` | SSH auth for private git repos |
 | `TOOLS_WEB_SEARCH_FETCH_CONTENT`, `WEB_*`, `MCP_CACHE_TTL_SECONDS` | Web fetch/search tooling |
+| `REACT_PERSIST_WORKSPACE` | Persist per‑turn workspace snapshot (diagnostic only) |
 
 ## Metrics‑Only
 
@@ -172,4 +175,4 @@ Minimal skeleton:
 }
 ```
 
-For the full schema, see `docs/service/gateway-README.md`.
+For the full schema, see [docs/service/gateway-README.md](../gateway-README.md).

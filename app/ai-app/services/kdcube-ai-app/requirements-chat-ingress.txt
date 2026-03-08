@@ -18,9 +18,7 @@ aiolimiter
 dramatiq==1.18.0
 
 # Auth + storage (Cognito / S3)
-boto3
-aioboto3
-aiobotocore
+-r requirements-aws.txt
 
 # Uploads / AV / MIME preflight
 python-multipart
@@ -32,8 +30,7 @@ beautifulsoup4
 # Scheduling (opex routines)
 croniter
 
-# Link preview (optional but used by /resources/link-preview)
-playwright
+# Link preview (disabled in ingress; Playwright only in proc)
 
 # Payments (control plane)
 stripe

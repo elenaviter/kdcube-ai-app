@@ -12,13 +12,25 @@ def get_service_key_fn(provider: AIProviderName) -> str:
     """
     Get the API key for the given provider.
     """
-    if provider == AIProviderName.open_ai:
-        return os.environ.get("OPENAI_API_KEY")
-    elif provider == AIProviderName.hugging_face:
-        return os.environ.get("HUGGING_FACE_KEY")
-    elif provider == AIProviderName.anthropic:
-        return os.environ.get("ANTHROPIC_API_KEY")
-    return ""
+    # Centralize secrets via Settings; fall back to env if Settings not available.
+    try:
+        from kdcube_ai_app.apps.chat.sdk.config import get_secret
+        if provider == AIProviderName.open_ai:
+            return get_secret("OPENAI_API_KEY") or ""
+        elif provider == AIProviderName.hugging_face:
+            return get_secret("HUGGING_FACE_KEY") or ""
+        elif provider == AIProviderName.anthropic:
+            return get_secret("ANTHROPIC_API_KEY") or ""
+        return ""
+    except Exception:
+        # Keep legacy env fallback for non-chat contexts.
+        if provider == AIProviderName.open_ai:
+            return os.environ.get("OPENAI_API_KEY")
+        elif provider == AIProviderName.hugging_face:
+            return os.environ.get("HUGGING_FACE_KEY")
+        elif provider == AIProviderName.anthropic:
+            return os.environ.get("ANTHROPIC_API_KEY")
+        return ""
 
 
 def calculate_cost(prefix_tokens: int, suffix_tokens: list[int], output_tokens: list[int],

@@ -13,12 +13,15 @@ def _bootstrap_sys_path() -> None:
     services_root = ai_app_root / "services/kdcube-ai-app"
     if services_root.exists():
         sys.path.insert(0, str(services_root))
+    cli_src = services_root / "kdcube_cli" / "src"
+    if cli_src.exists():
+        sys.path.insert(0, str(cli_src))
 
 
 def main() -> None:
     _bootstrap_sys_path()
     try:
-        from kdcube_ai_app.ops.cli.installer import main as installer_main
+        from kdcube_cli.installer import main as installer_main
     except ImportError as exc:
         raise SystemExit(
             "Could not import the installer. "

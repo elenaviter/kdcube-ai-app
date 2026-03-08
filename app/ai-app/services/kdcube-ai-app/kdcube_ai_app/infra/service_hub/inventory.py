@@ -36,6 +36,7 @@ from kdcube_ai_app.infra.embedding.embedding import get_embedding
 from kdcube_ai_app.infra.plugin.bundle_registry import BundleSpec
 import kdcube_ai_app.infra.service_hub.errors as service_errors
 import kdcube_ai_app.apps.chat.sdk.tools.citations as citation_utils
+from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.infra.service_hub.message_utils import (
     extract_message_blocks,
     normalize_blocks,
@@ -575,10 +576,11 @@ class Config:
                  embedding_model: Optional[str] = None,
                  default_llm_model: Optional[str] = None,
                  role_models: Optional[Dict[str, Dict[str, str]]] = None):
-        # keys
-        self.openai_api_key = openai_api_key or os.getenv("OPENAI_API_KEY", "")
-        self.claude_api_key = claude_api_key or os.getenv("ANTHROPIC_API_KEY", "")
-        self.google_api_key = google_api_key or os.getenv("GEMINI_API_KEY", "")
+        # keys (prefer Settings/sidecar, fall back to env)
+        settings = get_settings()
+        self.openai_api_key = openai_api_key or settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY", "")
+        self.claude_api_key = claude_api_key or settings.ANTHROPIC_API_KEY or os.getenv("ANTHROPIC_API_KEY", "")
+        self.google_api_key = google_api_key or settings.GOOGLE_API_KEY or os.getenv("GEMINI_API_KEY", "")
 
         # Gemini cache options (env or defaults)
         self.gemini_cache_enabled: bool = bool(int(os.getenv("GEMINI_CACHE_ENABLED", "0")))
@@ -797,6 +799,7 @@ def _build_model_service_from_env() -> "ModelServiceBase":
     Build ModelServiceBase from environment variables.
     Used by MCP servers and other lightweight entrypoints.
     """
+    settings = get_settings()
     selected_model = (
         os.getenv("DEFAULT_LLM_MODEL_ID")
         or os.getenv("SELECTED_MODEL")
@@ -811,13 +814,13 @@ def _build_model_service_from_env() -> "ModelServiceBase":
             role_models = None
 
     req = ConfigRequest(
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
-        claude_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-        google_api_key=os.environ.get("GEMINI_API_KEY"),
+        openai_api_key=settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY"),
+        claude_api_key=settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY"),
+        google_api_key=settings.GOOGLE_API_KEY or os.environ.get("GEMINI_API_KEY"),
         selected_model=selected_model,
         role_models=role_models,
-        tenant=os.environ.get("TENANT_ID"),
-        project=os.environ.get("DEFAULT_PROJECT_NAME"),
+        tenant=settings.TENANT or os.environ.get("TENANT_ID"),
+        project=settings.PROJECT or os.environ.get("DEFAULT_PROJECT_NAME"),
     )
     cfg = create_workflow_config(req)
     return ModelServiceBase(cfg)
@@ -3293,9 +3296,10 @@ if __name__ == "__main__":
         m = "claude-3-7-sonnet-20250219"
         # m = "claude-sonnet-4-20250514"
         role = "segment_enrichment"
+        settings = get_settings()
         req = ConfigRequest(
-            openai_api_key=os.environ.get("OPENAI_API_KEY"),
-            claude_api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            openai_api_key=settings.OPENAI_API_KEY or os.environ.get("OPENAI_API_KEY"),
+            claude_api_key=settings.ANTHROPIC_API_KEY or os.environ.get("ANTHROPIC_API_KEY"),
             selected_model=m,
             role_models={ role: {"provider": "anthropic", "model": m}},
         )
