@@ -11,6 +11,7 @@ services:
         required: false
     networks:
       - kdcube-internal
+      - kdcube-secrets
     restart: "no"
 
   clamav:
@@ -20,6 +21,7 @@ services:
     restart: unless-stopped
     networks:
       - kdcube-internal
+      - kdcube-secrets
     environment:
       - CLAMD_START=1
       - FRESHCLAM_CHECKS=24
@@ -32,6 +34,24 @@ services:
       - ./data/clamav:/var/lib/clamav
     ports:
       - "127.0.0.1:3310:3310"
+
+  kdcube-secrets:
+    image: kdcube-secrets:latest
+    container_name: kdcube-secrets
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      - SECRETS_ADMIN_TOKEN=${SECRETS_ADMIN_TOKEN:-}
+      - SECRETS_READ_TOKENS=${SECRETS_READ_TOKENS:-}
+    restart: unless-stopped
+    tmpfs:
+      - /run/kdcube-secrets
+    networks:
+      - kdcube-secrets
 
   chat-ingress:
     image: kdcube-chat-ingress:latest
@@ -48,6 +68,7 @@ services:
       - LOG_FILE_PREFIX=chat-ingress
       - GATEWAY_COMPONENT=ingress
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
+      - SECRETS_TOKEN=${SECRETS_TOKEN_INGRESS:-}
     volumes:
       - ./data/kdcube-storage:/kdcube-storage
       - ./logs/chat-ingress:/logs
@@ -58,10 +79,13 @@ services:
     depends_on:
       postgres-setup:
         condition: service_completed_successfully
+      kdcube-secrets:
+        condition: service_started
       clamav:
         condition: service_healthy
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "127.0.0.1:${CHAT_APP_PORT:-8010}:8010"
 
@@ -80,6 +104,7 @@ services:
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
       - HOST_BUNDLE_STORAGE_PATH=${HOST_BUNDLE_STORAGE_PATH}
       - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
+      - SECRETS_TOKEN=${SECRETS_TOKEN_PROC:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data/kdcube-storage:/kdcube-storage
@@ -112,6 +137,7 @@ services:
         condition: service_completed_successfully
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "127.0.0.1:${CHAT_PROCESSOR_PORT:-8020}:8020"
 
@@ -200,3 +226,6 @@ networks:
     driver: bridge
   kdcube-internal:
     driver: bridge
+  kdcube-secrets:
+    driver: bridge
+    internal: true

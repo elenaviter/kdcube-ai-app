@@ -7,7 +7,10 @@ import shutil
 import json
 import subprocess
 from dataclasses import dataclass
+import secrets
+import tempfile
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -323,6 +326,98 @@ def ensure_local_dirs(data_dir: Path, logs_dir: Path) -> None:
             pass
 
 
+def apply_runtime_secrets(console: Console, ctx: PathsContext, secrets: Dict[str, str], env_file: Path) -> None:
+    if not secrets:
+        return
+    if not wait_for_secrets_ready(console, ctx, env_file):
+        console.print("[red]Secrets service not ready. Skipping secret injection.[/red]")
+        return
+    console.print("[dim]Injecting runtime secrets into secrets service...[/dim]")
+    for key, value in secrets.items():
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "--env-file",
+                    str(env_file),
+                    "exec",
+                    "-T",
+                    "kdcube-secrets",
+                    "python",
+                    "/app/secretsctl.py",
+                    "set",
+                    key,
+                    value,
+                ],
+                cwd=ctx.docker_dir,
+                check=True,
+            )
+        except FileNotFoundError:
+            console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
+            return
+        except subprocess.CalledProcessError:
+            console.print("[red]Failed to inject secrets. Ensure kdcube-secrets is running.[/red]")
+            return
+
+
+def wait_for_secrets_ready(console: Console, ctx: PathsContext, env_file: Path, timeout_seconds: int = 30) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        try:
+            subprocess.run(
+                [
+                    "docker",
+                    "compose",
+                    "--env-file",
+                    str(env_file),
+                    "exec",
+                    "-T",
+                    "kdcube-secrets",
+                    "python",
+                    "-c",
+                    (
+                        "import sys,urllib.request\n"
+                        "try:\n"
+                        "    r=urllib.request.urlopen('http://127.0.0.1:7777/health',timeout=1)\n"
+                        "    sys.exit(0 if r.status==200 else 1)\n"
+                        "except Exception:\n"
+                        "    sys.exit(1)\n"
+                    ),
+                ],
+                cwd=ctx.docker_dir,
+                check=True,
+            )
+            return True
+        except Exception:
+            time.sleep(1)
+    console.print("[yellow]Timed out waiting for secrets service.[/yellow]")
+    return False
+
+
+def generate_runtime_tokens() -> Dict[str, str]:
+    admin = secrets.token_urlsafe(24)
+    ingress = secrets.token_urlsafe(16)
+    proc = secrets.token_urlsafe(16)
+    return {
+        "SECRETS_ADMIN_TOKEN": admin,
+        "SECRETS_READ_TOKENS": f"{ingress},{proc}",
+        "SECRETS_TOKEN_INGRESS": ingress,
+        "SECRETS_TOKEN_PROC": proc,
+    }
+
+
+def write_env_overlay(base_env: Path, overrides: Dict[str, str]) -> Path:
+    env = load_env_file(base_env)
+    for key, value in overrides.items():
+        update_env_value(env, key, value)
+    fd, tmp_path = tempfile.mkstemp(prefix="kdcube-env-", suffix=".env")
+    os.close(fd)
+    env.path = Path(tmp_path)
+    save_env_file(env)
+    return env.path
+
+
 def load_env_file(path: Path) -> EnvFile:
     lines = path.read_text().splitlines()
     entries = parse_env(lines)
@@ -489,6 +584,37 @@ def prompt_secret(
         return current if force_prompt else None
 
 
+def prompt_secret_value(
+    console: Console,
+    label: str,
+    *,
+    required: bool = False,
+    current: Optional[str] = None,
+    force_prompt: bool = False,
+) -> Optional[str]:
+    current_value = None if is_placeholder(current) else current
+    if not force_prompt and current_value:
+        return current_value
+    while True:
+        if force_prompt and current_value:
+            console.print(f"{_label(label)} [dim](press Enter to keep current)[/dim]")
+            value = console.input("> ", password=True).strip()
+            _abort_if_quit(value)
+            if not value:
+                return current_value
+        elif required:
+            value = ask(console, label, secret=True)
+        else:
+            value = prompt_optional(console, label, secret=True)
+        if value:
+            console.print(f"{_label(label)}: [dim]{_mask(value)}[/]")
+            return value
+        if required:
+            console.print("[red]This value is required. Please enter a value.[/red]")
+            continue
+        return current_value if force_prompt else None
+
+
 def prompt_choice(console: Console, label: str, choices: List[str], default: str) -> str:
     value = Prompt.ask(_label(label), choices=choices, default=default)
     _abort_if_quit(value)
@@ -569,7 +695,7 @@ def should_replace_bundles_config(value: Optional[str]) -> bool:
     return False
 
 
-def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
+def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str, str], Dict[str, str]]:
     force_prompt = os.getenv("KDCUBE_RESET_CONFIG", "").lower() in {"1", "true", "yes", "on"}
     env_main = load_env_file(ctx.config_dir / ".env")
     env_ingress = load_env_file(ctx.config_dir / ".env.ingress")
@@ -577,6 +703,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     env_metrics = load_env_file(ctx.config_dir / ".env.metrics")
     env_pg = load_env_file(ctx.config_dir / ".env.postgres.setup")
     env_proxy = load_env_file(ctx.config_dir / ".env.proxylogin")
+    runtime_secrets: Dict[str, str] = {}
 
     defaults = compute_paths(ctx.ai_app_root, ctx.lib_root, ctx.workdir)
 
@@ -606,6 +733,12 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         env_pg.entries.get("PROJECT_ID", (None, None))[1]
     ):
         update_env_value(env_pg, "PROJECT_ID", project)
+
+    update_if_placeholder(env_ingress, "SECRETS_PROVIDER", "local")
+    update_if_placeholder(env_proc, "SECRETS_PROVIDER", "local")
+    update_if_placeholder(env_ingress, "SECRETS_URL", "http://kdcube-secrets:7777")
+    update_if_placeholder(env_proc, "SECRETS_URL", "http://kdcube-secrets:7777")
+
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
     if force_prompt or is_placeholder(pg_user):
@@ -696,9 +829,39 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     if is_placeholder(env_proc.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_proc, "POSTGRES_HOST", "postgres-db")
 
-    prompt_secret(console, env_proc, "OPENAI_API_KEY", "OpenAI API key", required=False, force_prompt=force_prompt)
-    prompt_secret(console, env_proc, "ANTHROPIC_API_KEY", "Anthropic API key", required=False, force_prompt=force_prompt)
-    prompt_secret(console, env_proc, "BRAVE_API_KEY", "Brave Search API key", required=False, force_prompt=force_prompt)
+    openai_key = prompt_secret_value(
+        console,
+        "OpenAI API key (leave blank to skip)",
+        required=False,
+        current=env_proc.entries.get("OPENAI_API_KEY", (None, None))[1],
+        force_prompt=force_prompt,
+    )
+    anthropic_key = prompt_secret_value(
+        console,
+        "Anthropic API key (leave blank to skip)",
+        required=False,
+        current=env_proc.entries.get("ANTHROPIC_API_KEY", (None, None))[1],
+        force_prompt=force_prompt,
+    )
+    brave_key = prompt_secret_value(
+        console,
+        "Brave Search API key (leave blank to skip)",
+        required=False,
+        current=env_proc.entries.get("BRAVE_API_KEY", (None, None))[1],
+        force_prompt=force_prompt,
+    )
+    if openai_key:
+        runtime_secrets["OPENAI_API_KEY"] = openai_key
+    if anthropic_key:
+        runtime_secrets["ANTHROPIC_API_KEY"] = anthropic_key
+    if brave_key:
+        runtime_secrets["BRAVE_API_KEY"] = brave_key
+    if force_prompt or is_placeholder(env_proc.entries.get("OPENAI_API_KEY", (None, None))[1]):
+        update_env_value(env_proc, "OPENAI_API_KEY", "")
+    if force_prompt or is_placeholder(env_proc.entries.get("ANTHROPIC_API_KEY", (None, None))[1]):
+        update_env_value(env_proc, "ANTHROPIC_API_KEY", "")
+    if force_prompt or is_placeholder(env_proc.entries.get("BRAVE_API_KEY", (None, None))[1]):
+        update_env_value(env_proc, "BRAVE_API_KEY", "")
 
     host_storage = ensure_absolute(
         console,
@@ -737,8 +900,9 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
     update_env_value(env_main, "HOST_BUNDLES_PATH", host_bundles)
     update_env_value(env_main, "HOST_BUNDLE_STORAGE_PATH", host_bundle_storage)
     update_env_value(env_main, "HOST_EXEC_WORKSPACE_PATH", host_exec)
-    update_if_placeholder(env_main, "KDCUBE_CONFIG_DIR", str(ctx.config_dir))
-    update_if_placeholder(env_main, "KDCUBE_DATA_DIR", str(ctx.data_dir))
+    # Always align compose paths to the selected workdir.
+    update_env_value(env_main, "KDCUBE_CONFIG_DIR", str(ctx.config_dir))
+    update_env_value(env_main, "KDCUBE_DATA_DIR", str(ctx.data_dir))
     # Always keep logs in the workdir for compose mounts.
     update_env_value(env_main, "KDCUBE_LOGS_DIR", str(ctx.workdir / "logs"))
     if is_placeholder(env_main.entries.get("AGENTIC_BUNDLES_ROOT", (None, None))[1]):
@@ -759,6 +923,12 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
 
     existing_http = env_proc.entries.get("GIT_HTTP_TOKEN", (None, None))[1]
     existing_ssh = env_proc.entries.get("GIT_SSH_KEY_PATH", (None, None))[1]
+    if existing_http and not is_placeholder(existing_http):
+        console.print(
+            "[yellow]Found GIT_HTTP_TOKEN in .env.proc; it will be cleared and treated as runtime-only.[/yellow]"
+        )
+        update_env_value(env_proc, "GIT_HTTP_TOKEN", "")
+        existing_http = None
     if not is_placeholder(existing_http):
         default_auth = "https-token"
     elif not is_placeholder(existing_ssh):
@@ -771,6 +941,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         default_idx = auth_options.index(default_auth)
     except ValueError:
         default_idx = 0
+    console.print("[bold]Git bundle authentication[/bold]")
     auth_choice = select_option(
         console,
         "Git auth method for private bundles",
@@ -795,16 +966,16 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
             update_env_value(env_proc, "GIT_HTTP_USER", "")
     elif auth_choice == "https-token":
         console.print("[dim]Create a GitHub token at https://github.com/settings/tokens[/dim]")
-        token = prompt_secret(
+        token = prompt_secret_value(
             console,
-            env_proc,
-            "GIT_HTTP_TOKEN",
             "Git HTTPS token",
             required=True,
-            force_prompt=force_prompt,
+            force_prompt=True,
         )
         if token:
-            update_if_placeholder(env_proc, "GIT_HTTP_USER", "x-access-token")
+            runtime_secrets["GIT_HTTP_TOKEN"] = token
+        # Never store the token in env files.
+        update_env_value(env_proc, "GIT_HTTP_TOKEN", "")
         # Avoid dangling SSH placeholders if user chose token
         if is_placeholder(env_proc.entries.get("GIT_SSH_KEY_PATH", (None, None))[1]):
             update_env_value(env_proc, "GIT_SSH_KEY_PATH", "")
@@ -812,6 +983,8 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
             update_env_value(env_proc, "GIT_SSH_KNOWN_HOSTS", "")
         if is_placeholder(env_proc.entries.get("GIT_SSH_STRICT_HOST_KEY_CHECKING", (None, None))[1]):
             update_env_value(env_proc, "GIT_SSH_STRICT_HOST_KEY_CHECKING", "")
+        if is_placeholder(env_proc.entries.get("GIT_HTTP_USER", (None, None))[1]):
+            update_env_value(env_proc, "GIT_HTTP_USER", "")
         # If host SSH paths are placeholders, disable mounts to avoid missing-path binds.
         if is_placeholder(env_main.entries.get("HOST_GIT_SSH_KEY_PATH", (None, None))[1]):
             update_env_value(env_main, "HOST_GIT_SSH_KEY_PATH", "/dev/null")
@@ -916,7 +1089,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Dict[str, str]:
         ".env.metrics": str(env_metrics.path),
         ".env.postgres.setup": str(env_pg.path),
         ".env.proxylogin": str(env_proxy.path),
-    }
+    }, runtime_secrets
 
 
 def run_setup(
@@ -1000,7 +1173,7 @@ def run_setup(
         (config_dir / "install-meta.json").write_text(json.dumps(meta, indent=2))
     except Exception:
         pass
-    env_paths = gather_configuration(console, ctx)
+    env_paths, runtime_secrets = gather_configuration(console, ctx)
     env_main = load_env_file(config_dir / ".env")
 
     console.print("\n[bold]Env files:[/bold]")
@@ -1028,6 +1201,7 @@ def run_setup(
                 "kdcube-postgres-setup",
                 "kdcube-web-ui",
                 "kdcube-web-proxy",
+                "kdcube-secrets",
                 "proxylogin",
                 "py-code-exec",
             ]
@@ -1072,6 +1246,7 @@ def run_setup(
                             "web-ui",
                             "web-proxy",
                             "postgres-setup",
+                            "kdcube-secrets",
                         ],
                         cwd=ctx.docker_dir,
                         check=True,
@@ -1092,23 +1267,34 @@ def run_setup(
                     console.print("[red]Docker build failed. Check the output and retry.[/red]")
 
     if ask_confirm(console, "Run docker compose now?", default=False):
+        runtime_env = None
         try:
-            compose_cmd = [
+            token_overrides = generate_runtime_tokens()
+            runtime_env = write_env_overlay(config_dir / ".env", token_overrides)
+            base_cmd = [
                 "docker",
                 "compose",
                 "--env-file",
-                str(config_dir / ".env"),
+                str(runtime_env),
                 "up",
                 "-d",
             ]
-            if install_mode != "release":
-                compose_cmd.append("--build")
+            build_flag = ["--build"] if install_mode != "release" else []
+            # Start secrets service first to accept injections.
             subprocess.run(
-                compose_cmd,
+                [*base_cmd, *build_flag, "kdcube-secrets"],
                 cwd=ctx.docker_dir,
                 check=True,
             )
             console.print("[green]Docker compose started.[/green]")
+            if runtime_secrets:
+                apply_runtime_secrets(console, ctx, runtime_secrets, runtime_env)
+            # Start the rest of the stack.
+            subprocess.run(
+                [*base_cmd, *build_flag],
+                cwd=ctx.docker_dir,
+                check=True,
+            )
             console.print("Open the UI:")
             ui_port = env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1] or "80"
             if ui_port == "80":
@@ -1120,6 +1306,14 @@ def run_setup(
             console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
         except subprocess.CalledProcessError:
             console.print("[red]Docker compose up failed. Check the output and retry.[/red]")
+        finally:
+            if runtime_env and runtime_env.exists():
+                runtime_env.unlink(missing_ok=True)
+    elif runtime_secrets:
+        console.print(
+            "[yellow]LLM secrets were provided but docker compose was not started. "
+            "Start compose and inject secrets using the secrets service.[/yellow]"
+        )
 
 
 def main() -> None:

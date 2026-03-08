@@ -15,6 +15,7 @@ import uuid
 import fcntl
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
+from kdcube_ai_app.apps.chat.sdk.config import get_secret
 
 
 @dataclass
@@ -302,6 +303,12 @@ def _build_git_env() -> Dict[str, str]:
     """
     env = os.environ.copy()
     # HTTPS token auth (via GIT_ASKPASS)
+    if not env.get("GIT_HTTP_TOKEN"):
+        secret = get_secret("GIT_HTTP_TOKEN")
+        if secret:
+            env["GIT_HTTP_TOKEN"] = secret
+            if not env.get("GIT_HTTP_USER"):
+                env["GIT_HTTP_USER"] = get_secret("GIT_HTTP_USER") or "x-access-token"
     if env.get("GIT_HTTP_TOKEN"):
         global _WARNED_HTTP_SSH
         if not _WARNED_HTTP_SSH and (env.get("GIT_SSH_KEY_PATH") or env.get("GIT_SSH_COMMAND")):
@@ -392,7 +399,7 @@ def ensure_git_bundle(
     """
     log = logger or AgentLogger("git.bundle")
     bundle_id = (bundle_id or "").strip() or _repo_name_from_url(git_url)
-    http_token = os.environ.get("GIT_HTTP_TOKEN")
+    http_token = get_secret("GIT_HTTP_TOKEN")
     if http_token:
         https_url = _https_url_for_ssh(git_url)
         if https_url != git_url:

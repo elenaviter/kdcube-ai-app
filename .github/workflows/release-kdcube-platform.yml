@@ -94,6 +94,8 @@ jobs:
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Metricservice
           - image: kdcube-postgres-setup
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_PostgresSetup
+          - image: kdcube-secrets
+            dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
           - image: proxylogin
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_ProxyLogin
           - image: kdcube-web-proxy

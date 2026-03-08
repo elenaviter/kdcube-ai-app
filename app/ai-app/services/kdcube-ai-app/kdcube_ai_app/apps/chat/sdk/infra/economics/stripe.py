@@ -19,6 +19,7 @@ from kdcube_ai_app.infra.accounting.usage import quote_tokens_for_usd
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription_budget import SubscriptionBudgetLimiter
 from kdcube_ai_app.apps.chat.sdk.infra.economics.project_budget import ProjectBudgetLimiter
 from kdcube_ai_app.infra.channel.email import send_admin_email
+from kdcube_ai_app.apps.chat.sdk.config import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class StripeSubscriptionService:
         self.subscription_mgr = subscription_mgr
         self.default_tenant = default_tenant
         self.default_project = default_project
-        self.stripe_api_key = stripe_api_key or os.getenv("STRIPE_SECRET_KEY") or os.getenv("STRIPE_API_KEY")
+        self.stripe_api_key = stripe_api_key or get_secret("STRIPE_SECRET_KEY") or get_secret("STRIPE_API_KEY")
 
     def _stripe(self):
         import stripe
@@ -256,8 +257,8 @@ class StripeEconomicsWebhookHandler:
         self.default_tenant = default_tenant
         self.default_project = default_project
 
-        self.webhook_secret = stripe_webhook_secret or os.getenv("STRIPE_WEBHOOK_SECRET")
-        self.stripe_api_key = os.getenv("STRIPE_SECRET_KEY") or os.getenv("STRIPE_API_KEY")
+        self.webhook_secret = stripe_webhook_secret or get_secret("STRIPE_WEBHOOK_SECRET")
+        self.stripe_api_key = get_secret("STRIPE_SECRET_KEY") or get_secret("STRIPE_API_KEY")
         self.ref_provider = ref_provider
         self.ref_model = ref_model
 
@@ -988,7 +989,7 @@ class StripeEconomicsAdminService:
         self.pg_pool = pg_pool
         self.user_credits_mgr = user_credits_mgr
         self.subscription_mgr = subscription_mgr
-        self.stripe_api_key = stripe_api_key or os.getenv("STRIPE_SECRET_KEY") or os.getenv("STRIPE_API_KEY")
+        self.stripe_api_key = stripe_api_key or get_secret("STRIPE_SECRET_KEY") or get_secret("STRIPE_API_KEY")
         self.ref_provider = ref_provider
         self.ref_model = ref_model
 

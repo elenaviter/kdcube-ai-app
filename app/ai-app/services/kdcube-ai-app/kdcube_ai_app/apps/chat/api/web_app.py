@@ -26,8 +26,19 @@ from dotenv import load_dotenv, find_dotenv
 os.environ.setdefault("GATEWAY_COMPONENT", "ingress")
 
 _ENV_DIR = Path(__file__).resolve().parent
-load_dotenv(_ENV_DIR / ".env.ingress", override=True)
-load_dotenv(find_dotenv(usecwd=False))
+_CONFIG_DIR = os.environ.get("KDCUBE_CONFIG_DIR")
+_IN_CONTAINER = Path("/.dockerenv").exists()
+
+if _CONFIG_DIR:
+    _CONFIG_ENV = Path(_CONFIG_DIR) / ".env.ingress"
+    if _CONFIG_ENV.exists():
+        load_dotenv(_CONFIG_ENV, override=True)
+elif not _IN_CONTAINER:
+    # Local dev only (avoid overriding compose envs in containers).
+    load_dotenv(_ENV_DIR / ".env.ingress", override=True)
+
+if not _IN_CONTAINER:
+    load_dotenv(find_dotenv(usecwd=False))
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 get_settings.cache_clear()
 

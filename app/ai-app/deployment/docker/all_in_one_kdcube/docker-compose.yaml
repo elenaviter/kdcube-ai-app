@@ -21,6 +21,7 @@ services:
       - ${KDCUBE_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -42,6 +43,7 @@ services:
       - "5050:80"
     networks:
       - kdcube-internal
+      - kdcube-secrets
 
   postgres-setup:
     image: kdcube-postgres-setup:latest
@@ -80,6 +82,24 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  kdcube-secrets:
+    image: kdcube-secrets:latest
+    container_name: kdcube-secrets
+    build:
+      context: ../../..
+      dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
+    env_file:
+      - path: ${KDCUBE_CONFIG_DIR:-./config}/.env
+        required: false
+    environment:
+      - SECRETS_ADMIN_TOKEN=${SECRETS_ADMIN_TOKEN:-}
+      - SECRETS_READ_TOKENS=${SECRETS_READ_TOKENS:-}
+    restart: unless-stopped
+    tmpfs:
+      - /run/kdcube-secrets
+    networks:
+      - kdcube-secrets
 
 #  neo4j:
 #    image: neo4j:5
@@ -206,6 +226,7 @@ services:
       - LOG_FILE_PREFIX=chat-ingress
       - GATEWAY_COMPONENT=ingress
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
+      - SECRETS_TOKEN=${SECRETS_TOKEN_INGRESS:-}
     volumes:
       - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
       - ${KDCUBE_LOGS_DIR:-./logs}/chat-ingress:/logs
@@ -218,10 +239,13 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      kdcube-secrets:
+        condition: service_started
       clamav:
         condition: service_healthy
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "${CHAT_APP_PORT:-8010}:8010"
 
@@ -243,6 +267,7 @@ services:
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
       - HOST_BUNDLE_STORAGE_PATH=${HOST_BUNDLE_STORAGE_PATH}
       - HOST_EXEC_WORKSPACE_PATH=${HOST_EXEC_WORKSPACE_PATH}
+      - SECRETS_TOKEN=${SECRETS_TOKEN_PROC:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
@@ -277,6 +302,7 @@ services:
         condition: service_healthy
     networks:
       - kdcube-internal
+      - kdcube-secrets
     ports:
       - "${CHAT_PROCESSOR_PORT:-8020}:8020"
 
@@ -365,3 +391,6 @@ networks:
     driver: bridge
   kdcube-internal:
     driver: bridge
+  kdcube-secrets:
+    driver: bridge
+    internal: true

@@ -1,102 +1,201 @@
 ---
 id: ks:docs/sdk/agents/react/react-turn-workspace-README.md
 title: "ReAct Turn Workspace"
-summary: "Per-turn execution workspace (work/out) and how it differs from timeline, turn log, and sources pool."
-tags: ["sdk", "agents", "react", "workspace", "execution"]
-keywords: ["turn workspace", "workdir", "outdir", "exec-workspace", "execution snapshot", "timeline.json"]
+summary: "Filesystem contract and lifecycle of the per-turn ReAct workspace (work/out), including local origin, runtime population, persistence, and Fargate/distributed snapshot transport."
+tags: ["sdk", "agents", "react", "workspace", "execution", "snapshot", "fargate", "distributed"]
+keywords: ["ctx_v2", "exec-workspace", "workdir", "outdir", "timeline.json", "tool_calls_index.json", "EXEC_SNAPSHOT", "build_exec_snapshot_workspace", "snapshot_exec_input", "py_code_exec_entry.py"]
 see_also:
   - ks:docs/sdk/agents/react/timeline-README.md
   - ks:docs/sdk/agents/react/turn-log-README.md
   - ks:docs/sdk/agents/react/source-pool-README.md
   - ks:docs/sdk/agents/react/external-exec-README.md
+  - ks:docs/exec/distributed-exec.md
 ---
 # ReAct Turn Workspace
 
-The **turn workspace** is a **per‑turn execution sandbox** created by the processor.
-It is **not** the source of truth for conversation state. It is a diagnostic artifact that
-captures what happened during one turn.
+This document defines the **actual workspace structure** used by ReAct and how it evolves across phases:
+- local turn start (`exec-workspace/ctx_v2_*`)
+- tool execution and artifact population
+- optional turn snapshot persistence
+- distributed/Fargate serialization, restore, and merge-back
 
-This workspace is recreated on every turn. It exists to:
-- stage inputs (attachments, fetched files)
-- store tool outputs and logs
-- give operators a forensics snapshot when debugging a turn
+The workspace is execution state. Canonical conversation state still lives in timeline/sources/turn-log artifacts.
 
-## How the workspace is created
+## Lifecycle at a glance
 
-On each turn, `ContextBrowser._ensure_workspace()` creates:
-- `.../ctx_v2_<id>/work`
-- `.../ctx_v2_<id>/out`
+1. ReAct creates a fresh per-turn workspace directory (`ctx_v2_*`) with `work/` and `out/`.
+2. During the turn, tools and runtime write files into `out/` (and sometimes `work/`).
+3. Optionally, `react.persist_workspace()` stores zipped `out`/`work` for diagnostics.
+4. For distributed/Fargate exec, a lightweight snapshot is built, uploaded, restored remotely, then outputs are merged back.
 
-It also sets:
-- `WORKDIR` and `OUTPUT_DIR` environment variables
-- `WORKDIR_CV` / `OUTDIR_CV` contextvars (for tool runtime plumbing)
+## Phase 1: Local origin workspace (turn start)
 
-Workspace root is resolved by `get_exec_workspace_root()` and typically comes from:
-- `EXEC_WORKSPACE_ROOT` (preferred)
-- fallback to `HOST_EXEC_WORKSPACE_PATH` in host mode
-- default `/exec-workspace` in Docker or `/tmp` on host
+Workspace is created by `ContextBrowser._ensure_workspace()`.
 
-## What is inside the workspace
+Root resolution (`get_exec_workspace_root()`):
+- `EXEC_WORKSPACE_ROOT` if set.
+- Docker default: `/exec-workspace`.
+- Host fallback: `HOST_EXEC_WORKSPACE_PATH`.
+- Final fallback: `/tmp`.
 
-The workspace is broader than “files written by tools”. It can include:
-- Turn attachments provided by the user (staged into `work/` or `out/`)
-- Files produced during the turn (reports, images, zips, etc.)
-- Execution logs (tool logs, code‑exec logs, stdout/stderr)
-- Materialized artifacts referenced by the agent during the turn
-  (e.g., files pulled from earlier turns, or fetched documents)
-- `out/timeline.json` — a compact snapshot of the timeline **plus** sources pool
+Directory creation pattern:
 
-This data is **turn‑local**. It is not used for future turn reconstruction.
-
-## Hosted artifacts happen immediately
-
-When a tool produces a **file artifact** with `visibility=external`, the React tool
-layer **hosts it immediately** (uploads to the artifact store) and emits the hosted
-payload into the turn stream. This happens *during the turn* and does **not** depend
-on the workspace snapshot.
-
-Implementation: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/tools/external.py`
-(see `host_artifact_file(...)` + `emit_hosted_files(...)`).
-
-### Implication
-Even if you **disable workspace persistence**, hosted artifacts are still available
-via their logical paths (`fi:`) and hosted URIs.
-
-## What is the real source of truth?
-
-Conversation state is stored elsewhere:
-- **Timeline** (`artifact:conv.timeline.v1`) — ordered blocks + metadata
-- **Sources pool** (`artifact:conv:sources_pool`)
-- **Turn log** — ordered blocks for the single turn
-- **Messages / attachments / files** — persisted in conversation storage
-
-The workspace is a **snapshot of execution**, not the canonical record.
-Do not build retrieval features from workspace content.
-
-## Persisting the workspace (optional)
-
-At the end of a turn, some bundles call:
-
-```
-await react.persist_workspace()
+```text
+<exec_workspace_root>/
+  ctx_v2_<random>/
+    work/
+    out/
 ```
 
-This writes a **zip snapshot** of `work/` and `out/` into conversation storage
-(`executions/.../turn_id/run_id/...`). This is useful for diagnostics but is not
-required for conversation correctness.
+Runtime bindings set immediately:
+- `RuntimeCtx.workdir` / `RuntimeCtx.outdir`
+- env vars: `WORKDIR`, `OUTPUT_DIR`
+- context vars: `WORKDIR_CV`, `OUTDIR_CV`
 
-You can disable this globally with:
+## Phase 2: What is populated during a normal turn
 
+### Regularly present files/folders in `out/`
+
+`out/` is the main execution surface. Typical content:
+
+```text
+ctx_v2_<id>/
+  work/
+    main.py                                # generated for isolated tool calls (when used)
+    ...                                    # helper files generated by execution code
+  out/
+    timeline.json                          # local timeline snapshot (written frequently)
+    tool_calls_index.json                  # tool id -> list of persisted tool call files
+    .tool_calls_index.lock                 # lock for index updates
+    <safe_tool_id>-<timestamp>.json        # one per tool call payload
+    result.json                            # present when generated runtime calls save_ret(...)
+    delta_aggregates.json                  # delta cache dump from isolated supervisor/runtime
+    executed_programs/                     # preserved executed main.py copies
+      <tool_id>_<index>_main.py
+    turn_<turn_id>/
+      files/                               # turn-scoped file artifacts/rehosted files
+      attachments/                         # turn-scoped attachment files
+    logs/                                  # isolated runtime logs (mode-dependent)
+      runtime.err.log                      # local subprocess path
+      docker.out.log                       # docker path
+      docker.err.log                       # docker path
+      executor.log                         # py_code_exec entry logging (when configured)
+      supervisor.log                       # supervisor-side logging (when configured)
 ```
-REACT_PERSIST_WORKSPACE=0
+
+Notes:
+- Not every file appears on every turn; many are conditional on which tools/runtimes were used.
+- `timeline.json` is flushed from the in-memory timeline to keep file-backed context in sync.
+
+### Path conventions used inside the workspace
+
+Logical `fi:` paths map to physical `out/` paths by convention:
+- `fi:<turn_id>.files/<rel>` -> `<turn_id>/files/<rel>`
+- `fi:<turn_id>.user.attachments/<rel>` -> `<turn_id>/attachments/<rel>`
+- legacy `fi:<turn_id>.attachments/<rel>` -> `<turn_id>/attachments/<rel>`
+
+Other logical paths (`ar:`, `tc:`, `so:`) resolve from timeline state and are not always direct files.
+
+## Phase 3: Optional turn snapshot persistence (`react.persist_workspace()`)
+
+If `REACT_PERSIST_WORKSPACE` is enabled (default on), ReAct stores zipped diagnostics via `ConversationStore.put_execution_snapshot(...)`:
+
+```text
+cb/tenants/<tenant>/projects/<project>/executions/
+  <user_type>/<user_or_fp>/<conversation_id>/<turn_id>/<codegen_run_id>/
+    out.zip
+    pkg.zip
 ```
 
-Default is enabled (`1`). When disabled, `react.persist_workspace()` becomes a no‑op.
+Meaning:
+- `out.zip` = snapshot of `out/`
+- `pkg.zip` = snapshot of `work/`
 
-## Relationship to external execution
+This is for diagnostics/forensics, not canonical conversation reconstruction.
 
-External exec uses a **separate snapshot path** (see `external-exec-README.md`):
-- It builds a *lightweight* snapshot for remote runners.
-- It merges only select outputs back into the live workspace.
+## Phase 4: Distributed/Fargate workspace serialization and restore
 
-That flow is related to execution, but **distinct** from the turn workspace snapshot.
+### 4.1 Host-side lightweight snapshot build
+
+Before remote execution, host builds a reduced workspace (`build_exec_snapshot_workspace(...)`):
+- copy full `work/`
+- create filtered `out/timeline.json`
+- include only referenced files required by code (`fetch_ctx`/file refs)
+- write `out/exec_snapshot_manifest.json`
+
+Temporary snapshot tree:
+
+```text
+/tmp/exec_ws_<random>/
+  work/
+    ... (copy of local workdir)
+  out/
+    timeline.json                          # filtered to referenced paths
+    exec_snapshot_manifest.json            # included paths summary
+    <referenced files only>
+```
+
+### 4.2 Storage layout for remote execution
+
+`snapshot_exec_input(...)` uploads snapshot zips to execution-scoped keys:
+
+```text
+cb/tenants/<tenant>/projects/<project>/executions/
+  <user_type>/<user_or_fp>/<conversation_id>/<turn_id>/<codegen_run_id>/<exec_id>/
+    input/work.zip
+    input/out.zip
+    output/work.zip
+    output/out.zip
+```
+
+`runtime_globals["EXEC_SNAPSHOT"]` carries these URIs into remote runtime.
+
+### 4.3 Remote executor workspace (inside Fargate task)
+
+Container runtime paths:
+
+```text
+/workspace/
+  work/                                    # restored from input/work.zip
+  out/                                     # restored from input/out.zip
+  bundles/<bundle_dir>/                    # optional bundle restore from BUNDLE_SNAPSHOT_URI
+```
+
+`py_code_exec_entry.py` flow:
+1. restore input snapshot zips into `/workspace/work` and `/workspace/out`
+2. bootstrap supervisor/tool runtime with restored globals and bundle path rewrites
+3. execute code
+4. upload output zips (`output/work.zip`, `output/out.zip`) as deltas
+
+### 4.4 Merge-back conventions on host after Fargate completion
+
+Host merge behavior (`external/fargate.py`):
+- `output/work.zip` -> extracted directly into local `workdir`
+- `output/out.zip` -> extracted to temp dir, then selective merge:
+  - append `logs/*`
+  - copy trees with top-level folder `turn_*`
+  - do **not** overwrite `timeline.json` / `sources_pool` directly
+
+This preserves local timeline/sources authority while still importing generated turn artifacts.
+
+## Phase 5: What is canonical vs diagnostic
+
+Canonical conversation state:
+- timeline artifacts
+- sources pool artifacts
+- turn log artifacts
+- stored messages/attachments/files
+
+Workspace (`work/` + `out/`) is execution state and diagnostics. Use it for runtime debugging and snapshot transport, not as a long-term source of truth.
+
+## Code map
+
+Primary implementation points:
+- workspace origin: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/browser.py`
+- root selection: `kdcube_ai_app/apps/chat/sdk/solutions/infra.py`
+- tool call index/files: `kdcube_ai_app/apps/chat/sdk/runtime/tool_index.py`, `kdcube_ai_app/apps/chat/sdk/tools/io_tools.py`
+- local timeline file writes: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/timeline.py`
+- lightweight distributed snapshot: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/solution_workspace.py`
+- snapshot upload/path conventions: `kdcube_ai_app/apps/chat/sdk/runtime/external/distributed_snapshot.py`
+- remote restore/upload entrypoint: `kdcube_ai_app/apps/chat/sdk/runtime/isolated/py_code_exec_entry.py`
+- Fargate launch + merge-back: `kdcube_ai_app/apps/chat/sdk/runtime/external/fargate.py`

@@ -25,8 +25,19 @@ from starlette.datastructures import MutableHeaders
 os.environ.setdefault("GATEWAY_COMPONENT", "proc")
 
 _ENV_DIR = Path(__file__).resolve().parent
-load_dotenv(_ENV_DIR / ".env.proc", override=True)
-load_dotenv(find_dotenv(usecwd=False))
+_CONFIG_DIR = os.environ.get("KDCUBE_CONFIG_DIR")
+_IN_CONTAINER = Path("/.dockerenv").exists()
+
+if _CONFIG_DIR:
+    _CONFIG_ENV = Path(_CONFIG_DIR) / ".env.proc"
+    if _CONFIG_ENV.exists():
+        load_dotenv(_CONFIG_ENV, override=True)
+elif not _IN_CONTAINER:
+    # Local dev only (avoid overriding compose envs in containers).
+    load_dotenv(_ENV_DIR / ".env.proc", override=True)
+
+if not _IN_CONTAINER:
+    load_dotenv(find_dotenv(usecwd=False))
 
 # Ensure per-replica instance id is set (do not override explicit env)
 os.environ.setdefault("INSTANCE_ID", f"proc-{uuid.uuid4().hex[:8]}")
