@@ -14,7 +14,7 @@ see_also:
 This guide is for **ops/deployment** owners who configure bundle registries, delivery, and upgrades.
 
 If you need **authoring** guidance, see:
-`docs/sdk/bundle/bundle-dev-README.md`.
+[docs/sdk/bundle/bundle-dev-README.md](bundle-dev-README.md).
 
 ---
 
@@ -267,8 +267,8 @@ Resolved values are stored in Redis as runtime props.
 
 Release descriptors define bundle versions for CI/CD.
 Canonical docs:
-- `docs/service/cicd/release-descriptor-README.md`
-- `docs/service/cicd/release-bundle-README.md`
+- [docs/service/cicd/release-descriptor-README.md](../../service/cicd/release-descriptor-README.md)
+- [docs/service/cicd/release-bundle-README.md](../../service/cicd/release-bundle-README.md)
 
 Use `repo/ref/subdir/module` in the release descriptor and set:
 ```

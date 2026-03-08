@@ -19,7 +19,7 @@ This document summarizes the **storage paths** used by the Chat SDK. It reflects
 ## 1) Conversation artifacts (per turn)
 
 ```
-<kdcube storage path>/cb/tenants/<tenant>/projects/<project>/conversation/<user_role>/<user_id>/<conversation_id>/<turn_id>/
+<kdcube storage path>/cb/tenants/<tenant>/projects/<project>/conversation/<user_id>/<conversation_id>/<turn_id>/
   artifact-<ts>-<id>-turn.log.json
   artifact-<ts>-<id>-perf-steps.json
   artifact-<ts>-<id>-conv.user_shortcuts.json
@@ -36,7 +36,7 @@ Notes:
 Attachments are stored in the **same turn directory** as artifacts. Example:
 
 ```
-<kdcube storage path>/cb/tenants/<tenant>/projects/<project>/conversation/<user_role>/<user_id>/<conversation_id>/<turn_id>/
+<kdcube storage path>/cb/tenants/<tenant>/projects/<project>/conversation/<user_id>/<conversation_id>/<turn_id>/
   20260113015047-oracle-oxy-tank.png
 ```
 
@@ -49,7 +49,7 @@ Notes:
 The full reactive workdir (tool calls, logs, outputs) is stored per execution:
 
 ```
-<kdcube storage path>/cb/tenants/<tenant>/projects/<project>/executions/privileged/<user_id>/<conversation_id>/<turn_id>/<exec_id>/
+<kdcube storage path>/cb/tenants/<tenant>/projects/<project>/executions/<user_id>/<conversation_id>/<turn_id>/<exec_id>/
   out.zip
   pkg.zip
 ```

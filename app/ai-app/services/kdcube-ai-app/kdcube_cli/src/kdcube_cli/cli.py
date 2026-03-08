@@ -38,9 +38,9 @@ def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
-def _docker_output(cmd: list[str]) -> str:
+def _docker_output(cmd: list[str], env: dict[str, str] | None = None) -> str:
     try:
-        return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout
+        return subprocess.run(cmd, check=True, capture_output=True, text=True, env=env).stdout
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or "").strip()
         stdout = (exc.stdout or "").strip()
@@ -62,9 +62,20 @@ def _docker_run(cmd: list[str]) -> None:
         raise SystemExit(f"Docker command failed: {' '.join(cmd)} (exit {exc.returncode})") from exc
 
 
+def _compose_env_from_cmd(cmd: list[str]) -> dict[str, str] | None:
+    if "--env-file" not in cmd:
+        return None
+    idx = cmd.index("--env-file")
+    if idx + 1 >= len(cmd):
+        return None
+    env = os.environ.copy()
+    env["COMPOSE_ENV_FILES"] = cmd[idx + 1]
+    return env
+
+
 def _run_compose(console: Console, cmd: list[str], *, cwd: Path) -> None:
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=_compose_env_from_cmd(cmd))
     if proc.stdout:
         console.print(proc.stdout.strip())
     if proc.stderr:
@@ -75,7 +86,7 @@ def _run_compose(console: Console, cmd: list[str], *, cwd: Path) -> None:
 
 def _run_compose_optional(console: Console, cmd: list[str], *, cwd: Path, label: str) -> bool:
     console.print(f"[dim]$ {' '.join(cmd)}[/dim]")
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=_compose_env_from_cmd(cmd))
     if proc.stdout:
         console.print(proc.stdout.strip())
     if proc.stderr:
@@ -173,6 +184,8 @@ def _ensure_secrets_service_available(docker_dir: Path) -> None:
 
 def _compose_services(docker_dir: Path, env_file: Path) -> set[str]:
     try:
+        env = os.environ.copy()
+        env["COMPOSE_ENV_FILES"] = str(env_file)
         output = _docker_output(
             [
                 "docker",
@@ -181,7 +194,8 @@ def _compose_services(docker_dir: Path, env_file: Path) -> set[str]:
                 str(env_file),
                 "config",
                 "--services",
-            ]
+            ],
+            env=env,
         )
         return {line.strip() for line in output.splitlines() if line.strip()}
     except SystemExit:
@@ -190,6 +204,8 @@ def _compose_services(docker_dir: Path, env_file: Path) -> set[str]:
 
 def _compose_running_services(docker_dir: Path, env_file: Path) -> set[str]:
     try:
+        env = os.environ.copy()
+        env["COMPOSE_ENV_FILES"] = str(env_file)
         output = _docker_output(
             [
                 "docker",
@@ -200,7 +216,8 @@ def _compose_running_services(docker_dir: Path, env_file: Path) -> set[str]:
                 "--services",
                 "--filter",
                 "status=running",
-            ]
+            ],
+            env=env,
         )
         return {line.strip() for line in output.splitlines() if line.strip()}
     except SystemExit:

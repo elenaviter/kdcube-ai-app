@@ -217,7 +217,7 @@ dc-infra up -d
 
 ECS deployment and env templates live in the platform repo:
 
-- `docs/ops/ecs/ecs-deployment-README.md`
+- [docs/ops/ecs/ecs-deployment-README.md](../ecs/ecs-deployment-README.md)
 - `deployment/ecs/`
 
 When moving to ECS, prefer **baked bundle images** (no host mounts).

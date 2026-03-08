@@ -76,8 +76,8 @@ Reference:
 Example layout (abbreviated):
 ```
 <KDCUBE_STORAGE_PATH>/
-  cb/tenants/<tenant>/projects/<project>/conversation/<role>/<user>/<conversation>/<turn>/
-  cb/tenants/<tenant>/projects/<project>/executions/<role>/<user>/<conversation>/<turn>/<exec_id>/
+  cb/tenants/<tenant>/projects/<project>/conversation/<user>/<conversation>/<turn>/
+  cb/tenants/<tenant>/projects/<project>/executions/<user>/<conversation>/<turn>/<exec_id>/
   accounting/<tenant>/project/<YYYY.MM.DD>/<service>/<bundle_id>/
   analytics/<tenant>/project/accounting/{daily,weekly,monthly}/
 ```

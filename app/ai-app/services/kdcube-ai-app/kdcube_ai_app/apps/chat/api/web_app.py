@@ -39,8 +39,6 @@ elif not _IN_CONTAINER:
 
 if not _IN_CONTAINER:
     load_dotenv(find_dotenv(usecwd=False))
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
-get_settings.cache_clear()
 
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
@@ -52,6 +50,9 @@ os.environ.setdefault("INSTANCE_ID", f"ingress-{uuid.uuid4().hex[:8]}")
 
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, log_secret_statuses
+get_settings.cache_clear()
+log_secret_statuses(force=True)
 try:
     # Ensure faulthandler is enabled in all processes (including Uvicorn workers).
     faulthandler.enable()
@@ -425,9 +426,9 @@ async def lifespan(app: FastAPI):
         await _safe_shutdown_step("redis_monitor.stop", app.state.redis_monitor.stop(), timeout=5.0)
 
     await _safe_shutdown_step("redis.close_all", close_redis_clients(), timeout=5.0)
+    await _safe_shutdown_step("link_preview.close", close_shared_link_preview(), timeout=5.0)
+    await _safe_shutdown_step("shared_browser.close", close_shared_browser(), timeout=5.0)
 
-    await close_shared_link_preview()
-    await close_shared_browser()
 
     logger.info("Chat service stopped")
 

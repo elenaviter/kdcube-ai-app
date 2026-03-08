@@ -49,6 +49,13 @@ def rn_citable(tenant: str, project: str,
 
 import re
 FILE_PATH_RE = re.compile(
+    r'^cb/tenants/(?P<tenant>[^/]+)/projects/(?P<project>[^/]+)/attachments/'
+    r'(?P<user_id>[^/]+)/'
+    r'(?P<conversation_id>[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})/'
+    r'(?P<turn_id>turn_[^/]+)/(?P<filename>[^/]+)$'
+)
+
+LEGACY_FILE_PATH_RE = re.compile(
     r'^cb/tenants/(?P<tenant>[^/]+)/projects/(?P<project>[^/]+)/attachments/(?P<role>[^/]+)/'
     r'(?P<user_id>[^/]+)/'
     r'(?P<conversation_id>[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12})/'
@@ -56,14 +63,17 @@ FILE_PATH_RE = re.compile(
 )
 
 def parse_file_path(path: str) -> dict:
-    m = FILE_PATH_RE.match(path)
+    m = FILE_PATH_RE.match(path) or LEGACY_FILE_PATH_RE.match(path)
     if not m:
         raise ValueError("Path did not match expected format")
     return m.groupdict()
 
 def build_file_path(d: dict) -> str:
-    return "cb/tenants/{tenant}/projects/{project}/attachments/{role}/{user_id}/{conversation_id}/{turn_id}/{filename}".format(**d)
+    return "cb/tenants/{tenant}/projects/{project}/attachments/{user_id}/{conversation_id}/{turn_id}/{filename}".format(**d)
 
 def rn_file_from_file_path(file_rel_path: str):
     places = parse_file_path(file_rel_path)
-    return rn_attachment(**places)
+    role = places.pop("role", None)
+    if not role or role in ("anonymous", "registered", "privileged", "paid"):
+        role = "artifact"
+    return rn_attachment(role=role, **places)

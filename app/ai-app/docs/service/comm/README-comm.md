@@ -196,7 +196,7 @@ Bundles can define an **event filter** (`IEventFilter`) that acts as an outbound
 It sees the event metadata + user/session details and can **suppress** events before
 they reach Redis/SSE/Socket.IO.
 
-See: `docs/sdk/bundle/bundle-firewall-README.md`
+See: [docs/sdk/bundle/bundle-firewall-README.md](../../sdk/bundle/bundle-firewall-README.md)
 
 ### Examples (per marker)
 

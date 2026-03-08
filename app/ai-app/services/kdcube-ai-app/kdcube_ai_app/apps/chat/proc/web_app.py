@@ -76,7 +76,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
     get_external_request_processor,
     service_health_checker,
 )
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, log_secret_statuses
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
 from kdcube_ai_app.apps.chat.proc.rest.integrations import mount_integrations_routers
 from kdcube_ai_app.infra.namespaces import CONFIG
@@ -92,6 +92,8 @@ os.environ.setdefault("INSTANCE_ID", f"proc-{uuid.uuid4().hex[:8]}")
 
 import kdcube_ai_app.apps.utils.logging_config as logging_config
 logging_config.configure_logging()
+get_settings.cache_clear()
+log_secret_statuses(force=True)
 logger = logging.getLogger("ChatProc.WebApp")
 
 

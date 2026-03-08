@@ -9,6 +9,7 @@ import os
 import logging
 from typing import Tuple, Optional
 
+from fastapi import HTTPException
 from starlette.requests import Request
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
@@ -28,8 +29,7 @@ from kdcube_ai_app.infra.gateway.config import (
 from kdcube_ai_app.infra.gateway.gateway import create_gateway_from_config
 
 from kdcube_ai_app.apps.middleware.gateway import FastAPIGatewayAdapter
-from kdcube_ai_app.infra.rendering.link_preview import AsyncLinkPreview
-from kdcube_ai_app.infra.rendering.shared_browser import SharedBrowserService
+from kdcube_ai_app.infra.rendering.link_preview import AsyncLinkPreview, get_shared_link_preview
 from kdcube_ai_app.infra.service_hub.inventory import ConfigRequest, ModelServiceBase, create_workflow_config
 from kdcube_ai_app.infra.redis.client import (
     get_async_redis_client,
@@ -307,8 +307,6 @@ _conv_index: Optional[ConvIndex] = None
 _conv_store: Optional[ConversationStore] = None
 _conv_browser: Optional[ContextRAGClient] = None
 
-_shared_browser_instance = None
-_link_preview = None
 
 def get_auth_manager():
     """Get singleton auth manager"""
@@ -662,22 +660,7 @@ async def get_conversation_system(pg_pool) -> Tuple[ContextRAGClient, ConvIndex,
                                   model_service=model_service)
     return _conv_browser, _conv_index, _conv_store
 
-async def shared_browser_instance() -> SharedBrowserService:
-    global _shared_browser_instance
-
-    if _shared_browser_instance is not None:
-        return _shared_browser_instance
-    _shared_browser_instance = SharedBrowserService(headless=True)
-    await _shared_browser_instance.start()
-    return _shared_browser_instance
-
 async def link_preview_instance() -> AsyncLinkPreview:
-    global _link_preview
-
-    if _link_preview is not None:
-        return _link_preview
-
-    shared_browser = await shared_browser_instance()
-    _link_preview = AsyncLinkPreview(shared_browser=shared_browser)
-    await _link_preview.start()
-    return _link_preview
+    if not get_settings().LINK_PREVIEW_ENABLED:
+        raise HTTPException(status_code=404, detail="Link preview disabled")
+    return await get_shared_link_preview()

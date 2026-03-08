@@ -149,7 +149,7 @@ Notes:
 - URLs are normalized on load.
 - `local_path` is normalized to `physical_path`.
 - Large `base64` values may be trimmed for safety.
-- See `docs/citations-system.md` for the full canonical sources shape.
+- See [docs/citations-system.md](../../citations-system.md) for the full canonical sources shape.
 
 
 ## Namespaces
@@ -230,8 +230,8 @@ SDK mechanisms using this:
 - `react.read` short-id resolution: `consumer="solver.react.decision.v2"` (which SKx ids can be loaded).
 - Generator role-based resolution/injection: `consumer=<role>` such as `answer.generator.strong`.
 
-For authoring examples, see `docs/sdk/skills/custom-skills-README.md`.
-For runtime wiring, see `docs/sdk/skills/skills-infra-README.md`.
+For authoring examples, see [docs/sdk/skills/custom-skills-README.md](custom-skills-README.md).
+For runtime wiring, see [docs/sdk/skills/skills-infra-README.md](skills-infra-README.md).
 
 
 ## Skill discovery and selection

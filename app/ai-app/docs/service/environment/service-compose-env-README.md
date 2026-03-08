@@ -72,7 +72,7 @@ Each service has its own `.env.*` file. See the samples for the complete set:
 - `sample_env/.env.metrics`
 
 **Note (proc only):** Git‑defined bundles require `BUNDLE_GIT_*` and optional `GIT_SSH_*` or `GIT_HTTP_TOKEN`.
-env vars in `.env.proc`. See `docs/sdk/bundle/bundle-ops-README.md`.
+env vars in `.env.proc`. See [docs/sdk/bundle/bundle-ops-README.md](../../sdk/bundle/bundle-ops-README.md).
 
 ## Shared Requirements
 
@@ -84,4 +84,4 @@ env vars in `.env.proc`. See `docs/sdk/bundle/bundle-ops-README.md`.
 - If you enable `pgadmin`, set `PGADMIN_DEFAULT_EMAIL` and `PGADMIN_DEFAULT_PASSWORD`
   in `.env.postgres.setup` (samples provide defaults).
 
-For the full config schema, see `docs/service/gateway-README.md`.
+For the full config schema, see [docs/service/gateway-README.md](../gateway-README.md).

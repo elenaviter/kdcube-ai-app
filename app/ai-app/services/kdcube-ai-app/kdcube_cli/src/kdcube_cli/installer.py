@@ -326,6 +326,32 @@ def ensure_local_dirs(data_dir: Path, logs_dir: Path) -> None:
             pass
 
 
+def compose_env(env_file: Path) -> Dict[str, str]:
+    env = os.environ.copy()
+    env["COMPOSE_ENV_FILES"] = str(env_file)
+    return env
+
+
+def list_compose_services(ctx: PathsContext, env_file: Path) -> List[str]:
+    try:
+        output = subprocess.check_output(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                str(env_file),
+                "config",
+                "--services",
+            ],
+            cwd=ctx.docker_dir,
+            env=compose_env(env_file),
+            text=True,
+        )
+        return [line.strip() for line in output.splitlines() if line.strip()]
+    except Exception:
+        return []
+
+
 def apply_runtime_secrets(console: Console, ctx: PathsContext, secrets: Dict[str, str], env_file: Path) -> None:
     if not secrets:
         return
@@ -352,6 +378,7 @@ def apply_runtime_secrets(console: Console, ctx: PathsContext, secrets: Dict[str
                 ],
                 cwd=ctx.docker_dir,
                 check=True,
+                env=compose_env(env_file),
             )
         except FileNotFoundError:
             console.print("[red]Docker not found. Please install Docker and rerun.[/red]")
@@ -387,6 +414,7 @@ def wait_for_secrets_ready(console: Console, ctx: PathsContext, env_file: Path, 
                 ],
                 cwd=ctx.docker_dir,
                 check=True,
+                env=compose_env(env_file),
             )
             return True
         except Exception:
@@ -738,6 +766,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     update_if_placeholder(env_proc, "SECRETS_PROVIDER", "local")
     update_if_placeholder(env_ingress, "SECRETS_URL", "http://kdcube-secrets:7777")
     update_if_placeholder(env_proc, "SECRETS_URL", "http://kdcube-secrets:7777")
+    update_if_placeholder(env_ingress, "LINK_PREVIEW_ENABLED", "0")
 
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
@@ -1250,6 +1279,7 @@ def run_setup(
                         ],
                         cwd=ctx.docker_dir,
                         check=True,
+                        env=compose_env(config_dir / ".env"),
                     )
                 except FileNotFoundError:
                     console.print("[red]Docker not found. Please install Docker and rerun the build step.[/red]")
@@ -1276,25 +1306,31 @@ def run_setup(
                 "compose",
                 "--env-file",
                 str(runtime_env),
-                "up",
-                "-d",
             ]
             build_flag = ["--build"] if install_mode != "release" else []
-            # Start secrets service first to accept injections.
+            if runtime_secrets:
+                # Start secrets service first so secrets are available before ingress/proc boot.
+                subprocess.run(
+                    [*base_cmd, "up", "-d", "--force-recreate", *build_flag, "kdcube-secrets"],
+                    cwd=ctx.docker_dir,
+                    check=True,
+                    env=compose_env(runtime_env),
+                )
+                apply_runtime_secrets(console, ctx, runtime_secrets, runtime_env)
+
+            services = list_compose_services(ctx, runtime_env)
+            if runtime_secrets and services:
+                services = [svc for svc in services if svc != "kdcube-secrets"]
+            up_cmd = [*base_cmd, "up", "-d", "--force-recreate", *build_flag]
+            if services:
+                up_cmd.extend(services)
             subprocess.run(
-                [*base_cmd, *build_flag, "kdcube-secrets"],
+                up_cmd,
                 cwd=ctx.docker_dir,
                 check=True,
+                env=compose_env(runtime_env),
             )
             console.print("[green]Docker compose started.[/green]")
-            if runtime_secrets:
-                apply_runtime_secrets(console, ctx, runtime_secrets, runtime_env)
-            # Start the rest of the stack.
-            subprocess.run(
-                [*base_cmd, *build_flag],
-                cwd=ctx.docker_dir,
-                check=True,
-            )
             console.print("Open the UI:")
             ui_port = env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1] or "80"
             if ui_port == "80":

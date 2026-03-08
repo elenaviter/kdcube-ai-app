@@ -85,16 +85,10 @@ def _is_owner_or_privileged(owner_id: str, session: UserSession) -> bool:
         return True
     return False
 
-def _pick_namespace_exists(store: ConversationStore, tenant: str, project: str,
-                           owner_id: str, conversation_id: str, turn_id: str, rel_builder) -> Optional[tuple]:
-    """
-    Try both namespaces (registered/anonymous) with the provided owner_id token.
-    rel_builder(who,user_or_fp) -> relative key to check.
-    """
-    for who in ("registered", "anonymous", "privileged", "paid"):
-        rel = rel_builder(who, owner_id)
+def _pick_existing_rel(store: ConversationStore, rels: List[str]) -> Optional[str]:
+    for rel in rels:
         if store.backend.exists(rel):
-            return who, owner_id
+            return rel
     return None
 
 @router.post("/by-rn", response_model=RNContentResponse)
@@ -111,13 +105,22 @@ async def chatbot_content_by_rn(req: RNContentRequest,
 
     store = ConversationStore(get_settings().STORAGE_PATH)
 
-    def conv_rel(who: str, uid: str, message_id: str) -> str:
+    def conv_rel(uid: str, message_id: str) -> str:
+        return f"cb/tenants/{tenant}/projects/{project}/conversation/{uid}/{conv_id}/{turn_id}/{message_id}.json"
+
+    def conv_rel_legacy(who: str, uid: str, message_id: str) -> str:
         return f"cb/tenants/{tenant}/projects/{project}/conversation/{who}/{uid}/{conv_id}/{turn_id}/{message_id}.json"
 
-    def att_rel(who: str, uid: str, filename: str) -> str:
+    def att_rel(uid: str, filename: str) -> str:
+        return f"cb/tenants/{tenant}/projects/{project}/attachments/{uid}/{conv_id}/{turn_id}/{filename}"
+
+    def att_rel_legacy(who: str, uid: str, filename: str) -> str:
         return f"cb/tenants/{tenant}/projects/{project}/attachments/{who}/{uid}/{conv_id}/{turn_id}/{filename}"
 
-    def exec_rel(who: str, uid: str, kind: str, path: str) -> str:
+    def exec_rel(uid: str, kind: str, path: str) -> str:
+        return f"cb/tenants/{tenant}/projects/{project}/executions/{uid}/{conv_id}/{turn_id}/{kind}/{path}"
+
+    def exec_rel_legacy(who: str, uid: str, kind: str, path: str) -> str:
         return f"cb/tenants/{tenant}/projects/{project}/executions/{who}/{uid}/{conv_id}/{turn_id}/{kind}/{path}"
 
     try:
@@ -126,12 +129,10 @@ async def chatbot_content_by_rn(req: RNContentRequest,
             if len(tail) < 1:
                 raise HTTPException(status_code=400, detail="Missing message_id")
             message_id = tail[0]
-            pick = _pick_namespace_exists(store, tenant, project, owner_id, conv_id, turn_id,
-                                          lambda who, uid: conv_rel(who, uid, message_id))
-            if not pick:
+            legacy = [conv_rel_legacy(w, owner_id, message_id) for w in ("registered", "anonymous", "privileged", "paid")]
+            rel = _pick_existing_rel(store, [conv_rel(owner_id, message_id)] + legacy)
+            if not rel:
                 raise HTTPException(status_code=404, detail="Not found")
-            who, uid = pick
-            rel = conv_rel(who, uid, message_id)
             raw = store.backend.read_text(rel)
             obj = json.loads(raw)
             return RNContentResponse(rn=req.rn, content_type="message", content=obj,
@@ -143,12 +144,10 @@ async def chatbot_content_by_rn(req: RNContentRequest,
             if len(tail) < 1:
                 raise HTTPException(status_code=400, detail="Missing filename")
             filename = tail[0].replace("%3A", ":")
-            pick = _pick_namespace_exists(store, tenant, project, owner_id, conv_id, turn_id,
-                                          lambda who, uid: att_rel(who, uid, filename))
-            if not pick:
+            legacy = [att_rel_legacy(w, owner_id, filename) for w in ("registered", "anonymous", "privileged", "paid")]
+            rel = _pick_existing_rel(store, [att_rel(owner_id, filename)] + legacy)
+            if not rel:
                 raise HTTPException(status_code=404, detail="Not found")
-            who, uid = pick
-            rel = att_rel(who, uid, filename)
             mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
             uri = store._uri_for_path(rel)
 
@@ -157,13 +156,13 @@ async def chatbot_content_by_rn(req: RNContentRequest,
                 "preview_url": str(router_or_app.url_path_for(
                     "preview_cb_attachment",
                     tenant=tenant, project=project,
-                    owner_id=uid, conversation_id=conv_id,
+                    owner_id=owner_id, conversation_id=conv_id,
                     turn_id=turn_id, filename=filename
                 )),
                 "download_url": str(router_or_app.url_path_for(
                     "download_cb_attachment",
                     tenant=tenant, project=project,
-                    owner_id=uid, conversation_id=conv_id,
+                    owner_id=owner_id, conversation_id=conv_id,
                     turn_id=turn_id, filename=filename
                 ))
             }
@@ -180,12 +179,10 @@ async def chatbot_content_by_rn(req: RNContentRequest,
                 raise HTTPException(status_code=400, detail="Execution RN must be :execution:<kind>:<rel_path>")
             kind = tail[0]
             rel_path = "/".join([seg.replace("%3A", ":") for seg in tail[1:]])
-            pick = _pick_namespace_exists(store, tenant, project, owner_id, conv_id, turn_id,
-                                          lambda who, uid: exec_rel(who, uid, kind, rel_path))
-            if not pick:
+            legacy = [exec_rel_legacy(w, owner_id, kind, rel_path) for w in ("registered", "anonymous", "privileged", "paid")]
+            rel = _pick_existing_rel(store, [exec_rel(owner_id, kind, rel_path)] + legacy)
+            if not rel:
                 raise HTTPException(status_code=404, detail="Not found")
-            who, uid = pick
-            rel = exec_rel(who, uid, kind, rel_path)
             mime = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
             uri = store._uri_for_path(rel)
             meta = {
@@ -193,13 +190,13 @@ async def chatbot_content_by_rn(req: RNContentRequest,
                 "preview_url": router_or_app.url_path_for(
                     "preview_cb_exec_file",
                     tenant=tenant, project=project,
-                    owner_id=uid, conversation_id=conv_id,
+                    owner_id=owner_id, conversation_id=conv_id,
                     turn_id=turn_id, kind=kind, path=rel_path
                 ),
                 "download_url": router_or_app.url_path_for(
                     "download_cb_exec_file",
                     tenant=tenant, project=project,
-                    owner_id=uid, conversation_id=conv_id,
+                    owner_id=owner_id, conversation_id=conv_id,
                     turn_id=turn_id, kind=kind, path=rel_path
                 )
             }
@@ -254,12 +251,15 @@ async def preview_cb_attachment(
         filename = unquote(filename)
 
         # try both namespaces with provided owner_id
-        def _rel(who, uid): return f"cb/tenants/{tenant}/projects/{project}/attachments/{who}/{uid}/{conversation_id}/{turn_id}/{filename}"
-        pick = _pick_namespace_exists(store, tenant, project, owner_id, conversation_id, turn_id, _rel)
-        if not pick:
+        rels = [
+            f"cb/tenants/{tenant}/projects/{project}/attachments/{owner_id}/{conversation_id}/{turn_id}/{filename}"
+        ] + [
+            f"cb/tenants/{tenant}/projects/{project}/attachments/{who}/{owner_id}/{conversation_id}/{turn_id}/{filename}"
+            for who in ("registered", "anonymous", "privileged", "paid")
+        ]
+        rel = _pick_existing_rel(store, rels)
+        if not rel:
             raise HTTPException(status_code=404, detail="Attachment not found")
-        who, uid = pick
-        rel = _rel(who, uid)
 
         raw = store.backend.read_bytes(rel)
         mime = get_mime_type_enhanced(filename, raw) or (mimetypes.guess_type(filename)[0] or "application/octet-stream")
@@ -305,12 +305,15 @@ async def preview_cb_exec_file(
         store = ConversationStore(get_settings().STORAGE_PATH)
         rel_path = unquote(path)
 
-        def _rel(who, uid): return f"cb/tenants/{tenant}/projects/{project}/executions/{who}/{uid}/{conversation_id}/{turn_id}/{kind}/{rel_path}"
-        pick = _pick_namespace_exists(store, tenant, project, owner_id, conversation_id, turn_id, _rel)
-        if not pick:
+        rels = [
+            f"cb/tenants/{tenant}/projects/{project}/executions/{owner_id}/{conversation_id}/{turn_id}/{kind}/{rel_path}"
+        ] + [
+            f"cb/tenants/{tenant}/projects/{project}/executions/{who}/{owner_id}/{conversation_id}/{turn_id}/{kind}/{rel_path}"
+            for who in ("registered", "anonymous", "privileged", "paid")
+        ]
+        rel = _pick_existing_rel(store, rels)
+        if not rel:
             raise HTTPException(status_code=404, detail="Execution file not found")
-        who, uid = pick
-        rel = _rel(who, uid)
 
         raw = store.backend.read_bytes(rel)
         filename = rel_path.split("/")[-1] or kind
@@ -338,4 +341,3 @@ async def download_cb_exec_file(
     if not _is_owner_or_privileged(owner_id, session):
         raise HTTPException(status_code=403, detail="Forbidden")
     return await preview_cb_exec_file(tenant, project, owner_id, conversation_id, turn_id, kind, path, True, session)
-

@@ -46,9 +46,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /opt/venv /opt/venv
 
-# Playwright is used by link-preview; keep it for ingress.
-RUN python -m playwright install --with-deps chromium
-
 # Create non-root user
 RUN groupadd --gid 1000 appuser && \
     useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash appuser

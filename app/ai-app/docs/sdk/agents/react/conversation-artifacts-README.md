@@ -102,7 +102,7 @@ See: `storage/sdk-store-README.md`
   (conv.thinking.stream is no longer persisted; it is synthesized during fetch)
   <attachment files...>
 
-<kdcube>/cb/tenants/<tenant>/projects/<project>/executions/privileged/<user_id>/<conversation_id>/<turn_id>/<exec_id>/
+<kdcube>/cb/tenants/<tenant>/projects/<project>/executions/<user_id>/<conversation_id>/<turn_id>/<exec_id>/
   out.zip
   pkg.zip
 

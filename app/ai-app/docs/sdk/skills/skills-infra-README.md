@@ -16,8 +16,8 @@ both the ReAct runtime and isolated execution environments.
 
 Scope:
 - This document focuses on wiring and runtime transport.
-- For skill format and runtime behavior, see `docs/sdk/skills/skills-README.md`.
-- For bundle-local authoring and AGENTS_CONFIG examples, see `docs/sdk/skills/custom-skills-README.md`.
+- For skill format and runtime behavior, see [docs/sdk/skills/skills-README.md](skills-README.md).
+- For bundle-local authoring and AGENTS_CONFIG examples, see [docs/sdk/skills/custom-skills-README.md](custom-skills-README.md).
 
 ## Core components
 

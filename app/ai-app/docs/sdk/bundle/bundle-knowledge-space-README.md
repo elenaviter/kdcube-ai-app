@@ -47,7 +47,7 @@ Where is `storage_root`?
 - Default location: `<bundles_root>/_bundle_storage/<tenant>/<project>/<bundle_id>`.
 - Configure with `BUNDLE_STORAGE_ROOT`.
 
-See: `docs/sdk/bundle/bundle-storage-cache-README.md`.
+See: [docs/sdk/bundle/bundle-storage-cache-README.md](bundle-storage-cache-README.md).
 
 ---
 

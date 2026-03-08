@@ -51,6 +51,24 @@ def get_secret(key: str, default: str | None = None) -> str | None:
             return value
     return settings.secret(key, default=default)
 
+
+def log_secret_statuses(force: bool = False) -> None:
+    if force:
+        _SECRET_LOGGED.clear()
+    settings = get_settings()
+    env_openai = os.getenv("OPENAI_API_KEY")
+    env_anthropic = os.getenv("ANTHROPIC_API_KEY")
+    env_gemini = os.getenv("GEMINI_API_KEY")
+    env_brave = os.getenv("BRAVE_API_KEY")
+    env_git_token = os.getenv("GIT_HTTP_TOKEN")
+    env_git_user = os.getenv("GIT_HTTP_USER")
+    _log_secret_status("OPENAI_API_KEY", settings.OPENAI_API_KEY, "env" if env_openai else "secrets")
+    _log_secret_status("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY, "env" if env_anthropic else "secrets")
+    _log_secret_status("GEMINI_API_KEY", settings.GOOGLE_API_KEY, "env" if env_gemini else "secrets")
+    _log_secret_status("BRAVE_API_KEY", settings.BRAVE_API_KEY, "env" if env_brave else "secrets")
+    _log_secret_status("GIT_HTTP_TOKEN", settings.GIT_HTTP_TOKEN, "env" if env_git_token else "secrets")
+    _log_secret_status("GIT_HTTP_USER", settings.GIT_HTTP_USER, "env" if env_git_user else "secrets")
+
 class CorsConfig(BaseModel):
     allow_origins: list[str] = Field(default_factory=lambda: ["*"])
     allow_methods: list[str] = Field(default_factory=lambda: ["*"])
@@ -86,6 +104,7 @@ class Settings(BaseSettings):
     SECRETS_PROVIDER: str | None = None
     SECRETS_URL: str | None = None
     SECRETS_TOKEN: str | None = None
+    LINK_PREVIEW_ENABLED: bool = Field(default=True)
 
     # Postgres
     PGHOST: str = Field(default="localhost", alias="POSTGRES_HOST")

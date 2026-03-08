@@ -42,6 +42,43 @@ python -m pip install --user kdcube-cli
 kdcube-setup
 ```
 
+### CLI options (common)
+| Option | Purpose |
+|---|---|
+| `--repo <url>` | Git repo URL (default: official kdcube repo). |
+| `--path <repo>` | Use a local repo checkout for builds (skip cloning). |
+| `--workdir <path>` | Use a specific workdir instead of `~/.kdcube/kdcube-runtime`. |
+| `--reset-config` | Re‑prompt for config values without deleting files. |
+| `--reset` | Alias for `--reset-config`. |
+| `--clean` | Clean local Docker cache and unused KDCube images. |
+| `--secrets-prompt` | Prompt for LLM keys and inject them at runtime (sidecar). |
+| `--secrets-set KEY=VALUE` | Inject a secret value without prompting (repeatable). |
+
+### Host bundle descriptor
+You can point the CLI to a **bundle descriptor YAML** that defines external bundles
+to preload (git repositories, refs, module entrypoints). This is useful when you
+want a default bundle set different from the built‑in registry.
+
+The wizard prompts for this as **Host bundle descriptor path**.
+It is written into the workdir envs and mounted into proc at runtime.
+
+Example:
+```yaml
+bundles:
+  default_bundle_id: "react@2026-02-10-02-44"
+  items:
+    - id: "app@2-0"
+      name: "Customer App"
+      repo: "git@github.com:org/customer-repo.git"
+      ref: "bundle-v2026.02.22"
+      subdir: "service/bundles"
+      module: "app@2-0.entrypoint"
+```
+
+Reference:
+- https://github.com/kdcube/kdcube-ai-app/blob/main/app/ai-app/docs/sdk/bundle/bundle-ops-README.md
+- https://github.com/kdcube/kdcube-ai-app/blob/main/app/ai-app/docs/service/cicd/release-descriptor-README.md
+
 ## What it installs (default)
 - Repo clone: `~/.kdcube/kdcube-ai-app`
 - Workdir: `~/.kdcube/kdcube-runtime`
@@ -60,6 +97,16 @@ That will bring up the stack with no local build required.
 ```bash
 kdcube-setup --path /Users/you/src/kdcube/kdcube-ai-app
 ```
+
+### Manual compose (advanced)
+
+If you want to run compose manually, use the workdir env file:
+
+```bash
+docker compose --env-file ~/.kdcube/kdcube-runtime/config/.env up -d --build
+```
+
+Note: `--env-file` is a **Docker Compose** option (not a CLI flag).
 
 At “Install source”:
 - **upstream** → build images from your local repo
@@ -98,7 +145,7 @@ When you run `kdcube-setup`, the **wizard** performs the steps below:
 5) Creates local data folders for Postgres/Redis/exec workspace/bundle storage.
 6) Optionally builds images and starts `docker compose up -d`.
 
-### Secrets (LLM keys)
+### Secrets (third services tokens)
 The wizard **does not** write OpenAI/Anthropic/Brave keys to `.env` files.
 If you provide them during setup, they are injected at runtime into the
 `kdcube-secrets` sidecar (in‑memory only). If you restart the stack, you’ll
@@ -177,6 +224,13 @@ Example workdir layout:
 ├─ data/
 │  ├─ postgres/
 │  ├─ redis/
+│  ├─ kdcube-storage/
+│  │  ├─ cb/
+│  │  │  └─ tenants/<tenant>/projects/<project>/
+│  │  │     ├─ conversation/<user>/<conversation>/<turn>/
+│  │  │     └─ executions/<user>/<conversation>/<turn>/<exec_id>/
+│  │  ├─ accounting/<tenant>/project/<YYYY.MM.DD>/<service>/<bundle_id>/
+│  │  └─ analytics/<tenant>/project/accounting/{daily,weekly,monthly}/
 │  ├─ exec-workspace/
 │  └─ bundle-storage/
 └─ logs/

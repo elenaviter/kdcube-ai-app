@@ -42,7 +42,7 @@ Bundles stream output through the platform communicator. Clients receive events 
 - Socket.IO (`/socket.io`)
 
 Docs:
-- SSE events: `docs/clients/sse-events-README.md`
+- SSE events: [docs/clients/sse-events-README.md](../../clients/sse-events-README.md)
 - Comm system: `docs/sdk/comm/README-comm.md`
 
 The communicator is **asynchronous**: bundle execution and streaming can happen on
@@ -56,7 +56,7 @@ Common stream payloads:
 - `citations` (sources)
 
 See:
-- `docs/clients/sse-events-README.md`
+- [docs/clients/sse-events-README.md](../../clients/sse-events-README.md)
 
 ---
 
@@ -162,8 +162,8 @@ Common namespaces:
 See `bundle-dev-README.md` for how these roots are configured.
 
 Docs:
-- Attachments system: `docs/hosting/attachments-system.md`
-- SSE events: `docs/clients/sse-events-README.md`
+- Attachments system: [docs/hosting/attachments-system.md](../../hosting/attachments-system.md)
+- SSE events: [docs/clients/sse-events-README.md](../../clients/sse-events-README.md)
 
 ---
 

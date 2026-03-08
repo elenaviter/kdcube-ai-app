@@ -162,7 +162,7 @@ Use Dockerfiles from `deployment/docker/custom-ui-managed-infra`.
 
 ## 3) Release Descriptor (Single Source of Truth)
 
-See: `docs/service/cicd/release-descriptor-README.md`
+See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
 
 This file (`release.yaml` in the customer repo) pins platform + frontend + bundles
 and is the only release input CI should need.
@@ -172,7 +172,7 @@ and is the only release input CI should need.
 ## 4) Bundle Descriptor (Derived by CI)
 
 CI derives `AGENTIC_BUNDLES_JSON` from the release descriptor.
-See: `docs/service/cicd/release-descriptor-README.md`
+See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
 
 **Optional shortcut (EC2/dev):** mount the `release.yaml` directly and set:
 
@@ -298,7 +298,7 @@ If using private git repos:
 ## 8.1) Bundle Descriptor Generation
 
 CI derives `AGENTIC_BUNDLES_JSON` from the release descriptor.
-See: `docs/service/cicd/release-descriptor-README.md`
+See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
 
 ---
 

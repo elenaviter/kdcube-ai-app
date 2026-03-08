@@ -206,10 +206,10 @@ When exporting to CloudWatch/Prometheus, use consistent names:
 
 ## 8) Related docs
 
-- Gateway config: `docs/service/gateway-README.md`
-- Monitoring UI: `docs/service/README-monitoring-observability.md`
-- Connection pooling: `docs/service/maintenance/connection-pooling-README.md`
-- Instance config: `docs/service/maintenance/instance-config-README.md`
+- Gateway config: [docs/service/gateway-README.md](../gateway-README.md)
+- Monitoring UI: [docs/service/README-monitoring-observability.md](../README-monitoring-observability.md)
+- Connection pooling: [docs/service/maintenance/connection-pooling-README.md](../maintenance/connection-pooling-README.md)
+- Instance config: [docs/service/maintenance/instance-config-README.md](../maintenance/instance-config-README.md)
 
 ---
 
@@ -253,7 +253,7 @@ Sample ECS task definitions:
 - `deployment/ecs/metrics/metrics-eventbridge-targets.json`
 
 See also:
-- `docs/service/scale/metric-server-README.md` (full metrics server guide)
+- [docs/service/scale/metric-server-README.md](metric-server-README.md) (full metrics server guide)
 
 **Metric name mapping (optional)**
 

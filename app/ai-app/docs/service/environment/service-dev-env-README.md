@@ -175,4 +175,4 @@ Minimal skeleton:
 }
 ```
 
-For the full schema, see `docs/service/gateway-README.md`.
+For the full schema, see [docs/service/gateway-README.md](../gateway-README.md).

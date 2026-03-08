@@ -14,8 +14,8 @@ see_also:
 This is a quick guide to defining **bundle‑local skills**.
 
 For full details, see:
-- `docs/sdk/skills/skills-README.md`
-- `docs/sdk/skills/skills-infra-README.md`
+- [docs/sdk/skills/skills-README.md](skills-README.md)
+- [docs/sdk/skills/skills-infra-README.md](skills-infra-README.md)
 
 ---
 
@@ -145,8 +145,8 @@ Where this is applied:
   resolve/inject skills.
 
 For exact code paths and full runtime flow, see:
-- `docs/sdk/skills/skills-README.md` (section: runtime usage and enforcement)
-- `docs/sdk/skills/skills-infra-README.md` (runtime wiring)
+- [docs/sdk/skills/skills-README.md](skills-README.md) (section: runtime usage and enforcement)
+- [docs/sdk/skills/skills-infra-README.md](skills-infra-README.md) (runtime wiring)
 
 ---
 

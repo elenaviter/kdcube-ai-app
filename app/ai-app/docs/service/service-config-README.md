@@ -20,6 +20,261 @@ It focuses on tenant/project/bundle settings, instance identity, and parallelism
 - Proc: `deployment/docker/devenv/sample_env/.env.proc`
 - Metrics: `deployment/docker/devenv/sample_env/.env.metrics`
 
+## Full Environment Variable Reference (All Services)
+
+This section enumerates **all env vars** used by the local/docker setup.
+Source of truth: `deployment/docker/all_in_one_kdcube/sample_env/`.
+Descriptions are condensed from the comments in those sample files.
+
+### `.env`
+| Key | Description |
+|---|---|
+| `KDCUBE_CONFIG_DIR` | Workdir layout (config + data + logs) If you keep configs in a separate workdir, point these to that root. |
+| `KDCUBE_DATA_DIR` | n/a |
+| `KDCUBE_LOGS_DIR` | n/a |
+| `HOST_KDCUBE_STORAGE_PATH` | Path on host to mount as a KDCUBE STORAGE (local filesystem or S3). If using S3 in KDCUBE_STORAGE_PATH, not needed |
+| `HOST_BUNDLES_PATH` | Host directory containing ALL custom agentic bundles (subfolders, wheels, zips) These extend the chat service with custom Python applications |
+| `HOST_BUNDLE_STORAGE_PATH` | Host directory for shared bundle local storage (bundle data; used by ks: resolvers). This is mounted into chat-proc at BUNDLE_STORAGE_ROOT. |
+| `HOST_BUNDLE_DESCRIPTOR_PATH` | Release descriptor (optional; mounted into chat-proc as /config/release.yaml) If unset, /dev/null is mounted and AGENTIC_BUNDLES_JSON should be inline or empty. |
+| `HOST_GIT_SSH_KEY_PATH` | Optional SSH key + known_hosts for git bundle pulls (private repos) These files are mounted into the chat-proc container at: /run/secrets/git_ssh_key /run/secrets/git_known_hosts |
+| `HOST_GIT_KNOWN_HOSTS_PATH` | n/a |
+| `HOST_EXEC_WORKSPACE_PATH` | Temporary workspace for code execution (Docker-in-Docker) |
+| `AGENTIC_BUNDLES_ROOT` | Mount path for bundles inside the container DO NOT CHANGE unless you modify AGENTIC_BUNDLES_JSON references |
+| `BUNDLE_STORAGE_ROOT` | Shared bundle storage root inside the container (knowledge space root) |
+| `UI_BUILD_CONTEXT` | Root of the KDCube ai-app directory (contains deployment/, ui/, services/) This works on Linux/Mac. For Windows, use a Windows-safe path (e.g., D:/path/to/kdcube-ai-app/app/ai-app) |
+| `UI_DOCKERFILE_PATH` | Path to Dockerfile_UI (relative to UI_BUILD_CONTEXT) |
+| `UI_SOURCE_PATH` | Path to UI source code (relative to UI_BUILD_CONTEXT) This directory should contain package.json and your UI application |
+| `NGINX_UI_CONFIG_FILE_PATH` | Path to nginx configuration for UI (relative to UI_BUILD_CONTEXT) This configures how nginx serves your built UI application |
+| `PATH_TO_FRONTEND_CONFIG_JSON` | Runtime config is mounted into the UI container as /usr/share/nginx/html/config.json Suggested path (workdir): <workdir>/config/frontend.config.hardcoded.json |
+| `SECRETS_ADMIN_TOKEN` | SECRETS SIDECAR (optional, local dev) Admin token required to inject secrets into the sidecar. |
+| `SECRETS_READ_TOKENS` | Comma-separated list of read tokens accepted by the sidecar. |
+| `SECRETS_TOKEN_INGRESS` | Per-service read tokens (runtime-only; leave blank in files). |
+| `SECRETS_TOKEN_PROC` | n/a |
+| `SECRETS_TOKEN_TTL_SECONDS` | Token lifetime and max uses (per token). |
+| `SECRETS_TOKEN_MAX_USES` | n/a |
+| `PROXY_BUILD_CONTEXT` | Common parent directory that can reach both platform and frontend repos |
+| `PROXY_DOCKERFILE_PATH` | Path to Dockerfile_ProxyOpenResty (relative to PROXY_BUILD_CONTEXT) This Dockerfile is provided by the platform (OpenResty-based) |
+| `NGINX_PROXY_CONFIG_FILE_PATH` | Path to custom nginx proxy configuration (relative to PROXY_BUILD_CONTEXT) Use nginx/conf/nginx_proxy.conf for HTTP or nginx/conf/nginx_proxy_ssl.conf for HTTPS |
+| `KDCUBE_UI_PORT` | KDCube Frontend port |
+| `CHAT_APP_PORT` | KDCube services. All scaled horizontally via running multiple instances of each service. |
+| `CHAT_PROCESSOR_PORT` | n/a |
+| `METRICS_PORT` | n/a |
+| `POSTGRES_USER` | Local infra (Postgres + Redis containers) |
+| `POSTGRES_PASSWORD` | n/a |
+| `POSTGRES_DATABASE` | n/a |
+| `POSTGRES_PORT` | n/a |
+| `PGUSER` | Optional aliases for tooling that expects PG* vars |
+| `PGPASSWORD` | n/a |
+| `PGDATABASE` | n/a |
+| `POSTGRES_MAX_CONNECTIONS` | n/a |
+| `REDIS_PASSWORD` | n/a |
+
+### `.env.ingress`
+| Key | Description |
+|---|---|
+| `CHAT_APP_PORT` | n/a |
+| `GATEWAY_COMPONENT` | n/a |
+| `SECRETS_PROVIDER` | n/a |
+| `SECRETS_URL` | n/a |
+| `SECRETS_TOKEN` | n/a |
+| `LINK_PREVIEW_ENABLED` | Enable link preview endpoint (ingress disables by default). |
+| `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
+| `POSTGRES_HOST` | n/a |
+| `POSTGRES_PORT` | n/a |
+| `POSTGRES_DATABASE` | n/a |
+| `POSTGRES_USER` | n/a |
+| `POSTGRES_PASSWORD` | n/a |
+| `POSTGRES_SSL` | n/a |
+| `REDIS_URL` | Managed Redis endpoint (reachable from containers) |
+| `CB_RELAY_IDENTITY` | n/a |
+| `UVICORN_RELOAD` | Dev-only: enable auto-reload when running web_app.py directly (0/1). |
+| `HEARTBEAT_INTERVAL` | n/a |
+| `KDCUBE_STORAGE_PATH` | Storage backend root (file:///... or s3://...). |
+| `OPENAI_API_KEY` | Services credentials Ext services |
+| `HUGGING_FACE_API_TOKEN` | n/a |
+| `ANTHROPIC_API_KEY` | n/a |
+| `BRAVE_API_KEY` | n/a |
+| `GEMINI_CACHE_ENABLED` | n/a |
+| `GEMINI_CACHE_TTL_SECONDS` | n/a |
+| `DEFAULT_LLM_MODEL_ID` | n/a |
+| `DEFAULT_EMBEDDING_MODEL_ID` | n/a |
+| `AUTH_PROVIDER` | Auth Auth provider, simple|cognito |
+| `ID_TOKEN_HEADER_NAME` | For non-simple auth, id token must be sent by client in addition to the access token in the auth header. |
+| `AUTH_TOKEN_COOKIE_NAME` | n/a |
+| `ID_TOKEN_COOKIE_NAME` | n/a |
+| `COGNITO_REGION` | # Cognito specifics |
+| `COGNITO_USER_POOL_ID` | n/a |
+| `COGNITO_APP_CLIENT_ID` | n/a |
+| `COGNITO_SERVICE_CLIENT_ID` | ideally, separate client for service users. can be the same as COGNITO_APP_CLIENT_ID |
+| `JWKS_CACHE_TTL_SECONDS` | 24h JWKS cache. Not used |
+| `OIDC_SERVICE_ADMIN_USERNAME` | # Service account settings |
+| `OIDC_SERVICE_ADMIN_PASSWORD` | n/a |
+| `ODIC_SERVICE_USER_EMAIL` | n/a |
+| `APP_AV_SCAN` | AV 1 to enable, 0 to disable |
+| `APP_AV_TIMEOUT_S` | scan timeout per file |
+| `CLAMAV_HOST` | n/a |
+| `CLAMAV_PORT` | n/a |
+| `OPEX_AGG_CRON` | Analytics scheduled Analytics. Accounting events aggregation schedule |
+| `LOG_LEVEL` | Log |
+| `LOG_MAX_MB` | n/a |
+| `LOG_BACKUP_COUNT` | n/a |
+| `LOG_DIR` | n/a |
+| `LOG_FILE_PREFIX` | n/a |
+| `CORS_CONFIG` | to disable CORS - remove env var or set it empty all options are optional to enable CORS with all defaults CORS_CONFIG={} |
+| `AWS_REGION` | AWS use AWS from the container AWS_PROFILE=... |
+| `AWS_DEFAULT_REGION` | n/a |
+| `AWS_SDK_LOAD_CONFIG` | optional: make boto3 read ~/.aws/config if present (harmless) |
+| `NO_PROXY` | EC2 stuff. If you run dockercompose on EC2. Running with managed services don't proxy IMDS |
+| `AWS_EC2_METADATA_DISABLED` | make sure SDKs don’t disable IMDS accidentally |
+
+### `.env.proc`
+| Key | Description |
+|---|---|
+| `CHAT_PROCESSOR_PORT` | n/a |
+| `GATEWAY_COMPONENT` | n/a |
+| `SECRETS_PROVIDER` | n/a |
+| `SECRETS_URL` | n/a |
+| `SECRETS_TOKEN` | n/a |
+| `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
+| `POSTGRES_HOST` | n/a |
+| `POSTGRES_PORT` | n/a |
+| `POSTGRES_DATABASE` | n/a |
+| `POSTGRES_USER` | n/a |
+| `POSTGRES_PASSWORD` | n/a |
+| `POSTGRES_SSL` | n/a |
+| `REDIS_URL` | Managed Redis endpoint (reachable from containers) |
+| `CB_RELAY_IDENTITY` | n/a |
+| `CHAT_TASK_TIMEOUT_SEC` | Per-task timeout (seconds). |
+| `UVICORN_RELOAD` | Dev-only: enable auto-reload when running web_app.py directly (0/1). |
+| `HEARTBEAT_INTERVAL` | n/a |
+| `KDCUBE_STORAGE_PATH` | Storage backend root (file:///... or s3://...). |
+| `CB_BUNDLE_STORAGE_URL` | n/a |
+| `BUNDLE_STORAGE_ROOT` | Shared bundle local storage (used by ks: resolvers). Must match docker-compose mount. |
+| `OPENAI_API_KEY` | Services credentials Ext services |
+| `HUGGING_FACE_API_TOKEN` | n/a |
+| `ANTHROPIC_API_KEY` | n/a |
+| `BRAVE_API_KEY` | n/a |
+| `GEMINI_CACHE_ENABLED` | n/a |
+| `GEMINI_CACHE_TTL_SECONDS` | n/a |
+| `DEFAULT_LLM_MODEL_ID` | n/a |
+| `DEFAULT_EMBEDDING_MODEL_ID` | n/a |
+| `AUTH_PROVIDER` | Auth Auth provider, simple|cognito |
+| `ID_TOKEN_HEADER_NAME` | For non-simple auth, id token must be sent by client in addition to the access token in the auth header. |
+| `AUTH_TOKEN_COOKIE_NAME` | n/a |
+| `ID_TOKEN_COOKIE_NAME` | n/a |
+| `COGNITO_REGION` | # Cognito specifics |
+| `COGNITO_USER_POOL_ID` | n/a |
+| `COGNITO_APP_CLIENT_ID` | n/a |
+| `COGNITO_SERVICE_CLIENT_ID` | ideally, separate client for service users. can be the same as COGNITO_APP_CLIENT_ID |
+| `JWKS_CACHE_TTL_SECONDS` | 24h JWKS cache. Not used |
+| `OIDC_SERVICE_ADMIN_USERNAME` | # Service account settings |
+| `OIDC_SERVICE_ADMIN_PASSWORD` | n/a |
+| `ODIC_SERVICE_USER_EMAIL` | n/a |
+| `EXEC_WORKSPACE_ROOT` | Exec |
+| `PY_CODE_EXEC_IMAGE` | n/a |
+| `PY_CODE_EXEC_TIMEOUT` | n/a |
+| `PY_CODE_EXEC_NETWORK_MODE` | n/a |
+| `TOOLS_WEB_SEARCH_FETCH_CONTENT` | Tools |
+| `WEB_FETCH_RESOURCES_MEDIUM` | Medium credentials (uid and sid from your browser after logging in.) |
+| `WEB_SEARCH_AGENTIC_THINKING_BUDGET` | n/a |
+| `WEB_SEARCH_PRIMARY_BACKEND` | Is adaptive (best effort graceful service degradation) backends supported: duckduckgo|brave|hybrid |
+| `WEB_SEARCH_BACKEND` | n/a |
+| `WEB_SEARCH_HYBRID_MODE` | # Hybrid mode (optional, defaults to "sequential"). sequential|parallel |
+| `WEB_SEARCH_SEGMENTER` | n/a |
+| `MCP_CACHE_TTL_SECONDS` | n/a |
+| `ACCOUNTING_SERVICES` | n/a |
+| `AGENTIC_BUNDLES_JSON` | Bundle Bundles descriptor (owner: customer repo). You can also point AGENTIC_BUNDLES_JSON to a JSON/YAML file (recommended) - path inside the container: This path is mounted from HOST_BUNDLE_DESCRIPTOR_PATH defined in .env AGENTIC_BUNDLES_JSON=/config/release.yaml |
+| `BUNDLES_INCLUDE_EXAMPLES` | Include built-in example bundles from sdk/examples/bundles (default: 1) |
+| `BUNDLE_CLEANUP_ENABLED` | Bundle cleanup / ref tracking Enable periodic bundle cleanup loop (uses Redis locks). |
+| `BUNDLE_CLEANUP_INTERVAL_SECONDS` | Cleanup interval (seconds). |
+| `BUNDLE_CLEANUP_LOCK_TTL_SECONDS` | Cleanup lock TTL (seconds). |
+| `BUNDLE_REF_TTL_SECONDS` | Active bundle ref TTL (seconds). |
+| `BUNDLES_FORCE_ENV_ON_STARTUP` | Force bundles registry overwrite from env on startup (processor only). |
+| `BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS` | n/a |
+| `AGENTIC_BUNDLES_ROOT` | Agentic bundles root inside the container. All bundles (subfolders, wheels, zips) will be linked there. The paths in the AGENTIC_BUNDLES_JSON must start with this root. Container bundle root (from .env.proc): Docker/ECS: set AGENTIC_BUNDLES_ROOT=/bundles and mount your host/EFS path there. Host path for mounts lives in .env (HOST_BUNDLES_PATH). |
+| `BUNDLE_GIT_RESOLUTION_ENABLED` | Git bundle resolution Disable git bundle resolution until git bundles are fully configured. |
+| `BUNDLE_GIT_ATOMIC` | Atomic checkout (clone to temp dir then rename) |
+| `BUNDLE_GIT_ALWAYS_PULL` | Always pull even if path exists (if using branch heads) |
+| `BUNDLE_GIT_REDIS_LOCK` | Redis lock for git pulls (per instance; key includes INSTANCE_ID) |
+| `BUNDLE_GIT_REDIS_LOCK_TTL_SECONDS` | n/a |
+| `BUNDLE_GIT_REDIS_LOCK_WAIT_SECONDS` | n/a |
+| `BUNDLE_GIT_PREFETCH_ENABLED` | Prefetch git bundles to gate readiness |
+| `BUNDLE_GIT_PREFETCH_INTERVAL_SECONDS` | n/a |
+| `BUNDLE_GIT_FAIL_BACKOFF_SECONDS` | Backoff after git failures |
+| `BUNDLE_GIT_FAIL_MAX_BACKOFF_SECONDS` | n/a |
+| `BUNDLE_GIT_KEEP` | Shallow clone settings (optional) BUNDLE_GIT_CLONE_DEPTH=50 BUNDLE_GIT_SHALLOW=1 Cleanup policy for old git bundles |
+| `BUNDLE_GIT_TTL_HOURS` | n/a |
+| `GIT_SSH_KEY_PATH` | Optional SSH auth (private repos) Container paths are fixed by docker-compose mounts: /run/secrets/git_ssh_key /run/secrets/git_known_hosts |
+| `GIT_SSH_KNOWN_HOSTS` | n/a |
+| `GIT_SSH_STRICT_HOST_KEY_CHECKING` | n/a |
+| `LOG_LEVEL` | Log |
+| `LOG_MAX_MB` | n/a |
+| `LOG_BACKUP_COUNT` | n/a |
+| `LOG_DIR` | n/a |
+| `LOG_FILE_PREFIX` | n/a |
+| `CORS_CONFIG` | to disable CORS - remove env var or set it empty all options are optional to enable CORS with all defaults CORS_CONFIG={} |
+| `AWS_REGION` | AWS use AWS from the container AWS_PROFILE=... |
+| `AWS_DEFAULT_REGION` | n/a |
+| `AWS_SDK_LOAD_CONFIG` | optional: make boto3 read ~/.aws/config if present (harmless) |
+| `NO_PROXY` | EC2 stuff. If you run dockercompose on EC2. Running with managed services don't proxy IMDS |
+| `AWS_EC2_METADATA_DISABLED` | make sure SDKs don’t disable IMDS accidentally |
+
+### `.env.metrics`
+| Key | Description |
+|---|---|
+| `METRICS_PORT` | n/a |
+| `METRICS_MODE` | n/a |
+| `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
+| `REDIS_URL` | Redis endpoint (reachable from containers) |
+| `METRICS_SCHEDULER_ENABLED` | Scheduler/export |
+| `METRICS_EXPORT_INTERVAL_SEC` | n/a |
+| `METRICS_EXPORT_ON_START` | n/a |
+| `METRICS_PROM_SCRAPE_TTL_SEC` | Prometheus scrape cache TTL (seconds) |
+| `METRICS_EXPORT_CLOUDWATCH` | CloudWatch export (optional) |
+| `METRICS_CLOUDWATCH_NAMESPACE` | n/a |
+| `METRICS_EXPORT_PROMETHEUS_PUSH` | Prometheus pushgateway export (optional) |
+| `METRICS_PROM_JOB_NAME` | METRICS_PROM_PUSHGATEWAY_URL=http://pushgateway:9091 |
+
+### `.env.postgres.setup`
+| Key | Description |
+|---|---|
+| `POSTGRES_USER` | n/a |
+| `POSTGRES_PASSWORD` | n/a |
+| `POSTGRES_DATABASE` | n/a |
+| `POSTGRES_PORT` | n/a |
+| `POSTGRES_SSL` | n/a |
+| `PGADMIN_DEFAULT_EMAIL` | PgAdmin defaults (used by pgadmin container) |
+| `PGADMIN_DEFAULT_PASSWORD` | n/a |
+| `TENANT_ID` | Project bootstrap (creates schema/tenant/project as needed) |
+| `PROJECT_ID` | n/a |
+
+### `.env.proxylogin`
+| Key | Description |
+|---|---|
+| `STORAGE_TYPE` | Redis |
+| `REDIS_KEYPREFIX` | n/a |
+| `REDIS_URL` | In a docker-compose env_file, Docker does not expand ${REDIS_PASSWORD} or ${REDIS_HOST}. |
+| `RATELIMITER_STORAGE` | n/a |
+| `TOKEN_COOKIES_SAMESITE` | Cookies mode -- HTTP_CORS_ENABLED - not needed |
+| `TOKEN_COOKIES_DOMAIN` | n/a |
+| `TOKEN_MASQUERADE` | n/a |
+| `COGNITO_CLIENTID` | n/a |
+| `COGNITO_CLIENTSECRET` | n/a |
+| `COGNITO_USERPOOLID` | n/a |
+| `COGNITO_JWKSISSUER` | n/a |
+| `COGNITO_JWKSSIGNINGKEYURL` | n/a |
+| `PASSWORD_RESET_COMPANY` | n/a |
+| `PASSWORD_RESET_SENDER` | n/a |
+| `PASSWORD_RESET_TEMPLATENAME` | n/a |
+| `PASSWORD_RESET_REDIRECTURL` | n/a |
+| `HTTP_URLBASE` | n/a |
+| `LOGGING_DEV` | n/a |
+| `AWS_REGION` | AWS |
+| `AWS_DEFAULT_REGION` | n/a |
+
 **Short pitch (capacity + limits)**  
 The chat service is **rate‑limited and capacity‑limited** by design:
 
@@ -108,7 +363,7 @@ When component‑scoped, each service reads its own subsection based on `GATEWAY
 | `redis`                       | `sse_stats_ttl_seconds`, `sse_stats_max_age_seconds`                                       | Redis‑based SSE stats retention.                            |
 
 Pattern styles (strict vs prefix‑tolerant) are documented in
-`docs/service/gateway-README.md`.
+[docs/service/gateway-README.md](gateway-README.md).
 
 ### Example (readable, component‑scoped)
 
@@ -392,7 +647,7 @@ The monitoring pipeline stores **rolling metrics** in Redis (tenant/project‑sc
 - Ingress REST latency percentiles (p50/p95/p99)
 
 Retention is **1 hour**. Metrics are exposed via:
-`GET /monitoring/system` and the Metrics server (`docs/service/scale/metric-server-README.md`).
+`GET /monitoring/system` and the Metrics server ([docs/service/scale/metric-server-README.md](scale/metric-server-README.md)).
 
 ## Scheduling (OPEX + Bundle Cleanup)
 

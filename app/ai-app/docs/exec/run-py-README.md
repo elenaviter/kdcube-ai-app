@@ -17,9 +17,9 @@ It focuses on **how to use the tools**, **which env vars to set**, and how
 bundle tools are available inside the sandbox.
 
 Related docs:
-- `docs/exec/README-iso-runtime.md` (architecture + supervisor/executor)
-- `docs/exec/logging-README.md` (log streams and error detection)
-- `docs/exec/operations.md` (deployment details)
+- [docs/exec/README-iso-runtime.md](README-iso-runtime.md) (architecture + supervisor/executor)
+- [docs/exec/logging-README.md](logging-README.md) (log streams and error detection)
+- [docs/exec/operations.md](operations.md) (deployment details)
 
 ---
 
@@ -143,7 +143,7 @@ await agent_io_tools.tool_call(
 
 ## Logging and diagnostics
 
-See `docs/exec/logging-README.md`.
+See [docs/exec/logging-README.md](logging-README.md).
 
 Summary:
 - `out/logs/user.log` — program stdout/stderr (+ logging if enabled)
