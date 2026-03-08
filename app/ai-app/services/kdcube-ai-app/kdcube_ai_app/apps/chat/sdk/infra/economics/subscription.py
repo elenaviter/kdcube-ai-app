@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 import asyncpg
 from calendar import monthrange
 
@@ -491,10 +491,12 @@ class SubscriptionManager:
     ) -> Optional[Subscription]:
         if not stripe_subscription_id:
             return None
+        # We use COALESCE($3, next_charge_at) to ensure we don't accidentally clear the period end 
+        # during intermediate status updates (like soft cancellation).
         sql = f"""
             UPDATE {self.CP}.{self.TABLE}
             SET status=$2,
-                next_charge_at=$3,
+                next_charge_at=COALESCE($3, next_charge_at),
                 updated_at=NOW()
             WHERE provider='stripe' AND stripe_subscription_id=$1
             RETURNING *
@@ -616,9 +618,10 @@ class SubscriptionManager:
             user_id: str,
             amount_cents: int,
             metadata: Dict[str, Any],
-    ) -> str:
+    ) -> Tuple[str, bool]:
+        """Returns (status, was_created)"""
         tbl = f"{self.CP}.{self.EXT_EVENTS_TABLE}"
-        await conn.execute(f"""
+        res = await conn.fetchval(f"""
             INSERT INTO {tbl} (
               source, kind, external_id,
               tenant, project, user_id,
@@ -628,10 +631,13 @@ class SubscriptionManager:
               'internal', $2, $1,
               $3, $4, $5,
               $6, NULL, 'usd',
-              'pending', NULL, $7::jsonb
+              'pending', NULL, $7
             )
             ON CONFLICT (source, kind, external_id) DO NOTHING
-        """, external_id, kind, tenant, project, user_id, int(amount_cents), json.dumps(metadata))
+            RETURNING TRUE
+        """, external_id, kind, tenant, project, user_id, int(amount_cents), metadata)
+
+        was_created = bool(res)
 
         row = await conn.fetchrow(f"""
             SELECT status
@@ -643,7 +649,7 @@ class SubscriptionManager:
         if not row:
             raise RuntimeError("Failed to lock/create external_economics_events row (internal)")
 
-        return str(row["status"])
+        return str(row["status"]), was_created
 
     async def _mark_internal_event_applied(self, conn: asyncpg.Connection, *, kind: str, external_id: str) -> None:
         tbl = f"{self.CP}.{self.EXT_EVENTS_TABLE}"
@@ -686,7 +692,7 @@ class SubscriptionManager:
             note += f" by={actor}"
 
         async def _run(c: asyncpg.Connection) -> Dict[str, Any]:
-            status = await self._lock_or_create_internal_event(
+            status, was_created = await self._lock_or_create_internal_event(
                 conn=c,
                 kind="subscription_rollover",
                 external_id=period_key,
@@ -697,6 +703,9 @@ class SubscriptionManager:
                 metadata={"period_end": period_end.isoformat() if period_end else None, "by": actor or "unknown"},
             )
             if status == "applied":
+                return {"status": "ok", "action": "duplicate", "moved_usd": 0.0}
+            
+            if not was_created and status == "pending":
                 return {"status": "ok", "action": "duplicate", "moved_usd": 0.0}
 
             try:
@@ -866,7 +875,7 @@ class SubscriptionManager:
 
             external_id = idempotency_key or f"internal:renew:{tenant}:{project}:{user_id}:{period_key_new}"
 
-            status = await self._lock_or_create_internal_event(
+            status, was_created = await self._lock_or_create_internal_event(
                 conn=c,
                 kind="subscription_topup",
                 external_id=external_id,
@@ -885,6 +894,17 @@ class SubscriptionManager:
                     status="ok",
                     action="duplicate",
                     message="Already applied (idempotent)",
+                    external_id=external_id,
+                    user_id=user_id,
+                    usd_amount=float(int(sub.monthly_price_cents) / 100.0),
+                    charged_at=charged_at,
+                )
+            
+            if not was_created and status == "pending":
+                return InternalRenewOnceResult(
+                    status="ok",
+                    action="duplicate",
+                    message="Already pending (idempotent)",
                     external_id=external_id,
                     user_id=user_id,
                     usd_amount=float(int(sub.monthly_price_cents) / 100.0),

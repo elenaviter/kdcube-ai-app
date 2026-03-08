@@ -296,11 +296,17 @@ class StripeEconomicsWebhookHandler:
 
     def _price_id_from_invoice_lines(self, invoice: Dict[str, Any]) -> Optional[str]:
         try:
-            lines = (invoice.get("lines") or {}).get("data") or []
+            lines = (invoice.get("lines") or {}).get("data") or invoice.get("data") or []
             for line in lines:
+                pricing = line.get("pricing") or {}
+                price_details = pricing.get("price_details") or {}
+                if price_details.get("price"):
+                    return str(price_details.get("price"))
+
                 price = line.get("price") or {}
                 if isinstance(price, dict) and price.get("id"):
                     return str(price.get("id"))
+
                 plan = line.get("plan") or {}
                 if isinstance(plan, dict) and plan.get("id"):
                     return str(plan.get("id"))
@@ -365,6 +371,8 @@ class StripeEconomicsWebhookHandler:
                 res = await self._handle_payment_intent_succeeded(event, obj)
             elif etype == "invoice.paid":
                 res = await self._handle_invoice_paid(event, obj)
+            elif etype == "checkout.session.completed":
+                res = await self._handle_checkout_session_completed(event, obj)
             elif etype in ("refund.updated", "refund.created"):
                 res = await self._handle_refund_updated(event, obj)
             elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
@@ -512,6 +520,57 @@ class StripeEconomicsWebhookHandler:
 
     # ---------------- event handlers ----------------
 
+    async def _handle_checkout_session_completed(self, event: Dict[str, Any], session_obj: Dict[str, Any]) -> StripeHandleResult:
+        meta = self._meta(session_obj)
+        tenant, project, user_id = self._resolve_tenant_project_user(meta)
+        if not user_id:
+            return StripeHandleResult(status="ok", action="ignored", message="Missing user_id in session metadata")
+
+        stripe_sub_id = session_obj.get("subscription")
+        stripe_cust_id = session_obj.get("customer")
+        session_id = str(session_obj.get("id") or "")
+        stripe_event_id = str(event.get("id") or "")
+
+        # If it's a subscription session, we want to capture the sub_id early
+        if stripe_sub_id:
+            plan_id = meta.get("plan_id")
+            async with self.pg_pool.acquire() as conn:
+                async with conn.transaction():
+                    # Idempotency for the session itself
+                    status = await self._lock_or_create_ext_event(
+                        conn=conn,
+                        kind="checkout_completed",
+                        external_id=session_id,
+                        tenant=tenant,
+                        project=project,
+                        user_id=user_id,
+                        amount_cents=None,
+                        tokens=None,
+                        currency=None,
+                        stripe_event_id=stripe_event_id,
+                        metadata=meta,
+                    )
+                    if status == "applied":
+                        return StripeHandleResult(status="ok", action="duplicate", message="Already applied")
+
+                    # Update subscription snapshot with the real ID and plan_id
+                    await conn.execute(f"""
+                        UPDATE {self.CP}.user_subscriptions
+                        SET stripe_subscription_id = COALESCE(stripe_subscription_id, $4),
+                            stripe_customer_id = COALESCE(stripe_customer_id, $5),
+                            plan_id = COALESCE(plan_id, $6),
+                            status = 'active',
+                            updated_at = NOW()
+                        WHERE tenant=$1 AND project=$2 AND user_id=$3
+                    """, tenant, project, user_id, stripe_sub_id, stripe_cust_id, plan_id)
+
+                    await self._mark_ext_event_applied(conn, kind="checkout_completed", external_id=session_id)
+
+        return StripeHandleResult(
+            status="ok", action="applied", message="Checkout session completed",
+            tenant=tenant, project=project, user_id=user_id
+        )
+
     async def _handle_payment_intent_succeeded(self, event: Dict[str, Any], pi: Dict[str, Any]) -> StripeHandleResult:
         meta = self._meta(pi)
         tenant, project, user_id = self._resolve_tenant_project_user(meta)
@@ -622,7 +681,7 @@ class StripeEconomicsWebhookHandler:
             monthly_price_cents = int(amount_cents)
 
         stripe_customer_id = invoice.get("customer")
-        stripe_subscription_id = invoice.get("subscription")
+        stripe_subscription_id = invoice.get("parent").get("subscription_details").get("subscription")
 
         next_charge_at = None
         # Prefer subscription.current_period_end if we can (more reliable), else fallback to invoice lines period end
@@ -896,7 +955,8 @@ class StripeEconomicsWebhookHandler:
 
         stripe_status = str(sub.get("status") or "")
         cp_status = map_stripe_subscription_status_to_cp(stripe_status)
-        cpe = sub.get("current_period_end")
+        items_data = sub.get("items", {}).get("data", [])
+        cpe = items_data[0].get("current_period_end") if items_data else None
         next_charge_at = datetime.fromtimestamp(int(cpe), tz=timezone.utc) if cpe else None
 
         stripe_event_id = str(event.get("id") or "")
@@ -919,6 +979,48 @@ class StripeEconomicsWebhookHandler:
                     return StripeHandleResult(status="ok", action="duplicate", message="Already applied (idempotent)")
 
                 if cp_status == "canceled":
+                    # Rollover logic before final cancellation
+                    existing_sub = await self.subscription_mgr.get_subscription_by_stripe_id(
+                        stripe_subscription_id=stripe_sub_id,
+                        conn=conn,
+                    )
+                    if existing_sub and existing_sub.next_charge_at and user_id:
+                        try:
+                            # Build period descriptor for the CURRENT (now final) period
+                            period_desc = build_subscription_period_descriptor(
+                                tenant=tenant,
+                                project=project,
+                                user_id=user_id,
+                                provider=existing_sub.provider,
+                                stripe_subscription_id=stripe_sub_id,
+                                period_end=existing_sub.next_charge_at,
+                                period_start=existing_sub.last_charged_at,
+                            )
+                            
+                            budget = self.subscription_budget_factory(
+                                tenant, project, user_id,
+                                period_desc["period_key"],
+                                period_desc["period_start"],
+                                period_desc["period_end"],
+                            )
+                            project_budget = self.project_budget_factory(tenant, project) if self.project_budget_factory else ProjectBudgetLimiter(
+                                redis=None, pg_pool=self.pg_pool, tenant=tenant, project=project
+                            )
+
+                            await self.subscription_mgr.rollover_unused_balance_once(
+                                tenant=tenant,
+                                project=project,
+                                user_id=user_id,
+                                subscription_budget=budget,
+                                project_budget=project_budget,
+                                period_key=period_desc["period_key"],
+                                period_end=period_desc["period_end"],
+                                actor="stripe_cancel",
+                                conn=conn,
+                            )
+                        except Exception:
+                            logger.exception("Rollover failed during subscription cancellation for user %s", user_id)
+
                     await self.subscription_mgr.update_status_by_stripe_id(
                         stripe_subscription_id=stripe_sub_id,
                         status="canceled",
@@ -1012,8 +1114,9 @@ class StripeEconomicsAdminService:
         amount_cents: Optional[int],
         tokens: Optional[int],
         metadata: Dict[str, Any],
-    ) -> str:
-        await conn.execute(f"""
+    ) -> Tuple[str, bool]:
+        """Returns (status, was_created)"""
+        res = await conn.fetchval(f"""
             INSERT INTO {self.CP}.external_economics_events (
               source, kind, external_id,
               tenant, project, user_id,
@@ -1023,10 +1126,13 @@ class StripeEconomicsAdminService:
               'internal', $1, $2,
               $3, $4, $5,
               $6, $7, 'usd',
-              'pending', NULL, $8::jsonb
+              'pending', NULL, $8
             )
             ON CONFLICT (source, kind, external_id) DO NOTHING
-        """, kind, external_id, tenant, project, user_id, amount_cents, tokens, json.dumps(metadata))
+            RETURNING TRUE
+        """, kind, external_id, tenant, project, user_id, amount_cents, tokens, metadata)
+
+        was_created = bool(res)
 
         row = await conn.fetchrow(f"""
             SELECT status
@@ -1038,7 +1144,7 @@ class StripeEconomicsAdminService:
         if not row:
             raise RuntimeError("Failed to lock/create external_economics_events row (internal)")
 
-        return str(row["status"])
+        return str(row["status"]), was_created
 
     async def _update_internal_event_metadata(
         self,
@@ -1050,10 +1156,10 @@ class StripeEconomicsAdminService:
     ) -> None:
         await conn.execute(f"""
             UPDATE {self.CP}.external_economics_events
-            SET metadata = COALESCE(metadata, '{{}}'::jsonb) || $3::jsonb,
+            SET metadata = COALESCE(metadata, '{{}}'::jsonb) || $3,
                 updated_at = NOW()
             WHERE source='internal' AND kind=$1 AND external_id=$2
-        """, kind, external_id, json.dumps(metadata))
+        """, kind, external_id, metadata)
 
     async def _mark_internal_event_applied(self, conn: asyncpg.Connection, *, kind: str, external_id: str) -> None:
         await conn.execute(f"""
@@ -1123,7 +1229,7 @@ class StripeEconomicsAdminService:
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
-                status = await self._lock_or_create_internal_event(
+                status, was_created = await self._lock_or_create_internal_event(
                     conn=conn,
                     kind="wallet_refund",
                     external_id=external_id,
@@ -1149,13 +1255,16 @@ class StripeEconomicsAdminService:
                         "message": "Refund already applied",
                         "external_id": external_id,
                     }
-                if status == "pending":
+                
+                # If not created now and still pending, then it's a real concurrent duplicate
+                if not was_created and status == "pending":
                     return {
                         "status": "ok",
                         "action": "duplicate",
                         "message": "Refund already pending",
                         "external_id": external_id,
                     }
+                    
                 if status == "failed":
                     raise ValueError("Previous refund attempt failed; use a new request or investigate")
 
@@ -1283,7 +1392,7 @@ class StripeEconomicsAdminService:
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
-                status = await self._lock_or_create_internal_event(
+                status, was_created = await self._lock_or_create_internal_event(
                     conn=conn,
                     kind="subscription_cancel",
                     external_id=external_id,
@@ -1300,8 +1409,10 @@ class StripeEconomicsAdminService:
                 )
                 if status == "applied":
                     return {"status": "ok", "action": "duplicate", "message": "Cancellation already applied"}
-                if status == "pending":
+                
+                if not was_created and status == "pending":
                     return {"status": "ok", "action": "duplicate", "message": "Cancellation already pending"}
+                
                 if status == "failed":
                     raise ValueError("Previous cancel attempt failed; investigate before retrying")
 
@@ -1401,7 +1512,28 @@ class StripeEconomicsAdminService:
         for row in rows:
             k = str(row["kind"])
             external_id = str(row["external_id"])
-            metadata = row["metadata"] or {}
+            raw_metadata = row["metadata"]
+            
+            metadata = {}
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            elif isinstance(raw_metadata, list):
+                # Handle the case where metadata is a list of items (can be dicts or JSON strings)
+                for item in raw_metadata:
+                    if isinstance(item, dict):
+                        metadata.update(item)
+                    elif isinstance(item, str):
+                        try:
+                            d = json.loads(item)
+                            if isinstance(d, dict):
+                                metadata.update(d)
+                        except Exception:
+                            pass
+            elif isinstance(raw_metadata, str):
+                try:
+                    metadata = json.loads(raw_metadata)
+                except Exception:
+                    metadata = {}
 
             if k == "wallet_refund":
                 refund_id = metadata.get("stripe_refund_id")

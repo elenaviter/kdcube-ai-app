@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from .control_plane import router as control_plane_router
 from .conversations_browser import router as conversations_browser_router
 from .redis_browser import router as redis_browser_router
+from kdcube_ai_app.apps.chat.api.economics.stripe_router import router as stripe_router
 
 
 def mount_control_plane_router(app: FastAPI):
@@ -27,10 +28,16 @@ def mount_control_plane_router(app: FastAPI):
     control_plane_router.state = app.state
     conversations_browser_router.state = app.state
     redis_browser_router.state = app.state
+    stripe_router.state = app.state
     app.include_router(
         control_plane_router,
         prefix="/api/admin/control-plane",
         tags=["CP admin"],
+    )
+    app.include_router(
+        stripe_router,
+        prefix="/api/v1",
+        tags=["Stripe"],
     )
     app.include_router(
         conversations_browser_router,
