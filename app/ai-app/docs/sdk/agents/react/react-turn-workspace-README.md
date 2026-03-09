@@ -3,7 +3,7 @@ id: ks:docs/sdk/agents/react/react-turn-workspace-README.md
 title: "ReAct Turn Workspace"
 summary: "Filesystem contract and lifecycle of the per-turn ReAct workspace (work/out), including local origin, runtime population, persistence, and Fargate/distributed snapshot transport."
 tags: ["sdk", "agents", "react", "workspace", "execution", "snapshot", "fargate", "distributed"]
-keywords: ["ctx_v2", "exec-workspace", "workdir", "outdir", "timeline.json", "tool_calls_index.json", "EXEC_SNAPSHOT", "build_exec_snapshot_workspace", "snapshot_exec_input", "py_code_exec_entry.py"]
+keywords: ["ctx_v2", "exec-workspace", "workdir", "outdir", "timeline.json", "tool_calls_index.json", "user.log", "infra.log", "EXEC_SNAPSHOT", "build_exec_snapshot_workspace", "snapshot_exec_input", "py_code_exec_entry.py"]
 see_also:
   - ks:docs/sdk/agents/react/timeline-README.md
   - ks:docs/sdk/agents/react/turn-log-README.md
@@ -75,17 +75,21 @@ ctx_v2_<id>/
     turn_<turn_id>/
       files/                               # turn-scoped file artifacts/rehosted files
       attachments/                         # turn-scoped attachment files
-    logs/                                  # isolated runtime logs (mode-dependent)
-      runtime.err.log                      # local subprocess path
-      docker.out.log                       # docker path
-      docker.err.log                       # docker path
-      executor.log                         # py_code_exec entry logging (when configured)
-      supervisor.log                       # supervisor-side logging (when configured)
+    logs/                                  # isolated runtime logs
+      user.log                             # program/user stream (stdout/stderr + logger "user")
+      infra.log                            # merged infra view for current execution id
+      runtime.err.log                      # raw subprocess capture
+      docker.out.log                       # raw outer docker stdout (docker mode)
+      docker.err.log                       # raw outer docker stderr (docker mode)
+      executor.log                         # executor process logger (mode-dependent)
+      supervisor.log                       # supervisor process logger (mode-dependent)
 ```
 
 Notes:
 - Not every file appears on every turn; many are conditional on which tools/runtimes were used.
 - `timeline.json` is flushed from the in-memory timeline to keep file-backed context in sync.
+- Runtime diagnostics/readouts consume `logs/user.log` and `logs/infra.log`.
+- `logs/infra.log` is produced by merging raw infra logs (`runtime.err.log`, `docker.*`, `executor.log`, `supervisor.log`) and may appear only after diagnostics/reporting code runs.
 
 ### Path conventions used inside the workspace
 
@@ -150,6 +154,11 @@ cb/tenants/<tenant>/projects/<project>/executions/
 
 `runtime_globals["EXEC_SNAPSHOT"]` carries these URIs into remote runtime.
 
+Delta packaging conventions (`distributed_snapshot.py` defaults):
+- skipped directories: `logs/`, `executed_programs/`, `__pycache__/`, `.pytest_cache/`, `.git/`
+- skipped files: `sources_pool.json`, `sources_used.json`, `tool_calls_index.json`
+- upload is baseline-aware (only changed files since restore are included)
+
 ### 4.3 Remote executor workspace (inside Fargate task)
 
 Container runtime paths:
@@ -191,11 +200,11 @@ Workspace (`work/` + `out/`) is execution state and diagnostics. Use it for runt
 ## Code map
 
 Primary implementation points:
-- workspace origin: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/browser.py`
-- root selection: `kdcube_ai_app/apps/chat/sdk/solutions/infra.py`
-- tool call index/files: `kdcube_ai_app/apps/chat/sdk/runtime/tool_index.py`, `kdcube_ai_app/apps/chat/sdk/tools/io_tools.py`
-- local timeline file writes: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/timeline.py`
-- lightweight distributed snapshot: `kdcube_ai_app/apps/chat/sdk/solutions/react/v2/solution_workspace.py`
-- snapshot upload/path conventions: `kdcube_ai_app/apps/chat/sdk/runtime/external/distributed_snapshot.py`
-- remote restore/upload entrypoint: `kdcube_ai_app/apps/chat/sdk/runtime/isolated/py_code_exec_entry.py`
-- Fargate launch + merge-back: `kdcube_ai_app/apps/chat/sdk/runtime/external/fargate.py`
+- workspace origin: [`kdcube_ai_app/apps/chat/sdk/solutions/react/v2/browser.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/react/v2/browser.py)
+- root selection: [`kdcube_ai_app/apps/chat/sdk/solutions/infra.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/infra.py)
+- tool call index/files: [`kdcube_ai_app/apps/chat/sdk/runtime/tool_index.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/tool_index.py), [`kdcube_ai_app/apps/chat/sdk/tools/io_tools.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/io_tools.py)
+- local timeline file writes: [`kdcube_ai_app/apps/chat/sdk/solutions/react/v2/timeline.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/react/v2/timeline.py)
+- lightweight distributed snapshot: [`kdcube_ai_app/apps/chat/sdk/solutions/react/v2/solution_workspace.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/react/v2/solution_workspace.py)
+- snapshot upload/path conventions: [`kdcube_ai_app/apps/chat/sdk/runtime/external/distributed_snapshot.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/external/distributed_snapshot.py)
+- remote restore/upload entrypoint: [`kdcube_ai_app/apps/chat/sdk/runtime/isolated/py_code_exec_entry.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/isolated/py_code_exec_entry.py)
+- Fargate launch + merge-back: [`kdcube_ai_app/apps/chat/sdk/runtime/external/fargate.py`](../../../../services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/external/fargate.py)

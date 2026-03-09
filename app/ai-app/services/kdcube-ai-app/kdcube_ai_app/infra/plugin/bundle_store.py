@@ -4,17 +4,22 @@
 
 from __future__ import annotations
 import json, os, time
+import logging
+import shutil
 from typing import Dict, Optional, Tuple, Any, Set
 from pathlib import Path
 from functools import lru_cache
 from pydantic import BaseModel, Field, ValidationError
 import kdcube_ai_app.infra.namespaces as namespaces
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.runtime.external.service_discovery import _is_running_in_docker
 
 REDIS_KEY_FMT = namespaces.CONFIG.BUNDLES.BUNDLE_MAPPING_KEY_FMT
 REDIS_CHANNEL_FMT = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL
 ADMIN_BUNDLE_ID = "kdcube.admin"
 _EXAMPLES_REL_PATH = Path("apps/chat/sdk/examples/bundles")
+_SHARED_BUNDLES_ROOT = Path("/bundles")
+_log = logging.getLogger(__name__)
 
 
 def _admin_bundle_entry() -> "BundleEntry":
@@ -30,6 +35,26 @@ def _admin_bundle_entry() -> "BundleEntry":
 
 def _examples_root() -> Path:
     return (Path(__file__).resolve().parents[2] / _EXAMPLES_REL_PATH).resolve()
+
+def _ensure_example_bundle_shared(bundle_root: Path) -> Path:
+    """
+    If running in Docker, copy example bundles from the image into /bundles
+    so sibling containers (py-code-exec) can mount them.
+    """
+    if not _is_running_in_docker():
+        return bundle_root
+
+    dest_root = _SHARED_BUNDLES_ROOT / bundle_root.name
+    try:
+        if dest_root.exists() and (dest_root / "entrypoint.py").exists():
+            return dest_root
+        dest_root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(bundle_root, dest_root, dirs_exist_ok=True)
+        _log.info("Copied example bundle to shared root: %s -> %s", bundle_root, dest_root)
+        return dest_root
+    except Exception as exc:
+        _log.warning("Failed to copy example bundle to %s: %s", dest_root, exc)
+        return bundle_root
 
 def _examples_enabled() -> bool:
     try:
@@ -54,10 +79,11 @@ def _load_example_bundles() -> Dict[str, "BundleEntry"]:
         if not (item / "entrypoint.py").exists():
             continue
         bid = item.name
+        bundle_path = _ensure_example_bundle_shared(item)
         bundles[bid] = BundleEntry(
             id=bid,
             name=bid,
-            path=str(item),
+            path=str(bundle_path),
             module="entrypoint",
             singleton=False,
             description="Built-in example bundle",
@@ -100,6 +126,7 @@ def _reserved_bundle_entry(bid: str) -> Optional["BundleEntry"]:
         return None
     if not (candidate / "entrypoint.py").exists():
         return None
+    candidate = _ensure_example_bundle_shared(candidate)
     return BundleEntry(
         id=bid,
         name=bid,
