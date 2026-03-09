@@ -33,15 +33,10 @@ from typing import Optional
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
 
-# Default paths used when env vars are not set (local dev fallback)
-DEFAULT_USER_WORKSPACE_ROOT = (
-    "/Users/evgen/PycharmProjects/kdcube-ai-app/app/ai-app/services/"
-    "kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/data/workspace"
-)
-DEFAULT_SANDBOX_ROOT = (
-    "/Users/evgen/PycharmProjects/kdcube-ai-app/app/ai-app/services/"
-    "kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/data/sandbox"
-)
+# Default to bundle storage so sandboxing stays within the shared workspace volume.
+_DEFAULT_BASE = pathlib.Path(os.environ.get("BUNDLE_STORAGE_ROOT", "./bundle-storage")).expanduser()
+DEFAULT_USER_WORKSPACE_ROOT = _DEFAULT_BASE / "iso-runtime" / "workspace"
+DEFAULT_SANDBOX_ROOT = _DEFAULT_BASE / "iso-runtime" / "sandbox"
 
 
 def _safe_user_id(user_id: str) -> str:

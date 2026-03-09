@@ -900,6 +900,15 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         force_prompt=force_prompt,
     )
     host_bundles_current = env_main.entries.get("HOST_BUNDLES_PATH", (None, None))[1]
+    agentic_root = env_main.entries.get("AGENTIC_BUNDLES_ROOT", (None, None))[1] or "/bundles"
+    if host_bundles_current:
+        normalized = str(host_bundles_current).strip()
+        if normalized.startswith("/bundles") or normalized.startswith("/app/") or normalized == agentic_root:
+            console.print(
+                "[yellow]HOST_BUNDLES_PATH points to a container path; "
+                "resetting to the local workdir bundles folder.[/yellow]"
+            )
+            host_bundles_current = None
     if force_prompt or not is_placeholder(host_bundles_current):
         host_bundles = ensure_absolute(
             console,
@@ -940,7 +949,8 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         update_env_value(env_main, "BUNDLE_STORAGE_ROOT", "/bundle-storage")
 
     current_descriptor = env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]
-    if force_prompt or is_placeholder(current_descriptor):
+    descriptor_value = (current_descriptor or "").strip().strip("'\"")
+    if force_prompt or is_placeholder(current_descriptor) or descriptor_value in {"", "/dev/null"}:
         if force_prompt:
             descriptor = prompt_optional_keep(console, "Host bundle descriptor path (release.yaml)", current_descriptor)
         else:

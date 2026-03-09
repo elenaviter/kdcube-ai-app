@@ -78,6 +78,12 @@ def _translate_container_path_to_host(container_path: pathlib.Path) -> pathlib.P
         rel = os.path.relpath(path_str, "/bundles")
         return pathlib.Path(host_bundles) / rel
 
+    # /bundle-storage → host path from env
+    if path_str.startswith("/bundle-storage"):
+        host_bundle_storage = os.environ.get("HOST_BUNDLE_STORAGE_PATH", "/bundle-storage")
+        rel = os.path.relpath(path_str, "/bundle-storage")
+        return pathlib.Path(host_bundle_storage) / rel
+
     # /exec-workspace → host path from env (NEW)
     # This handles paths that were created directly in /exec-workspace
     if path_str.startswith("/exec-workspace") and running_in_docker:

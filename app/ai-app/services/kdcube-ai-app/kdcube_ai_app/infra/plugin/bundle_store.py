@@ -261,7 +261,12 @@ def _merge_example_bundles(reg: "BundlesRegistry") -> tuple["BundlesRegistry", b
         bundles=dict(reg.bundles),
     )
     for bid, entry in examples.items():
-        if bid not in merged.bundles:
+        existing = merged.bundles.get(bid)
+        if existing is None:
+            merged.bundles[bid] = entry
+            updated = True
+            continue
+        if not _entries_equivalent(existing, entry):
             merged.bundles[bid] = entry
             updated = True
     return merged, updated
