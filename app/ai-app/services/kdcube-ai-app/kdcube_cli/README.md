@@ -140,10 +140,40 @@ When you run `kdcube-setup`, the **wizard** performs the steps below:
 2) Writes compose env files into `config/` (only if missing; it won’t overwrite existing files).
 3) Copies nginx configs into `config/` for runtime overrides:
    - `nginx_ui.conf`
-   - `nginx_proxy.conf`
-4) Generates frontend runtime config.
+   - runtime proxy config (based on selected auth mode)
+4) Selects **auth mode** (simple or cognito) and writes:
+   - `AUTH_PROVIDER` in `.env.ingress` + `.env.proc`
+   - Cognito fields when applicable (see below)
+5) Generates frontend runtime config (hardcoded or cognito).
 5) Creates local data folders for Postgres/Redis/exec workspace/bundle storage.
 6) Optionally builds images and starts `docker compose up -d`.
+
+### Authentication modes
+The wizard prompts for an auth mode and updates both backend and frontend config.
+
+**Simple (hardcoded)**
+- `AUTH_PROVIDER=simple`
+- Frontend config: `frontend.config.hardcoded.json`
+- Uses a hardcoded admin token in config (local dev only)
+
+**Cognito**
+- `AUTH_PROVIDER=cognito`
+- Frontend config: `frontend.config.cognito.json`
+- Required fields:
+  - `COGNITO_REGION`
+  - `COGNITO_USER_POOL_ID`
+  - `COGNITO_APP_CLIENT_ID`
+  - `COGNITO_SERVICE_CLIENT_ID`
+- The frontend `authority` is composed as:
+  - `https://cognito-idp.<COGNITO_REGION>.amazonaws.com/<COGNITO_USER_POOL_ID>`
+
+**Delegated**
+- Shown in the selector but **disabled** for now (falls back to cognito).
+
+### Routes prefix & nginx proxy
+The frontend config includes `routesPrefix` (default: `/chatbot`).
+The wizard patches the **runtime proxy config** in `config/` so nginx uses the
+same prefix. This keeps `/chatbot` (or any custom prefix) consistent between UI and proxy.
 
 ### Secrets (third services tokens)
 The wizard **does not** write OpenAI/Anthropic/Brave keys to `.env` files.
