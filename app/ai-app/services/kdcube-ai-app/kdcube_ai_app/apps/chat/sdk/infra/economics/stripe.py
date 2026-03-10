@@ -80,12 +80,12 @@ class StripeSubscriptionService:
         self.subscription_mgr = subscription_mgr
         self.default_tenant = default_tenant
         self.default_project = default_project
-        self.stripe_api_key = stripe_api_key or get_secret("STRIPE_SECRET_KEY") or get_secret("STRIPE_API_KEY")
+        self.stripe_api_key = stripe_api_key or get_secret("services.stripe.secret_key")
 
     def _stripe(self):
         import stripe
         if not self.stripe_api_key:
-            raise RuntimeError("Stripe API key not configured (STRIPE_SECRET_KEY)")
+            raise RuntimeError("Stripe API key not configured (services.stripe.secret_key)")
         stripe.api_key = self.stripe_api_key
         return stripe
 
@@ -257,8 +257,8 @@ class StripeEconomicsWebhookHandler:
         self.default_tenant = default_tenant
         self.default_project = default_project
 
-        self.webhook_secret = stripe_webhook_secret or get_secret("STRIPE_WEBHOOK_SECRET")
-        self.stripe_api_key = get_secret("STRIPE_SECRET_KEY") or get_secret("STRIPE_API_KEY")
+        self.webhook_secret = stripe_webhook_secret or get_secret("services.stripe.webhook_secret")
+        self.stripe_api_key = get_secret("services.stripe.secret_key")
         self.ref_provider = ref_provider
         self.ref_model = ref_model
 
@@ -390,7 +390,7 @@ class StripeEconomicsWebhookHandler:
 
     def _verify_and_parse(self, *, body: bytes, stripe_signature: Optional[str]) -> Dict[str, Any]:
         if not self.webhook_secret:
-            logger.warning("STRIPE_WEBHOOK_SECRET not set: parsing Stripe event WITHOUT verification")
+            logger.warning("services.stripe.webhook_secret not set: parsing Stripe event WITHOUT verification")
             return json.loads(body.decode("utf-8"))
 
         if not stripe_signature:
@@ -989,14 +989,14 @@ class StripeEconomicsAdminService:
         self.pg_pool = pg_pool
         self.user_credits_mgr = user_credits_mgr
         self.subscription_mgr = subscription_mgr
-        self.stripe_api_key = stripe_api_key or get_secret("STRIPE_SECRET_KEY") or get_secret("STRIPE_API_KEY")
+        self.stripe_api_key = stripe_api_key or get_secret("services.stripe.secret_key")
         self.ref_provider = ref_provider
         self.ref_model = ref_model
 
     def _stripe(self):
         import stripe
         if not self.stripe_api_key:
-            raise RuntimeError("Stripe API key not configured (STRIPE_SECRET_KEY)")
+            raise RuntimeError("Stripe API key not configured (services.stripe.secret_key)")
         stripe.api_key = self.stripe_api_key
         return stripe
 

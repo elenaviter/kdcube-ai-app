@@ -1,7 +1,6 @@
 services:
 
   postgres-db:
-    container_name: kdcube-postgres
     image: pgvector/pgvector:pg16
     env_file:
       - path: ${KDCUBE_CONFIG_DIR:-./config}/.env
@@ -32,7 +31,6 @@ services:
 
   pgadmin:
     image: dpage/pgadmin4:latest
-    container_name: pgadmin4
     restart: unless-stopped
     environment:
       PGADMIN_LISTEN_PORT: 80
@@ -47,7 +45,6 @@ services:
 
   postgres-setup:
     image: kdcube-postgres-setup:latest
-    container_name: kdcube-postgres-setup
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_PostgresSetup
@@ -64,7 +61,6 @@ services:
     restart: "no"
 
   redis:
-    container_name: kdcube-redis
     image: redis:latest
     env_file:
       - path: ${KDCUBE_CONFIG_DIR:-./config}/.env
@@ -85,7 +81,6 @@ services:
 
   kdcube-secrets:
     image: kdcube-secrets:latest
-    container_name: kdcube-secrets
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
@@ -135,7 +130,6 @@ services:
 
   clamav:
     image: clamav/clamav:stable
-    container_name: kdcube-clamav
     platform: linux/amd64
     restart: unless-stopped
     networks:
@@ -210,7 +204,6 @@ services:
 
   chat-ingress:
     image: kdcube-chat-ingress:latest
-    container_name: kdcube-chat-ingress
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Ingress
@@ -251,7 +244,6 @@ services:
 
   chat-proc:
     image: kdcube-chat-proc:latest
-    container_name: kdcube-chat-proc
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Chatproc
@@ -276,7 +268,7 @@ services:
       - ${KDCUBE_LOGS_DIR:-./logs}/chat-proc:/logs
       - type: bind
         source: ${HOST_BUNDLE_DESCRIPTOR_PATH:-/dev/null}
-        target: /config/release.yaml
+        target: /config/assembly.yaml
         read_only: true
       - type: bind
         source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
@@ -309,7 +301,6 @@ services:
 
   metrics:
     image: kdcube-metrics:latest
-    container_name: kdcube-metrics
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Metricservice
@@ -327,8 +318,7 @@ services:
       - "127.0.0.1:${METRICS_PORT:-8090}:8090"
 
   web-ui:
-    image: kdcube-web-ui:latest
-    container_name: kdcube-web-ui
+    image: ${KDCUBE_UI_IMAGE:-kdcube-web-ui:latest}
     build:
       context: ${UI_BUILD_CONTEXT}
       dockerfile: ${UI_DOCKERFILE_PATH}
@@ -365,7 +355,6 @@ services:
 
   web-proxy:
     image: kdcube-web-proxy:latest
-    container_name: kdcube-web-proxy
     build:
       context: ${PROXY_BUILD_CONTEXT}
       dockerfile: ${PROXY_DOCKERFILE_PATH}
@@ -373,7 +362,7 @@ services:
         - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
     restart: unless-stopped
     volumes:
-      - ${NGINX_PROXY_RUNTIME_CONFIG_PATH:-./config/nginx_proxy.conf}:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ${NGINX_PROXY_RUNTIME_CONFIG_PATH:-${KDCUBE_CONFIG_DIR:-./config}/nginx_proxy.conf}:/usr/local/openresty/nginx/conf/nginx.conf:ro
     depends_on:
       chat-ingress:
         condition: service_started

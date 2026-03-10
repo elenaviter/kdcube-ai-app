@@ -1,18 +1,18 @@
 ---
 id: ks:docs/service/environment/setup-dev-env-README.md
 title: "Setup Dev Env"
-summary: "Minimal env and SSH setup to load bundles from release.yaml in local dev."
+summary: "Minimal env and SSH setup to load bundles from assembly.yaml in local dev."
 tags: ["service", "environment", "setup", "dev", "git"]
-keywords: ["release.yaml", "AGENTIC_BUNDLES_JSON", "GIT_SSH_KEY_PATH", "known_hosts"]
+keywords: ["assembly.yaml", "AGENTIC_BUNDLES_JSON", "GIT_SSH_KEY_PATH", "known_hosts"]
 see_also:
   - ks:docs/service/environment/setup-for-dockercompose-README.md
   - ks:docs/service/environment/service-dev-env-README.md
   - ks:docs/service/environment/setup-for-ecs-README.md
 ---
-# Setup Dev Env (Bundles from Release Descriptor)
+# Setup Dev Env (Bundles from Assembly Descriptor)
 
 This guide shows the **minimal env variables** needed to load bundles from a
-`release.yaml` descriptor during local development, and how to prepare SSH
+`assembly.yaml` descriptor during local development, and how to prepare SSH
 credentials for private git repos.
 
 If you already use `kdcube-setup` (PyPI package: `kdcube-cli`), you can reuse the generated env files
@@ -25,8 +25,8 @@ from `workdir/config` instead of copying sample envs manually.
 Add these to your `chat-proc` env (e.g. `apps/chat/proc/.env.proc`):
 
 ```bash
-# Path to release descriptor (YAML or JSON)
-AGENTIC_BUNDLES_JSON=/absolute/path/to/release.yaml
+# Path to assembly descriptor (YAML or JSON)
+AGENTIC_BUNDLES_JSON=/absolute/path/to/assembly.yaml
 
 # Overwrite Redis registry on startup (use once per rollout)
 BUNDLES_FORCE_ENV_ON_STARTUP=1
@@ -104,7 +104,7 @@ GIT_SSH_KNOWN_HOSTS=~/.ssh/known_hosts
 
 ## 3) Notes
 
-- The processor reads the `bundles` section from `release.yaml`.
+- The processor reads the `bundles` section from `assembly.yaml`.
 - Redis remains the runtime source of truth; the env only overwrites it when
   `BUNDLES_FORCE_ENV_ON_STARTUP=1`.
 - For gateway config enforcement in local dev, set

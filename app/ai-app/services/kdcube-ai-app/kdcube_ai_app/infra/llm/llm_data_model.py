@@ -12,6 +12,7 @@ from kdcube_ai_app.infra.accounting import ServiceUsage
 
 class AIProviderName(str, Enum):
     open_ai = "openai"
+    open_router = "openrouter"
     google = "google"
     anthropic = "anthropic"
     hugging_face = "hugging-face"

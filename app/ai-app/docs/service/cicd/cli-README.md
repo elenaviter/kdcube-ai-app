@@ -1,12 +1,13 @@
 ---
 id: ks:docs/service/cicd/cli-README.md
 title: "CLI (kdcube)"
-summary: "CLI design for local env bootstrapping, compose setup, and release descriptor validation."
+summary: "CLI design for local env bootstrapping, compose setup, and assembly descriptor validation."
 tags: ["service", "cicd", "cli", "env", "deployment"]
-keywords: ["kdcube cli", "env init", "docker compose", "local dev", "release.yaml"]
+keywords: ["kdcube cli", "env init", "docker compose", "local dev", "assembly.yaml"]
 see_also:
   - ks:docs/service/cicd/release-README.md
-  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/assembly-descriptor-README.md
+  - ks:docs/service/cicd/secrets-descriptor-README.md
   - ks:docs/service/environment/setup-dev-env-README.md
   - ks:docs/service/environment/setup-for-dockercompose-README.md
 ---
@@ -16,7 +17,7 @@ This document defines the **initial CLI surface** and behavior. The CLI is for:
 
 - **Platform developers** running services on host (PyCharm/IntelliJ or shell).
 - **Compose users** running the all‑in‑one stack.
-- **Release tooling** (validate and render release descriptors).
+- **Release tooling** (validate and render assembly descriptors).
 
 CLI root (code): `services/kdcube-ai-app/kdcube_cli`
 
@@ -33,11 +34,17 @@ CLI root (code): `services/kdcube-ai-app/kdcube_cli`
    - Produce `.env.*` files in `deployment/docker/all_in_one_kdcube`
    - Create data folders
 
-3) **Validate release descriptor**
+2b) **Compose with custom UI (advanced)**
+   - Use an `assembly.yaml` that includes a `frontend` section
+   - If `frontend.image` is set, the UI build is skipped
+   - If `frontend.build` is set, the UI repo is cloned and built
+   - Switches compose mode to `custom‑ui‑managed‑infra`
+
+3) **Validate assembly descriptor**
    - Validate schema + refs
 
 4) **Render bundle registry**
-   - Convert release descriptor bundles → `AGENTIC_BUNDLES_JSON`
+   - Convert assembly descriptor bundles → `AGENTIC_BUNDLES_JSON`
 
 ---
 
@@ -98,18 +105,48 @@ kdcube env init \
 - `<workdir>/data/*` (same subfolders as above)
 - `<workdir>/logs/*`
 
-### 2.3 `kdcube release validate`
+### 2.3 Custom UI via assembly descriptor (compose)
+
+When `assembly.yaml` contains a `frontend` section, the CLI uses
+**custom‑ui‑managed‑infra** compose mode:
+
+- `frontend.image` → use a prebuilt UI image (skip build)
+- `frontend.build` → clone repo and build UI
+
+The CLI also generates runtime `config.json` from `frontend_config`.
+See: [docs/service/cicd/assembly-descriptor-README.md](assembly-descriptor-README.md)
+
+If `platform.ref` is present in the descriptor, the install source selector
+adds **assembly-descriptor**, which pulls that tag from DockerHub.
+
+The wizard asks whether to apply the descriptor to **bundles**, **frontend**,
+and/or **platform** (these can be enabled independently).
+
+If no path is provided, the wizard uses `config/assembly.yaml` in the workdir
+and seeds it from `deployment/assembly.yaml`.
+
+When an assembly descriptor is provided, the wizard writes non‑secret values
+back into `assembly.yaml` (tenant/project, auth, infra, paths) and then renders
+`.env*` from it. The assembly file becomes the source of truth for local config.
+
+### 2.4 Secrets descriptor (optional)
+If you provide a `secrets.yaml`, the CLI will use it to prefill runtime secrets
+and sensitive infra passwords. The file is **not copied** into the workdir.
+
+See: [docs/service/cicd/secrets-descriptor-README.md](secrets-descriptor-README.md)
+
+### 2.5 `kdcube release validate`
 
 ```
-kdcube release validate --file release.yaml
+kdcube release validate --file assembly.yaml
 ```
 
-Validates release descriptor schema and prints errors with line numbers.
+Validates assembly descriptor schema and prints errors with line numbers.
 
-### 2.4 `kdcube release render-bundles`
+### 2.6 `kdcube release render-bundles`
 
 ```
-kdcube release render-bundles --file release.yaml --out bundles.json
+kdcube release render-bundles --file assembly.yaml --out bundles.json
 ```
 
 Renders `bundles.items` to a runtime registry payload for `AGENTIC_BUNDLES_JSON`.
@@ -170,7 +207,7 @@ Overrides apply **after** merge rules.
 
 ## 6) Sample bundles (local only)
 
-If `release.yaml` does not contain bundles, the CLI can seed sample bundles:
+If `assembly.yaml` does not contain bundles, the CLI can seed sample bundles:
 
 ```
 kdcube bundles seed --preset samples

@@ -1,18 +1,18 @@
 ---
 id: ks:docs/service/environment/setup-for-ecs-README.md
 title: "Setup For ECS"
-summary: "How to run git‑defined bundles on ECS with release.yaml."
+summary: "How to run git‑defined bundles on ECS with assembly.yaml."
 tags: ["service", "environment", "ecs", "bundles"]
-keywords: ["task definition", "EFS", "secrets", "release.yaml"]
+keywords: ["task definition", "EFS", "secrets", "assembly.yaml"]
 see_also:
   - ks:docs/service/environment/setup-for-dockercompose-README.md
   - ks:docs/service/environment/setup-dev-env-README.md
   - ks:docs/service/environment/service-ecs-env-README.md
 ---
-# Setup for ECS (Bundles from Release Descriptor)
+# Setup for ECS (Bundles from Assembly Descriptor)
 
 This guide shows how to run **git‑defined bundles** on ECS using a
-`release.yaml` descriptor.
+`assembly.yaml` descriptor.
 
 ---
 
@@ -21,7 +21,7 @@ This guide shows how to run **git‑defined bundles** on ECS using a
 Set these env vars on the **chat‑proc task**:
 
 ```bash
-AGENTIC_BUNDLES_JSON=/config/release.yaml
+AGENTIC_BUNDLES_JSON=/config/assembly.yaml
 BUNDLES_FORCE_ENV_ON_STARTUP=1
 
 BUNDLE_GIT_RESOLUTION_ENABLED=1
@@ -47,12 +47,12 @@ BUNDLES_FORCE_ENV_ON_STARTUP=0
 
 ---
 
-## 2) Mount release descriptor
+## 2) Mount assembly descriptor
 
-Mount `release.yaml` into the task at:
+Mount `assembly.yaml` into the task at:
 
 ```
- /config/release.yaml
+ /config/assembly.yaml
 ```
 
 Common options:

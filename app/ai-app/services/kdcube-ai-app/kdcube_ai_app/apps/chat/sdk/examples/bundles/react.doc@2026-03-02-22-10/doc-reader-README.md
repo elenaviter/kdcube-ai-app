@@ -18,8 +18,9 @@ Motivation:
 
 ## How it works (high‑level)
 
-1) **Knowledge space is prepared on bundle startup**
+1) **Knowledge space is prepared before each turn (cached)**
    - Entry: `entrypoint.py` calls `_ensure_knowledge_space()` in `pre_run_hook`.
+   - A signature cache prevents rebuilding unless repo/ref/roots change.
    - The builder scans `docs/` for front‑matter and builds:
      - `index.json` (structured list of docs)
      - `index.md` (human‑readable list)
@@ -38,6 +39,9 @@ Required bundle props:
 There are **no implicit defaults** for docs/src roots when `knowledge.repo` is set.
 You must define both roots explicitly. `deploy_root` is optional but recommended.
 
+If **all** `knowledge.*` fields are empty, the bundle tries to auto‑detect a local
+repo (host dev) or falls back to `KDCUBE_KNOWLEDGE_REPO` (default: public repo).
+
 Example (this repo):
 ```yaml
 knowledge:
@@ -51,7 +55,7 @@ knowledge:
 
 The repo is cloned into **bundle local storage** (shared bundle storage root):
 ```
-<bundle_storage>/repos/<repo_name>/
+<bundle_storage>/repos/<repo>__<bundle_id>__<ref>/
 ```
 
 Then `knowledge.docs_root` and `knowledge.src_root` are resolved against that repo root.

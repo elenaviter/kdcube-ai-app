@@ -13,7 +13,7 @@ see_also:
 
 This guide is for **bundle developers** who build workflows, tools, and UI experiences on top of the KDCube Chat SDK.
 
-If you need **ops/runtime config** (registry, env vars, git bundles, release descriptors), see:
+If you need **ops/runtime config** (registry, env vars, git bundles, assembly descriptors), see:
 [docs/sdk/bundle/bundle-ops-README.md](bundle-ops-README.md).
 
 ---

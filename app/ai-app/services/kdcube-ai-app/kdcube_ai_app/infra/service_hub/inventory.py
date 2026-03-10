@@ -1107,6 +1107,8 @@ class ModelServiceBase:
             return self.config.google_api_key or get_service_key_fn(provider)
         if provider == AIProviderName.hugging_face:
             return get_service_key_fn(provider)
+        if provider == AIProviderName.open_router:
+            return get_service_key_fn(provider)
         return ""
 
     def _init_embeddings(self) -> None:

@@ -555,7 +555,7 @@ def _load_env_json(strict: bool) -> Optional[Dict[str, Any]]:
         data = json.loads(text)
     if not data:
         return None
-    # If a release descriptor is provided, extract the bundles section.
+    # If an assembly descriptor is provided, extract the bundles section.
     if isinstance(data, dict) and "bundles" in data:
         bundles_block = data.get("bundles") or {}
         if isinstance(bundles_block, dict) and "items" in bundles_block:
@@ -566,7 +566,7 @@ def _load_env_json(strict: bool) -> Optional[Dict[str, Any]]:
                     continue
                 bid = item.get("id")
                 if not bid:
-                    raise ValueError("Bundle item missing 'id' in release descriptor.")
+                    raise ValueError("Bundle item missing 'id' in assembly descriptor.")
                 bundles[bid] = dict(item)
             return {
                 "default_bundle_id": bundles_block.get("default_bundle_id"),

@@ -1,12 +1,13 @@
 ---
 id: ks:docs/service/cicd/custom-cicd-README.md
 title: "Custom CICD"
-summary: "Two‑repo CI/CD plan covering build outputs, image mapping, release.yaml flow, and ECS/EC2 deployment steps."
+summary: "Two‑repo CI/CD plan covering build outputs, image mapping, assembly.yaml flow, and ECS/EC2 deployment steps."
 tags: ["service", "cicd", "deployment", "ecs", "ec2", "docker-compose", "images", "bundles", "release", "frontend"]
-keywords: ["two-repo", "platform repo", "customer repo", "release.yaml", "bundle packaging", "image mapping", "ecs task definitions", "compose envs", "AGENTIC_BUNDLES_JSON"]
+keywords: ["two-repo", "platform repo", "customer repo", "assembly.yaml", "bundle packaging", "image mapping", "ecs task definitions", "compose envs", "AGENTIC_BUNDLES_JSON"]
 see_also:
   - ks:docs/service/cicd/release-bundle-README.md
-  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/assembly-descriptor-README.md
+  - ks:docs/service/cicd/secrets-descriptor-README.md
   - ks:docs/service/cicd/release-README.md
 ---
 # Custom CI/CD (Open Source + Customer Repo)
@@ -41,8 +42,8 @@ Before GitHub Actions can build and publish releases, ensure these are set:
    - `contents: write` (to create tags)
    - `id-token: write` (for PyPI trusted publisher)
 
-4. **Release file**
-   - `release.yaml` must exist and contain:
+4. **Assembly file**
+   - `assembly.yaml` must exist and contain:
      - `platform.ref` (PEP440‑compatible; used as tag + CLI version)
 
 ---
@@ -50,7 +51,7 @@ Before GitHub Actions can build and publish releases, ensure these are set:
 ## TL;DR (1‑page CI/CD Flow)
 
 **Inputs (single release file in customer repo):**
-- `release.yaml` (pins platform tag + frontend tag + bundles list)
+- `assembly.yaml` (pins platform tag + frontend tag + bundles list)
 
 **CI (build phase):**
 1. Checkout **platform repo** at `platform.ref`.
@@ -71,7 +72,7 @@ Before GitHub Actions can build and publish releases, ensure these are set:
 
 ```mermaid
 flowchart LR
-  R[release.yaml<br/>customer repo] --> CI[CI build]
+  R[assembly.yaml<br/>private repo] --> CI[CI build]
   CI --> I[kdcube-chat-ingress]
   CI --> P[kdcube-chat-proc-bundled]
   CI --> E[kdcube-exec-bundled]
@@ -160,24 +161,57 @@ Use Dockerfiles from `deployment/docker/custom-ui-managed-infra`.
 
 ---
 
-## 3) Release Descriptor (Single Source of Truth)
+## 3) Assembly Descriptor (Single Source of Truth)
 
-See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
+See: [docs/service/cicd/assembly-descriptor-README.md](assembly-descriptor-README.md)
 
-This file (`release.yaml` in the customer repo) pins platform + frontend + bundles
+This file (`assembly.yaml` in the private repo) pins platform + frontend + bundles
 and is the only release input CI should need.
+
+For **sensitive values** (LLM keys, Git HTTPS token, proxylogin client secret,
+infra passwords), use a separate `secrets.yaml` and keep it out of the repo.
+See: [docs/service/cicd/secrets-descriptor-README.md](secrets-descriptor-README.md)
+
+For local compose, the CLI can also use `platform.ref` from `assembly.yaml`
+to pull the matching platform images (install source: **assembly-descriptor**).
+
+### Frontend mode (build vs image)
+
+The `frontend` section supports **build mode** (clone + build UI) and **image mode**
+(use a prebuilt UI image). When `image` is set, it takes precedence over `build`.
+
+Minimal example:
+
+```yaml
+frontend:
+  build:
+    repo: "private-ui-repo"
+    ref: "ui-v2026.02.22"
+    dockerfile: "ops/docker/Dockerfile_UI"
+    src: "ui/chat-web-app"
+  image: "registry/private-ui:2026.02.22"  # optional; if set, CLI uses this image
+  frontend_config: "ops/docker/config.cognito.json"
+```
+
+For local compose (custom‑ui‑managed‑infra), the CLI will:
+- use `image` if present (skip UI build),
+- otherwise clone the UI repo and build it,
+- generate runtime `config.json` from `frontend_config`.
+
+Details are documented in:  
+[docs/service/cicd/assembly-descriptor-README.md](assembly-descriptor-README.md)
 
 ---
 
 ## 4) Bundle Descriptor (Derived by CI)
 
-CI derives `AGENTIC_BUNDLES_JSON` from the release descriptor.
-See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
+CI derives `AGENTIC_BUNDLES_JSON` from the assembly descriptor.
+See: [docs/service/cicd/assembly-descriptor-README.md](assembly-descriptor-README.md)
 
-**Optional shortcut (EC2/dev):** mount the `release.yaml` directly and set:
+**Optional shortcut (EC2/dev):** mount the `assembly.yaml` directly and set:
 
 ```
-AGENTIC_BUNDLES_JSON=/config/release.yaml
+AGENTIC_BUNDLES_JSON=/config/assembly.yaml
 ```
 
 The loader will read the `bundles` section from the YAML.
@@ -266,7 +300,7 @@ If using private git repos:
   - `BUNDLE_GIT_RESOLUTION_ENABLED=1`
 
 **Ownership:** DevOps owns secret provisioning and task definition wiring. Release manager owns
-`release.yaml` (bundle list + refs).
+`assembly.yaml` (bundle list + refs).
 
 ---
 
@@ -297,8 +331,8 @@ If using private git repos:
 
 ## 8.1) Bundle Descriptor Generation
 
-CI derives `AGENTIC_BUNDLES_JSON` from the release descriptor.
-See: [docs/service/cicd/release-descriptor-README.md](release-descriptor-README.md)
+CI derives `AGENTIC_BUNDLES_JSON` from the assembly descriptor.
+See: [docs/service/cicd/assembly-descriptor-README.md](assembly-descriptor-README.md)
 
 ---
 

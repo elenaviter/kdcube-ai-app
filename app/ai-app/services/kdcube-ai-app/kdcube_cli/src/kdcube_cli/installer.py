@@ -6,6 +6,8 @@ import re
 import shutil
 import json
 import subprocess
+import yaml
+import subprocess
 from dataclasses import dataclass
 import secrets
 import tempfile
@@ -79,6 +81,10 @@ def is_placeholder(value: Optional[str]) -> bool:
         return True
     if "/absolute/path" in stripped or "absolute/path" in stripped:
         return True
+    if "path/to/" in stripped or stripped.startswith("path/to"):
+        return True
+    if "platform-repo/" in stripped or "frontend-repo/" in stripped:
+        return True
     if "..." in stripped:
         return True
     if "changeme" in stripped.lower():
@@ -128,6 +134,46 @@ def _normalize_path(value: Optional[str]) -> Optional[str]:
         return str(Path(value).expanduser().resolve())
     except Exception:
         return value
+
+
+def _as_str(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    try:
+        return str(value)
+    except Exception:
+        return None
+
+
+def _resolve_descriptor_path(
+    value: Optional[str],
+    *,
+    repo_root: Optional[Path],
+    descriptor_dir: Optional[Path],
+) -> Optional[Path]:
+    if not value:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    if repo_root is not None:
+        repo_candidate = repo_root / candidate
+        if repo_candidate.exists():
+            return repo_candidate
+    if descriptor_dir is not None:
+        descriptor_candidate = descriptor_dir / candidate
+        if descriptor_candidate.exists():
+            return descriptor_candidate
+    if repo_root is not None:
+        return repo_root / candidate
+    if descriptor_dir is not None:
+        return descriptor_dir / candidate
+    return candidate
 
 
 def _extract_multiline_value(env: EnvFile, key: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
@@ -219,6 +265,80 @@ def _load_json_file(path: Path) -> Dict[str, object]:
         return {}
 
 
+def load_release_descriptor(path: Path) -> Dict[str, object]:
+    try:
+        data = yaml.safe_load(path.read_text())
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_release_descriptor(path: Path, data: Dict[str, object]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.safe_dump(data, sort_keys=False))
+    except Exception:
+        pass
+
+
+def _get_nested(dct: Dict[str, object], *keys: str) -> Optional[object]:
+    cur: object = dct
+    for key in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _set_nested(dct: Dict[str, object], keys: List[str], value: object) -> None:
+    cur: Dict[str, object] = dct
+    for key in keys[:-1]:
+        nxt = cur.get(key)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[key] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
+
+
+def _has_nested(dct: Dict[str, object], *keys: str) -> bool:
+    cur: object = dct
+    for key in keys:
+        if not isinstance(cur, dict) or key not in cur:
+            return False
+        cur = cur.get(key)
+    return True
+
+
+def is_git_repo(path: Path) -> bool:
+    return path.is_dir() and (path / ".git").is_dir()
+
+
+def git_clone_or_update(console: Console, repo: str, ref: Optional[str], dest: Path) -> Path:
+    repo_path = Path(repo).expanduser()
+    if repo_path.exists():
+        console.print(f"[dim]Using local frontend repo:[/dim] {repo_path}")
+        return repo_path.resolve()
+
+    dest.mkdir(parents=True, exist_ok=True)
+    if is_git_repo(dest):
+        try:
+            subprocess.run(["git", "fetch", "--all", "--tags"], cwd=dest, check=True)
+        except Exception:
+            pass
+    else:
+        subprocess.run(["git", "clone", repo, str(dest)], check=True)
+    if ref:
+        try:
+            subprocess.run(["git", "checkout", ref], cwd=dest, check=True)
+        except Exception:
+            try:
+                subprocess.run(["git", "checkout", f"origin/{ref}"], cwd=dest, check=True)
+            except Exception:
+                console.print(f"[yellow]Warning: failed to checkout ref {ref} in {dest}[/yellow]")
+    return dest.resolve()
+
+
 def normalize_routes_prefix(value: Optional[str]) -> str:
     prefix = (value or "").strip()
     if not prefix:
@@ -265,6 +385,7 @@ def write_frontend_config(
     cognito_region: Optional[str] = None,
     cognito_user_pool_id: Optional[str] = None,
     cognito_app_client_id: Optional[str] = None,
+    routes_prefix: Optional[str] = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     template_data: Dict[str, object] = {}
@@ -285,7 +406,10 @@ def write_frontend_config(
         merged["tenant_id"] = tenant
     if "project_id" in merged:
         merged["project_id"] = project
-    merged.setdefault("routesPrefix", "/chatbot")
+    if routes_prefix:
+        merged["routesPrefix"] = routes_prefix
+    else:
+        merged.setdefault("routesPrefix", "/chatbot")
 
     auth = merged.get("auth") if isinstance(merged.get("auth"), dict) else {}
     auth_type = auth.get("authType") or "hardcoded"
@@ -342,9 +466,69 @@ def ensure_env_files(target_dir: Path, sample_env_dir: Path) -> None:
         shutil.copyfile(sample, target)
 
 
-def ensure_nginx_configs(target_dir: Path, ai_app_root: Path) -> None:
-    src_dir = ai_app_root / "deployment/docker/all_in_one_kdcube/nginx/conf"
-    for name in ("nginx_ui.conf", "nginx_proxy.conf", "nginx_proxy_delegated.conf"):
+def ensure_assembly_template(target_path: Path, ai_app_root: Path) -> None:
+    if target_path.exists():
+        return
+    src = ai_app_root / "deployment/assembly.yaml"
+    if not src.exists():
+        raise FileNotFoundError(f"Missing assembly template: {src}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target_path)
+
+
+def stage_assembly_descriptor(
+    target_path: Path,
+    *,
+    source_path: Optional[Path],
+    ai_app_root: Path,
+) -> None:
+    if source_path and source_path.exists():
+        if target_path.resolve() != source_path.resolve():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+        return
+    ensure_assembly_template(target_path, ai_app_root)
+
+
+def ensure_secrets_template(target_path: Path, ai_app_root: Path) -> None:
+    if target_path.exists():
+        return
+    src = ai_app_root / "deployment/secrets.yaml"
+    if not src.exists():
+        raise FileNotFoundError(f"Missing secrets template: {src}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target_path)
+
+
+def stage_secrets_descriptor(
+    target_path: Path,
+    *,
+    source_path: Optional[Path],
+    ai_app_root: Path,
+) -> None:
+    if source_path and source_path.exists():
+        if target_path.resolve() != source_path.resolve():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+        return
+    ensure_secrets_template(target_path, ai_app_root)
+
+
+def ensure_nginx_configs(target_dir: Path, ai_app_root: Path, docker_dir: Path) -> None:
+    if docker_dir.name == "custom-ui-managed-infra":
+        src_dir = ai_app_root / "deployment/docker/custom-ui-managed-infra/nginx/conf"
+        names = (
+            "nginx_ui.conf",
+            "nginx_proxy.conf",
+            "nginx_proxy_delegated.conf",
+            "nginx_proxy_ssl_hardcoded.conf",
+            "nginx_proxy_ssl_cognito.conf",
+            "nginx_proxy_ssl_delegated_auth.conf",
+        )
+    else:
+        src_dir = ai_app_root / "deployment/docker/all_in_one_kdcube/nginx/conf"
+        names = ("nginx_ui.conf", "nginx_proxy.conf", "nginx_proxy_delegated.conf")
+    for name in names:
         target = target_dir / name
         if target.exists():
             continue
@@ -507,6 +691,8 @@ def save_env_file(env_file: EnvFile) -> None:
     env_file.path.write_text(text)
 
 def missing_build_keys(env_main: EnvFile) -> List[str]:
+    ui_image = env_main.entries.get("KDCUBE_UI_IMAGE", (None, None))[1]
+    skip_ui = bool(ui_image and not is_placeholder(ui_image))
     keys = [
         "UI_BUILD_CONTEXT",
         "UI_DOCKERFILE_PATH",
@@ -516,6 +702,8 @@ def missing_build_keys(env_main: EnvFile) -> List[str]:
         "PROXY_DOCKERFILE_PATH",
         "NGINX_PROXY_CONFIG_FILE_PATH",
     ]
+    if skip_ui:
+        keys = [key for key in keys if not key.startswith("UI_") and key != "NGINX_UI_CONFIG_FILE_PATH"]
     missing = []
     for key in keys:
         val = env_main.entries.get(key, (None, None))[1]
@@ -699,6 +887,106 @@ def prompt_choice(console: Console, label: str, choices: List[str], default: str
     return value
 
 
+def maybe_remove_legacy_containers(console: Console) -> None:
+    legacy_names = [
+        "kdcube-secrets",
+        "kdcube-postgres",
+        "kdcube-postgres-setup",
+        "kdcube-redis",
+        "kdcube-clamav",
+        "kdcube-chat-ingress",
+        "kdcube-chat-proc",
+        "kdcube-metrics",
+        "kdcube-web-ui",
+        "kdcube-web-proxy",
+        "pgadmin4",
+    ]
+    try:
+        result = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return
+    existing = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+    to_remove = [name for name in legacy_names if name in existing]
+    if not to_remove:
+        return
+    if ask_confirm(
+        console,
+        "Found legacy fixed-name containers from older installs. Remove them to avoid conflicts?",
+        default=True,
+    ):
+        try:
+            subprocess.run(["docker", "rm", "-f", *to_remove], check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            console.print("[yellow]Could not remove one or more legacy containers.[/yellow]")
+
+
+def normalize_env_build_relative(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = value.strip().strip("'\"")
+    if not cleaned:
+        return None
+    if cleaned.startswith("/") and not (len(cleaned) > 2 and cleaned[1] == ":" and cleaned[2] in {"/", "\\"}):
+        cleaned = cleaned.lstrip("/")
+    if is_placeholder(cleaned) or "path/to/" in cleaned:
+        return ".env.ui.build"
+    return cleaned
+
+
+def parse_bool(value: Optional[object]) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        raw = value.strip().lower()
+        if raw in {"1", "true", "yes", "y", "on"}:
+            return True
+        if raw in {"0", "false", "no", "n", "off"}:
+            return False
+    return None
+
+
+def ensure_ui_env_build_file(console: Console, build_context: Optional[str], env_build_relative: Optional[str]) -> None:
+    if not build_context or not env_build_relative:
+        return
+    try:
+        rel_path = Path(env_build_relative)
+        if rel_path.is_absolute():
+            return
+        root = Path(build_context).expanduser().resolve()
+        target = (root / rel_path).resolve()
+        if not str(target).startswith(str(root)):
+            return
+        if target.exists():
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("", encoding="utf-8")
+        console.print(f"[yellow]Created empty UI build env file at {target}[/yellow]")
+    except Exception:
+        return
+
+
+def normalize_docker_host(console: Console, host: Optional[str], label: str) -> Optional[str]:
+    if not host:
+        return host
+    host_str = str(host).strip()
+    if host_str in {"localhost", "127.0.0.1"}:
+        console.print(
+            f"[yellow]{label} host '{host_str}' resolves to the container itself. "
+            "Using host.docker.internal instead.[/yellow]"
+        )
+        return "host.docker.internal"
+    return host_str
+
+
 def select_option(console: Console, title: str, options: List[str], default_index: int = 0) -> str:
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return prompt_choice(console, title, options, options[default_index])
@@ -736,8 +1024,11 @@ def select_option(console: Console, title: str, options: List[str], default_inde
             live.update(_render())
 
 
-def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str, str]:
-    docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
+def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path, compose_mode: str) -> Dict[str, str]:
+    if compose_mode == "custom-ui-managed-infra":
+        docker_dir = ai_app_root / "deployment/docker/custom-ui-managed-infra"
+    else:
+        docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
     repo_root = ai_app_root.parent.parent
     defaults: Dict[str, str] = {
         "docker_dir": str(docker_dir),
@@ -745,35 +1036,63 @@ def compute_paths(ai_app_root: Path, lib_root: Path, workdir: Path) -> Dict[str,
         "host_bundle_storage": str(workdir / "data/bundle-storage"),
         "host_exec_workspace": str(workdir / "data/exec-workspace"),
         "host_bundles": str(workdir / "data/bundles"),
-        "ui_dockerfile_path": "deployment/docker/all_in_one_kdcube/Dockerfile_UI",
-        "ui_source_path": "ui/chat-web-app",
-        "ui_env_build_relative": "ui/chat-web-app/.env.sample",
-        "nginx_ui_config": "deployment/docker/all_in_one_kdcube/nginx/conf/nginx_ui.conf",
+        "ui_dockerfile_path": "",
+        "ui_source_path": "",
+        "ui_env_build_relative": "",
+        "nginx_ui_config": "",
         "frontend_config_json": str((workdir / "config/frontend.config.hardcoded.json").resolve()),
     }
+    if compose_mode == "custom-ui-managed-infra":
+        defaults["ui_dockerfile_path"] = "deployment/docker/custom-ui-managed-infra/Dockerfile_UI"
+        defaults["ui_source_path"] = "ui/chat-web-app"
+        defaults["ui_env_build_relative"] = "ui/chat-web-app/.env.sample"
+        defaults["nginx_ui_config"] = "deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_ui.conf"
+        defaults["nginx_proxy_config"] = "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_ssl_cognito.conf"
+    else:
+        defaults["ui_dockerfile_path"] = "deployment/docker/all_in_one_kdcube/Dockerfile_UI"
+        defaults["ui_source_path"] = "ui/chat-web-app"
+        defaults["ui_env_build_relative"] = "ui/chat-web-app/.env.sample"
+        defaults["nginx_ui_config"] = "deployment/docker/all_in_one_kdcube/nginx/conf/nginx_ui.conf"
+        defaults["nginx_proxy_config"] = "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
 
     common_parent = repo_root
     defaults["proxy_build_context"] = str(common_parent)
-    defaults["proxy_dockerfile_path"] = str(
-        (ai_app_root / "deployment/docker/all_in_one_kdcube/Dockerfile_ProxyOpenResty").relative_to(common_parent)
-    )
+    if compose_mode == "custom-ui-managed-infra":
+        defaults["proxy_dockerfile_path"] = str(
+            (ai_app_root / "deployment/docker/custom-ui-managed-infra/Dockerfile_ProxyOpenResty").relative_to(common_parent)
+        )
+    else:
+        defaults["proxy_dockerfile_path"] = str(
+            (ai_app_root / "deployment/docker/all_in_one_kdcube/Dockerfile_ProxyOpenResty").relative_to(common_parent)
+        )
     defaults["ui_build_context"] = str(ai_app_root)
     defaults["ui_env_file_path"] = str(ai_app_root / "ui/chat-web-app/.env")
-    defaults["nginx_proxy_config"] = "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
     return defaults
 
 
 def should_replace_bundles_config(value: Optional[str]) -> bool:
     if is_placeholder(value):
         return True
-    if value and "/config/release.yaml" in value:
+    if value and "/config/assembly.yaml" in value:
         return False
+    if value and "/config/release.yaml" in value:
+        return True
     if value and ("kdcube.demo.1" in value or "<project>" in value):
         return True
     return False
 
 
-def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str, str], Dict[str, str]]:
+def gather_configuration(
+    console: Console,
+    ctx: PathsContext,
+    *,
+    release_descriptor_path: Optional[str] = None,
+    release_descriptor: Optional[Dict[str, object]] = None,
+    secrets_descriptor: Optional[Dict[str, object]] = None,
+    compose_mode: str = "all-in-one",
+    use_descriptor_bundles: Optional[bool] = None,
+    use_descriptor_frontend: Optional[bool] = None,
+) -> Tuple[Dict[str, str], Dict[str, str]]:
     force_prompt = os.getenv("KDCUBE_RESET_CONFIG", "").lower() in {"1", "true", "yes", "on"}
     env_main = load_env_file(ctx.config_dir / ".env")
     env_ingress = load_env_file(ctx.config_dir / ".env.ingress")
@@ -782,9 +1101,47 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     env_pg = load_env_file(ctx.config_dir / ".env.postgres.setup")
     env_proxy = load_env_file(ctx.config_dir / ".env.proxylogin")
     runtime_secrets: Dict[str, str] = {}
+    assembly_path = Path(release_descriptor_path).expanduser().resolve() if release_descriptor_path else None
+    assembly_data: Dict[str, object] = dict(release_descriptor or {})
+    secrets_data: Dict[str, object] = dict(secrets_descriptor or {})
+    autosave_envs = (env_main, env_ingress, env_proc, env_metrics, env_pg, env_proxy)
 
-    defaults = compute_paths(ctx.ai_app_root, ctx.lib_root, ctx.workdir)
+    def _secret_pick(*paths: object) -> Optional[str]:
+        for path in paths:
+            if isinstance(path, str):
+                val = secrets_data.get(path)
+            elif isinstance(path, (list, tuple)):
+                val = _get_nested(secrets_data, *path)
+            else:
+                continue
+            if isinstance(val, str):
+                val = val.strip()
+                if val and not is_placeholder(val):
+                    return val
+        return None
 
+    def _autosave() -> None:
+        if assembly_path:
+            save_release_descriptor(assembly_path, assembly_data)
+        for env in autosave_envs:
+            try:
+                save_env_file(env)
+            except Exception:
+                pass
+
+    def _set_env(env: EnvFile, key: str, value: str) -> None:
+        if assembly_path:
+            update_env_value(env, key, value)
+        else:
+            update_if_placeholder(env, key, value)
+
+    defaults = compute_paths(ctx.ai_app_root, ctx.lib_root, ctx.workdir, compose_mode)
+
+    if assembly_path:
+        update_env_value(env_main, "KDCUBE_ASSEMBLY_DESCRIPTOR_PATH", str(assembly_path))
+        _autosave()
+
+    # Persist bundle descriptor selection early so Ctrl+C still keeps it.
     existing_tenant, existing_project = _extract_tenant_project(env_ingress)
     if not existing_tenant or not existing_project:
         alt_tenant, alt_project = _extract_tenant_project(env_proc)
@@ -795,12 +1152,24 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         existing_tenant = existing_tenant or alt_tenant
         existing_project = existing_project or alt_project
 
-    tenant = ask(console, "Tenant ID", default=existing_tenant or "demo-tenant")
-    project = ask(console, "Project name", default=existing_project or "demo-project")
+    descriptor_tenant = _get_nested(assembly_data, "context", "tenant")
+    descriptor_project = _get_nested(assembly_data, "context", "project")
+    tenant = ask(
+        console,
+        "Tenant ID",
+        default=(str(descriptor_tenant) if descriptor_tenant else existing_tenant or "demo-tenant"),
+    )
+    project = ask(
+        console,
+        "Project name",
+        default=(str(descriptor_project) if descriptor_project else existing_project or "demo-project"),
+    )
     if is_placeholder(tenant):
         tenant = "demo-tenant"
     if is_placeholder(project):
         project = "demo-project"
+    _set_nested(assembly_data, ["context", "tenant"], tenant)
+    _set_nested(assembly_data, ["context", "project"], project)
     for env in (env_ingress, env_proc, env_metrics):
         patch_gateway_config_json(env, tenant, project)
     if is_placeholder(env_pg.entries.get("TENANT_ID", (None, None))[1]) or is_default_tenant_project(
@@ -811,6 +1180,7 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         env_pg.entries.get("PROJECT_ID", (None, None))[1]
     ):
         update_env_value(env_pg, "PROJECT_ID", project)
+    _autosave()
 
     update_if_placeholder(env_ingress, "SECRETS_PROVIDER", "local")
     update_if_placeholder(env_proc, "SECRETS_PROVIDER", "local")
@@ -820,54 +1190,295 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
 
     # Auth provider selection
     existing_auth = env_ingress.entries.get("AUTH_PROVIDER", (None, None))[1] or env_proc.entries.get("AUTH_PROVIDER", (None, None))[1]
-    auth_options = ["simple", "cognito", "delegated (disabled)"]
-    default_auth = "cognito" if (existing_auth or "").strip().lower() == "cognito" else "simple"
+    auth_descriptor: Dict[str, Any] = {}
+    if isinstance(release_descriptor, dict):
+        raw_auth = release_descriptor.get("auth")
+        if isinstance(raw_auth, dict):
+            auth_descriptor = raw_auth
+    descriptor_auth_type = (auth_descriptor.get("type") or "").strip().lower()
+    auth_options = ["simple", "cognito", "delegated"]
+    if descriptor_auth_type in auth_options:
+        default_auth = descriptor_auth_type
+    else:
+        default_auth = "cognito" if (existing_auth or "").strip().lower() == "cognito" else "simple"
+    current_proxy_cfg = env_main.entries.get("NGINX_PROXY_RUNTIME_CONFIG_PATH", (None, None))[1] or ""
+    if "delegated" in current_proxy_cfg:
+        default_auth = "delegated"
     default_idx = auth_options.index(default_auth)
     console.print("[bold]Authentication[/bold]")
-    while True:
-        auth_choice = select_option(
-            console,
-            "Auth type",
-            options=auth_options,
-            default_index=default_idx,
-        )
-        if auth_choice.startswith("delegated"):
-            console.print("[yellow]Delegated auth is not available yet. Please choose simple or cognito.[/yellow]")
-            continue
-        break
+    auth_choice = select_option(
+        console,
+        "Auth type",
+        options=auth_options,
+        default_index=default_idx,
+    )
+    auth_mode = auth_choice
+    _set_nested(assembly_data, ["auth", "type"], auth_mode)
     auth_provider = "simple" if auth_choice == "simple" else "cognito"
     update_env_value(env_ingress, "AUTH_PROVIDER", auth_provider)
     update_env_value(env_proc, "AUTH_PROVIDER", auth_provider)
+    proxy_ssl_env = parse_bool(os.getenv("KDCUBE_PROXY_SSL"))
+    proxy_ssl_descriptor = parse_bool(_get_nested(assembly_data, "proxy", "ssl"))
+    proxy_ssl_enabled = proxy_ssl_env if proxy_ssl_env is not None else (proxy_ssl_descriptor or False)
+    _set_nested(assembly_data, ["proxy", "ssl"], proxy_ssl_enabled)
 
     if auth_provider == "cognito":
-        console.print("[dim]Cognito auth is used for both cognito and delegated modes (delegated is disabled for now).[/dim]")
+        def _pick(dct: Dict[str, Any], *keys: str) -> str:
+            for key in keys:
+                val = dct.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+            return ""
+
+        cognito_descriptor: Dict[str, Any] = {}
+        raw_cognito = auth_descriptor.get("cognito") if auth_descriptor else None
+        if isinstance(raw_cognito, dict):
+            cognito_descriptor = dict(raw_cognito)
+
+        def _normalize_cognito_block(block: Dict[str, Any]) -> None:
+            legacy_map = {
+                "user_pool": "user_pool_id",
+                "user_pool_name": "user_pool_id",
+                "app_client": "app_client_id",
+                "app_client_name": "app_client_id",
+                "service_client": "service_client_id",
+                "service_client_name": "service_client_id",
+            }
+            for legacy_key, canonical_key in legacy_map.items():
+                legacy_val = block.get(legacy_key)
+                canonical_val = block.get(canonical_key)
+                if (not canonical_val or is_placeholder(str(canonical_val))) and legacy_val and not is_placeholder(str(legacy_val)):
+                    block[canonical_key] = legacy_val
+            for legacy_key in legacy_map:
+                if legacy_key != legacy_map[legacy_key]:
+                    block.pop(legacy_key, None)
+            block.pop("client_secret", None)
+
+        if cognito_descriptor:
+            _normalize_cognito_block(cognito_descriptor)
+        descriptor_region = _pick(cognito_descriptor, "region")
+        descriptor_pool = _pick(cognito_descriptor, "user_pool_id")
+        descriptor_app = _pick(cognito_descriptor, "app_client_id")
+        descriptor_service = _pick(cognito_descriptor, "service_client_id")
+        use_descriptor_auth = False
+        if descriptor_region or descriptor_pool or descriptor_app or descriptor_service:
+            use_descriptor_auth = ask_confirm(
+                console,
+                "Use Cognito settings from assembly descriptor?",
+                default=True,
+            )
+
+        if auth_mode == "delegated":
+            console.print("[dim]Delegated auth uses Cognito for token validation and proxylogin for delegation.[/dim]")
         cognito_region = env_ingress.entries.get("COGNITO_REGION", (None, None))[1]
-        if force_prompt or is_placeholder(cognito_region):
+        if use_descriptor_auth and descriptor_region and not is_placeholder(descriptor_region):
+            cognito_region = descriptor_region
+            update_env_value(env_ingress, "COGNITO_REGION", cognito_region)
+            update_env_value(env_proc, "COGNITO_REGION", cognito_region)
+        elif force_prompt or is_placeholder(cognito_region):
             cognito_region = ask(console, "COGNITO_REGION", default="eu-west-1")
         update_env_value(env_ingress, "COGNITO_REGION", cognito_region or "eu-west-1")
         update_env_value(env_proc, "COGNITO_REGION", cognito_region or "eu-west-1")
+        _set_nested(assembly_data, ["auth", "cognito", "region"], cognito_region or "eu-west-1")
 
         for key in ("COGNITO_USER_POOL_ID", "COGNITO_APP_CLIENT_ID", "COGNITO_SERVICE_CLIENT_ID"):
             current_val = env_ingress.entries.get(key, (None, None))[1]
+            if use_descriptor_auth:
+                if key == "COGNITO_USER_POOL_ID" and descriptor_pool and not is_placeholder(descriptor_pool):
+                    current_val = descriptor_pool
+                elif key == "COGNITO_APP_CLIENT_ID" and descriptor_app and not is_placeholder(descriptor_app):
+                    current_val = descriptor_app
+                elif key == "COGNITO_SERVICE_CLIENT_ID" and descriptor_service and not is_placeholder(descriptor_service):
+                    current_val = descriptor_service
             if force_prompt or is_placeholder(current_val):
                 current_val = ask(console, key, default=current_val or "")
             update_env_value(env_ingress, key, current_val or "")
             update_env_value(env_proc, key, current_val or "")
+            if key == "COGNITO_USER_POOL_ID":
+                _set_nested(assembly_data, ["auth", "cognito", "user_pool_id"], current_val or "")
+            elif key == "COGNITO_APP_CLIENT_ID":
+                _set_nested(assembly_data, ["auth", "cognito", "app_client_id"], current_val or "")
+            elif key == "COGNITO_SERVICE_CLIENT_ID":
+                _set_nested(assembly_data, ["auth", "cognito", "service_client_id"], current_val or "")
+
+        proxy_client_secret = _secret_pick(("auth", "cognito", "client_secret"))
+        if auth_mode == "delegated" and not proxy_client_secret:
+            proxy_client_secret = ask(
+                console,
+                "COGNITO_CLIENT_SECRET (leave blank to skip)",
+                default="",
+            )
+        if proxy_client_secret and not is_placeholder(proxy_client_secret):
+            update_env_value(env_proxy, "COGNITO_CLIENTSECRET", proxy_client_secret)
+            runtime_secrets["auth.cognito.client_secret"] = proxy_client_secret
+        elif auth_mode == "delegated":
+            update_env_value(env_proxy, "COGNITO_CLIENTSECRET", "")
+
+        proxy_client_id = env_proxy.entries.get("COGNITO_CLIENTID", (None, None))[1]
+        if use_descriptor_auth and descriptor_app and not is_placeholder(descriptor_app):
+            proxy_client_id = descriptor_app
+        if is_placeholder(proxy_client_id):
+            proxy_client_id = env_ingress.entries.get("COGNITO_APP_CLIENT_ID", (None, None))[1]
+        if proxy_client_id:
+            update_env_value(env_proxy, "COGNITO_CLIENTID", proxy_client_id)
+
+        proxy_user_pool = env_proxy.entries.get("COGNITO_USERPOOLID", (None, None))[1]
+        if use_descriptor_auth and descriptor_pool and not is_placeholder(descriptor_pool):
+            proxy_user_pool = descriptor_pool
+        if is_placeholder(proxy_user_pool):
+            proxy_user_pool = env_ingress.entries.get("COGNITO_USER_POOL_ID", (None, None))[1]
+        if proxy_user_pool:
+            update_env_value(env_proxy, "COGNITO_USERPOOLID", proxy_user_pool)
+
+        issuer_region = (cognito_region or "").strip()
+        issuer_pool = (proxy_user_pool or "").strip()
+        if issuer_region and issuer_pool:
+            issuer = f"https://cognito-idp.{issuer_region}.amazonaws.com/{issuer_pool}"
+            update_env_value(env_proxy, "COGNITO_JWKSISSUER", issuer)
+            update_env_value(env_proxy, "COGNITO_JWKSSIGNINGKEYURL", f"{issuer}/.well-known/jwks.json")
+
+        # Ensure legacy keys are removed from the assembly descriptor after normalization.
+        auth_block = assembly_data.get("auth")
+        if isinstance(auth_block, dict):
+            cognito_block = auth_block.get("cognito")
+            if isinstance(cognito_block, dict):
+                _normalize_cognito_block(cognito_block)
+
+        if auth_mode == "delegated":
+            proxy_login_cfg: Dict[str, Any] = {}
+            raw_proxy_login = _get_nested(assembly_data, "auth", "proxy_login")
+            if isinstance(raw_proxy_login, dict):
+                proxy_login_cfg = dict(raw_proxy_login)
+
+            def _proxy_pick(*keys: str) -> str:
+                for key in keys:
+                    val = proxy_login_cfg.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+                return ""
+
+            domain_raw = _get_nested(assembly_data, "domain")
+            proxy_domain = ""
+            if isinstance(domain_raw, str) and domain_raw.strip():
+                raw = domain_raw.strip()
+                if "://" in raw:
+                    from urllib.parse import urlparse
+
+                    parsed = urlparse(raw)
+                    proxy_domain = parsed.netloc or parsed.path
+                else:
+                    proxy_domain = raw
+                proxy_domain = proxy_domain.split("/")[0]
+
+            if not proxy_domain:
+                ui_port = str(
+                    _get_nested(assembly_data, "ports", "ui")
+                    or env_main.entries.get("KDCUBE_UI_PORT", (None, None))[1]
+                    or "5174"
+                ).strip()
+                if ui_port in ("80", "443"):
+                    proxy_domain = "localhost"
+                else:
+                    proxy_domain = f"localhost:{ui_port}"
+
+            def _apply_domain(value: str) -> str:
+                if not value:
+                    return value
+                return value.replace("YOUR_DOMAIN", proxy_domain).replace("<YOUR_DOMAIN>", proxy_domain)
+
+            keyprefix = _proxy_pick("redis_key_prefix") or env_proxy.entries.get("REDIS_KEYPREFIX", (None, None))[1] or "proxylogin:<TENANT>:<PROJECT>:"
+            if "<TENANT>" in keyprefix or "<PROJECT>" in keyprefix:
+                keyprefix = keyprefix.replace("<TENANT>", tenant).replace("<PROJECT>", project)
+            update_env_value(env_proxy, "REDIS_KEYPREFIX", keyprefix)
+
+
+            token_masq = proxy_login_cfg.get("token_masquerade")
+            if token_masq is None:
+                token_masq = proxy_login_cfg.get("token_mascarade")
+            if token_masq is not None:
+                update_env_value(env_proxy, "TOKEN_MASQUERADE", str(token_masq).lower())
+
+            reset_cfg = proxy_login_cfg.get("password_reset") if isinstance(proxy_login_cfg.get("password_reset"), dict) else {}
+            reset_company = str(reset_cfg.get("company") or env_proxy.entries.get("PASSWORD_RESET_COMPANY", (None, None))[1] or "")
+            reset_sender = str(reset_cfg.get("sender") or env_proxy.entries.get("PASSWORD_RESET_SENDER", (None, None))[1] or "")
+            reset_template = str(reset_cfg.get("template_name") or env_proxy.entries.get("PASSWORD_RESET_TEMPLATENAME", (None, None))[1] or "")
+            reset_redirect = str(reset_cfg.get("redirect_url") or env_proxy.entries.get("PASSWORD_RESET_REDIRECTURL", (None, None))[1] or "")
+            reset_redirect = _apply_domain(reset_redirect)
+            if reset_company:
+                update_env_value(env_proxy, "PASSWORD_RESET_COMPANY", reset_company)
+            if reset_sender:
+                update_env_value(env_proxy, "PASSWORD_RESET_SENDER", reset_sender)
+            if reset_template:
+                update_env_value(env_proxy, "PASSWORD_RESET_TEMPLATENAME", reset_template)
+            if reset_redirect:
+                update_env_value(env_proxy, "PASSWORD_RESET_REDIRECTURL", reset_redirect)
+
+            http_urlbase = _proxy_pick("http_urlbase") or env_proxy.entries.get("HTTP_URLBASE", (None, None))[1] or ""
+            http_urlbase = _apply_domain(http_urlbase)
+            if not http_urlbase:
+                scheme = "https" if proxy_ssl_enabled else "http"
+                http_urlbase = f"{scheme}://{proxy_domain}/auth"
+            update_env_value(env_proxy, "HTTP_URLBASE", http_urlbase)
+
+    _autosave()
 
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
+    pg_user_from_assembly = _get_nested(assembly_data, "infra", "postgres", "user")
+    pg_db_from_assembly = _get_nested(assembly_data, "infra", "postgres", "database")
+    pg_pass_from_assembly = _get_nested(assembly_data, "infra", "postgres", "password")
+    pg_pass_from_secrets = _secret_pick(("infra", "postgres", "password"), ("postgres_password",))
+    pg_host_from_assembly = _get_nested(assembly_data, "infra", "postgres", "host")
+    pg_port_from_assembly = _get_nested(assembly_data, "infra", "postgres", "port")
+    has_pg_descriptor = bool(
+        (pg_user_from_assembly and not is_placeholder(str(pg_user_from_assembly)))
+        or (pg_db_from_assembly and not is_placeholder(str(pg_db_from_assembly)))
+        or (pg_pass_from_assembly and not is_placeholder(str(pg_pass_from_assembly)))
+        or (pg_host_from_assembly and not is_placeholder(str(pg_host_from_assembly)))
+        or (pg_port_from_assembly and not is_placeholder(str(pg_port_from_assembly)))
+    )
+    use_pg_secret = False
+    if pg_pass_from_secrets:
+        use_pg_secret = ask_confirm(console, "Use Postgres password from secrets descriptor?", default=True)
+    use_pg_descriptor = False
+    if assembly_path and has_pg_descriptor:
+        if use_pg_secret:
+            use_pg_descriptor = True
+        else:
+            use_pg_descriptor = ask_confirm(console, "Use Postgres settings from assembly descriptor?", default=True)
+
+    if use_pg_descriptor:
+        if pg_user_from_assembly and not is_placeholder(str(pg_user_from_assembly)):
+            update_env_value(env_pg, "POSTGRES_USER", str(pg_user_from_assembly))
+        if pg_db_from_assembly and not is_placeholder(str(pg_db_from_assembly)):
+            update_env_value(env_pg, "POSTGRES_DATABASE", str(pg_db_from_assembly))
+        if pg_pass_from_assembly and not is_placeholder(str(pg_pass_from_assembly)) and not use_pg_secret:
+            update_env_value(env_pg, "POSTGRES_PASSWORD", str(pg_pass_from_assembly))
+        if pg_host_from_assembly and not is_placeholder(str(pg_host_from_assembly)):
+            update_env_value(env_ingress, "POSTGRES_HOST", str(pg_host_from_assembly))
+            update_env_value(env_proc, "POSTGRES_HOST", str(pg_host_from_assembly))
+        if pg_port_from_assembly and not is_placeholder(str(pg_port_from_assembly)):
+            update_env_value(env_pg, "POSTGRES_PORT", str(pg_port_from_assembly))
+
+    pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
     if force_prompt or is_placeholder(pg_user):
-        pg_user_default = pg_user if not is_placeholder(pg_user) else "postgres"
+        pg_user_default = (
+            str(pg_user_from_assembly)
+            if pg_user_from_assembly and not is_placeholder(str(pg_user_from_assembly))
+            else (pg_user if not is_placeholder(pg_user) else "postgres")
+        )
         pg_user = ask(console, "Postgres user", default=pg_user_default)
         update_env_value(env_pg, "POSTGRES_USER", pg_user)
     if force_prompt:
         update_env_value(env_ingress, "POSTGRES_USER", pg_user or "postgres")
         update_env_value(env_proc, "POSTGRES_USER", pg_user or "postgres")
     else:
-        update_if_placeholder(env_ingress, "POSTGRES_USER", pg_user or "postgres")
-        update_if_placeholder(env_proc, "POSTGRES_USER", pg_user or "postgres")
+        _set_env(env_ingress, "POSTGRES_USER", pg_user or "postgres")
+        _set_env(env_proc, "POSTGRES_USER", pg_user or "postgres")
 
     # If .env.postgres.setup is empty, fall back to .env values
+    if use_pg_secret and pg_pass_from_secrets:
+        update_env_value(env_pg, "POSTGRES_PASSWORD", pg_pass_from_secrets)
     pg_pass_env = env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]
     if is_placeholder(pg_pass_env):
         fallback_pg = env_main.entries.get("POSTGRES_PASSWORD", (None, None))[1]
@@ -875,27 +1486,38 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
             fallback_pg = env_main.entries.get("PGPASSWORD", (None, None))[1]
         if not is_placeholder(fallback_pg):
             update_env_value(env_pg, "POSTGRES_PASSWORD", fallback_pg)
+    if (not use_pg_secret) and is_placeholder(env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1]) and pg_pass_from_assembly:
+        update_env_value(env_pg, "POSTGRES_PASSWORD", str(pg_pass_from_assembly))
 
-    pg_pass = prompt_secret(
-        console,
-        env_pg,
-        "POSTGRES_PASSWORD",
-        "Postgres password",
-        required=True,
-        force_prompt=force_prompt,
-    )
+    if use_pg_secret and pg_pass_from_secrets:
+        pg_pass = pg_pass_from_secrets
+    else:
+        pg_pass = prompt_secret(
+            console,
+            env_pg,
+            "POSTGRES_PASSWORD",
+            "Postgres password",
+            required=True,
+            force_prompt=force_prompt,
+        )
     if not pg_pass:
         pg_pass = env_pg.entries.get("POSTGRES_PASSWORD", (None, None))[1] or ""
+        if not pg_pass and pg_pass_from_assembly:
+            pg_pass = str(pg_pass_from_assembly)
     if force_prompt:
         update_env_value(env_ingress, "POSTGRES_PASSWORD", pg_pass or "postgres")
         update_env_value(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
     else:
-        update_if_placeholder(env_ingress, "POSTGRES_PASSWORD", pg_pass or "postgres")
-        update_if_placeholder(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
+        _set_env(env_ingress, "POSTGRES_PASSWORD", pg_pass or "postgres")
+        _set_env(env_proc, "POSTGRES_PASSWORD", pg_pass or "postgres")
 
     pg_db = env_pg.entries.get("POSTGRES_DATABASE", (None, None))[1]
     if force_prompt or is_placeholder(pg_db):
-        pg_db_default = pg_db if not is_placeholder(pg_db) else "kdcube"
+        pg_db_default = (
+            str(pg_db_from_assembly)
+            if pg_db_from_assembly and not is_placeholder(str(pg_db_from_assembly))
+            else (pg_db if not is_placeholder(pg_db) else "kdcube")
+        )
         pg_db = ask(console, "Postgres database", default=pg_db_default)
         update_env_value(env_pg, "POSTGRES_DATABASE", pg_db)
     if force_prompt:
@@ -905,72 +1527,210 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         update_env_value(env_main, "PGPASSWORD", pg_pass or "postgres")
         update_env_value(env_main, "PGDATABASE", pg_db or "kdcube")
     else:
-        update_if_placeholder(env_ingress, "POSTGRES_DATABASE", pg_db or "kdcube")
-        update_if_placeholder(env_proc, "POSTGRES_DATABASE", pg_db or "kdcube")
-        update_if_placeholder(env_main, "PGUSER", pg_user or "postgres")
-        update_if_placeholder(env_main, "PGPASSWORD", pg_pass or "postgres")
-        update_if_placeholder(env_main, "PGDATABASE", pg_db or "kdcube")
+        _set_env(env_ingress, "POSTGRES_DATABASE", pg_db or "kdcube")
+        _set_env(env_proc, "POSTGRES_DATABASE", pg_db or "kdcube")
+        _set_env(env_main, "PGUSER", pg_user or "postgres")
+        _set_env(env_main, "PGPASSWORD", pg_pass or "postgres")
+        _set_env(env_main, "PGDATABASE", pg_db or "kdcube")
 
-    redis_pass = prompt_secret(
-        console,
-        env_main,
-        "REDIS_PASSWORD",
-        "Redis password",
-        required=True,
-        force_prompt=force_prompt,
+    _set_nested(assembly_data, ["infra", "postgres", "user"], pg_user or "postgres")
+    if not use_pg_secret:
+        _set_nested(assembly_data, ["infra", "postgres", "password"], pg_pass or "")
+    _set_nested(assembly_data, ["infra", "postgres", "database"], pg_db or "kdcube")
+
+    redis_pass_from_assembly = _get_nested(assembly_data, "infra", "redis", "password")
+    redis_pass_from_secrets = _secret_pick(("infra", "redis", "password"), ("redis_password",))
+    redis_host_from_assembly = _get_nested(assembly_data, "infra", "redis", "host")
+    redis_port_from_assembly = _get_nested(assembly_data, "infra", "redis", "port")
+    has_redis_descriptor = bool(
+        _has_nested(assembly_data, "infra", "redis", "password")
+        or (redis_host_from_assembly and not is_placeholder(str(redis_host_from_assembly)))
+        or (redis_port_from_assembly and not is_placeholder(str(redis_port_from_assembly)))
     )
-    if not redis_pass:
+    use_redis_secret = False
+    if redis_pass_from_secrets:
+        use_redis_secret = ask_confirm(console, "Use Redis password from secrets descriptor?", default=True)
+
+    use_redis_descriptor = False
+    if assembly_path and has_redis_descriptor:
+        if use_redis_secret:
+            use_redis_descriptor = True
+        else:
+            use_redis_descriptor = ask_confirm(console, "Use Redis settings from assembly descriptor?", default=True)
+
+    if use_redis_descriptor:
+        if _has_nested(assembly_data, "infra", "redis", "password") and not use_redis_secret:
+            update_env_value(env_main, "REDIS_PASSWORD", str(redis_pass_from_assembly or ""))
+        if redis_host_from_assembly and not is_placeholder(str(redis_host_from_assembly)):
+            update_env_value(env_ingress, "REDIS_HOST", str(redis_host_from_assembly))
+            update_env_value(env_proc, "REDIS_HOST", str(redis_host_from_assembly))
+            update_env_value(env_metrics, "REDIS_HOST", str(redis_host_from_assembly))
+        if redis_port_from_assembly and not is_placeholder(str(redis_port_from_assembly)):
+            update_env_value(env_ingress, "REDIS_PORT", str(redis_port_from_assembly))
+            update_env_value(env_proc, "REDIS_PORT", str(redis_port_from_assembly))
+            update_env_value(env_metrics, "REDIS_PORT", str(redis_port_from_assembly))
+
+    if use_redis_secret and redis_pass_from_secrets:
+        update_env_value(env_main, "REDIS_PASSWORD", str(redis_pass_from_secrets))
+    if (not use_redis_secret) and is_placeholder(env_main.entries.get("REDIS_PASSWORD", (None, None))[1]) and redis_pass_from_assembly:
+        update_env_value(env_main, "REDIS_PASSWORD", str(redis_pass_from_assembly))
+
+    if use_redis_secret and redis_pass_from_secrets:
+        redis_pass = redis_pass_from_secrets
+    elif use_redis_descriptor and _has_nested(assembly_data, "infra", "redis", "password"):
         redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
+    else:
+        redis_pass = prompt_secret(
+            console,
+            env_main,
+            "REDIS_PASSWORD",
+            "Redis password",
+            required=True,
+            force_prompt=force_prompt,
+        )
+        if not redis_pass:
+            redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
+
+    redis_host = (
+        env_ingress.entries.get("REDIS_HOST", (None, None))[1]
+        or env_proc.entries.get("REDIS_HOST", (None, None))[1]
+        or str(redis_host_from_assembly or "redis")
+    )
+    redis_host = normalize_docker_host(console, redis_host, "Redis")
+    redis_port = (
+        env_ingress.entries.get("REDIS_PORT", (None, None))[1]
+        or env_proc.entries.get("REDIS_PORT", (None, None))[1]
+        or str(redis_port_from_assembly or "6379")
+    )
+    if redis_pass:
+        redis_url = f"redis://:{redis_pass}@{redis_host}:{redis_port}/0"
+    else:
+        redis_url = f"redis://{redis_host}:{redis_port}/0"
 
     if force_prompt:
         update_env_value(env_ingress, "REDIS_PASSWORD", redis_pass)
         update_env_value(env_proc, "REDIS_PASSWORD", redis_pass)
         update_env_value(env_metrics, "REDIS_PASSWORD", redis_pass)
-        update_env_value(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_env_value(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_env_value(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_env_value(env_proxy, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        update_env_value(env_ingress, "REDIS_URL", redis_url)
+        update_env_value(env_proc, "REDIS_URL", redis_url)
+        update_env_value(env_metrics, "REDIS_URL", redis_url)
+        update_env_value(env_proxy, "REDIS_URL", redis_url)
     else:
-        update_if_placeholder(env_ingress, "REDIS_PASSWORD", redis_pass)
-        update_if_placeholder(env_proc, "REDIS_PASSWORD", redis_pass)
-        update_if_placeholder(env_metrics, "REDIS_PASSWORD", redis_pass)
-        update_if_placeholder(env_ingress, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_if_placeholder(env_proc, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_if_placeholder(env_metrics, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
-        update_if_placeholder(env_proxy, "REDIS_URL", f"redis://:{redis_pass}@redis:6379/0")
+        _set_env(env_ingress, "REDIS_PASSWORD", redis_pass)
+        _set_env(env_proc, "REDIS_PASSWORD", redis_pass)
+        _set_env(env_metrics, "REDIS_PASSWORD", redis_pass)
+        _set_env(env_ingress, "REDIS_URL", redis_url)
+        _set_env(env_proc, "REDIS_URL", redis_url)
+        _set_env(env_metrics, "REDIS_URL", redis_url)
+        _set_env(env_proxy, "REDIS_URL", redis_url)
+
+    if not use_redis_secret:
+        _set_nested(assembly_data, ["infra", "redis", "password"], redis_pass or "")
+    _set_nested(assembly_data, ["infra", "redis", "host"], redis_host)
+    _set_nested(assembly_data, ["infra", "redis", "port"], str(redis_port))
 
     if is_placeholder(env_ingress.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_ingress, "POSTGRES_HOST", "postgres-db")
     if is_placeholder(env_proc.entries.get("POSTGRES_HOST", (None, None))[1]):
         update_env_value(env_proc, "POSTGRES_HOST", "postgres-db")
 
+    pg_host_val = env_ingress.entries.get("POSTGRES_HOST", (None, None))[1] or "postgres-db"
+    pg_host_val = normalize_docker_host(console, pg_host_val, "Postgres")
+    pg_port_val = env_pg.entries.get("POSTGRES_PORT", (None, None))[1] or env_main.entries.get("POSTGRES_PORT", (None, None))[1] or "5432"
+    update_env_value(env_pg, "POSTGRES_HOST", pg_host_val)
+    update_env_value(env_pg, "POSTGRES_PORT", str(pg_port_val))
+    if assembly_path:
+        update_env_value(env_ingress, "POSTGRES_HOST", pg_host_val)
+        update_env_value(env_proc, "POSTGRES_HOST", pg_host_val)
+    _set_nested(assembly_data, ["infra", "postgres", "host"], pg_host_val)
+    _set_nested(assembly_data, ["infra", "postgres", "port"], str(pg_port_val))
+    _autosave()
+
+    openai_from_secrets = _secret_pick(
+        ("services", "openai", "api_key"),
+        ("openai_api_key",),
+        ("openai", "api_key"),
+        ("providers", "openai", "api_key"),
+    )
+    anthropic_from_secrets = _secret_pick(
+        ("services", "anthropic", "api_key"),
+        ("anthropic_api_key",),
+        ("anthropic", "api_key"),
+        ("providers", "anthropic", "api_key"),
+    )
+    brave_from_secrets = _secret_pick(
+        ("services", "brave", "api_key"),
+        ("brave_api_key",),
+        ("brave", "api_key"),
+        ("search", "brave_api_key"),
+    )
+    openrouter_from_secrets = _secret_pick(
+        ("services", "openrouter", "api_key"),
+        ("openrouter_api_key",),
+    )
+    google_from_secrets = _secret_pick(
+        ("services", "google", "api_key"),
+        ("google_api_key",),
+        ("gemini_api_key",),
+    )
+    huggingface_from_secrets = _secret_pick(
+        ("services", "huggingface", "api_key"),
+        ("hugging_face_api_key",),
+        ("huggingface_api_key",),
+        ("hugging_face_key",),
+    )
+    stripe_secret_from_secrets = _secret_pick(
+        ("services", "stripe", "secret_key"),
+        ("stripe_secret_key",),
+    )
+    stripe_webhook_from_secrets = _secret_pick(
+        ("services", "stripe", "webhook_secret"),
+        ("stripe_webhook_secret",),
+    )
+    claude_code_from_secrets = _secret_pick(
+        ("services", "anthropic", "claude_code_key"),
+        ("anthropic_claude_code_key",),
+        ("claude_code_key",),
+    )
     openai_key = prompt_secret_value(
         console,
         "OpenAI API key (leave blank to skip)",
         required=False,
-        current=env_proc.entries.get("OPENAI_API_KEY", (None, None))[1],
+        current=openai_from_secrets or env_proc.entries.get("OPENAI_API_KEY", (None, None))[1],
         force_prompt=force_prompt,
     )
     anthropic_key = prompt_secret_value(
         console,
         "Anthropic API key (leave blank to skip)",
         required=False,
-        current=env_proc.entries.get("ANTHROPIC_API_KEY", (None, None))[1],
+        current=anthropic_from_secrets or env_proc.entries.get("ANTHROPIC_API_KEY", (None, None))[1],
         force_prompt=force_prompt,
     )
     brave_key = prompt_secret_value(
         console,
         "Brave Search API key (leave blank to skip)",
         required=False,
-        current=env_proc.entries.get("BRAVE_API_KEY", (None, None))[1],
+        current=brave_from_secrets or env_proc.entries.get("BRAVE_API_KEY", (None, None))[1],
         force_prompt=force_prompt,
     )
     if openai_key:
-        runtime_secrets["OPENAI_API_KEY"] = openai_key
+        runtime_secrets["services.openai.api_key"] = openai_key
     if anthropic_key:
-        runtime_secrets["ANTHROPIC_API_KEY"] = anthropic_key
+        runtime_secrets["services.anthropic.api_key"] = anthropic_key
     if brave_key:
-        runtime_secrets["BRAVE_API_KEY"] = brave_key
+        runtime_secrets["services.brave.api_key"] = brave_key
+    if openrouter_from_secrets:
+        runtime_secrets["services.openrouter.api_key"] = openrouter_from_secrets
+    if google_from_secrets:
+        runtime_secrets["services.google.api_key"] = google_from_secrets
+    if huggingface_from_secrets:
+        runtime_secrets["services.huggingface.api_key"] = huggingface_from_secrets
+    if stripe_secret_from_secrets:
+        runtime_secrets["services.stripe.secret_key"] = stripe_secret_from_secrets
+    if stripe_webhook_from_secrets:
+        runtime_secrets["services.stripe.webhook_secret"] = stripe_webhook_from_secrets
+    if claude_code_from_secrets:
+        runtime_secrets["services.anthropic.claude_code_key"] = claude_code_from_secrets
     if force_prompt or is_placeholder(env_proc.entries.get("OPENAI_API_KEY", (None, None))[1]):
         update_env_value(env_proc, "OPENAI_API_KEY", "")
     if force_prompt or is_placeholder(env_proc.entries.get("ANTHROPIC_API_KEY", (None, None))[1]):
@@ -978,11 +1738,14 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     if force_prompt or is_placeholder(env_proc.entries.get("BRAVE_API_KEY", (None, None))[1]):
         update_env_value(env_proc, "BRAVE_API_KEY", "")
 
+    _autosave()
+
+    host_storage_default = _get_nested(assembly_data, "paths", "host_kdcube_storage_path") or defaults.get("host_kb_storage")
     host_storage = ensure_absolute(
         console,
         "Host system storage path",
         env_main.entries.get("HOST_KDCUBE_STORAGE_PATH", (None, None))[1],
-        defaults.get("host_kb_storage"),
+        str(host_storage_default) if host_storage_default else None,
         force_prompt=force_prompt,
     )
     host_bundles_current = env_main.entries.get("HOST_BUNDLES_PATH", (None, None))[1]
@@ -995,28 +1758,29 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
                 "resetting to the local workdir bundles folder.[/yellow]"
             )
             host_bundles_current = None
+    host_bundles_default = _get_nested(assembly_data, "paths", "host_bundles_path") or defaults.get("host_bundles")
     if force_prompt or not is_placeholder(host_bundles_current):
         host_bundles = ensure_absolute(
             console,
             "Host bundles root (git clones)",
             host_bundles_current,
-            defaults.get("host_bundles"),
+            str(host_bundles_default) if host_bundles_default else None,
             force_prompt=force_prompt,
         )
     else:
-        host_bundles = defaults.get("host_bundles", "")
+        host_bundles = str(host_bundles_default or "")
     host_bundle_storage = ensure_absolute(
         console,
         "Host bundle local storage path",
         env_main.entries.get("HOST_BUNDLE_STORAGE_PATH", (None, None))[1],
-        defaults.get("host_bundle_storage"),
+        str(_get_nested(assembly_data, "paths", "host_bundle_storage_path") or defaults.get("host_bundle_storage")),
         force_prompt=force_prompt,
     )
     host_exec = ensure_absolute(
         console,
         "Host exec workspace path",
         env_main.entries.get("HOST_EXEC_WORKSPACE_PATH", (None, None))[1],
-        defaults.get("host_exec_workspace"),
+        str(_get_nested(assembly_data, "paths", "host_exec_workspace_path") or defaults.get("host_exec_workspace")),
         force_prompt=force_prompt,
     )
 
@@ -1024,6 +1788,10 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     update_env_value(env_main, "HOST_BUNDLES_PATH", host_bundles)
     update_env_value(env_main, "HOST_BUNDLE_STORAGE_PATH", host_bundle_storage)
     update_env_value(env_main, "HOST_EXEC_WORKSPACE_PATH", host_exec)
+    _set_nested(assembly_data, ["paths", "host_kdcube_storage_path"], host_storage)
+    _set_nested(assembly_data, ["paths", "host_bundles_path"], host_bundles)
+    _set_nested(assembly_data, ["paths", "host_bundle_storage_path"], host_bundle_storage)
+    _set_nested(assembly_data, ["paths", "host_exec_workspace_path"], host_exec)
     # Always align compose paths to the selected workdir.
     update_env_value(env_main, "KDCUBE_CONFIG_DIR", str(ctx.config_dir))
     update_env_value(env_main, "KDCUBE_DATA_DIR", str(ctx.data_dir))
@@ -1034,21 +1802,47 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     if is_placeholder(env_main.entries.get("BUNDLE_STORAGE_ROOT", (None, None))[1]):
         update_env_value(env_main, "BUNDLE_STORAGE_ROOT", "/bundle-storage")
 
+    ports_block = _get_nested(assembly_data, "ports")
+    if not isinstance(ports_block, dict):
+        ports_block = {}
+
+    def _set_port(env_key: str, port_key: str, default_val: str) -> None:
+        current_env = env_main.entries.get(env_key, (None, None))[1]
+        asm_val = ports_block.get(port_key)
+        if asm_val is not None and not is_placeholder(str(asm_val)):
+            update_env_value(env_main, env_key, str(asm_val))
+            current_env = str(asm_val)
+        if is_placeholder(current_env):
+            update_env_value(env_main, env_key, default_val)
+            current_env = default_val
+        ports_block[port_key] = str(current_env)
+
+    _set_port("CHAT_APP_PORT", "ingress", "8010")
+    _set_port("CHAT_PROCESSOR_PORT", "proc", "8020")
+    _set_port("METRICS_PORT", "metrics", "8090")
+    _set_port("KDCUBE_UI_PORT", "ui", "80")
+    _set_port("KDCUBE_UI_SSL_PORT", "ui_ssl", "443")
+    _set_nested(assembly_data, ["ports"], ports_block)
+
+    _autosave()
+
     current_descriptor = env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]
+    if release_descriptor_path and use_descriptor_bundles is not False:
+        current_descriptor = release_descriptor_path
+        update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", release_descriptor_path)
     descriptor_value = (current_descriptor or "").strip().strip("'\"")
-    if force_prompt or is_placeholder(current_descriptor) or descriptor_value in {"", "/dev/null"}:
-        use_descriptor = ask_confirm(console, "Use a custom bundle descriptor (release.yaml)?", default=False)
-        if use_descriptor:
-            if force_prompt:
-                descriptor = prompt_optional_keep(console, "Host bundle descriptor path (release.yaml)", current_descriptor)
-            else:
-                descriptor = prompt_optional(console, "Host bundle descriptor path (release.yaml)")
-            if descriptor:
-                update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", descriptor)
-            else:
-                update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", "/dev/null")
-        else:
+    if use_descriptor_bundles is None:
+        if release_descriptor_path:
+            update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", release_descriptor_path)
+        elif force_prompt or is_placeholder(current_descriptor) or descriptor_value in {"", "/dev/null"}:
             update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", "/dev/null")
+    elif use_descriptor_bundles:
+        if release_descriptor_path:
+            update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", release_descriptor_path)
+        elif is_placeholder(current_descriptor) or descriptor_value in {"", "/dev/null"}:
+            update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", "/dev/null")
+    else:
+        update_env_value(env_main, "HOST_BUNDLE_DESCRIPTOR_PATH", "/dev/null")
 
     # If a descriptor is set, force a one-time registry sync on startup.
     current_descriptor = env_main.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]
@@ -1059,15 +1853,18 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     else:
         update_env_value(env_proc, "BUNDLES_FORCE_ENV_ON_STARTUP", "0")
 
-    existing_http = env_proc.entries.get("GIT_HTTP_TOKEN", (None, None))[1]
+    _autosave()
+
+    git_token_from_secrets = _secret_pick(("git", "http_token"), ("git_http_token",))
+    env_http = env_proc.entries.get("GIT_HTTP_TOKEN", (None, None))[1]
     existing_ssh = env_proc.entries.get("GIT_SSH_KEY_PATH", (None, None))[1]
-    if existing_http and not is_placeholder(existing_http):
+    if env_http and not is_placeholder(env_http):
         console.print(
             "[yellow]Found GIT_HTTP_TOKEN in .env.proc; it will be cleared and treated as runtime-only.[/yellow]"
         )
         update_env_value(env_proc, "GIT_HTTP_TOKEN", "")
-        existing_http = None
-    if not is_placeholder(existing_http):
+        env_http = None
+    if git_token_from_secrets and not is_placeholder(git_token_from_secrets):
         default_auth = "https-token"
     elif not is_placeholder(existing_ssh):
         default_auth = "ssh"
@@ -1104,14 +1901,25 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
             update_env_value(env_proc, "GIT_HTTP_USER", "")
     elif auth_choice == "https-token":
         console.print("[dim]Create a GitHub token at https://github.com/settings/tokens[/dim]")
-        token = prompt_secret_value(
-            console,
-            "Git HTTPS token",
-            required=True,
-            force_prompt=True,
-        )
-        if token:
-            runtime_secrets["GIT_HTTP_TOKEN"] = token
+        use_git_secret = False
+        if git_token_from_secrets and not is_placeholder(git_token_from_secrets):
+            use_git_secret = ask_confirm(
+                console,
+                "Use Git HTTPS token from secrets descriptor?",
+                default=True,
+            )
+        if use_git_secret:
+            runtime_secrets["services.git.http_token"] = git_token_from_secrets
+        else:
+            token = prompt_secret_value(
+                console,
+                "Git HTTPS token",
+                required=True,
+                current=None,
+                force_prompt=force_prompt,
+            )
+            if token:
+                runtime_secrets["services.git.http_token"] = token
         # Never store the token in env files.
         update_env_value(env_proc, "GIT_HTTP_TOKEN", "")
         # Avoid dangling SSH placeholders if user chose token
@@ -1129,9 +1937,11 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         if is_placeholder(env_main.entries.get("HOST_GIT_KNOWN_HOSTS_PATH", (None, None))[1]):
             update_env_value(env_main, "HOST_GIT_KNOWN_HOSTS_PATH", "/dev/null")
 
+    _autosave()
+
     bundles_json = env_proc.entries.get("AGENTIC_BUNDLES_JSON", (None, None))[1]
     if should_replace_bundles_config(bundles_json):
-        update_env_value(env_proc, "AGENTIC_BUNDLES_JSON", "/config/release.yaml")
+        update_env_value(env_proc, "AGENTIC_BUNDLES_JSON", "/config/assembly.yaml")
 
     if is_placeholder(env_proc.entries.get("KDCUBE_STORAGE_PATH", (None, None))[1]):
         update_env_value(env_proc, "KDCUBE_STORAGE_PATH", "/kdcube-storage")
@@ -1162,23 +1972,154 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
     for key, default_key in [
         ("UI_DOCKERFILE_PATH", "ui_dockerfile_path"),
         ("UI_SOURCE_PATH", "ui_source_path"),
+        ("UI_ENV_BUILD_RELATIVE", "ui_env_build_relative"),
         ("NGINX_UI_CONFIG_FILE_PATH", "nginx_ui_config"),
     ]:
         value = env_main.entries.get(key, (None, None))[1]
         if is_placeholder(value):
             update_env_value(env_main, key, defaults.get(default_key, ""))
 
+    # If the assembly descriptor includes frontend configuration, use it.
+    frontend_descriptor: Dict[str, object] = {}
+    if use_descriptor_frontend is not False and isinstance(release_descriptor, dict):
+        frontend_descriptor = release_descriptor.get("frontend") or {}
+
+    descriptor_dir = None
+    if release_descriptor_path:
+        try:
+            descriptor_dir = Path(release_descriptor_path).expanduser().resolve().parent
+        except Exception:
+            descriptor_dir = None
+
+    frontend_template_override: Optional[Path] = None
+    frontend_root: Optional[Path] = None
+    frontend_build: Optional[Dict[str, object]] = None
+    frontend_image: Optional[str] = None
+    frontend_config_value: Optional[str] = None
+    nginx_ui_config_value: Optional[str] = None
+    env_build_value: Optional[str] = None
+
+    if isinstance(frontend_descriptor, dict):
+        build_section = frontend_descriptor.get("build")
+        if isinstance(build_section, dict):
+            frontend_build = build_section
+        else:
+            for legacy_key in ("repo", "dockerfile", "src", "ref"):
+                if legacy_key in frontend_descriptor:
+                    frontend_build = frontend_descriptor
+                    break
+
+        frontend_image = _as_str(frontend_descriptor.get("image"))
+        if frontend_image is not None:
+            update_env_value(env_main, "KDCUBE_UI_IMAGE", frontend_image.strip())
+        elif frontend_build is not None:
+            update_env_value(env_main, "KDCUBE_UI_IMAGE", "")
+
+        frontend_config_value = _as_str(frontend_descriptor.get("frontend_config"))
+        if not frontend_config_value and isinstance(frontend_build, dict):
+            frontend_config_value = _as_str(frontend_build.get("frontend_config"))
+        nginx_ui_config_value = _as_str(frontend_descriptor.get("nginx_ui_config"))
+        if not nginx_ui_config_value and isinstance(frontend_build, dict):
+            nginx_ui_config_value = _as_str(frontend_build.get("nginx_ui_config"))
+        env_build_value = _as_str(frontend_descriptor.get("ui_env_build_relative") or frontend_descriptor.get("env_build"))
+        if not env_build_value and isinstance(frontend_build, dict):
+            env_build_value = _as_str(frontend_build.get("ui_env_build_relative") or frontend_build.get("env_build"))
+
+    if isinstance(frontend_build, dict) and frontend_build.get("repo"):
+        frontend_repo = str(frontend_build.get("repo"))
+        frontend_ref = frontend_build.get("ref")
+        frontend_root = git_clone_or_update(
+            console,
+            frontend_repo,
+            frontend_ref if isinstance(frontend_ref, str) else None,
+            ctx.workdir / "frontend",
+        )
+
+        update_env_value(env_main, "UI_BUILD_CONTEXT", str(frontend_root))
+
+        dockerfile_path = frontend_build.get("dockerfile")
+        if isinstance(dockerfile_path, str) and dockerfile_path:
+            update_env_value(env_main, "UI_DOCKERFILE_PATH", dockerfile_path)
+        source_path = frontend_build.get("src")
+        if isinstance(source_path, str) and source_path:
+            update_env_value(env_main, "UI_SOURCE_PATH", source_path)
+        if isinstance(env_build_value, str) and env_build_value:
+            if is_placeholder(env_build_value) or "path/to/" in env_build_value:
+                env_build_value = ".env.ui.build"
+            update_env_value(env_main, "UI_ENV_BUILD_RELATIVE", env_build_value)
+        else:
+            update_env_value(env_main, "UI_ENV_BUILD_RELATIVE", ".env.ui.build")
+        if isinstance(nginx_ui_config_value, str) and nginx_ui_config_value:
+            update_env_value(env_main, "NGINX_UI_CONFIG_FILE_PATH", nginx_ui_config_value)
+
+    if isinstance(frontend_config_value, str) and frontend_config_value:
+        frontend_template_override = _resolve_descriptor_path(
+            frontend_config_value,
+            repo_root=frontend_root,
+            descriptor_dir=descriptor_dir,
+        )
+
+    ui_build_context_final = env_main.entries.get("UI_BUILD_CONTEXT", (None, None))[1]
+    ui_env_build_rel_final = env_main.entries.get("UI_ENV_BUILD_RELATIVE", (None, None))[1]
+    ui_env_build_rel_final = normalize_env_build_relative(ui_env_build_rel_final)
+    if ui_env_build_rel_final:
+        update_env_value(env_main, "UI_ENV_BUILD_RELATIVE", ui_env_build_rel_final)
+    ensure_ui_env_build_file(console, ui_build_context_final, ui_env_build_rel_final)
+
     if auth_provider == "simple":
         frontend_template = ctx.ai_app_root / "deployment/docker/all_in_one_kdcube/frontend/config.hardcoded.json"
         compose_ui_config = ctx.config_dir / "frontend.config.hardcoded.json"
-        defaults["nginx_proxy_config"] = "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
+        if ctx.docker_dir.name == "custom-ui-managed-infra":
+            defaults["nginx_proxy_config"] = (
+                "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_ssl_hardcoded.conf"
+                if proxy_ssl_enabled
+                else "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy.conf"
+            )
+        else:
+            defaults["nginx_proxy_config"] = (
+                "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy_ssl.conf"
+                if proxy_ssl_enabled
+                else "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
+            )
     else:
         frontend_template = ctx.ai_app_root / "deployment/docker/all_in_one_kdcube/frontend/config.cognito.json"
         compose_ui_config = ctx.config_dir / "frontend.config.cognito.json"
-        defaults["nginx_proxy_config"] = "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
+        if ctx.docker_dir.name == "custom-ui-managed-infra":
+            if auth_mode == "delegated":
+                defaults["nginx_proxy_config"] = (
+                    "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_ssl_delegated_auth.conf"
+                    if proxy_ssl_enabled
+                    else "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_delegated.conf"
+                )
+            else:
+                defaults["nginx_proxy_config"] = (
+                    "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_ssl_cognito.conf"
+                    if proxy_ssl_enabled
+                    else "app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy.conf"
+                )
+        else:
+            if auth_mode == "delegated":
+                defaults["nginx_proxy_config"] = (
+                    "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy_ssl_delegated_auth.conf"
+                    if proxy_ssl_enabled
+                    else "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy_delegated.conf"
+                )
+            else:
+                defaults["nginx_proxy_config"] = (
+                    "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy_ssl.conf"
+                    if proxy_ssl_enabled
+                    else "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
+                )
+    if frontend_template_override and frontend_template_override.exists():
+        frontend_template = frontend_template_override
     cognito_region_val = env_ingress.entries.get("COGNITO_REGION", (None, None))[1]
     cognito_user_pool_id_val = env_ingress.entries.get("COGNITO_USER_POOL_ID", (None, None))[1]
     cognito_app_client_id_val = env_ingress.entries.get("COGNITO_APP_CLIENT_ID", (None, None))[1]
+    proxy_route_prefix_raw = _get_nested(assembly_data, "proxy", "route_prefix")
+    proxy_route_prefix = normalize_routes_prefix(proxy_route_prefix_raw) if proxy_route_prefix_raw else ""
+    if proxy_route_prefix:
+        _set_nested(assembly_data, ["proxy", "route_prefix"], proxy_route_prefix)
+
     write_frontend_config(
         compose_ui_config,
         tenant,
@@ -1187,8 +2128,9 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
         cognito_region=cognito_region_val,
         cognito_user_pool_id=cognito_user_pool_id_val,
         cognito_app_client_id=cognito_app_client_id_val,
+        routes_prefix=proxy_route_prefix or None,
     )
-    routes_prefix = normalize_routes_prefix(_load_json_file(compose_ui_config).get("routesPrefix"))
+    routes_prefix = proxy_route_prefix or normalize_routes_prefix(_load_json_file(compose_ui_config).get("routesPrefix"))
     runtime_proxy_path = env_main.entries.get("NGINX_PROXY_RUNTIME_CONFIG_PATH", (None, None))[1]
     desired_runtime_path = str((ctx.config_dir / Path(defaults["nginx_proxy_config"]).name).resolve())
     if is_placeholder(runtime_proxy_path) or not runtime_proxy_path:
@@ -1266,6 +2208,10 @@ def gather_configuration(console: Console, ctx: PathsContext) -> Tuple[Dict[str,
             else:
                 update_env_value(env_main, key, ask(console, f"{key} (relative to PROXY_BUILD_CONTEXT)"))
 
+    _autosave()
+
+    update_env_value(env_main, "KDCUBE_COMPOSE_MODE", compose_mode)
+
     save_env_file(env_main)
     save_env_file(env_ingress)
     save_env_file(env_proc)
@@ -1319,11 +2265,6 @@ def run_setup(
             console.print("[yellow]Could not infer lib root; using ai-app root instead.[/yellow]")
             lib_root = ai_app_root
 
-    docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
-    sample_env_dir = docker_dir / "sample_env"
-    if not sample_env_dir.exists():
-        raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
-
     if workdir is None:
         workdir_env = os.getenv("KDCUBE_WORKDIR", "").strip()
         if workdir_env:
@@ -1341,6 +2282,89 @@ def run_setup(
     data_dir = workdir / "data"
     logs_dir = workdir / "logs"
 
+    # Resolve compose mode before generating env files.
+    compose_mode_env = os.getenv("KDCUBE_COMPOSE_MODE", "").strip()
+    compose_mode = compose_mode_env
+    release_descriptor_path = None
+    release_descriptor = {}
+    secrets_descriptor_path = None
+    secrets_descriptor: Dict[str, object] = {}
+    env_descriptor = os.getenv("KDCUBE_ASSEMBLY_DESCRIPTOR_PATH", "").strip()
+    env_secrets_descriptor = os.getenv("KDCUBE_SECRETS_DESCRIPTOR_PATH", "").strip()
+    def _env_flag(name: str) -> Optional[bool]:
+        raw = os.getenv(name, "").strip().lower()
+        if not raw:
+            return None
+        if raw in {"1", "true", "yes", "y", "on"}:
+            return True
+        if raw in {"0", "false", "no", "n", "off"}:
+            return False
+        return None
+    use_descriptor_bundles = _env_flag("KDCUBE_ASSEMBLY_USE_BUNDLES")
+    use_descriptor_frontend = _env_flag("KDCUBE_ASSEMBLY_USE_FRONTEND")
+    use_descriptor_platform = _env_flag("KDCUBE_ASSEMBLY_USE_PLATFORM")
+    if (config_dir / ".env").exists():
+        env_existing = load_env_file(config_dir / ".env")
+        existing_mode = env_existing.entries.get("KDCUBE_COMPOSE_MODE", (None, None))[1]
+        if existing_mode:
+            compose_mode = existing_mode.strip()
+        existing_descriptor = env_existing.entries.get("HOST_BUNDLE_DESCRIPTOR_PATH", (None, None))[1]
+        if existing_descriptor and not is_placeholder(existing_descriptor):
+            release_descriptor_path = existing_descriptor
+    if env_descriptor and (use_descriptor_bundles or use_descriptor_frontend or use_descriptor_platform):
+        release_descriptor_path = env_descriptor
+
+    if not compose_mode and (not env_descriptor or (use_descriptor_bundles is None and use_descriptor_frontend is None and use_descriptor_platform is None)):
+        default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
+        release_descriptor_path = ask(console, "Assembly descriptor path (assembly.yaml)", default=default_assembly)
+        release_descriptor_path = str(Path(release_descriptor_path).expanduser())
+        stage_assembly_descriptor(
+            Path(default_assembly),
+            source_path=Path(release_descriptor_path),
+            ai_app_root=ai_app_root,
+        )
+        release_descriptor_path = default_assembly
+        compose_mode = "custom-ui-managed-infra" if release_descriptor_path else "all-in-one"
+    elif env_descriptor:
+        default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
+        stage_assembly_descriptor(
+            Path(default_assembly),
+            source_path=Path(env_descriptor),
+            ai_app_root=ai_app_root,
+        )
+        release_descriptor_path = default_assembly
+
+    if env_secrets_descriptor:
+        secrets_descriptor_path = str(Path(env_secrets_descriptor).expanduser().resolve())
+
+    if release_descriptor_path:
+        descriptor_path = Path(release_descriptor_path).expanduser()
+        if descriptor_path.exists():
+            release_descriptor = load_release_descriptor(descriptor_path)
+            if use_descriptor_frontend is True:
+                compose_mode = "custom-ui-managed-infra"
+            elif use_descriptor_frontend is False:
+                if not compose_mode_env:
+                    compose_mode = "all-in-one"
+            elif isinstance(release_descriptor, dict) and release_descriptor.get("frontend"):
+                compose_mode = "custom-ui-managed-infra"
+            elif not compose_mode_env:
+                compose_mode = "all-in-one"
+
+    if secrets_descriptor_path:
+        secrets_path = Path(secrets_descriptor_path).expanduser()
+        if secrets_path.exists():
+            secrets_descriptor = load_release_descriptor(secrets_path)
+
+    if compose_mode == "custom-ui-managed-infra":
+        docker_dir = ai_app_root / "deployment/docker/custom-ui-managed-infra"
+    else:
+        docker_dir = ai_app_root / "deployment/docker/all_in_one_kdcube"
+
+    sample_env_dir = docker_dir / "sample_env"
+    if not sample_env_dir.exists():
+        raise FileNotFoundError(f"Missing sample_env at {sample_env_dir}")
+
     ctx = PathsContext(
         lib_root=lib_root,
         ai_app_root=ai_app_root,
@@ -1352,7 +2376,7 @@ def run_setup(
     )
 
     ensure_env_files(config_dir, sample_env_dir)
-    ensure_nginx_configs(config_dir, ai_app_root)
+    ensure_nginx_configs(config_dir, ai_app_root, docker_dir)
     ensure_local_dirs(data_dir, logs_dir)
     # Record installer metadata for future runs.
     try:
@@ -1364,7 +2388,17 @@ def run_setup(
         (config_dir / "install-meta.json").write_text(json.dumps(meta, indent=2))
     except Exception:
         pass
-    env_paths, runtime_secrets = gather_configuration(console, ctx)
+    console.print("Launching setup wizard...")
+    env_paths, runtime_secrets = gather_configuration(
+        console,
+        ctx,
+        release_descriptor_path=release_descriptor_path,
+        release_descriptor=release_descriptor,
+        secrets_descriptor=secrets_descriptor,
+        compose_mode=compose_mode,
+        use_descriptor_bundles=use_descriptor_bundles,
+        use_descriptor_frontend=use_descriptor_frontend,
+    )
     env_main = load_env_file(config_dir / ".env")
 
     console.print("\n[bold]Env files:[/bold]")
@@ -1414,7 +2448,7 @@ def run_setup(
         if ask_confirm(
             console,
             "Build core platform images (includes py-code-exec)?",
-            default=False,
+            default=True,
         ):
             missing = missing_build_keys(env_main)
             if missing:
@@ -1424,6 +2458,17 @@ def run_setup(
                 console.print("[yellow]Fill these in .env and rerun the build step.[/yellow]")
             else:
                 try:
+                    ui_image_override = env_main.entries.get("KDCUBE_UI_IMAGE", (None, None))[1]
+                    build_services = [
+                        "chat-ingress",
+                        "chat-proc",
+                        "metrics",
+                        "web-proxy",
+                        "postgres-setup",
+                        "kdcube-secrets",
+                    ]
+                    if not (ui_image_override and not is_placeholder(ui_image_override)):
+                        build_services.append("web-ui")
                     subprocess.run(
                         [
                             "docker",
@@ -1431,13 +2476,7 @@ def run_setup(
                             "--env-file",
                             str(config_dir / ".env"),
                             "build",
-                            "chat-ingress",
-                            "chat-proc",
-                            "metrics",
-                            "web-ui",
-                            "web-proxy",
-                            "postgres-setup",
-                            "kdcube-secrets",
+                            *build_services,
                         ],
                         cwd=ctx.docker_dir,
                         check=True,
@@ -1458,9 +2497,10 @@ def run_setup(
                 except subprocess.CalledProcessError:
                     console.print("[red]Docker build failed. Check the output and retry.[/red]")
 
-    if ask_confirm(console, "Run docker compose now?", default=False):
+    if ask_confirm(console, "Run docker compose now?", default=True):
         runtime_env = None
         try:
+            maybe_remove_legacy_containers(console)
             token_overrides = generate_runtime_tokens()
             runtime_env = write_env_overlay(config_dir / ".env", token_overrides)
             base_cmd = [

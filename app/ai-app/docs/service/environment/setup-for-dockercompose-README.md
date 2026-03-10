@@ -3,13 +3,13 @@ id: ks:docs/service/environment/setup-for-dockercompose-README.md
 title: "Setup For Dockercompose"
 summary: "How to run git‑defined bundles with docker‑compose."
 tags: ["service", "environment", "docker-compose", "bundles"]
-keywords: ["all_in_one_kdcube", "custom-ui-managed-infra", "volume mounts", "release.yaml"]
+keywords: ["all_in_one_kdcube", "custom-ui-managed-infra", "volume mounts", "assembly.yaml"]
 see_also:
   - ks:docs/service/environment/setup-dev-env-README.md
   - ks:docs/service/environment/setup-for-ecs-README.md
   - ks:docs/service/environment/service-compose-env-README.md
 ---
-# Setup for Docker Compose (Bundles from Release Descriptor)
+# Setup for Docker Compose (Bundles from Assembly Descriptor)
 
 This guide shows how to run **git‑defined bundles** using docker‑compose
 (`all_in_one_kdcube` or `custom-ui-managed-infra`).
@@ -21,8 +21,8 @@ This guide shows how to run **git‑defined bundles** using docker‑compose
 Set these in the **compose `.env`** (paths on the host):
 
 ```bash
-# Release descriptor (mounted into /config/release.yaml)
-HOST_BUNDLE_DESCRIPTOR_PATH=/absolute/path/to/release.yaml
+# Assembly descriptor (mounted into /config/assembly.yaml)
+HOST_BUNDLE_DESCRIPTOR_PATH=/absolute/path/to/assembly.yaml
 
 # Bundles root on host (mounted into /bundles)
 HOST_BUNDLES_PATH=/absolute/path/to/bundles
@@ -50,7 +50,7 @@ cp nginx/conf/nginx_proxy.conf ./config/nginx_proxy.conf
 Set these in the **proc env file**:
 
 ```bash
-AGENTIC_BUNDLES_JSON=/config/release.yaml
+AGENTIC_BUNDLES_JSON=/config/assembly.yaml
 BUNDLES_FORCE_ENV_ON_STARTUP=1
 
 BUNDLE_GIT_RESOLUTION_ENABLED=1
@@ -87,7 +87,7 @@ BUNDLES_FORCE_ENV_ON_STARTUP=0
 
 ## 3) Notes
 
-- The processor reads the `bundles` section directly from `release.yaml`.
+- The processor reads the `bundles` section directly from `assembly.yaml`.
 - Redis is the runtime source of truth; `BUNDLES_FORCE_ENV_ON_STARTUP=1`
   performs a one‑time overwrite.
 - To enforce gateway config from env on every restart, set

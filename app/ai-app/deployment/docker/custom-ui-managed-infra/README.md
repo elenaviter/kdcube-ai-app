@@ -3,7 +3,7 @@ id: ks:deploy/docker/custom-ui-managed-infra/README.md
 title: "Custom UI + Managed Infra (Docker Compose)"
 summary: "Run KDCube services with a custom UI and OpenResty proxy against managed Postgres/Redis."
 tags: ["deployment", "docker", "compose", "custom-ui", "managed-infra", "nginx", "openresty"]
-keywords: ["custom frontend", "managed postgres", "managed redis", "openresty", "proxylogin", "bundles", "release descriptor"]
+keywords: ["custom frontend", "managed postgres", "managed redis", "openresty", "proxylogin", "bundles", "assembly descriptor"]
 see_also:
   - ks:docs/ops/deployment-options-index-README.md
   - ks:docs/service/environment/service-compose-env-README.md
@@ -107,12 +107,12 @@ Backend API routes are **not** under `routesPrefix`:
 - `HOST_BUNDLE_STORAGE_PATH` (host) → `BUNDLE_STORAGE_ROOT` (container)
 - Set `BUNDLE_STORAGE_ROOT=/bundle-storage` in `.env.proc`
 
-**Optional release descriptor (recommended):**
+**Optional assembly descriptor (recommended):**
 
-- Set `HOST_BUNDLE_DESCRIPTOR_PATH` in `.env` (host path to `release.yaml`)
-- Inside container it mounts to `/config/release.yaml`
+- Set `HOST_BUNDLE_DESCRIPTOR_PATH` in `.env` (host path to `assembly.yaml`)
+- Inside container it mounts to `/config/assembly.yaml`
 - In `.env.proc`, set:
-  - `AGENTIC_BUNDLES_JSON=/config/release.yaml`
+  - `AGENTIC_BUNDLES_JSON=/config/assembly.yaml`
 
 If you leave `HOST_BUNDLE_DESCRIPTOR_PATH` unset, `/dev/null` is mounted and the loader
 falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.

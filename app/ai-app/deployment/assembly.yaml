@@ -1,0 +1,60 @@
+config:
+  version: "2026.3.10.209"
+
+release_name: "local-default"
+domain: ""
+
+context:
+  tenant: "demo-tenant"
+  project: "demo-project"
+
+auth:
+  type: "simple"  # "simple" | "cognito" | "delegated"
+  cognito:
+    region: "eu-west-1"
+    user_pool_id: ""
+    app_client_id: ""
+    service_client_id: ""
+  proxy_login:
+    redis_key_prefix: "proxylogin:<TENANT>:<PROJECT>:"
+    token_masquerade: true
+    password_reset:
+      company: ""
+      sender: "email@your-org.com"
+      template_name: ""
+      redirect_url: "http://YOUR_DOMAIN/chatbot/reset-password?user=%[1]s"
+    http_urlbase: "https://YOUR_DOMAIN/auth"
+
+proxy:
+  ssl: false
+  route_prefix: "/chatbot"
+
+ports:
+  ingress: "8010"
+  proc: "8020"
+  metrics: "8090"
+  ui: "80"
+  ui_ssl: "443"
+
+infra:
+  postgres:
+    user: "postgres"
+    password: "postgres"
+    database: "kdcube"
+    host: "postgres-db"
+    port: "5432"
+  redis:
+    password: "redispass"
+    host: "redis"
+    port: "6379"
+
+bundles:
+  default_bundle_id: "react@2026-02-10-02-44"
+  items:
+    - id: app@2-0
+      name: Customer App
+      repo: git@github.com:org/customer-repo.git
+      ref: bundle-v2026.02.22
+      subdir: service/bundles
+      module: app@2-0.entrypoint
+

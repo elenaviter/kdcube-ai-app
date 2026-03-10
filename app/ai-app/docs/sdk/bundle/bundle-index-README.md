@@ -25,5 +25,5 @@ Use this index to find the right doc by persona.
 ## Ops / deployment
 
 - Registry, env vars, git delivery: [[docs/sdk/bundle/bundle-ops-README.md](bundle-ops-README.md)](bundle-ops-README.md)
-- Release descriptor + CI/CD: [[docs/service/cicd/release-descriptor-README.md](../../service/cicd/release-descriptor-README.md)](../../service/cicd/release-descriptor-README.md)
+- Assembly descriptor + CI/CD: [[docs/service/cicd/assembly-descriptor-README.md](../../service/cicd/assembly-descriptor-README.md)](../../service/cicd/assembly-descriptor-README.md)
 - Bundle release workflow: [[docs/service/cicd/release-bundle-README.md](../../service/cicd/release-bundle-README.md)](../../service/cicd/release-bundle-README.md)

@@ -389,7 +389,6 @@ def run_installer(
     release_ref: str | None,
     docker_namespace: str | None,
 ) -> None:
-    console.print("Launching setup wizard...")
     installer_mod.run_setup(
         console,
         repo_root=repo_root,
@@ -441,6 +440,16 @@ def main() -> None:
         action="store_true",
         help="Prompt for LLM keys and inject into the secrets sidecar",
     )
+    parser.add_argument(
+        "--proxy-ssl",
+        action="store_true",
+        help="Force SSL nginx proxy config (overrides assembly descriptor)",
+    )
+    parser.add_argument(
+        "--no-proxy-ssl",
+        action="store_true",
+        help="Disable SSL nginx proxy config (overrides assembly descriptor)",
+    )
     args = parser.parse_args()
 
     repo_path = Path(os.path.expanduser(args.path)).resolve()
@@ -448,11 +457,75 @@ def main() -> None:
         if args.clean:
             clean_docker_images(console)
             return
+        if args.proxy_ssl and args.no_proxy_ssl:
+            raise SystemExit("Choose only one of --proxy-ssl or --no-proxy-ssl.")
+        if args.proxy_ssl:
+            os.environ["KDCUBE_PROXY_SSL"] = "1"
+        elif args.no_proxy_ssl:
+            os.environ["KDCUBE_PROXY_SSL"] = "0"
         workdir = Path(os.path.expanduser(args.workdir)).expanduser().resolve()
         if not args.secrets_set and not args.secrets_prompt:
             workdir = Path(
                 Prompt.ask("Compose workdir (config+data root)", default=str(workdir))
             ).expanduser().resolve()
+
+        assembly_descriptor_path: Path | None = None
+        secrets_descriptor_path: Path | None = None
+        assembly_platform_ref: str | None = None
+        use_descriptor_bundles = False
+        use_descriptor_frontend = False
+        use_descriptor_platform = False
+        if not args.secrets_set and not args.secrets_prompt:
+            default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
+            raw_path = Prompt.ask("Assembly descriptor path (assembly.yaml)", default=default_assembly).strip()
+            source_path = Path(os.path.expanduser(raw_path)).expanduser().resolve()
+            target_path = Path(default_assembly)
+            installer_mod.stage_assembly_descriptor(
+                target_path,
+                source_path=source_path,
+                ai_app_root=repo_path / "app/ai-app",
+            )
+            os.environ["KDCUBE_ASSEMBLY_DESCRIPTOR_PATH"] = str(target_path)
+            assembly_descriptor_path = target_path
+            descriptor = installer_mod.load_release_descriptor(target_path)
+            bundles_default = isinstance(descriptor, dict) and bool(descriptor.get("bundles"))
+            frontend_default = isinstance(descriptor, dict) and bool(descriptor.get("frontend"))
+            platform_ref = None
+            if isinstance(descriptor, dict):
+                platform = descriptor.get("platform")
+                if isinstance(platform, dict):
+                    platform_ref = platform.get("ref")
+
+            raw_secrets = Prompt.ask(
+                "Secrets descriptor path (secrets.yaml) (leave blank to skip)",
+                default="",
+            ).strip()
+            if raw_secrets:
+                secrets_descriptor_path = Path(os.path.expanduser(raw_secrets)).expanduser().resolve()
+                os.environ["KDCUBE_SECRETS_DESCRIPTOR_PATH"] = str(secrets_descriptor_path)
+
+            use_descriptor_bundles = Confirm.ask(
+                "Use assembly descriptor for bundles?",
+                default=bundles_default,
+            )
+            use_descriptor_frontend = Confirm.ask(
+                "Use assembly descriptor for frontend?",
+                default=frontend_default,
+            )
+            use_descriptor_platform = Confirm.ask(
+                "Use assembly descriptor for platform (pull images)?",
+                default=bool(platform_ref),
+            )
+
+            if platform_ref and use_descriptor_platform:
+                assembly_platform_ref = str(platform_ref)
+            elif use_descriptor_platform and not platform_ref:
+                console.print("[yellow]Assembly descriptor has no platform.ref; skipping platform pull.[/yellow]")
+                use_descriptor_platform = False
+
+            os.environ["KDCUBE_ASSEMBLY_USE_BUNDLES"] = "1" if use_descriptor_bundles else "0"
+            os.environ["KDCUBE_ASSEMBLY_USE_FRONTEND"] = "1" if use_descriptor_frontend else "0"
+            os.environ["KDCUBE_ASSEMBLY_USE_PLATFORM"] = "1" if use_descriptor_platform else "0"
 
         if args.secrets_set or args.secrets_prompt:
             secrets = _parse_secret_pairs(args.secrets_set)
@@ -594,6 +667,9 @@ def main() -> None:
         choices = ["release-latest", "release-tag", "upstream", "skip"]
         if install_meta and install_meta.get("platform_ref"):
             choices.insert(1, "release-installed")
+        if assembly_platform_ref:
+            insert_at = 2 if "release-installed" in choices else 1
+            choices.insert(insert_at, "assembly-descriptor")
         choice = _select_option(
             console,
             "Install source",
@@ -610,7 +686,9 @@ def main() -> None:
             release_ref = None
         else:
             mode = "release"
-            if choice == "release-installed":
+            if choice == "assembly-descriptor":
+                release_ref = assembly_platform_ref
+            elif choice == "release-installed":
                 release_ref = install_meta.get("platform_ref") if install_meta else None
                 if not release_ref:
                     release_ref = Prompt.ask("Release version (platform.ref)")

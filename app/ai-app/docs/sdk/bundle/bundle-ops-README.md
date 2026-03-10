@@ -3,7 +3,7 @@ id: ks:docs/sdk/bundle/bundle-ops-README.md
 title: "Bundle Ops"
 summary: "Ops guide for bundle registry, delivery modes, git resolution, env controls, and runtime props."
 tags: ["sdk", "bundle", "ops", "registry", "git", "env", "release", "props"]
-keywords: ["AGENTIC_BUNDLES_JSON", "bundles registry", "Redis", "BUNDLES_FORCE_ENV_ON_STARTUP", "git bundles", "BUNDLE_GIT_RESOLUTION_ENABLED", "BUNDLE_GIT_REDIS_LOCK", "release.yaml", "props"]
+keywords: ["AGENTIC_BUNDLES_JSON", "bundles registry", "Redis", "BUNDLES_FORCE_ENV_ON_STARTUP", "git bundles", "BUNDLE_GIT_RESOLUTION_ENABLED", "BUNDLE_GIT_REDIS_LOCK", "assembly.yaml", "props"]
 see_also:
   - ks:docs/sdk/bundle/bundle-dev-README.md
   - ks:docs/sdk/bundle/bundle-index-README.md
@@ -203,7 +203,7 @@ BUNDLES_INCLUDE_EXAMPLES=0
 ## Bundle props (runtime overrides)
 
 Bundles can expose runtime props stored per tenant/project/bundle in Redis.
-These props can be provided in the release descriptor **or** updated at runtime.
+These props can be provided in the assembly descriptor **or** updated at runtime.
 
 Admin APIs:
 - `GET /admin/integrations/bundles/{bundle_id}/props`
@@ -231,9 +231,9 @@ POST /admin/integrations/bundles/<bundle_id>/props
 }
 ```
 
-### Props in release.yaml
+### Props in assembly.yaml
 
-You can also set props per bundle item in `release.yaml`:
+You can also set props per bundle item in `assembly.yaml`:
 
 ```yaml
 bundles:
@@ -263,19 +263,19 @@ Resolved values are stored in Redis as runtime props.
 
 ---
 
-## Release descriptors
+## Assembly descriptors
 
-Release descriptors define bundle versions for CI/CD.
+Assembly descriptors define bundle versions for CI/CD.
 Canonical docs:
-- [docs/service/cicd/release-descriptor-README.md](../../service/cicd/release-descriptor-README.md)
+- [docs/service/cicd/assembly-descriptor-README.md](../../service/cicd/assembly-descriptor-README.md)
 - [docs/service/cicd/release-bundle-README.md](../../service/cicd/release-bundle-README.md)
 
-Use `repo/ref/subdir/module` in the release descriptor and set:
+Use `repo/ref/subdir/module` in the assembly descriptor and set:
 ```
-AGENTIC_BUNDLES_JSON=/config/release.yaml
+AGENTIC_BUNDLES_JSON=/config/assembly.yaml
 ```
 
-Release descriptors define **bundle versions** and can include **bundle props**.
+Assembly descriptors define **bundle versions** and can include **bundle props**.
 
 ---
 

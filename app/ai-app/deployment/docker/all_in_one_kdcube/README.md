@@ -126,12 +126,12 @@ If you use the CLI installer, it pre‑creates `./logs/chat-ingress` and
 
 This is how bundle code becomes available to the processor in this setup.
 
-**Optional release descriptor (recommended):**
+**Optional assembly descriptor (recommended):**
 
-- Set `HOST_BUNDLE_DESCRIPTOR_PATH` in `.env` (host path to `release.yaml`)
-- Inside container it mounts to `/config/release.yaml`
+- Set `HOST_BUNDLE_DESCRIPTOR_PATH` in `.env` (host path to `assembly.yaml`)
+- Inside container it mounts to `/config/assembly.yaml`
 - In `.env.proc`, set:
-  - `AGENTIC_BUNDLES_JSON=/config/release.yaml`
+  - `AGENTIC_BUNDLES_JSON=/config/assembly.yaml`
 
 If you leave `HOST_BUNDLE_DESCRIPTOR_PATH` unset, `/dev/null` is mounted and the loader
 falls back to inline `AGENTIC_BUNDLES_JSON` or the Redis registry.

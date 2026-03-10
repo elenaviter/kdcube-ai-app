@@ -28,7 +28,7 @@ from datetime import datetime, timedelta, timezone
 from kdcube_ai_app.apps.chat.api.resolvers import auth_without_pressure
 from kdcube_ai_app.apps.chat.sdk.infra.economics.stripe import StripeEconomicsWebhookHandler
 from kdcube_ai_app.auth.sessions import UserSession
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, get_secret
 from kdcube_ai_app.apps.chat.sdk.infra.economics.limiter import UserEconomicsRateLimiter
 from kdcube_ai_app.apps.chat.sdk.infra.economics.project_budget import ProjectBudgetLimiter
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription_budget import SubscriptionBudgetLimiter
@@ -1506,7 +1506,7 @@ async def stripe_webhook(
         subscription_mgr=subscription_mgr,
         default_tenant=settings.TENANT,
         default_project=settings.PROJECT,
-        stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET"),
+        stripe_webhook_secret=get_secret("services.stripe.webhook_secret"),
     )
 
     body = await request.body()

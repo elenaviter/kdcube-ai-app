@@ -1,18 +1,18 @@
 ---
 id: ks:docs/service/cicd/release-bundle-README.md
 title: "Release Bundle"
-summary: "Step‑by‑step bundle release workflow: tagging, release.yaml updates, delivery mode, props, and validation."
+summary: "Step‑by‑step bundle release workflow: tagging, assembly.yaml updates, delivery mode, props, and validation."
 tags: ["service", "cicd", "release", "bundles", "delivery", "git", "baked", "props", "redis"]
-keywords: ["bundle id", "tag", "commit", "release.yaml", "subdir", "module", "baked bundles", "git-defined bundles", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLES_INCLUDE_EXAMPLES"]
+keywords: ["bundle id", "tag", "commit", "assembly.yaml", "subdir", "module", "baked bundles", "git-defined bundles", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLES_INCLUDE_EXAMPLES"]
 see_also:
-  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/assembly-descriptor-README.md
   - ks:docs/service/cicd/custom-cicd-README.md
   - ks:docs/service/cicd/release-README.md
 ---
 ## Bundle Release Process
 
-This doc describes how to release a bundle and update the **release descriptor**
-(`release.yaml`). It applies to both **baked** bundles and **git‑defined** bundles.
+This doc describes how to release a bundle and update the **assembly descriptor**
+(`assembly.yaml`). It applies to both **baked** bundles and **git‑defined** bundles.
 
 ---
 
@@ -34,14 +34,14 @@ git tag <bundle-tag>
 git push origin <bundle-tag>
 ```
 
-Use that tag/commit as `ref` in the release descriptor.  
+Use that tag/commit as `ref` in the assembly descriptor.  
 **Branch refs are for dev only** and require `BUNDLE_GIT_ALWAYS_PULL=1`.
 
 ---
 
-## 3) Update release.yaml
+## 3) Update assembly.yaml
 
-Edit `release.yaml` in the **customer repo** and add/update the bundle entry.
+Edit `assembly.yaml` in the **customer repo** and add/update the bundle entry.
 
 ### Example (bundle inside monorepo)
 
@@ -65,7 +65,7 @@ bundles:
 ## 4) Configure bundle props (optional)
 
 Bundles may require **runtime props** (for example: knowledge repo + docs root).
-You can define props directly in `release.yaml` **per bundle item**:
+You can define props directly in `assembly.yaml` **per bundle item**:
 
 ```yaml
 bundles:

@@ -64,9 +64,9 @@ For git‑defined bundles, ensure:
 - `BUNDLE_GIT_RESOLUTION_ENABLED=1`
 - `BUNDLE_GIT_REDIS_LOCK=1` (each replica pulls once)
 - `AGENTIC_BUNDLES_JSON` can point to a JSON/YAML file path mounted into the task (recommended for readability).
-  Mount it to `/config/release.yaml` and set:
+  Mount it to `/config/assembly.yaml` and set:
   ```
-  AGENTIC_BUNDLES_JSON=/config/release.yaml
+  AGENTIC_BUNDLES_JSON=/config/assembly.yaml
   ```
 
 **Rule:** set `subdir` to the **parent bundles directory** and use `module: "<bundle_folder>.entrypoint"`.
