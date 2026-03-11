@@ -559,10 +559,13 @@ def main() -> None:
                     "Use assembly descriptor for bundles?",
                     default=bundles_default,
                 )
+            if frontend_default:
                 use_descriptor_frontend = Confirm.ask(
                     "Use assembly descriptor for frontend?",
                     default=frontend_default,
                 )
+            else:
+                use_descriptor_frontend = False
                 use_descriptor_platform = Confirm.ask(
                     "Use assembly descriptor for platform (pull images)?",
                     default=bool(platform_ref),
