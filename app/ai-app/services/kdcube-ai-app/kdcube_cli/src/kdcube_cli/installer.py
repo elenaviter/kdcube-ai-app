@@ -83,6 +83,8 @@ def is_placeholder(value: Optional[str]) -> bool:
         return True
     if "path/to/" in stripped or stripped.startswith("path/to"):
         return True
+    if "relative_path" in stripped.lower():
+        return True
     if "platform-repo/" in stripped or "frontend-repo/" in stripped:
         return True
     if "..." in stripped:
@@ -1708,16 +1710,28 @@ def gather_configuration(
                 redis_pass = str(redis_pass_from_assembly)
             redis_pass = redis_pass or ""
     else:
-        redis_pass = prompt_secret(
-            console,
-            env_main,
-            "REDIS_PASSWORD",
-            "Redis password (leave blank for none)",
-            required=False,
-            force_prompt=force_prompt,
-        )
-        if not redis_pass:
-            redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
+        current_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1]
+        if is_placeholder(current_pass):
+            current_pass = None
+        options: List[str] = []
+        if current_pass:
+            options.append("Keep current password")
+        options.extend(["Unset (no password)", "Enter new password"])
+        default_index = 0 if current_pass else 0
+        choice = select_option(console, "Redis password", options, default_index)
+        if choice.startswith("Keep") and current_pass:
+            redis_pass = current_pass
+        elif choice.startswith("Unset"):
+            redis_pass = ""
+        else:
+            redis_pass = prompt_secret_value(
+                console,
+                "Redis password",
+                required=False,
+                current=current_pass,
+                force_prompt=True,
+            ) or ""
+        update_env_value(env_main, "REDIS_PASSWORD", redis_pass)
 
     redis_host = (
         env_ingress.entries.get("REDIS_HOST", (None, None))[1]
