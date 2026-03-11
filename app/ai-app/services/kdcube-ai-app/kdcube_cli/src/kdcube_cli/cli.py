@@ -498,6 +498,9 @@ def main() -> None:
         use_descriptor_bundles = False
         use_descriptor_frontend = False
         use_descriptor_platform = False
+        bundles_default = False
+        frontend_default = False
+        platform_ref = None
         if not args.secrets_set and not args.secrets_prompt:
             default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
             raw_path = Prompt.ask("Assembly descriptor path (assembly.yaml)", default=default_assembly).strip()
@@ -514,7 +517,6 @@ def main() -> None:
                 descriptor = installer_mod.load_release_descriptor(target_path)
                 bundles_default = isinstance(descriptor, dict) and bool(descriptor.get("bundles"))
                 frontend_default = isinstance(descriptor, dict) and bool(descriptor.get("frontend"))
-                platform_ref = None
                 if isinstance(descriptor, dict):
                     platform = descriptor.get("platform")
                     if isinstance(platform, dict):
@@ -548,18 +550,19 @@ def main() -> None:
                 )
                 os.environ["KDCUBE_GATEWAY_DESCRIPTOR_PATH"] = str(target_gateway)
 
-            use_descriptor_bundles = Confirm.ask(
-                "Use assembly descriptor for bundles?",
-                default=bundles_default,
-            )
-            use_descriptor_frontend = Confirm.ask(
-                "Use assembly descriptor for frontend?",
-                default=frontend_default,
-            )
-            use_descriptor_platform = Confirm.ask(
-                "Use assembly descriptor for platform (pull images)?",
-                default=bool(platform_ref),
-            )
+            if assembly_descriptor_path:
+                use_descriptor_bundles = Confirm.ask(
+                    "Use assembly descriptor for bundles?",
+                    default=bundles_default,
+                )
+                use_descriptor_frontend = Confirm.ask(
+                    "Use assembly descriptor for frontend?",
+                    default=frontend_default,
+                )
+                use_descriptor_platform = Confirm.ask(
+                    "Use assembly descriptor for platform (pull images)?",
+                    default=bool(platform_ref),
+                )
 
             if platform_ref and use_descriptor_platform:
                 assembly_platform_ref = str(platform_ref)
