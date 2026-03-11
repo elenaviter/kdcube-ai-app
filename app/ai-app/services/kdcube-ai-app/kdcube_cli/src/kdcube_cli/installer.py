@@ -265,6 +265,23 @@ def _load_json_file(path: Path) -> Dict[str, object]:
         return {}
 
 
+def load_gateway_descriptor(path: Path) -> Dict[str, object]:
+    try:
+        text = path.read_text()
+    except Exception:
+        return {}
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    try:
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def load_release_descriptor(path: Path) -> Dict[str, object]:
     try:
         data = yaml.safe_load(path.read_text())
@@ -300,6 +317,24 @@ def _set_nested(dct: Dict[str, object], keys: List[str], value: object) -> None:
         cur = nxt
     cur[keys[-1]] = value
 
+
+def _delete_nested(dct: Dict[str, object], keys: List[str]) -> None:
+    cur: object = dct
+    parents: List[Tuple[Dict[str, object], str]] = []
+    for key in keys:
+        if not isinstance(cur, dict) or key not in cur:
+            return
+        parents.append((cur, key))
+        cur = cur.get(key)
+    parent, last_key = parents[-1]
+    parent.pop(last_key, None)
+    # Clean up empty parent dicts.
+    for parent, key in reversed(parents[:-1]):
+        child = parent.get(key)
+        if isinstance(child, dict) and not child:
+            parent.pop(key, None)
+        else:
+            break
 
 def _has_nested(dct: Dict[str, object], *keys: str) -> bool:
     cur: object = dct
@@ -512,6 +547,30 @@ def stage_secrets_descriptor(
             shutil.copyfile(source_path, target_path)
         return
     ensure_secrets_template(target_path, ai_app_root)
+
+
+def ensure_gateway_template(target_path: Path, ai_app_root: Path) -> None:
+    if target_path.exists():
+        return
+    src = ai_app_root / "deployment/gateway.yaml"
+    if not src.exists():
+        raise FileNotFoundError(f"Missing gateway template: {src}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, target_path)
+
+
+def stage_gateway_descriptor(
+    target_path: Path,
+    *,
+    source_path: Optional[Path],
+    ai_app_root: Path,
+) -> None:
+    if source_path and source_path.exists():
+        if target_path.resolve() != source_path.resolve():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+        return
+    ensure_gateway_template(target_path, ai_app_root)
 
 
 def ensure_nginx_configs(target_dir: Path, ai_app_root: Path, docker_dir: Path) -> None:
@@ -1088,6 +1147,7 @@ def gather_configuration(
     *,
     release_descriptor_path: Optional[str] = None,
     release_descriptor: Optional[Dict[str, object]] = None,
+    gateway_descriptor: Optional[Dict[str, object]] = None,
     secrets_descriptor: Optional[Dict[str, object]] = None,
     compose_mode: str = "all-in-one",
     use_descriptor_bundles: Optional[bool] = None,
@@ -1104,6 +1164,7 @@ def gather_configuration(
     assembly_path = Path(release_descriptor_path).expanduser().resolve() if release_descriptor_path else None
     assembly_data: Dict[str, object] = dict(release_descriptor or {})
     secrets_data: Dict[str, object] = dict(secrets_descriptor or {})
+    gateway_data: Dict[str, object] = dict(gateway_descriptor or {})
     autosave_envs = (env_main, env_ingress, env_proc, env_metrics, env_pg, env_proxy)
 
     def _secret_pick(*paths: object) -> Optional[str]:
@@ -1140,6 +1201,10 @@ def gather_configuration(
     if assembly_path:
         update_env_value(env_main, "KDCUBE_ASSEMBLY_DESCRIPTOR_PATH", str(assembly_path))
         _autosave()
+
+    if gateway_data:
+        for env in (env_ingress, env_proc, env_metrics):
+            replace_multiline_block(env, "GATEWAY_CONFIG_JSON", _format_json_multiline("GATEWAY_CONFIG_JSON", gateway_data))
 
     # Persist bundle descriptor selection early so Ctrl+C still keeps it.
     existing_tenant, existing_project = _extract_tenant_project(env_ingress)
@@ -1422,6 +1487,38 @@ def gather_configuration(
 
     _autosave()
 
+    aws_region = _get_nested(assembly_data, "aws", "region")
+    aws_profile = _get_nested(assembly_data, "aws", "profile")
+    aws_ec2_flag = _get_nested(assembly_data, "aws", "ec2")
+    aws_region_val = aws_region.strip() if isinstance(aws_region, str) else ""
+    aws_profile_val = aws_profile.strip() if isinstance(aws_profile, str) else ""
+    aws_ec2_enabled = parse_bool(str(aws_ec2_flag)) if aws_ec2_flag is not None else False
+    if aws_region_val:
+        update_env_value(env_ingress, "AWS_REGION", aws_region_val)
+        update_env_value(env_ingress, "AWS_DEFAULT_REGION", aws_region_val)
+        update_env_value(env_proc, "AWS_REGION", aws_region_val)
+        update_env_value(env_proc, "AWS_DEFAULT_REGION", aws_region_val)
+        update_env_value(env_metrics, "AWS_REGION", aws_region_val)
+        update_env_value(env_metrics, "AWS_DEFAULT_REGION", aws_region_val)
+        update_env_value(env_proxy, "AWS_REGION", aws_region_val)
+        update_env_value(env_proxy, "AWS_DEFAULT_REGION", aws_region_val)
+    if aws_profile_val:
+        update_env_value(env_ingress, "AWS_PROFILE", aws_profile_val)
+        update_env_value(env_proc, "AWS_PROFILE", aws_profile_val)
+        update_env_value(env_metrics, "AWS_PROFILE", aws_profile_val)
+        update_env_value(env_proxy, "AWS_PROFILE", aws_profile_val)
+
+    if aws_ec2_enabled:
+        update_env_value(env_ingress, "AWS_SDK_LOAD_CONFIG", "1")
+        update_env_value(env_proc, "AWS_SDK_LOAD_CONFIG", "1")
+        update_env_value(env_metrics, "AWS_SDK_LOAD_CONFIG", "1")
+        update_env_value(env_ingress, "AWS_EC2_METADATA_DISABLED", "false")
+        update_env_value(env_proc, "AWS_EC2_METADATA_DISABLED", "false")
+        update_env_value(env_metrics, "AWS_EC2_METADATA_DISABLED", "false")
+        update_env_value(env_ingress, "NO_PROXY", "169.254.169.254,localhost,127.0.0.1")
+        update_env_value(env_proc, "NO_PROXY", "169.254.169.254,localhost,127.0.0.1")
+        update_env_value(env_metrics, "NO_PROXY", "169.254.169.254,localhost,127.0.0.1")
+
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
     pg_user_from_assembly = _get_nested(assembly_data, "infra", "postgres", "user")
@@ -1430,12 +1527,14 @@ def gather_configuration(
     pg_pass_from_secrets = _secret_pick(("infra", "postgres", "password"), ("postgres_password",))
     pg_host_from_assembly = _get_nested(assembly_data, "infra", "postgres", "host")
     pg_port_from_assembly = _get_nested(assembly_data, "infra", "postgres", "port")
+    pg_ssl_from_assembly = _get_nested(assembly_data, "infra", "postgres", "ssl")
     has_pg_descriptor = bool(
         (pg_user_from_assembly and not is_placeholder(str(pg_user_from_assembly)))
         or (pg_db_from_assembly and not is_placeholder(str(pg_db_from_assembly)))
         or (pg_pass_from_assembly and not is_placeholder(str(pg_pass_from_assembly)))
         or (pg_host_from_assembly and not is_placeholder(str(pg_host_from_assembly)))
         or (pg_port_from_assembly and not is_placeholder(str(pg_port_from_assembly)))
+        or pg_ssl_from_assembly is not None
     )
     use_pg_secret = False
     if pg_pass_from_secrets:
@@ -1459,6 +1558,10 @@ def gather_configuration(
             update_env_value(env_proc, "POSTGRES_HOST", str(pg_host_from_assembly))
         if pg_port_from_assembly and not is_placeholder(str(pg_port_from_assembly)):
             update_env_value(env_pg, "POSTGRES_PORT", str(pg_port_from_assembly))
+        if pg_ssl_from_assembly is not None:
+            update_env_value(env_ingress, "POSTGRES_SSL", str(pg_ssl_from_assembly).lower())
+            update_env_value(env_proc, "POSTGRES_SSL", str(pg_ssl_from_assembly).lower())
+            update_env_value(env_pg, "POSTGRES_SSL", str(pg_ssl_from_assembly).lower())
 
     pg_user = env_pg.entries.get("POSTGRES_USER", (None, None))[1]
     if force_prompt or is_placeholder(pg_user):
@@ -1560,7 +1663,8 @@ def gather_configuration(
 
     if use_redis_descriptor:
         if _has_nested(assembly_data, "infra", "redis", "password") and not use_redis_secret:
-            update_env_value(env_main, "REDIS_PASSWORD", str(redis_pass_from_assembly or ""))
+            if redis_pass_from_assembly is not None and str(redis_pass_from_assembly).strip():
+                update_env_value(env_main, "REDIS_PASSWORD", str(redis_pass_from_assembly))
         if redis_host_from_assembly and not is_placeholder(str(redis_host_from_assembly)):
             update_env_value(env_ingress, "REDIS_HOST", str(redis_host_from_assembly))
             update_env_value(env_proc, "REDIS_HOST", str(redis_host_from_assembly))
@@ -1578,14 +1682,20 @@ def gather_configuration(
     if use_redis_secret and redis_pass_from_secrets:
         redis_pass = redis_pass_from_secrets
     elif use_redis_descriptor and _has_nested(assembly_data, "infra", "redis", "password"):
-        redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1] or ""
+        if redis_pass_from_assembly is None or str(redis_pass_from_assembly).strip() == "":
+            redis_pass = ""
+        else:
+            redis_pass = env_main.entries.get("REDIS_PASSWORD", (None, None))[1]
+            if is_placeholder(redis_pass):
+                redis_pass = str(redis_pass_from_assembly)
+            redis_pass = redis_pass or ""
     else:
         redis_pass = prompt_secret(
             console,
             env_main,
             "REDIS_PASSWORD",
-            "Redis password",
-            required=True,
+            "Redis password (leave blank for none)",
+            required=False,
             force_prompt=force_prompt,
         )
         if not redis_pass:
@@ -1625,7 +1735,10 @@ def gather_configuration(
         _set_env(env_proxy, "REDIS_URL", redis_url)
 
     if not use_redis_secret:
-        _set_nested(assembly_data, ["infra", "redis", "password"], redis_pass or "")
+        if redis_pass and str(redis_pass).strip():
+            _set_nested(assembly_data, ["infra", "redis", "password"], redis_pass)
+        else:
+            _delete_nested(assembly_data, ["infra", "redis", "password"])
     _set_nested(assembly_data, ["infra", "redis", "host"], redis_host)
     _set_nested(assembly_data, ["infra", "redis", "port"], str(redis_port))
 
@@ -1642,8 +1755,14 @@ def gather_configuration(
     if assembly_path:
         update_env_value(env_ingress, "POSTGRES_HOST", pg_host_val)
         update_env_value(env_proc, "POSTGRES_HOST", pg_host_val)
+    if pg_ssl_from_assembly is not None and assembly_path:
+        update_env_value(env_ingress, "POSTGRES_SSL", str(pg_ssl_from_assembly).lower())
+        update_env_value(env_proc, "POSTGRES_SSL", str(pg_ssl_from_assembly).lower())
+        update_env_value(env_pg, "POSTGRES_SSL", str(pg_ssl_from_assembly).lower())
     _set_nested(assembly_data, ["infra", "postgres", "host"], pg_host_val)
     _set_nested(assembly_data, ["infra", "postgres", "port"], str(pg_port_val))
+    if pg_ssl_from_assembly is not None:
+        _set_nested(assembly_data, ["infra", "postgres", "ssl"], bool(pg_ssl_from_assembly))
     _autosave()
 
     openai_from_secrets = _secret_pick(
@@ -1678,6 +1797,14 @@ def gather_configuration(
         ("hugging_face_api_key",),
         ("huggingface_api_key",),
         ("hugging_face_key",),
+    )
+    aws_access_key_from_secrets = _secret_pick(
+        ("aws", "access_key_id"),
+        ("aws_access_key_id",),
+    )
+    aws_secret_key_from_secrets = _secret_pick(
+        ("aws", "secret_access_key"),
+        ("aws_secret_access_key",),
     )
     stripe_secret_from_secrets = _secret_pick(
         ("services", "stripe", "secret_key"),
@@ -1725,6 +1852,12 @@ def gather_configuration(
         runtime_secrets["services.google.api_key"] = google_from_secrets
     if huggingface_from_secrets:
         runtime_secrets["services.huggingface.api_key"] = huggingface_from_secrets
+    if aws_access_key_from_secrets:
+        runtime_secrets["aws.access_key_id"] = aws_access_key_from_secrets
+        update_env_value(env_proxy, "AWS_ACCESS_KEY_ID", aws_access_key_from_secrets)
+    if aws_secret_key_from_secrets:
+        runtime_secrets["aws.secret_access_key"] = aws_secret_key_from_secrets
+        update_env_value(env_proxy, "AWS_SECRET_ACCESS_KEY", aws_secret_key_from_secrets)
     if stripe_secret_from_secrets:
         runtime_secrets["services.stripe.secret_key"] = stripe_secret_from_secrets
     if stripe_webhook_from_secrets:
@@ -2237,8 +2370,11 @@ def run_setup(
     install_mode: Optional[str] = None,
     release_ref: Optional[str] = None,
     docker_namespace: Optional[str] = None,
+    dry_run: bool = False,
 ) -> None:
     install_mode = (install_mode or os.getenv("KDCUBE_INSTALL_MODE", "upstream")).strip().lower()
+    if not dry_run:
+        dry_run = parse_bool(os.getenv("KDCUBE_DRY_RUN", "")) is True
     env_release_ref = os.getenv("KDCUBE_RELEASE_REF", "").strip()
     env_docker_namespace = os.getenv("KDCUBE_DOCKER_NAMESPACE", "").strip()
     if not release_ref and env_release_ref:
@@ -2289,8 +2425,11 @@ def run_setup(
     release_descriptor = {}
     secrets_descriptor_path = None
     secrets_descriptor: Dict[str, object] = {}
+    gateway_descriptor_path = None
+    gateway_descriptor: Dict[str, object] = {}
     env_descriptor = os.getenv("KDCUBE_ASSEMBLY_DESCRIPTOR_PATH", "").strip()
     env_secrets_descriptor = os.getenv("KDCUBE_SECRETS_DESCRIPTOR_PATH", "").strip()
+    env_gateway_descriptor = os.getenv("KDCUBE_GATEWAY_DESCRIPTOR_PATH", "").strip()
     def _env_flag(name: str) -> Optional[bool]:
         raw = os.getenv(name, "").strip().lower()
         if not raw:
@@ -2337,6 +2476,9 @@ def run_setup(
     if env_secrets_descriptor:
         secrets_descriptor_path = str(Path(env_secrets_descriptor).expanduser().resolve())
 
+    if env_gateway_descriptor:
+        gateway_descriptor_path = str(Path(env_gateway_descriptor).expanduser().resolve())
+
     if release_descriptor_path:
         descriptor_path = Path(release_descriptor_path).expanduser()
         if descriptor_path.exists():
@@ -2355,6 +2497,11 @@ def run_setup(
         secrets_path = Path(secrets_descriptor_path).expanduser()
         if secrets_path.exists():
             secrets_descriptor = load_release_descriptor(secrets_path)
+
+    if gateway_descriptor_path:
+        gateway_path = Path(gateway_descriptor_path).expanduser()
+        if gateway_path.exists():
+            gateway_descriptor = load_gateway_descriptor(gateway_path)
 
     if compose_mode == "custom-ui-managed-infra":
         docker_dir = ai_app_root / "deployment/docker/custom-ui-managed-infra"
@@ -2394,6 +2541,7 @@ def run_setup(
         ctx,
         release_descriptor_path=release_descriptor_path,
         release_descriptor=release_descriptor,
+        gateway_descriptor=gateway_descriptor,
         secrets_descriptor=secrets_descriptor,
         compose_mode=compose_mode,
         use_descriptor_bundles=use_descriptor_bundles,
@@ -2412,6 +2560,26 @@ def run_setup(
     console.print(f"  PROXY_BUILD_CONTEXT={proxy_ctx}")
 
     console.print("\n[dim]Small coffee break:[/dim] ☕\n")
+
+    if dry_run:
+        console.print(f"[bold]Dry run:[/bold] no Docker actions will be executed. Workdir: {workdir}")
+        console.print("\n[bold]Env files:[/bold]")
+        for name, path in env_paths.items():
+            console.print(f"  {name}: {path}")
+        if parse_bool(os.getenv("KDCUBE_DRY_RUN_PRINT_ENV", "")) is True:
+            for name, path in env_paths.items():
+                try:
+                    content = Path(path).read_text()
+                except Exception as exc:
+                    console.print(f"[red]Failed to read {name} ({path}): {exc}[/red]")
+                    continue
+                console.print(f"\n[bold]{name}[/bold] — {path}\n")
+                console.print(content.rstrip())
+        if runtime_secrets:
+            console.print("\n[bold]Runtime secrets to inject:[/bold]")
+            for key in sorted(runtime_secrets.keys()):
+                console.print(f"  - {key}")
+        return
 
     if install_mode == "release":
         console.print("[bold]Release mode[/bold]: pull prebuilt images from DockerHub.")

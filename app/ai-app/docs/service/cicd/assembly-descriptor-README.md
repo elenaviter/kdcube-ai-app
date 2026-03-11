@@ -103,10 +103,16 @@ infra:
     database: "kdcube"
     host: "postgres-db"
     port: "5432"
+    ssl: false
   redis:
     password: "redispass"
     host: "redis"
     port: "6379"
+
+aws:
+  region: "eu-west-1"
+  profile: "dev"
+  ec2: false
 
 paths:
   host_kdcube_storage_path: "/srv/kdcube/data/kdcube-storage"
@@ -181,6 +187,10 @@ Optional:
 - `paths.*`: local-only host path overrides. The CLI will write these into the
   workdir copy of the descriptor when needed; they are not required in the
   public template.
+- `aws.region`: used to set `AWS_REGION`/`AWS_DEFAULT_REGION` in services.
+- `aws.profile`: used to set `AWS_PROFILE` in services.
+- `aws.ec2`: when true, the CLI sets EC2-safe defaults (`AWS_SDK_LOAD_CONFIG=1`,
+  `AWS_EC2_METADATA_DISABLED=false`, and `NO_PROXY=169.254.169.254,localhost,127.0.0.1`).
 
 **CLI behavior:**
 - If `frontend.build` is provided, clones the frontend repo into
@@ -224,6 +234,8 @@ When you run the wizard with an assembly descriptor, it will:
 - Use `infra.postgres` and `infra.redis` values as defaults.
 - Use `paths.*` as defaults for local host paths.
 - Write back any values you enter, keeping `assembly.yaml` as the source of truth.
+
+`infra.postgres.ssl` maps to `POSTGRES_SSL` in ingress/proc.
 
 For infra, the wizard will explicitly ask whether to use Postgres/Redis settings
 from the descriptor or override them. If you choose to use the descriptor, it

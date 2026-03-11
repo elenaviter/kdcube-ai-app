@@ -388,6 +388,7 @@ def run_installer(
     mode: str,
     release_ref: str | None,
     docker_namespace: str | None,
+    dry_run: bool,
 ) -> None:
     installer_mod.run_setup(
         console,
@@ -396,6 +397,7 @@ def run_installer(
         install_mode=mode,
         release_ref=release_ref,
         docker_namespace=docker_namespace,
+        dry_run=dry_run,
     )
 
 
@@ -450,7 +452,25 @@ def main() -> None:
         action="store_true",
         help="Disable SSL nginx proxy config (overrides assembly descriptor)",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate env files and print a preview without running Docker",
+    )
+    parser.add_argument(
+        "--dry-run-print-env",
+        action="store_true",
+        help="With --dry-run, print full env file contents",
+    )
     args = parser.parse_args()
+
+    def _arg_provided(name: str) -> bool:
+        return any(arg == name or arg.startswith(f"{name}=") for arg in sys.argv[1:])
+
+    if args.dry_run and (args.secrets_set or args.secrets_prompt):
+        console.print("[yellow]Dry run ignores --secrets-set/--secrets-prompt (env generation only).[/yellow]")
+        args.secrets_set = []
+        args.secrets_prompt = False
 
     repo_path = Path(os.path.expanduser(args.path)).resolve()
     try:
@@ -463,8 +483,11 @@ def main() -> None:
             os.environ["KDCUBE_PROXY_SSL"] = "1"
         elif args.no_proxy_ssl:
             os.environ["KDCUBE_PROXY_SSL"] = "0"
+        if args.dry_run_print_env:
+            os.environ["KDCUBE_DRY_RUN_PRINT_ENV"] = "1"
         workdir = Path(os.path.expanduser(args.workdir)).expanduser().resolve()
-        if not args.secrets_set and not args.secrets_prompt:
+        workdir_arg = _arg_provided("--workdir")
+        if not args.secrets_set and not args.secrets_prompt and not (args.dry_run and workdir_arg):
             workdir = Path(
                 Prompt.ask("Compose workdir (config+data root)", default=str(workdir))
             ).expanduser().resolve()
@@ -503,6 +526,21 @@ def main() -> None:
             if raw_secrets:
                 secrets_descriptor_path = Path(os.path.expanduser(raw_secrets)).expanduser().resolve()
                 os.environ["KDCUBE_SECRETS_DESCRIPTOR_PATH"] = str(secrets_descriptor_path)
+
+            default_gateway = str((workdir / "config" / "gateway.yaml").resolve())
+            raw_gateway = Prompt.ask(
+                "Gateway config path (gateway.yaml) (leave blank to skip)",
+                default="",
+            ).strip()
+            if raw_gateway:
+                gateway_source = Path(os.path.expanduser(raw_gateway)).expanduser().resolve()
+                target_gateway = Path(default_gateway)
+                installer_mod.stage_gateway_descriptor(
+                    target_gateway,
+                    source_path=gateway_source,
+                    ai_app_root=repo_path / "app/ai-app",
+                )
+                os.environ["KDCUBE_GATEWAY_DESCRIPTOR_PATH"] = str(target_gateway)
 
             use_descriptor_bundles = Confirm.ask(
                 "Use assembly descriptor for bundles?",
@@ -699,7 +737,7 @@ def main() -> None:
 
         if args.reset_config or args.reset:
             os.environ["KDCUBE_RESET_CONFIG"] = "1"
-        run_installer(console, repo_path, workdir, mode, release_ref, docker_namespace)
+        run_installer(console, repo_path, workdir, mode, release_ref, docker_namespace, args.dry_run)
     except FileNotFoundError as exc:
         raise SystemExit("Missing dependency. Please install Git and Python.") from exc
     except KeyboardInterrupt:

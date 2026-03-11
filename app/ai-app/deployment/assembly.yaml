@@ -43,10 +43,16 @@ infra:
     database: "kdcube"
     host: "postgres-db"
     port: "5432"
+    ssl: false
   redis:
     password: "redispass"
     host: "redis"
     port: "6379"
+
+aws:
+  region: ""
+  profile: ""
+  ec2: false
 
 bundles:
   default_bundle_id: "react@2026-02-10-02-44"
@@ -57,4 +63,3 @@ bundles:
       ref: bundle-v2026.02.22
       subdir: service/bundles
       module: app@2-0.entrypoint
-

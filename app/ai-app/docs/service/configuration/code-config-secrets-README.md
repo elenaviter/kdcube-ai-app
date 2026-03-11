@@ -40,6 +40,8 @@ services.stripe.webhook_secret
 services.git.http_token
 services.git.http_user
 auth.cognito.client_secret
+aws.access_key_id
+aws.secret_access_key
 ```
 
 ### Example (platform/bundle code)

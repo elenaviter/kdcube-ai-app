@@ -54,6 +54,10 @@ infra:
 auth:
   cognito:
     client_secret: null
+
+aws:
+  access_key_id: null
+  secret_access_key: null
 ```
 
 ## 2) How the CLI uses it
@@ -65,6 +69,8 @@ When `secrets.yaml` is provided:
 - Stripe secrets (`services.stripe.*`) are injected into the sidecar.
 - `git.http_token` is used as the Git HTTPS token (runtime‑only).
 - `auth.cognito.client_secret` is used for **proxylogin** (delegated auth).
+- `aws.access_key_id` and `aws.secret_access_key` are injected into the secrets sidecar
+  for services that need AWS SDK access.
 - `infra.postgres.password` and `infra.redis.password` override assembly values
   and are written into the compose envs (required by local infra containers).
 

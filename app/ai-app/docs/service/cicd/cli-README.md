@@ -8,6 +8,7 @@ see_also:
   - ks:docs/service/cicd/release-README.md
   - ks:docs/service/cicd/assembly-descriptor-README.md
   - ks:docs/service/cicd/secrets-descriptor-README.md
+  - ks:docs/service/cicd/gateway-config-README.md
   - ks:docs/service/environment/setup-dev-env-README.md
   - ks:docs/service/environment/setup-for-dockercompose-README.md
 ---
@@ -134,6 +135,20 @@ If you provide a `secrets.yaml`, the CLI will use it to prefill runtime secrets
 and sensitive infra passwords. The file is **not copied** into the workdir.
 
 See: [docs/service/cicd/secrets-descriptor-README.md](secrets-descriptor-README.md)
+
+### 2.5 Gateway config descriptor (optional)
+If you provide a `gateway.yaml`, the CLI will replace `GATEWAY_CONFIG_JSON`
+in `.env.ingress`, `.env.proc`, and `.env.metrics` with the descriptor content.
+The wizard still patches `tenant` and `project` from your prompts.
+
+Template: [`deployment/gateway.yaml`](../../../deployment/gateway.yaml)
+
+You can skip the prompt by setting:
+```
+KDCUBE_GATEWAY_DESCRIPTOR_PATH=/path/to/gateway.yaml
+```
+
+See: [docs/service/cicd/gateway-config-README.md](gateway-config-README.md)
 
 ### 2.5 `kdcube release validate`
 

@@ -91,6 +91,7 @@ Descriptions are condensed from the comments in those sample files.
 | `SECRETS_TOKEN` | n/a |
 | `LINK_PREVIEW_ENABLED` | Enable link preview endpoint (ingress disables by default). |
 | `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `KDCUBE_GATEWAY_DESCRIPTOR_PATH` | Path to `gateway.yaml` used by the CLI to render `GATEWAY_CONFIG_JSON`. |
 | `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
 | `POSTGRES_HOST` | n/a |
 | `POSTGRES_PORT` | n/a |
@@ -149,6 +150,7 @@ Descriptions are condensed from the comments in those sample files.
 | `SECRETS_URL` | n/a |
 | `SECRETS_TOKEN` | n/a |
 | `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `KDCUBE_GATEWAY_DESCRIPTOR_PATH` | Path to `gateway.yaml` used by the CLI to render `GATEWAY_CONFIG_JSON`. |
 | `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
 | `POSTGRES_HOST` | n/a |
 | `POSTGRES_PORT` | n/a |
@@ -239,6 +241,7 @@ Descriptions are condensed from the comments in those sample files.
 | `METRICS_PORT` | n/a |
 | `METRICS_MODE` | n/a |
 | `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `KDCUBE_GATEWAY_DESCRIPTOR_PATH` | Path to `gateway.yaml` used by the CLI to render `GATEWAY_CONFIG_JSON`. |
 | `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
 | `REDIS_URL` | Redis endpoint (reachable from containers) |
 | `METRICS_SCHEDULER_ENABLED` | Scheduler/export |
@@ -295,6 +298,8 @@ The chat service is **rate‑limited and capacity‑limited** by design:
 - Concurrency limits keep each processor stable under load.
 
 For gateway‑level rate limits and backpressure configuration, see `docs/gateway-README.md`.
+If you use a `gateway.yaml`, the CLI renders it into `GATEWAY_CONFIG_JSON`.
+See: [gateway-config-README.md](../cicd/gateway-config-README.md).
 ## Gateway Config (Required)
 
 Tenant/project **must** be provided via `GATEWAY_CONFIG_JSON` (per tenant/project).

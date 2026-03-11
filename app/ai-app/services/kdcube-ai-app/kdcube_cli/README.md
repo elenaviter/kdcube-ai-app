@@ -292,6 +292,17 @@ Secrets are keyed by **dot‑path** (e.g. `services.openai.api_key`).
 Template:
 - [`app/ai-app/deployment/secrets.yaml`](../../../deployment/secrets.yaml)
 
+### Gateway config descriptor (optional)
+You can provide a `gateway.yaml` path in the wizard (or via `KDCUBE_GATEWAY_DESCRIPTOR_PATH`).
+The CLI loads it and replaces `GATEWAY_CONFIG_JSON` in `.env.ingress`, `.env.proc`,
+and `.env.metrics`, then patches `tenant` and `project` from your prompts.
+
+Template:
+- [`app/ai-app/deployment/gateway.yaml`](../../../deployment/gateway.yaml)
+
+References:
+- https://github.com/kdcube/kdcube-ai-app/blob/main/app/ai-app/docs/service/cicd/gateway-config-README.md
+
 ### Custom UI via assembly descriptor (build or image)
 If your `assembly.yaml` includes a `frontend` section, the CLI will switch to
 **custom‑ui‑managed‑infra** compose mode.
