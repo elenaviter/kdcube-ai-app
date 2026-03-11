@@ -96,6 +96,7 @@ MCP_TOOL_SPECS: List[Dict[str, Any]] = [
     {"server_id": "stack", "alias": "stack", "tools": ["*"]},   # Stdio transport
     {"server_id": "docs", "alias": "docs", "tools": ["*"]},     # HTTP / Streamable HTTP
     {"server_id": "local", "alias": "local", "tools": ["*"]},   # SSE transport
+    {"server_id": "deepwiki", "alias": "deepwiki", "tools": ["*"]},  # DeepWiki — GitHub repo docs (streamable-http)
 ]
 
 # ──────────────────────────────────────────────────────────────

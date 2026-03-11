@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 import inspect
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,9 +73,13 @@ class PythonSDKMCPAdapter:
         self.server = server
 
     async def list_tools(self) -> List[MCPToolSchema]:
+        logger.info("MCP adapter list_tools: server=%s transport=%s opening session", self.server.server_id, self.server.transport)
         async with self._session() as session:
+            logger.info("MCP adapter list_tools: server=%s session ready, sending ListToolsRequest", self.server.server_id)
             resp = await session.list_tools()
-            return [self._tool_from_sdk(t) for t in (getattr(resp, "tools", []) or [])]
+            tools = [self._tool_from_sdk(t) for t in (getattr(resp, "tools", []) or [])]
+            logger.info("MCP adapter list_tools: server=%s got %d tools", self.server.server_id, len(tools))
+            return tools
 
     async def call_tool(
         self,
@@ -81,8 +88,11 @@ class PythonSDKMCPAdapter:
         *,
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        logger.info("MCP adapter call_tool: server=%s tool=%s opening session", self.server.server_id, tool_id)
         async with self._session() as session:
+            logger.info("MCP adapter call_tool: server=%s tool=%s session ready, calling", self.server.server_id, tool_id)
             result = await session.call_tool(tool_id, params or {})
+            logger.info("MCP adapter call_tool: server=%s tool=%s call completed", self.server.server_id, tool_id)
             # Prefer structuredContent if present, otherwise return raw content blocks
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
@@ -149,6 +159,9 @@ def _supports_kwarg(fn, name: str) -> bool:
 
 
 def _stdio_session(server: MCPServerSpec):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
     async def _cm():
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -161,10 +174,13 @@ def _stdio_session(server: MCPServerSpec):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    return _async_cm(_cm)
+    return _cm()
 
 
 def _sse_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
     async def _cm():
         from mcp import ClientSession
         from mcp.client.sse import sse_client
@@ -175,10 +191,13 @@ def _sse_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    return _async_cm(_cm)
+    return _cm()
 
 
 def _streamable_http_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
     async def _cm():
         from mcp import ClientSession
         client_fn = None
@@ -200,24 +219,7 @@ def _streamable_http_session(server: MCPServerSpec, *, headers: Dict[str, str] |
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    return _async_cm(_cm)
-
-
-def _async_cm(factory):
-    class _Wrapper:
-        def __init__(self, f):
-            self._f = f
-            self._agen = None
-
-        async def __aenter__(self):
-            self._agen = self._f()
-            return await self._agen.__anext__()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            if self._agen:
-                await self._agen.aclose()
-            return False
-    return _Wrapper(factory)
+    return _cm()
 
 
 class MCPToolsSubsystemLike(Protocol):

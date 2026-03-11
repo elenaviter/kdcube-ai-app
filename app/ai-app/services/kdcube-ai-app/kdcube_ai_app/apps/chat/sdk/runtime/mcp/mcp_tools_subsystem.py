@@ -223,12 +223,16 @@ class MCPToolsSubsystem:
         return results
 
     async def build_tool_entries(self) -> List[Dict[str, Any]]:
+        logger.info("MCP build_tool_entries: specs=%s", [s.server_id for s in self.mcp_specs])
         entries: List[Dict[str, Any]] = []
         for spec in self.mcp_specs:
             server = self._server_spec(spec.server_id)
             if not server:
+                logger.warning("MCP build_tool_entries: server %s not resolved (missing config or interactive auth)", spec.server_id)
                 continue
+            logger.info("MCP build_tool_entries: loading tools for server=%s transport=%s", spec.server_id, server.transport)
             tools = await self._tools_for_server(server)
+            logger.info("MCP build_tool_entries: server=%s returned %d tools", spec.server_id, len(tools))
             if spec.tools and "*" not in spec.tools:
                 tools = [t for t in tools if t.id in set(spec.tools)]
             alias = spec.alias or f"mcp_{spec.server_id}"
@@ -242,6 +246,7 @@ class MCPToolsSubsystem:
                 )
                 entries.append(entry)
                 self._tool_index[entry["id"]] = entry
+        logger.info("MCP build_tool_entries: total %d entries: %s", len(entries), [e["id"] for e in entries])
         return entries
 
     async def call_tool(
@@ -282,19 +287,24 @@ class MCPToolsSubsystem:
         cache_key = f"{server.server_id}:tools"
         cached = await self.cache.get_json(cache_key) if self.cache else None
         if cached:
+            logger.info("MCP _tools_for_server: server=%s cache hit (%d tools)", server.server_id, len(cached))
             return [MCPToolSchema(**t) for t in cached if isinstance(t, dict)]
+        logger.info("MCP _tools_for_server: server=%s cache miss, calling adapter.list_tools()", server.server_id)
         factory = self._adapter_factory_for_server(server.server_id)
         if not factory:
+            logger.warning("MCP _tools_for_server: no adapter factory for %s", server.server_id)
             return []
         adapter = factory(server)
         try:
             tools = await adapter.list_tools()
+            logger.info("MCP _tools_for_server: server=%s list_tools returned %d tools: %s", server.server_id, len(tools), [t.id for t in tools])
         except Exception as e:
             logger.exception("MCP list_tools failed for %s: %s", server.server_id, e)
             return []
         ttl = _ttl_for_server(self._services_cfg.get(server.server_id) or {})
         if self.cache:
             await self.cache.set_json(cache_key, [t.__dict__ for t in tools], ttl_seconds=ttl)
+            logger.info("MCP _tools_for_server: server=%s cached %d tools (ttl=%ds)", server.server_id, len(tools), ttl)
         return tools
 
 
