@@ -511,8 +511,10 @@ def main() -> None:
                 source_path=source_path,
                 ai_app_root=repo_path / "app/ai-app",
             )
+            user_supplied = source_path.resolve() != target_path.resolve()
             if staged and target_path.exists():
                 os.environ["KDCUBE_ASSEMBLY_DESCRIPTOR_PATH"] = str(target_path)
+                os.environ["KDCUBE_ASSEMBLY_USER_SUPPLIED"] = "1" if user_supplied else "0"
                 assembly_descriptor_path = target_path
                 descriptor = installer_mod.load_release_descriptor(target_path)
                 bundles_default = isinstance(descriptor, dict) and bool(descriptor.get("bundles"))
@@ -523,6 +525,8 @@ def main() -> None:
                         platform_ref = platform.get("ref")
             else:
                 console.print("[yellow]Assembly template not found; continuing without assembly descriptor.[/yellow]")
+                os.environ["KDCUBE_ASSEMBLY_SKIP"] = "1"
+                os.environ["KDCUBE_ASSEMBLY_USER_SUPPLIED"] = "0"
 
             raw_secrets = Prompt.ask(
                 "Secrets descriptor path (secrets.yaml) (leave blank to skip)",
@@ -573,6 +577,10 @@ def main() -> None:
             os.environ["KDCUBE_ASSEMBLY_USE_BUNDLES"] = "1" if use_descriptor_bundles else "0"
             os.environ["KDCUBE_ASSEMBLY_USE_FRONTEND"] = "1" if use_descriptor_frontend else "0"
             os.environ["KDCUBE_ASSEMBLY_USE_PLATFORM"] = "1" if use_descriptor_platform else "0"
+            if not assembly_descriptor_path:
+                os.environ["KDCUBE_ASSEMBLY_USE_BUNDLES"] = "0"
+                os.environ["KDCUBE_ASSEMBLY_USE_FRONTEND"] = "0"
+                os.environ["KDCUBE_ASSEMBLY_USE_PLATFORM"] = "0"
 
         if args.secrets_set or args.secrets_prompt:
             secrets = _parse_secret_pairs(args.secrets_set)

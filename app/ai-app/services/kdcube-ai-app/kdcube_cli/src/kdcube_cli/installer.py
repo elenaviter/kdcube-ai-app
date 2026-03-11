@@ -595,7 +595,21 @@ def ensure_nginx_configs(target_dir: Path, ai_app_root: Path, docker_dir: Path) 
             continue
         src = src_dir / name
         if not src.exists():
-            raise FileNotFoundError(f"Missing nginx config template: {src}")
+            # Older repos may not ship delegated/ssl variants; fall back to base proxy config if available.
+            fallback = None
+            if "ssl" in name:
+                candidate = src_dir / "nginx_proxy_ssl_hardcoded.conf"
+                if candidate.exists():
+                    fallback = candidate
+            if fallback is None:
+                candidate = src_dir / "nginx_proxy.conf"
+                if candidate.exists():
+                    fallback = candidate
+            if fallback is None:
+                # No usable template in this repo; skip without failing.
+                print(f"[kdcube-cli] Missing nginx config template: {src} (skipped)")
+                continue
+            src = fallback
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, target)
 
@@ -643,7 +657,8 @@ def list_compose_services(ctx: PathsContext, env_file: Path) -> List[str]:
             text=True,
         )
         return [line.strip() for line in output.splitlines() if line.strip()]
-    except Exception:
+    except Exception as exc:
+        print(f"[kdcube-cli] Unable to list compose services: {exc}")
         return []
 
 
@@ -1168,6 +1183,7 @@ def gather_configuration(
     secrets_data: Dict[str, object] = dict(secrets_descriptor or {})
     gateway_data: Dict[str, object] = dict(gateway_descriptor or {})
     autosave_envs = (env_main, env_ingress, env_proc, env_metrics, env_pg, env_proxy)
+    assembly_user_supplied = parse_bool(os.getenv("KDCUBE_ASSEMBLY_USER_SUPPLIED", "")) is True
 
     def _secret_pick(*paths: object) -> Optional[str]:
         for path in paths:
@@ -1542,7 +1558,7 @@ def gather_configuration(
     if pg_pass_from_secrets:
         use_pg_secret = ask_confirm(console, "Use Postgres password from secrets descriptor?", default=True)
     use_pg_descriptor = False
-    if assembly_path and has_pg_descriptor:
+    if assembly_path and has_pg_descriptor and assembly_user_supplied:
         if use_pg_secret:
             use_pg_descriptor = True
         else:
@@ -1657,7 +1673,7 @@ def gather_configuration(
         use_redis_secret = ask_confirm(console, "Use Redis password from secrets descriptor?", default=True)
 
     use_redis_descriptor = False
-    if assembly_path and has_redis_descriptor:
+    if assembly_path and has_redis_descriptor and assembly_user_supplied:
         if use_redis_secret:
             use_redis_descriptor = True
         else:
@@ -2432,6 +2448,7 @@ def run_setup(
     env_descriptor = os.getenv("KDCUBE_ASSEMBLY_DESCRIPTOR_PATH", "").strip()
     env_secrets_descriptor = os.getenv("KDCUBE_SECRETS_DESCRIPTOR_PATH", "").strip()
     env_gateway_descriptor = os.getenv("KDCUBE_GATEWAY_DESCRIPTOR_PATH", "").strip()
+    skip_assembly_prompt = parse_bool(os.getenv("KDCUBE_ASSEMBLY_SKIP", "")) is True
     def _env_flag(name: str) -> Optional[bool]:
         raw = os.getenv(name, "").strip().lower()
         if not raw:
@@ -2455,28 +2472,37 @@ def run_setup(
     if env_descriptor and (use_descriptor_bundles or use_descriptor_frontend or use_descriptor_platform):
         release_descriptor_path = env_descriptor
 
-    if not compose_mode and (not env_descriptor or (use_descriptor_bundles is None and use_descriptor_frontend is None and use_descriptor_platform is None)):
+    if skip_assembly_prompt:
+        release_descriptor_path = None
+    elif not compose_mode and (not env_descriptor or (use_descriptor_bundles is None and use_descriptor_frontend is None and use_descriptor_platform is None)):
         default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
         release_descriptor_path = ask(console, "Assembly descriptor path (assembly.yaml)", default=default_assembly)
-        release_descriptor_path = str(Path(release_descriptor_path).expanduser())
+        source_path_obj = Path(release_descriptor_path).expanduser()
+        release_descriptor_path = str(source_path_obj)
         staged = stage_assembly_descriptor(
             Path(default_assembly),
-            source_path=Path(release_descriptor_path),
+            source_path=source_path_obj,
             ai_app_root=ai_app_root,
         )
+        if os.getenv("KDCUBE_ASSEMBLY_USER_SUPPLIED", "") == "":
+            user_supplied = source_path_obj.resolve() != Path(default_assembly).resolve()
+            os.environ["KDCUBE_ASSEMBLY_USER_SUPPLIED"] = "1" if user_supplied else "0"
         if staged and Path(default_assembly).exists():
             release_descriptor_path = default_assembly
             compose_mode = "custom-ui-managed-infra"
         else:
             release_descriptor_path = None
             compose_mode = "all-in-one"
-    elif env_descriptor:
+    elif env_descriptor and not skip_assembly_prompt:
         default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
         staged = stage_assembly_descriptor(
             Path(default_assembly),
             source_path=Path(env_descriptor),
             ai_app_root=ai_app_root,
         )
+        if os.getenv("KDCUBE_ASSEMBLY_USER_SUPPLIED", "") == "":
+            user_supplied = Path(env_descriptor).expanduser().resolve() != Path(default_assembly).resolve()
+            os.environ["KDCUBE_ASSEMBLY_USER_SUPPLIED"] = "1" if user_supplied else "0"
         if staged and Path(default_assembly).exists():
             release_descriptor_path = default_assembly
         else:
@@ -2687,6 +2713,7 @@ def run_setup(
                 str(runtime_env),
             ]
             build_flag = ["--build"] if install_mode != "release" else []
+            force_recreate_flag = ["--force-recreate"] if install_mode != "release" else []
             if runtime_secrets:
                 # Start secrets service first so secrets are available before ingress/proc boot.
                 subprocess.run(
@@ -2700,7 +2727,12 @@ def run_setup(
             services = list_compose_services(ctx, runtime_env)
             if runtime_secrets and services:
                 services = [svc for svc in services if svc != "kdcube-secrets"]
-            up_cmd = [*base_cmd, "up", "-d", "--force-recreate", *build_flag]
+            if runtime_secrets and not services:
+                console.print(
+                    "[yellow]Could not resolve compose services; running without --force-recreate to avoid restarting kdcube-secrets.[/yellow]"
+                )
+                force_recreate_flag = []
+            up_cmd = [*base_cmd, "up", "-d", *force_recreate_flag, *build_flag]
             if services:
                 up_cmd.extend(services)
             subprocess.run(
