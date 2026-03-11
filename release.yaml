@@ -1,13 +1,10 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.10.209"
+  ref: "2026.3.11.453"
   description: |
-    This release improves local setup and auth configuration:
-    - Added auth mode selection (simple vs Cognito) in the CLI wizard.
-    - Cognito configs are now generated correctly (authority + client ID), and hardcoded tokens are removed when Cognito is used.
-    - Frontend config selection is now auth‑aware (hardcoded or cognito).
-    - The nginx proxy runtime config is now patched to match the UI routesPrefix, ensuring consistent routing for custom prefixes.
-    - Added support for delegated proxy template (disabled for now) and runtime proxy config selection in compose.
-    - Workdir proxy config is now aligned with the selected auth mode and compose runtime file.
+    Assembly, Secrets, and Gateway Descriptors + Delegated Auth + Proxy Alignment
+    This release introduces the new assembly / secrets / gateway descriptor flow for CLI installs. It adds delegated auth with proxylogin wiring and standardizes nginx proxy templates
+    across modes (custom UI and all‑in‑one). Local and EC2 setup is now descriptor‑driven for auth, domain, routesPrefix, ports, frontend selection, and gateway config, while secrets
+    are centralized via the secrets sidecar to keep sensitive values out of env files where possible.
   config:
-    version: "2026.3.10.209"
+    version: "2026.3.11.453"
