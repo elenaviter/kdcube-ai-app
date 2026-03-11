@@ -503,21 +503,24 @@ def main() -> None:
             raw_path = Prompt.ask("Assembly descriptor path (assembly.yaml)", default=default_assembly).strip()
             source_path = Path(os.path.expanduser(raw_path)).expanduser().resolve()
             target_path = Path(default_assembly)
-            installer_mod.stage_assembly_descriptor(
+            staged = installer_mod.stage_assembly_descriptor(
                 target_path,
                 source_path=source_path,
                 ai_app_root=repo_path / "app/ai-app",
             )
-            os.environ["KDCUBE_ASSEMBLY_DESCRIPTOR_PATH"] = str(target_path)
-            assembly_descriptor_path = target_path
-            descriptor = installer_mod.load_release_descriptor(target_path)
-            bundles_default = isinstance(descriptor, dict) and bool(descriptor.get("bundles"))
-            frontend_default = isinstance(descriptor, dict) and bool(descriptor.get("frontend"))
-            platform_ref = None
-            if isinstance(descriptor, dict):
-                platform = descriptor.get("platform")
-                if isinstance(platform, dict):
-                    platform_ref = platform.get("ref")
+            if staged and target_path.exists():
+                os.environ["KDCUBE_ASSEMBLY_DESCRIPTOR_PATH"] = str(target_path)
+                assembly_descriptor_path = target_path
+                descriptor = installer_mod.load_release_descriptor(target_path)
+                bundles_default = isinstance(descriptor, dict) and bool(descriptor.get("bundles"))
+                frontend_default = isinstance(descriptor, dict) and bool(descriptor.get("frontend"))
+                platform_ref = None
+                if isinstance(descriptor, dict):
+                    platform = descriptor.get("platform")
+                    if isinstance(platform, dict):
+                        platform_ref = platform.get("ref")
+            else:
+                console.print("[yellow]Assembly template not found; continuing without assembly descriptor.[/yellow]")
 
             raw_secrets = Prompt.ask(
                 "Secrets descriptor path (secrets.yaml) (leave blank to skip)",
@@ -525,7 +528,10 @@ def main() -> None:
             ).strip()
             if raw_secrets:
                 secrets_descriptor_path = Path(os.path.expanduser(raw_secrets)).expanduser().resolve()
-                os.environ["KDCUBE_SECRETS_DESCRIPTOR_PATH"] = str(secrets_descriptor_path)
+                if secrets_descriptor_path.exists():
+                    os.environ["KDCUBE_SECRETS_DESCRIPTOR_PATH"] = str(secrets_descriptor_path)
+                else:
+                    console.print("[yellow]Secrets descriptor not found; continuing without secrets descriptor.[/yellow]")
 
             default_gateway = str((workdir / "config" / "gateway.yaml").resolve())
             raw_gateway = Prompt.ask(

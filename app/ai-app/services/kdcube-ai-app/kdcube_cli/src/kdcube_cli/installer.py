@@ -501,14 +501,15 @@ def ensure_env_files(target_dir: Path, sample_env_dir: Path) -> None:
         shutil.copyfile(sample, target)
 
 
-def ensure_assembly_template(target_path: Path, ai_app_root: Path) -> None:
+def ensure_assembly_template(target_path: Path, ai_app_root: Path) -> bool:
     if target_path.exists():
-        return
+        return True
     src = ai_app_root / "deployment/assembly.yaml"
     if not src.exists():
-        raise FileNotFoundError(f"Missing assembly template: {src}")
+        return False
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, target_path)
+    return True
 
 
 def stage_assembly_descriptor(
@@ -516,23 +517,24 @@ def stage_assembly_descriptor(
     *,
     source_path: Optional[Path],
     ai_app_root: Path,
-) -> None:
+) -> bool:
     if source_path and source_path.exists():
         if target_path.resolve() != source_path.resolve():
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source_path, target_path)
-        return
-    ensure_assembly_template(target_path, ai_app_root)
+        return True
+    return ensure_assembly_template(target_path, ai_app_root)
 
 
-def ensure_secrets_template(target_path: Path, ai_app_root: Path) -> None:
+def ensure_secrets_template(target_path: Path, ai_app_root: Path) -> bool:
     if target_path.exists():
-        return
+        return True
     src = ai_app_root / "deployment/secrets.yaml"
     if not src.exists():
-        raise FileNotFoundError(f"Missing secrets template: {src}")
+        return False
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(src, target_path)
+    return True
 
 
 def stage_secrets_descriptor(
@@ -540,13 +542,13 @@ def stage_secrets_descriptor(
     *,
     source_path: Optional[Path],
     ai_app_root: Path,
-) -> None:
+) -> bool:
     if source_path and source_path.exists():
         if target_path.resolve() != source_path.resolve():
             target_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source_path, target_path)
-        return
-    ensure_secrets_template(target_path, ai_app_root)
+        return True
+    return ensure_secrets_template(target_path, ai_app_root)
 
 
 def ensure_gateway_template(target_path: Path, ai_app_root: Path) -> None:
@@ -2457,21 +2459,28 @@ def run_setup(
         default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
         release_descriptor_path = ask(console, "Assembly descriptor path (assembly.yaml)", default=default_assembly)
         release_descriptor_path = str(Path(release_descriptor_path).expanduser())
-        stage_assembly_descriptor(
+        staged = stage_assembly_descriptor(
             Path(default_assembly),
             source_path=Path(release_descriptor_path),
             ai_app_root=ai_app_root,
         )
-        release_descriptor_path = default_assembly
-        compose_mode = "custom-ui-managed-infra" if release_descriptor_path else "all-in-one"
+        if staged and Path(default_assembly).exists():
+            release_descriptor_path = default_assembly
+            compose_mode = "custom-ui-managed-infra"
+        else:
+            release_descriptor_path = None
+            compose_mode = "all-in-one"
     elif env_descriptor:
         default_assembly = str((workdir / "config" / "assembly.yaml").resolve())
-        stage_assembly_descriptor(
+        staged = stage_assembly_descriptor(
             Path(default_assembly),
             source_path=Path(env_descriptor),
             ai_app_root=ai_app_root,
         )
-        release_descriptor_path = default_assembly
+        if staged and Path(default_assembly).exists():
+            release_descriptor_path = default_assembly
+        else:
+            release_descriptor_path = None
 
     if env_secrets_descriptor:
         secrets_descriptor_path = str(Path(env_secrets_descriptor).expanduser().resolve())
