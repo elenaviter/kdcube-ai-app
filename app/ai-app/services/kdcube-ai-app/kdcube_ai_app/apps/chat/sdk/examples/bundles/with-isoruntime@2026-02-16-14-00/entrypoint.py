@@ -151,6 +151,7 @@ class Entrypoint(BaseEntrypoint):
         g.add_edge("orchestrate", END)
         return g.compile()
 
+    @property
     def configuration(self) -> Dict[str, Any]:
         """
         Override model configuration for this bundle.

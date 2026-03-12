@@ -334,6 +334,7 @@ class ReactWorkflow(BaseEntrypoint):
             self.logger.log(traceback.format_exc(), "WARNING")
         return None
 
+    @property
     def configuration(self) -> Dict[str, Any]:
         """
         Override model configuration for this bundle.

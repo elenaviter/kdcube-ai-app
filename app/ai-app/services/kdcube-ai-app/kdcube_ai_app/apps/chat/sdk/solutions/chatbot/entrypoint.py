@@ -86,7 +86,7 @@ class BaseEntrypoint:
     # ---------- Common helpers ----------
 
     def _apply_configuration_overrides(self) -> None:
-        configuration = getattr(self, "configuration", None) or {}
+        configuration = self._resolve_configuration() or {}
 
         wf_roles = configuration.get("role_models") or {}
         if wf_roles:
@@ -124,7 +124,7 @@ class BaseEntrypoint:
         prev_props = getattr(self, "bundle_props", None)
         try:
             self.bundle_props = {}
-            config = self.configuration
+            config = self._resolve_configuration()
             return dict(config or {}) if isinstance(config, dict) else {}
         finally:
             if prev_props is None:
@@ -134,6 +134,20 @@ class BaseEntrypoint:
                     pass
             else:
                 self.bundle_props = prev_props
+
+    def _resolve_configuration(self) -> Any:
+        """
+        Resolve configuration defined as a @property or legacy method.
+        Some bundles still implement configuration() as a method without @property.
+        """
+        config_attr = getattr(self, "configuration", None)
+        if callable(config_attr):
+            try:
+                return config_attr()
+            except TypeError:
+                # In case a @property-like object is callable but expects no args
+                return config_attr
+        return config_attr
 
     def on_bundle_load(self, **kwargs) -> None:
         """

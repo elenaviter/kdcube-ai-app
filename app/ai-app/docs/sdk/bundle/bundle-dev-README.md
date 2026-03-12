@@ -141,6 +141,7 @@ When defining bundle defaults in code, prefer `configuration` and preserve
 external overrides:
 
 ```python
+@property
 def configuration(self) -> Dict[str, Any]:
     config = dict(super().configuration)  # property, not a method
     role_models = dict(config.get("role_models") or {})
