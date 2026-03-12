@@ -1,12 +1,11 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.12.039"
+  ref: "2026.3.12.2356"
   description: |
-    Assembly, Secrets, and Gateway Descriptors + Delegated Auth + Proxy Alignment
-    This release introduces the new assembly / secrets / gateway descriptor flow for CLI installs. It adds delegated auth with proxylogin wiring and standardizes nginx proxy templates
-    across modes (custom UI and all‑in‑one). Local and EC2 setup is now descriptor‑driven for auth, domain, routesPrefix, ports, frontend selection, and gateway config, while secrets
-    are centralized via the secrets sidecar to keep sensitive values out of env files where possible.
-    CLI fixes. 
-    react.patch tool fixes.
+    This release introduces full bundle props/secrets support across the platform and deployment flow. Bundles now have dedicated bundles.yaml and bundles.secrets.yaml descriptors,
+    secrets are injected into the sidecar with dot‑path keys, and the admin UI supports write‑only secret updates plus clear, effective props editing. Bundle configuration defaults now
+    come from entrypoint.configuration, external overrides are deep‑merged, and the UI shows the real resolution order. Code defaults in the UI are refreshed from the latest bundle code
+    (no stale cache), example bundles were updated to the correct property pattern, and the docs now reflect the new descriptors, override semantics, and bundle developer best
+    practices.
   config:
-    version: "2026.3.12.039"
+    version: "2026.3.12.2356"
