@@ -1,6 +1,6 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.12.2356"
+  ref: "2026.3.13.210"
   description: |
     This release introduces full bundle props/secrets support across the platform and deployment flow. Bundles now have dedicated bundles.yaml and bundles.secrets.yaml descriptors,
     secrets are injected into the sidecar with dot‑path keys, and the admin UI supports write‑only secret updates plus clear, effective props editing. Bundle configuration defaults now
@@ -8,4 +8,4 @@ platform:
     (no stale cache), example bundles were updated to the correct property pattern, and the docs now reflect the new descriptors, override semantics, and bundle developer best
     practices.
   config:
-    version: "2026.3.12.2356"
+    version: "2026.3.13.210"
