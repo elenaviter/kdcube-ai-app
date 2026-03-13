@@ -92,10 +92,7 @@ export MCP_SERVICES='{
         "-m",
         "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server",
         "--transport", "stdio"
-      ],
-      "env": {
-        "PYTHONPATH": "/path/to/services/kdcube-ai-app"
-      }
+      ]
     },
 
     "deepwiki": {
@@ -163,8 +160,12 @@ export MCP_SERVICES='{
 }'
 ```
 
-> If `env` is omitted for a stdio server, the child process inherits the parent
-> process environment.
+> **Environment inheritance for stdio servers:**
+> - If `env` is **omitted**, the child process inherits the full parent environment.
+> - If `env` is **set**, only the listed vars are passed. However, `PYTHONPATH` and
+>   `PATH` are **auto-inherited** from the parent process when not explicitly set,
+>   so you never need to hardcode `PYTHONPATH` in the config — the runtime infers it
+>   dynamically (see `_resolve_stdio_env()` in `mcp_adapter.py`).
 
 ---
 

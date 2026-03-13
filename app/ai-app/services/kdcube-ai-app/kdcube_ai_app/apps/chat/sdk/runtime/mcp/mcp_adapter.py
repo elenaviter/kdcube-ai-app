@@ -158,6 +158,41 @@ def _supports_kwarg(fn, name: str) -> bool:
         return False
 
 
+def _resolve_stdio_env(server: MCPServerSpec) -> dict | None:
+    """
+    Build environment dict for a stdio MCP subprocess.
+
+    When *env* is ``None`` the child inherits the parent environment
+    automatically (MCP SDK default).  When *env* is set, the SDK
+    **replaces** the entire environment, so critical variables like
+    ``PYTHONPATH`` and ``PATH`` would be lost.
+
+    This helper merges the parent ``PYTHONPATH`` / ``PATH`` into the
+    server-specific env so that ``python -m …`` invocations can resolve
+    installed packages without hardcoding paths in the config.
+    """
+    env = server.env
+    if env is None:
+        return None
+
+    env = dict(env)  # don't mutate the original
+
+    # Inherit PYTHONPATH from the parent process so that
+    # `python -m kdcube_ai_app.…` resolves without manual config.
+    if "PYTHONPATH" not in env:
+        parent_pp = os.environ.get("PYTHONPATH", "")
+        if parent_pp:
+            env["PYTHONPATH"] = parent_pp
+
+    # Inherit PATH so that `python`, `npx`, etc. are discoverable.
+    if "PATH" not in env:
+        parent_path = os.environ.get("PATH", "")
+        if parent_path:
+            env["PATH"] = parent_path
+
+    return env
+
+
 def _stdio_session(server: MCPServerSpec):
     from contextlib import asynccontextmanager
 
@@ -168,7 +203,7 @@ def _stdio_session(server: MCPServerSpec):
         params = StdioServerParameters(
             command=server.command or "",
             args=server.args or [],
-            env=server.env or None,
+            env=_resolve_stdio_env(server),
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
