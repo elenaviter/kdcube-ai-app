@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-env
+  namespace: kdcube-ai-app
+data:
+  POSTGRES_DATABASE: "kdcube"
+  POSTGRES_PORT: "5432"
+  POSTGRES_HOST: "postgres-db"
+  DEFAULT_PROJECT_NAME: "dev"
+  DEFAULT_TENANT: "dev"
+  TENANT_ID: "dev"
+  KDCUBE_STORAGE_PATH: "file:///kdcube-storage"
+  ORCHESTRATOR_WORKER_CONCURRENCY: "10"
+  CB_ORCHESTRATOR_TYPE: "chatbot"
+  CB_RELAY_IDENTITY: "kdcube.relay.chatbot"
+  DRAMATIQ_PROCESSES: "4"
+  MAX_CONCURRENT_CHATS: "5"
+  MAX_QUEUE_SIZE: "100"
+  KB_PARALLELISM: "4"
+  CHAT_APP_PARALLELISM: "4"
+  HEARTBEAT_INTERVAL: "5"
+  OPENAI_API_KEY: "sk-proj-..."
+  HUGGING_FACE_API_TOKEN: "hf_..."
+  ANTHROPIC_API_KEY: "sk-ant-..."
+  BRAVE_API_KEY: "..."
+  GEMINI_CACHE_ENABLED: "0"
+  GEMINI_CACHE_TTL_SECONDS: "3600"
+  APP_DOMAIN: "your.domain.com"
+  TORCH_DEVICE: "cpu"
+  AUTH_PROVIDER: "simple"
+  EXTRA_ID_TOKEN_HEADER: "X-ID-Token"
+  AGENTIC_BUNDLES_ROOT: "/bundles"
+  DEFAULT_LLM_MODEL_ID: "sonnet-4.5"
+  DEFAULT_EMBEDDING_MODEL_ID: "openai-text-embedding-3-small"
+  APP_AV_SCAN: "0"
+  APP_AV_TIMEOUT_S: "3.0"
+  CLAMAV_HOST: "clamav"
+  CLAMAV_PORT: "3310"
+

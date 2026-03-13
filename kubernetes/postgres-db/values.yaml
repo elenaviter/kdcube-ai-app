@@ -1,0 +1,22 @@
+replicaCount: 1
+
+name: postgres-db
+
+image:
+  repository: pgvector/pgvector
+  tag: "pg16"
+  pullPolicy: IfNotPresent
+
+postgresUser: postgres
+postgresPassword: kdcube321
+postgresDatabase: kdcube
+
+service:
+  type: ClusterIP
+  port: 5432
+
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 5Gi

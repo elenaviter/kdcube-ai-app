@@ -1,0 +1,78 @@
+name: kdcube-web-ui
+
+image:
+  repository: k3s-registry.localhost:5000/kdcube-web-ui
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+port: 5173
+container_port: 80
+
+# ConfigMap name containing .env.ui.build values
+envConfigMaps: 
+- frontend-env
+
+#envSecrets:
+#- postgres-db-credentials
+
+# Direct env block
+
+#env_block:
+#  - name: REDIS_PASSWORD
+#    valueFrom:
+#      secretKeyRef:
+#        name: redis-auth
+#        key: redis-password
+#
+#  - name: REDIS_URL
+#    value: "redis://:$(REDIS_PASSWORD)@redis:6379/0"
+  
+
+# Additional environment variables
+env:
+  NODE_ENV: production
+
+# Volumes definition
+# Each item creates:
+# - one hostPath volume
+# - one volumeMount
+#
+# type can be:
+#   Directory
+#   DirectoryOrCreate
+#   File
+#   FileOrCreate
+#
+#volumes:
+  # - name: docker-sock
+  #   hostPath: /Users/viacheslav/.docker/run/docker.sock
+  #   mountPath: /var/run/docker.sock
+  #   type: Socket
+
+#  - name: kdcube-storage
+#    hostPath: /Users/viacheslav/work/NestLogic/kdcube/data/kdcube-storage
+#    mountPath: /kdcube-storage
+#    type: DirectoryOrCreate
+#
+#  - name: exec-workspace
+#    hostPath: /Users/viacheslav/work/NestLogic/kdcube/data/exec-workspace
+#    mountPath: /exec-workspace
+#    type: DirectoryOrCreate
+#
+#  - name: chat-logs
+#    hostPath: /Users/viacheslav/work/NestLogic/kdcube/data/logs/chat
+#    mountPath: /logs
+#    type: DirectoryOrCreate
+#
+#  - name: bundles
+#    hostPath: /Users/viacheslav/work/NestLogic/kdcube/data/bundles
+#    mountPath: /bundles
+#    type: DirectoryOrCreate
+
+  # - name: aws-credentials
+  #   hostPath: /home/node/.aws
+  #   mountPath: /home/appuser/.aws
+  #   type: Directory
+  #   readOnly: true

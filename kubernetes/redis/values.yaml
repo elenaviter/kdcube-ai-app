@@ -1,0 +1,33 @@
+name: redis
+
+replicaCount: 1
+
+image:
+  repository: redis
+  tag: "8"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 6379
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+persistence:
+  enabled: true
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  storageClass: ""
+
+redisConfig:
+  appendonly: "yes"
+
+auth:
+  enabled: true
+  password: "kdcube321"

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: kdcube-postgres
+description: A Helm chart for PostgreSQL v16
+type: application
+version: 0.1.0
+appVersion: "16"

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ .Values.name }}-config"
+  annotations:
+    app.kubernetes.io/name: {{ .Values.name }}
+data:
+  POSTGRES_HOST: "{{ .Values.name }}"
+  POSTGRES_DATABASE: "{{ .Values.postgresDatabase }}"
+  POSTGRES_PORT: "{{ .Values.service.port }}"
+  POSTGRES_SSL: "False"
+  TENANT_ID: "default"
+  PROJECT_ID: "default"

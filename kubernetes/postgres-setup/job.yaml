@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kdcube-postgres-setup
+  namespace: kdcube-ai-app
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: kdcube-postgres-setup
+          image: kdcube/kdcube-postgres-setup:2026.3.11.453
+          env:
+            - name: REDIS_PORT
+              value: "6379"
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-db-credentials
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-db-credentials
+                  key: POSTGRES_PASSWORD
+          envFrom:
+            - configMapRef:
+                  name: postgres-db-config
