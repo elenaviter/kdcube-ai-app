@@ -27,6 +27,29 @@ SubscriptionBudgetFactory = Callable[[str, str, str, str, datetime, datetime], S
 ProjectBudgetFactory = Callable[[str, str], ProjectBudgetLimiter]
 
 
+
+def _extract_stripe_data_list(obj: Dict[str, Any], key: str) -> list[Dict[str, Any]]:
+    """Safely extracts a list of data items from a Stripe list object (like lines, items, charges)."""
+    if not isinstance(obj, dict):
+        return []
+    val = obj.get(key)
+    if isinstance(val, dict):
+        return val.get("data") or []
+    # Sometimes the top-level object IS the list object, so we fall back to obj.get("data")
+    return obj.get("data") or []
+
+def _extract_stripe_timestamp(obj: Dict[str, Any], key: str) -> Optional[datetime]:
+    """Safely extracts a timestamp field and converts it to a UTC datetime."""
+    if not isinstance(obj, dict):
+        return None
+    ts = obj.get(key)
+    if ts is not None:
+        try:
+            return datetime.fromtimestamp(int(ts), tz=timezone.utc)
+        except (ValueError, TypeError):
+            pass
+    return None
+
 def map_stripe_subscription_status_to_cp(status: str) -> str:
     # CP constraint: active|canceled|suspended
     s = (status or "").lower()
@@ -131,6 +154,80 @@ class StripeSubscriptionService:
         if not stripe_price_id:
             raise ValueError("stripe_price_id is required (plan missing stripe_price_id)")
 
+        # Cancel existing Stripe subscription if user is switching plans.
+        # Without this, both subscriptions remain active in Stripe and the user
+        # gets double-charged at the next billing cycle.
+        # We also rollover the unused balance synchronously here, before cancelling in Stripe,
+        # to avoid the race condition where customer.subscription.deleted webhook arrives
+        # after the new subscription has already overwritten the DB record.
+        existing_sub = await self.subscription_mgr.get_subscription(
+            tenant=tenant, project=project, user_id=user_id
+        )
+        if (
+            existing_sub
+            and existing_sub.provider == "stripe"
+            and existing_sub.stripe_subscription_id
+            and existing_sub.status == "active"
+        ):
+            old_stripe_sub_id = existing_sub.stripe_subscription_id
+
+            # Rollover unused balance to project budget before cancelling.
+            if existing_sub.next_charge_at:
+                try:
+                    from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription_budget import SubscriptionBudgetLimiter
+                    period_desc = build_subscription_period_descriptor(
+                        tenant=tenant,
+                        project=project,
+                        user_id=user_id,
+                        provider=existing_sub.provider,
+                        stripe_subscription_id=old_stripe_sub_id,
+                        period_end=existing_sub.next_charge_at,
+                        period_start=existing_sub.last_charged_at,
+                    )
+                    sub_budget = SubscriptionBudgetLimiter(
+                        pg_pool=self.pg_pool,
+                        tenant=tenant,
+                        project=project,
+                        user_id=user_id,
+                        period_key=period_desc["period_key"],
+                        period_start=period_desc["period_start"],
+                        period_end=period_desc["period_end"],
+                    )
+                    proj_budget = ProjectBudgetLimiter(
+                        redis=None, pg_pool=self.pg_pool, tenant=tenant, project=project
+                    )
+                    await self.subscription_mgr.rollover_unused_balance_once(
+                        tenant=tenant,
+                        project=project,
+                        user_id=user_id,
+                        subscription_budget=sub_budget,
+                        project_budget=proj_budget,
+                        period_key=period_desc["period_key"],
+                        period_end=period_desc["period_end"],
+                        actor="plan_change",
+                    )
+                    logger.info(
+                        "Rolled over unused balance for subscription %s (user %s, plan change to %s)",
+                        old_stripe_sub_id, user_id, plan_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to rollover unused balance for subscription %s (user %s) before plan change",
+                        old_stripe_sub_id, user_id,
+                    )
+
+            try:
+                stripe.Subscription.cancel(old_stripe_sub_id)
+                logger.info(
+                    "Cancelled old Stripe subscription %s for user %s (plan change to %s)",
+                    old_stripe_sub_id, user_id, plan_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to cancel old Stripe subscription %s before creating new one for user %s",
+                    old_stripe_sub_id, user_id,
+                )
+
         # Ensure customer
         customer_id = stripe_customer_id
         if not customer_id:
@@ -186,8 +283,8 @@ class StripeSubscriptionService:
                     ) VALUES (
                       $1,$2,$3,
                       $4,$5,$6,
-                      NOW(), $8, NULL,
-                      'stripe', $9, $10
+                      NOW(), $7, NULL,
+                      'stripe', $8, $9
                     )
                     ON CONFLICT (tenant, project, user_id)
                     DO UPDATE SET
@@ -284,7 +381,7 @@ class StripeEconomicsWebhookHandler:
 
     def _meta_from_invoice_lines(self, invoice: Dict[str, Any]) -> Dict[str, str]:
         try:
-            lines = (invoice.get("lines") or {}).get("data") or []
+            lines = _extract_stripe_data_list(invoice, "lines")
             if not lines:
                 return {}
             m = lines[0].get("metadata") or {}
@@ -296,11 +393,17 @@ class StripeEconomicsWebhookHandler:
 
     def _price_id_from_invoice_lines(self, invoice: Dict[str, Any]) -> Optional[str]:
         try:
-            lines = (invoice.get("lines") or {}).get("data") or []
+            lines = _extract_stripe_data_list(invoice, "lines")
             for line in lines:
+                pricing = line.get("pricing") or {}
+                price_details = pricing.get("price_details") or {}
+                if price_details.get("price"):
+                    return str(price_details.get("price"))
+
                 price = line.get("price") or {}
                 if isinstance(price, dict) and price.get("id"):
                     return str(price.get("id"))
+
                 plan = line.get("plan") or {}
                 if isinstance(plan, dict) and plan.get("id"):
                     return str(plan.get("id"))
@@ -357,24 +460,7 @@ class StripeEconomicsWebhookHandler:
 
     async def handle_webhook(self, *, body: bytes, stripe_signature: Optional[str]) -> Dict[str, Any]:
         event = self._verify_and_parse(body=body, stripe_signature=stripe_signature)
-        etype = event.get("type")
-        obj = (event.get("data") or {}).get("object") or {}
-
-        try:
-            if etype == "payment_intent.succeeded":
-                res = await self._handle_payment_intent_succeeded(event, obj)
-            elif etype == "invoice.paid":
-                res = await self._handle_invoice_paid(event, obj)
-            elif etype in ("refund.updated", "refund.created"):
-                res = await self._handle_refund_updated(event, obj)
-            elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
-                res = await self._handle_subscription_event(event, obj)
-            else:
-                res = StripeHandleResult(status="ok", action="unsupported", message=f"Event {etype} not processed")
-        except Exception as e:
-            logger.exception("Stripe webhook failed: type=%s", etype)
-            return {"status": "error", "action": "failed", "message": str(e), "event_type": etype}
-
+        res = await self.process_event(event)
         return {
             "status": res.status,
             "action": res.action,
@@ -385,6 +471,31 @@ class StripeEconomicsWebhookHandler:
             "project": res.project,
             "user_id": res.user_id,
         }
+
+    async def process_event(self, event: Dict[str, Any]) -> StripeHandleResult:
+        """
+        Process a Stripe event (either from webhook or from API).
+        Idempotency is handled via external_economics_events table.
+        """
+        etype = event.get("type")
+        obj = (event.get("data") or {}).get("object") or {}
+
+        try:
+            if etype == "payment_intent.succeeded":
+                return await self._handle_payment_intent_succeeded(event, obj)
+            elif etype == "invoice.paid":
+                return await self._handle_invoice_paid(event, obj)
+            elif etype == "checkout.session.completed":
+                return await self._handle_checkout_session_completed(event, obj)
+            elif etype in ("refund.updated", "refund.created"):
+                return await self._handle_refund_updated(event, obj)
+            elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
+                return await self._handle_subscription_event(event, obj)
+            else:
+                return StripeHandleResult(status="ok", action="unsupported", message=f"Event {etype} not processed")
+        except Exception as e:
+            logger.exception("Stripe event processing failed: type=%s", etype)
+            return StripeHandleResult(status="error", action="failed", message=str(e))
 
     # ---------------- verification ----------------
 
@@ -512,6 +623,57 @@ class StripeEconomicsWebhookHandler:
 
     # ---------------- event handlers ----------------
 
+    async def _handle_checkout_session_completed(self, event: Dict[str, Any], session_obj: Dict[str, Any]) -> StripeHandleResult:
+        meta = self._meta(session_obj)
+        tenant, project, user_id = self._resolve_tenant_project_user(meta)
+        if not user_id:
+            return StripeHandleResult(status="ok", action="ignored", message="Missing user_id in session metadata")
+
+        stripe_sub_id = session_obj.get("subscription")
+        stripe_cust_id = session_obj.get("customer")
+        session_id = str(session_obj.get("id") or "")
+        stripe_event_id = str(event.get("id") or "")
+
+        # If it's a subscription session, we want to capture the sub_id early
+        if stripe_sub_id:
+            plan_id = meta.get("plan_id")
+            async with self.pg_pool.acquire() as conn:
+                async with conn.transaction():
+                    # Idempotency for the session itself
+                    status = await self._lock_or_create_ext_event(
+                        conn=conn,
+                        kind="checkout_completed",
+                        external_id=session_id,
+                        tenant=tenant,
+                        project=project,
+                        user_id=user_id,
+                        amount_cents=None,
+                        tokens=None,
+                        currency=None,
+                        stripe_event_id=stripe_event_id,
+                        metadata=meta,
+                    )
+                    if status == "applied":
+                        return StripeHandleResult(status="ok", action="duplicate", message="Already applied")
+
+                    # Update subscription snapshot with the real ID and plan_id
+                    await conn.execute(f"""
+                        UPDATE {self.CP}.user_subscriptions
+                        SET stripe_subscription_id = COALESCE(stripe_subscription_id, $4),
+                            stripe_customer_id = COALESCE(stripe_customer_id, $5),
+                            plan_id = COALESCE(plan_id, $6),
+                            status = 'active',
+                            updated_at = NOW()
+                        WHERE tenant=$1 AND project=$2 AND user_id=$3
+                    """, tenant, project, user_id, stripe_sub_id, stripe_cust_id, plan_id)
+
+                    await self._mark_ext_event_applied(conn, kind="checkout_completed", external_id=session_id)
+
+        return StripeHandleResult(
+            status="ok", action="applied", message="Checkout session completed",
+            tenant=tenant, project=project, user_id=user_id
+        )
+
     async def _handle_payment_intent_succeeded(self, event: Dict[str, Any], pi: Dict[str, Any]) -> StripeHandleResult:
         meta = self._meta(pi)
         tenant, project, user_id = self._resolve_tenant_project_user(meta)
@@ -622,7 +784,7 @@ class StripeEconomicsWebhookHandler:
             monthly_price_cents = int(amount_cents)
 
         stripe_customer_id = invoice.get("customer")
-        stripe_subscription_id = invoice.get("subscription")
+        stripe_subscription_id = invoice.get("parent").get("subscription_details").get("subscription")
 
         next_charge_at = None
         # Prefer subscription.current_period_end if we can (more reliable), else fallback to invoice lines period end
@@ -638,7 +800,7 @@ class StripeEconomicsWebhookHandler:
 
         if not next_charge_at:
             try:
-                lines = (invoice.get("lines") or {}).get("data") or []
+                lines = _extract_stripe_data_list(invoice, "lines")
                 if lines:
                     period_end = ((lines[0].get("period") or {}).get("end"))
                     if period_end:
@@ -651,7 +813,7 @@ class StripeEconomicsWebhookHandler:
 
         period_start = None
         try:
-            lines = (invoice.get("lines") or {}).get("data") or []
+            lines = _extract_stripe_data_list(invoice, "lines")
             if lines:
                 period_start_ts = ((lines[0].get("period") or {}).get("start"))
                 if period_start_ts:
@@ -715,13 +877,20 @@ class StripeEconomicsWebhookHandler:
                         tenant=tenant, project=project, user_id=user_id, conn=conn
                     )
                     if prev_sub and prev_sub.next_charge_at:
+                        # Ensure we rollover the EXACT old period.
+                        # If prev_sub.next_charge_at was somehow already advanced to the new period end,
+                        # we must reconstruct the old period end from the invoice's period_start.
+                        old_period_end = prev_sub.next_charge_at
+                        if period_start and next_charge_at and old_period_end >= next_charge_at:
+                            old_period_end = period_start
+
                         prev_desc = build_subscription_period_descriptor(
                             tenant=tenant,
                             project=project,
                             user_id=user_id,
                             provider=prev_sub.provider,
                             stripe_subscription_id=prev_sub.stripe_subscription_id,
-                            period_end=prev_sub.next_charge_at,
+                            period_end=old_period_end,
                             period_start=prev_sub.last_charged_at,
                         )
                         period_key = prev_desc["period_key"]
@@ -771,6 +940,29 @@ class StripeEconomicsWebhookHandler:
                 except Exception as e:
                     await self._mark_ext_event_failed(conn, kind="subscription_topup", external_id=topup_external_id, error=str(e))
                     raise
+
+        # Cancel the old Stripe subscription if the user switched plans via Checkout.
+        # prev_sub here holds the state before this invoice's upsert (fetched at tx open time).
+        # If the subscription IDs differ, a new subscription replaced the old one — cancel it now.
+        if (
+            prev_sub
+            and prev_sub.stripe_subscription_id
+            and stripe_subscription_id
+            and prev_sub.stripe_subscription_id != stripe_subscription_id
+        ):
+            stripe_client = self._stripe()
+            if stripe_client:
+                try:
+                    stripe_client.Subscription.cancel(prev_sub.stripe_subscription_id)
+                    logger.info(
+                        "[invoice.paid] Cancelled old Stripe subscription %s for user %s (switched to %s)",
+                        prev_sub.stripe_subscription_id, user_id, stripe_subscription_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "[invoice.paid] Failed to cancel old Stripe subscription %s for user %s",
+                        prev_sub.stripe_subscription_id, user_id,
+                    )
 
         return StripeHandleResult(
             status="ok",
@@ -896,8 +1088,9 @@ class StripeEconomicsWebhookHandler:
 
         stripe_status = str(sub.get("status") or "")
         cp_status = map_stripe_subscription_status_to_cp(stripe_status)
-        cpe = sub.get("current_period_end")
-        next_charge_at = datetime.fromtimestamp(int(cpe), tz=timezone.utc) if cpe else None
+        items_data = _extract_stripe_data_list(sub, "items")
+        cpe = items_data[0] if items_data else {}
+        next_charge_at = _extract_stripe_timestamp(cpe, "current_period_end")
 
         stripe_event_id = str(event.get("id") or "")
         async with self.pg_pool.acquire() as conn:
@@ -919,6 +1112,48 @@ class StripeEconomicsWebhookHandler:
                     return StripeHandleResult(status="ok", action="duplicate", message="Already applied (idempotent)")
 
                 if cp_status == "canceled":
+                    # Rollover logic before final cancellation
+                    existing_sub = await self.subscription_mgr.get_subscription_by_stripe_id(
+                        stripe_subscription_id=stripe_sub_id,
+                        conn=conn,
+                    )
+                    if existing_sub and existing_sub.next_charge_at and user_id:
+                        try:
+                            # Build period descriptor for the CURRENT (now final) period
+                            period_desc = build_subscription_period_descriptor(
+                                tenant=tenant,
+                                project=project,
+                                user_id=user_id,
+                                provider=existing_sub.provider,
+                                stripe_subscription_id=stripe_sub_id,
+                                period_end=existing_sub.next_charge_at,
+                                period_start=existing_sub.last_charged_at,
+                            )
+                            
+                            budget = self.subscription_budget_factory(
+                                tenant, project, user_id,
+                                period_desc["period_key"],
+                                period_desc["period_start"],
+                                period_desc["period_end"],
+                            )
+                            project_budget = self.project_budget_factory(tenant, project) if self.project_budget_factory else ProjectBudgetLimiter(
+                                redis=None, pg_pool=self.pg_pool, tenant=tenant, project=project
+                            )
+
+                            await self.subscription_mgr.rollover_unused_balance_once(
+                                tenant=tenant,
+                                project=project,
+                                user_id=user_id,
+                                subscription_budget=budget,
+                                project_budget=project_budget,
+                                period_key=period_desc["period_key"],
+                                period_end=period_desc["period_end"],
+                                actor="stripe_cancel",
+                                conn=conn,
+                            )
+                        except Exception:
+                            logger.exception("Rollover failed during subscription cancellation for user %s", user_id)
+
                     await self.subscription_mgr.update_status_by_stripe_id(
                         stripe_subscription_id=stripe_sub_id,
                         status="canceled",
@@ -934,11 +1169,14 @@ class StripeEconomicsWebhookHandler:
                     if internal and str(internal["status"]) != "applied":
                         await self._mark_internal_event_applied(conn, kind="subscription_cancel", external_id=stripe_sub_id)
                 else:
-                    # keep status updated for suspended/active; preserve next_charge_at from Stripe if provided
+                    # keep status updated for suspended/active.
+                    # DO NOT update next_charge_at here! Advancing next_charge_at before
+                    # invoice.paid tops up the new budget causes a "0 balance" gap.
+                    # invoice.paid will definitively update next_charge_at.
                     await self.subscription_mgr.update_status_by_stripe_id(
                         stripe_subscription_id=stripe_sub_id,
                         status=cp_status,
-                        next_charge_at=next_charge_at,
+                        next_charge_at=None,
                         conn=conn,
                     )
 
@@ -1012,8 +1250,9 @@ class StripeEconomicsAdminService:
         amount_cents: Optional[int],
         tokens: Optional[int],
         metadata: Dict[str, Any],
-    ) -> str:
-        await conn.execute(f"""
+    ) -> Tuple[str, bool]:
+        """Returns (status, was_created)"""
+        res = await conn.fetchval(f"""
             INSERT INTO {self.CP}.external_economics_events (
               source, kind, external_id,
               tenant, project, user_id,
@@ -1023,10 +1262,13 @@ class StripeEconomicsAdminService:
               'internal', $1, $2,
               $3, $4, $5,
               $6, $7, 'usd',
-              'pending', NULL, $8::jsonb
+              'pending', NULL, $8
             )
             ON CONFLICT (source, kind, external_id) DO NOTHING
-        """, kind, external_id, tenant, project, user_id, amount_cents, tokens, json.dumps(metadata))
+            RETURNING TRUE
+        """, kind, external_id, tenant, project, user_id, amount_cents, tokens, metadata)
+
+        was_created = bool(res)
 
         row = await conn.fetchrow(f"""
             SELECT status
@@ -1038,7 +1280,7 @@ class StripeEconomicsAdminService:
         if not row:
             raise RuntimeError("Failed to lock/create external_economics_events row (internal)")
 
-        return str(row["status"])
+        return str(row["status"]), was_created
 
     async def _update_internal_event_metadata(
         self,
@@ -1050,10 +1292,10 @@ class StripeEconomicsAdminService:
     ) -> None:
         await conn.execute(f"""
             UPDATE {self.CP}.external_economics_events
-            SET metadata = COALESCE(metadata, '{{}}'::jsonb) || $3::jsonb,
+            SET metadata = COALESCE(metadata, '{{}}'::jsonb) || $3,
                 updated_at = NOW()
             WHERE source='internal' AND kind=$1 AND external_id=$2
-        """, kind, external_id, json.dumps(metadata))
+        """, kind, external_id, metadata)
 
     async def _mark_internal_event_applied(self, conn: asyncpg.Connection, *, kind: str, external_id: str) -> None:
         await conn.execute(f"""
@@ -1088,7 +1330,7 @@ class StripeEconomicsAdminService:
             raise ValueError(f"Unsupported currency for refund: {currency}")
 
         amount_received = int(pi.get("amount_received") or pi.get("amount") or 0)
-        charges = (pi.get("charges") or {}).get("data") or []
+        charges = _extract_stripe_data_list(pi, "charges")
         amount_refunded = sum(int(c.get("amount_refunded") or 0) for c in charges)
         max_refundable = max(0, amount_received - amount_refunded)
         if max_refundable <= 0:
@@ -1123,7 +1365,7 @@ class StripeEconomicsAdminService:
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
-                status = await self._lock_or_create_internal_event(
+                status, was_created = await self._lock_or_create_internal_event(
                     conn=conn,
                     kind="wallet_refund",
                     external_id=external_id,
@@ -1149,13 +1391,16 @@ class StripeEconomicsAdminService:
                         "message": "Refund already applied",
                         "external_id": external_id,
                     }
-                if status == "pending":
+                
+                # If not created now and still pending, then it's a real concurrent duplicate
+                if not was_created and status == "pending":
                     return {
                         "status": "ok",
                         "action": "duplicate",
                         "message": "Refund already pending",
                         "external_id": external_id,
                     }
+                    
                 if status == "failed":
                     raise ValueError("Previous refund attempt failed; use a new request or investigate")
 
@@ -1283,7 +1528,7 @@ class StripeEconomicsAdminService:
 
         async with self.pg_pool.acquire() as conn:
             async with conn.transaction():
-                status = await self._lock_or_create_internal_event(
+                status, was_created = await self._lock_or_create_internal_event(
                     conn=conn,
                     kind="subscription_cancel",
                     external_id=external_id,
@@ -1300,8 +1545,10 @@ class StripeEconomicsAdminService:
                 )
                 if status == "applied":
                     return {"status": "ok", "action": "duplicate", "message": "Cancellation already applied"}
-                if status == "pending":
+                
+                if not was_created and status == "pending":
                     return {"status": "ok", "action": "duplicate", "message": "Cancellation already pending"}
+                
                 if status == "failed":
                     raise ValueError("Previous cancel attempt failed; investigate before retrying")
 
@@ -1401,7 +1648,28 @@ class StripeEconomicsAdminService:
         for row in rows:
             k = str(row["kind"])
             external_id = str(row["external_id"])
-            metadata = row["metadata"] or {}
+            raw_metadata = row["metadata"]
+            
+            metadata = {}
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+            elif isinstance(raw_metadata, list):
+                # Handle the case where metadata is a list of items (can be dicts or JSON strings)
+                for item in raw_metadata:
+                    if isinstance(item, dict):
+                        metadata.update(item)
+                    elif isinstance(item, str):
+                        try:
+                            d = json.loads(item)
+                            if isinstance(d, dict):
+                                metadata.update(d)
+                        except Exception:
+                            pass
+            elif isinstance(raw_metadata, str):
+                try:
+                    metadata = json.loads(raw_metadata)
+                except Exception:
+                    metadata = {}
 
             if k == "wallet_refund":
                 refund_id = metadata.get("stripe_refund_id")
@@ -1514,4 +1782,60 @@ class StripeEconomicsAdminService:
             "reconciled": reconciled,
             "applied": applied,
             "failed": failed,
+        }
+
+    async def reconcile_stripe_events(
+        self,
+        *,
+        handler: StripeEconomicsWebhookHandler,
+        since_timestamp: int,
+        limit: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        Fetch recent events from Stripe API since since_timestamp and process them.
+        Returns result summary and the latest_event_timestamp for state tracking.
+        """
+        stripe = self._stripe()
+        import time
+        
+        # Stripe events are available for 30 days
+        max_back_seconds = 30 * 24 * 3600
+        min_allowed_timestamp = int(time.time()) - max_back_seconds
+        actual_start_time = max(since_timestamp, min_allowed_timestamp)
+
+        logger.info("[Stripe Reconcile] Fetching events created since %s", 
+                    datetime.fromtimestamp(actual_start_time, tz=timezone.utc))
+
+        events = stripe.Event.list(created={"gt": actual_start_time}, limit=limit)
+        
+        reconciled = 0
+        applied = 0
+        skipped = 0
+        errors = 0
+        latest_ts = actual_start_time
+
+        # auto_paging_iter handles pagination automatically
+        for event in events.auto_paging_iter():
+            reconciled += 1
+            if event.created > latest_ts:
+                latest_ts = event.created
+                
+            res = await handler.process_event(event)
+            if res.status == "ok":
+                if res.action == "applied":
+                    applied += 1
+                else:
+                    skipped += 1
+            else:
+                errors += 1
+                logger.error("[Stripe Reconcile] Failed to process event %s (%s): %s", 
+                             event.id, event.type, res.message)
+
+        return {
+            "status": "ok",
+            "reconciled": reconciled,
+            "applied": applied,
+            "skipped": skipped,
+            "errors": errors,
+            "latest_event_timestamp": latest_ts
         }
