@@ -140,13 +140,14 @@ If metadata is missing, the webhook handler attempts fallback lookups via the DB
 
 ## Webhook Events Handled
 
-| Event | Action |
-|-------|--------|
-| `payment_intent.succeeded` | Top up wallet (lifetime credits) for `wallet_topup` kind |
-| `invoice.paid` | Top up subscription period budget; update subscription record |
-| `refund.created` / `refund.updated` | Finalize wallet refund pending event |
-| `customer.subscription.updated` | Sync subscription status, `next_charge_at` |
-| `customer.subscription.deleted` | Mark subscription as canceled |
+| Event                               | Action                                                        |
+|-------------------------------------|---------------------------------------------------------------|
+| `payment_intent.succeeded`          | Top up wallet (lifetime credits) for `wallet_topup` kind      |
+| `invoice.paid`                      | Top up subscription period budget; update subscription record |
+| `refund.created` / `refund.updated` | Finalize wallet refund pending event                          |
+| `checkout.session.completed`        | Write `stripe_subscription_id` to DB immediately after checkout; prevents a gap where `invoice.paid` arrives before the subscription ID is stored |
+| `customer.subscription.updated`     | Sync subscription status, `next_charge_at`                    |
+| `customer.subscription.deleted`     | Mark subscription as canceled                                 |
 
 All events are idempotent via `external_economics_events` table (keyed by Stripe event ID).
 
