@@ -1,6 +1,6 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.13.245"
+  ref: "2026.3.14.348"
   description: |
     Bundle config + secrets update (for bundle developers)
     We now support dedicated bundle configuration and bundle secrets end-to-end.
@@ -40,4 +40,4 @@ platform:
     4. bundles.yaml — bundle registry + non‑secret bundle config
     5. bundles.secrets.yaml — bundle secrets (dot‑path keys)
   config:
-    version: "2026.3.13.245"
+    version: "2026.3.14.348"
