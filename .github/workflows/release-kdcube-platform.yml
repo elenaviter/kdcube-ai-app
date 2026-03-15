@@ -100,8 +100,6 @@ jobs:
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_ProxyLogin
           - image: kdcube-web-proxy
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_ProxyOpenResty
-            build_args: |
-              NGINX_CONFIG_FILE_PATH=deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf
           - image: kdcube-web-ui
             dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_UI
             build_args: |
