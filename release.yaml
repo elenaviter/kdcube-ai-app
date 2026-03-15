@@ -1,6 +1,6 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.16.107"
+  ref: "2026.3.16.127"
   description: |
     This release fixes the secrets backend configuration model so it matches the intended descriptor boundaries.
   
@@ -11,4 +11,4 @@ platform:
     The release also keeps provider handling backward-compatible where practical: legacy local still maps to the local secrets-service sidecar, and local CLI sidecar injection now only
     runs when the selected provider is actually secrets-service. Documentation and the default assembly template were updated so the new source of truth is explicit.
   config:
-    version: "2026.3.16.107"
+    version: "2026.3.16.127"
