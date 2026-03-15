@@ -2,28 +2,23 @@ FROM openresty/openresty:alpine
 
 RUN apk add --no-cache gettext
 
-# Build argument for nginx config path (relative to build context)
-ARG NGINX_CONFIG_FILE_PATH
-
-# Copy nginx configuration as a template.
-# envsubst will substitute ${APP_DOMAIN} and ${ALB_CIDR} at container startup,
-# producing the final nginx.conf.  Docker-compose configs that do not contain
-# those placeholders are passed through unchanged — zero regression.
-COPY ${NGINX_CONFIG_FILE_PATH} /usr/local/openresty/nginx/conf/nginx.conf.template
-
-# Create webroot for Let's Encrypt
-# RUN mkdir -p /var/www/letsencrypt
-
 # EXPOSE 80 443
 EXPOSE 80
 
-# Substitute only the two ECS-specific variables; leave everything else alone.
-# On docker-compose neither variable is typically set, so the template is
-# copied verbatim (envsubst replaces unknowns with empty string by default —
-# passing the explicit variable list prevents that for any other $-expressions
-# that may appear in the config, e.g. Lua variable references).
+# Two deployment modes — no config is baked into this image:
+#
+#   Local install (docker-compose):
+#     Host file is bind-mounted directly to /usr/local/openresty/nginx/conf/nginx.conf.
+#     OpenResty uses it as-is; the envsubst block below is skipped.
+#
+#   ECS/Fargate:
+#     EFS nginx-config access point is mounted at /nginx-config/.
+#     nginx.conf.template is written there by the nginx-config-init one-shot task.
+#     envsubst substitutes ${APP_DOMAIN} and ${ALB_CIDR} at container startup.
 CMD ["/bin/sh", "-c", \
-  "envsubst '${APP_DOMAIN} ${ALB_CIDR}' \
-     < /usr/local/openresty/nginx/conf/nginx.conf.template \
-     > /usr/local/openresty/nginx/conf/nginx.conf \
+  "if [ -f /nginx-config/nginx.conf.template ]; then \
+     envsubst '${APP_DOMAIN} ${ALB_CIDR}' \
+       < /nginx-config/nginx.conf.template \
+       > /usr/local/openresty/nginx/conf/nginx.conf; \
+   fi \
    && exec openresty -g 'daemon off;'"]
