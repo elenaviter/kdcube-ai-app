@@ -2877,6 +2877,7 @@ def run_setup(
         use_bundles_secrets=use_bundles_secrets,
     )
     env_main = load_env_file(config_dir / ".env")
+    env_proc = load_env_file(config_dir / ".env.proc")
 
     console.print("\n[bold]Env files:[/bold]")
     for name, path in env_paths.items():
