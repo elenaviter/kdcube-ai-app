@@ -1,0 +1,66 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "postgres-setup.fullname" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "postgres-setup.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "postgres-setup.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      restartPolicy: {{ .Values.job.restartPolicy }}
+      initContainers:
+        - name: wait-for-postgres
+          image: pgvector/pgvector:pg16
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h {{ .Values.postgres.host | quote }} -p {{ .Values.postgres.port | quote }} -U "$POSTGRES_USER" -d "$POSTGRES_DATABASE"; do
+                echo "Waiting for postgres..."
+                sleep 3
+              done
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingPostgresSecret.name }}
+                  key: {{ .Values.existingPostgresSecret.userKey }}
+            - name: POSTGRES_DATABASE
+              value: {{ .Values.postgres.database | quote }}
+      containers:
+        - name: postgres-setup
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: POSTGRES_HOST
+              value: {{ .Values.postgres.host | quote }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.postgres.port | quote }}
+            - name: POSTGRES_DATABASE
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_SSL
+              value: {{ .Values.postgres.ssl | quote }}
+            - name: TENANT_ID
+              value: {{ .Values.bootstrap.tenantId | quote }}
+            - name: PROJECT_ID
+              value: {{ .Values.bootstrap.projectId | quote }}
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingPostgresSecret.name }}
+                  key: {{ .Values.existingPostgresSecret.userKey }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingPostgresSecret.name }}
+                  key: {{ .Values.existingPostgresSecret.passwordKey }}
+          resources:
+{{ toYaml .Values.resources | indent 12 }}

@@ -1,0 +1,145 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  imagePullPolicy: IfNotPresent
+
+configMaps:
+  backendEnv: backend-env
+  frontendRuntime: frontend-runtime-config
+  frontendNginx: frontend-nginx-config
+  nginxProxy: nginx-proxy-config
+  descriptors: kdcube-descriptors
+
+secrets:
+  postgres:
+    name: postgres-db-credentials
+    userKey: POSTGRES_USER
+    passwordKey: POSTGRES_PASSWORD
+  redis:
+    name: redis-auth
+    passwordKey: redis-password
+  platform:
+    create: true
+    name: kdcube-platform-secrets
+    data:
+      OPENAI_API_KEY: ""
+      HUGGING_FACE_API_TOKEN: ""
+      ANTHROPIC_API_KEY: ""
+      BRAVE_API_KEY: ""
+      SECRETS_ADMIN_TOKEN: ""
+      SECRETS_READ_TOKENS: ""
+      SECRETS_TOKEN_INGRESS: ""
+      SECRETS_TOKEN_PROC: ""
+
+postgres:
+  host: postgres-db
+  port: "5432"
+  database: kdcube
+  ssl: "False"
+
+redis:
+  host: redis
+  port: "6379"
+
+persistence:
+  create: true
+  storageClassName: ""
+  bundles:
+    claimName: bundles
+    size: 10Gi
+  kdcubeStorage:
+    claimName: kdcube-storage
+    size: 10Gi
+  bundleStorage:
+    claimName: bundle-storage
+    size: 10Gi
+  execWorkspace:
+    claimName: exec-workspace
+    size: 10Gi
+  logs:
+    claimName: kdcube-logs
+    size: 10Gi
+
+dockerSocket:
+  enabled: true
+  hostPath: /var/run/docker.sock
+
+awsCredentials:
+  enabled: false
+  hostPath: /home/appuser/.aws
+
+services:
+  secrets:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: kdcube/kdcube-secrets
+      tag: latest
+    servicePort: 7777
+
+  chatIngress:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: kdcube/kdcube-chat-ingress
+      tag: latest
+    servicePort: 8010
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+
+  chatProc:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: kdcube/kdcube-chat-proc
+      tag: latest
+    servicePort: 8020
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+
+  metrics:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: kdcube/kdcube-metrics
+      tag: latest
+    servicePort: 8090
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+
+  webUi:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: kdcube/kdcube-web-ui
+      tag: latest
+    servicePort: 80
+
+  webProxy:
+    enabled: true
+    replicaCount: 1
+    image:
+      repository: kdcube/kdcube-web-proxy
+      tag: latest
+    servicePort: 80
+    serviceType: ClusterIP
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
