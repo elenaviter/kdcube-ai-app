@@ -1,33 +1,14 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.15.2147"
+  ref: "2026.3.16.107"
   description: |
-    This release contains two main changes: a packaging/runtime update for the web proxy image, and a proc-service Redis reliability refactor focused on long-running workers in
-    production.
+    This release fixes the secrets backend configuration model so it matches the intended descriptor boundaries.
   
-    The web proxy image is now deployment-agnostic. We removed build-time baking of a specific Nginx config into the kdcube-web-proxy image and switched the container to load
-    configuration at runtime instead. In ECS/Fargate, the container now reads /nginx-config/nginx.conf.template and renders the final config with envsubst using APP_DOMAIN and ALB_CIDR.
-    In local docker-compose setups, the existing bind-mounted nginx.conf path continues to work without regression. The release workflow was simplified accordingly and no longer passes
-    NGINX_CONFIG_FILE_PATH as a build argument. Operationally, this means the same proxy image can be reused across environments, and Nginx configuration can be supplied by mounted
-    storage instead of requiring an image rebuild.
+    Secrets provider selection is now driven by assembly.yaml instead of gateway config. The runtime no longer reads secrets backend settings from GATEWAY_CONFIG_JSON, the local
+    installer now reads assembly.yaml.secrets.provider and renders SECRETS_PROVIDER into service env files, and ECS Terraform reads the same field and injects it into task envs. This
+    keeps gateway config limited to gateway concerns only, while actual secret values continue to come only from secrets.yaml, bundles.secrets.yaml, and AWS Secrets Manager.
   
-    The proc service was refactored to use a single shared async Redis pool per worker process and to recover more safely from degraded or stale ElastiCache connections. Previously,
-    proc could initialize multiple Redis client pools in the same process and long-lived queue/pubsub operations could remain stuck until the service was restarted. With this release,
-    proc now recreates steady-state Redis access around one shared async client, aligns pool sizing with gateway-config pools.redis_max_connections, and removes the proc runtime
-    dependency on separate redis_async_decode and redis_sync clients. Gateway-config cache and pub/sub flows were also moved onto the same bytes-based async Redis path so they do not
-    silently create an extra async pool.
-  
-    Queue consumption and config-listener behavior were hardened for long-lived operation. The processor now wraps blocking Redis operations such as queue BRPOP and pub/sub get_message
-    in explicit client-side timeouts, records queue/config loop lag and the last Redis-related error, and exposes this in heartbeat metadata. When Redis operations exceed those bounds
-    or fail abnormally, proc now disconnects the current shared async pool sockets so the next Redis operation reconnects automatically through the same client once ElastiCache is
-    healthy again. This is intended to address the production failure mode where the proc service stayed alive but stopped draining the queue until restart. Heartbeat reporting was also
-    improved so processor load and runtime metadata are visible to monitoring instead of reporting a healthy-but-stalled worker.
-  
-    Operator Notes
-  
-    - Expected benefit: proc workers should self-recover from stale or broken long-lived Redis connections without requiring a full service restart.
-    - Connection budgeting is now cleaner for proc: steady-state Redis usage is based on one shared async pool per worker process, plus any separate short-lived connections created by
-      spawned execution tasks.
-    - One caveat remains: if pools.redis_max_connections changes in gateway config at runtime, existing proc workers will keep the pool size they started with until restart.
+    The release also keeps provider handling backward-compatible where practical: legacy local still maps to the local secrets-service sidecar, and local CLI sidecar injection now only
+    runs when the selected provider is actually secrets-service. Documentation and the default assembly template were updated so the new source of truth is explicit.
   config:
-    version: "2026.3.15.2147"
+    version: "2026.3.16.107"
