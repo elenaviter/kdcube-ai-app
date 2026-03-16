@@ -23,7 +23,6 @@ def mount_control_plane_router(app: FastAPI):
         auth_manager: AuthManager instance
     """
 
-    # Mount content rebuild router
     control_plane_router.state = app.state
     conversations_browser_router.state = app.state
     redis_browser_router.state = app.state
