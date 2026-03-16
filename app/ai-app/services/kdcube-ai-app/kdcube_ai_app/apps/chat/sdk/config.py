@@ -31,6 +31,7 @@ _SECRET_ALIASES: dict[str, list[str]] = {
 _LEGACY_SECRET_TO_CANON: dict[str, str] = {
     legacy: canon for canon, aliases in _SECRET_ALIASES.items() for legacy in aliases
 }
+_PG_SSL_MODES = {"disable", "allow", "prefer", "require", "verify-ca", "verify-full"}
 
 
 def _secret_candidates(key: str) -> list[str]:
@@ -135,6 +136,8 @@ class Settings(BaseSettings):
     PGUSER: str = Field(default="postgres", alias="POSTGRES_USER")
     PGPASSWORD: str = Field(default="postgres", alias="POSTGRES_PASSWORD")
     PGSSL: bool = Field(default=False, alias="POSTGRES_SSL")
+    PGSSL_MODE: str | None = Field(default=None, alias="POSTGRES_SSL_MODE")
+    PGSSL_ROOT_CERT: str | None = Field(default=None, alias="POSTGRES_SSL_ROOT_CERT")
 
     # Neo4j
     NEO4J_URI: str = Field(default="bolt://neo4j:7687", alias="APP_NEO4J_URI")
@@ -279,3 +282,24 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
+
+def resolve_asyncpg_ssl(settings: Settings | None = None) -> bool | str:
+    settings = settings or get_settings()
+    if not settings.PGSSL:
+        return False
+
+    mode = (settings.PGSSL_MODE or "").strip().lower().replace("_", "-") or "require"
+    if mode not in _PG_SSL_MODES:
+        raise ValueError(
+            f"Unsupported POSTGRES_SSL_MODE={settings.PGSSL_MODE!r}; "
+            f"expected one of {sorted(_PG_SSL_MODES)}"
+        )
+
+    # Let asyncpg honor libpq-compatible sslmode semantics. If an explicit CA
+    # path is configured under our POSTGRES_* namespace, bridge it to the
+    # environment name asyncpg already understands.
+    if settings.PGSSL_ROOT_CERT and not os.getenv("PGSSLROOTCERT"):
+        os.environ["PGSSLROOTCERT"] = settings.PGSSL_ROOT_CERT
+
+    return mode

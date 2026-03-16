@@ -10,7 +10,7 @@ import kdcube_ai_app.apps.utils.sql_dt_utils as dt_utils
 
 from kdcube_ai_app.apps.knowledge_base.db.data_models import HybridSearchParams
 from kdcube_ai_app.infra.embedding.embedding import convert_embedding_to_string
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, resolve_asyncpg_ssl
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class KBClient:
                 user=self._settings.PGUSER,
                 password=self._settings.PGPASSWORD,
                 database=self._settings.PGDATABASE,
-                ssl=self._settings.PGSSL,
+                ssl=resolve_asyncpg_ssl(self._settings),
                 max_inactive_connection_lifetime=300.0,
                 min_size=pool_min,   # 0 so idle workers release conns
                 max_size=pool_max,

@@ -28,6 +28,8 @@ class PostgreSqlDbMgr:
 
         # Optional tuning knobs via env
         self.ssl = (os.environ.get("POSTGRES_SSL", "false").lower() == "true")
+        self.sslmode = os.environ.get("POSTGRES_SSL_MODE") or ("require" if self.ssl else "disable")
+        self.sslrootcert = os.environ.get("POSTGRES_SSL_ROOT_CERT")
         self.appname = connection_params.get("application_name") or os.environ.get("POSTGRES_APPNAME", "kdcube-psql")
         self.statement_timeout_ms = int(os.environ.get("POSTGRES_STATEMENT_TIMEOUT_MS", "60000"))  # 60s
         self.search_path = connection_params.get("search_path") or os.environ.get("POSTGRES_SEARCH_PATH")  # optional
@@ -47,15 +49,18 @@ class PostgreSqlDbMgr:
         self._options = " ".join(opts)
 
     def get_connection(self):
-        return psycopg2.connect(
+        kwargs = dict(
             dbname=self.database,
             user=self.username,
             password=self.password,
             host=self.host,
             port=self.port,
-            sslmode=("require" if self.ssl else "disable"),
+            sslmode=self.sslmode,
             options=self._options,
         )
+        if self.sslrootcert:
+            kwargs["sslrootcert"] = self.sslrootcert
+        return psycopg2.connect(**kwargs)
 
     def execute_sql_string(self, sql: str):
         with self.get_connection() as conn:

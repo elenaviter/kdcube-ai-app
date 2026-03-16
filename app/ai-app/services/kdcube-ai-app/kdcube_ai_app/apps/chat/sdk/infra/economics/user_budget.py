@@ -16,6 +16,7 @@ from redis.asyncio import Redis
 
 from kdcube_ai_app.infra.namespaces import REDIS
 from kdcube_ai_app.infra.redis.client import get_async_redis_client
+from kdcube_ai_app.apps.chat.sdk.config import resolve_asyncpg_ssl
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription import SubscriptionManager
 from kdcube_ai_app.apps.chat.sdk.infra.economics.subscription_budget import SubscriptionBudgetLimiter
 
@@ -269,7 +270,7 @@ class PlanOverrideManager:
                 user=self._settings.PGUSER,
                 password=self._settings.PGPASSWORD,
                 database=self._settings.PGDATABASE,
-                ssl=self._settings.PGSSL,
+                ssl=resolve_asyncpg_ssl(self._settings),
             )
             self._owns_pool = True
 
@@ -459,7 +460,7 @@ class UserCreditsManager:
                 user=self._settings.PGUSER,
                 password=self._settings.PGPASSWORD,
                 database=self._settings.PGDATABASE,
-                ssl=self._settings.PGSSL,
+                ssl=resolve_asyncpg_ssl(self._settings),
             )
             self._owns_pool = True
 

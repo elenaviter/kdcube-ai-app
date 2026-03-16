@@ -6,7 +6,7 @@
 from __future__ import annotations
 import asyncpg, hashlib
 from typing import Optional, List, Dict, Any, Sequence
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, resolve_asyncpg_ssl
 from kdcube_ai_app.infra.embedding.embedding import convert_embedding_to_string
 
 class RAGIndex:
@@ -22,7 +22,7 @@ class RAGIndex:
         self._pool = await asyncpg.create_pool(
             host=self._settings.PGHOST, port=self._settings.PGPORT,
             user=self._settings.PGUSER, password=self._settings.PGPASSWORD,
-            database=self._settings.PGDATABASE, ssl=self._settings.PGSSL
+            database=self._settings.PGDATABASE, ssl=resolve_asyncpg_ssl(self._settings)
         )
 
     async def close(self):

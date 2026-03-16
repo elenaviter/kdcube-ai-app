@@ -89,6 +89,11 @@ Important consequences:
 
 The current processor uses Redis Lists plus Redis keys for claims and leases.
 
+Current implementation note:
+
+- the currently implemented keys are primarily scoped by `tenant` and `project`
+- the fuller target scheduler design below adds `bundle_id` and `user_id` segments for conversation-scoped resources
+
 ### Ready queues
 
 Key pattern:
@@ -467,15 +472,38 @@ What it solves:
 - workflow-level inspection API
 - fallback processing for non-reactive bundles through post-turn promotion
 
-What it does not solve yet:
+What it still does not provide:
 
-- full conversation sharding
-- explicit conversation lease ownership independent from current conversation-state rows
-- shard-local ordered scheduling across multiple queued turns for the same conversation
-- instant mid-turn control semantics for all bundles
-- stream-native pending ownership / recovery
+- a real conversation scheduler
+- a durable "wake this conversation up" mechanism independent from the current owner
+- a first-class lease that is owned and renewed by the active conversation owner
+- direct processing of the next mailbox turn without bouncing back through the global user-type queue
+- explicit crash recovery for "mailbox non-empty but owner died"
+- a clear fairness model once one conversation keeps receiving many followups
 
-So steer/followup is now partially implemented, but the system is not yet a full conversation-scheduler architecture.
+This is why the current slice was implementable as an extension, but the full design is not a small patch.
+The missing piece is not "another Redis key".
+It is a new scheduling model whose primary unit is the **conversation**, not the global lane item.
+
+### 10.1 Why this is more complex than the current queue
+
+The current queue is optimized for:
+
+- one task payload
+- one worker claims it
+- one turn executes
+- task completes or fails
+
+The full steer/followup model needs to handle:
+
+- multiple accepted messages per conversation while a turn is still active
+- one active owner at a time without sticky instance affinity
+- handoff of ownership after a worker dies
+- a runtime that may or may not consume live continuation input
+- strict order across future turns for the same conversation
+- non-replay semantics once a turn has already started producing side effects
+
+That is why the right next step is a conversation scheduler, not another refinement of the global ready queue.
 
 ## 11. Steer/Followup: Desired Product Semantics
 
@@ -492,129 +520,420 @@ The target behavior should be:
 - let non-reactive bundles leave those messages queued so they are processed later in normal order
 - never auto-replay an already-started turn just because a worker died
 
-The last point remains non-negotiable. Steer/followup does not change the non-idempotent nature of an already-started turn.
+The last point remains non-negotiable.
+Steer/followup does not change the non-idempotent nature of an already-started turn.
 
 ---
 
-## 12. Recommended Architecture For Full Conversation Ownership
+## 12. Proposed Full Conversation Scheduler
 
-### 12.1 Move from user-type queues to conversation sharding
+The recommended target model is:
 
-For steer/followup, the main scheduling unit should become the conversation, not the global lane item.
+```text
+ingress append -> conversation mailbox -> shard wake-up stream -> owner lease ->
+active conversation loop -> reactive consume or deferred next turn -> lease handoff
+```
 
-Recommended model:
+### 12.1 Core primitives
 
-- compute `conversation_shard = hash(conversation_id) % N`
-- route all messages for one conversation to the same shard
-- ensure one active consumer/owner per conversation at a time via a shared lease
-- keep per-conversation order inside that shard
+The full design should introduce five first-class primitives.
+
+Target naming rule:
+
+- conversation-scoped scheduler resources should be namespaced by the stable routing tuple:
+  - `tenant`
+  - `project`
+  - `bundle_id`
+  - `user_id`
+- then by the concrete resource kind such as conversation mailbox, lease, scheduled marker, or state
+- shared shard resources may omit `user_id` in the key because one shard stream can carry many users; in that case `user_id` must still be present in the wake-up event body
+
+#### A. Per-conversation mailbox
+
+All accepted messages for a conversation go into shared ordered storage:
+
+```text
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:mailbox
+```
+
+This mailbox holds:
+
+- `regular` head turns
+- `followup` messages
+- `steer` messages
+
+Every mailbox item should carry at least:
+
+- `conversation_id`
+- `turn_id`
+- `message_kind`
+- `created_at`
+- monotonic `sequence`
+- optional `target_turn_id`
+- payload metadata needed to rebuild `ChatTaskPayload`
+
+#### B. Conversation shard wake-up stream
+
+Workers should no longer poll only global user-type queues.
+They should also consume a shard scheduler stream:
+
+```text
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:shard:{shard_id}:wake
+```
+
+Each event means:
+
+- "conversation `{id}` has work and needs an owner"
+- the event payload carries at least `conversation_id`, `user_id`, and `bundle_id`
+
+The shard is computed as:
+
+```text
+hash(conversation_id) % N
+```
 
 Important:
 
 - this is **not** sticky-processor routing
-- the same conversation does not need to stay on the same proc instance across turns
-- ownership is lease-based and can move between workers
-- the only invariant is that at one moment in time there is at most one active owner for that conversation
+- it is only stable routing of conversation scheduling metadata
 
-This is the key property the current architecture does not yet have as an explicit shard-native lease model.
+#### C. Conversation lease
 
-### 12.2 Keep the per-conversation mailbox, but make it shard-native
-
-Each conversation needs an ordered mailbox that stores:
-
-- the accepted head turn
-- queued followup messages behind it
-- steer messages that target the currently active turn
-
-Conceptually:
+The active owner of a conversation holds a renewable lease:
 
 ```text
-conversation C
-  active turn: T1
-  mailbox:
-    1. steer S1 -> targets T1 while T1 is running
-    2. followup F1 -> next turn after T1
-    3. followup F2 -> next turn after F1
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:lease
 ```
 
-The runtime contract should become:
+The lease means:
 
-- the active turn owns the conversation lease
-- steer/followup messages are written to shared ordered storage, not to process memory
-- the active owner can inspect that storage at any moment while it runs
-- steer messages are visible to that active owner immediately
-- followups remain ordered behind the active turn unless the active workflow explicitly decides to consume them as live continuation input
-- if the active workflow does not pick them, they stay available for normal later processing
+- at most one proc worker owns this conversation right now
+- that owner may execute the active turn and inspect the mailbox
 
-### 12.3 Keep explicit continuation metadata in the request contract
+This is the key invariant the current architecture does not yet have explicitly.
 
-The task payload should grow explicit continuation metadata.
+#### D. Scheduled marker
 
-At minimum:
+The scheduler needs a dedupe bit such as:
 
-- message kind: `regular | followup | steer`
-- target conversation id
-- optional target turn id for steer
-- monotonic sequence information inside the conversation
+```text
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:scheduled
+```
 
-Classification rule:
+This prevents unbounded duplicate wake-up events when many messages arrive while the conversation is already known to the scheduler.
 
-- if a message arrives while the conversation is not working, it is a normal `regular` turn unless explicitly marked otherwise
-- if a message arrives while the conversation is working, it should default to `followup`
-- if the client explicitly marks it as `steer`, it is treated as `steer`
-- the client may also explicitly mark a message as `followup` even if the server could infer it
+#### E. Started-turn marker
 
-This distinction now exists in the payload and should remain explicit. The processor behavior should not infer it implicitly from prompt text or route shape.
+The existing non-replay rule must stay.
+Once a turn crosses the started boundary, recovery must mark it interrupted rather than replaying it.
 
-### 12.4 Keep continuation access at the workflow layer
+That can stay as today:
 
-The continuation API should be injected at workflow/entrypoint level, not embedded directly into individual agents.
+- a per-task started marker
+- or an equivalent turn state persisted in the conversation execution state
 
-Recommended shape:
+### 12.2 Proposed end-to-end flow
 
-- entrypoint/workflow receives a `ConversationContinuationSource`
-- reactive runtimes can call it between rounds or tool steps
-- the workflow decides how a continuation changes the active plan
-- individual agents stay focused on reasoning, not Redis mechanics
+```mermaid
+flowchart TD
+    A[Ingress accepts message] --> B[Append to conversation mailbox]
+    B --> C{scheduled marker set?}
+    C -- no --> D[Set scheduled marker]
+    D --> E[Append wake-up event to shard stream]
+    C -- yes --> F[No extra wake-up needed]
 
-That continuation source should support at least:
+    E --> G[Proc worker consumes shard wake-up]
+    G --> H{Acquire conversation lease?}
+    H -- no --> I[Another owner is active]
+    H -- yes --> J[Become active owner]
 
-- peek whether any next message exists for this conversation
-- read the next available steer/followup message in order
-- optionally leave the message untouched if the workflow decides not to consume it yet
-- ack/claim the message only when the workflow has decided to pick it
+    J --> K[Read mailbox head in order]
+    K --> L[Run turn]
+    L --> M{Runtime consumes live steer/followup?}
+    M -- yes --> N[Apply continuation inside active turn]
+    M -- no --> O[Leave mailbox items pending]
 
-This matters for reuse:
+    L --> P{Mailbox still has next turn?}
+    P -- yes --> Q[Start next queued turn under same lease or reschedule]
+    P -- no --> R[Clear scheduled marker and release lease]
+```
 
-- reactive bundles can actively consume steer/followup
-- non-reactive bundles can remain unchanged
-- a generic workflow wrapper can decide whether a mailbox item is actionable now or should stay queued
+### 12.3 Ingress write path
 
-### 12.5 Reactive vs non-reactive behavior
+Ingress should become append-oriented, not enqueue-oriented.
+
+Recommended flow:
+
+1. classify the incoming message as `regular`, `followup`, or `steer`
+2. append it to the per-conversation mailbox with monotonic sequence
+3. if the conversation is not already scheduled or leased:
+   - set the scheduled marker
+   - emit one wake-up event to the shard stream
+4. return acceptance to the client immediately
+
+That means ingress no longer needs to decide:
+
+- which proc worker should get this
+- whether to push directly into a global lane queue
+
+Strictly speaking, ingress already does **not** choose a concrete proc worker today.
+What changes in the target model is this:
+
+- today ingress chooses the **global queueing path**:
+  - user-type ready queue
+  - or per-conversation mailbox
+- in the target model ingress chooses only the **conversation write path**:
+  - append to mailbox
+  - optionally emit a shard wake-up
+
+Ingress only decides:
+
+- what the message is
+- which conversation mailbox it belongs to
+- whether the scheduler must be nudged
+
+### 12.4 Worker acquisition path
+
+Proc workers consume shard wake-up events through a consumer group.
+
+Recommended flow:
+
+1. a worker claims a wake-up event from `chat:conv:shard:{shard}:wake`
+2. it tries to acquire `chat:conv:lease:{conversation_id}`
+3. if lease acquisition fails:
+   - another owner is already active
+   - the wake-up may be acked or collapsed depending on scheduler policy
+4. if lease acquisition succeeds:
+   - this worker becomes the active conversation owner
+   - it renews the lease while active
+   - it enters the conversation execution loop
+
+The worker is now responsible for the conversation, not just one popped queue item.
+
+### 12.5 Active owner conversation loop
+
+This is the core behavior that the current implementation still lacks.
+
+Once a worker owns the conversation lease:
+
+1. read the oldest mailbox item in order
+2. if it is a next-turn item, start that turn
+3. while the turn runs:
+   - expose mailbox access through `ConversationContinuationSource`
+   - let the runtime decide whether to consume steer/followup live
+4. after the turn ends:
+   - if the mailbox still has next-turn work, continue with the next turn
+   - otherwise clear scheduler state and release the lease
+
+The important difference from today:
+
+- non-reactive bundles do **not** need promotion back to the global ready queue in the target design
+- the owner loop itself can continue with the next mailbox turn in order
+- lease handoff happens only when the conversation becomes idle, the owner reaches a fairness boundary, or the owner dies
+
+### 12.6 Fairness policy
+
+One risk of the full owner-loop model is starvation:
+
+- if one conversation keeps receiving more followups, one worker could sit on it for too long
+
+So the design should include an explicit fairness boundary such as:
+
+- max sequential turns per conversation before reschedule
+- or max owner timeslice per conversation before reschedule
+
+Example:
+
+- process up to `K` sequential mailbox turns under one lease
+- if mailbox is still non-empty after that:
+  - keep the mailbox state
+  - emit another shard wake-up
+  - release the lease
+
+This preserves order while preventing one conversation from monopolizing a worker forever.
+
+### 12.7 Reactive vs non-reactive bundles in the target model
 
 Reactive bundle:
 
-- while the turn is running, the runtime can poll or await continuation input from the shared conversation mailbox
-- steer can change objective, constraints, stop conditions, or request interruption/reorientation
-- steer may even contain no user text and still be meaningful as a control signal
-- followup can either stay queued for the next turn or, if the workflow supports it, be converted into a live continuation step
-- the runtime chooses whether to pick the next available continuation message or leave it queued
+- while the turn is running, the runtime can poll or await continuation input from the mailbox
+- `steer` can modify objective, constraints, or stop/reorient behavior
+- `followup` can either remain queued for the next turn or be consumed as live continuation input
+- the runtime decides whether to pick the next continuation now or leave it pending
 
 Non-reactive bundle:
 
 - current turn runs unchanged
-- queued steer/followup stays in mailbox order
-- after the active turn ends, the next queued message becomes the next regular turn
-- that next regular turn may be picked by the same proc worker or by another one
+- mailbox items remain ordered and durable
+- when the current turn finishes, the owner loop starts the next queued turn in order
+- if the owner releases the lease first, another proc worker may become the next owner and continue from the same mailbox state
 
-This lets the platform support advanced runtimes without forcing every bundle to understand live continuation semantics.
+This is how the design avoids sticky processors while still preserving order.
+
+### 12.8 Does this still apply to one-shot or non-conversational bundles?
+
+Yes.
+
+The scheduler unit is still the conversation envelope, even if the bundle itself is semantically "one-shot".
+
+That means:
+
+- a one-shot bundle can still run under the same model
+- it simply ignores live continuation input
+- in the common case its mailbox contains only one item, so the conversation loop is trivial
+- if followup arrives while a one-shot turn is active, the scheduler still preserves order correctly
+
+So the model does **not** require every bundle to be deeply conversational.
+It only requires that every accepted request belong to some schedulable conversation/session identity.
+
+In practice:
+
+- conversational bundle:
+  - may use mailbox state actively
+- one-shot bundle:
+  - usually just processes the current item and finishes
+
+The same scheduler can support both.
+
+### 12.9 Message-kind propagation and pass-through policy
+
+The bundle entrypoint or workflow context must be able to see the message kind it is receiving.
+
+At minimum, the runtime contract should expose:
+
+- `message_kind`
+- `target_turn_id` if present
+- whether the message was explicitly marked
+
+The framework/scheduler should preserve the accepted ordered message as-is.
+It should not reinterpret the message into another kind before calling the bundle.
+
+That means:
+
+- `regular` stays `regular`
+- `followup` stays `followup`
+- `steer` stays `steer`
+
+The bundle/runtime is responsible for deciding whether that message kind is actionable.
+
+#### Regular
+
+- always valid as a normal turn input
+- bundle `run()` handles it as ordinary user input
+
+#### Followup
+
+- if consumed mid-turn by a reactive runtime, it is treated as live continuation input
+- if not consumed mid-turn, and later promoted into the next scheduled turn, it is still delivered as `followup`
+- a non-reactive bundle may then choose to handle it exactly like ordinary user input, or ignore any followup-specific semantics
+
+#### Steer
+
+`steer` is a control message, not just "another user prompt".
+
+Examples:
+
+- "stop"
+- "change direction"
+- blank control message that means "interrupt"
+
+If a `steer` message is later delivered into a normal scheduled turn because no active runtime consumed it live, the framework still passes it through as `steer`.
+If that bundle does not support `steer`, it may ignore it or apply bundle-specific fallback behavior.
+
+So the rule is:
+
+- yes, bundle `run()` or workflow context must be able to distinguish the message type
+- yes, the framework should pass the ordered accepted message through unchanged
+- no, the framework should not silently degrade one message kind into another on behalf of the bundle
+
+### 12.10 Can there be more message kinds later?
+
+Yes, but the scheduler-facing taxonomy should stay small and stable.
+
+Recommended separation:
+
+- scheduler/control kinds:
+  - `regular`
+  - `followup`
+  - `steer`
+  - future control kinds like `cancel` if needed
+- domain/UI payload subtypes:
+  - attachment-only message
+  - form action
+  - tool result
+  - system advisory
+
+In other words:
+
+- not every new UI or payload subtype should become a new scheduler kind
+- only kinds that change execution ownership or continuation semantics should live at the scheduler layer
+
+### 12.11 Failure and recovery model
+
+Recovery should become conversation-oriented, not just task-oriented.
+
+#### Owner dies before turn start
+
+- lease expires
+- mailbox still contains pending work
+- a reaper or scheduler repair loop observes:
+  - mailbox non-empty
+  - no active lease
+  - scheduled marker stale or missing
+- the conversation is re-woken on its shard stream
+
+Safe to replay:
+
+- yes, if the specific turn never crossed the started boundary
+
+#### Owner dies after turn start
+
+- the active turn is marked interrupted
+- that started turn is **not** replayed automatically
+- later mailbox items remain pending
+- the conversation is re-woken after interruption handling
+
+This preserves the current product rule:
+
+- pre-start work is recoverable
+- started turns are interrupted, not replayed
+
+### 12.12 Data model sketch
+
+One workable Redis-Streams-oriented shape is:
+
+```text
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:mailbox      # stream of accepted messages
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:shard:{shard_id}:wake                               # stream of conversations needing an owner
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:lease        # renewable key
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:scheduled    # dedupe / scheduler bit
+{tenant}:{project}:kdcube:chat:bundle:{bundle_id}:user:{user_id}:conv:{conversation_id}:state        # optional execution metadata
+```
+
+Mailbox events should be append-only and carry:
+
+- sequence
+- message kind
+- turn id
+- task id
+- payload pointer or payload body
+- live-consumed flag / terminal status if needed
+
+Wake-up events should be tiny and cheap:
+
+- conversation id
+- user id
+- bundle id
+- shard id
+- latest known mailbox sequence
+- cause such as `new_message`, `lease_repair`, `next_turn`
 
 ---
 
 ## 13. Why Redis Streams Are The Better Next Step
 
 The current processor uses Redis Lists.
-That is still acceptable for the current coarse proc queue, but it is a weak fit for steer/followup mailboxes.
+That is still acceptable for the current coarse proc queue, but it is a weak fit for a full conversation scheduler.
 
 ### Lists: what they are good at
 
@@ -626,8 +945,9 @@ That is still acceptable for the current coarse proc queue, but it is a weak fit
 
 - no native pending ledger
 - reclaim logic is manual
-- hard to inspect ownership cleanly
-- poor fit for ordered per-conversation mailboxes with consumer failover
+- hard to inspect owner handoff cleanly
+- awkward for wake-up streams plus per-conversation mailboxes
+- poor fit for lease repair and consumer failover
 
 ### Streams: what they add
 
@@ -638,17 +958,18 @@ That is still acceptable for the current coarse proc queue, but it is a weak fit
 - `XPENDING`
 - `XCLAIM` / `XAUTOCLAIM`
 
-For steer/followup, streams are the recommended direction because they naturally model:
+For the target design, streams are recommended because they naturally model:
 
-- shard streams
-- consumer ownership
-- pending conversation work
-- ordered continuation delivery
+- shard wake-up streams
+- consumer-group ownership
+- pending wake-up repair
+- ordered per-conversation mailbox delivery
+- observable failover behavior
 
 Important:
 
-- Streams do **not** solve non-idempotent started turns automatically.
-- The replay policy still has to remain:
+- streams do **not** solve non-idempotent started turns automatically
+- the replay policy still has to remain:
   - pre-start pending item: recoverable
   - started turn: interrupted, not auto-replayed
 
@@ -658,44 +979,51 @@ Important:
 
 The recommended migration is incremental.
 
-### Phase A: formalize the abstraction
+### Phase A: keep the current workflow abstraction
 
-- introduce a queue/mailbox abstraction
-- keep current list-backed implementation for normal turns
-- add explicit continuation metadata to payloads
+- keep `ConversationContinuationSource` as the public workflow API
+- keep explicit continuation metadata in payloads
+- keep current mailbox slice working
 
-### Phase B: add conversation shard routing
+This protects bundle code from the backend change.
 
-- hash by `conversation_id`
-- introduce shard ownership
-- continue running only normal turns first
+### Phase B: add a scheduler backend abstraction
 
-### Phase C: add continuation mailbox API
+- introduce a `ConversationScheduler` backend interface
+- current backend:
+  - global ready queue + mailbox promotion
+- target backend:
+  - shard stream + lease + mailbox stream
 
-- expose a workflow-level continuation source
-- let reactive bundles consume steer/followup
-- keep non-reactive bundles on deferred-next-turn behavior
+### Phase C: introduce wake-up streams and leases
 
-### Phase D: move the conversation layer to Redis Streams
+- add shard wake-up streams
+- add conversation leases
+- initially use them only for next-turn scheduling, not live continuation
 
-- use shard streams with consumer groups
-- cut over by tenant/project or explicit feature flag
-- avoid dual-consuming the same logical traffic from both backends
+### Phase D: move non-reactive continuation processing into the owner loop
 
-### Phase E: relax ingress gating
+- stop promoting next mailbox items back into the global queue
+- let the conversation owner start the next mailbox turn directly
+- add fairness boundaries so one conversation cannot monopolize a worker forever
 
-Only after mailbox + ownership exist should ingress stop relying on `require_not_in_progress=True` for all messages.
+### Phase E: enable live continuation on the new scheduler
 
-At that point:
+- reactive bundles consume mailbox input from the same owner loop
+- non-reactive bundles continue to ignore live continuation
+- both classes still share the same mailbox and lease model
 
-- normal message may still be denied if the product wants strict UX
-- followup/steer can be admitted safely because the conversation already has an ordered mailbox
+### Phase F: retire the old global-lane queue for chat turns
+
+- keep global capacity and rate-limit accounting
+- move actual execution scheduling to the conversation scheduler
+- leave lane-style queues only if they still serve a separate system concern
 
 ---
 
 ## 15. Architecture Rules To Keep
 
-These rules should survive the steer/followup redesign:
+These rules should survive the redesign:
 
 - one conversation can have only one active processor owner at a time
 - conversation ownership is lease-based, not sticky to one proc instance across turns
@@ -703,7 +1031,8 @@ These rules should survive the steer/followup redesign:
 - partial output already seen by the client must remain valid UI state
 - backpressure must count accepted but unfinished work, not only ready depth
 - shutdown must stop new admissions before it starts waiting on inflight work
-- continuation transport should be hidden behind a workflow-level API, not exposed as raw Redis operations to bundles
+- continuation transport should stay behind a workflow-level API, not raw Redis operations inside bundles
+- a worker crash must not lose queued followup/steer messages for the conversation
 
 ---
 
@@ -721,17 +1050,18 @@ That architecture is now much safer for long-running workers:
 - it lets continuation-aware bundles inspect that mailbox during execution
 - it falls back to promoting the next mailbox item into the normal queue for non-reactive bundles
 
-The current model already supports a first steer/followup slice.
-The next major step is to evolve from:
+The next major step is no longer "improve mailbox promotion".
+It is to replace the current queue-centric execution model with a real conversation scheduler:
 
 ```text
-global lane queue -> task execution
+global lane queue -> one task -> one turn
 ```
 
-to:
+becomes:
 
 ```text
-conversation shard -> conversation mailbox -> active turn owner -> optional reactive continuation consumption
+conversation mailbox -> shard wake-up stream -> lease owner ->
+one active conversation loop -> reactive consume or ordered next turn
 ```
 
-That is the right boundary for the next design step.
+That is the right boundary for the next implementation step.

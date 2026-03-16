@@ -12,7 +12,7 @@ from typing import Tuple, Optional
 from fastapi import HTTPException
 from starlette.requests import Request
 
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, resolve_asyncpg_ssl
 from kdcube_ai_app.apps.chat.sdk.context.retrieval.ctx_rag import ContextRAGClient
 from kdcube_ai_app.apps.chat.sdk.context.vector.conv_index import ConvIndex
 from kdcube_ai_app.apps.chat.sdk.storage.conversation_store import ConversationStore
@@ -578,7 +578,7 @@ async def get_pg_pool():
         user=_settings.PGUSER,
         password=_settings.PGPASSWORD,
         database=_settings.PGDATABASE,
-        ssl=_settings.PGSSL,
+        ssl=resolve_asyncpg_ssl(_settings),
         init=_init_conn,
         **pool_kwargs,
     )

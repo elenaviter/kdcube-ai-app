@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional, Sequence, Union, Callable, Iterable, Tuple
 
 
-from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.config import get_settings, resolve_asyncpg_ssl
 from kdcube_ai_app.infra.embedding.embedding import convert_embedding_to_string
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,7 @@ class ConvIndex:
                 user=self._settings.PGUSER,
                 password=self._settings.PGPASSWORD,
                 database=self._settings.PGDATABASE,
-                ssl=self._settings.PGSSL,
+                ssl=resolve_asyncpg_ssl(self._settings),
             )
 
     async def close(self):
