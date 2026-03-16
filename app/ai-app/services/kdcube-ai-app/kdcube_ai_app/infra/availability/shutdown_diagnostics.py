@@ -79,20 +79,59 @@ def _collect_process_tree(entries: dict[int, _PsEntry], root_pid: int) -> list[_
     return descendants
 
 
+def _read_proc_filesystem() -> dict[int, _PsEntry]:
+    """Read process info from /proc directly — works in any Linux container without ps."""
+    entries: dict[int, _PsEntry] = {}
+    try:
+        proc_dir = "/proc"
+        for name in os.listdir(proc_dir):
+            if not name.isdigit():
+                continue
+            pid = int(name)
+            try:
+                status: dict[str, str] = {}
+                with open(f"{proc_dir}/{pid}/status", "r") as f:
+                    for line in f:
+                        if ":" in line:
+                            k, _, v = line.partition(":")
+                            status[k.strip()] = v.strip()
+                ppid = int(status.get("PPid", "-1"))
+                # State line e.g. "S (sleeping)" → take first char
+                raw_state = status.get("State", "?")
+                stat = raw_state[0] if raw_state else "?"
+                try:
+                    with open(f"{proc_dir}/{pid}/cmdline", "rb") as f:
+                        cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+                except Exception:
+                    cmdline = status.get("Name", "?")
+                try:
+                    pgid = os.getpgid(pid)
+                except Exception:
+                    pgid = -1
+                entries[pid] = _PsEntry(
+                    pid=pid, ppid=ppid, pgid=pgid, stat=stat, etime="?", command=cmdline or status.get("Name", "?")
+                )
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return entries
+
+
 def _render_ps_lines(root_pid: int) -> list[str]:
-    proc = subprocess.run(
-        [
-            "ps",
-            "-ax",
-            "-o",
-            "pid=,ppid=,pgid=,stat=,etime=,command=",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=3.0,
-        check=True,
-    )
-    entries = _parse_ps_output(proc.stdout)
+    # Try ps first; fall back to /proc filesystem (available in all Linux containers).
+    entries: dict[int, _PsEntry] = {}
+    try:
+        proc = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,ppid=,pgid=,stat=,etime=,command="],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=True,
+        )
+        entries = _parse_ps_output(proc.stdout)
+    except Exception:
+        entries = _read_proc_filesystem()
     tree = _collect_process_tree(entries, root_pid)
     if not tree and root_pid in entries:
         tree = [entries[root_pid]]
