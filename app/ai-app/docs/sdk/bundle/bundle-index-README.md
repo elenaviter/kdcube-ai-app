@@ -21,7 +21,7 @@ Use this index to find the right doc by persona.
 - Interfaces (widgets + ops): [[docs/sdk/bundle/bundle-interfaces-README.md](bundle-interfaces-README.md)](bundle-interfaces-README.md)
 - Custom tools (bundle‑local): [[docs/sdk/tools/custom-tools-README.md](../tools/custom-tools-README.md)](../tools/custom-tools-README.md)
 - Custom skills (bundle‑local): [[docs/sdk/skills/custom-skills-README.md](../skills/custom-skills-README.md)](../skills/custom-skills-README.md)
-
+- Bundle properties and secrets: [[bundle-configuration-README.md](../../service/configuration/bundle-configuration-README.md)](../../service/configuration/bundle-configuration-README.md)
 ## Ops / deployment
 
 - Registry, env vars, git delivery: [[docs/sdk/bundle/bundle-ops-README.md](bundle-ops-README.md)](bundle-ops-README.md)
