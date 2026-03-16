@@ -128,8 +128,22 @@ class PythonSDKMCPAdapter:
         if auth_type in {"oauth_gui", "oauth-gui", "interactive"}:
             return {}
         env_key = auth.get("env")
+        secret_key = auth.get("secret")  # dot-path key for get_secret()
         header = auth.get("header")
-        token = os.environ.get(env_key) if env_key else None
+        # Resolve token: get_secret() first (supports bundle secrets), then env fallback
+        token = None
+        if secret_key:
+            try:
+                from kdcube_ai_app.apps.chat.sdk.config import get_secret
+                token = get_secret(secret_key)
+            except Exception:
+                pass
+        if not token and env_key:
+            try:
+                from kdcube_ai_app.apps.chat.sdk.config import get_secret
+                token = get_secret(env_key)
+            except Exception:
+                token = os.environ.get(env_key)
         if not token:
             return {}
         if auth_type in {"bearer", "oauth"}:
@@ -158,6 +172,24 @@ def _supports_kwarg(fn, name: str) -> bool:
         return False
 
 
+def _resolve_secret_ref(value: str) -> str:
+    """
+    Resolve ``${secret:dot.path.key}`` references in env values via get_secret().
+    If the value does not match the pattern, it is returned as-is.
+    """
+    if not isinstance(value, str) or not value.startswith("${secret:") or not value.endswith("}"):
+        return value
+    key = value[len("${secret:"):-1].strip()
+    if not key:
+        return value
+    try:
+        from kdcube_ai_app.apps.chat.sdk.config import get_secret
+        resolved = get_secret(key)
+        return resolved or value
+    except Exception:
+        return value
+
+
 def _resolve_stdio_env(server: MCPServerSpec) -> dict | None:
     """
     Build environment dict for a stdio MCP subprocess.
@@ -170,12 +202,19 @@ def _resolve_stdio_env(server: MCPServerSpec) -> dict | None:
     This helper merges the parent ``PYTHONPATH`` / ``PATH`` into the
     server-specific env so that ``python -m …`` invocations can resolve
     installed packages without hardcoding paths in the config.
+
+    Env values matching ``${secret:dot.path.key}`` are resolved via
+    get_secret(), enabling bundle-specific secrets from bundles.secrets.yaml.
     """
     env = server.env
     if env is None:
         return None
 
     env = dict(env)  # don't mutate the original
+
+    # Resolve ${secret:...} references in env values
+    for k, v in env.items():
+        env[k] = _resolve_secret_ref(v)
 
     # Inherit PYTHONPATH from the parent process so that
     # `python -m kdcube_ai_app.…` resolves without manual config.
