@@ -1,150 +1,389 @@
 ---
 id: ks:docs/exec/distributed-exec.md
-title: "Distributed Exec"
-summary: "Planned distributed execution model (Fargate/external) when Docker on node is unavailable."
-tags: ["exec", "distributed", "fargate", "external", "architecture"]
-keywords: ["distributed exec", "snapshot zip", "bundle", "outdir", "workdir", "remote executor"]
+title: "Distributed Exec — Fargate"
+summary: "End-to-end design and deployment guide for the Fargate isolated execution task."
+tags: ["exec", "distributed", "fargate", "external", "architecture", "ecs"]
+keywords: ["distributed exec", "snapshot zip", "bundle", "outdir", "workdir", "remote executor", "run-task", "ECS"]
 see_also:
   - ks:docs/exec/README-iso-runtime.md
-  - ks:docs/exec/README-runtime-modes-builtin-tools.md
   - ks:docs/exec/runtime-README.md
+  - ks:docs/exec/operations.md
 ---
-# Distributed Execution (Fargate/External)
 
-This document defines the plan to support **distributed code execution** (Fargate, Prefect, etc.)
-when Docker‑on‑node is not available. It complements the current docker runtime.
+# Distributed Execution — Fargate
 
-## Goals
-
-- Run isolated exec outside the chat node (Fargate / external worker)
-- Snapshot current workdir + outdir, upload to shared storage (S3)
-- Bootstrap exec with downloaded snapshot
-- Upload result deltas back to S3
-- Merge deltas into the host outdir after completion
-
-## Non‑Goals (for phase 1)
-
-- Parallel tool calls in the same workdir (future: distributed tool index)
-- Full bundle shipping for every run (only required if tools are bundle‑local)
+This document covers the end-to-end design for running isolated Python code execution
+on a dedicated ECS Fargate **exec task** instead of a local Docker sidecar.
 
 ---
 
-## Current runtime (baseline)
+## Why Fargate exec
 
-- **Local docker runtime** executes within node and shares workdir/outdir
-- Tool calls are indexed in `tool_calls_index.json`
-- Context + artifacts are stored in outdir
+Docker-on-node (`isolation="docker"`) is the local production mode — the proc container
+spawns a Docker child container on the same host, sharing workdir/outdir via bind mounts.
+This is not available in Fargate because:
+
+- Fargate containers cannot access Docker daemon
+- Fargate does not support `--cap-add=SYS_ADMIN` (needed for `unshare(CLONE_NEWNET)`)
+- There is no host filesystem to bind-mount
+
+The Fargate exec task is the replacement:
+
+| Feature | Docker mode | Fargate exec mode |
+|---|---|---|
+| Workdir sharing | Host bind mount | S3 snapshot + restore |
+| Bundle access | Host bind mount | S3 snapshot + restore |
+| Network isolation | `unshare(CLONE_NEWNET)` | Task-level VPC SG |
+| Task lifetime | Container exits → docker rm | Task STOPPED |
+| Caller waits | `asyncio.wait_for(proc.communicate())` | Poll `describe_tasks` until STOPPED |
+| Parallel executions | One Docker child per call | One ECS run-task per call |
 
 ---
 
-## Required changes (phased)
+## Architecture diagrams
 
-### Phase 1 — Tool index updates (safe change)
-
-- Replace index suffix from numeric counter to **timestamp suffix**
-- Make index writes **thread/process‑safe**
-- Keep `tool_calls_index.json` format (tool_id → list of files)
-
-### Phase 2 — Distributed exec abstraction
-
-- Keep `runtime/external/docker` as the local implementation
-- Add `runtime/external/fargate`
-- Introduce a runtime interface (`ExternalRuntime`) and a shared snapshot helper:
-  - `runtime/external/distributed_snapshot.py`
-
-### Phase 3 — Snapshot format + S3 layout
-
-**Snapshot rules**
-
-- Input snapshot = workdir + minimal outdir state
-- Exclude:
-  - `logs/`
-  - executed programs folder
-  - `sources_pool.json`, `sources_used.json`
-  - `tool_calls_index.json` (replaced by timestamped suffix list)
-
-**Storage layout** (per execution)
+### 1. Deployment time (task definition)
 
 ```
-.../executions/<role>/<session>/<conversation>/<turn>/<react-id>/<execution_id>/
-  input/
-    work.zip
-    out.zip
-  output/
-    work.zip
-    out.zip
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ AWS ECS — FARGATE EXEC TASK DEFINITION (kdcube-{env}-exec)                  │
+│                                                                              │
+│  Image: {registry}/kdcube-exec:{tag}                                         │
+│  Entrypoint: py_code_exec_entry.py   (PID 1)                                 │
+│                                                                              │
+│  IAM task role = proc_task_role  (same permissions as chat-proc)             │
+│    • S3: GetObject / PutObject / DeleteObject on kdcube-storage bucket       │
+│    • Secrets Manager: GetSecretValue on kdcube/services/*                    │
+│    • SSM: GetParameter on kdcube/config/*                                    │
+│    • CloudWatch Logs: CreateLogStream / PutLogEvents                         │
+│    • ECS: NOT required (no self-management)                                  │
+│                                                                              │
+│  Volumes:                                                                    │
+│    EFS ap_git_ssh_id → /run/secrets  (ro, IAM-auth transit-enc)             │
+│    (workdir, outdir, bundles are ephemeral local FS restored from S3)       │
+│                                                                              │
+│  Environment (injected at run-task time via containerOverrides):            │
+│    RUNTIME_GLOBALS_JSON   — full runtime_globals from caller                 │
+│    RUNTIME_TOOL_MODULES   — JSON list of tool module names                   │
+│    EXECUTION_ID           — unique per call                                  │
+│    WORKDIR=/workspace/work                                                   │
+│    OUTPUT_DIR=/workspace/out                                                 │
+│    LOG_DIR=/workspace/out/logs                                               │
+│    LOG_FILE_PREFIX=executor                                                  │
+│    EXECUTION_SANDBOX=fargate                                                 │
+│    EXEC_BUNDLE_ROOT=/workspace/bundles/{bundle_dir}                          │
+│    REDIS_URL, POSTGRES_HOST, POSTGRES_PASSWORD, ...  (same as proc)         │
+│                                                                              │
+│  Networking: private subnets, ecs-tasks SG (same SG as proc)                │
+│  No load balancer — ephemeral run-task only, never a service                │
+│                                                                              │
+│  CloudWatch log group: /kdcube/exec                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Example paths:
-- `.../<execution_id>/input/work.zip`
-- `.../<execution_id>/input/out.zip`
-- `.../<execution_id>/output/work.zip`
-- `.../<execution_id>/output/out.zip`
+### 2. Runtime — caller side (inside `chat-proc`)
 
-### Phase 4 — Exec bootstrap + result merge
+```
+chat-proc (FargateRuntime.run)
+│
+│  1. build_exec_snapshot_workspace()
+│     → lightweight copy of workdir/outdir (strips large blobs)
+│
+│  2. snapshot_exec_input()
+│     → zip work/ + zip out/ (exclude logs/, executed_programs/,
+│       sources_pool.json, tool_calls_index.json)
+│     → upload to S3:
+│         cb/tenants/{t}/projects/{p}/executions/
+│           {user_type}/{user}/{conv}/{turn}/{codegen_run_id}/{exec_id}/
+│             input/work.zip
+│             input/out.zip
+│     → returns ExecSnapshotInfo with URIs
+│
+│  3. ensure_bundle_snapshot()  (if bundle tools requested)
+│     → zip bundle dir from EFS
+│     → upload to S3:
+│         cb/tenants/{t}/projects/{p}/ai-bundle-storage/{bundle_id}/bundle.zip
+│     → returns BundleSnapshotInfo with bundle_uri
+│
+│  4. Rewrite TOOL_MODULE_FILES host paths → container paths
+│       /efs/bundles/{bundle_dir}/tool.py  →  /workspace/bundles/{bundle_dir}/tool.py
+│     Also sets:  BUNDLE_ID, BUNDLE_DIR, BUNDLE_ROOT_CONTAINER in runtime_globals
+│     SKILLS_DESCRIPTOR.custom_skills_root rewritten if within bundle_root
+│
+│  5. Embed into runtime_globals:
+│       EXEC_SNAPSHOT.input_work_uri  = s3://bucket/.../input/work.zip
+│       EXEC_SNAPSHOT.input_out_uri   = s3://bucket/.../input/out.zip
+│       EXEC_SNAPSHOT.output_work_uri = s3://bucket/.../output/work.zip
+│       EXEC_SNAPSHOT.output_out_uri  = s3://bucket/.../output/out.zip
+│       BUNDLE_SNAPSHOT_URI           = s3://bucket/.../bundle.zip
+│       BUNDLE_DIR / BUNDLE_ID / BUNDLE_ROOT_CONTAINER
+│
+│  6. ecs.run_task(  [asyncio.to_thread]
+│       cluster=FARGATE_CLUSTER,
+│       taskDefinition=FARGATE_TASK_DEFINITION,
+│       launchType=FARGATE,
+│       networkConfiguration={subnets, securityGroups},
+│       overrides={containerOverrides: [{name, environment: [...]}]}
+│     )
+│     → returns task_arn
+│
+│  7. Poll ecs.describe_tasks every 2s until lastStatus == "STOPPED"  [asyncio.to_thread]
+│     or deadline exceeded → ecs.stop_task(reason="exec-timeout")
+│
+│  8. restore_zip_to_dir(output_work_uri, local_workdir)
+│     restore_zip_to_dir(output_out_uri, tmp_dir)
+│     → selective merge into local outdir:
+│         logs/    → append
+│         turn_*/  → overwrite
+│
+│  9. Return ExternalExecResult(ok, returncode, error, seconds=elapsed)
+```
 
-**Remote exec bootstrap**
-- Use `EXEC_SNAPSHOT` (in `runtime_globals`) with `input_work_uri`/`input_out_uri`
-- Download + unzip into local workdir/outdir before supervisor bootstrap
-- Ensure bundle is available (see next section)
+### 3. Runtime — exec task side (`py_code_exec_entry.py`)
 
-**Result collection**
-- On completion, zip workdir/outdir (delta support optional)
-- Upload to `output/work.zip` + `output/out.zip`
-
-**Host merge**
-- Download output zip, merge into local outdir
-- Extract executed program and save with exec ID
+```
+ECS FARGATE EXEC TASK
+│
+│  ENV: RUNTIME_GLOBALS_JSON, RUNTIME_TOOL_MODULES, WORKDIR, OUTPUT_DIR, ...
+│
+│  startup
+│  ├── _load_runtime_globals()           parse RUNTIME_GLOBALS_JSON
+│  ├── _restore_snapshot_if_present()
+│  │     EXEC_SNAPSHOT.input_work_uri → restore_zip_to_dir → /workspace/work
+│  │     EXEC_SNAPSHOT.input_out_uri  → restore_zip_to_dir → /workspace/out
+│  │
+│  ├── _restore_bundle_if_present()
+│  │     BUNDLE_SNAPSHOT_URI present?
+│  │       yes → restore_zip_to_dir → /workspace/bundles/{bundle_id}
+│  │             rewrite_runtime_globals_for_bundle()
+│  │               (rewrites TOOL_MODULE_FILES paths to /workspace/bundles/…)
+│  │       no  → _maybe_restore_bundle_from_git()  (BUNDLE_REPO fallback)
+│  │
+│  ├── baseline_work = build_manifest(workdir)   (for delta upload)
+│  ├── baseline_out  = build_manifest(outdir)
+│  │
+│  ├── _bootstrap_supervisor_runtime()
+│  │     load dynamic tool modules from TOOL_MODULE_FILES
+│  │     bootstrap_bind_all(bootstrap_env=False)
+│  │       → ModelService, KB client, Redis comm, tool bindings
+│  │     start PrivilegedSupervisor on /tmp/supervisor.sock
+│  │
+│  ├── run_py_code()     ← main.py in executor subprocess
+│  │     executor subprocess:
+│  │       setuid(1001)                  (unprivileged)
+│  │       unshare(CLONE_NEWNET)         (network-isolated — best-effort)
+│  │       executes main.py
+│  │       tool calls → Unix socket → supervisor
+│  │     supervisor:
+│  │       handles tool calls (web_search, write_file, llm, kb, ...)
+│  │       writes tool call audit files to /workspace/out/
+│  │
+│  ├── _upload_snapshot_outputs()
+│  │     delta zip(workdir, baseline=baseline_work) → output_work_uri (S3)
+│  │     delta zip(outdir,  baseline=baseline_out)  → output_out_uri  (S3)
+│  │
+│  └── exit(returncode)   ← ECS task STOPPED, caller sees exit code
+```
 
 ---
 
-## Bundle availability (remote exec)
+## S3 storage layout
 
-If tools are bundle‑local, the remote executor must resolve them:
+```
+cb/tenants/{tenant}/projects/{project}/
+  executions/
+    {user_type}/{user_or_fp}/{conversation_id}/{turn_id}/{codegen_run_id}/{exec_id}/
+      input/
+        work.zip      ← workdir snapshot before execution
+        out.zip       ← outdir snapshot before execution
+      output/
+        work.zip      ← workdir delta after execution
+        out.zip       ← outdir delta after execution (turn_*, logs/)
 
-Options:
-1) **Bake bundle into exec image** (preferred for Fargate)
-2) **Ship bundle snapshot** alongside workdir (zip + unpack). Uses `AIBundleStorage` under
-   `cb/tenants/{tenant}/projects/{project}/ai-bundle-storage/{bundle_id}/bundle.zip`
-3) **Mount bundles from shared storage** (S3/efs) if available
+  ai-bundle-storage/
+    {bundle_id}/
+      bundle.zip      ← bundle snapshot (written once, reused across exec calls)
+```
 
-**Decision point**: pick 1 for production, 2 for dev flexibility.
-
----
-
-## Fargate runner (current env contract)
-
-Required env:
-- `FARGATE_EXEC_ENABLED=1`
-- `FARGATE_CLUSTER`
-- `FARGATE_TASK_DEFINITION`
-- `FARGATE_CONTAINER_NAME`
-- `FARGATE_SUBNETS` (comma list)
-- `FARGATE_SECURITY_GROUPS` (comma list, optional)
-- `FARGATE_ASSIGN_PUBLIC_IP` (`ENABLED`/`DISABLED`)
-
-Optional env:
-- `FARGATE_LAUNCH_TYPE` (default: `FARGATE`)
-- `FARGATE_PLATFORM_VERSION`
-
-Container receives:
-- `RUNTIME_GLOBALS_JSON`
-- `RUNTIME_TOOL_MODULES`
-- `EXECUTION_ID`, `WORKDIR=/workspace/work`, `OUTPUT_DIR=/workspace/out`
-- `EXEC_BUNDLE_ROOT` if bundle snapshot is used
+**Snapshot filter** — excluded from both input and output zips:
+- `logs/` directory
+- `executed_programs/` directory
+- `sources_pool.json`, `sources_used.json`
+- `tool_calls_index.json`
+- `__pycache__/`, `.git/`
 
 ---
 
-## React integration points
+## How the caller (proc) selects docker vs fargate
 
-- `solution/widgets/exec.py` orchestrates iso runtime
-- Both react v1 and v2 set workdir/outdir — do not duplicate logic there
-- Move new snapshot + merge behavior into the exec layer (not react)
+The routing is in `iso_runtime` / `run_exec_tool` based on `EXECUTION_SANDBOX` env var
+or explicit `isolation` parameter. In ECS, Docker is not available, so:
+
+- `EXECUTION_SANDBOX=docker` → `run_py_in_docker()` → **fails** (no Docker daemon)
+- `EXECUTION_SANDBOX=fargate` → `run_py_in_fargate()` → **works**
+- `FARGATE_EXEC_ENABLED=1` must be set on the proc task
+
+The proc task definition must set these env vars to enable fargate routing:
+
+| Variable | Value | Source |
+|---|---|---|
+| `FARGATE_EXEC_ENABLED` | `1` | task def environment |
+| `FARGATE_CLUSTER` | `{name_prefix}-cluster` | task def environment |
+| `FARGATE_TASK_DEFINITION` | `{name_prefix}-exec` | task def environment |
+| `FARGATE_CONTAINER_NAME` | `exec` | task def environment |
+| `FARGATE_SUBNETS` | `subnet-xxx,subnet-yyy` | task def environment |
+| `FARGATE_SECURITY_GROUPS` | `sg-xxx` | task def environment |
+| `FARGATE_ASSIGN_PUBLIC_IP` | `DISABLED` | task def environment |
+| `EXECUTION_SANDBOX` | `fargate` | task def environment |
 
 ---
 
-## Open questions
+## Implementation status
 
-- Should `tool_calls_index.json` remain authoritative, or move to event logs only?
-- How to reconcile parallel tool runs when distributed?
-- Should remote exec upload only deltas or full snapshot?
+All gaps are closed. Summary of changes made:
+
+| # | Description | Where |
+|---|---|---|
+| 1 | ECS exec task definition (Terraform) | `task_exec.tf` — task def, IAM policy, log group |
+| 2 | `TOOL_MODULE_FILES` path rewrite | `fargate.py` — rewrites host paths → `/workspace/bundles/{bundle_dir}/…` before serialising |
+| 3 | `BUNDLE_ID` / `BUNDLE_ROOT_CONTAINER` in runtime_globals | `fargate.py` — set alongside `BUNDLE_DIR` |
+| 4 | boto3 calls blocking event loop | `fargate.py` — `run_task`, `describe_tasks`, `stop_task` wrapped in `asyncio.to_thread()` |
+| 5 | Execution timing not tracked | `fargate.py` — `seconds=elapsed` set in all `ExternalExecResult` returns |
+| 6 | Proc task `FARGATE_*` env vars not wired in Terraform | `task_chat_proc.tf` — auto-injected from Terraform locals (cluster id, task def name, subnets, SG) |
+| 7 | Regex double-escape bug in error pattern | `fargate.py` — `r"\\b\\w+Error\\b"` → `r"\b\w+Error\b"` |
+| 8 | `_MERGE_LOCKS` dict grows unbounded | `fargate.py` — replaced `Dict` with `weakref.WeakValueDictionary`; GC handles cleanup |
+
+---
+
+## Env vars the exec task receives (full list)
+
+Injected via `containerOverrides.environment` at `run_task` call time:
+
+| Variable | Set by | Purpose |
+|---|---|---|
+| `WORKDIR` | fargate.py | `/workspace/work` — where main.py runs |
+| `OUTPUT_DIR` | fargate.py | `/workspace/out` — artifacts, result.json |
+| `LOG_DIR` | fargate.py | `/workspace/out/logs` |
+| `LOG_FILE_PREFIX` | fargate.py | `executor` |
+| `EXECUTION_ID` | fargate.py | Unique run ID |
+| `EXECUTION_SANDBOX` | fargate.py | `fargate` |
+| `RUNTIME_GLOBALS_JSON` | fargate.py | All runtime context (see below) |
+| `RUNTIME_TOOL_MODULES` | fargate.py | JSON list of tool module names |
+| `EXEC_BUNDLE_ROOT` | fargate.py | `/workspace/bundles/{bundle_dir}` |
+| `REDIS_URL` | fargate.py (from base_env) | Redis connection string |
+| `REDIS_CLIENT_NAME` | fargate.py | `exec` |
+| `AWS_REGION` etc. | task def + fargate.py | AWS SDK config |
+| All proc secrets | task definition | Postgres, API keys, SM, etc. |
+
+**`RUNTIME_GLOBALS_JSON` keys** (passed from proc caller):
+
+| Key | Purpose |
+|---|---|
+| `PORTABLE_SPEC_JSON` | ModelService config, KB config |
+| `TOOL_ALIAS_MAP` | `{alias: dynamic_module_name}` |
+| `TOOL_MODULE_FILES` | `{alias: /path/to/tool.py}` — rewritten for container |
+| `BUNDLE_SPEC` | `{id, module, version, ...}` |
+| `BUNDLE_ID` | bundle id string |
+| `BUNDLE_DIR` | directory name under `/workspace/bundles/` |
+| `BUNDLE_ROOT_CONTAINER` | full container path `/workspace/bundles/{bundle_dir}` |
+| `BUNDLE_SNAPSHOT_URI` | S3 URI of bundle.zip |
+| `EXEC_SNAPSHOT` | `{input_work_uri, input_out_uri, output_work_uri, output_out_uri}` |
+| `EXEC_CONTEXT` | `{tenant, project, user_id, conversation_id, turn_id, ...}` |
+| `CONTRACT` | output contract spec |
+| `COMM_SPEC` | communicator/SSE spec |
+| `SANDBOX_FS` | filesystem sandbox settings |
+| `SKILLS_DESCRIPTOR` | custom skills config |
+
+---
+
+## What the proc IAM role needs (additions)
+
+```hcl
+# Allow proc to spawn exec tasks
+statement {
+  sid    = "FargateExecRun"
+  effect = "Allow"
+  actions = [
+    "ecs:RunTask",
+    "ecs:DescribeTasks",
+    "ecs:StopTask",
+  ]
+  resources = [
+    "arn:aws:ecs:${region}:${account}:task-definition/${name_prefix}-exec:*",
+    "arn:aws:ecs:${region}:${account}:task/${cluster_name}/*",
+  ]
+}
+
+# PassRole so ECS can apply execution + task roles to the spawned task
+statement {
+  sid     = "FargateExecPassRole"
+  effect  = "Allow"
+  actions = ["iam:PassRole"]
+  resources = [
+    var.execution_role_arn,
+    var.proc_task_role_arn,   # exec task role = reuse proc task role
+  ]
+}
+```
+
+---
+
+## Bundle availability strategy (chosen)
+
+**Option 2 — S3 snapshot** is the active strategy:
+
+1. Caller (`FargateRuntime.run`) calls `ensure_bundle_snapshot()` which zips the bundle
+   from EFS and uploads to `ai-bundle-storage/{bundle_id}/bundle.zip` (written once,
+   reused on repeat calls if `bundle_version` matches).
+2. `BUNDLE_SNAPSHOT_URI` is embedded in `runtime_globals`.
+3. Exec task (`py_code_exec_entry.py`) calls `_restore_bundle_if_present()` which
+   downloads and unzips to `/workspace/bundles/{bundle_id}`.
+4. `rewrite_runtime_globals_for_bundle()` rewrites `TOOL_MODULE_FILES` paths.
+
+**Git fallback** (`_maybe_restore_bundle_from_git`): used if `BUNDLE_SNAPSHOT_URI` is
+absent but `BUNDLE_REPO` is set in `runtime_globals`. Good for dev/test.
+
+---
+
+## io_tools.tool_call in Fargate exec
+
+The exec task runs the same supervisor/executor architecture as Docker mode.
+`io_tools.tool_call()` inside the executor subprocess detects `AGENT_IO_CONTEXT=limited`
+(set by `run_py_code`) and proxies all calls over the Unix socket to the supervisor.
+The supervisor has full access to Redis, Postgres, ModelService, S3, etc.
+
+This means **all modular bundle tools keep working unchanged** — the tool call path
+is identical to Docker mode. The only difference is that the supervisor connects to
+Redis/Postgres via VPC DNS (Cloud Map private DNS) instead of `localhost`.
+
+Key implication: **`REDIS_URL` must resolve to the ElastiCache endpoint inside the
+VPC, not `localhost`**. The exec task is in the same VPC/SG as proc, so Cloud Map
+DNS (`redis.kdcube.local`) or the direct ElastiCache endpoint both work.
+
+---
+
+## Testing the integration
+
+With the full ECS wiring in place, you can verify end-to-end by pointing at the staging cluster:
+
+```bash
+# On a machine with AWS credentials + ECS access
+export FARGATE_EXEC_ENABLED=1
+export FARGATE_CLUSTER=kdcube-staging-cluster
+export FARGATE_TASK_DEFINITION=kdcube-staging-exec
+export FARGATE_CONTAINER_NAME=exec
+export FARGATE_SUBNETS=subnet-xxx,subnet-yyy
+export FARGATE_SECURITY_GROUPS=sg-xxx
+export FARGATE_ASSIGN_PUBLIC_IP=DISABLED
+export EXECUTION_SANDBOX=fargate
+
+# then trigger a bundle execution through the proc API
+```
+
+To validate the snapshot round-trip without launching ECS:
+```python
+from kdcube_ai_app.apps.chat.sdk.runtime.external.distributed_snapshot import (
+    snapshot_exec_input, restore_zip_to_dir
+)
+# snapshot input, restore to a temp dir, check contents
+```

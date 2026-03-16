@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2025 Elena Viter
 
-"""Fargate / distributed execution stub.
+"""Fargate / distributed execution.
 
-Planned flow:
+Flow:
 - Snapshot workdir/outdir and upload to S3
-- Launch remote exec task
-- Collect output zips and return results
+- Rewrite TOOL_MODULE_FILES paths to container-local bundle paths
+- Launch remote exec ECS task
+- Poll until STOPPED or timeout
+- Restore output zips back to caller directories
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import json
 import os
 import pathlib
 import time
+import weakref
 from typing import Any, Dict, List, Optional
 
 from kdcube_ai_app.infra.service_hub.inventory import AgentLogger
@@ -31,16 +34,21 @@ from kdcube_ai_app.apps.chat.sdk.runtime.isolated.environment import filter_host
 from kdcube_ai_app.apps.chat.sdk.runtime.external.detect_aws_env import check_and_apply_cloud_environment
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 
+# Container-side bundle root — exec task restores bundles here.
+_CONTAINER_BUNDLES_ROOT = "/workspace/bundles"
+
 # Serialize output merge when multiple agents run in parallel.
-_MERGE_LOCKS: Dict[str, asyncio.Lock] = {}
+# WeakValueDictionary: locks are GC'd automatically once no coroutine holds a reference.
+_MERGE_LOCKS: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
 
 
 def _merge_lock_for(turn_id: str) -> asyncio.Lock:
-    tid = (turn_id or "").strip()
-    if not tid:
-        # Fallback to a shared lock
-        return _MERGE_LOCKS.setdefault("_global", asyncio.Lock())
-    return _MERGE_LOCKS.setdefault(tid, asyncio.Lock())
+    tid = (turn_id or "").strip() or "_global"
+    lock = _MERGE_LOCKS.get(tid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _MERGE_LOCKS[tid] = lock
+    return lock
 
 
 class FargateRuntime(ExternalRuntime):
@@ -161,13 +169,45 @@ class FargateRuntime(ExternalRuntime):
         module_name = bundle_spec.get("module") if isinstance(bundle_spec, dict) else None
         module_first_segment = module_name.split(".", 1)[0] if isinstance(module_name, str) and module_name else None
         bundle_dir = module_first_segment or bundle_id
-        if bundle_dir:
+        container_bundle_root = f"{_CONTAINER_BUNDLES_ROOT}/{bundle_dir}" if bundle_dir else None
+
+        # Rewrite TOOL_MODULE_FILES host paths → container-local bundle paths (Gap 2 & 3)
+        if bundle_dir and request.bundle_root is not None:
+            host_bundle_root = str(pathlib.Path(request.bundle_root).resolve())
+            tg = dict(runtime_globals)
+            tmf = dict(tg.get("TOOL_MODULE_FILES") or {})
+            rewritten: Dict[str, Optional[str]] = {}
+            for alias, path in tmf.items():
+                if not path:
+                    rewritten[alias] = None
+                    continue
+                p = str(path)
+                if p.startswith(host_bundle_root):
+                    rel = os.path.relpath(p, host_bundle_root)
+                    rewritten[alias] = f"{container_bundle_root}/{rel}"
+                else:
+                    rewritten[alias] = None
+            tg["TOOL_MODULE_FILES"] = rewritten
+            tg["BUNDLE_DIR"] = bundle_dir
+            tg["BUNDLE_ID"] = bundle_id or bundle_dir
+            tg["BUNDLE_ROOT_CONTAINER"] = container_bundle_root
+            skills_desc = tg.get("SKILLS_DESCRIPTOR") or {}
+            if isinstance(skills_desc, dict):
+                csr = skills_desc.get("custom_skills_root")
+                if isinstance(csr, str) and csr.startswith(host_bundle_root):
+                    rel = os.path.relpath(csr, host_bundle_root)
+                    skills_desc = dict(skills_desc)
+                    skills_desc["custom_skills_root"] = f"{container_bundle_root}/{rel}"
+                    tg["SKILLS_DESCRIPTOR"] = skills_desc
+            runtime_globals = tg
+        elif bundle_dir:
             runtime_globals["BUNDLE_DIR"] = bundle_dir
-            if logger:
-                logger.log(
-                    f"[fargate] bundle_dir={bundle_dir} exec_bundle_root=/workspace/bundles/{bundle_dir}",
-                    level="INFO",
-                )
+
+        if bundle_dir and logger:
+            logger.log(
+                f"[fargate] bundle_dir={bundle_dir} exec_bundle_root={container_bundle_root}",
+                level="INFO",
+            )
 
         env = dict(base_env or {})
         env.update({
@@ -203,14 +243,17 @@ class FargateRuntime(ExternalRuntime):
         if logger:
             logger.log(f"[fargate] launching task {task_def} on {cluster}", level="INFO")
 
-        resp = ecs.run_task(
+        run_kwargs: Dict[str, Any] = dict(
             cluster=cluster,
             taskDefinition=task_def,
             launchType=launch_type,
             networkConfiguration=network,
             overrides=overrides,
-            **({"platformVersion": platform_version} if platform_version else {}),
         )
+        if platform_version:
+            run_kwargs["platformVersion"] = platform_version
+
+        resp = await asyncio.to_thread(ecs.run_task, **run_kwargs)
         tasks = resp.get("tasks") or []
         if not tasks:
             if logger:
@@ -221,12 +264,13 @@ class FargateRuntime(ExternalRuntime):
         if logger:
             logger.log(f"[fargate] task started: {task_arn}", level="INFO")
 
+        t0 = time.monotonic()
         deadline = time.time() + (request.timeout_s or 600)
         last_status = None
         exit_code = None
         while time.time() < deadline:
             await asyncio.sleep(2)
-            desc = ecs.describe_tasks(cluster=cluster, tasks=[task_arn])
+            desc = await asyncio.to_thread(ecs.describe_tasks, cluster=cluster, tasks=[task_arn])
             t = (desc.get("tasks") or [{}])[0]
             last_status = t.get("lastStatus")
             if last_status == "STOPPED":
@@ -237,14 +281,16 @@ class FargateRuntime(ExternalRuntime):
                         break
                 break
 
+        elapsed = time.monotonic() - t0
+
         if last_status != "STOPPED":
             if logger:
                 logger.log("[fargate] task timeout; stopping", level="ERROR")
             try:
-                ecs.stop_task(cluster=cluster, task=task_arn, reason="exec-timeout")
+                await asyncio.to_thread(ecs.stop_task, cluster=cluster, task=task_arn, reason="exec-timeout")
             except Exception:
                 pass
-            return ExternalExecResult(ok=False, returncode=124, error="timeout")
+            return ExternalExecResult(ok=False, returncode=124, error="timeout", seconds=elapsed)
 
         # Merge outputs from snapshot storage
         snap = runtime_globals.get("EXEC_SNAPSHOT") or {}
@@ -296,7 +342,7 @@ class FargateRuntime(ExternalRuntime):
                         logger.log(f"[fargate] Failed to restore outdir output: {e}", level="WARNING")
 
         ok = (exit_code == 0)
-        return ExternalExecResult(ok=ok, returncode=int(exit_code or 1), error=None if ok else "nonzero_exit")
+        return ExternalExecResult(ok=ok, returncode=int(exit_code or 1), error=None if ok else "nonzero_exit", seconds=elapsed)
 
 
 async def run_py_in_fargate(
@@ -331,7 +377,7 @@ async def run_py_in_fargate(
                 stderr_tail = err_txt[-4000:] if err_txt else ""
                 if err_txt:
                     for line in err_txt.splitlines():
-                        if re.search(r"\\b\\w+Error\\b", line) or "Exception" in line:
+                        if re.search(r"\b\w+Error\b", line) or "Exception" in line:
                             error_summary = line.strip()
                             break
         except Exception:
