@@ -8,11 +8,23 @@ see_also:
   - ks:docs/service/README-monitoring-observability.md
   - ks:docs/service/gateway-README.md
   - ks:docs/service/service-and-infrastructure-index-README.md
+  - ks:docs/service/cicd/secrets-descriptor-README.md
+  - ks:docs/service/configuration/code-config-secrets-README.md
 ---
 # Service Configuration — Chat Platform
 
 This document summarizes **runtime configuration** for the chat service.  
 It focuses on tenant/project/bundle settings, instance identity, and parallelism.
+
+For **sensitive values** (LLM keys, Git tokens, infra passwords, proxylogin client secret),
+use the optional `secrets.yaml` workflow described in
+[docs/service/cicd/secrets-descriptor-README.md](../cicd/secrets-descriptor-README.md).
+
+For **code usage guidelines** (how to read config/secrets in platform/bundles),
+see [docs/service/configuration/code-config-secrets-README.md](code-config-secrets-README.md).
+
+**Secrets note:** Secrets are injected via the secrets sidecar using **dot‑path keys**
+(for example, `services.openai.api_key`). Env vars are legacy compatibility only.
 
 **Sample env files (per service)**
 
@@ -35,7 +47,8 @@ Descriptions are condensed from the comments in those sample files.
 | `HOST_KDCUBE_STORAGE_PATH` | Path on host to mount as a KDCUBE STORAGE (local filesystem or S3). If using S3 in KDCUBE_STORAGE_PATH, not needed |
 | `HOST_BUNDLES_PATH` | Host directory containing ALL custom agentic bundles (subfolders, wheels, zips) These extend the chat service with custom Python applications |
 | `HOST_BUNDLE_STORAGE_PATH` | Host directory for shared bundle local storage (bundle data; used by ks: resolvers). This is mounted into chat-proc at BUNDLE_STORAGE_ROOT. |
-| `HOST_BUNDLE_DESCRIPTOR_PATH` | Release descriptor (optional; mounted into chat-proc as /config/release.yaml) If unset, /dev/null is mounted and AGENTIC_BUNDLES_JSON should be inline or empty. |
+| `HOST_BUNDLE_DESCRIPTOR_PATH` | Assembly descriptor (optional; mounted into chat-proc as /config/assembly.yaml). Runtime does not read this file; it is used by the CLI for platform/frontend config. |
+| `HOST_BUNDLES_DESCRIPTOR_PATH` | Bundles descriptor (optional; mounted into chat-proc as /config/bundles.yaml). When set, AGENTIC_BUNDLES_JSON should be `/config/bundles.yaml`. |
 | `HOST_GIT_SSH_KEY_PATH` | Optional SSH key + known_hosts for git bundle pulls (private repos) These files are mounted into the chat-proc container at: /run/secrets/git_ssh_key /run/secrets/git_known_hosts |
 | `HOST_GIT_KNOWN_HOSTS_PATH` | n/a |
 | `HOST_EXEC_WORKSPACE_PATH` | Temporary workspace for code execution (Docker-in-Docker) |
@@ -46,12 +59,12 @@ Descriptions are condensed from the comments in those sample files.
 | `UI_SOURCE_PATH` | Path to UI source code (relative to UI_BUILD_CONTEXT) This directory should contain package.json and your UI application |
 | `NGINX_UI_CONFIG_FILE_PATH` | Path to nginx configuration for UI (relative to UI_BUILD_CONTEXT) This configures how nginx serves your built UI application |
 | `PATH_TO_FRONTEND_CONFIG_JSON` | Runtime config is mounted into the UI container as /usr/share/nginx/html/config.json Suggested path (workdir): <workdir>/config/frontend.config.hardcoded.json |
-| `SECRETS_ADMIN_TOKEN` | SECRETS SIDECAR (optional, local dev) Admin token required to inject secrets into the sidecar. |
+| `SECRETS_ADMIN_TOKEN` | Secrets sidecar admin token (runtime-only). Used by **proc** to write bundle secrets via admin UI. Set in `.env.proc` as `${SECRETS_ADMIN_TOKEN}` so the runtime token is injected. |
 | `SECRETS_READ_TOKENS` | Comma-separated list of read tokens accepted by the sidecar. |
 | `SECRETS_TOKEN_INGRESS` | Per-service read tokens (runtime-only; leave blank in files). |
 | `SECRETS_TOKEN_PROC` | n/a |
-| `SECRETS_TOKEN_TTL_SECONDS` | Token lifetime and max uses (per token). |
-| `SECRETS_TOKEN_MAX_USES` | n/a |
+| `SECRETS_TOKEN_TTL_SECONDS` | Token lifetime (seconds). `0` = no expiry. |
+| `SECRETS_TOKEN_MAX_USES` | Max uses per token. `0` = unlimited. |
 | `PROXY_BUILD_CONTEXT` | Common parent directory that can reach both platform and frontend repos |
 | `PROXY_DOCKERFILE_PATH` | Path to Dockerfile_ProxyOpenResty (relative to PROXY_BUILD_CONTEXT) This Dockerfile is provided by the platform (OpenResty-based) |
 | `NGINX_PROXY_CONFIG_FILE_PATH` | Path to custom nginx proxy configuration (relative to PROXY_BUILD_CONTEXT) Use nginx/conf/nginx_proxy.conf for HTTP or nginx/conf/nginx_proxy_ssl.conf for HTTPS |
@@ -69,16 +82,44 @@ Descriptions are condensed from the comments in those sample files.
 | `POSTGRES_MAX_CONNECTIONS` | n/a |
 | `REDIS_PASSWORD` | n/a |
 
+## Secrets sidecar roles (setter vs getter)
+
+Secrets resolution is provider-based:
+
+- `in-memory` for process-local operational values
+- `secrets-service` for the local `kdcube-secrets` sidecar
+- `aws-sm` for AWS Secrets Manager
+
+The local secrets sidecar provider supports two roles:
+
+- **Getter (read)**: any service that calls `get_secret()` needs a read token.
+  Set `SECRETS_URL` and `SECRETS_TOKEN` in the service env.
+- **Setter (write)**: the **proc** service (bundle admin UI) writes secrets to
+  the sidecar and therefore needs `SECRETS_ADMIN_TOKEN` in `.env.proc`
+  (usually set to `${SECRETS_ADMIN_TOKEN}` so the CLI injects the runtime token).
+
+`SECRETS_PROVIDER` is rendered from `assembly.yaml` (`secrets.provider`).
+Gateway config must not carry secrets backend settings.
+
+Token TTL/uses:
+- `SECRETS_TOKEN_TTL_SECONDS=0` and `SECRETS_TOKEN_MAX_USES=0` mean **no expiry**.
+- This is required if bundle secrets can be updated and read long after startup.
+
 ### `.env.ingress`
 | Key | Description |
 |---|---|
 | `CHAT_APP_PORT` | n/a |
 | `GATEWAY_COMPONENT` | n/a |
-| `SECRETS_PROVIDER` | n/a |
-| `SECRETS_URL` | n/a |
-| `SECRETS_TOKEN` | n/a |
+| `SECRETS_PROVIDER` | Secrets backend: `secrets-service`, `aws-sm`, or `in-memory`. Legacy `local` remains accepted as an alias for `secrets-service`. |
+| `SECRETS_URL` | Base URL for the local `secrets-service` provider. |
+| `SECRETS_TOKEN` | Read token for secrets sidecar (runtime-only; injected by CLI). |
+| `SECRETS_ADMIN_TOKEN` | Admin token for **writing** secrets (bundle admin UI). Set to `${SECRETS_ADMIN_TOKEN}`. |
+| `SECRETS_TOKEN_TTL_SECONDS` | Token lifetime (seconds). `0` = no expiry. |
+| `SECRETS_TOKEN_MAX_USES` | Max uses per token. `0` = unlimited. |
+| `SECRETS_ADMIN_TOKEN` | Optional admin token for writing secrets via the bundle admin UI. |
 | `LINK_PREVIEW_ENABLED` | Enable link preview endpoint (ingress disables by default). |
 | `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `KDCUBE_GATEWAY_DESCRIPTOR_PATH` | Path to `gateway.yaml` used by the CLI to render `GATEWAY_CONFIG_JSON`. |
 | `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
 | `POSTGRES_HOST` | n/a |
 | `POSTGRES_PORT` | n/a |
@@ -116,6 +157,13 @@ Descriptions are condensed from the comments in those sample files.
 | `CLAMAV_HOST` | n/a |
 | `CLAMAV_PORT` | n/a |
 | `OPEX_AGG_CRON` | Analytics scheduled Analytics. Accounting events aggregation schedule |
+| `STRIPE_RECONCILE_ENABLED` | Enable/disable Stripe reconcile job (default `true`) |
+| `STRIPE_RECONCILE_CRON` | Stripe reconcile schedule (default `45 * * * *`) |
+| `STRIPE_RECONCILE_LOCK_TTL_SECONDS` | Distributed lock TTL for reconcile job (default `900`) |
+| `SUBSCRIPTION_ROLLOVER_ENABLED` | Enable/disable subscription rollover job (default `true`) |
+| `SUBSCRIPTION_ROLLOVER_CRON` | Subscription rollover schedule (default `15 * * * *`) |
+| `SUBSCRIPTION_ROLLOVER_LOCK_TTL_SECONDS` | Distributed lock TTL for rollover job (default `900`) |
+| `SUBSCRIPTION_ROLLOVER_SWEEP_LIMIT` | Max subscriptions processed per rollover run (default `500`) |
 | `LOG_LEVEL` | Log |
 | `LOG_MAX_MB` | n/a |
 | `LOG_BACKUP_COUNT` | n/a |
@@ -133,10 +181,11 @@ Descriptions are condensed from the comments in those sample files.
 |---|---|
 | `CHAT_PROCESSOR_PORT` | n/a |
 | `GATEWAY_COMPONENT` | n/a |
-| `SECRETS_PROVIDER` | n/a |
-| `SECRETS_URL` | n/a |
-| `SECRETS_TOKEN` | n/a |
+| `SECRETS_PROVIDER` | Secrets backend: `secrets-service`, `aws-sm`, or `in-memory`. Legacy `local` remains accepted as an alias for `secrets-service`. |
+| `SECRETS_URL` | Base URL for the local `secrets-service` provider. |
+| `SECRETS_TOKEN` | Read token for the configured `secrets-service` provider. |
 | `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `KDCUBE_GATEWAY_DESCRIPTOR_PATH` | Path to `gateway.yaml` used by the CLI to render `GATEWAY_CONFIG_JSON`. |
 | `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
 | `POSTGRES_HOST` | n/a |
 | `POSTGRES_PORT` | n/a |
@@ -185,7 +234,7 @@ Descriptions are condensed from the comments in those sample files.
 | `WEB_SEARCH_SEGMENTER` | n/a |
 | `MCP_CACHE_TTL_SECONDS` | n/a |
 | `ACCOUNTING_SERVICES` | n/a |
-| `AGENTIC_BUNDLES_JSON` | Bundle Bundles descriptor (owner: customer repo). You can also point AGENTIC_BUNDLES_JSON to a JSON/YAML file (recommended) - path inside the container: This path is mounted from HOST_BUNDLE_DESCRIPTOR_PATH defined in .env AGENTIC_BUNDLES_JSON=/config/release.yaml |
+| `AGENTIC_BUNDLES_JSON` | Bundles descriptor (JSON/YAML). Common value inside container: `/config/bundles.yaml`. This path is mounted from `HOST_BUNDLES_DESCRIPTOR_PATH` in `.env`. |
 | `BUNDLES_INCLUDE_EXAMPLES` | Include built-in example bundles from sdk/examples/bundles (default: 1) |
 | `BUNDLE_CLEANUP_ENABLED` | Bundle cleanup / ref tracking Enable periodic bundle cleanup loop (uses Redis locks). |
 | `BUNDLE_CLEANUP_INTERVAL_SECONDS` | Cleanup interval (seconds). |
@@ -227,6 +276,7 @@ Descriptions are condensed from the comments in those sample files.
 | `METRICS_PORT` | n/a |
 | `METRICS_MODE` | n/a |
 | `GATEWAY_CONFIG_JSON` | Gateway config JSON (see Gateway Config section above). |
+| `KDCUBE_GATEWAY_DESCRIPTOR_PATH` | Path to `gateway.yaml` used by the CLI to render `GATEWAY_CONFIG_JSON`. |
 | `GATEWAY_CONFIG_FORCE_ENV_ON_STARTUP` | n/a |
 | `REDIS_URL` | Redis endpoint (reachable from containers) |
 | `METRICS_SCHEDULER_ENABLED` | Scheduler/export |
@@ -283,6 +333,8 @@ The chat service is **rate‑limited and capacity‑limited** by design:
 - Concurrency limits keep each processor stable under load.
 
 For gateway‑level rate limits and backpressure configuration, see `docs/gateway-README.md`.
+If you use a `gateway.yaml`, the CLI renders it into `GATEWAY_CONFIG_JSON`.
+See: [gateway-config-README.md](../cicd/gateway-config-README.md).
 ## Gateway Config (Required)
 
 Tenant/project **must** be provided via `GATEWAY_CONFIG_JSON` (per tenant/project).
@@ -653,12 +705,19 @@ Retention is **1 hour**. Metrics are exposed via:
 
 These settings are now **first‑class** in `Settings` (`apps/chat/sdk/config.py`).
 
-| Setting                           | Default     | Purpose                                   |
-|-----------------------------------|-------------|-------------------------------------------|
-| `OPEX_AGG_CRON`                   | `0 3 * * *` | Schedule for daily accounting aggregation |
-| `BUNDLE_CLEANUP_ENABLED`          | `true`      | Enable periodic git bundle cleanup        |
-| `BUNDLE_CLEANUP_INTERVAL_SECONDS` | `3600`      | Cleanup interval                          |
-| `BUNDLE_CLEANUP_LOCK_TTL_SECONDS` | `900`       | Redis lock TTL for cleanup loop           |
+| Setting                                  | Default        | Purpose                                   |
+|------------------------------------------|----------------|-------------------------------------------|
+| `OPEX_AGG_CRON`                          | `0 3 * * *`    | Schedule for daily accounting aggregation |
+| `BUNDLE_CLEANUP_ENABLED`                 | `true`         | Enable periodic git bundle cleanup        |
+| `BUNDLE_CLEANUP_INTERVAL_SECONDS`        | `3600`         | Cleanup interval                          |
+| `BUNDLE_CLEANUP_LOCK_TTL_SECONDS`        | `900`          | Redis lock TTL for cleanup loop           |
+| `STRIPE_RECONCILE_ENABLED`               | `true`         | Enable/disable Stripe reconcile job       |
+| `STRIPE_RECONCILE_CRON`                  | `45 * * * *`   | Stripe reconcile schedule                 |
+| `STRIPE_RECONCILE_LOCK_TTL_SECONDS`      | `900`          | Redis lock TTL for reconcile job          |
+| `SUBSCRIPTION_ROLLOVER_ENABLED`          | `true`         | Enable/disable subscription rollover job  |
+| `SUBSCRIPTION_ROLLOVER_CRON`             | `15 * * * *`   | Subscription rollover schedule            |
+| `SUBSCRIPTION_ROLLOVER_LOCK_TTL_SECONDS` | `900`          | Redis lock TTL for rollover job           |
+| `SUBSCRIPTION_ROLLOVER_SWEEP_LIMIT`      | `500`          | Max subscriptions per rollover run        |
 
 The cleanup loop uses Redis locks to avoid multi‑worker collisions.
 
@@ -681,13 +740,19 @@ Plan quota seeding
 
 Stripe configuration
 
-| Setting                 | Default | Purpose                        |
-|-------------------------| --- |--------------------------------|
-| `STRIPE_SECRET_KEY`     | _(unset)_ | Stripe API key (preferred)     |
-| `STRIPE_API_KEY`        | _(unset)_ | Fallback Stripe API key        |
-| `STRIPE_WEBHOOK_SECRET` | _(unset)_ | Webhook signature verification |
+Stripe secrets are managed via the **secrets sidecar** using dot‑path keys (see
+[code-config-secrets-README.md](code-config-secrets-README.md)).
+Set them in `secrets.yaml` and inject via the CLI — do **not** put them in `.env` files.
 
-If `STRIPE_WEBHOOK_SECRET` is not set, webhook payloads are accepted without signature verification (not recommended).
+| Dot‑path key                    | Purpose                        |
+|---------------------------------|--------------------------------|
+| `services.stripe.secret_key`    | Stripe API key                 |
+| `services.stripe.webhook_secret`| Webhook signature verification |
+
+Legacy env vars (`STRIPE_SECRET_KEY`, `STRIPE_API_KEY`, `STRIPE_WEBHOOK_SECRET`) are
+still supported as fallback aliases but are deprecated — use dot‑path keys in new code.
+
+If `services.stripe.webhook_secret` is not set, webhook payloads are accepted without signature verification (not recommended).
 
 Admin email notifications
 

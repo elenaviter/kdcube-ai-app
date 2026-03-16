@@ -17,8 +17,7 @@
 #
 # Key base class: BaseEntrypoint
 #   Your bundle overrides:
-#     - configuration       → role_models (which LLM for which agent)
-#     - bundle_props_defaults → knowledge repo/docs/src/deploy config
+#     - configuration       → role_models + knowledge repo/docs/src/deploy config
 #     - pre_run_hook()       → ensure knowledge space is ready before each turn
 #     - execute_core()       → the async method that runs the compiled LangGraph
 #
@@ -170,28 +169,6 @@ class ReactWorkflow(BaseEntrypoint):
         g.add_edge(START, "orchestrate")
         g.add_edge("orchestrate", END)
         return g.compile()
-
-    @property
-    def bundle_props_defaults(self) -> Dict[str, Any]:
-        """
-        Declare configurable knowledge-space properties.
-        These can be overridden per-tenant via bundle props in the admin UI.
-        """
-        defaults = dict(super().bundle_props_defaults or {})
-        defaults.update({
-            # Knowledge repository — docs + sources pulled on startup.
-            # If repo is set, docs/src/deploy roots are resolved relative to the repo root.
-            # If repo is empty, roots are resolved relative to the bundle directory.
-            "knowledge": {
-                "repo": "",           # Git URL (e.g. https://github.com/org/repo)
-                "ref": "",            # Git ref (branch/tag/commit); empty = default branch
-                "docs_root": "",      # Path to docs/ directory
-                "src_root": "",       # Path to source code root
-                "deploy_root": "",    # Path to deployment configs (compose, env, dockerfiles)
-                "validate_refs": True, # Check that code refs in docs point to existing files
-            }
-        })
-        return defaults
 
     async def pre_run_hook(self, *, state: Dict[str, Any]) -> None:
         """Called before every turn — ensures knowledge index is built and current."""
@@ -347,15 +324,26 @@ class ReactWorkflow(BaseEntrypoint):
 
         config = dict(super().configuration)
         role_models = dict(config.get("role_models") or {})
-        role_models.update({
+        for key, value in {
             "gate.simple": {"provider": "anthropic", "model": haiku_4},                         # Gate — fast, lightweight
             "answer.generator.simple": {"provider": "anthropic", "model": sonnet_45},            # Answer — strong generation
             "solver.coordinator.v2": {"provider": "anthropic", "model": sonnet_45},              # Solver coordinator
             "solver.react.v2.decision.v2.strong": {"provider": "anthropic", "model": sonnet_45}, # Solver — hard reasoning
             "solver.react.v2.decision.v2.regular": {"provider": "anthropic", "model": haiku_4},  # Solver — routine steps
-
-        })
+        }.items():
+            role_models.setdefault(key, value)
         config["role_models"] = role_models
+        # Knowledge repository — docs + sources pulled on startup.
+        # If repo is set, docs/src/deploy roots are resolved relative to the repo root.
+        # If repo is empty, roots are resolved relative to the bundle directory.
+        knowledge = dict(config.get("knowledge") or {})
+        knowledge.setdefault("repo", "")            # Git URL (e.g. https://github.com/org/repo)
+        knowledge.setdefault("ref", "")             # Git ref (branch/tag/commit); empty = default branch
+        knowledge.setdefault("docs_root", "")       # Path to docs/ directory
+        knowledge.setdefault("src_root", "")        # Path to source code root
+        knowledge.setdefault("deploy_root", "")     # Path to deployment configs (compose, env, dockerfiles)
+        knowledge.setdefault("validate_refs", True) # Check that code refs in docs point to existing files
+        config["knowledge"] = knowledge
         return config
 
     async def execute_core(self, *, state: Dict[str, Any], thread_id: str, params: Dict[str, Any]):

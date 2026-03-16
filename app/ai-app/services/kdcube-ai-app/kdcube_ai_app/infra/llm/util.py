@@ -16,11 +16,13 @@ def get_service_key_fn(provider: AIProviderName) -> str:
     try:
         from kdcube_ai_app.apps.chat.sdk.config import get_secret
         if provider == AIProviderName.open_ai:
-            return get_secret("OPENAI_API_KEY") or ""
+            return get_secret("services.openai.api_key") or ""
         elif provider == AIProviderName.hugging_face:
-            return get_secret("HUGGING_FACE_KEY") or ""
+            return get_secret("services.huggingface.api_key") or ""
         elif provider == AIProviderName.anthropic:
-            return get_secret("ANTHROPIC_API_KEY") or ""
+            return get_secret("services.anthropic.api_key") or ""
+        elif provider == AIProviderName.open_router:
+            return get_secret("services.openrouter.api_key") or ""
         return ""
     except Exception:
         # Keep legacy env fallback for non-chat contexts.
@@ -30,6 +32,8 @@ def get_service_key_fn(provider: AIProviderName) -> str:
             return os.environ.get("HUGGING_FACE_KEY")
         elif provider == AIProviderName.anthropic:
             return os.environ.get("ANTHROPIC_API_KEY")
+        elif provider == AIProviderName.open_router:
+            return os.environ.get("OPENROUTER_API_KEY")
         return ""
 
 

@@ -11,6 +11,7 @@ import logging
 import os
 import signal
 import sys
+import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
@@ -69,7 +70,7 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
     REDIS_URL,
     get_pg_pool,
     get_conversation_system,
-    get_redis_clients,
+    get_shared_async_redis_client,
     close_redis_clients,
     get_redis_monitor_instance,
     get_heartbeats_mgr_and_middleware,
@@ -85,6 +86,10 @@ from kdcube_ai_app.infra.plugin.git_bundle import (
     ensure_git_bundle_async,
     GitBundleCooldown,
     compute_git_bundle_paths,
+)
+from kdcube_ai_app.infra.availability.shutdown_diagnostics import (
+    install_uvicorn_shutdown_diagnostics,
+    log_shutdown_diagnostics,
 )
 
 # Ensure per-replica instance id is set (do not override explicit env)
@@ -102,10 +107,14 @@ def _install_crash_logging() -> None:
         faulthandler.enable(all_threads=True)
     except Exception:
         logger.warning("Failed to enable faulthandler", exc_info=True)
-    for sig in (signal.SIGTERM, signal.SIGABRT, signal.SIGSEGV):
+
+    # Do NOT register SIGTERM here.
+    # Uvicorn / the process supervisor should own SIGTERM for graceful shutdown.
+    for sig in (signal.SIGABRT, signal.SIGSEGV):
         try:
             faulthandler.register(sig, all_threads=True)
         except Exception:
+            # Some signals may not be supported on all platforms.
             pass
 
     def _excepthook(exc_type, exc, tb):
@@ -124,6 +133,34 @@ def _get_uvicorn_workers_from_config() -> int:
     except Exception:
         logger.exception("Failed to resolve Uvicorn workers from gateway config; using 1")
         return 1
+
+
+def _get_uvicorn_worker_healthcheck_timeout() -> int:
+    """
+    Maximum seconds Uvicorn waits for a worker to answer its startup healthcheck.
+
+    Default to something much larger than Uvicorn's default because this app
+    intentionally performs heavy per-worker lifespan initialization.
+    """
+    try:
+        return max(5, int(os.getenv("UVICORN_TIMEOUT_WORKER_HEALTHCHECK", "60")))
+    except Exception:
+        logger.exception(
+            "Invalid UVICORN_TIMEOUT_WORKER_HEALTHCHECK value; falling back to 60"
+        )
+        return 60
+
+
+def _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn_module) -> bool:
+    try:
+        import inspect
+        return "timeout_worker_healthcheck" in inspect.signature(uvicorn_module.run).parameters
+    except Exception:
+        logger.exception("Failed to inspect uvicorn.run signature")
+        return False
+
+
+PROC_UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 120
 
 
 def _git_prefetch_enabled() -> bool:
@@ -211,25 +248,6 @@ async def lifespan(app: FastAPI):
     app.state.shutting_down = False
     app.state.draining = False
 
-    # register signal handlers for graceful drain (best-effort)
-    try:
-        import signal
-        loop = asyncio.get_running_loop()
-
-        def _enter_draining_mode():
-            if not getattr(app.state, "draining", False):
-                app.state.draining = True
-                app.state.shutting_down = True
-                logger.warning("Proc entering draining mode (SIGTERM/SIGINT).")
-
-        for _sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(_sig, _enter_draining_mode)
-            except Exception:
-                signal.signal(_sig, lambda *_args: _enter_draining_mode())
-    except Exception:
-        pass
-
     try:
         # Gateway adapter (used by integrations auth)
         app.state.gateway_adapter = get_fastapi_adapter()
@@ -273,6 +291,9 @@ async def lifespan(app: FastAPI):
                     settings.TENANT,
                     settings.PROJECT,
                 )
+        # Redis clients may be touched while loading gateway config from cache.
+        # Reset them here so the steady-state pool is recreated from the final config.
+        await close_redis_clients()
         app.state.gateway_config_stop = asyncio.Event()
         app.state.gateway_config_task = asyncio.create_task(
             subscribe_gateway_config_updates(
@@ -296,10 +317,12 @@ async def lifespan(app: FastAPI):
 
     # Shared Redis pools + monitor
     try:
-        app.state.redis_async, app.state.redis_async_decode, app.state.redis_sync = await get_redis_clients()
-        logger.info("Redis pools ready (async/sync)")
+        app.state.redis_async = get_shared_async_redis_client()
+        app.state.redis_async_decode = None
+        app.state.redis_sync = None
+        logger.info("Redis pool ready (shared async only)")
     except Exception:
-        logger.exception("Failed to initialize shared Redis pools")
+        logger.exception("Failed to initialize shared async Redis pool")
         raise
     try:
         app.state.redis_monitor = await get_redis_monitor_instance()
@@ -417,14 +440,16 @@ async def lifespan(app: FastAPI):
         from kdcube_ai_app.infra.metrics.pool_stats import build_pool_metadata
 
         def _heartbeat_metadata():
-            return build_pool_metadata(
+            metadata = build_pool_metadata(
                 pg_pool=app.state.pg_pool,
                 redis_clients={
                     "async": app.state.redis_async,
-                    "async_decode": app.state.redis_async_decode,
-                    "sync": app.state.redis_sync,
                 },
             )
+            processor = getattr(app.state, "processor", None)
+            if processor is not None:
+                metadata["processor"] = processor.get_runtime_metadata()
+            return metadata
 
         middleware, heartbeat_manager = get_heartbeats_mgr_and_middleware(
             service_type="chat",
@@ -446,6 +471,7 @@ async def lifespan(app: FastAPI):
 
         processor = get_external_request_processor(middleware, agentic_app_func, app, redis=redis_async)
         app.state.processor = processor
+        heartbeat_manager.load_provider = processor.get_current_load
 
         await heartbeat_manager.start_heartbeat(interval=10)
         try:
@@ -503,9 +529,15 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # mark draining so /health returns 503 during graceful shutdown window
+    app.state.draining = True
     app.state.shutting_down = True
     if getattr(app.state, "processor", None):
-        await _safe_shutdown_step("processor.stop_processing", app.state.processor.stop_processing(), timeout=10.0)
+        logger.info(
+            "Starting processor drain: metadata=%s",
+            app.state.processor.get_runtime_metadata(),
+        )
+        await app.state.processor.stop_processing()
     if getattr(app.state, "heartbeat_manager", None):
         await _safe_shutdown_step("heartbeat.stop", app.state.heartbeat_manager.stop_heartbeat(), timeout=5.0)
     if getattr(app.state, "gateway_config_stop", None):
@@ -619,13 +651,15 @@ mount_integrations_routers(app)
 if __name__ == "__main__":
     import uvicorn
 
-    try:
-        faulthandler.enable()
-    except Exception:
-        pass
+    # Enable faulthandler to capture native crashes and dump tracebacks.
+    faulthandler.enable()
+    install_uvicorn_shutdown_diagnostics(uvicorn, logger, component="chat-proc")
 
     workers = _get_uvicorn_workers_from_config()
     reload_enabled = os.getenv("UVICORN_RELOAD", "").lower() in {"1", "true", "yes", "on"}
+    worker_healthcheck_timeout = _get_uvicorn_worker_healthcheck_timeout()
+
+    # Uvicorn requires an import string when using workers or reload.
     use_import_string = workers > 1 or reload_enabled
     app_target = "kdcube_ai_app.apps.chat.proc.web_app:app" if use_import_string else app
 
@@ -634,20 +668,49 @@ if __name__ == "__main__":
         "port": CHAT_PROCESSOR_PORT,
         "log_config": None,
         "log_level": None,
-        "timeout_keep_alive": 60 * 60,
-        "timeout_graceful_shutdown": 15,
+        "timeout_keep_alive": 45,
+        "timeout_graceful_shutdown": PROC_UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
     }
+
+    if _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn):
+        run_kwargs["timeout_worker_healthcheck"] = worker_healthcheck_timeout
+    else:
+        logger.warning(
+            "Installed uvicorn does not support timeout_worker_healthcheck; "
+            "configured value=%s will be ignored",
+            worker_healthcheck_timeout,
+        )
+
     if use_import_string:
         run_kwargs["workers"] = workers
         if reload_enabled:
             run_kwargs["reload"] = True
 
     logger.info(
-        "Starting Uvicorn (proc): target=%s workers=%s reload=%s port=%s pid=%s",
+        "Starting Uvicorn (proc): target=%s workers=%s reload=%s port=%s pid=%s "
+        "worker_healthcheck_timeout=%s timeout_supported=%s",
         app_target,
         workers,
         reload_enabled,
         CHAT_PROCESSOR_PORT,
         os.getpid(),
+        worker_healthcheck_timeout,
+        _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn),
     )
-    uvicorn.run(app_target, **run_kwargs)
+    run_started_at = time.monotonic()
+    try:
+        uvicorn.run(app_target, **run_kwargs)
+    finally:
+        elapsed = time.monotonic() - run_started_at
+        logger.warning(
+            "uvicorn.run returned: component=%s pid=%s elapsed=%.3fs version=%s",
+            "chat-proc",
+            os.getpid(),
+            elapsed,
+            getattr(uvicorn, "__version__", "unknown"),
+        )
+        log_shutdown_diagnostics(
+            logger,
+            reason=f"chat-proc:uvicorn.run.returned:elapsed={elapsed:.3f}s",
+            include_traceback=True,
+        )

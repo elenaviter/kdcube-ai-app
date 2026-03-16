@@ -21,6 +21,7 @@ from kdcube_ai_app.apps.chat.emitters import (
     build_relay_from_env,
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
+from kdcube_ai_app.apps.chat.sdk.continuations import get_current_conversation_continuation_source
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
 from kdcube_ai_app.apps.chat.sdk.viz.patch_platform_dashboard import patch_dashboard
 from kdcube_ai_app.infra.service_hub.inventory import (
@@ -58,6 +59,7 @@ class BaseEntrypoint:
         comm_context: ChatTaskPayload = None,
         event_filter: Optional[Any] = None,
         ctx_client: Optional[Any] = None,
+        continuation_source: Optional[Any] = None,
     ):
         self.config = config
         self.settings = get_settings()
@@ -65,13 +67,15 @@ class BaseEntrypoint:
         self.redis = redis
         self.comm_context = comm_context
         self._event_filter = event_filter
+        self._continuation_source = continuation_source
 
         self._comm: Optional[ChatCommunicator] = None
         self._conv_idx = None
         self._kb = None
         self._store = None
         self.ctx_client = ctx_client
-        self.bundle_props: Dict[str, Any] = dict(self.bundle_props_defaults or {})
+        self.bundle_props: Dict[str, Any] = {}
+        self.bundle_props = dict(self.bundle_props_defaults or {})
         self.kv_cache = create_kv_cache_from_env()
 
         self.logger = AgentLogger(f"{self.BUNDLE_ID}.Workflow", config.log_level)
@@ -82,10 +86,32 @@ class BaseEntrypoint:
 
         self._apply_configuration_overrides()
 
+    @property
+    def continuation_source(self) -> Optional[Any]:
+        return self._continuation_source or get_current_conversation_continuation_source()
+
+    async def pending_continuation_count(self) -> int:
+        source = self.continuation_source
+        if source is None:
+            return 0
+        return int(await source.pending_count())
+
+    async def peek_next_continuation(self):
+        source = self.continuation_source
+        if source is None:
+            return None
+        return await source.peek_next()
+
+    async def take_next_continuation(self):
+        source = self.continuation_source
+        if source is None:
+            return None
+        return await source.take_next()
+
     # ---------- Common helpers ----------
 
     def _apply_configuration_overrides(self) -> None:
-        configuration = getattr(self, "configuration", None) or {}
+        configuration = self._resolve_configuration() or {}
 
         wf_roles = configuration.get("role_models") or {}
         if wf_roles:
@@ -114,7 +140,39 @@ class BaseEntrypoint:
 
     @property
     def bundle_props_defaults(self) -> Dict[str, Any]:
-        return {}
+        """
+        Bundle-defined configuration defaults (without external overrides).
+        """
+        return self._configuration_without_overrides()
+
+    def _configuration_without_overrides(self) -> Dict[str, Any]:
+        prev_props = getattr(self, "bundle_props", None)
+        try:
+            self.bundle_props = {}
+            config = self._resolve_configuration()
+            return dict(config or {}) if isinstance(config, dict) else {}
+        finally:
+            if prev_props is None:
+                try:
+                    del self.bundle_props
+                except AttributeError:
+                    pass
+            else:
+                self.bundle_props = prev_props
+
+    def _resolve_configuration(self) -> Any:
+        """
+        Resolve configuration defined as a @property or legacy method.
+        Some bundles still implement configuration() as a method without @property.
+        """
+        config_attr = getattr(self, "configuration", None)
+        if callable(config_attr):
+            try:
+                return config_attr()
+            except TypeError:
+                # In case a @property-like object is callable but expects no args
+                return config_attr
+        return config_attr
 
     def on_bundle_load(self, **kwargs) -> None:
         """
@@ -152,10 +210,51 @@ class BaseEntrypoint:
         except Exception:
             return None
 
+    @staticmethod
+    def get_prop_path(data: Dict[str, Any], path: str, default: Any = None) -> Any:
+        if not path:
+            return default
+        cur: Any = data
+        for part in path.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                return default
+            cur = cur[part]
+        return cur
+
+    def bundle_prop(self, path: str, default: Any = None) -> Any:
+        return self.get_prop_path(self.bundle_props or {}, path, default)
+
+    def _deep_merge_props(self, base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = dict(base or {})
+        for key, value in (patch or {}).items():
+            base_value = merged.get(key)
+            if isinstance(base_value, dict) and isinstance(value, dict):
+                merged[key] = self._deep_merge_props(base_value, value)
+            else:
+                merged[key] = value
+        return merged
+
+    def _apply_bundle_props_overrides(self) -> None:
+        """
+        Apply runtime overrides from bundle props (Redis / admin UI / bundles.yaml).
+        These are evaluated after refresh_bundle_props() and may override
+        configuration-based defaults for this bundle instance.
+        """
+        props = self.bundle_props or {}
+
+        role_models = self.get_prop_path(props, "role_models")
+        if isinstance(role_models, dict) and role_models:
+            self.config.set_role_models({**(self.config.role_models or {}), **role_models})
+
+        embedding = self.get_prop_path(props, "embedding")
+        if isinstance(embedding, dict) and embedding:
+            self.config.set_embedding(embedding)
+
     async def refresh_bundle_props(self, *, state: Dict[str, Any]) -> Dict[str, Any]:
         defaults = dict(self.bundle_props_defaults or {})
         if not self.kv_cache and not self.redis:
             self.bundle_props = defaults
+            self._apply_bundle_props_overrides()
             return self.bundle_props
 
         tenant = state.get("tenant") or getattr(getattr(self.comm_context, "actor", None), "tenant_id", None)
@@ -187,9 +286,10 @@ class BaseEntrypoint:
                 except Exception:
                     overrides = {}
         if overrides:
-            defaults.update(overrides)
+            defaults = self._deep_merge_props(defaults, overrides)
 
         self.bundle_props = defaults
+        self._apply_bundle_props_overrides()
         return self.bundle_props
 
     @property
@@ -491,8 +591,36 @@ class BaseEntrypoint:
             self.logger.log(f"Error loading ai_bundles by user {user_id}: {traceback.format_exc()}", "ERROR")
         return [default_html]
 
-    @property
-    def configuration(self) -> Dict[str, Any]:
+    def user_billing(self, user_id: Optional[str] = None, **kwargs):
+        user_type = self.user_type_from_comm_ctx(self.comm)
+        if user_type == "anonymous":
+            return ["<p>No permission. Please log in.</p>"]
+
+        self.logger.log(f"[user_billing]. Generating User Billing Dashboard for user {user_id} ({user_type})")
+
+        default_content = "<p>No user billing interface available.</p>"
+        default_html = f"<div style='margin: 0; position: absolute'>{default_content}</div>"
+
+        try:
+            economics_mod = importlib.import_module("kdcube_ai_app.apps.chat.api.economics")
+            fallback_path = Path(economics_mod.__file__).parent / "UserBillingDashboard.tsx"
+            content = fallback_path.read_text(encoding="utf-8")
+
+            output_content = patch_dashboard(
+                input_content=content,
+                base_url=f"http://localhost:{os.environ.get('CHAT_APP_PORT') or '8010'}",
+                access_token=None,
+                default_tenant=self.settings.TENANT,
+                default_project=self.settings.PROJECT,
+                default_app_bundle_id=self.config.ai_bundle_spec.id,
+            )
+            html = self._render_dashboard_html(content=output_content, title="Billing & Plans")
+            return [html]
+        except Exception:
+            self.logger.log(f"Error loading user_billing by user {user_id}: {traceback.format_exc()}", "ERROR")
+        return [default_html]
+
+    def configuration_defaults(self) -> Dict[str, Any]:
         sonnet_45 = "claude-sonnet-4-5-20250929"
         haiku_3 = "claude-3-5-haiku-20241022"
         haiku_4 = "claude-haiku-4-5-20251001"
@@ -513,6 +641,8 @@ class BaseEntrypoint:
                 "solver.react.decision": {"provider": "anthropic", "model": sonnet_45},
                 "solver.react.decision.strong": {"provider": "anthropic", "model": sonnet_45},
                 "solver.react.decision.regular": {"provider": "anthropic", "model": haiku_4},
+                "solver.react.v2.decision.v2.strong": {"provider": "anthropic", "model": sonnet_45}, # Solver — hard reasoning
+                "solver.react.v2.decision.v2.regular": {"provider": "anthropic", "model": haiku_4},  # Solver — routine steps
                 "solver.react.summary": {"provider": "anthropic", "model": haiku_4},
 
                 "tool.generator": {"provider": "anthropic", "model": sonnet_45},
@@ -529,6 +659,15 @@ class BaseEntrypoint:
             },
         }
 
+    @property
+    def configuration(self) -> Dict[str, Any]:
+        """
+        Effective configuration = defaults (base + subclass) deep-merged with
+        external bundle props overrides.
+        """
+        base = self.configuration_defaults() or {}
+        overrides = self.bundle_props or {}
+        return self._deep_merge_props(base, overrides)
     async def apply_accounting(
         self,
         tenant: str,

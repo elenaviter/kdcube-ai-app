@@ -7,7 +7,7 @@ keywords: ["workers", "processes_per_instance", "pg_max_connections", "capacity 
 see_also:
   - ks:docs/service/maintenance/connection-pooling-README.md
   - ks:docs/service/maintenance/requests-monitoring-README.md
-  - ks:docs/service/service-config-README.md
+  - ks:docs/service/configuration/service-config-README.md
 ---
 # Instance Config Maintenance
 

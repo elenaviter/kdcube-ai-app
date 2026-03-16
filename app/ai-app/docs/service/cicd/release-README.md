@@ -1,12 +1,12 @@
 ---
 id: ks:docs/service/cicd/release-README.md
 title: "Release"
-summary: "Monorepo release guide driven by release.yaml: CI build/publish and deployment-time descriptor usage."
+summary: "Monorepo release guide driven by assembly.yaml + bundles.yaml: CI build/publish and deployment-time descriptor usage."
 tags: ["service", "cicd", "release", "versioning", "git", "images", "bundles", "registry"]
-keywords: ["release.yaml", "platform.ref", "git tag", "image tags", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLE_GIT_REDIS_LOCK", "monorepo versioning", "PyPI"]
+keywords: ["assembly.yaml", "bundles.yaml", "platform.ref", "git tag", "image tags", "BUNDLES_FORCE_ENV_ON_STARTUP", "BUNDLE_GIT_REDIS_LOCK", "monorepo versioning", "PyPI"]
 see_also:
   - ks:docs/service/cicd/release-bundle-README.md
-  - ks:docs/service/cicd/release-descriptor-README.md
+  - ks:docs/service/cicd/assembly-descriptor-README.md
   - ks:docs/service/cicd/custom-cicd-README.md
   - ks:docs/service/cicd/cli-README.md
 ---
@@ -18,7 +18,7 @@ We use **one unified version** for the monorepo (platform + SDK) until the SDK i
 
 ## 1) Version Source
 
-**Single source of truth:** `release.yaml`
+**Source of truth:** `assembly.yaml` (platform) + `bundles.yaml` (bundles)
 
 ```
 platform:
@@ -59,7 +59,7 @@ kdcube-chat-ingress:2026.3.4.1716
 Suggested flow (platform team):
 
 1. Create a release branch (e.g. `release/2026.3.4.1716`)
-2. Update `release.yaml` and set `platform.ref`
+2. Update `assembly.yaml` and set `platform.ref`
    - Bundles can be empty; the CLI can seed sample bundles on install
 3. Open PR and merge to `main`
 4. GitHub Actions does the rest:
@@ -99,14 +99,12 @@ Notes:
 ## 5) Deployment-Time Descriptor Usage
 
 The processor consumes a **runtime bundle descriptor** (`AGENTIC_BUNDLES_JSON`).
-That descriptor has the shape which resembles the release.yaml descriptor (its `bundles` vertical).
-Example of the release descriptor shape 
-```yaml
-platform:
-  repo: "kdcube-ai-app"
-  ref: "2026.3.4.1716"          # tag
+That descriptor has the same shape as `bundles.yaml`.
 
+Example (`bundles.yaml`):
+```yaml
 bundles:
+  version: "1"
   default_bundle_id: "react@2026-02-10-02-44"
   items:
     - id: "app@2-0"
@@ -174,20 +172,20 @@ The CLI lives at:
 
 Immediate use cases to support:
 
-1. **Validate release descriptor**
-   - `kdcube release validate --file release.yaml`
+1. **Validate assembly descriptor**
+   - `kdcube release validate --file assembly.yaml`
 2. **Render runtime bundle registry**
-   - `kdcube release render-bundles --file release.yaml`
+   - `kdcube release render-bundles --file bundles.yaml`
    - Output `AGENTIC_BUNDLES_JSON` payload for proc
 3. **Generate env files**
    - Uses `deployment/docker/all_in_one_kdcube/sample_env` as the reference
    - `kdcube env init --preset all-in-one --out ./env`
 4. **Seed sample bundles**
-   - For local/dev installs when `release.yaml` has no bundles
+   - For local/dev installs when `bundles.yaml` is empty
    - `kdcube bundles seed --preset samples`
 5. **Doctor / verify**
    - Verify required paths + env variables
    - `kdcube doctor --env ./env/.env.proc`
 
 Note: The CLI does **not** replace CI. It provides a consistent local
-experience that mirrors the release descriptor and the sample envs.
+experience that mirrors the assembly descriptor and the sample envs.

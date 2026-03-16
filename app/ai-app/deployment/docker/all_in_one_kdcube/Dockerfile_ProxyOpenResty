@@ -1,15 +1,24 @@
 FROM openresty/openresty:alpine
 
-# Build argument for nginx config path (relative to build context)
-ARG NGINX_CONFIG_FILE_PATH
-
-# Copy nginx configuration from customer repo
-COPY ${NGINX_CONFIG_FILE_PATH} /usr/local/openresty/nginx/conf/nginx.conf
-
-# Create webroot for Let's Encrypt
-# RUN mkdir -p /var/www/letsencrypt
+RUN apk add --no-cache gettext
 
 # EXPOSE 80 443
 EXPOSE 80
 
-CMD ["openresty", "-g", "daemon off;"]
+# Two deployment modes — no config is baked into this image:
+#
+#   Local install (docker-compose):
+#     Host file is bind-mounted directly to /usr/local/openresty/nginx/conf/nginx.conf.
+#     OpenResty uses it as-is; the envsubst block below is skipped.
+#
+#   ECS/Fargate:
+#     EFS nginx-config access point is mounted at /nginx-config/.
+#     nginx.conf.template is written there by the nginx-config-init one-shot task.
+#     envsubst substitutes ${APP_DOMAIN} and ${ALB_CIDR} at container startup.
+CMD ["/bin/sh", "-c", \
+  "if [ -f /nginx-config/nginx.conf.template ]; then \
+     envsubst '${APP_DOMAIN} ${ALB_CIDR}' \
+       < /nginx-config/nginx.conf.template \
+       > /usr/local/openresty/nginx/conf/nginx.conf; \
+   fi \
+   && exec openresty -g 'daemon off;'"]

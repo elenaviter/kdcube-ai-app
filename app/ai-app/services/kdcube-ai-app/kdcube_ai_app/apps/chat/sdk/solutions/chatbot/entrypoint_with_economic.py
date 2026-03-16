@@ -72,12 +72,12 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
             )
 
     @property
-    def bundle_props_defaults(self) -> Dict[str, Any]:
-        base = dict(super().bundle_props_defaults or {})
-        econ = dict(base.get("economics") or {})
+    def configuration(self) -> Dict[str, Any]:
+        config = dict(super().configuration)
+        econ = dict(config.get("economics") or {})
         econ.setdefault("reservation_amount_dollars", 2.0)
-        base["economics"] = econ
-        return base
+        config["economics"] = econ
+        return config
 
 
     async def ensure_policies_initialized(self):

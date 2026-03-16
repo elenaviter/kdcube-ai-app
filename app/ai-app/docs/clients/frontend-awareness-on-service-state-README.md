@@ -18,6 +18,7 @@ The backend is **multi‑replica** and **serverless‑like**: instances can scal
 
 - **Never assume sticky connections.** Any request can land on any replica.
 - **Expect drains / restarts.** SSE streams can close with a `server_shutdown` event.
+- **A started turn is not auto-retried.** If proc dies after bundle execution started, the client may see partial output and then an interruption signal.
 - **Honor rate‑limits and backpressure.** Use exponential backoff and jitter.
 - **Reduce request bursts.** Coalesce calls on page load and across tabs.
 
@@ -30,6 +31,7 @@ The backend is **multi‑replica** and **serverless‑like**: instances can scal
 | **SSE stream closes** | `server_shutdown` event, or connection drop | Reconnect with **backoff + jitter** (start 1–2s, cap 30s). |
 | **Draining instance** | HTTP `503` with `{status:"draining"}` | Retry after short delay (1–3s + jitter). Don’t hammer. |
 | **Scaled down instance** | SSE closes, no more events | Reconnect; don’t treat as fatal. |
+| **Turn interrupted after start** | `conv_status` with `data.state="error"` and `data.completion="interrupted"`, plus `chat_error` with `data.error_type="turn_interrupted"` | Keep partial output visible, mark the turn as interrupted/failed, and let the user retry manually. Do not auto-resubmit the same message. |
 | **No stickiness** | Requests land on different replicas | Keep **session_id** and **auth tokens** consistent per user. |
 | **Multiple tabs** | Higher burst risk | Use shared storage and **coordinate** so only one tab does polling. |
 
@@ -65,6 +67,16 @@ The backend is **multi‑replica** and **serverless‑like**: instances can scal
 - Treat it as **expected**.
 - Close stream immediately.
 - Reconnect after a short delay (1–2s + jitter).
+
+### On turn interruption
+
+- This is different from `server_shutdown`.
+- It means proc had already started the turn, and the client may already have rendered `chat_delta` chunks.
+- Preserve the partial output that was already shown.
+- Mark the active turn as interrupted/failed when you receive:
+  - `conv_status` with `data.completion = "interrupted"`
+  - `chat_error` with `data.error_type = "turn_interrupted"`
+- Offer a visible retry/resubmit action, but do not auto-replay the original request.
 
 ### Keepalive handling
 
@@ -140,4 +152,5 @@ This avoids duplicate SSE streams and rate‑limit bursts.
 - 429 spikes? → reduce burst, add backoff, coalesce requests.
 - 503 spikes? → capacity pressure, wait and retry.
 - SSE drops? → check for `server_shutdown` and reconnect.
+- Partial answer then abrupt failure? → look for `conv_status` completion `interrupted` and `chat_error.error_type = turn_interrupted`; keep the partial output and let the user retry.
 - No SSE events? → verify stream is open and user/session is valid.

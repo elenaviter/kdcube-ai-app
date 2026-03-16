@@ -741,8 +741,13 @@ async def create_client(model_record: ModelRecord):
                 "anthropic-beta": "output-128k-2025-02-19"
             }
         )
-    elif model_record.provider.provider == AIProviderName.open_ai:
-        client = AsyncOpenAI(api_key=model_record.provider.apiToken)
+    elif model_record.provider.provider in {AIProviderName.open_ai, AIProviderName.open_router}:
+        if model_record.provider.provider == AIProviderName.open_router:
+            from kdcube_ai_app.apps.chat.sdk.config import get_settings
+            base_url = get_settings().OPENROUTER_BASE_URL or "https://openrouter.ai/api/v1"
+            client = AsyncOpenAI(api_key=model_record.provider.apiToken, base_url=base_url)
+        else:
+            client = AsyncOpenAI(api_key=model_record.provider.apiToken)
     else:
         raise ValueError(f"Unsupported AI provider: {model_record.provider.provider}")
     return client
@@ -758,7 +763,7 @@ async def create_batch(model_record: ModelRecord, batch_id: Optional[str] = None
             messages=messages,
             client=client
         )
-    elif model_record.provider.provider == AIProviderName.open_ai:
+    elif model_record.provider.provider in {AIProviderName.open_ai, AIProviderName.open_router}:
         return OpenAIBatch(
             model=model_record.systemName,
             id=batch_id,

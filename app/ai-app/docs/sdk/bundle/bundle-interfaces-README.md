@@ -132,7 +132,7 @@ This allows UI → backend → bundle round-trips without exposing a separate se
 
 ## 5) Reading bundle props from cache
 
-Bundles can store UI config or parameters in bundle props. The admin UI writes props to Redis (KV cache), and the bundle reads them at runtime. Use `bundle_props_defaults` + `bundle_props` on `BaseEntrypoint` to read merged defaults/overrides.
+Bundles can store UI config or parameters in bundle props. The admin UI writes props to Redis (KV cache), and the bundle reads them at runtime. Define defaults in `entrypoint.configuration` and read effective values from `bundle_props` (defaults + overrides).
 
 See: `kdcube_ai_app/apps/chat/sdk/solutions/chatbot/entrypoint.py`.
 

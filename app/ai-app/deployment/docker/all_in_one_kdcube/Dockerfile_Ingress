@@ -41,6 +41,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto-color-emoji \
     libmagic1 \
     file \
+    procps \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 

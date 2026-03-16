@@ -2,12 +2,11 @@ services:
 
   postgres-setup:
     image: kdcube-postgres-setup:latest
-    container_name: kdcube-postgres-setup
     build:
       context: ../../..
       dockerfile: deployment/docker/custom-ui-managed-infra/Dockerfile_PostgresSetup
     env_file:
-      - path: ./.env.postgres.setup
+      - path: ${KDCUBE_CONFIG_DIR:-.}/.env.postgres.setup
         required: false
     networks:
       - kdcube-internal
@@ -16,7 +15,6 @@ services:
 
   clamav:
     image: clamav/clamav:stable
-    container_name: kdcube-clamav
     platform: linux/amd64
     restart: unless-stopped
     networks:
@@ -31,18 +29,17 @@ services:
       timeout: 10s
       retries: 10
     volumes:
-      - ./data/clamav:/var/lib/clamav
+      - ${KDCUBE_DATA_DIR:-./data}/clamav:/var/lib/clamav
     ports:
       - "127.0.0.1:3310:3310"
 
   kdcube-secrets:
     image: kdcube-secrets:latest
-    container_name: kdcube-secrets
     build:
       context: ../../..
       dockerfile: deployment/docker/all_in_one_kdcube/Dockerfile_Secrets
     env_file:
-      - path: ./.env
+      - path: ${KDCUBE_CONFIG_DIR:-.}/.env
         required: false
     environment:
       - SECRETS_ADMIN_TOKEN=${SECRETS_ADMIN_TOKEN:-}
@@ -55,12 +52,11 @@ services:
 
   chat-ingress:
     image: kdcube-chat-ingress:latest
-    container_name: kdcube-chat-ingress
     build:
       context: ../../..
       dockerfile: deployment/docker/custom-ui-managed-infra/Dockerfile_Ingress
     env_file:
-      - path: ./.env.ingress
+      - path: ${KDCUBE_CONFIG_DIR:-.}/.env.ingress
         required: false
     environment:
       - CLAMAV_HOST=clamav
@@ -70,8 +66,8 @@ services:
       - HOST_KDCUBE_STORAGE_PATH=${HOST_KDCUBE_STORAGE_PATH}
       - SECRETS_TOKEN=${SECRETS_TOKEN_INGRESS:-}
     volumes:
-      - ./data/kdcube-storage:/kdcube-storage
-      - ./logs/chat-ingress:/logs
+      - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
+      - ${KDCUBE_LOGS_DIR:-./logs}/chat-ingress:/logs
       - type: bind
         source: ${HOME}/.aws
         target: /home/appuser/.aws
@@ -91,12 +87,11 @@ services:
 
   chat-proc:
     image: kdcube-chat-proc:latest
-    container_name: kdcube-chat-proc
     build:
       context: ../../..
       dockerfile: deployment/docker/custom-ui-managed-infra/Dockerfile_Chatproc
     env_file:
-      - path: ./.env.proc
+      - path: ${KDCUBE_CONFIG_DIR:-.}/.env.proc
         required: false
     environment:
       - LOG_FILE_PREFIX=chat-proc
@@ -108,12 +103,15 @@ services:
       - SECRETS_TOKEN=${SECRETS_TOKEN_PROC:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./data/kdcube-storage:/kdcube-storage
-      - ./data/exec-workspace:/exec-workspace
-      - ./logs/chat-proc:/logs
+      - ${KDCUBE_DATA_DIR:-./data}/kdcube-storage:/kdcube-storage
+      - ${KDCUBE_DATA_DIR:-./data}/exec-workspace:/exec-workspace
+      - ${KDCUBE_LOGS_DIR:-./logs}/chat-proc:/logs
       - type: bind
         source: ${HOST_BUNDLE_DESCRIPTOR_PATH:-/dev/null}
-        target: /config/release.yaml
+        target: /config/assembly.yaml
+      - type: bind
+        source: ${HOST_BUNDLES_DESCRIPTOR_PATH:-/dev/null}
+        target: /config/bundles.yaml
         read_only: true
       - type: bind
         source: ${HOST_BUNDLES_PATH?}           # host root with all bundles
@@ -144,12 +142,11 @@ services:
 
   metrics:
     image: kdcube-metrics:latest
-    container_name: kdcube-metrics
     build:
       context: ../../..
       dockerfile: deployment/docker/custom-ui-managed-infra/Dockerfile_Metricservice
     env_file:
-      - path: ./.env.metrics
+      - path: ${KDCUBE_CONFIG_DIR:-.}/.env.metrics
         required: false
     environment:
       - LOG_FILE_PREFIX=metrics
@@ -159,8 +156,7 @@ services:
       - "127.0.0.1:${METRICS_PORT:-8090}:8090"
 
   web-ui:
-    image: kdcube-web-ui:latest
-    container_name: kdcube-web-ui
+    image: ${KDCUBE_UI_IMAGE:-kdcube-web-ui:latest}
     build:
       context: ${UI_BUILD_CONTEXT}
       dockerfile: ${UI_DOCKERFILE_PATH}
@@ -186,7 +182,7 @@ services:
       context: ../../..
       dockerfile: deployment/docker/custom-ui-managed-infra/Dockerfile_ProxyLogin
     env_file:
-      - path: ./.env.proxylogin
+      - path: ${KDCUBE_CONFIG_DIR:-.}/.env.proxylogin
         required: false
     networks:
       - kdcube-internal
@@ -198,7 +194,6 @@ services:
 
   web-proxy:
     image: kdcube-web-proxy:latest
-    container_name: kdcube-web-proxy
     build:
       context: ${PROXY_BUILD_CONTEXT}
       dockerfile: ${PROXY_DOCKERFILE_PATH}
@@ -207,7 +202,8 @@ services:
     restart: unless-stopped
     volumes:
       - /etc/letsencrypt:/etc/letsencrypt:ro
-      - ./nginx/webroot:/var/www/letsencrypt
+      - ${KDCUBE_DATA_DIR:-./data}/nginx/webroot:/var/www/letsencrypt
+      - ${NGINX_PROXY_RUNTIME_CONFIG_PATH:-${KDCUBE_CONFIG_DIR:-.}/nginx_proxy_ssl_cognito.conf}:/usr/local/openresty/nginx/conf/nginx.conf:ro
     depends_on:
       chat-ingress:
         condition: service_started
@@ -219,8 +215,8 @@ services:
       - kdcube-external
       - kdcube-internal
     ports:
-      - "80:80"
-      - "443:443"
+      - "${KDCUBE_UI_PORT:-80}:80"
+      - "${KDCUBE_UI_SSL_PORT:-443}:443"
 
 networks:
   kdcube-external:

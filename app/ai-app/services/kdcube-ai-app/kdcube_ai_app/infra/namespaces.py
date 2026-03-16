@@ -20,6 +20,10 @@ def ns_key(base: str, *, tenant: str | None = None, project: str | None = None) 
 class REDIS:
     class CHAT:
         PROMPT_QUEUE_PREFIX = "kdcube:chat:prompt:queue"
+        PROMPT_QUEUE_INFLIGHT_PREFIX = "kdcube:chat:prompt:queue:inflight"
+        CONVERSATION_MAILBOX_PREFIX = "kdcube:chat:conversation:mailbox"
+        CONVERSATION_MAILBOX_SEQ_PREFIX = "kdcube:chat:conversation:mailbox:seq"
+        CONVERSATION_MAILBOX_COUNT_PREFIX = "kdcube:chat:conversation:mailbox:count"
         SSE_CONNECTIONS_PREFIX = "kdcube:chat:sse:connections"
 
     class INSTANCE:
@@ -95,6 +99,7 @@ class CONFIG:
         UPDATE_CHANNEL = "kdcube:config:bundles:update:{tenant}:{project}"
         PROPS_KEY_FMT = "kdcube:config:bundles:props:{tenant}:{project}:{bundle_id}"
         PROPS_UPDATE_CHANNEL = "kdcube:config:bundles:props:update:{tenant}:{project}"
+        SECRETS_KEYS_FMT = "kdcube:config:bundles:secrets:{tenant}:{project}:{bundle_id}"
         CLEANUP_CHANNEL = "kdcube:config:bundles:cleanup:{tenant}:{project}"
         ACTIVE_REFS_KEY_FMT = "kdcube:config:bundles:refs:{tenant}:{project}"
         ENV_SYNC_LOCK_FMT = "kdcube:config:bundles:env-sync-lock:{tenant}:{project}"

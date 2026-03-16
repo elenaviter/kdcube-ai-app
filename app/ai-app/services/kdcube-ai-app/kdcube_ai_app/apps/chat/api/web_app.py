@@ -16,6 +16,7 @@ import signal
 import sys
 import uuid
 import json
+import inspect
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -91,6 +92,10 @@ from kdcube_ai_app.apps.chat.api.resolvers import (
 )
 from kdcube_ai_app.infra.metrics.rolling_stats import record_metric
 from kdcube_ai_app.infra.namespaces import REDIS
+from kdcube_ai_app.infra.availability.shutdown_diagnostics import (
+    install_uvicorn_shutdown_diagnostics,
+    log_shutdown_diagnostics,
+)
 from kdcube_ai_app.auth.AuthManager import RequireUser
 from kdcube_ai_app.auth.sessions import UserType, UserSession
 from kdcube_ai_app.apps.chat.reg import MODEL_CONFIGS, EMBEDDERS
@@ -109,7 +114,10 @@ def _install_crash_logging() -> None:
         faulthandler.enable(all_threads=True)
     except Exception:
         logger.warning("Failed to enable faulthandler", exc_info=True)
-    for sig in (signal.SIGTERM, signal.SIGABRT, signal.SIGSEGV):
+
+    # Do NOT register SIGTERM here.
+    # Uvicorn / the process supervisor should own SIGTERM for graceful shutdown.
+    for sig in (signal.SIGABRT, signal.SIGSEGV):
         try:
             faulthandler.register(sig, all_threads=True)
         except Exception:
@@ -129,6 +137,28 @@ def _get_uvicorn_workers_from_config() -> int:
     except Exception:
         logger.exception("Failed to resolve Uvicorn workers from gateway config; using 1")
         return 1
+
+def _get_uvicorn_worker_healthcheck_timeout() -> int:
+    """
+    Maximum seconds Uvicorn waits for a worker to answer its startup healthcheck.
+
+    Default to something much larger than Uvicorn's default because this app
+    intentionally performs heavy per-worker lifespan initialization.
+    """
+    try:
+        return max(5, int(os.getenv("UVICORN_TIMEOUT_WORKER_HEALTHCHECK", "60")))
+    except Exception:
+        logger.exception(
+            "Invalid UVICORN_TIMEOUT_WORKER_HEALTHCHECK value; falling back to 60"
+        )
+        return 60
+
+def _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn_module) -> bool:
+    try:
+        return "timeout_worker_healthcheck" in inspect.signature(uvicorn_module.run).parameters
+    except Exception:
+        logger.exception("Failed to inspect uvicorn.run signature")
+        return False
 
 async def _safe_shutdown_step(name: str, coro, timeout: float = 5.0) -> None:
     try:
@@ -153,25 +183,6 @@ async def lifespan(app: FastAPI):
     # mark not shutting down yet
     app.state.shutting_down = False
     app.state.draining = False
-
-    # register signal handlers for graceful drain (best-effort)
-    try:
-        import signal
-        loop = asyncio.get_running_loop()
-
-        def _enter_draining_mode():
-            if not getattr(app.state, "draining", False):
-                app.state.draining = True
-                app.state.shutting_down = True
-                logger.warning("Ingress entering draining mode (SIGTERM/SIGINT).")
-
-        for _sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(_sig, _enter_draining_mode)
-            except Exception:
-                signal.signal(_sig, lambda *_args: _enter_draining_mode())
-    except Exception:
-        pass
 
     try:
         # Initialize gateway adapter and store in app state
@@ -397,7 +408,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # mark shutdown so SSE generators can exit
+    # mark shutdown so SSE generators can exit; mark draining so /health returns 503
+    app.state.draining = True
     app.state.shutting_down = True
 
     # Shutdown
@@ -533,14 +545,11 @@ async def root():
         "name": "KDCube AI App Platform",
         "version": "3.0.0",
         "description": "Multitenant hosting for your AI applications",
-        "features": [
-        ],
+        "features": [],
         "available_models": list(MODEL_CONFIGS.keys()),
         "socketio_enabled": socketio_enabled,
-        "endpoints": {
-        }
+        "endpoints": {},
     }
-
 
 @app.get("/profile")
 # think of replacing with auth_without_pressure
@@ -554,7 +563,7 @@ async def get_profile(session: UserSession = Depends(get_user_session_dependency
             len(session.roles or []),
             len(session.permissions or []),
             session.session_id,
-        )
+            )
     if session.user_type in [UserType.REGISTERED, UserType.PRIVILEGED]:
         return {
             "user_type": "registered" if session.user_type == UserType.REGISTERED else "privileged",
@@ -581,7 +590,7 @@ async def get_profile(session: UserSession = Depends(get_user_session_dependency
 async def health_check():
     """Basic health check"""
     socketio_status = "enabled" if hasattr(app.state, 'socketio_handler') and app.state.socketio_handler else "disabled"
-    sse_status = "enabled" if  hasattr(app.state, 'sse_enabled') and app.state.sse_enabled else "disabled"
+    sse_status = "enabled" if hasattr(app.state, 'sse_enabled') and app.state.sse_enabled else "disabled"
     draining = getattr(app.state, "draining", False)
     payload = {
         "status": "draining" if draining else "healthy",
@@ -669,6 +678,10 @@ mount_opex_router(app)
 from kdcube_ai_app.apps.chat.api.control_plane import mount_control_plane_router
 mount_control_plane_router(app)
 
+# Mount Economics router
+from kdcube_ai_app.apps.chat.api.economics import mount_economics_router
+mount_economics_router(app)
+
 # ================================
 # RUN APPLICATION
 # ================================
@@ -678,9 +691,12 @@ if __name__ == "__main__":
 
     # Enable faulthandler to capture native crashes and dump tracebacks.
     faulthandler.enable()
+    install_uvicorn_shutdown_diagnostics(uvicorn, logger, component="chat-ingress")
 
     workers = _get_uvicorn_workers_from_config()
     reload_enabled = os.getenv("UVICORN_RELOAD", "").lower() in {"1", "true", "yes", "on"}
+    worker_healthcheck_timeout = _get_uvicorn_worker_healthcheck_timeout()
+
     # Uvicorn requires an import string when using workers or reload.
     use_import_string = workers > 1 or reload_enabled
     app_target = "kdcube_ai_app.apps.chat.api.web_app:app" if use_import_string else app
@@ -690,21 +706,49 @@ if __name__ == "__main__":
         "port": CHAT_APP_PORT,
         "log_config": None,  # don't let Uvicorn install its own handlers
         "log_level": None,
-        "timeout_keep_alive": 60 * 60,  # TODO : DO NOT FORGET TO REMOVE THIS
+        "timeout_keep_alive": 45,
         "timeout_graceful_shutdown": 15,
-        # "timeout_keep_alive": 45,
     }
+
+    if _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn):
+        run_kwargs["timeout_worker_healthcheck"] = worker_healthcheck_timeout
+    else:
+        logger.warning(
+            "Installed uvicorn does not support timeout_worker_healthcheck; "
+            "configured value=%s will be ignored",
+            worker_healthcheck_timeout,
+        )
+
     if use_import_string:
         run_kwargs["workers"] = workers
         if reload_enabled:
             run_kwargs["reload"] = True
 
     logger.info(
-        "Starting Uvicorn: target=%s workers=%s reload=%s port=%s pid=%s",
+        "Starting Uvicorn: target=%s workers=%s reload=%s port=%s pid=%s "
+        "worker_healthcheck_timeout=%s timeout_supported=%s",
         app_target,
         workers,
         reload_enabled,
         CHAT_APP_PORT,
         os.getpid(),
+        worker_healthcheck_timeout,
+        _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn),
     )
-    uvicorn.run(app_target, **run_kwargs)
+    run_started_at = time.monotonic()
+    try:
+        uvicorn.run(app_target, **run_kwargs)
+    finally:
+        elapsed = time.monotonic() - run_started_at
+        logger.warning(
+            "uvicorn.run returned: component=%s pid=%s elapsed=%.3fs version=%s",
+            "chat-ingress",
+            os.getpid(),
+            elapsed,
+            getattr(uvicorn, "__version__", "unknown"),
+        )
+        log_shutdown_diagnostics(
+            logger,
+            reason=f"chat-ingress:uvicorn.run.returned:elapsed={elapsed:.3f}s",
+            include_traceback=True,
+        )

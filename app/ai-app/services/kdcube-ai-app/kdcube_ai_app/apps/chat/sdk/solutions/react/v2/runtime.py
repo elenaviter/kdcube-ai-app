@@ -27,6 +27,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.proto import ReactResult
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.solution_workspace import ApplicationHostingService
 from kdcube_ai_app.apps.chat.sdk.solutions.widgets.exec import DecisionExecCodeStreamer
 from kdcube_ai_app.apps.chat.sdk.solutions.widgets.canvas import (
+    ReactPatchContentStreamer,
     ReactWriteContentStreamer,
     RenderingWriteContentStreamer,
     TimelineStreamer,
@@ -82,6 +83,29 @@ class ReactStateV2:
 
 class ReactSolverV2:
     MODULE_AGENT_NAME = "solver.react.v2"
+
+    @property
+    def continuation_source(self):
+        runtime_ctx = getattr(self.ctx_browser, "runtime_ctx", None) if self.ctx_browser else None
+        return getattr(runtime_ctx, "continuation_source", None) if runtime_ctx else None
+
+    async def pending_continuation_count(self) -> int:
+        source = self.continuation_source
+        if source is None:
+            return 0
+        return int(await source.pending_count())
+
+    async def peek_next_continuation(self):
+        source = self.continuation_source
+        if source is None:
+            return None
+        return await source.peek_next()
+
+    async def take_next_continuation(self):
+        source = self.continuation_source
+        if source is None:
+            return None
+        return await source.take_next()
     DECISION_AGENT_NAME = "decision.v2"
 
     def __init__(
@@ -271,15 +295,20 @@ class ReactSolverV2:
             **base_args,
             stream_tool_id="react.write",
         )
+        patch_streamer = ReactPatchContentStreamer(
+            **base_args,
+            stream_tool_id="react.patch",
+        )
         rendering_streamer = RenderingWriteContentStreamer(
             **base_args,
             write_tool_prefix="rendering_tools.write_",
         )
         fns = [
             self._wrap_json_streamer(react_streamer, sources_list=sources_list),
+            self._wrap_json_streamer(patch_streamer, sources_list=sources_list),
             self._wrap_json_streamer(rendering_streamer, sources_list=sources_list),
         ]
-        return fns, [react_streamer, rendering_streamer]
+        return fns, [react_streamer, patch_streamer, rendering_streamer]
 
     def _wrap_json_streamer(
         self,
@@ -1477,10 +1506,21 @@ class ReactSolverV2:
                     citations = []
                     pool = list(self.ctx_browser.timeline.sources_pool or [])
                     pool_updated = False
+                    non_citable = []
+
+                    def _is_citable_source(row: dict) -> bool:
+                        st = (row.get("source_type") or "").strip().lower()
+                        if st in {"file", "attachment"}:
+                            return False
+                        url = (row.get("url") or "").strip().lower()
+                        return url.startswith("http://") or url.startswith("https://")
                     for row in pool:
                         if not isinstance(row, dict):
                             continue
                         if row.get("sid") in sid_set:
+                            if not _is_citable_source(row):
+                                non_citable.append(row.get("sid"))
+                                continue
                             if row.get("used") is not True:
                                 row["used"] = True
                                 pool_updated = True
@@ -1492,12 +1532,18 @@ class ReactSolverV2:
                             self.ctx_browser.set_sources_pool(sources_pool=pool)
                         except Exception:
                             self.log.log(traceback.format_exc())
+                    if non_citable:
+                        self.log.log(
+                            f"[react.v2] emit_citations: skipped non-citable sids={sorted(set(non_citable))}",
+                            level="INFO",
+                        )
                     self.log.log(
                         f"[react.v2] emit_citations: used_sids={sorted(sid_set)} "
                         f"pool={len(pool)} citations={len(citations)}",
                         level="INFO",
                     )
-                    await self.hosting_service.emit_solver_artifacts(files=[], citations=citations)
+                    if citations:
+                        await self.hosting_service.emit_solver_artifacts(files=[], citations=citations)
                 else:
                     self.log.log("[react.v2] emit_citations: no used_sids detected", level="INFO")
         except Exception:

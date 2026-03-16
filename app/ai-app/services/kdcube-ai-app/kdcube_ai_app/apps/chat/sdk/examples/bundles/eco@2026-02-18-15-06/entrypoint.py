@@ -171,12 +171,12 @@ class EcoEntrypoint(BaseEntrypointWithEconomics):
 
         config = dict(super().configuration)
         role_models = dict(config.get("role_models") or {})
-        role_models.update({
+        for key, value in {
             "gate.simple": {"provider": "anthropic", "model": haiku_4},                      # Gate — fast, lightweight
             "solver.react.v2.decision.v2.strong": {"provider": "anthropic", "model": sonnet_45},  # Solver — hard reasoning
             "solver.react.v2.decision.v2.regular": {"provider": "anthropic", "model": haiku_4},   # Solver — routine steps
-
-        })
+        }.items():
+            role_models.setdefault(key, value)
         config["role_models"] = role_models
         return config
 

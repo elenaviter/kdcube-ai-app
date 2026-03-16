@@ -32,8 +32,13 @@ async def create_client(model_record: ModelRecord):
                                               "anthropic-beta": "output-128k-2025-02-19"
                                           })
 
-    elif model_record.provider.provider == AIProviderName.open_ai:
-        client = AsyncOpenAI(api_key=model_record.provider.apiToken)
+    elif model_record.provider.provider in {AIProviderName.open_ai, AIProviderName.open_router}:
+        if model_record.provider.provider == AIProviderName.open_router:
+            from kdcube_ai_app.apps.chat.sdk.config import get_settings
+            base_url = get_settings().OPENROUTER_BASE_URL or "https://openrouter.ai/api/v1"
+            client = AsyncOpenAI(api_key=model_record.provider.apiToken, base_url=base_url)
+        else:
+            client = AsyncOpenAI(api_key=model_record.provider.apiToken)
     else:
         raise ValueError(f"Unsupported AI provider: {model_record.provider.provider}")
     return client
@@ -444,7 +449,7 @@ async def llm_streaming_with_progress(
                 if thinking_config:
                     kwargs["thinking"] = thinking_config
 
-            elif model.provider.provider == AIProviderName.open_ai:
+            elif model.provider.provider in {AIProviderName.open_ai, AIProviderName.open_router}:
                 # Enable usage tracking for OpenAI if needed
                 if return_usage:
                     kwargs["stream_options"] = {"include_usage": True}
@@ -456,7 +461,7 @@ async def llm_streaming_with_progress(
                 async with client.messages.stream(**kwargs) as stream:
                     await process_stream(stream, system_reasoning, usage_tracker)
 
-            elif provider == AIProviderName.open_ai:
+            elif provider in {AIProviderName.open_ai, AIProviderName.open_router}:
                 # With OpenAI, we don't need async with, just await the stream
                 open_ai_client: AsyncOpenAI = client
                 stream = await open_ai_client.chat.completions.create(
@@ -593,7 +598,10 @@ async def llm_streaming_structured(
         provider=model.provider.provider.value if hasattr(model.provider.provider, 'value') else str(model.provider.provider)
     )
 
-    system_reasoning = system_reasoning and (model.provider.provider == AIProviderName.open_ai or (model.provider.provider == AIProviderName.anthropic and "haiku" not in model.systemName.lower()))
+    system_reasoning = system_reasoning and (
+        model.provider.provider in {AIProviderName.open_ai, AIProviderName.open_router}
+        or (model.provider.provider == AIProviderName.anthropic and "haiku" not in model.systemName.lower())
+    )
     try:
         # Call the main streaming function with usage tracking
         content, usage, provider_message_id = await llm_streaming_with_progress(

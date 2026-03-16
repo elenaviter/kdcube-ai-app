@@ -10,8 +10,36 @@ from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
+from kdcube_ai_app.infra.secrets import get_secrets_manager
+
 _SECRET_LOG = logging.getLogger("kdcube.settings.secrets")
 _SECRET_LOGGED: set[str] = set()
+
+_SECRET_ALIASES: dict[str, list[str]] = {
+    "services.openai.api_key": ["OPENAI_API_KEY"],
+    "services.anthropic.api_key": ["ANTHROPIC_API_KEY"],
+    "services.anthropic.claude_code_key": ["CLAUDE_CODE_KEY"],
+    "services.brave.api_key": ["BRAVE_API_KEY"],
+    "services.google.api_key": ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
+    "services.git.http_token": ["GIT_HTTP_TOKEN"],
+    "services.git.http_user": ["GIT_HTTP_USER"],
+    "services.openrouter.api_key": ["OPENROUTER_API_KEY"],
+    "services.stripe.secret_key": ["STRIPE_SECRET_KEY", "STRIPE_API_KEY"],
+    "services.stripe.webhook_secret": ["STRIPE_WEBHOOK_SECRET"],
+    "services.huggingface.api_key": ["HUGGING_FACE_KEY", "HUGGINGFACE_API_KEY"],
+}
+_LEGACY_SECRET_TO_CANON: dict[str, str] = {
+    legacy: canon for canon, aliases in _SECRET_ALIASES.items() for legacy in aliases
+}
+
+
+def _secret_candidates(key: str) -> list[str]:
+    if key in _SECRET_ALIASES:
+        return [key, *_SECRET_ALIASES[key]]
+    if key in _LEGACY_SECRET_TO_CANON:
+        canon = _LEGACY_SECRET_TO_CANON[key]
+        return [canon, *_SECRET_ALIASES.get(canon, [])]
+    return [key]
 
 
 def _log_secret_status(key: str, value: str | None, source: str | None) -> None:
@@ -24,32 +52,20 @@ def _log_secret_status(key: str, value: str | None, source: str | None) -> None:
         _SECRET_LOG.warning("Secret %s not set", key)
 
 
-def _fetch_secret_from_sidecar(key: str, *, url: str | None, token: str | None) -> str | None:
-    if not url:
-        return None
-    try:
-        import httpx
-        headers = {}
-        if token:
-            headers["X-KDCUBE-SECRET-TOKEN"] = token
-        resp = httpx.get(f"{url}/secret/{key}", timeout=2.0, headers=headers)
-        if resp.status_code == 200:
-            return (resp.json() or {}).get("value")
-    except Exception:
-        return None
-    return None
-
-
 def get_secret(key: str, default: str | None = None) -> str | None:
-    env_val = os.getenv(key)
-    if env_val:
-        return env_val
     settings = get_settings()
-    if hasattr(settings, key):
-        value = getattr(settings, key)
+    for candidate in _secret_candidates(key):
+        env_val = os.getenv(candidate)
+        if env_val:
+            return env_val
+        if hasattr(settings, candidate):
+            value = getattr(settings, candidate)
+            if value:
+                return value
+        value = settings.secret(candidate, default=None)
         if value:
             return value
-    return settings.secret(key, default=default)
+    return default
 
 
 def log_secret_statuses(force: bool = False) -> None:
@@ -62,12 +78,14 @@ def log_secret_statuses(force: bool = False) -> None:
     env_brave = os.getenv("BRAVE_API_KEY")
     env_git_token = os.getenv("GIT_HTTP_TOKEN")
     env_git_user = os.getenv("GIT_HTTP_USER")
-    _log_secret_status("OPENAI_API_KEY", settings.OPENAI_API_KEY, "env" if env_openai else "secrets")
-    _log_secret_status("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY, "env" if env_anthropic else "secrets")
-    _log_secret_status("GEMINI_API_KEY", settings.GOOGLE_API_KEY, "env" if env_gemini else "secrets")
-    _log_secret_status("BRAVE_API_KEY", settings.BRAVE_API_KEY, "env" if env_brave else "secrets")
-    _log_secret_status("GIT_HTTP_TOKEN", settings.GIT_HTTP_TOKEN, "env" if env_git_token else "secrets")
-    _log_secret_status("GIT_HTTP_USER", settings.GIT_HTTP_USER, "env" if env_git_user else "secrets")
+    env_openrouter = os.getenv("OPENROUTER_API_KEY")
+    _log_secret_status("services.openai.api_key", settings.OPENAI_API_KEY, "env" if env_openai else "secrets")
+    _log_secret_status("services.anthropic.api_key", settings.ANTHROPIC_API_KEY, "env" if env_anthropic else "secrets")
+    _log_secret_status("services.google.api_key", settings.GOOGLE_API_KEY, "env" if env_gemini else "secrets")
+    _log_secret_status("services.brave.api_key", settings.BRAVE_API_KEY, "env" if env_brave else "secrets")
+    _log_secret_status("services.git.http_token", settings.GIT_HTTP_TOKEN, "env" if env_git_token else "secrets")
+    _log_secret_status("services.git.http_user", settings.GIT_HTTP_USER, "env" if env_git_user else "secrets")
+    _log_secret_status("services.openrouter.api_key", settings.OPENROUTER_API_KEY, "env" if env_openrouter else "secrets")
 
 class CorsConfig(BaseModel):
     allow_origins: list[str] = Field(default_factory=lambda: ["*"])
@@ -101,9 +119,13 @@ class Settings(BaseSettings):
     BRAVE_API_KEY: str | None = None
     GIT_HTTP_TOKEN: str | None = None
     GIT_HTTP_USER: str | None = None
+    OPENROUTER_API_KEY: str | None = None
+    OPENROUTER_BASE_URL: str | None = None
+    CLAUDE_CODE_KEY: str | None = None
     SECRETS_PROVIDER: str | None = None
     SECRETS_URL: str | None = None
     SECRETS_TOKEN: str | None = None
+    SECRETS_ADMIN_TOKEN: str | None = None
     LINK_PREVIEW_ENABLED: bool = Field(default=True)
 
     # Postgres
@@ -151,6 +173,11 @@ class Settings(BaseSettings):
     SUBSCRIPTION_ROLLOVER_LOCK_TTL_SECONDS: int = Field(default=900)
     SUBSCRIPTION_ROLLOVER_SWEEP_LIMIT: int = Field(default=500)
 
+    # Stripe reconcile scheduler
+    STRIPE_RECONCILE_ENABLED: bool = Field(default=True)
+    STRIPE_RECONCILE_CRON: str = Field(default="45 * * * *")
+    STRIPE_RECONCILE_LOCK_TTL_SECONDS: int = Field(default=900)
+
     # Bundle cleanup + ref tracking
     BUNDLE_CLEANUP_ENABLED: bool = Field(default=True)
     BUNDLE_CLEANUP_INTERVAL_SECONDS: int = Field(default=3600)
@@ -164,9 +191,10 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context) -> None:
         def _fetch_secret(key: str) -> str | None:
-            url = os.getenv("SECRETS_URL") or self.SECRETS_URL
-            token = os.getenv("SECRETS_TOKEN") or self.SECRETS_TOKEN
-            return _fetch_secret_from_sidecar(key, url=url, token=token)
+            try:
+                return get_secrets_manager(self).get_secret(key)
+            except Exception:
+                return None
 
         # Override tenant/project from GATEWAY_CONFIG_JSON if present.
         cfg_json = os.getenv("GATEWAY_CONFIG_JSON")
@@ -205,34 +233,48 @@ class Settings(BaseSettings):
         env_brave = os.getenv("BRAVE_API_KEY")
         env_git_token = os.getenv("GIT_HTTP_TOKEN")
         env_git_user = os.getenv("GIT_HTTP_USER")
+        env_openrouter = os.getenv("OPENROUTER_API_KEY")
 
         if not self.OPENAI_API_KEY:
-            self.OPENAI_API_KEY = _fetch_secret("OPENAI_API_KEY")
+            self.OPENAI_API_KEY = _fetch_secret("services.openai.api_key") or _fetch_secret("OPENAI_API_KEY")
         if not self.ANTHROPIC_API_KEY:
-            self.ANTHROPIC_API_KEY = _fetch_secret("ANTHROPIC_API_KEY")
+            self.ANTHROPIC_API_KEY = _fetch_secret("services.anthropic.api_key") or _fetch_secret("ANTHROPIC_API_KEY")
         if not self.GOOGLE_API_KEY:
-            self.GOOGLE_API_KEY = _fetch_secret("GOOGLE_API_KEY") or _fetch_secret("GEMINI_API_KEY")
+            self.GOOGLE_API_KEY = (
+                _fetch_secret("services.google.api_key")
+                or _fetch_secret("GOOGLE_API_KEY")
+                or _fetch_secret("GEMINI_API_KEY")
+            )
         if not self.BRAVE_API_KEY:
-            self.BRAVE_API_KEY = _fetch_secret("BRAVE_API_KEY")
+            self.BRAVE_API_KEY = _fetch_secret("services.brave.api_key") or _fetch_secret("BRAVE_API_KEY")
         if not self.GIT_HTTP_TOKEN:
-            self.GIT_HTTP_TOKEN = _fetch_secret("GIT_HTTP_TOKEN")
+            self.GIT_HTTP_TOKEN = _fetch_secret("services.git.http_token") or _fetch_secret("GIT_HTTP_TOKEN")
         if not self.GIT_HTTP_USER and self.GIT_HTTP_TOKEN:
-            self.GIT_HTTP_USER = _fetch_secret("GIT_HTTP_USER") or "x-access-token"
+            self.GIT_HTTP_USER = _fetch_secret("services.git.http_user") or _fetch_secret("GIT_HTTP_USER") or "x-access-token"
+        if not self.OPENROUTER_API_KEY:
+            self.OPENROUTER_API_KEY = _fetch_secret("services.openrouter.api_key") or _fetch_secret("OPENROUTER_API_KEY")
+        if not self.OPENROUTER_BASE_URL:
+            self.OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+        if not self.CLAUDE_CODE_KEY:
+            self.CLAUDE_CODE_KEY = _fetch_secret("services.anthropic.claude_code_key") or _fetch_secret("CLAUDE_CODE_KEY")
 
-        _log_secret_status("OPENAI_API_KEY", self.OPENAI_API_KEY, "env" if env_openai else "secrets")
-        _log_secret_status("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY, "env" if env_anthropic else "secrets")
-        _log_secret_status("GEMINI_API_KEY", self.GOOGLE_API_KEY, "env" if env_gemini else "secrets")
-        _log_secret_status("BRAVE_API_KEY", self.BRAVE_API_KEY, "env" if env_brave else "secrets")
-        _log_secret_status("GIT_HTTP_TOKEN", self.GIT_HTTP_TOKEN, "env" if env_git_token else "secrets")
-        _log_secret_status("GIT_HTTP_USER", self.GIT_HTTP_USER, "env" if env_git_user else "secrets")
+        _log_secret_status("services.openai.api_key", self.OPENAI_API_KEY, "env" if env_openai else "secrets")
+        _log_secret_status("services.anthropic.api_key", self.ANTHROPIC_API_KEY, "env" if env_anthropic else "secrets")
+        _log_secret_status("services.google.api_key", self.GOOGLE_API_KEY, "env" if env_gemini else "secrets")
+        _log_secret_status("services.brave.api_key", self.BRAVE_API_KEY, "env" if env_brave else "secrets")
+        _log_secret_status("services.git.http_token", self.GIT_HTTP_TOKEN, "env" if env_git_token else "secrets")
+        _log_secret_status("services.git.http_user", self.GIT_HTTP_USER, "env" if env_git_user else "secrets")
+        _log_secret_status("services.openrouter.api_key", self.OPENROUTER_API_KEY, "env" if env_openrouter else "secrets")
 
     def secret(self, key: str, default: str | None = None) -> str | None:
         env_val = os.getenv(key)
         if env_val:
             return env_val
-        url = self.SECRETS_URL or os.getenv("SECRETS_URL")
-        token = self.SECRETS_TOKEN or os.getenv("SECRETS_TOKEN")
-        return _fetch_secret_from_sidecar(key, url=url, token=token) or default
+        try:
+            value = get_secrets_manager(self).get_secret(key)
+        except Exception:
+            value = None
+        return value or default
 
 @lru_cache()
 def get_settings() -> Settings:

@@ -272,26 +272,33 @@ async def run_py_in_docker(
     stderr_tail = ""
     error_summary = ""
 
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=to)
-    except asyncio.TimeoutError:
-        timed_out = True
+    async def _terminate_proc_for_shutdown() -> tuple[bytes, bytes]:
         try:
             proc.terminate()
         except ProcessLookupError:
-            pass
+            return b"", b""
         try:
-            out2, err2 = await asyncio.wait_for(proc.communicate(), timeout=5)
-            out += out2
-            err += err2
+            return await asyncio.wait_for(proc.communicate(), timeout=5)
         except asyncio.TimeoutError:
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
-            out2, err2 = await proc.communicate()
-            out += out2
-            err += err2
+            return await proc.communicate()
+
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=to)
+    except asyncio.CancelledError:
+        log.log("[docker.exec] Cancelled while waiting for container; terminating child process", level="WARNING")
+        out2, err2 = await _terminate_proc_for_shutdown()
+        out += out2
+        err += err2
+        raise
+    except asyncio.TimeoutError:
+        timed_out = True
+        out2, err2 = await _terminate_proc_for_shutdown()
+        out += out2
+        err += err2
 
     # Persist Docker-level stdout/err under logs/
     try:
