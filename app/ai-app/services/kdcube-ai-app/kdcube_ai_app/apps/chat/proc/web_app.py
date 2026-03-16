@@ -102,10 +102,14 @@ def _install_crash_logging() -> None:
         faulthandler.enable(all_threads=True)
     except Exception:
         logger.warning("Failed to enable faulthandler", exc_info=True)
-    for sig in (signal.SIGTERM, signal.SIGABRT, signal.SIGSEGV):
+
+    # Do NOT register SIGTERM here.
+    # Uvicorn / the process supervisor should own SIGTERM for graceful shutdown.
+    for sig in (signal.SIGABRT, signal.SIGSEGV):
         try:
             faulthandler.register(sig, all_threads=True)
         except Exception:
+            # Some signals may not be supported on all platforms.
             pass
 
     def _excepthook(exc_type, exc, tb):
@@ -124,6 +128,31 @@ def _get_uvicorn_workers_from_config() -> int:
     except Exception:
         logger.exception("Failed to resolve Uvicorn workers from gateway config; using 1")
         return 1
+
+
+def _get_uvicorn_worker_healthcheck_timeout() -> int:
+    """
+    Maximum seconds Uvicorn waits for a worker to answer its startup healthcheck.
+
+    Default to something much larger than Uvicorn's default because this app
+    intentionally performs heavy per-worker lifespan initialization.
+    """
+    try:
+        return max(5, int(os.getenv("UVICORN_TIMEOUT_WORKER_HEALTHCHECK", "60")))
+    except Exception:
+        logger.exception(
+            "Invalid UVICORN_TIMEOUT_WORKER_HEALTHCHECK value; falling back to 60"
+        )
+        return 60
+
+
+def _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn_module) -> bool:
+    try:
+        import inspect
+        return "timeout_worker_healthcheck" in inspect.signature(uvicorn_module.run).parameters
+    except Exception:
+        logger.exception("Failed to inspect uvicorn.run signature")
+        return False
 
 
 def _git_prefetch_enabled() -> bool:
@@ -210,25 +239,6 @@ async def lifespan(app: FastAPI):
     )
     app.state.shutting_down = False
     app.state.draining = False
-
-    # register signal handlers for graceful drain (best-effort)
-    try:
-        import signal
-        loop = asyncio.get_running_loop()
-
-        def _enter_draining_mode():
-            if not getattr(app.state, "draining", False):
-                app.state.draining = True
-                app.state.shutting_down = True
-                logger.warning("Proc entering draining mode (SIGTERM/SIGINT).")
-
-        for _sig in (signal.SIGTERM, signal.SIGINT):
-            try:
-                loop.add_signal_handler(_sig, _enter_draining_mode)
-            except Exception:
-                signal.signal(_sig, lambda *_args: _enter_draining_mode())
-    except Exception:
-        pass
 
     try:
         # Gateway adapter (used by integrations auth)
@@ -511,6 +521,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # mark draining so /health returns 503 during graceful shutdown window
+    app.state.draining = True
     app.state.shutting_down = True
     if getattr(app.state, "processor", None):
         await _safe_shutdown_step("processor.stop_processing", app.state.processor.stop_processing(), timeout=10.0)
@@ -627,13 +639,14 @@ mount_integrations_routers(app)
 if __name__ == "__main__":
     import uvicorn
 
-    try:
-        faulthandler.enable()
-    except Exception:
-        pass
+    # Enable faulthandler to capture native crashes and dump tracebacks.
+    faulthandler.enable()
 
     workers = _get_uvicorn_workers_from_config()
     reload_enabled = os.getenv("UVICORN_RELOAD", "").lower() in {"1", "true", "yes", "on"}
+    worker_healthcheck_timeout = _get_uvicorn_worker_healthcheck_timeout()
+
+    # Uvicorn requires an import string when using workers or reload.
     use_import_string = workers > 1 or reload_enabled
     app_target = "kdcube_ai_app.apps.chat.proc.web_app:app" if use_import_string else app
 
@@ -645,17 +658,30 @@ if __name__ == "__main__":
         "timeout_keep_alive": 60 * 60,
         "timeout_graceful_shutdown": 15,
     }
+
+    if _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn):
+        run_kwargs["timeout_worker_healthcheck"] = worker_healthcheck_timeout
+    else:
+        logger.warning(
+            "Installed uvicorn does not support timeout_worker_healthcheck; "
+            "configured value=%s will be ignored",
+            worker_healthcheck_timeout,
+        )
+
     if use_import_string:
         run_kwargs["workers"] = workers
         if reload_enabled:
             run_kwargs["reload"] = True
 
     logger.info(
-        "Starting Uvicorn (proc): target=%s workers=%s reload=%s port=%s pid=%s",
+        "Starting Uvicorn (proc): target=%s workers=%s reload=%s port=%s pid=%s "
+        "worker_healthcheck_timeout=%s timeout_supported=%s",
         app_target,
         workers,
         reload_enabled,
         CHAT_PROCESSOR_PORT,
         os.getpid(),
+        worker_healthcheck_timeout,
+        _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn),
     )
     uvicorn.run(app_target, **run_kwargs)
