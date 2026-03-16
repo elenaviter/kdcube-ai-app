@@ -32,6 +32,7 @@ QUEUE_BLOCK_TIMEOUT_SEC = 0.1
 QUEUE_CALL_TIMEOUT_SEC = 2.0
 CONFIG_GET_MESSAGE_TIMEOUT_SEC = 1.0
 CONFIG_CALL_TIMEOUT_SEC = 5.0
+INFLIGHT_REAPER_INTERVAL_SEC = 5.0
 
 class EnhancedChatRequestProcessor:
     """
@@ -74,44 +75,108 @@ class EnhancedChatRequestProcessor:
         self._relay = relay or ChatRelayCommunicator()  # transport
         self._processor_task: Optional[asyncio.Task] = None
         self._config_task: Optional[asyncio.Task] = None
+        self._reaper_task: Optional[asyncio.Task] = None
         self._active_tasks: set[asyncio.Task] = set()
+        self._active_task_details: dict[asyncio.Task, Dict[str, Any]] = {}
         self._current_load = 0
         self._stop_event = asyncio.Event()
         self._queue_idx = 0
+        ns_fn = getattr(self.middleware, "ns", None)
+        self._inflight_queue_prefix = (
+            ns_fn(REDIS.CHAT.PROMPT_QUEUE_INFLIGHT_PREFIX)
+            if callable(ns_fn)
+            else f"{self.middleware.QUEUE_PREFIX}:inflight"
+        )
         self.queue_block_timeout_sec = QUEUE_BLOCK_TIMEOUT_SEC
         self.queue_call_timeout_sec = QUEUE_CALL_TIMEOUT_SEC
         self.config_get_message_timeout_sec = CONFIG_GET_MESSAGE_TIMEOUT_SEC
         self.config_call_timeout_sec = CONFIG_CALL_TIMEOUT_SEC
+        self.inflight_reaper_interval_sec = INFLIGHT_REAPER_INTERVAL_SEC
         self._last_queue_poll_completed_at = time.monotonic()
         self._last_config_poll_completed_at = time.monotonic()
+        self._last_reaper_poll_completed_at = time.monotonic()
         self._last_queue_error: Optional[str] = None
         self._last_config_error: Optional[str] = None
+        self._last_reaper_error: Optional[str] = None
+        self._stale_requeue_count = 0
+        self._stale_interrupted_count = 0
 
     # ---------------- Public API ----------------
 
     async def start_processing(self):
+        self._stop_event.clear()
         if self._processor_task and not self._processor_task.done():
             return
         self._processor_task = asyncio.create_task(self._processing_loop(), name="chat-processing-loop")
-        if not self._config_task:
+        if not self._config_task or self._config_task.done():
             self._config_task = asyncio.create_task(self._config_listener_loop(), name="config-bundles-listener")
+        if not self._reaper_task or self._reaper_task.done():
+            self._reaper_task = asyncio.create_task(
+                self._inflight_recovery_loop(),
+                name="chat-inflight-recovery-loop",
+            )
+
+    async def _await_background_task_exit(
+            self,
+            task: Optional[asyncio.Task],
+            *,
+            name: str,
+            timeout: float = 10.0,
+    ) -> None:
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(task, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Background processor task did not stop within %.1fs: %s; cancelling it",
+                timeout,
+                name,
+            )
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    def get_active_task_details(self) -> list[Dict[str, Any]]:
+        details: list[Dict[str, Any]] = []
+        for task in list(self._active_tasks):
+            info = dict(self._active_task_details.get(task) or {})
+            info.setdefault("task_name", task.get_name())
+            info["done"] = task.done()
+            details.append(info)
+        details.sort(key=lambda item: str(item.get("task_id") or item.get("task_name") or ""))
+        return details
+
+    async def wait_for_active_tasks(self) -> None:
+        pending = {task for task in list(self._active_tasks) if not task.done()}
+        if not pending:
+            return
+        logger.info(
+            "Waiting for %s in-flight processor tasks to finish: %s",
+            len(pending),
+            self.get_active_task_details(),
+        )
+        try:
+            await asyncio.wait(pending)
+        except asyncio.CancelledError:
+            logger.warning(
+                "Processor drain was cancelled with %s in-flight tasks still running: %s",
+                len(self._active_tasks),
+                self.get_active_task_details(),
+            )
+            raise
 
     async def stop_processing(self):
         self._stop_event.set()
-        if self._processor_task:
-            self._processor_task.cancel()
-            try:
-                await self._processor_task
-            except asyncio.CancelledError:
-                pass
-        if self._config_task:
-            self._config_task.cancel()
-            try:
-                await self._config_task
-            except asyncio.CancelledError:
-                pass
-        if self._active_tasks:
-            await asyncio.gather(*list(self._active_tasks), return_exceptions=True)
+        await self._await_background_task_exit(self._processor_task, name="chat-processing-loop")
+        self._processor_task = None
+        await self._await_background_task_exit(self._config_task, name="config-bundles-listener")
+        self._config_task = None
+        await self._await_background_task_exit(self._reaper_task, name="chat-inflight-recovery-loop")
+        self._reaper_task = None
+        await self.wait_for_active_tasks()
 
     def get_current_load(self) -> int:
         return self._current_load
@@ -121,10 +186,15 @@ class EnhancedChatRequestProcessor:
         return {
             "current_load": self._current_load,
             "active_tasks": len(self._active_tasks),
+            "draining": self._stop_event.is_set(),
             "queue_loop_lag_sec": round(max(0.0, now - self._last_queue_poll_completed_at), 3),
             "config_loop_lag_sec": round(max(0.0, now - self._last_config_poll_completed_at), 3),
+            "reaper_loop_lag_sec": round(max(0.0, now - self._last_reaper_poll_completed_at), 3),
             "last_queue_error": self._last_queue_error,
             "last_config_error": self._last_config_error,
+            "last_reaper_error": self._last_reaper_error,
+            "stale_requeue_count": self._stale_requeue_count,
+            "stale_interrupted_count": self._stale_interrupted_count,
         }
 
     async def _reset_shared_async_pool(self, reason: str) -> None:
@@ -136,10 +206,131 @@ class EnhancedChatRequestProcessor:
         except Exception:
             logger.warning("Failed to disconnect shared async Redis pool", exc_info=True)
 
-    async def _queue_brpop(self, queue_key: str):
+    def _ready_queue_key(self, user_type: str) -> str:
+        return f"{self.middleware.QUEUE_PREFIX}:{user_type}"
+
+    def _inflight_queue_key(self, user_type: str) -> str:
+        return f"{self._inflight_queue_prefix}:{user_type}"
+
+    @staticmethod
+    def _task_logical_id(task_dict: Dict[str, Any]) -> Optional[str]:
+        return task_dict.get("meta", {}).get("task_id") or task_dict.get("task_id")
+
+    def _task_lock_key(self, logical_id: str) -> str:
+        return f"{self.middleware.LOCK_PREFIX}:{logical_id}"
+
+    def _task_started_key(self, logical_id: str) -> str:
+        return f"{self.middleware.LOCK_PREFIX}:started:{logical_id}"
+
+    async def _started_marker_exists(self, logical_id: str) -> bool:
+        ttl = await self.redis.ttl(self._task_started_key(logical_id))
+        return ttl is not None and ttl >= -1
+
+    async def _mark_task_started(self, task_data: Dict[str, Any], payload: ChatTaskPayload, request_id: str) -> Optional[str]:
+        logical_id = self._task_logical_id(task_data)
+        if not logical_id:
+            return None
+        started_key = self._task_started_key(logical_id)
+        marker = {
+            "task_id": logical_id,
+            "request_id": request_id,
+            "started_at": _utc_now_iso(),
+            "tenant": payload.actor.tenant_id,
+            "project": payload.actor.project_id,
+            "conversation_id": payload.routing.conversation_id,
+            "turn_id": payload.routing.turn_id,
+            "session_id": payload.routing.session_id,
+            "by_instance": f"{self.middleware.instance_id}:{self.process_id}",
+        }
+        await self.redis.set(
+            started_key,
+            json.dumps(marker, ensure_ascii=False),
+            ex=self.lock_ttl_sec,
+        )
+        task_data["_started_key"] = started_key
+        return started_key
+
+    def _build_runtime_context(self, payload: ChatTaskPayload):
+        session_id = payload.routing.session_id
+        socket_id = payload.routing.socket_id
+        task_id = payload.meta.task_id
+        request_id = (payload.accounting.envelope or {}).get("request_id", task_id)
+        svc = ServiceCtx(
+            request_id=request_id,
+            tenant=payload.actor.tenant_id,
+            project=payload.actor.project_id,
+            user=payload.user.user_id or payload.user.fingerprint,
+            user_obj=payload.user,
+        )
+        conv = ConversationCtx(
+            session_id=session_id,
+            conversation_id=(payload.routing.conversation_id or session_id),
+            turn_id=payload.routing.turn_id,
+        )
+        comm = ChatCommunicator(
+            emitter=self._relay,
+            service=svc.model_dump(),
+            conversation=conv.model_dump(),
+            room=session_id,
+            target_sid=socket_id,
+            tenant=payload.actor.tenant_id,
+            project=payload.actor.project_id,
+            user_id=payload.user.user_id,
+            user_type=payload.user.user_type,
+        )
+        return request_id, svc, conv, comm
+
+    async def _mark_task_interrupted(self, task_dict: Dict[str, Any], *, reason: str) -> None:
+        try:
+            payload = ChatTaskPayload.model_validate(task_dict)
+        except Exception:
+            logger.warning("Could not materialize interrupted task payload for reason=%s", reason, exc_info=True)
+            return
+
+        request_id, svc, conv, comm = self._build_runtime_context(payload)
+        try:
+            res = await self.conversation_ctx.set_conversation_state(
+                tenant=payload.actor.tenant_id,
+                project=payload.actor.project_id,
+                user_id=payload.user.user_id,
+                conversation_id=payload.routing.conversation_id,
+                new_state="error",
+                by_instance=f"{self.middleware.instance_id}:{self.process_id}",
+                request_id=request_id,
+                last_turn_id=payload.routing.turn_id,
+                require_not_in_progress=False,
+                user_type=payload.user.user_type,
+                bundle_id=payload.routing.bundle_id,
+            )
+            await self._relay.emit_conv_status(
+                svc,
+                conv,
+                routing=payload.routing,
+                state="error",
+                updated_at=res["updated_at"],
+                current_turn_id=res.get("current_turn_id"),
+                completion="interrupted",
+                target_sid=None,
+            )
+        except Exception:
+            logger.warning("Failed to mark interrupted conversation state for task %s", payload.meta.task_id, exc_info=True)
+
+        try:
+            await comm.error(
+                message=f"Turn interrupted before completion ({reason}).",
+                data={"task_id": payload.meta.task_id, "error_type": "turn_interrupted", "reason": reason},
+            )
+        except Exception:
+            logger.debug("Failed to emit interrupted error for task %s", payload.meta.task_id, exc_info=True)
+
+    async def _queue_claim(self, ready_queue_key: str, inflight_queue_key: str):
         try:
             result = await asyncio.wait_for(
-                self.redis.brpop(queue_key, timeout=self.queue_block_timeout_sec),
+                self.redis.brpoplpush(
+                    ready_queue_key,
+                    inflight_queue_key,
+                    timeout=self.queue_block_timeout_sec,
+                ),
                 timeout=self.queue_call_timeout_sec,
             )
             self._last_queue_poll_completed_at = time.monotonic()
@@ -150,21 +341,183 @@ class EnhancedChatRequestProcessor:
         except asyncio.TimeoutError:
             self._last_queue_poll_completed_at = time.monotonic()
             self._last_queue_error = (
-                f"Queue BRPOP exceeded {self.queue_call_timeout_sec:.2f}s on {queue_key}"
+                "Queue claim exceeded "
+                f"{self.queue_call_timeout_sec:.2f}s on {ready_queue_key}->{inflight_queue_key}"
             )
             logger.error(
-                "Queue pop timed out after %.2fs on %s; disconnecting shared pool",
+                "Queue claim timed out after %.2fs on %s->%s; disconnecting shared pool",
                 self.queue_call_timeout_sec,
-                queue_key,
+                ready_queue_key,
+                inflight_queue_key,
             )
-            await self._reset_shared_async_pool("queue pop timeout")
+            await self._reset_shared_async_pool("queue claim timeout")
             return None
         except Exception as e:
             self._last_queue_poll_completed_at = time.monotonic()
             self._last_queue_error = str(e)
-            logger.error("Queue pop failed on %s: %s", queue_key, e, exc_info=True)
-            await self._reset_shared_async_pool(f"queue pop error: {e}")
+            logger.error(
+                "Queue claim failed on %s->%s: %s",
+                ready_queue_key,
+                inflight_queue_key,
+                e,
+                exc_info=True,
+            )
+            await self._reset_shared_async_pool(f"queue claim error: {e}")
             raise
+
+    async def _drop_claimed_payload(
+            self,
+            *,
+            inflight_queue_key: Optional[str],
+            raw_payload,
+            lock_key: Optional[str] = None,
+            started_key: Optional[str] = None,
+            reason: str,
+    ) -> bool:
+        removed = 0
+        try:
+            if inflight_queue_key and raw_payload is not None:
+                removed = await self.redis.lrem(inflight_queue_key, 1, raw_payload)
+                if not removed:
+                    logger.warning(
+                        "Claimed payload missing from inflight queue during drop: %s reason=%s",
+                        inflight_queue_key,
+                        reason,
+                    )
+            if lock_key:
+                await self.redis.delete(lock_key)
+            if started_key:
+                await self.redis.delete(started_key)
+        except Exception:
+            logger.exception("Failed to drop claimed payload: %s", reason)
+            return False
+        return bool(removed or lock_key or started_key)
+
+    async def _requeue_claimed_payload(
+            self,
+            *,
+            ready_queue_key: Optional[str],
+            inflight_queue_key: Optional[str],
+            raw_payload,
+            lock_key: Optional[str] = None,
+            started_key: Optional[str] = None,
+            reason: str,
+    ) -> bool:
+        try:
+            removed = 0
+            if inflight_queue_key and raw_payload is not None:
+                removed = await self.redis.lrem(inflight_queue_key, 1, raw_payload)
+                if removed and ready_queue_key:
+                    await self.redis.rpush(ready_queue_key, raw_payload)
+                elif not removed:
+                    logger.warning(
+                        "Claimed payload missing from inflight queue during requeue: %s reason=%s",
+                        inflight_queue_key,
+                        reason,
+                    )
+            if lock_key:
+                await self.redis.delete(lock_key)
+            if started_key:
+                await self.redis.delete(started_key)
+            return bool(removed)
+        except Exception:
+            logger.exception("Failed to requeue claimed payload: %s", reason)
+            return False
+
+    async def _ack_claimed_task(self, task_data: Dict[str, Any]) -> None:
+        await self._drop_claimed_payload(
+            inflight_queue_key=task_data.get("_inflight_queue_key"),
+            raw_payload=task_data.get("_raw_payload"),
+            lock_key=task_data.get("_lock_key"),
+            started_key=task_data.get("_started_key"),
+            reason=f"task-finished:{self._task_logical_id(task_data) or 'unknown'}",
+        )
+
+    async def _inflight_recovery_loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                reclaimed = await self._requeue_stale_inflight_tasks()
+                self._last_reaper_poll_completed_at = time.monotonic()
+                self._last_reaper_error = None
+                if reclaimed:
+                    self._stale_requeue_count += reclaimed
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                self._last_reaper_poll_completed_at = time.monotonic()
+                self._last_reaper_error = str(e)
+                logger.error("Inflight recovery loop error: %s", e, exc_info=True)
+            await asyncio.sleep(self.inflight_reaper_interval_sec)
+
+    async def _requeue_stale_inflight_tasks(self) -> int:
+        reclaimed = 0
+        for user_type in self.QUEUE_ORDER:
+            ready_queue_key = self._ready_queue_key(user_type)
+            inflight_queue_key = self._inflight_queue_key(user_type)
+            try:
+                raw_items = await self.redis.lrange(inflight_queue_key, 0, -1)
+            except Exception:
+                logger.exception("Failed to inspect inflight queue %s", inflight_queue_key)
+                continue
+
+            for raw_payload in raw_items or []:
+                try:
+                    task_dict = json.loads(raw_payload)
+                except Exception:
+                    if await self._drop_claimed_payload(
+                        inflight_queue_key=inflight_queue_key,
+                        raw_payload=raw_payload,
+                        reason="invalid-json-inflight",
+                    ):
+                        logger.error("Dropped invalid JSON payload from inflight queue %s", inflight_queue_key)
+                    continue
+
+                logical_id = self._task_logical_id(task_dict)
+                if not logical_id:
+                    if await self._drop_claimed_payload(
+                        inflight_queue_key=inflight_queue_key,
+                        raw_payload=raw_payload,
+                        reason="missing-task-id-inflight",
+                    ):
+                        logger.error("Dropped inflight payload without task_id from %s", inflight_queue_key)
+                    continue
+
+                ttl = await self.redis.ttl(self._task_lock_key(logical_id))
+                if ttl is not None and ttl >= 0:
+                    continue
+
+                started_key = self._task_started_key(logical_id)
+                if await self._started_marker_exists(logical_id):
+                    if await self._drop_claimed_payload(
+                        inflight_queue_key=inflight_queue_key,
+                        raw_payload=raw_payload,
+                        started_key=started_key,
+                        reason=f"started-task-interrupted:{logical_id}",
+                    ):
+                        self._stale_interrupted_count += 1
+                        await self._mark_task_interrupted(task_dict, reason="worker_lost_after_start")
+                        logger.warning(
+                            "Marked stale started task %s as interrupted and removed it from %s",
+                            logical_id,
+                            inflight_queue_key,
+                        )
+                    continue
+
+                if await self._requeue_claimed_payload(
+                    ready_queue_key=ready_queue_key,
+                    inflight_queue_key=inflight_queue_key,
+                    raw_payload=raw_payload,
+                    started_key=started_key,
+                    reason=f"stale-prestart-inflight:{logical_id}",
+                ):
+                    reclaimed += 1
+                    logger.warning(
+                        "Requeued stale pre-start inflight task %s from %s to %s",
+                        logical_id,
+                        inflight_queue_key,
+                        ready_queue_key,
+                    )
+        return reclaimed
 
     # ---------------- Core loop ----------------
 
@@ -180,12 +533,35 @@ class EnhancedChatRequestProcessor:
                     await asyncio.sleep(0.05)
                     continue
 
+                if self._stop_event.is_set():
+                    await self._requeue_claimed_payload(
+                        ready_queue_key=task_data.get("_ready_queue_key") or task_data.get("_queue_key"),
+                        inflight_queue_key=task_data.get("_inflight_queue_key"),
+                        raw_payload=task_data.get("_raw_payload"),
+                        lock_key=task_data.get("_lock_key"),
+                        reason="processor-drain-before-task-start",
+                    )
+                    continue
+
+                task_id = self._task_logical_id(task_data)
                 task = asyncio.create_task(
                     self._process_task(task_data),
-                    name=f"chat-task:{task_data.get('task_id') or task_data.get('meta',{}).get('task_id')}",
+                    name=f"chat-task:{task_id}",
                 )
                 self._active_tasks.add(task)
-                task.add_done_callback(lambda t: self._active_tasks.discard(t))
+                self._active_task_details[task] = {
+                    "task_id": task_id,
+                    "queue_key": task_data.get("_ready_queue_key") or task_data.get("_queue_key"),
+                    "inflight_queue_key": task_data.get("_inflight_queue_key"),
+                    "started_at": _utc_now_iso(),
+                    "started_execution": False,
+                }
+
+                def _on_done(t: asyncio.Task) -> None:
+                    self._active_tasks.discard(t)
+                    self._active_task_details.pop(t, None)
+
+                task.add_done_callback(_on_done)
 
             except asyncio.CancelledError:
                 break
@@ -195,29 +571,52 @@ class EnhancedChatRequestProcessor:
 
     async def _pop_any_queue_fair(self) -> Optional[Dict[str, Any]]:
         for _ in range(len(self.QUEUE_ORDER)):
+            if self._stop_event.is_set():
+                return None
             user_type = self.QUEUE_ORDER[self._queue_idx]
             self._queue_idx = (self._queue_idx + 1) % len(self.QUEUE_ORDER)
 
             if self._current_load >= self.max_concurrent:
                 return None
 
-            queue_key = f"{self.middleware.QUEUE_PREFIX}:{user_type}"
-            raw = await self._queue_brpop(queue_key)
-            if not raw:
+            queue_key = self._ready_queue_key(user_type)
+            inflight_queue_key = self._inflight_queue_key(user_type)
+            raw_payload = await self._queue_claim(queue_key, inflight_queue_key)
+            if raw_payload is None:
                 continue
+
+            if self._stop_event.is_set():
+                await self._requeue_claimed_payload(
+                    ready_queue_key=queue_key,
+                    inflight_queue_key=inflight_queue_key,
+                    raw_payload=raw_payload,
+                    reason=f"processor-drain-before-lock:{user_type}",
+                )
+                logger.info("Processor draining; returned claimed queue item to %s before processing", queue_key)
+                return None
 
             try:
-                task_dict = json.loads(raw[1])
+                task_dict = json.loads(raw_payload)
             except Exception:
                 logger.error("Invalid task payload (not JSON); dropping")
+                await self._drop_claimed_payload(
+                    inflight_queue_key=inflight_queue_key,
+                    raw_payload=raw_payload,
+                    reason=f"invalid-json:{user_type}",
+                )
                 continue
 
-            logical_id = task_dict.get("meta", {}).get("task_id") or task_dict.get("task_id")
+            logical_id = self._task_logical_id(task_dict)
             if not logical_id:
                 logger.error("Task missing task_id; dropping")
+                await self._drop_claimed_payload(
+                    inflight_queue_key=inflight_queue_key,
+                    raw_payload=raw_payload,
+                    reason=f"missing-task-id:{user_type}",
+                )
                 continue
 
-            lock_key = f"{self.middleware.LOCK_PREFIX}:{logical_id}"
+            lock_key = self._task_lock_key(logical_id)
             acquired = await self.redis.set(
                 lock_key,
                 f"{self.middleware.instance_id}:{self.process_id}",
@@ -225,6 +624,16 @@ class EnhancedChatRequestProcessor:
                 ex=self.lock_ttl_sec,
             )
             if acquired:
+                if self._stop_event.is_set():
+                    await self._requeue_claimed_payload(
+                        ready_queue_key=queue_key,
+                        inflight_queue_key=inflight_queue_key,
+                        raw_payload=raw_payload,
+                        lock_key=lock_key,
+                        reason=f"processor-drain-after-lock:{logical_id}",
+                    )
+                    logger.info("Processor draining; returned locked task %s to %s", logical_id, queue_key)
+                    return None
                 self._current_load += 1
                 created_at = (task_dict.get("meta") or {}).get("created_at")
                 queue_wait_ms = None
@@ -240,9 +649,17 @@ class EnhancedChatRequestProcessor:
                 task_dict["_queue_wait_ms"] = queue_wait_ms
                 task_dict["_lock_key"] = lock_key
                 task_dict["_queue_key"] = queue_key
+                task_dict["_ready_queue_key"] = queue_key
+                task_dict["_inflight_queue_key"] = inflight_queue_key
+                task_dict["_raw_payload"] = raw_payload
                 return task_dict
 
-            await self.redis.lpush(queue_key, json.dumps(task_dict, ensure_ascii=False))
+            await self._requeue_claimed_payload(
+                ready_queue_key=queue_key,
+                inflight_queue_key=inflight_queue_key,
+                raw_payload=raw_payload,
+                reason=f"lock-not-acquired:{logical_id}",
+            )
         return None
 
     # ---------------- Config loop ----------------
@@ -448,15 +865,25 @@ class EnhancedChatRequestProcessor:
     # ---------------- Per-task execution ----------------
 
     @asynccontextmanager
-    async def _lock_renewer(self, lock_key: str):
+    async def _lock_renewer(self, lock_key: str, *, extra_keys: Optional[Iterable[str]] = None):
+        lease_keys = tuple(key for key in (extra_keys or ()) if key)
+
         async def renewer():
             try:
-                while not self._stop_event.is_set():
+                while True:
                     await asyncio.sleep(self.lock_renew_sec)
                     ttl = await self.redis.ttl(lock_key)
                     if ttl is None or ttl < 0:
                         break
                     await self.redis.expire(lock_key, self.lock_ttl_sec)
+                    for extra_key in lease_keys:
+                        try:
+                            extra_ttl = await self.redis.ttl(extra_key)
+                            if extra_ttl is None or extra_ttl < 0:
+                                continue
+                            await self.redis.expire(extra_key, self.lock_ttl_sec)
+                        except Exception:
+                            logger.debug("Failed to renew extra lease key %s", extra_key, exc_info=True)
             except asyncio.CancelledError:
                 pass
 
@@ -480,8 +907,7 @@ class EnhancedChatRequestProcessor:
             logger.error(f"Cannot normalize legacy task: {e}")
             logger.error(traceback.format_exc())
             try:
-                if lock_key:
-                    await self.redis.delete(lock_key)
+                await self._ack_claimed_task(task_data)
             finally:
                 # Ensure load is released even for invalid payloads
                 self._current_load = max(0, self._current_load - 1)
@@ -490,35 +916,10 @@ class EnhancedChatRequestProcessor:
         assert payload is not None
 
         # 2) Build contexts
-        session_id = payload.routing.session_id
-        socket_id = payload.routing.socket_id
         task_id = payload.meta.task_id
-        request_id = (payload.accounting.envelope or {}).get("request_id", task_id)
-        svc = ServiceCtx(
-            request_id=request_id,
-            tenant=payload.actor.tenant_id,
-            project=payload.actor.project_id,
-            user=payload.user.user_id or payload.user.fingerprint,
-            user_obj=payload.user
-        )
-        conv = ConversationCtx(
-            session_id=session_id,
-            conversation_id=(payload.routing.conversation_id or session_id),
-            turn_id=payload.routing.turn_id,
-        )
-        # 3) ChatCommunicator (async) over the relay
-        comm = ChatCommunicator(
-            emitter=self._relay,
-            service=svc.model_dump(),
-            conversation=conv.model_dump(),
-            room=session_id,
-            target_sid=socket_id,
-            tenant=payload.actor.tenant_id,
-            project=payload.actor.project_id,
-            user_id=payload.user.user_id,
-            user_type=payload.user.user_type,
-        )
-        # 4) accounting + storage
+        request_id, svc, conv, comm = self._build_runtime_context(payload)
+
+        # 3) accounting + storage
         from kdcube_ai_app.infra.accounting.envelope import AccountingEnvelope, bind_accounting
         from kdcube_ai_app.infra.accounting import with_accounting
 
@@ -526,7 +927,6 @@ class EnhancedChatRequestProcessor:
         _settings = get_settings()
         storage_backend = create_storage_backend(_settings.STORAGE_PATH, **{})
 
-        # 5) Announce start (async)
         queue_wait_ms = task_data.get("_queue_wait_ms")
         if queue_wait_ms is None:
             created_at = None
@@ -545,29 +945,38 @@ class EnhancedChatRequestProcessor:
             if payload.request.message and len(payload.request.message) > 100
             else (payload.request.message or f"operation={payload.request.operation}")
         )
-        await comm.start(message=msg, queue_stats={})
-        await comm.step(
-            step="workflow_start",
-            status="started",
-            title="Workflow Start",
-            data={ "default_model": (payload.config.values or {}).get("selected_model"), "task_id": task_id},
-        )
 
-        # 6) Execute with lock renew + timeout
         success = False
-        exec_started_at = time.monotonic()
+        task_cancelled = False
+        exec_started_at = None
         try:
-            async with bind_accounting(envelope, storage_backend, enabled=True):
-                async with with_accounting("chat.orchestrator",
-                                           app_bundle_id=payload.routing.bundle_id,
-                                           conversation_id=payload.routing.conversation_id,
-                                           turn_id=payload.routing.turn_id,
-                                           metadata={
-                    "task_id": task_id,
-                    "conversation_id": payload.routing.conversation_id,
-                    "turn_id": payload.routing.turn_id,
-                }):
-                    async with self._lock_renewer(lock_key=lock_key):
+            started_key = await self._mark_task_started(task_data, payload, request_id)
+            if started_key:
+                details = self._active_task_details.get(asyncio.current_task())
+                if details is not None:
+                    details["started_execution"] = True
+                    details["started_at"] = _utc_now_iso()
+
+            async with self._lock_renewer(lock_key=lock_key, extra_keys=[started_key] if started_key else None):
+                await comm.start(message=msg, queue_stats={})
+                await comm.step(
+                    step="workflow_start",
+                    status="started",
+                    title="Workflow Start",
+                    data={"default_model": (payload.config.values or {}).get("selected_model"), "task_id": task_id},
+                )
+
+                exec_started_at = time.monotonic()
+                async with bind_accounting(envelope, storage_backend, enabled=True):
+                    async with with_accounting("chat.orchestrator",
+                                               app_bundle_id=payload.routing.bundle_id,
+                                               conversation_id=payload.routing.conversation_id,
+                                               turn_id=payload.routing.turn_id,
+                                               metadata={
+                        "task_id": task_id,
+                        "conversation_id": payload.routing.conversation_id,
+                        "turn_id": payload.routing.turn_id,
+                    }):
                         result = await asyncio.wait_for(
                             self.chat_handler(
                                 payload,
@@ -580,25 +989,37 @@ class EnhancedChatRequestProcessor:
             success = True
             await comm.complete(data=result)
 
+        except asyncio.CancelledError:
+            task_cancelled = True
+            logger.warning(
+                "Task %s was cancelled; keeping inflight claim for recovery",
+                task_id,
+            )
+            raise
         except asyncio.TimeoutError:
             tb = "Task timed out"
             await comm.error(message=tb, data={"task_id": task_id})
             success = False
         except Exception:
             tb = traceback.format_exc()
-            await comm.error(message=tb, data={"task_id": task_id})
+            try:
+                await comm.error(message=tb, data={"task_id": task_id})
+            except Exception:
+                logger.debug("Failed to emit processor error for %s", task_id, exc_info=True)
             success = False
         finally:
             exec_ms = None
+            if exec_started_at is not None:
+                try:
+                    exec_ms = int((time.monotonic() - exec_started_at) * 1000)
+                except Exception:
+                    exec_ms = None
             try:
-                exec_ms = int((time.monotonic() - exec_started_at) * 1000)
-            except Exception:
-                exec_ms = None
-            try:
-                if lock_key:
-                    await self.redis.delete(lock_key)
+                if not task_cancelled:
+                    await self._ack_claimed_task(task_data)
             finally:
                 self._current_load = max(0, self._current_load - 1)
+            if not task_cancelled:
                 if self.queue_analytics_updater:
                     try:
                         user_type = payload.user.user_type.value if hasattr(payload.user.user_type, "value") else str(payload.user.user_type)

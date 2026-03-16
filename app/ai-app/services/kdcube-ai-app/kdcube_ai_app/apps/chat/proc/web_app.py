@@ -160,6 +160,9 @@ def _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn_module) -> bool:
         return False
 
 
+PROC_UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT_SEC = 120
+
+
 def _git_prefetch_enabled() -> bool:
     return os.environ.get("BUNDLE_GIT_PREFETCH_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
 
@@ -530,7 +533,11 @@ async def lifespan(app: FastAPI):
     app.state.draining = True
     app.state.shutting_down = True
     if getattr(app.state, "processor", None):
-        await _safe_shutdown_step("processor.stop_processing", app.state.processor.stop_processing(), timeout=10.0)
+        logger.info(
+            "Starting processor drain: metadata=%s",
+            app.state.processor.get_runtime_metadata(),
+        )
+        await app.state.processor.stop_processing()
     if getattr(app.state, "heartbeat_manager", None):
         await _safe_shutdown_step("heartbeat.stop", app.state.heartbeat_manager.stop_heartbeat(), timeout=5.0)
     if getattr(app.state, "gateway_config_stop", None):
@@ -662,7 +669,7 @@ if __name__ == "__main__":
         "log_config": None,
         "log_level": None,
         "timeout_keep_alive": 45,
-        "timeout_graceful_shutdown": 15,
+        "timeout_graceful_shutdown": PROC_UVICORN_GRACEFUL_SHUTDOWN_TIMEOUT_SEC,
     }
 
     if _uvicorn_run_supports_timeout_worker_healthcheck(uvicorn):

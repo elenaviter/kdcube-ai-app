@@ -146,9 +146,9 @@ These are emitted by the default workflow and are stable across bundles.
 | `chat.step`     | `chat_step`     | Generic step status.         | `event.step`, `event.status`, `event.title`, `data`             |
 | `chat.delta`    | `chat_delta`    | Stream chunk.                | `delta.text`, `delta.index`, `delta.marker`, `delta.completed?` |
 | `chat.complete` | `chat_complete` | Final answer.                | `data.final_answer`, `data.followups?`, `data.selected_model?`  |
-| `chat.error`    | `chat_error`    | Turn error.                  | `data.error`                                                    |
+| `chat.error`    | `chat_error`    | Turn error.                  | `data.error`, `data.error_type?`, `data.reason?`, `data.task_id?` |
 | `chat.service`  | `chat_service`  | Service‑level event.         | `event.step`, `data`                                            |
-| `conv.status`   | `conv_status`   | Conversation state snapshot. | `data.state`, `data.updated_at`, `data.current_turn_id?`        |
+| `conv.status`   | `conv_status`   | Conversation state snapshot. | `data.state`, `data.updated_at`, `data.current_turn_id?`, `data.completion?` |
 
 ---
 
@@ -307,6 +307,53 @@ This event is emitted by `/sse/conv_status.get` and mirrors server‑side state:
 }
 ```
 
+### Interrupted turn contract
+
+If proc started a turn but lost the worker before the turn completed, the server does not auto-replay that request. Instead it signals interruption to the client with:
+
+- `conv_status` where:
+  - `data.state = "error"`
+  - `data.completion = "interrupted"`
+- `chat_error` where:
+  - `data.error_type = "turn_interrupted"`
+  - `data.reason` is a machine-readable cause such as `worker_lost_after_start`
+  - `data.task_id` identifies the interrupted task
+
+Example `conv_status`:
+
+```json
+{
+  "type": "conv.status",
+  "event": {"step": "conv.state", "status": "error"},
+  "data": {
+    "state": "error",
+    "updated_at": "2026-03-16T13:42:19.331Z",
+    "current_turn_id": "turn_123",
+    "completion": "interrupted"
+  }
+}
+```
+
+Example `chat_error`:
+
+```json
+{
+  "type": "chat.error",
+  "data": {
+    "error": "Turn interrupted before completion (worker_lost_after_start).",
+    "error_type": "turn_interrupted",
+    "reason": "worker_lost_after_start",
+    "task_id": "task_123"
+  }
+}
+```
+
+Client guidance:
+- Keep any `chat_delta` content already rendered.
+- Mark the active turn as interrupted/failed.
+- Offer manual retry/resubmit if appropriate.
+- Do not assume the backend will replay the request automatically.
+
 ---
 
 **Client Integration (EventSource)**
@@ -333,6 +380,7 @@ The client should:
 - Use `delta.marker` to fan out to UI channels.
 - Respect `delta.completed` to close streams per channel/artifact.
 - Reconnect on `server_shutdown`.
+- Treat `chat_error.error_type = "turn_interrupted"` plus `conv_status.data.completion = "interrupted"` as a terminal interrupted-turn state, not as a reconnect instruction.
 
 See implementation:  
 `ChatService.ts` in your UI repo.

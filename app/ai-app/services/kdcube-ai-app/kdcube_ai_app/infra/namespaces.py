@@ -20,6 +20,7 @@ def ns_key(base: str, *, tenant: str | None = None, project: str | None = None) 
 class REDIS:
     class CHAT:
         PROMPT_QUEUE_PREFIX = "kdcube:chat:prompt:queue"
+        PROMPT_QUEUE_INFLIGHT_PREFIX = "kdcube:chat:prompt:queue:inflight"
         SSE_CONNECTIONS_PREFIX = "kdcube:chat:sse:connections"
 
     class INSTANCE:

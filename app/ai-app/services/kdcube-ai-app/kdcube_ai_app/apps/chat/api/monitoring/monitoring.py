@@ -183,11 +183,16 @@ async def reset_throttling_state(
     # Chat queues (danger: drops pending tasks)
     if purge_chat_queues:
         queue_prefix = ns_key(REDIS.CHAT.PROMPT_QUEUE_PREFIX, tenant=tenant, project=project)
+        inflight_queue_prefix = ns_key(REDIS.CHAT.PROMPT_QUEUE_INFLIGHT_PREFIX, tenant=tenant, project=project)
         keys = [
             f"{queue_prefix}:anonymous",
             f"{queue_prefix}:registered",
             f"{queue_prefix}:privileged",
             f"{queue_prefix}:paid",
+            f"{inflight_queue_prefix}:anonymous",
+            f"{inflight_queue_prefix}:registered",
+            f"{inflight_queue_prefix}:privileged",
+            f"{inflight_queue_prefix}:paid",
         ]
         deleted = await redis.delete(*keys)
         results["deleted"]["chat_queues"] = deleted

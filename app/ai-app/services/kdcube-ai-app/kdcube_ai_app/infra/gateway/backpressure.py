@@ -19,6 +19,21 @@ from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
 logger = logging.getLogger(__name__)
 
+QUEUE_USER_TYPES = ("anonymous", "registered", "privileged", "paid")
+
+
+def _queue_key(prefix: str, user_type: str) -> str:
+    return f"{prefix}:{user_type}"
+
+
+async def _get_combined_queue_sizes(redis, queue_prefix: str, inflight_queue_prefix: str) -> Dict[str, int]:
+    sizes: Dict[str, int] = {}
+    for user_type in QUEUE_USER_TYPES:
+        ready = await redis.llen(_queue_key(queue_prefix, user_type))
+        inflight = await redis.llen(_queue_key(inflight_queue_prefix, user_type))
+        sizes[user_type] = int(ready) + int(inflight)
+    return sizes
+
 class BackpressureError(GatewayError):
     """System under pressure"""
     def __init__(self, message: str, retry_after: int = 60, session: UserSession = None):
@@ -42,6 +57,7 @@ class BackpressureManager:
         self.capacity_calculator = None
 
         self.QUEUE_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_PREFIX)
+        self.QUEUE_INFLIGHT_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_INFLIGHT_PREFIX)
         self.PROCESS_HEARTBEAT_PREFIX = self.ns(REDIS.PROCESS.HEARTBEAT_PREFIX)
         self.INSTANCE_STATUS_PREFIX = self.ns(REDIS.INSTANCE.HEARTBEAT_PREFIX)
 
@@ -125,19 +141,7 @@ class BackpressureManager:
     async def get_individual_queue_sizes(self) -> Dict[str, int]:
         """Get individual queue sizes"""
         await self.init_redis()
-
-        queues = {
-            "anonymous": f"{self.QUEUE_PREFIX}:anonymous",
-            "registered": f"{self.QUEUE_PREFIX}:registered",
-            "privileged": f"{self.QUEUE_PREFIX}:privileged",
-            "paid": f"{self.QUEUE_PREFIX}:paid",
-        }
-
-        sizes = {}
-        for user_type, queue_key in queues.items():
-            sizes[user_type] = await self.redis.llen(queue_key)
-
-        return sizes
+        return await _get_combined_queue_sizes(self.redis, self.QUEUE_PREFIX, self.QUEUE_INFLIGHT_PREFIX)
 
     async def get_queue_analytics(self) -> Dict[str, Dict[str, Any]]:
         """Get queue analytics for each user type"""
@@ -206,7 +210,10 @@ class BackpressureManager:
             analytics["throughput_last_hour"] += 1
 
         # Update peak size
-        current_size = await self.redis.llen(f"{self.QUEUE_PREFIX}:{user_type}")
+        current_size = (
+            await self.redis.llen(_queue_key(self.QUEUE_PREFIX, user_type))
+            + await self.redis.llen(_queue_key(self.QUEUE_INFLIGHT_PREFIX, user_type))
+        )
         analytics["peak_size_today"] = max(analytics.get("peak_size_today", 0), current_size)
         analytics["last_updated"] = time.time()
 
@@ -422,19 +429,20 @@ class BackpressureManager:
         lua_script = """
         local user_queue_key = KEYS[1]
         local total_counter_key = KEYS[2]
+        local user_inflight_key = KEYS[3]
         local threshold = tonumber(ARGV[1])
         local hard_limit = tonumber(ARGV[2])
         local user_type = ARGV[3]
         
         -- Get current queue sizes
-        local user_queue_size = redis.call('LLEN', user_queue_key)
+        local user_queue_size = redis.call('LLEN', user_queue_key) + redis.call('LLEN', user_inflight_key)
         local total_size = 0
         
         -- Calculate total across all queues
-        local anonymous_size = redis.call('LLEN', KEYS[3])
-        local registered_size = redis.call('LLEN', KEYS[4])
-        local privileged_size = redis.call('LLEN', KEYS[5])
-        local paid_size = redis.call('LLEN', KEYS[6])
+        local anonymous_size = redis.call('LLEN', KEYS[4]) + redis.call('LLEN', KEYS[8])
+        local registered_size = redis.call('LLEN', KEYS[5]) + redis.call('LLEN', KEYS[9])
+        local privileged_size = redis.call('LLEN', KEYS[6]) + redis.call('LLEN', KEYS[10])
+        local paid_size = redis.call('LLEN', KEYS[7]) + redis.call('LLEN', KEYS[11])
         total_size = anonymous_size + registered_size + paid_size + privileged_size
         
         -- Check if we can admit this request
@@ -460,23 +468,33 @@ class BackpressureManager:
 
         # Prepare Redis keys
         user_queue_key = f"{self.QUEUE_PREFIX}:{user_type.value.lower()}"
+        user_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:{user_type.value.lower()}"
         total_counter_key = f"{self.CAPACITY_COUNTER_KEY}:total"
         anonymous_queue_key = f"{self.QUEUE_PREFIX}:anonymous"
         registered_queue_key = f"{self.QUEUE_PREFIX}:registered"
         privileged_queue_key = f"{self.QUEUE_PREFIX}:privileged"
         paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
+        anonymous_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:anonymous"
+        registered_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:registered"
+        privileged_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:privileged"
+        paid_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:paid"
 
         try:
             # Execute atomic check
             result = await self.redis.eval(
                 lua_script,
-                6,  # Number of keys
+                11,  # Number of keys
                 user_queue_key,
                 total_counter_key,
+                user_inflight_key,
                 anonymous_queue_key,
                 registered_queue_key,
                 privileged_queue_key,
                 paid_queue_key,
+                anonymous_inflight_key,
+                registered_inflight_key,
+                privileged_inflight_key,
+                paid_inflight_key,
                 threshold,
                 thresholds['hard_limit'],
                 user_type.value.lower()
@@ -557,6 +575,7 @@ class AtomicBackpressureManager:
 
         # Redis keys (keep same as existing)
         self.QUEUE_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_PREFIX)
+        self.QUEUE_INFLIGHT_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_INFLIGHT_PREFIX)
         self.PROCESS_HEARTBEAT_PREFIX = self.ns(REDIS.PROCESS.HEARTBEAT_PREFIX)
         self.INSTANCE_STATUS_PREFIX = self.ns(REDIS.INSTANCE.HEARTBEAT_PREFIX)
         self.CAPACITY_COUNTER_KEY = self.ns(f"{REDIS.SYSTEM.CAPACITY}:counter")
@@ -570,6 +589,10 @@ class AtomicBackpressureManager:
         local reg_queue_key = KEYS[2]
         local priv_queue_key = KEYS[3]
         local paid_queue_key = KEYS[4]
+        local anon_inflight_key = KEYS[5]
+        local reg_inflight_key = KEYS[6]
+        local priv_inflight_key = KEYS[7]
+        local paid_inflight_key = KEYS[8]
         
         local user_type = ARGV[1]
         local anonymous_ratio = tonumber(ARGV[2])
@@ -612,10 +635,10 @@ class AtomicBackpressureManager:
         end
         
         -- Get current queue sizes
-        local anon_queue = redis.call('LLEN', anon_queue_key)
-        local reg_queue = redis.call('LLEN', reg_queue_key) 
-        local priv_queue = redis.call('LLEN', priv_queue_key)
-        local paid_queue = redis.call('LLEN', paid_queue_key)
+        local anon_queue = redis.call('LLEN', anon_queue_key) + redis.call('LLEN', anon_inflight_key)
+        local reg_queue = redis.call('LLEN', reg_queue_key) + redis.call('LLEN', reg_inflight_key)
+        local priv_queue = redis.call('LLEN', priv_queue_key) + redis.call('LLEN', priv_inflight_key)
+        local paid_queue = redis.call('LLEN', paid_queue_key) + redis.call('LLEN', paid_inflight_key)
         local total_queue = anon_queue + reg_queue + paid_queue + priv_queue
         
         if actual_capacity <= 0 then
@@ -693,6 +716,10 @@ class AtomicBackpressureManager:
         reg_queue_key = f"{self.QUEUE_PREFIX}:registered"
         priv_queue_key = f"{self.QUEUE_PREFIX}:privileged"
         paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
+        anon_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:anonymous"
+        reg_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:registered"
+        priv_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:privileged"
+        paid_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:paid"
 
         heartbeat_pattern = f"{self.PROCESS_HEARTBEAT_PREFIX}:*"
         service_type, service_name = self.gateway_config.capacity_source_selector()
@@ -700,11 +727,15 @@ class AtomicBackpressureManager:
         try:
             result = await self.redis.eval(
                 self.ATOMIC_CAPACITY_CHECK_SCRIPT,
-                4,  # Number of keys
+                8,  # Number of keys
                 anon_queue_key,
                 reg_queue_key,
                 priv_queue_key,
                 paid_queue_key,
+                anon_inflight_key,
+                reg_inflight_key,
+                priv_inflight_key,
+                paid_inflight_key,
                 # Arguments
                 user_type.value,
                 str(bp.anonymous_pressure_threshold),
@@ -840,19 +871,7 @@ class AtomicBackpressureManager:
     async def get_individual_queue_sizes(self) -> Dict[str, int]:
         """Get individual queue sizes"""
         await self.init_redis()
-
-        queues = {
-            "anonymous": f"{self.QUEUE_PREFIX}:anonymous",
-            "registered": f"{self.QUEUE_PREFIX}:registered",
-            "privileged": f"{self.QUEUE_PREFIX}:privileged",
-            "paid": f"{self.QUEUE_PREFIX}:paid",
-        }
-
-        sizes = {}
-        for user_type, queue_key in queues.items():
-            sizes[user_type] = await self.redis.llen(queue_key)
-
-        return sizes
+        return await _get_combined_queue_sizes(self.redis, self.QUEUE_PREFIX, self.QUEUE_INFLIGHT_PREFIX)
 
     async def get_queue_analytics(self) -> Dict[str, Dict[str, Any]]:
         """Get queue analytics for each user type"""
@@ -917,7 +936,10 @@ class AtomicBackpressureManager:
             analytics["total_processed"] += 1
             analytics["throughput_last_hour"] += 1
 
-        current_size = await self.redis.llen(f"{self.QUEUE_PREFIX}:{user_type}")
+        current_size = (
+            await self.redis.llen(_queue_key(self.QUEUE_PREFIX, user_type))
+            + await self.redis.llen(_queue_key(self.QUEUE_INFLIGHT_PREFIX, user_type))
+        )
         analytics["peak_size_today"] = max(analytics.get("peak_size_today", 0), current_size)
         analytics["last_updated"] = time.time()
 
@@ -1100,6 +1122,7 @@ class AtomicChatQueueManager:
 
         # Redis keys
         self.QUEUE_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_PREFIX)
+        self.QUEUE_INFLIGHT_PREFIX = self.ns(REDIS.CHAT.PROMPT_QUEUE_INFLIGHT_PREFIX)
         self.PROCESS_HEARTBEAT_PREFIX = self.ns(REDIS.PROCESS.HEARTBEAT_PREFIX)
         self.CAPACITY_COUNTER_KEY = self.ns(f"{REDIS.SYSTEM.CAPACITY}:counter")
 
@@ -1111,6 +1134,10 @@ class AtomicChatQueueManager:
         local reg_queue_key = KEYS[4]
         local priv_queue_key = KEYS[5]
         local paid_queue_key = KEYS[6]
+        local anon_inflight_key = KEYS[7]
+        local reg_inflight_key = KEYS[8]
+        local priv_inflight_key = KEYS[9]
+        local paid_inflight_key = KEYS[10]
         
         local user_type = ARGV[1]
         local chat_task_json = ARGV[2]  -- Actual chat task
@@ -1155,10 +1182,10 @@ class AtomicChatQueueManager:
         end
         
         -- Get current queue sizes
-        local anon_queue = redis.call('LLEN', anon_queue_key)
-        local reg_queue = redis.call('LLEN', reg_queue_key) 
-        local priv_queue = redis.call('LLEN', priv_queue_key)
-        local paid_queue = redis.call('LLEN', paid_queue_key)
+        local anon_queue = redis.call('LLEN', anon_queue_key) + redis.call('LLEN', anon_inflight_key)
+        local reg_queue = redis.call('LLEN', reg_queue_key) + redis.call('LLEN', reg_inflight_key)
+        local priv_queue = redis.call('LLEN', priv_queue_key) + redis.call('LLEN', priv_inflight_key)
+        local paid_queue = redis.call('LLEN', paid_queue_key) + redis.call('LLEN', paid_inflight_key)
         local total_queue = anon_queue + reg_queue + paid_queue + priv_queue
 
         if actual_capacity <= 0 then
@@ -1233,6 +1260,10 @@ class AtomicChatQueueManager:
         reg_queue_key = f"{self.QUEUE_PREFIX}:registered"
         priv_queue_key = f"{self.QUEUE_PREFIX}:privileged"
         paid_queue_key = f"{self.QUEUE_PREFIX}:paid"
+        anon_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:anonymous"
+        reg_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:registered"
+        priv_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:privileged"
+        paid_inflight_key = f"{self.QUEUE_INFLIGHT_PREFIX}:paid"
 
         heartbeat_pattern = f"{self.PROCESS_HEARTBEAT_PREFIX}:*"
         service_type, service_name = self.gateway_config.capacity_source_selector()
@@ -1240,13 +1271,17 @@ class AtomicChatQueueManager:
         try:
             result = await self.redis.eval(
                 self.ATOMIC_CHAT_ENQUEUE_SCRIPT,
-                6,  # Number of keys
+                10,  # Number of keys
                 queue_key,
                 capacity_counter_key,
                 anon_queue_key,
                 reg_queue_key,
                 priv_queue_key,
                 paid_queue_key,
+                anon_inflight_key,
+                reg_inflight_key,
+                priv_inflight_key,
+                paid_inflight_key,
                 # Arguments
                 user_type.value,
                 json.dumps(chat_task_data, ensure_ascii=False),  # Your actual chat task

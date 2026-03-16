@@ -1,8 +1,11 @@
 import asyncio
+import json
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
 
+import kdcube_ai_app.apps.chat.processor as processor_mod
 from kdcube_ai_app.apps.chat.processor import EnhancedChatRequestProcessor
 
 
@@ -18,7 +21,8 @@ class _HangingRedis:
     def __init__(self):
         self.connection_pool = _FakePool()
 
-    async def brpop(self, queue_key, timeout):
+    async def brpoplpush(self, source, destination, timeout):
+        del source, destination, timeout
         await asyncio.sleep(60)
 
 
@@ -26,7 +30,159 @@ async def _noop_handler(_payload):
     return {}
 
 
-def _build_processor(redis_client):
+class _MinimalRedis:
+    def __init__(self):
+        self.connection_pool = _FakePool()
+        self.expire_calls = []
+        self.lpush_calls = []
+        self.rpush_calls = []
+        self.delete_calls = []
+        self.lrem_calls = []
+        self.set_calls = []
+        self.lists = {}
+        self.lock_ttls = {}
+
+    def seed_list(self, key, values):
+        self.lists[key] = list(values)
+
+    async def brpoplpush(self, source, destination, timeout):
+        del timeout
+        items = self.lists.get(source) or []
+        if not items:
+            return None
+        value = items.pop()
+        self.lists[source] = items
+        self.lists.setdefault(destination, []).insert(0, value)
+        return value
+
+    async def ttl(self, key):
+        return self.lock_ttls.get(key, -2)
+
+    async def expire(self, key, ttl):
+        self.expire_calls.append((key, ttl))
+        if key in self.lock_ttls:
+            self.lock_ttls[key] = ttl
+        return True
+
+    async def set(self, key, value, nx=False, ex=None):
+        self.set_calls.append((key, value, nx, ex))
+        if nx and key in self.lock_ttls and self.lock_ttls[key] >= 0:
+            return False
+        self.lock_ttls[key] = ex if ex is not None else 300
+        return True
+
+    async def delete(self, *keys):
+        deleted = 0
+        for key in keys:
+            self.delete_calls.append(key)
+            if key in self.lock_ttls:
+                deleted += 1
+                del self.lock_ttls[key]
+            elif key in self.lists:
+                deleted += 1
+                del self.lists[key]
+        return deleted
+
+    async def lpush(self, key, value):
+        self.lpush_calls.append((key, value))
+        self.lists.setdefault(key, []).insert(0, value)
+        return len(self.lists[key])
+
+    async def rpush(self, key, value):
+        self.rpush_calls.append((key, value))
+        self.lists.setdefault(key, []).append(value)
+        return len(self.lists[key])
+
+    async def lrem(self, key, count, value):
+        self.lrem_calls.append((key, count, value))
+        items = list(self.lists.get(key) or [])
+        removed = 0
+        new_items = []
+        for item in items:
+            if item == value and (count <= 0 or removed < count):
+                removed += 1
+                continue
+            new_items.append(item)
+        self.lists[key] = new_items
+        return removed
+
+    async def lrange(self, key, start, end):
+        items = list(self.lists.get(key) or [])
+        if end == -1:
+            return items[start:]
+        return items[start:end + 1]
+
+    async def llen(self, key):
+        return len(self.lists.get(key) or [])
+
+
+class _NoopConversationCtx:
+    def __init__(self):
+        self.calls = []
+
+    async def set_conversation_state(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"updated_at": "2026-03-16T00:00:00Z"}
+
+
+class _NoopRelay:
+    def __init__(self):
+        self.conv_status_calls = []
+
+    async def emit_conv_status(self, *args, **kwargs):
+        self.conv_status_calls.append({"args": args, "kwargs": kwargs})
+
+
+class _DummyChatCommunicator:
+    error_calls = []
+
+    def __init__(self, *args, **kwargs):
+        del args, kwargs
+
+    async def start(self, **kwargs):
+        del kwargs
+
+    async def step(self, **kwargs):
+        del kwargs
+
+    async def complete(self, **kwargs):
+        del kwargs
+
+    async def error(self, **kwargs):
+        type(self).error_calls.append(kwargs)
+
+
+class _DummyEnvelope:
+    @staticmethod
+    def from_dict(data):
+        return data
+
+
+@asynccontextmanager
+async def _noop_async_context(*args, **kwargs):
+    del args, kwargs
+    yield
+
+
+def _build_task_payload(task_id="task-1", *, user_type="registered"):
+    return {
+        "meta": {"task_id": task_id, "created_at": 1.0, "instance_id": "ingress-1"},
+        "routing": {
+            "bundle_id": "bundle.demo",
+            "session_id": "session-1",
+            "conversation_id": "conv-1",
+            "turn_id": "turn-1",
+            "socket_id": "socket-1",
+        },
+        "actor": {"tenant_id": "tenant-a", "project_id": "project-a"},
+        "user": {"user_type": user_type, "user_id": "user-1", "fingerprint": "fp-1"},
+        "request": {"message": "hello", "operation": "chat", "payload": None},
+        "config": {"values": {}},
+        "accounting": {"envelope": {}},
+    }
+
+
+def _build_processor(redis_client, *, max_concurrent=5, handler=_noop_handler, conversation_ctx=None, relay=None):
     middleware = SimpleNamespace(
         redis_url="redis://example",
         instance_id="proc-test",
@@ -36,22 +192,215 @@ def _build_processor(redis_client):
     )
     processor = EnhancedChatRequestProcessor(
         middleware,
-        _noop_handler,
-        conversation_ctx=SimpleNamespace(),
+        handler,
+        conversation_ctx=conversation_ctx or _NoopConversationCtx(),
+        relay=relay or _NoopRelay(),
         redis=redis_client,
+        max_concurrent=max_concurrent,
     )
     processor.queue_block_timeout_sec = 0.01
     processor.queue_call_timeout_sec = 0.02
+    processor.inflight_reaper_interval_sec = 0.01
     return processor
 
 
+@pytest.fixture
+def _patch_processor_dependencies(monkeypatch):
+    _DummyChatCommunicator.error_calls = []
+    monkeypatch.setattr(processor_mod, "get_settings", lambda: SimpleNamespace(STORAGE_PATH="/tmp"))
+    monkeypatch.setattr(processor_mod, "create_storage_backend", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(processor_mod, "record_metric", _noop_handler)
+    monkeypatch.setattr(processor_mod, "ChatCommunicator", _DummyChatCommunicator)
+
+    import kdcube_ai_app.infra.accounting.envelope as envelope_mod
+    import kdcube_ai_app.infra.accounting as accounting_mod
+
+    monkeypatch.setattr(envelope_mod, "AccountingEnvelope", _DummyEnvelope)
+    monkeypatch.setattr(envelope_mod, "bind_accounting", _noop_async_context)
+    monkeypatch.setattr(accounting_mod, "with_accounting", _noop_async_context)
+    return _DummyChatCommunicator
+
+
 @pytest.mark.asyncio
-async def test_queue_brpop_timeout_disconnects_shared_pool():
+async def test_queue_claim_timeout_disconnects_shared_pool():
     hanging = _HangingRedis()
     processor = _build_processor(hanging)
 
-    result = await processor._queue_brpop("queue:anonymous")
+    result = await processor._queue_claim("queue:anonymous", "queue:inflight:anonymous")
 
     assert result is None
     assert hanging.connection_pool.disconnect_calls == [True]
-    assert "Queue BRPOP exceeded" in (processor.get_runtime_metadata()["last_queue_error"] or "")
+    assert "Queue claim exceeded" in (processor.get_runtime_metadata()["last_queue_error"] or "")
+
+
+@pytest.mark.asyncio
+async def test_stop_processing_waits_for_inflight_task_without_cancelling():
+    redis = _MinimalRedis()
+    processor = _build_processor(redis, max_concurrent=1)
+    task_started = asyncio.Event()
+    task_finish = asyncio.Event()
+    task_cancelled = False
+
+    async def _processing_loop():
+        while not processor._stop_event.is_set():
+            await asyncio.sleep(0.01)
+
+    async def _config_loop():
+        while not processor._stop_event.is_set():
+            await asyncio.sleep(0.01)
+
+    async def _reaper_loop():
+        while not processor._stop_event.is_set():
+            await asyncio.sleep(0.01)
+
+    async def _inflight_task():
+        nonlocal task_cancelled
+        task_started.set()
+        try:
+            await task_finish.wait()
+        except asyncio.CancelledError:
+            task_cancelled = True
+            raise
+        finally:
+            processor._current_load = 0
+
+    processor._current_load = 1
+    inflight = asyncio.create_task(_inflight_task(), name="chat-task:drain-test")
+    processor._active_tasks.add(inflight)
+    processor._active_task_details[inflight] = {"task_id": "drain-test", "queue_key": "queue:registered"}
+    inflight.add_done_callback(lambda t: (processor._active_tasks.discard(t), processor._active_task_details.pop(t, None)))
+    processor._processor_task = asyncio.create_task(_processing_loop(), name="chat-processing-loop")
+    processor._config_task = asyncio.create_task(_config_loop(), name="config-bundles-listener")
+    processor._reaper_task = asyncio.create_task(_reaper_loop(), name="chat-inflight-recovery-loop")
+
+    await task_started.wait()
+    stop_task = asyncio.create_task(processor.stop_processing())
+
+    await asyncio.sleep(0.05)
+    assert stop_task.done() is False
+    assert task_cancelled is False
+    assert processor.get_runtime_metadata()["draining"] is True
+
+    task_finish.set()
+    await stop_task
+
+    assert task_cancelled is False
+    assert processor.get_current_load() == 0
+    assert processor.get_runtime_metadata()["active_tasks"] == 0
+
+
+@pytest.mark.asyncio
+async def test_pop_any_queue_fair_requeues_item_if_drain_starts_after_claim():
+    redis = _MinimalRedis()
+    processor = _build_processor(redis)
+    payload = {"meta": {"task_id": "task-1"}}
+    raw_payload = json.dumps(payload).encode("utf-8")
+
+    async def _queue_claim(_ready_key, inflight_key):
+        redis.seed_list(inflight_key, [raw_payload])
+        processor._stop_event.set()
+        return raw_payload
+
+    processor._queue_claim = _queue_claim
+
+    result = await processor._pop_any_queue_fair()
+
+    assert result is None
+    assert redis.lrem_calls == [("queue:inflight:privileged", 1, raw_payload)]
+    assert redis.rpush_calls == [("queue:privileged", raw_payload)]
+    assert processor.get_current_load() == 0
+
+
+@pytest.mark.asyncio
+async def test_lock_renewer_keeps_extending_lock_during_drain():
+    redis = _MinimalRedis()
+    redis.lock_ttls["lock:test"] = 300
+    processor = _build_processor(redis)
+    processor.lock_renew_sec = 0.01
+
+    async with processor._lock_renewer("lock:test"):
+        processor._stop_event.set()
+        await asyncio.sleep(0.03)
+
+    assert redis.expire_calls
+
+
+@pytest.mark.asyncio
+async def test_requeue_stale_inflight_task_returns_item_to_ready_queue():
+    redis = _MinimalRedis()
+    processor = _build_processor(redis)
+    raw_payload = json.dumps(_build_task_payload("stale-task")).encode("utf-8")
+    ready_key = "queue:privileged"
+    inflight_key = "queue:inflight:privileged"
+    redis.seed_list(inflight_key, [raw_payload])
+
+    reclaimed = await processor._requeue_stale_inflight_tasks()
+
+    assert reclaimed == 1
+    assert redis.lists[inflight_key] == []
+    assert redis.lists[ready_key] == [raw_payload]
+
+
+@pytest.mark.asyncio
+async def test_started_stale_inflight_task_is_marked_interrupted_and_signalled(_patch_processor_dependencies):
+    redis = _MinimalRedis()
+    conversation_ctx = _NoopConversationCtx()
+    relay = _NoopRelay()
+    processor = _build_processor(redis, conversation_ctx=conversation_ctx, relay=relay)
+    raw_payload = json.dumps(_build_task_payload("started-task")).encode("utf-8")
+    inflight_key = "queue:inflight:privileged"
+    started_key = "lock:started:started-task"
+    redis.seed_list(inflight_key, [raw_payload])
+    redis.lock_ttls[started_key] = 300
+
+    reclaimed = await processor._requeue_stale_inflight_tasks()
+
+    assert reclaimed == 0
+    assert redis.lists[inflight_key] == []
+    assert redis.lists.get("queue:privileged", []) == []
+    assert started_key in redis.delete_calls
+    assert processor.get_runtime_metadata()["stale_interrupted_count"] == 1
+    assert conversation_ctx.calls[-1]["new_state"] == "error"
+    assert relay.conv_status_calls[-1]["kwargs"]["completion"] == "interrupted"
+    assert _patch_processor_dependencies.error_calls[-1]["data"]["error_type"] == "turn_interrupted"
+
+
+@pytest.mark.asyncio
+async def test_process_task_cancellation_keeps_started_inflight_claim(_patch_processor_dependencies):
+    redis = _MinimalRedis()
+    handler_started = asyncio.Event()
+
+    async def _blocking_handler(_payload):
+        handler_started.set()
+        await asyncio.Event().wait()
+
+    processor = _build_processor(redis, handler=_blocking_handler)
+    task_payload = _build_task_payload("cancel-task")
+    raw_payload = json.dumps(task_payload).encode("utf-8")
+    lock_key = "lock:cancel-task"
+    started_key = "lock:started:cancel-task"
+    inflight_key = "queue:inflight:registered"
+    redis.seed_list(inflight_key, [raw_payload])
+    redis.lock_ttls[lock_key] = 300
+    processor._current_load = 1
+
+    task_data = dict(task_payload)
+    task_data["_lock_key"] = lock_key
+    task_data["_raw_payload"] = raw_payload
+    task_data["_ready_queue_key"] = "queue:registered"
+    task_data["_inflight_queue_key"] = inflight_key
+    task_data["_queue_wait_ms"] = 10
+
+    task = asyncio.create_task(processor._process_task(task_data))
+    await handler_started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert redis.lists[inflight_key] == [raw_payload]
+    assert lock_key in redis.lock_ttls
+    assert started_key in redis.lock_ttls
+    assert lock_key not in redis.delete_calls
+    assert started_key not in redis.delete_calls
+    assert processor.get_current_load() == 0

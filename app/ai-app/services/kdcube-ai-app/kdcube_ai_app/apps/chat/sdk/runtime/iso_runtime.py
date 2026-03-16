@@ -272,31 +272,35 @@ async def _run_subprocess(entry_path: pathlib.Path, *,
     stderr_tail = ""
     error_summary = ""
 
-    try:
-        # Read and wait at the same time; avoids pipe deadlock
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
-    except asyncio.TimeoutError:
-        timed_out = True
+    async def _terminate_proc_for_shutdown() -> tuple[bytes, bytes]:
         try:
             proc.terminate()
         except ProcessLookupError:
-            pass
+            return b"", b""
 
-        # Give it a moment to shut down gracefully
         try:
-            out2, err2 = await asyncio.wait_for(proc.communicate(), timeout=5)
-            # Append any extra output we got after terminate()
-            out += out2
-            err += err2
+            return await asyncio.wait_for(proc.communicate(), timeout=5)
         except asyncio.TimeoutError:
-            # Force kill if it still doesn’t exit
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
-            out2, err2 = await proc.communicate()
-            out += out2
-            err += err2
+            return await proc.communicate()
+
+    try:
+        # Read and wait at the same time; avoids pipe deadlock
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except asyncio.CancelledError:
+        log.warning("[_run_subprocess] Cancelled while waiting for child process; terminating it")
+        out2, err2 = await _terminate_proc_for_shutdown()
+        out += out2
+        err += err2
+        raise
+    except asyncio.TimeoutError:
+        timed_out = True
+        out2, err2 = await _terminate_proc_for_shutdown()
+        out += out2
+        err += err2
     finally:
         try:
             log_dir = outdir / "logs"
