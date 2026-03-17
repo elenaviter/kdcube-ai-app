@@ -50,11 +50,13 @@ Declared in `tools_descriptor.py` → `MCP_TOOL_SPECS`:
 | Alias | Transport | Tools | Description |
 |-------|-----------|-------|-------------|
 | `web_search` | stdio | `web_search` | Built-in web search server (replaces native `web_tools`) |
+| `deepwiki` | streamable-http | `*` (all) | GitHub repository documentation (public, no auth) |
+| `firecrawl` | stdio | `*` (all) | Web scraping/crawling via Firecrawl (requires `FIRECRAWL_API_KEY`) |
 | `stack` | stdio | `*` (all) | StackOverflow via `npx mcp-remote` |
 | `docs` | http | `*` (all) | Remote documentation server |
 | `local` | sse | `*` (all) | Local development MCP server |
 
-Tool ID format: `mcp.<alias>.<tool_id>` (e.g., `mcp.web_search.web_search`).
+Tool ID format: `mcp.<alias>.<tool_id>` (e.g., `mcp.web_search.web_search`, `mcp.firecrawl.firecrawl_scrape`).
 
 Full configuration guide: [react-mcp-configuration-README.md](react-mcp-configuration-README.md).
 
@@ -195,6 +197,7 @@ POST /admin/integrations/bundles/react.mcp@2026-03-09/props
 | `AGENTIC_BUNDLES_ROOT` | No | Bundles root directory (default `/bundles`) |
 | `BUNDLE_STORAGE_ROOT` | No | Shared local bundle storage path |
 | `CB_BUNDLE_STORAGE_URL` | No | Per-bundle storage backend (`file://` or `s3://`) |
+| `FIRECRAWL_API_KEY` | If using `firecrawl` | API key for Firecrawl MCP server (https://www.firecrawl.dev/) |
 | `MCP_DOCS_TOKEN` | If using `docs` with auth | Bearer token for remote docs MCP server |
 
 ---

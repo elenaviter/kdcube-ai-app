@@ -80,6 +80,29 @@ export MCP_SERVICES='{
 - `bearer` / `api_key` / `header` auth reads secrets from env and injects headers.
 - Secrets are not written to Redis cache.
 
+## Secret resolution: `${secret:...}` syntax
+
+For stdio servers, env values can use the `${secret:dot.path.key}` syntax to
+resolve secrets via `get_secret()` at session creation time:
+
+```json
+"env": {
+  "FIRECRAWL_API_KEY": "${secret:services.firecrawl.api_key}"
+}
+```
+
+`get_secret()` resolution order:
+1. Environment variables (via `_SECRET_ALIASES` in `sdk/config.py`)
+2. Settings attributes (Pydantic BaseSettings)
+3. Secrets manager provider (secrets-service / AWS SM / in-memory)
+
+**Local dev:** secrets come from env vars in `.env.proc`. Each dot-path key
+needs a corresponding alias in `_SECRET_ALIASES` (e.g.,
+`"services.firecrawl.api_key": ["FIRECRAWL_API_KEY"]`).
+
+**CLI deploy:** the CLI reads `secrets.yaml` / `bundles.secrets.yaml` and
+injects values into the secrets-service sidecar or AWS Secrets Manager.
+
 ## Runtime execution flow
 
 1. `MCPToolsSubsystem.build_tool_entries()` contributes MCP entries to the tool catalog.

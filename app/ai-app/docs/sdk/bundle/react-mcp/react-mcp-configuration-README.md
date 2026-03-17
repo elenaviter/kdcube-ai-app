@@ -41,10 +41,12 @@ Defined in `tools_descriptor.py`:
 
 ```python
 MCP_TOOL_SPECS = [
-    {"server_id": "web_search", "alias": "web_search", "tools": ["web_search"]},
-    {"server_id": "stack",      "alias": "stack",      "tools": ["*"]},
-    {"server_id": "docs",       "alias": "docs",       "tools": ["*"]},
-    {"server_id": "local",      "alias": "local",      "tools": ["*"]},
+    # {"server_id": "web_search", "alias": "web_search", "tools": ["web_search"]},  # Built-in web search (optional)
+    {"server_id": "deepwiki",   "alias": "deepwiki",   "tools": ["*"]},   # Streamable HTTP — GitHub repo docs
+    {"server_id": "firecrawl",  "alias": "firecrawl",  "tools": ["*"]},   # Web scraping/crawling via Firecrawl
+    {"server_id": "stack",      "alias": "stack",      "tools": ["*"]},   # Stdio transport
+    {"server_id": "docs",       "alias": "docs",       "tools": ["*"]},   # HTTP / Streamable HTTP
+    {"server_id": "local",      "alias": "local",      "tools": ["*"]},   # SSE transport
 ]
 ```
 
@@ -56,19 +58,14 @@ MCP_TOOL_SPECS = [
 
 ### Declared connectors
 
-| Alias | Transport | Purpose |
-|-------|-----------|---------|
-| `web_search` | stdio | Built-in web search MCP server (replaces native `web_tools`) |
-| `stack` | stdio | StackOverflow via `npx mcp-remote` |
-| `docs` | http / streamable-http | Remote documentation server |
-| `local` | sse | Local development MCP server |
-
-> The `react.doc` bundle also declares a `deepwiki` connector
-> (`streamable-http`, `https://mcp.deepwiki.com/mcp`) for GitHub repo documentation.
-> You can add it to this bundle by appending to `MCP_TOOL_SPECS`:
-> ```python
-> {"server_id": "deepwiki", "alias": "deepwiki", "tools": ["*"]}
-> ```
+| Alias | Transport | Auth required | Purpose |
+|-------|-----------|---------------|---------|
+| `web_search` | stdio | No | Built-in web search MCP server (replaces native `web_tools`). Disabled by default. |
+| `deepwiki` | streamable-http | No | GitHub repository documentation (public server) |
+| `firecrawl` | stdio | Yes (`FIRECRAWL_API_KEY`) | Web scraping, crawling, structured extraction via Firecrawl |
+| `stack` | stdio | No | StackOverflow via `npx mcp-remote` |
+| `docs` | http / streamable-http | Optional (bearer) | Remote documentation server |
+| `local` | sse | No | Local development MCP server |
 
 ---
 
@@ -85,24 +82,26 @@ This is the actual configuration used in the project:
 export MCP_SERVICES='{
   "mcpServers": {
 
-    "web_search": {
-      "transport": "stdio",
-      "command": "python",
-      "args": [
-        "-m",
-        "kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server",
-        "--transport", "stdio"
-      ]
-    },
-
     "deepwiki": {
       "transport": "streamable-http",
       "url": "https://mcp.deepwiki.com/mcp"
+    },
+
+    "firecrawl": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"],
+      "env": {
+        "FIRECRAWL_API_KEY": "${secret:services.firecrawl.api_key}"
+      }
     }
 
   }
 }'
 ```
+
+> **Note:** `web_search` is not included in the production config above but can be
+> re-enabled by adding its entry to both `MCP_TOOL_SPECS` and `MCP_SERVICES`.
 
 ### Extended example (all connector types)
 
@@ -123,6 +122,15 @@ export MCP_SERVICES='{
     "deepwiki": {
       "transport": "streamable-http",
       "url": "https://mcp.deepwiki.com/mcp"
+    },
+
+    "firecrawl": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"],
+      "env": {
+        "FIRECRAWL_API_KEY": "${secret:services.firecrawl.api_key}"
+      }
     },
 
     "stack": {
@@ -209,17 +217,71 @@ python -m kdcube_ai_app.apps.chat.sdk.tools.mcp.web_search.web_search_server \
 
 ## 4) Authentication and secrets
 
-### Where secrets are stored
+### Secret resolution: two paths
 
-Secrets are passed through **environment variables** only:
+MCP server secrets are resolved through `get_secret()` (in `sdk/config.py`),
+which supports two resolution paths depending on the deployment mode:
+
+```mermaid
+flowchart TD
+    REF["${secret:services.firecrawl.api_key}"]
+    REF --> RS["_resolve_secret_ref()  (mcp_adapter.py)"]
+    RS --> GS["get_secret('services.firecrawl.api_key')"]
+    GS --> A{_SECRET_ALIASES?}
+    A -->|yes| ENV["os.getenv('FIRECRAWL_API_KEY')"]
+    A -->|no| SM["Secrets Manager provider"]
+    SM --> SVC["secrets-service sidecar"]
+    SM --> AWS["AWS Secrets Manager"]
+    SM --> MEM["in-memory (empty)"]
+```
+
+**Local dev (no sidecar):** secrets come from env vars in `.env.proc`.
+`get_secret()` finds them via `_SECRET_ALIASES` mapping in `sdk/config.py`:
+
+```python
+_SECRET_ALIASES = {
+    "services.firecrawl.api_key": ["FIRECRAWL_API_KEY"],
+    "services.openai.api_key": ["OPENAI_API_KEY"],
+    # ...
+}
+```
+
+**CLI deploy (docker-compose / ECS):** the CLI reads `secrets.yaml` and
+`bundles.secrets.yaml`, flattens them into dot-path keys, and injects into
+the secrets-service sidecar (or AWS SM). `get_secret()` then reads from the
+configured secrets provider.
+
+### `${secret:...}` syntax for stdio env blocks
+
+For stdio MCP servers, env values can reference secrets via the
+`${secret:dot.path.key}` syntax. These are resolved at session creation
+time by `_resolve_secret_ref()` in `mcp_adapter.py`:
+
+```json
+"firecrawl": {
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "firecrawl-mcp"],
+  "env": {
+    "FIRECRAWL_API_KEY": "${secret:services.firecrawl.api_key}"
+  }
+}
+```
+
+The `${secret:...}` pattern calls `get_secret()` which checks, in order:
+1. Environment variables (via `_SECRET_ALIASES`)
+2. Settings attributes (Pydantic BaseSettings)
+3. Secrets manager provider (secrets-service / AWS SM / in-memory)
+
+If the value does not match `${secret:...}`, it is passed through as-is.
+
+### Where secrets are stored
 
 - For **stdio** servers: in the `env` block of the `MCP_SERVICES` entry, or
   inherited from the parent process env.
 - For **http/sse** servers: in the `auth.env` field, which names the env var
   containing the token/key.
 - Secrets are **never written to Redis** cache.
-- For production, use your secrets manager (AWS Secrets Manager, Vault, etc.)
-  to inject env vars into the container.
 
 ### Supported auth types
 
@@ -228,6 +290,34 @@ Secrets are passed through **environment variables** only:
 | `bearer` | `"auth": {"type": "bearer", "env": "TOKEN_VAR"}` | Reads token from env, sends `Authorization: Bearer {token}` |
 | `api_key` | `"auth": {"type": "api_key", "env": "KEY_VAR"}` | Reads key from env, sends `X-API-Key` header |
 | `header` | `"auth": {"type": "header", "name": "X-Custom", "env": "VAR"}` | Custom header injection |
+
+### Example: Firecrawl (stdio with `${secret:...}`)
+
+```bash
+# Local dev: set the env var in .env.proc
+FIRECRAWL_API_KEY=fc-your-key-here
+
+# CLI deploy: add to secrets.yaml
+# services:
+#   firecrawl:
+#     api_key: fc-your-key-here
+# And to bundles.secrets.yaml under the relevant bundle.
+```
+
+```json
+"firecrawl": {
+  "transport": "stdio",
+  "command": "npx",
+  "args": ["-y", "firecrawl-mcp"],
+  "env": {
+    "FIRECRAWL_API_KEY": "${secret:services.firecrawl.api_key}"
+  }
+}
+```
+
+Get API key at https://www.firecrawl.dev/ (free tier: 500 credits).
+Tools exposed: `firecrawl_scrape`, `firecrawl_crawl`, `firecrawl_map`,
+`firecrawl_search`, `firecrawl_extract`, and more (12 tools total).
 
 ### Example: public streamable-http server (DeepWiki)
 
@@ -315,6 +405,7 @@ Key details:
 | MCP tools not in agent catalog | `MCP_TOOL_SPECS` has entry with matching `server_id`? `MCP_SERVICES` has matching key? |
 | `mcp.<alias>.<tool>` call fails | Server running? Transport fields correct? (`command` for stdio, `url` for http/sse) |
 | Auth errors (401/403) | Env var with token is set? `auth.env` points to correct var name? |
+| `${secret:...}` not resolving | Is `_SECRET_ALIASES` in `sdk/config.py` configured for this key? Is the env var set in `.env.proc`? (local dev) Or is the secret injected into secrets-service? (CLI deploy) |
 | Tools not refreshed after update | MCP tool listings cached in Redis (TTL 3600s). Wait or clear cache. |
 | stdio server not starting | `command` is in PATH? `args` correct? Check proc logs for spawn errors. |
 

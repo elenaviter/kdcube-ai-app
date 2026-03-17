@@ -22,7 +22,9 @@ The bundles are **nearly identical**. Only `tools_descriptor.py` differs:
 
 | Area | Base `react` | This bundle (`react.mcp`) |
 |------|-------------|---------------------------|
-| Web search / fetch | `web_tools` Python module (in-proc) | MCP `web_search` server (stdio/http/sse) |
+| Web search / fetch | `web_tools` Python module (in-proc) | MCP `web_search` server (stdio) |
+| Web scraping / crawling | None | MCP `firecrawl` server (stdio, requires API key) |
+| GitHub repo docs | None | MCP `deepwiki` server (streamable-http, public) |
 | External tool servers | None | MCP connectors: `stack`, `docs`, `local` |
 | Everything else | Identical | Identical (entrypoint, workflow, gate, skills, event filter) |
 
@@ -56,12 +58,14 @@ flowchart TD
     T -->|MCP tool| MCP[MCPToolsSubsystem]
 
     MCP -->|stdio| STDIO[web_search server process]
+    MCP -->|stdio| FC[Firecrawl — web scraping/crawling]
     MCP -->|streamable-http| DW[DeepWiki — GitHub repo docs]
     MCP -->|http| HTTP[Remote docs server]
     MCP -->|sse| SSE[Local dev MCP server]
 
     PT --> S
     STDIO --> S
+    FC --> S
     DW --> S
     HTTP --> S
     SSE --> S
@@ -104,10 +108,21 @@ export MCP_SERVICES='{
     "deepwiki": {
       "transport": "streamable-http",
       "url": "https://mcp.deepwiki.com/mcp"
+    },
+    "firecrawl": {
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"],
+      "env": {
+        "FIRECRAWL_API_KEY": "${secret:services.firecrawl.api_key}"
+      }
     }
   }
 }'
 ```
+
+> **Firecrawl** requires an API key. Get one at https://www.firecrawl.dev/ (free tier: 500 credits).
+> For secret resolution details, see [react-mcp-configuration-README.md](react-mcp-configuration-README.md) §4.
 
 2. Register the bundle:
 
