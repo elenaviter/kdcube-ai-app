@@ -916,7 +916,11 @@ def ask(console: Console, label: str, default: Optional[str] = None, secret: boo
 def ask_confirm(console: Console, label: str, default: bool = False) -> bool:
     default_hint = "y" if default else "n"
     while True:
-        raw = console.input(f"{label} [y/n] ({default_hint}): ").strip().lower()
+        try:
+            raw = console.input(f"{label} [y/n] ({default_hint}): ").strip().lower()
+        except UnicodeDecodeError:
+            console.print("[yellow]Input encoding error (keyboard shortcut?). Please try again.[/yellow]")
+            continue
         if not raw:
             return default
         if raw in {"q", "quit", "exit"}:
@@ -930,7 +934,13 @@ def ask_confirm(console: Console, label: str, default: bool = False) -> bool:
 
 def prompt_optional(console: Console, label: str, secret: bool = False) -> str:
     console.print(f"{_label(label)} [dim](leave blank to skip)[/dim]")
-    value = console.input("> ", password=secret).strip()
+    while True:
+        try:
+            value = console.input("> ", password=secret).strip()
+        except UnicodeDecodeError:
+            console.print("[yellow]Input encoding error (keyboard shortcut?). Please try again.[/yellow]")
+            continue
+        break
     _abort_if_quit(value)
     return value
 
@@ -940,7 +950,13 @@ def prompt_optional_keep(console: Console, label: str, current: Optional[str]) -
         console.print(f"{_label(label)} [dim](press Enter to keep current)[/dim]")
     else:
         console.print(f"{_label(label)} [dim](leave blank to skip)[/dim]")
-    value = console.input("> ").strip()
+    while True:
+        try:
+            value = console.input("> ").strip()
+        except UnicodeDecodeError:
+            console.print("[yellow]Input encoding error (keyboard shortcut?). Please try again.[/yellow]")
+            continue
+        break
     _abort_if_quit(value)
     if not value:
         return current if current and not is_placeholder(current) else None

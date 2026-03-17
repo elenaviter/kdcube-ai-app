@@ -194,6 +194,15 @@ class Settings(BaseSettings):
     BUNDLES_FORCE_ENV_ON_STARTUP: bool = Field(default=False)
     BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS: int = Field(default=60)
 
+    # Email notifications (admin alerts for Stripe events)
+    EMAIL_ENABLED: bool = Field(default=True)
+    EMAIL_HOST: str | None = None
+    EMAIL_PORT: int = Field(default=587)
+    EMAIL_USER: str | None = None
+    EMAIL_FROM: str | None = None
+    EMAIL_TO: str = Field(default="ops@example.com")
+    EMAIL_USE_TLS: bool = Field(default=True)
+
     # Solution workspace retention — set True to keep workdir/outdir after turn completes (debug).
     SOLUTION_RETAIN_TURN_WORKSPACE: bool = Field(default=False)
 
