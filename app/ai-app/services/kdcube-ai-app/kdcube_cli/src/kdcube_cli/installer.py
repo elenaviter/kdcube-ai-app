@@ -2211,6 +2211,26 @@ def gather_configuration(
                 str_val = str(val).lower() if isinstance(val, bool) else str(val)
                 update_env_value(env_ingress, env_key, str_val)
 
+    # Notifications: apply email settings from assembly descriptor (non-interactive).
+    if assembly_path:
+        email_block = _get_nested(assembly_data, "notifications", "email")
+        if isinstance(email_block, dict):
+            _email_map = [
+                ("enabled", "EMAIL_ENABLED"),
+                ("host", "EMAIL_HOST"),
+                ("port", "EMAIL_PORT"),
+                ("user", "EMAIL_USER"),
+                ("from", "EMAIL_FROM"),
+                ("to", "EMAIL_TO"),
+                ("use_tls", "EMAIL_USE_TLS"),
+            ]
+            for yaml_key, env_key in _email_map:
+                val = email_block.get(yaml_key)
+                if val is None or is_placeholder(str(val)):
+                    continue
+                str_val = str(val).lower() if isinstance(val, bool) else str(val)
+                update_env_value(env_ingress, env_key, str_val)
+
     bundles_descriptor_selected = False
     assembly_descriptor_selected = False
 

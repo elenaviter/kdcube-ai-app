@@ -16,6 +16,16 @@ storage:
   kdcube: "s3://../data/kdcube"
   bundles: "s3://../data/kdcube"
 
+notifications:
+  email:
+    enabled: true
+    host: ""
+    port: "587"
+    user: ""
+    from: ""
+    to: "ops@example.com"
+    use_tls: true
+
 routines:
 
   economics:

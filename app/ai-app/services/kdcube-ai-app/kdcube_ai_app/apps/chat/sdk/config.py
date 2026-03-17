@@ -28,6 +28,7 @@ _SECRET_ALIASES: dict[str, list[str]] = {
     "services.stripe.webhook_secret": ["STRIPE_WEBHOOK_SECRET"],
     "services.huggingface.api_key": ["HUGGING_FACE_KEY", "HUGGINGFACE_API_KEY"],
     "services.firecrawl.api_key": ["FIRECRAWL_API_KEY"],
+    "services.email.password": ["EMAIL_PASSWORD"],
 }
 _LEGACY_SECRET_TO_CANON: dict[str, str] = {
     legacy: canon for canon, aliases in _SECRET_ALIASES.items() for legacy in aliases
