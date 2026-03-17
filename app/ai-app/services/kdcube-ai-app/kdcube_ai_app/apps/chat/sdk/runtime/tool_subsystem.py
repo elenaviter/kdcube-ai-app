@@ -492,6 +492,17 @@ class ToolSubsystem:
         except Exception as e:
             logger.log(f"[tool-subsystem] bootstrap_bind_all/set_comm failed: {e}", level="ERROR")
 
+        # Ensure the *canonical* io_tools module has access to this ToolSubsystem.
+        # _load_tools_module creates dynamic module copies (dyn_io_tools_<hash>),
+        # but execution.py imports from the canonical package path, so we must
+        # bind into both the dynamic copy AND the canonical module.
+        try:
+            from kdcube_ai_app.apps.chat.sdk.tools import io_tools as _canonical_io
+            if hasattr(_canonical_io, "bind_integrations"):
+                _canonical_io.bind_integrations({"tool_subsystem": self})
+        except Exception:
+            pass
+
     # ---------- internals (moved from CodegenToolManager) ----------
 
     def _resolve_tools(self, specs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

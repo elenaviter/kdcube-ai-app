@@ -11,7 +11,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 import inspect
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -70,9 +73,13 @@ class PythonSDKMCPAdapter:
         self.server = server
 
     async def list_tools(self) -> List[MCPToolSchema]:
+        logger.info("MCP adapter list_tools: server=%s transport=%s opening session", self.server.server_id, self.server.transport)
         async with self._session() as session:
+            logger.info("MCP adapter list_tools: server=%s session ready, sending ListToolsRequest", self.server.server_id)
             resp = await session.list_tools()
-            return [self._tool_from_sdk(t) for t in (getattr(resp, "tools", []) or [])]
+            tools = [self._tool_from_sdk(t) for t in (getattr(resp, "tools", []) or [])]
+            logger.info("MCP adapter list_tools: server=%s got %d tools", self.server.server_id, len(tools))
+            return tools
 
     async def call_tool(
         self,
@@ -81,8 +88,11 @@ class PythonSDKMCPAdapter:
         *,
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        logger.info("MCP adapter call_tool: server=%s tool=%s opening session", self.server.server_id, tool_id)
         async with self._session() as session:
+            logger.info("MCP adapter call_tool: server=%s tool=%s session ready, calling", self.server.server_id, tool_id)
             result = await session.call_tool(tool_id, params or {})
+            logger.info("MCP adapter call_tool: server=%s tool=%s call completed", self.server.server_id, tool_id)
             # Prefer structuredContent if present, otherwise return raw content blocks
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
@@ -118,8 +128,22 @@ class PythonSDKMCPAdapter:
         if auth_type in {"oauth_gui", "oauth-gui", "interactive"}:
             return {}
         env_key = auth.get("env")
+        secret_key = auth.get("secret")  # dot-path key for get_secret()
         header = auth.get("header")
-        token = os.environ.get(env_key) if env_key else None
+        # Resolve token: get_secret() first (supports bundle secrets), then env fallback
+        token = None
+        if secret_key:
+            try:
+                from kdcube_ai_app.apps.chat.sdk.config import get_secret
+                token = get_secret(secret_key)
+            except Exception:
+                pass
+        if not token and env_key:
+            try:
+                from kdcube_ai_app.apps.chat.sdk.config import get_secret
+                token = get_secret(env_key)
+            except Exception:
+                token = os.environ.get(env_key)
         if not token:
             return {}
         if auth_type in {"bearer", "oauth"}:
@@ -148,23 +172,89 @@ def _supports_kwarg(fn, name: str) -> bool:
         return False
 
 
+def _resolve_secret_ref(value: str) -> str:
+    """
+    Resolve ``${secret:dot.path.key}`` references in env values via get_secret().
+    If the value does not match the pattern, it is returned as-is.
+    """
+    if not isinstance(value, str) or not value.startswith("${secret:") or not value.endswith("}"):
+        return value
+    key = value[len("${secret:"):-1].strip()
+    if not key:
+        return value
+    try:
+        from kdcube_ai_app.apps.chat.sdk.config import get_secret
+        resolved = get_secret(key)
+        return resolved or value
+    except Exception:
+        return value
+
+
+def _resolve_stdio_env(server: MCPServerSpec) -> dict | None:
+    """
+    Build environment dict for a stdio MCP subprocess.
+
+    When *env* is ``None`` the child inherits the parent environment
+    automatically (MCP SDK default).  When *env* is set, the SDK
+    **replaces** the entire environment, so critical variables like
+    ``PYTHONPATH`` and ``PATH`` would be lost.
+
+    This helper merges the parent ``PYTHONPATH`` / ``PATH`` into the
+    server-specific env so that ``python -m …`` invocations can resolve
+    installed packages without hardcoding paths in the config.
+
+    Env values matching ``${secret:dot.path.key}`` are resolved via
+    get_secret(), enabling bundle-specific secrets from bundles.secrets.yaml.
+    """
+    env = server.env
+    if env is None:
+        return None
+
+    env = dict(env)  # don't mutate the original
+
+    # Resolve ${secret:...} references in env values
+    for k, v in env.items():
+        env[k] = _resolve_secret_ref(v)
+
+    # Inherit PYTHONPATH from the parent process so that
+    # `python -m kdcube_ai_app.…` resolves without manual config.
+    if "PYTHONPATH" not in env:
+        parent_pp = os.environ.get("PYTHONPATH", "")
+        if parent_pp:
+            env["PYTHONPATH"] = parent_pp
+
+    # Inherit PATH so that `python`, `npx`, etc. are discoverable.
+    if "PATH" not in env:
+        parent_path = os.environ.get("PATH", "")
+        if parent_path:
+            env["PATH"] = parent_path
+
+    return env
+
+
 def _stdio_session(server: MCPServerSpec):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
     async def _cm():
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
         params = StdioServerParameters(
             command=server.command or "",
             args=server.args or [],
-            env=server.env or None,
+            env=_resolve_stdio_env(server),
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    return _async_cm(_cm)
+    return _cm()
 
 
 def _sse_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
     async def _cm():
         from mcp import ClientSession
         from mcp.client.sse import sse_client
@@ -175,10 +265,13 @@ def _sse_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    return _async_cm(_cm)
+    return _cm()
 
 
 def _streamable_http_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
     async def _cm():
         from mcp import ClientSession
         client_fn = None
@@ -200,24 +293,7 @@ def _streamable_http_session(server: MCPServerSpec, *, headers: Dict[str, str] |
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    return _async_cm(_cm)
-
-
-def _async_cm(factory):
-    class _Wrapper:
-        def __init__(self, f):
-            self._f = f
-            self._agen = None
-
-        async def __aenter__(self):
-            self._agen = self._f()
-            return await self._agen.__anext__()
-
-        async def __aexit__(self, exc_type, exc, tb):
-            if self._agen:
-                await self._agen.aclose()
-            return False
-    return _Wrapper(factory)
+    return _cm()
 
 
 class MCPToolsSubsystemLike(Protocol):
