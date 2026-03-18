@@ -139,6 +139,8 @@ def _infer_physical_from_fi(path: str) -> str:
         tid, rel = p.split(".attachments/", 1)
         if tid and rel:
             return f"{tid}/attachments/{rel}"
+    if p and _safe_relpath(p):
+        return p
     return ""
 
 
@@ -218,6 +220,7 @@ async def read_artifact_for_react(
     raw_path = path.strip()
     if not raw_path.startswith("fi:"):
         return {"missing": True}
+    inferred_physical = _infer_physical_from_fi(raw_path)
 
     artifact: Optional[Dict[str, Any]] = None
     try:
@@ -245,14 +248,23 @@ async def read_artifact_for_react(
                 artifact = resolve_artifact_from_timeline({"blocks": contrib_log, "sources_pool": []}, raw_path)
 
     if not isinstance(artifact, dict):
-        return {"missing": True}
+        if not inferred_physical:
+            return {"missing": True}
+        artifact = {
+            "path": raw_path,
+            "filepath": inferred_physical,
+            "physical_path": inferred_physical,
+            "mime": _guess_mime_from_path(inferred_physical),
+            "kind": "file",
+            "visibility": "internal",
+        }
 
-    mime = (artifact.get("mime") or _guess_mime_from_path(raw_path) or "application/octet-stream").strip()
+    mime = (artifact.get("mime") or _guess_mime_from_path(inferred_physical or raw_path) or "application/octet-stream").strip()
 
     physical_path = (
         artifact.get("filepath")
         or artifact.get("physical_path")
-        or _infer_physical_from_fi(raw_path)
+        or inferred_physical
         or ""
     )
     if not physical_path:
@@ -570,6 +582,10 @@ def build_exec_snapshot_workspace(
                 art = None
             if isinstance(art, dict):
                 phys = (art.get("filepath") or art.get("physical_path") or "").strip()
+                if phys:
+                    file_paths.append(phys)
+            else:
+                phys = _infer_physical_from_fi(p)
                 if phys:
                     file_paths.append(phys)
             continue

@@ -14,6 +14,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.artifacts import (
     build_artifact_binary_block,
     build_artifact_view,
     normalize_physical_path,
+    physical_path_to_logical_path,
     detect_edit,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.artifact_analysis import (
@@ -336,15 +337,19 @@ async def handle_external_tool(*,
         path_val = final_params.get("path")
         if isinstance(path_val, str) and path_val.strip():
             turn_id = (ctx_browser.runtime_ctx.turn_id or "").strip()
-            physical, rel, rewritten = normalize_physical_path(path_val, turn_id=turn_id)
+            physical, rel, rewritten = normalize_physical_path(
+                path_val,
+                turn_id=turn_id,
+                allow_generic_fi=True,
+            )
             if "/attachments/" in physical:
                 # writing to attachments is not allowed; rewrite to files/<name>
                 rel = rel.split("/", 1)[-1] if rel else "output"
                 physical = f"{turn_id}/files/{rel}"
                 rewritten = True
-            if rewritten and physical:
+            if physical and physical != path_val:
                 final_params["path"] = physical
-                if physical != path_val:
+                if rewritten:
                     notice_block(
                         ctx_browser=ctx_browser,
                         tool_call_id=tool_call_id,
@@ -503,7 +508,17 @@ async def handle_external_tool(*,
                         candidate = p.name
             except Exception:
                 pass
-            phys_path_override, rel_path_override, rewritten_override = normalize_physical_path(candidate, turn_id=turn_id)
+            path_hint = final_params.get("path")
+            if isinstance(path_hint, str) and path_hint.strip() == candidate:
+                phys_path_override = candidate
+                rel_path_override = candidate
+                rewritten_override = False
+            else:
+                phys_path_override, rel_path_override, rewritten_override = normalize_physical_path(
+                    candidate,
+                    turn_id=turn_id,
+                    allow_generic_fi=True,
+                )
             if phys_path_override:
                 value = phys_path_override
                 rewrite_original = candidate
@@ -530,8 +545,15 @@ async def handle_external_tool(*,
             elif isinstance(final_params.get("path"), str):
                 file_hint = final_params.get("path") or ""
             if file_hint:
-                phys_hint, _, _ = normalize_physical_path(file_hint, turn_id=turn_id)
-                file_for_stats = phys_hint or file_hint
+                if isinstance(final_params.get("path"), str) and final_params.get("path", "").strip() == file_hint:
+                    file_for_stats = file_hint
+                else:
+                    phys_hint, _, _ = normalize_physical_path(
+                        file_hint,
+                        turn_id=turn_id,
+                        allow_generic_fi=True,
+                    )
+                    file_for_stats = phys_hint or file_hint
                 try:
                     artifact_stats = analyze_write_tool_output(
                         file_path=file_for_stats,
@@ -619,7 +641,11 @@ async def handle_external_tool(*,
                 tr_path = (tr.get("filepath") or "").strip()
                 if tr_path:
                     artifact_rel = tr_path
-                phys_path, rel_path, rewritten = normalize_physical_path(artifact_rel, turn_id=turn_id)
+                phys_path, rel_path, rewritten = normalize_physical_path(
+                    artifact_rel,
+                    turn_id=turn_id,
+                    allow_generic_fi=True,
+                )
                 if rewritten:
                     original_path = (artifact_view.path or (artifact_view.raw.get("value") or {}).get("path") or artifact_id or "")
                     if phys_path and original_path and original_path != phys_path:
@@ -630,8 +656,12 @@ async def handle_external_tool(*,
                             message="Artifact path contained a turn/files prefix; rewritten to current-turn relative path.",
                             extra={"original": original_path, "normalized": phys_path},
                         )
-        artifact_path = f"fi:{turn_id}.files/{rel_path}" if (turn_id and rel_path and visibility == "external") else tc_result_path(turn_id=turn_id, call_id=tool_call_id)
-        physical_path = phys_path if (turn_id and rel_path and visibility == "external") else ""
+        artifact_path = (
+            physical_path_to_logical_path(phys_path)
+            if (phys_path and visibility == "external")
+            else tc_result_path(turn_id=turn_id, call_id=tool_call_id)
+        )
+        physical_path = phys_path if (phys_path and visibility == "external") else ""
         if tools_insights.is_search_tool(tool_id) or tools_insights.is_fetch_uri_content_tool(tool_id):
             try:
                 sids = remapped_source_sids

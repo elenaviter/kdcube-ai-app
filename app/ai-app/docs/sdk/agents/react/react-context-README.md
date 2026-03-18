@@ -76,7 +76,7 @@ flowchart LR
 
 Notes:
 - **Knowledge Space** is **read‑only** and accessed via `ks:<relpath>`.
-- **OUT_DIR** is where tools write artifacts during a turn; it maps to `fi:<turn_id>.files/...`.
+- **OUT_DIR** is where tools write artifacts during a turn; turn outputs map to `fi:<turn_id>.files/...`, and any readable OUT_DIR file can be loaded with `fi:<outdir-relative-path>`.
 - **Conversation Workspace** will be the long‑lived, writable project state for copilot‑style flows.
 
 ---

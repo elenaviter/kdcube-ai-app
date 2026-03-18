@@ -16,19 +16,36 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.common import (
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools_.search_files import search_files
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.solution_workspace import _safe_relpath
+from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.artifacts import physical_path_to_logical_path
+
 
 TOOL_SPEC = {
     "id": "react.search_files",
-    "purpose": "Search local files under OUT_DIR (default) or workdir for filenames or content regexes.",
+    "purpose": (
+        "Search local files under OUT_DIR (default) or workdir by file name regex and/or text content regex. "
+        "It does not load full file content. "
+        "Results return `root` plus `hits`. Each hit includes `path`, which is relative to the searched root and does not include that root prefix; "
+        "`size_bytes`; and, for OUT_DIR hits, `logical_path` so it can be read with react.read."
+    ),
     "args": {
-        "root": "optional root selector: outdir (default), fi:<relpath>, or workdir/wd:<relpath>",
-        "name_regex": "optional regex for file name",
-        "content_regex": "optional regex for file content",
-        "max_files": "int limit",
-        "max_bytes": "int per file",
-        "max_hits": "int limit",
+        "root": (
+            "optional root selector. Omit or use 'outdir' to search the full OUT_DIR. "
+            "Use 'outdir/<subdir>' to search a subtree under OUT_DIR. "
+            "Use 'workdir' to search the full workdir, or 'workdir/<subdir>' to narrow it."
+        ),
+        "name_regex": "optional Python regex matched against the basename only, not the full path",
+        "content_regex": (
+            "optional Python regex matched against UTF-8-decoded file text. "
+            "If set, each file is read up to max_bytes."
+        ),
+        "max_bytes": "optional per-file byte cap used only for content_regex searches; default 1000000",
+        "max_hits": "optional maximum number of matching paths to return; default 200",
     },
-    "returns": "list of matching file paths",
+    "returns": (
+        "JSON object {root, hits}. "
+        "Each hit has path (relative to searched root), size_bytes, and optional logical_path. "
+        "OUT_DIR hits include logical_path for react.read; workdir hits do not."
+    ),
 }
 
 
@@ -40,7 +57,6 @@ async def handle_react_search_files(*, ctx_browser: Any, state: Dict[str, Any], 
     root_sel = (params.get("root") or "").strip()
     name_regex = params.get("name_regex")
     content_regex = params.get("content_regex")
-    max_files = int(params.get("max_files") or 2000)
     max_bytes = int(params.get("max_bytes") or 1_000_000)
     max_hits = int(params.get("max_hits") or 200)
 
@@ -58,23 +74,32 @@ async def handle_react_search_files(*, ctx_browser: Any, state: Dict[str, Any], 
 
     outdir = pathlib.Path(state["outdir"])
     root_dir = outdir
+    root_kind = "outdir"
+    normalized_root = "outdir"
+    root_virtual_prefix = ""
     if root_sel:
-        if root_sel.startswith("fi:"):
-            rel = root_sel[len("fi:"):].lstrip("/")
-            if rel:
-                if not _safe_relpath(rel):
-                    notice_block(
-                        ctx_browser=ctx_browser,
-                        tool_call_id=tool_call_id,
-                        code="search_files_invalid_root",
-                        message="invalid fi: root selector.",
-                        extra={"tool_id": tool_id, "root": root_sel},
-                        rel="result",
-                    )
-                    state["last_tool_result"] = []
-                    return state
-                root_dir = outdir / rel
-        elif root_sel.lower() in {"workdir", "wd", "work"} or root_sel.startswith(("wd:", "workdir:")):
+        root_sel_lc = root_sel.lower()
+        if root_sel_lc == "outdir":
+            root_dir = outdir
+            normalized_root = "outdir"
+            root_virtual_prefix = ""
+        elif root_sel_lc.startswith("outdir/"):
+            rel = root_sel[len("outdir/"):].lstrip("/")
+            if not rel or not _safe_relpath(rel):
+                notice_block(
+                    ctx_browser=ctx_browser,
+                    tool_call_id=tool_call_id,
+                    code="search_files_invalid_root",
+                    message="invalid outdir root selector.",
+                    extra={"tool_id": tool_id, "root": root_sel},
+                    rel="result",
+                )
+                state["last_tool_result"] = []
+                return state
+            root_dir = outdir / rel
+            normalized_root = f"outdir/{rel}"
+            root_virtual_prefix = rel
+        elif root_sel_lc == "workdir":
             workdir_raw = getattr(getattr(ctx_browser, "runtime_ctx", None), "workdir", "") or ""
             if not workdir_raw:
                 notice_block(
@@ -87,31 +112,55 @@ async def handle_react_search_files(*, ctx_browser: Any, state: Dict[str, Any], 
                 )
                 state["last_tool_result"] = []
                 return state
-            rel = ""
-            if root_sel.startswith("wd:"):
-                rel = root_sel[len("wd:"):].lstrip("/")
-            elif root_sel.startswith("workdir:"):
-                rel = root_sel[len("workdir:"):].lstrip("/")
             root_dir = pathlib.Path(workdir_raw)
-            if rel:
-                if not _safe_relpath(rel):
-                    notice_block(
-                        ctx_browser=ctx_browser,
-                        tool_call_id=tool_call_id,
-                        code="search_files_invalid_root",
-                        message="invalid workdir root selector.",
-                        extra={"tool_id": tool_id, "root": root_sel},
-                        rel="result",
-                    )
-                    state["last_tool_result"] = []
-                    return state
-                root_dir = root_dir / rel
+            root_kind = "workdir"
+            normalized_root = "workdir"
+            root_virtual_prefix = ""
+        elif root_sel_lc.startswith("workdir/"):
+            workdir_raw = getattr(getattr(ctx_browser, "runtime_ctx", None), "workdir", "") or ""
+            if not workdir_raw:
+                notice_block(
+                    ctx_browser=ctx_browser,
+                    tool_call_id=tool_call_id,
+                    code="search_files_no_workdir",
+                    message="workdir is not configured.",
+                    extra={"tool_id": tool_id},
+                    rel="result",
+                )
+                state["last_tool_result"] = []
+                return state
+            rel = root_sel[len("workdir/"):].lstrip("/")
+            if not rel or not _safe_relpath(rel):
+                notice_block(
+                    ctx_browser=ctx_browser,
+                    tool_call_id=tool_call_id,
+                    code="search_files_invalid_root",
+                    message="invalid workdir root selector.",
+                    extra={"tool_id": tool_id, "root": root_sel},
+                    rel="result",
+                )
+                state["last_tool_result"] = []
+                return state
+            root_dir = pathlib.Path(workdir_raw) / rel
+            root_kind = "workdir"
+            normalized_root = f"workdir/{rel}"
+            root_virtual_prefix = rel
+        else:
+            notice_block(
+                ctx_browser=ctx_browser,
+                tool_call_id=tool_call_id,
+                code="search_files_invalid_root",
+                message="invalid root selector. Use outdir, outdir/<subdir>, workdir, or workdir/<subdir>.",
+                extra={"tool_id": tool_id, "root": root_sel},
+                rel="result",
+            )
+            state["last_tool_result"] = []
+            return state
     try:
-        hits = search_files(
+        raw_hits = search_files(
             root=str(root_dir),
             name_regex=name_regex,
             content_regex=content_regex,
-            max_files=max_files,
             max_bytes=max_bytes,
             max_hits=max_hits,
         )
@@ -127,13 +176,34 @@ async def handle_react_search_files(*, ctx_browser: Any, state: Dict[str, Any], 
         state["last_tool_result"] = []
         return state
 
+    hits: List[Dict[str, Any]] = []
+    for row in raw_hits:
+        rel_path = str((row or {}).get("path") or "").strip()
+        if not rel_path:
+            continue
+        hit: Dict[str, Any] = {
+            "path": rel_path,
+            "size_bytes": int((row or {}).get("size_bytes") or 0),
+        }
+        full_path = rel_path
+        if root_virtual_prefix:
+            full_path = pathlib.PurePosixPath(root_virtual_prefix, rel_path).as_posix()
+        if root_kind == "outdir":
+            logical_path = physical_path_to_logical_path(full_path)
+            hit["logical_path"] = logical_path
+        hits.append(hit)
+
+    payload = {
+        "root": normalized_root,
+        "hits": hits,
+    }
     add_block(ctx_browser, {
         "turn": turn_id,
         "type": "react.tool.result",
         "call_id": tool_call_id,
         "mime": "application/json",
         "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
-        "text": json.dumps({"hits": hits}, ensure_ascii=False, indent=2),
+        "text": json.dumps(payload, ensure_ascii=False, indent=2),
         "meta": {
             "tool_call_id": tool_call_id,
         },

@@ -46,3 +46,15 @@ async def test_write_internal_channel_creates_note_block(tmp_path):
     assert note_blocks, "internal channel should create react.note block"
     assert any((b.get("meta") or {}).get("channel") == "internal" for b in note_blocks)
     assert any("\"visibility\": \"internal\"" in (b.get("text") or "") for b in ctx.timeline.blocks)
+
+
+@pytest.mark.asyncio
+async def test_write_rejects_generic_outdir_fi_path(tmp_path):
+    runtime = RuntimeCtx(turn_id="turn_cur", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+    state = {"last_decision": {"tool_call": {"params": {"path": "fi:logs/docker.err.log", "content": "hi", "kind": "display"}}},
+             "outdir": str(tmp_path)}
+
+    await handle_react_write(react=FakeReact(), ctx_browser=ctx, state=state, tool_call_id="c3")
+
+    assert state["error"]["error"] == "invalid_write_logical_path"

@@ -153,3 +153,41 @@ async def test_patch_file_kind_hosts_and_emits_file(tmp_path):
     assert json_blocks
     payload = json.loads(json_blocks[-1]["text"])
     assert payload["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_patch_accepts_generic_outdir_fi_path_without_rewrite(tmp_path):
+    runtime = RuntimeCtx(turn_id="turn_new", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    target = logs_dir / "docker.err.log"
+    target.write_text("old", encoding="utf-8")
+
+    state = {
+        "last_decision": {
+            "tool_call": {
+                "params": {
+                    "path": "fi:logs/docker.err.log",
+                    "channel": "canvas",
+                    "patch": "new",
+                    "kind": "display",
+                }
+            }
+        },
+        "outdir": str(tmp_path),
+    }
+
+    await handle_react_patch(react=FakeReact(), ctx_browser=ctx, state=state, tool_call_id="p4")
+
+    assert target.read_text(encoding="utf-8") == "new"
+    assert any(
+        b.get("path") == "fi:logs/docker.err.log"
+        for b in ctx.timeline.blocks
+        if b.get("type") == "react.tool.result"
+    )
+    assert not any(
+        b.get("type") == "react.notice" and "path_rewritten" in (b.get("text") or "")
+        for b in ctx.timeline.blocks
+    )

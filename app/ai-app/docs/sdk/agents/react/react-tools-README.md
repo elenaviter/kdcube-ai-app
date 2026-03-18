@@ -46,6 +46,10 @@ Params:
 Behavior by path:
 - `fi:` → rehost file locally, emit metadata digest block + file content (text or base64 if pdf/image;
   binary files emit metadata only).
+  Supported `fi:` forms:
+  - `fi:<turn_id>.files/<relpath>`
+  - `fi:<turn_id>.user.attachments/<relpath>`
+  - `fi:<outdir-relative-path>` for any readable file already present inside OUT_DIR, for example `fi:logs/docker.err.log`
 - `ks:` → read from knowledge space (read‑only reference files).
 - `so:sources_pool[...]` → if rows contain file/attachment sources, they are resolved as `fi:`; other rows
   are rendered as sources_pool text.
@@ -146,15 +150,27 @@ Example result (simplified):
 
 react.search_files
 - Purpose: safely search files under OUT_DIR or workdir without shell execution.
-- Returns: list of matching file paths.
+- Returns: `{root, hits}`. Each hit contains:
+  - `path`: relative to the searched root and does not include that root prefix
+  - `size_bytes`
+  - `logical_path` for OUT_DIR hits, suitable for `react.read`
 Params:
-- root: str (optional). `fi:<relpath>` to search under OUT_DIR subpath; `workdir` or `wd:<relpath>` for workdir; default is OUT_DIR.
-- name_regex: str (FIRST FIELD). Regex for filenames (optional).
-- content_regex: str (SECOND FIELD). Regex for file content (optional).
+- root: str (optional). `outdir` or `outdir/<subdir>`; `workdir` or `workdir/<subdir>`; default is `outdir`.
+- name_regex: str (optional). Regex for filenames.
+- content_regex: str (optional). Regex for file content.
 - max_hits: int (optional). Default 200.
+- Notes:
+  - `react.search_files` does not load file content.
+  - For OUT_DIR hits, call `react.read` on the returned `logical_path`.
+  - workdir hits are discovery-only with the current toolset.
 Example result (simplified):
 ```json
-{ "type": "react.tool.result", "path": "tc:turn_123.abc.result", "mime": "application/json", "text": "{...}" }
+{
+  "type": "react.tool.result",
+  "path": "tc:turn_123.abc.result",
+  "mime": "application/json",
+  "text": "{ \"root\": \"outdir/logs\", \"hits\": [{\"path\": \"docker.err.log\", \"size_bytes\": 1234, \"logical_path\": \"fi:logs/docker.err.log\"}] }"
+}
 ```
 
 Notes

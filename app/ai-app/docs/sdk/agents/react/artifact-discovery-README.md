@@ -22,15 +22,17 @@ Stable identifier used in `react.read` / `fetch_ctx`. Examples:
 - `ar:<turn_id>.assistant.completion`
 - `fi:<turn_id>.files/<relpath>`
 - `fi:<turn_id>.user.attachments/<name>`
+- `fi:logs/docker.err.log`
 - `so:sources_pool[...]`
 - `su:<turn_id>.conv.range.summary`
 - `tc:<turn_id>.<call_id>.result`
 
 **Physical path**  
 OUT_DIR‑relative path used for `react.patch`, rendering tools, and exec code file I/O.
-Always normalized to:
+Common forms:
 - `<turn_id>/files/<relpath>` (files; current or historical)
 - `<turn_id>/attachments/<name>` (attachments)
+- `logs/<name>` and other runtime-managed files already present in OUT_DIR
 
 **Block metadata**  
 Artifacts are described by a **metadata JSON result block** plus one or more **content blocks**:
@@ -97,6 +99,8 @@ The rewrite is recorded as a **protocol notice** in the timeline so the agent ca
   metadata block from `meta.digest` (if present). It then emits:
   - metadata digest block (text only)
   - file content block (text or base64) when readable; binary files emit **metadata only**
+- `react.read` also accepts `fi:<outdir-relative-path>` for any readable file already present in OUT_DIR.
+  Example: `fi:logs/docker.err.log`
 
 **react.patch**
 - Accepts physical path (OUT_DIR‑relative).
@@ -107,6 +111,15 @@ The rewrite is recorded as a **protocol notice** in the timeline so the agent ca
 - For `kind=file`, file is hosted and metadata (hosted_uri/rn/key) stored in `meta`.
   - `visibility=internal` files are **not hosted** (stored only in OUT_DIR + timeline).
 - For `kind=display`, content is emitted and stored as text block.
+
+**react.search_files**
+- Searches under `outdir` or `workdir` and returns discovery metadata only.
+- Result shape is `{root, hits}`.
+- Each hit contains:
+  - `path`: relative to the searched root
+  - `size_bytes`
+  - `logical_path` for OUT_DIR hits, suitable for `react.read`
+- This is the bridge from filesystem discovery to content loading.
 
 ## Compaction Notes
 

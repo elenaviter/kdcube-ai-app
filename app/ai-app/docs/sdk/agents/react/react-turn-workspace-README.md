@@ -5,6 +5,7 @@ summary: "Filesystem contract and lifecycle of the per-turn ReAct workspace (wor
 tags: ["sdk", "agents", "react", "workspace", "execution", "snapshot", "fargate", "distributed"]
 keywords: ["ctx_v2", "exec-workspace", "workdir", "outdir", "timeline.json", "tool_calls_index.json", "user.log", "infra.log", "EXEC_SNAPSHOT", "build_exec_snapshot_workspace", "snapshot_exec_input", "py_code_exec_entry.py"]
 see_also:
+  - ks:docs/sdk/agents/react/agent-workspace-collboration-README.md
   - ks:docs/sdk/agents/react/timeline-README.md
   - ks:docs/sdk/agents/react/turn-log-README.md
   - ks:docs/sdk/agents/react/source-pool-README.md
@@ -20,6 +21,19 @@ This document defines the **actual workspace structure** used by ReAct and how i
 - distributed/Fargate serialization, restore, and merge-back
 
 The workspace is execution state. Canonical conversation state still lives in timeline/sources/turn-log artifacts.
+
+## Effective agent workspace model
+
+The agent works with a **versioned workspace**, not a single mutable project tree:
+- History is preserved physically under `out/turn_<id>/files/...` and `out/turn_<id>/attachments/...`.
+- Writes for the current turn go only to `out/<current_turn>/files/...`.
+- Reads can target:
+  - versioned turn artifacts and attachments
+  - any readable file already present under `out/` (for example `out/logs/docker.err.log`)
+- The practical mental model is:
+  - `turn_<id>/files/...` and `turn_<id>/attachments/...` preserve origin and history
+  - the latest visible version of a file path is the current logical workspace view
+  - runtime folders like `logs/` are part of OUT_DIR but are not part of the turn-versioned file namespace
 
 ## Lifecycle at a glance
 
@@ -90,6 +104,10 @@ Notes:
 - `timeline.json` is flushed from the in-memory timeline to keep file-backed context in sync.
 - Runtime diagnostics/readouts consume `logs/user.log` and `logs/infra.log`.
 - `logs/infra.log` is produced by merging raw infra logs (`runtime.err.log`, `docker.*`, `executor.log`, `supervisor.log`) and may appear only after diagnostics/reporting code runs.
+- The current platform-generated raw log set is: `user.log`, `runtime.err.log`, `docker.out.log`, `docker.err.log`, `executor.log`, `supervisor.log`, and derived `infra.log`.
+- `runtime.out.log` appears in some older comments/docs but is not part of the current code path.
+- `errors.log` is legacy/helper-only and is not part of the current main exec report assembly path.
+- The merge step is generic over `*.log` files under `out/logs` except `user.log` and `infra.log`, so extra `.log` files can also appear in `infra.log` if future platform code or custom code writes them there.
 
 ### Path conventions used inside the workspace
 
@@ -97,8 +115,16 @@ Logical `fi:` paths map to physical `out/` paths by convention:
 - `fi:<turn_id>.files/<rel>` -> `<turn_id>/files/<rel>`
 - `fi:<turn_id>.user.attachments/<rel>` -> `<turn_id>/attachments/<rel>`
 - legacy `fi:<turn_id>.attachments/<rel>` -> `<turn_id>/attachments/<rel>`
+- `fi:<outdir-relative-path>` -> `<outdir-relative-path>` for any readable file already present under `out/`
+  Example: `fi:logs/docker.err.log` -> `logs/docker.err.log`
 
 Other logical paths (`ar:`, `tc:`, `so:`) resolve from timeline state and are not always direct files.
+
+Workspace/read-write summary:
+- `react.write`, `react.patch`, rendering tools, and exec outputs write to the current turn file namespace.
+- `react.read` can load any readable OUT_DIR file through `fi:...`.
+- `react.search_files` can search all of OUT_DIR and returns `logical_path` for OUT_DIR hits so the agent can immediately call `react.read`.
+- workdir is searchable but is still not a general-purpose readable namespace for `react.read`.
 
 ## Phase 3: Optional turn snapshot persistence (`react.persist_workspace()`)
 

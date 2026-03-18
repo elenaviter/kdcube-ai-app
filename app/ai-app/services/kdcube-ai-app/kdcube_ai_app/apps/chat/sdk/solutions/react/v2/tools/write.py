@@ -79,6 +79,10 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         return state
     ext_notice = None
     rewrite_notice = None
+    if artifact_name.startswith("fi:") and ".files/" not in artifact_name[len("fi:"):]:
+        state["exit_reason"] = "error"
+        state["error"] = {"where": "tool_execution", "error": "invalid_write_logical_path", "managed": True}
+        return state
     if channel == "canvas":
         try:
             ext = pathlib.Path(artifact_name).suffix.lower()

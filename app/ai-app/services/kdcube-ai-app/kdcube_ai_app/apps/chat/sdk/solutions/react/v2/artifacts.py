@@ -15,10 +15,46 @@ import kdcube_ai_app.apps.chat.sdk.tools.tools_insights as tools_insights
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.common import tc_result_path
 
 
-def normalize_physical_path(path_value: str, *, turn_id: str) -> tuple[str, str, bool]:
+def _is_safe_outdir_relpath(path_value: str) -> bool:
+    try:
+        p = pathlib.PurePosixPath(path_value)
+        if path_value.startswith(("/", "\\")):
+            return False
+        if any(part == ".." for part in p.parts):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def physical_path_to_logical_path(path_value: str) -> str:
+    raw = (path_value or "").strip().lstrip("/")
+    if not raw:
+        return ""
+    if raw.startswith("turn_") and "/files/" in raw:
+        turn_id, rel = raw.split("/files/", 1)
+        if turn_id and rel:
+            return f"fi:{turn_id}.files/{rel}"
+    if raw.startswith("turn_") and "/attachments/" in raw:
+        turn_id, rel = raw.split("/attachments/", 1)
+        if turn_id and rel:
+            return f"fi:{turn_id}.user.attachments/{rel}"
+    if _is_safe_outdir_relpath(raw):
+        return f"fi:{raw}"
+    return ""
+
+
+def normalize_physical_path(
+    path_value: str,
+    *,
+    turn_id: str,
+    allow_generic_fi: bool = False,
+) -> tuple[str, str, bool]:
     """
     Normalize a user-supplied path to a physical OUT_DIR-relative path.
-    Always returns a path starting with "<turn_id>/files/…".
+    For writer-like callers, paths are normalized to "<turn_id>/files/…".
+    When allow_generic_fi=True, generic fi:<outdir-relative-path> inputs are preserved
+    as OUT_DIR-relative physical paths instead of being rewritten to current turn files.
     Returns (physical_path, relpath, rewritten_flag).
     """
     raw = (path_value or "").strip()
@@ -41,6 +77,10 @@ def normalize_physical_path(path_value: str, *, turn_id: str) -> tuple[str, str,
             use_turn = turn_id or tid
             physical = f"{use_turn}/attachments/{rel}"
             return physical, rel, True
+        if allow_generic_fi:
+            logical = logical.lstrip("/")
+            if _is_safe_outdir_relpath(logical):
+                return logical, logical, False
         # unknown logical -> return as-is
         return raw, raw, False
     rel = raw

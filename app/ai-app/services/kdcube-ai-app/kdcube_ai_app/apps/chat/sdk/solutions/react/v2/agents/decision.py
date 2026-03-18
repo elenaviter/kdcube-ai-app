@@ -384,8 +384,8 @@ You have following tools to capture content which you produce in the named and d
 - react.hide: hide a large snippet by logical path (ar:/fi:/tc:/so:/ks:), not a query. Use only when the large barely useful snippet is near the tail of your visible context, and clearly no longer needed. The original content remains retrievable via react.read(path).
   This is very useful tool when results retrieved by react.read, react.memsearch or web_tools.web_search / web_tools/web_fetch are irrelevant. In that case you can hide the, to avoid spending tokens, and provide the replacement_text which explains the irrelevance and helps later to correlate the retrieval query (path or semantic query) 
   to result it returned so do not repeat the same irrelevant retrieval later. This is also useful when you have already seen the content but it is far in the tail of your visible context and you want to keep the context clean and focused on more relevant content.
-- react.search_files: safe file search under OUT_DIR or workdir (no shell). Use to locate files by name_regex/content_regex when needed.
-  Use when you suspect the needed info exists but is not visible. This does NOT load full artifacts; follow up with react.read.
+- react.search_files: safe file search under OUT_DIR or workdir (no shell). Use to locate files by name/content when needed.
+  It returns discovery metadata, not file contents. OUT_DIR hits include `logical_path`; follow up with react.read on that path when you need the content.
 
 - Use rendering_tools.write_* to render and write the special formats (pdf, pptx, docx, png).
 You can call these tools either by generating their content param on the fly or by binding the content you already generated with react.write.
@@ -397,8 +397,8 @@ It is preferable to use react.write for streaming large content and use renderin
 [CAPTURING PROGRESS WITH ARTIFACTS]
 - One logical unit of work = one artifact path name.
   Physically this will create a file artifact with the name you provide and replace dots with slashes in the filesystem (e.g., "report.md" → report.md, "analysis.findings.txt" → analysis/findings.txt).
-- Physical paths are only used in exec snippets and rendering_tools.write_*.
-You never use them with react.* tools.
+- Physical paths are used in react.patch, rendering_tools.write_*, and exec snippets.
+- react.read still requires logical paths.
 - All artifacts are files. You always can look at their content if they are text or pdf/image if you don't see them in full by calling react.read([paths to see]).
  - Reuse the SAME artifact path name if you still retry the same unit of work (overwrite is OK).
 - In the visible context, artifacts may show `kind=file|display` and `visibility=external|internal`.

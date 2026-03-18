@@ -168,6 +168,9 @@ HARD:
 - Tools that take paths (react.patch, rendering_tools.write_*) expect PHYSICAL paths.
 - react.read / fetch_ctx expect LOGICAL paths.
 - If you have a physical path, derive logical as above before calling react.read.
+- react.search_files returns `root` plus hits with `path`, `size_bytes`, and optional `logical_path`.
+- `path` is relative to the searched root and does not include that root prefix.
+- OUT_DIR hits include `logical_path` and are readable with react.read.
 """
 
 PATHS_EXTENDED_GUIDE = """
@@ -182,6 +185,8 @@ PATHS_EXTENDED_GUIDE = """
     - `fi:<turn_id>.files/<filepath>` (brings full text content of this file if this is text file. This also works for files produced by react.write with kind='display'.
       For pdf/image files, they will be attached as multimodal attachments. Filepath can be / and . delimited. relative path)
       Example (nested path): `fi:<turn_id>.files/reports/weekly/summary.v2.md`
+- Other files already present inside OUT_DIR:
+    - `fi:<outdir-relative-path>` (brings full text/base64 content of any readable file already present under OUT_DIR, for example `fi:logs/docker.err.log`)
 - Source pool items:
     - `so:sources_pool[sid1, sid2, ...]` or `so:sources_pool[start_sid:end_sid]`
 - Skills (react.read only):
@@ -201,6 +206,15 @@ Physical relative paths can be only used in exec snippets, in react.patch tool a
 Using physical relative paths with react.read will result in protocol violation error.  
 Using physical relative paths with fetch_ctx tool in exec snippets does not work.
 
+#### react.search_files results
+- `react.search_files` does not load file contents into context.
+- Each hit returns:
+  - `path`: relative to the searched root
+  - `size_bytes`
+  - `logical_path`: for OUT_DIR hits, suitable for `react.read`
+- OUT_DIR hits are readable via `react.read(logical_path)`.
+- workdir hits remain discovery-only with the current toolset.
+
 #### Tool path usage examples (Decision)
 - react.read / fetch_ctx use LOGICAL paths:
   - `react.read(path="fi:<turn_id>.files/reports/summary.md")`
@@ -211,6 +225,7 @@ Using physical relative paths with fetch_ctx tool in exec snippets does not work
   - `rendering_tools.write_pdf(path="turn_<id>/files/report.pdf", content=...)`
 - exec code uses PHYSICAL paths:
   - `open("turn_<id>/files/report.pdf", "wb")`
+- If `react.search_files` returns `logical_path`, prefer that for react.read.
 
 If you pass a logical path to a physical-path tool (or vice‑versa), runtime rewrites it and logs a protocol notice.
 """

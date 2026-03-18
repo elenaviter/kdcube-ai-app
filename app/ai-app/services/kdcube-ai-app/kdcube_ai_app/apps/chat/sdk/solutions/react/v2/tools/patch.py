@@ -12,6 +12,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.artifacts import (
     build_artifact_meta_block,
     build_artifact_view,
     normalize_physical_path,
+    physical_path_to_logical_path,
     detect_edit,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.common import (
@@ -84,7 +85,7 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
         return state
     original_path = artifact_name
     phys_path, rel_path, rewritten = normalize_physical_path(
-        artifact_name, turn_id=ctx_browser.runtime_ctx.turn_id or ""
+        artifact_name, turn_id=ctx_browser.runtime_ctx.turn_id or "", allow_generic_fi=True
     )
     if rewritten:
         notice_block(
@@ -253,7 +254,7 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
                 rel="result",
             )
     artifact_rel = (rel_path or "").strip()
-    artifact_path = f"fi:{turn_id}.files/{artifact_rel}" if (turn_id and artifact_rel) else ""
+    artifact_path = physical_path_to_logical_path(artifact_name)
     physical_path = artifact_name
     edited = detect_edit(
         timeline=getattr(ctx_browser, "timeline", None),

@@ -57,6 +57,7 @@ TOOL_SPEC = {
     "purpose": (
         "Read artifacts or skills into the visible context so you can use them. "
         "Paths must be context paths (fi:/ar:/so:/sk:/ks:), not physical paths. "
+        "search_files results are directly readable here only when they include logical_path. "
         "Each path you read becomes visible in the timeline; skills are shown with ACTIVE 💡 banner. "
         "Use ks:<relpath> to read files from the knowledge space (read-only reference files prepared by the system)."
     ),
@@ -291,7 +292,12 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
 
     async def _emit_fi_path(ctx_path: str) -> None:
         nonlocal total_tokens
-        outdir = pathlib.Path(state.get("outdir") or "")
+        outdir_raw = (
+            state.get("outdir")
+            or getattr(getattr(ctx_browser, "runtime_ctx", None), "outdir", "")
+            or ""
+        )
+        outdir = pathlib.Path(outdir_raw)
         res = {}
         if outdir and outdir.exists():
             try:

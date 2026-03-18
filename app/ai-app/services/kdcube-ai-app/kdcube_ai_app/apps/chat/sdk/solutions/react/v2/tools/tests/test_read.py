@@ -52,3 +52,21 @@ async def test_read_returns_latest_version(tmp_path):
     state = {"last_decision": {"tool_call": {"params": {"paths": [path]}}}}
     await handle_react_read(ctx_browser=ctx, state=state, tool_call_id="r2")
     assert any(b.get("text") == "new" for b in ctx.timeline.blocks if b.get("type") == "react.tool.result")
+
+
+@pytest.mark.asyncio
+async def test_read_supports_outdir_relative_fi_paths(tmp_path):
+    runtime = RuntimeCtx(turn_id="turn_read", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / "docker.err.log").write_text("boom", encoding="utf-8")
+
+    state = {"last_decision": {"tool_call": {"params": {"paths": ["fi:logs/docker.err.log"]}}}}
+    await handle_react_read(ctx_browser=ctx, state=state, tool_call_id="r3")
+
+    assert any(
+        b.get("path") == "fi:logs/docker.err.log" and b.get("text") == "boom"
+        for b in ctx.timeline.blocks
+        if b.get("type") == "react.tool.result"
+    )

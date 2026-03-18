@@ -219,6 +219,8 @@ async def ensure_rendering_assets(
                     elif ap.startswith("fi:") and ".user.attachments/" in ap:
                         tid, rel = ap.split(".user.attachments/", 1)
                         physical_path = f"{tid[3:]}/attachments/{rel}" if tid.startswith("fi:") else ""
+                    elif ap.startswith("fi:"):
+                        physical_path = ap[len("fi:"):].lstrip("/")
                 if physical_path and physical_path.startswith("turn_") and ("/files/" in physical_path or "/attachments/" in physical_path):
                     sid_rehost.append(physical_path)
             if sid_rehost:
