@@ -27,6 +27,24 @@ def test_build_exec_error_payload_prefers_runtime_failure_over_missing_outputs()
     assert error["details"]["missing"] == ["turn_1/files/out.txt"]
 
 
+def test_build_exec_error_payload_uses_stderr_tail_when_summary_missing():
+    error = _build_exec_error_payload(
+        missing=["turn_1/files/hello.txt"],
+        errors=[],
+        run_res={
+            "ok": False,
+            "returncode": 125,
+            "stderr_tail": "docker: Error response from daemon: permission denied while trying to connect to the Docker daemon socket\nSee 'docker run --help'.",
+        },
+        infra_text="",
+    )
+
+    assert error is not None
+    assert error["code"] == "execution_failed"
+    assert "permission denied while trying to connect to the Docker daemon socket" in error["message"]
+    assert "Missing output files" in error["message"]
+
+
 def test_build_exec_context_from_comm_spec_preserves_identity_fields():
     ctx = _build_exec_context_from_comm_spec(
         comm_spec={

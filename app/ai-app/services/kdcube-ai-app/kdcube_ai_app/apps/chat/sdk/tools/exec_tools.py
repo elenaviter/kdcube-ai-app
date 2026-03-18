@@ -305,6 +305,17 @@ def _runtime_error_details(run_res: Dict[str, Any] | None) -> Tuple[bool, str, s
     runtime_ok = bool(run_res.get("ok", True))
     raw = str(run_res.get("error") or "").strip()
     summary = str(run_res.get("error_summary") or "").strip()
+    stderr_tail = str(run_res.get("stderr_tail") or "").strip()
+
+    def _stderr_summary(text: str) -> str:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if not lines:
+            return ""
+        for line in lines:
+            lowered = line.lower()
+            if "error" in lowered or "exception" in lowered:
+                return line
+        return lines[0]
 
     code = "execution_failed"
     message = ""
@@ -318,6 +329,8 @@ def _runtime_error_details(run_res: Dict[str, Any] | None) -> Tuple[bool, str, s
             code = raw
     if summary:
         message = summary
+    if not message and stderr_tail:
+        message = _stderr_summary(stderr_tail)
     if not message:
         message = raw or "Execution failed (non-zero exit)"
     return runtime_ok, code, message
@@ -856,6 +869,16 @@ async def run_exec_tool(
         result_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+    if logger is not None:
+        try:
+            preview = report_text
+            if len(preview) > 4000:
+                preview = preview[:4000] + "\n...[truncated]"
+            level = "INFO" if ok else "ERROR"
+            logger.log(f"[exec.tool] final report\n{preview}", level=level)
+        except Exception:
+            pass
 
     artifact_lvl = "artifact"
     artifacts_list = [
