@@ -159,7 +159,7 @@ Use **queue wait + queue pressure**:
 
 Example policy:
 - Scale out when `pressure_ratio > 0.7` or `p95 queue_wait > 3s` for 2–5 min.
-- Scale in when `queue_utilization < 0.3` and `avg_wait < 1s` for 10–15 min.
+- Scale in when `queue_utilization < 0.3` and `p95 queue_wait < 1s` for 10–15 min.
 
 ---
 
@@ -177,7 +177,7 @@ Recommended approach:
 2. Publish metrics to **CloudWatch** (`PutMetricData`) from that service, or scrape `/metrics`.
 3. Use **Target Tracking** or **Step Scaling** for:
    - Ingress: SSE saturation metric.
-   - Processor: queue utilization or avg wait time metric.
+   - Processor: queue utilization/pressure plus p95 queue wait.
 
 If you run multiple workers per task, prefer the **component aggregates**
 (`components.*`) rather than per‑process signals.
@@ -189,21 +189,21 @@ If you run multiple workers per task, prefer the **component aggregates**
 When exporting to CloudWatch/Prometheus, use consistent names:
 
 **Ingress**
-- `chat.ingress.sse.connections`
-- `chat.ingress.sse.saturation`
-- `chat.ingress.rest.latency.p95`
-- `chat.ingress.throttle.rate_limit_429`
-- `chat.ingress.throttle.backpressure_503`
+- `chat/ingress/sse/connections`
+- `chat/ingress/sse/saturation`
+- `chat/ingress/rest/latency/p95`
+- `chat/ingress/throttle/rate_limit_429`
+- `chat/ingress/throttle/backpressure_503`
 
 **Processor**
-- `chat.proc.queue.total`
-- `chat.proc.queue.utilization`
-- `chat.proc.queue.wait.p95`
-- `chat.proc.exec.p95`
-- `chat.proc.throttle.backpressure_503`
+- `chat/proc/queue/total`
+- `chat/proc/queue/utilization`
+- `chat/proc/queue/wait/p95`
+- `chat/proc/exec/p95`
+- `chat/proc/throttle/backpressure_503`
 
-These names are a suggested normalized export naming scheme.
-The current built-in Metrics service exports a smaller scalar subset by default.
+These are recommended CloudWatch-style names.
+The current built-in Metrics service now exports the stronger proc autoscaling signals (`proc.queue.utilization_ratio`, `proc.queue.wait.p95_ms`, `proc.queue.pressure_ratio`) and can map them to stable CloudWatch names through `METRICS_MAPPING_JSON`.
 
 ---
 

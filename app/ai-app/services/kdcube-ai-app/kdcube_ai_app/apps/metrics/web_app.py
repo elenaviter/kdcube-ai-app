@@ -48,6 +48,7 @@ from kdcube_ai_app.infra.gateway.config import (
     subscribe_gateway_config_updates,
     gateway_config_cache_key,
 )
+from kdcube_ai_app.apps.metrics.export_metrics import extract_metrics, parse_json_dict
 from kdcube_ai_app.infra.metrics.system_monitoring import compute_system_monitoring
 
 import httpx
@@ -118,18 +119,6 @@ def _build_headers() -> Dict[str, str]:
     return headers
 
 
-def _parse_json_dict(raw: str) -> Dict[str, str]:
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-        if isinstance(data, dict):
-            return {str(k): str(v) for k, v in data.items() if v is not None}
-    except Exception:
-        logger.warning("Failed to parse JSON dict: %s", raw)
-    return {}
-
-
 def _load_metric_mapping() -> Dict[str, Dict[str, str]]:
     if not METRICS_MAPPING_JSON:
         return {}
@@ -196,67 +185,6 @@ async def _fetch_system(client: httpx.AsyncClient, base_url: str) -> Dict[str, A
     return await _fetch_json(client, url)
 
 
-def _extract_metrics(ingress: Optional[Dict[str, Any]], proc: Optional[Dict[str, Any]]) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
-
-    def _num(val: Any) -> Optional[float]:
-        if isinstance(val, (int, float)):
-            return float(val)
-        return None
-
-    # Ingress (SSE)
-    if isinstance(ingress, dict) and "sse_connections" in ingress:
-        sse = ingress.get("sse_connections") or {}
-        total = _num(sse.get("global_total_connections") or sse.get("total_connections"))
-        max_conn = _num(sse.get("global_max_connections") or sse.get("max_connections"))
-        sessions = _num(sse.get("global_sessions") or sse.get("sessions"))
-        if total is not None:
-            metrics["ingress.sse.total_connections"] = total
-        if max_conn is not None:
-            metrics["ingress.sse.max_connections"] = max_conn
-        if sessions is not None:
-            metrics["ingress.sse.sessions"] = sessions
-        if total is not None and max_conn and max_conn > 0:
-            metrics["ingress.sse.saturation_percent"] = (total / max_conn) * 100.0
-
-    # Processor (queue)
-    if isinstance(proc, dict):
-        queue_total = _num((proc.get("enhanced_queue_stats") or {}).get("total_queue"))
-        queue_util = _num(proc.get("queue_utilization"))
-        pressure_ratio = _num((proc.get("capacity_info") or {}).get("pressure_ratio"))
-        wait_times = (proc.get("queue_analytics") or {}).get("wait_times") or {}
-
-        if queue_total is not None:
-            metrics["proc.queue.total"] = queue_total
-        if queue_util is not None:
-            metrics["proc.queue.utilization_percent"] = queue_util
-        if pressure_ratio is not None:
-            metrics["proc.pressure_ratio_percent"] = pressure_ratio * 100.0
-
-        for role in ("registered", "paid", "privileged", "anonymous"):
-            w = _num(wait_times.get(role))
-            if w is not None:
-                metrics[f"proc.queue.avg_wait_seconds.{role}"] = w
-
-    # Throttling stats (tenant/project global; use as advisory)
-    if isinstance(proc, dict) and "throttling_stats" in proc:
-        ts = proc.get("throttling_stats") or {}
-    elif isinstance(ingress, dict) and "throttling_stats" in ingress:
-        ts = ingress.get("throttling_stats") or {}
-    else:
-        ts = None
-
-    if ts:
-        rate_429 = _num(ts.get("rate_limit_429"))
-        back_503 = _num(ts.get("backpressure_503"))
-        if rate_429 is not None:
-            metrics["throttling.rate_limit_429"] = rate_429
-        if back_503 is not None:
-            metrics["throttling.backpressure_503"] = back_503
-
-    return metrics
-
-
 async def _export_cloudwatch(metrics: Dict[str, float]) -> None:
     if not CLOUDWATCH_ENABLED or not metrics:
         return
@@ -266,7 +194,7 @@ async def _export_cloudwatch(metrics: Dict[str, float]) -> None:
         logger.exception("boto3 is not installed; CloudWatch export disabled")
         return
 
-    dims = _parse_json_dict(CLOUDWATCH_DIMENSIONS_JSON)
+    dims = parse_json_dict(CLOUDWATCH_DIMENSIONS_JSON)
     dimensions = [{"Name": k, "Value": v} for k, v in dims.items()]
     namespace = CLOUDWATCH_NAMESPACE
     region = CLOUDWATCH_REGION
@@ -304,7 +232,7 @@ async def _export_prometheus(metrics: Dict[str, float]) -> None:
         logger.exception("prometheus_client is not installed; Prometheus export disabled")
         return
 
-    grouping = _parse_json_dict(PROM_GROUPING_LABELS_JSON)
+    grouping = parse_json_dict(PROM_GROUPING_LABELS_JSON)
     mapping = _load_metric_mapping()
 
     def _push() -> None:
@@ -342,7 +270,7 @@ async def _export_once(app: FastAPI) -> None:
 async def _collect_metrics(app: FastAPI) -> Dict[str, float]:
     if METRICS_MODE == "redis":
         system_data = await _collect_system_redis(app)
-        return _extract_metrics(system_data, system_data)
+        return extract_metrics(system_data, system_data)
     ingress_data = None
     proc_data = None
     if INGRESS_BASE_URL:
@@ -355,7 +283,7 @@ async def _collect_metrics(app: FastAPI) -> Dict[str, float]:
             proc_data = await _fetch_system(app.state.http, PROC_BASE_URL)
         except Exception as e:
             logger.warning("Processor metrics fetch failed: %s", e)
-    return _extract_metrics(ingress_data, proc_data)
+    return extract_metrics(ingress_data, proc_data)
 
 
 async def _collect_system_redis(app: FastAPI) -> Dict[str, Any]:
@@ -416,7 +344,7 @@ async def _run_once() -> int:
             )
             tmp.pg_pool = await get_pg_pool() if METRICS_ENABLE_PG_POOL else None
             system_data = await _collect_system_redis(tmp)
-            metrics = _extract_metrics(system_data, system_data)
+            metrics = extract_metrics(system_data, system_data)
             if not metrics:
                 logger.warning("No metrics collected (redis mode)")
                 return 2
@@ -437,7 +365,7 @@ async def _run_once() -> int:
                 proc_data = await _fetch_system(client, PROC_BASE_URL)
             except Exception as e:
                 logger.warning("Processor metrics fetch failed: %s", e)
-        metrics = _extract_metrics(ingress_data, proc_data)
+        metrics = extract_metrics(ingress_data, proc_data)
         if not metrics:
             logger.warning("No metrics collected (check base URLs / auth)")
             return 2

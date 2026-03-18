@@ -45,9 +45,16 @@ Current exported scalar keys:
 - `ingress.sse.max_connections`
 - `ingress.sse.sessions`
 - `ingress.sse.saturation_percent`
+- `ingress.sse.saturation_ratio`
 - `proc.queue.total`
 - `proc.queue.utilization_percent`
+- `proc.queue.utilization_ratio`
 - `proc.pressure_ratio_percent`
+- `proc.queue.pressure_ratio`
+- `proc.queue.wait.p95_ms`
+- `proc.exec.p95_ms`
+- `proc.queue.depth.1m`
+- `proc.queue.pressure_ratio.1m`
 - `proc.queue.avg_wait_seconds.anonymous`
 - `proc.queue.avg_wait_seconds.registered`
 - `proc.queue.avg_wait_seconds.paid`
@@ -160,7 +167,7 @@ Operational note:
 | `METRICS_EXPORT_CLOUDWATCH` | Enable CloudWatch export. |
 | `METRICS_CLOUDWATCH_NAMESPACE` | Namespace (default `KDCube/Metrics`). |
 | `METRICS_CLOUDWATCH_REGION` | AWS region. |
-| `METRICS_CLOUDWATCH_DIMENSIONS_JSON` | JSON dict of dimensions (tenant/project/env). |
+| `METRICS_CLOUDWATCH_DIMENSIONS_JSON` | JSON dict of dimensions (tenant/project/env). For compatibility it also accepts ECS-style arrays such as `[{"Name":"Environment","Value":"staging"}]`. |
 
 ### Prometheus
 | Env | Meaning |
@@ -179,13 +186,16 @@ Operational note:
 Example:
 ```json
 {
-  "ingress.sse.total_connections": { "name": "Ingress/SSEConnections", "unit": "Count" },
-  "ingress.sse.saturation_percent": { "name": "Ingress/SSESaturation", "unit": "Percent" },
-  "proc.queue.utilization_percent": { "name": "Processor/QueueUtilization", "unit": "Percent" },
-  "proc.pressure_ratio_percent": { "name": "Processor/QueuePressure", "unit": "Percent" },
-  "proc.queue.avg_wait_seconds.registered": { "name": "Processor/RegisteredQueueWait", "unit": "Seconds" }
+  "ingress.sse.saturation_ratio": { "name": "chat/ingress/sse/saturation", "unit": "None" },
+  "proc.queue.utilization_ratio": { "name": "chat/proc/queue/utilization", "unit": "None" },
+  "proc.queue.wait.p95_ms": { "name": "chat/proc/queue/wait/p95", "unit": "Milliseconds" },
+  "proc.exec.p95_ms": { "name": "chat/proc/exec/p95", "unit": "Milliseconds" }
 }
 ```
+
+CloudWatch naming note:
+- the exporter replaces `.` with `/` when it sends metric names to CloudWatch
+- if you want a stable CloudWatch name, provide it explicitly in `METRICS_MAPPING_JSON`
 
 ---
 
