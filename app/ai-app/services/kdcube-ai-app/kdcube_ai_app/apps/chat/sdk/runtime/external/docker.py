@@ -27,6 +27,87 @@ from kdcube_ai_app.apps.chat.sdk.config import get_settings
 _DEFAULT_IMAGE = os.environ.get("PY_CODE_EXEC_IMAGE", "py-code-exec:latest")
 _DEFAULT_TIMEOUT_S = int(os.environ.get("PY_CODE_EXEC_TIMEOUT", "600"))  # 10min default
 
+
+def _log_path_translation_context(log: AgentLogger) -> None:
+    host_bundles = os.environ.get("HOST_BUNDLES_PATH")
+    host_exec_workspace = os.environ.get("HOST_EXEC_WORKSPACE_PATH")
+    host_bundle_storage = os.environ.get("HOST_BUNDLE_STORAGE_PATH")
+    log.log(
+        "[docker.exec] path translation env "
+        f"HOST_BUNDLES_PATH={host_bundles or '<unset>'} "
+        f"HOST_EXEC_WORKSPACE_PATH={host_exec_workspace or '<unset>'} "
+        f"HOST_BUNDLE_STORAGE_PATH={host_bundle_storage or '<unset>'}",
+        level="INFO",
+    )
+    if not host_bundles:
+        log.log(
+            "[docker.exec] HOST_BUNDLES_PATH is unset; bundle mounts assume the host sees the same /bundles path as proc. "
+            "That is often false for Docker-in-Docker on ECS.",
+            level="WARNING",
+        )
+    if not host_exec_workspace:
+        log.log(
+            "[docker.exec] HOST_EXEC_WORKSPACE_PATH is unset; workdir/outdir mounts assume the host sees the same /exec-workspace path as proc. "
+            "That is often false for Docker-in-Docker on ECS.",
+            level="WARNING",
+        )
+
+
+def _bundle_tool_host_checks(
+        *,
+        tool_module_files: Dict[str, Any],
+        proc_bundle_root: pathlib.Path | None,
+        host_bundle_root: pathlib.Path | None,
+) -> list[str]:
+    problems: list[str] = []
+    if proc_bundle_root is None or host_bundle_root is None:
+        return problems
+    proc_bundle_root = proc_bundle_root.resolve()
+    for alias, raw_path in (tool_module_files or {}).items():
+        if not raw_path or not isinstance(raw_path, str):
+            continue
+        try:
+            tool_path = pathlib.Path(raw_path).resolve()
+            rel = tool_path.relative_to(proc_bundle_root)
+        except Exception:
+            continue
+        host_tool_path = host_bundle_root / rel
+        if not host_tool_path.exists():
+            problems.append(
+                f"translated host bundle path for tool alias '{alias}' does not exist: {host_tool_path}"
+            )
+    return problems
+
+
+def _docker_mount_preflight(
+        *,
+        host_workdir: pathlib.Path,
+        host_outdir: pathlib.Path,
+        host_bundle_root: pathlib.Path | None,
+        proc_bundle_root: pathlib.Path | None,
+        raw_tool_module_files: Dict[str, Any],
+) -> list[str]:
+    problems: list[str] = []
+    if not host_workdir.exists():
+        problems.append(f"translated host workdir does not exist: {host_workdir}")
+    main_py = host_workdir / "main.py"
+    if not main_py.exists():
+        problems.append(f"translated host workdir does not contain main.py: {main_py}")
+    if not host_outdir.exists():
+        problems.append(f"translated host outdir does not exist: {host_outdir}")
+    if host_bundle_root is not None:
+        if not host_bundle_root.exists():
+            problems.append(f"translated host bundle root does not exist: {host_bundle_root}")
+        else:
+            problems.extend(
+                _bundle_tool_host_checks(
+                    tool_module_files=raw_tool_module_files,
+                    proc_bundle_root=proc_bundle_root,
+                    host_bundle_root=host_bundle_root,
+                )
+            )
+    return problems
+
 def _build_docker_argv(
         *,
         image: str,
@@ -149,6 +230,8 @@ async def run_py_in_docker(
     outdir = outdir.resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
+    raw_tool_module_files = dict(runtime_globals.get("TOOL_MODULE_FILES") or {})
+    proc_bundle_root: pathlib.Path | None = bundle_root.resolve() if bundle_root is not None else None
 
     exec_id = (extra_env or {}).get("EXECUTION_ID") or runtime_globals.get("EXECUTION_ID") or runtime_globals.get("RESULT_FILENAME")
     if not exec_id:
@@ -203,8 +286,29 @@ async def run_py_in_docker(
 
     if _is_running_in_docker():
         log.log(f"[docker.exec] Running in Docker-in-Docker mode", level="INFO")
+        _log_path_translation_context(log)
     log.log(f"[docker.exec] Container paths: workdir={workdir}, outdir={outdir}")
     log.log(f"[docker.exec] Host paths: workdir={host_workdir}, outdir={host_outdir}")
+    if proc_bundle_root is not None:
+        log.log(f"[docker.exec] Bundle paths: container={proc_bundle_root}, host={bundle_root}", level="INFO")
+
+    preflight_problems = _docker_mount_preflight(
+        host_workdir=host_workdir,
+        host_outdir=host_outdir,
+        host_bundle_root=bundle_root,
+        proc_bundle_root=proc_bundle_root,
+        raw_tool_module_files=raw_tool_module_files,
+    )
+    if preflight_problems:
+        message = "; ".join(preflight_problems)
+        log.log(f"[docker.exec] mount preflight failed: {message}", level="ERROR")
+        return {
+            "ok": False,
+            "returncode": 127,
+            "error": f"host_mount_error: {message}",
+            "stderr_tail": "\n".join(preflight_problems),
+            "error_summary": preflight_problems[0],
+        }
 
     argv = _build_docker_argv(
         image=img,
@@ -329,6 +433,10 @@ async def run_py_in_docker(
     ok = (rc == 0)
     if not ok:
         log.log(f"[docker.exec] Container exited with {rc}", level="ERROR")
+        if error_summary:
+            log.log(f"[docker.exec] stderr summary: {error_summary}", level="ERROR")
+        elif stderr_tail:
+            log.log(f"[docker.exec] stderr tail: {stderr_tail[-1000:]}", level="ERROR")
 
     return {
         "ok": ok,

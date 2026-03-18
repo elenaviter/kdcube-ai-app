@@ -33,12 +33,16 @@ class _FakeProc:
 @pytest.mark.asyncio
 async def test_run_py_in_docker_terminates_child_process_when_cancelled(tmp_path, monkeypatch):
     fake_proc = _FakeProc()
+    workdir = tmp_path / "work"
+    outdir = tmp_path / "out"
+    workdir.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    (workdir / "main.py").write_text("print('ok')\n", encoding="utf-8")
 
     async def _fake_create_subprocess_exec(*_args, **_kwargs):
         return fake_proc
 
     monkeypatch.setattr(docker_runtime.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-    monkeypatch.setattr(docker_runtime, "filter_host_environment", lambda env: dict(env))
     monkeypatch.setattr(docker_runtime, "check_and_apply_cloud_environment", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(docker_runtime, "_resolve_redis_url_for_container", lambda url, logger=None: url)
     monkeypatch.setattr(docker_runtime, "_translate_container_path_to_host", lambda path: path)
@@ -47,8 +51,8 @@ async def test_run_py_in_docker_terminates_child_process_when_cancelled(tmp_path
 
     task = asyncio.create_task(
         docker_runtime.run_py_in_docker(
-            workdir=tmp_path / "work",
-            outdir=tmp_path / "out",
+            workdir=workdir,
+            outdir=outdir,
             runtime_globals={"EXECUTION_ID": "exec-1"},
             tool_module_names=[],
             logger=SimpleNamespace(log=lambda *_args, **_kwargs: None),
@@ -63,6 +67,51 @@ async def test_run_py_in_docker_terminates_child_process_when_cancelled(tmp_path
 
     assert fake_proc.terminate_calls == 1
     assert fake_proc.kill_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_run_py_in_docker_fails_fast_when_translated_mount_is_missing(tmp_path, monkeypatch):
+    workdir = tmp_path / "work"
+    outdir = tmp_path / "out"
+    bundle_root = tmp_path / "bundle"
+    workdir.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    (workdir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    (bundle_root / "tools").mkdir(parents=True, exist_ok=True)
+    (bundle_root / "tools" / "react_tools.py").write_text("x = 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(docker_runtime, "check_and_apply_cloud_environment", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(docker_runtime, "_resolve_redis_url_for_container", lambda url, logger=None: url)
+    monkeypatch.setattr(docker_runtime, "_is_running_in_docker", lambda: True)
+    monkeypatch.setattr(docker_runtime, "get_settings", lambda: SimpleNamespace(REDIS_URL="redis://example"))
+
+    def _fake_translate(path):
+        p = path.resolve()
+        if p == bundle_root.resolve():
+            return tmp_path / "missing-host-bundle"
+        return p
+
+    monkeypatch.setattr(docker_runtime, "_translate_container_path_to_host", _fake_translate)
+
+    result = await docker_runtime.run_py_in_docker(
+        workdir=workdir,
+        outdir=outdir,
+        runtime_globals={
+            "EXECUTION_ID": "exec-2",
+            "TOOL_MODULE_FILES": {
+                "react_tools": str((bundle_root / "tools" / "react_tools.py").resolve()),
+            },
+        },
+        tool_module_names=[],
+        logger=SimpleNamespace(log=lambda *_args, **_kwargs: None),
+        bundle_root=bundle_root,
+    )
+
+    assert result["ok"] is False
+    assert result["returncode"] == 127
+    assert result["error"].startswith("host_mount_error:")
+    assert "bundle root" in result["stderr_tail"] or "react_tools" in result["stderr_tail"]
 
 
 @pytest.mark.asyncio

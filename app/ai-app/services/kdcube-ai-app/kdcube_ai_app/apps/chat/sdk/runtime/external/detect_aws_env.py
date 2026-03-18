@@ -5,6 +5,12 @@
 import os, sys, pathlib
 from typing import Dict, Optional
 
+def _has_ecs_task_credentials() -> bool:
+    return bool(
+        os.environ.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI")
+        or os.environ.get("AWS_CONTAINER_CREDENTIALS_FULL_URI")
+    )
+
 def detect_aws_environment() -> tuple[bool, Optional[Dict[str, str]]]:
     """
     Detect if we're running on AWS infrastructure or local dev.
@@ -19,7 +25,7 @@ def detect_aws_environment() -> tuple[bool, Optional[Dict[str, str]]]:
         # Running in Lambda, ECS, or other AWS managed environment
         return (True, None)
 
-    if os.environ.get("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"):
+    if _has_ecs_task_credentials():
         # Running in ECS with task role
         return (True, None)
 
@@ -56,8 +62,34 @@ def check_and_apply_cloud_environment(env: Dict[str, str],
     # Auto-detect environment and get credentials if needed
     is_aws_infra, local_creds = detect_aws_environment()
     if is_aws_infra:
+        if _has_ecs_task_credentials():
+            try:
+                current_creds = _read_aws_credentials_from_host()
+            except Exception as e:
+                current_creds = None
+                log.log(
+                    "[docker.exec] Running in ECS task role context, but failed to resolve current task credentials; "
+                    f"falling back to host IMDS: {e}",
+                    level="WARNING",
+                )
+            if current_creds:
+                log.log("[docker.exec] Running in ECS task role context, passing current AWS credentials to supervisor", level="INFO")
+                env.update(current_creds)
+                region = (
+                    current_creds.get("AWS_REGION")
+                    or current_creds.get("AWS_DEFAULT_REGION")
+                    or os.environ.get("AWS_REGION")
+                    or os.environ.get("AWS_DEFAULT_REGION")
+                    or "eu-west-1"
+                )
+                env["AWS_REGION"] = region
+                env["AWS_DEFAULT_REGION"] = region
+                env["NO_PROXY"] = env.get("NO_PROXY") or "169.254.169.254,localhost,127.0.0.1"
+                env["AWS_EC2_METADATA_DISABLED"] = "true"
+                env["AWS_SDK_LOAD_CONFIG"] = env.get("AWS_SDK_LOAD_CONFIG") or "1"
+                return
+
         log.log("[docker.exec] Running on AWS infrastructure, will use instance role via IMDS", level="INFO")
-        # Ensure IMDS-related vars are passed
         imds_vars = {
             "AWS_REGION": os.environ.get("AWS_REGION", "eu-west-1"),
             "AWS_DEFAULT_REGION": os.environ.get("AWS_DEFAULT_REGION", "eu-west-1"),
