@@ -133,3 +133,68 @@ Test that requests reach agent and responses are returned correctly.
 - [ ] Multi-turn conversation preserves context
 - [ ] Error messages reach client
 - [ ] Timeout handled gracefully (> 30s)
+
+## 12. Custom Tools Tests
+
+Test custom tools that extend bundle functionality through the Tools Subsystem.
+
+- [ ] Tool registers with Tools Subsystem correctly
+- [ ] Tool accessible via `bundle.get_tool("tool_name")`
+- [ ] Tool accepts required parameters (bundle_config, redis, comm_context)
+- [ ] Tool executes with valid inputs
+- [ ] Tool returns expected output format
+- [ ] Tool errors caught and reported (not propagated)
+- [ ] Tool ID format correct (`<alias>.<tool_name>` or `mcp.<alias>.<tool_name>`)
+- [ ] Tool descriptor entry is complete (metadata, params, output)
+- [ ] Tool callable from LangGraph nodes
+- [ ] Multiple custom tools don't conflict
+
+## 13. Custom Skills Tests
+
+Test custom skills that extend bundle functionality through the Skills Subsystem.
+
+- [ ] Skill registers with Skills Subsystem correctly
+- [ ] Skill accessible via `bundle.get_skill("skill_name")`
+- [ ] Skill initializes without errors
+- [ ] `SKILL.md` file exists with valid frontmatter
+- [ ] `tools.yaml` metadata is valid (if provided)
+- [ ] `sources.yaml` citations are correct (if provided)
+- [ ] Skill visibility controlled via `AGENTS_CONFIG`
+- [ ] Skill appears for enabled agents
+- [ ] Skill hidden from disabled agents
+- [ ] Skill instruction injected into LLM prompt
+- [ ] Skill callable from LangGraph nodes
+
+## 14. Storage Tests
+
+Test bundle storage integration (Cloud Storage, Local FS, Redis Cache).
+
+### Cloud Storage (S3) Tests
+- [ ] Bundle can read files from S3
+- [ ] Bundle can write files to S3
+- [ ] File paths include tenant/project/bundle_id
+- [ ] S3 unavailable handled gracefully
+- [ ] Non-existent files return proper error (not crash)
+
+### Local Filesystem Tests
+- [ ] Bundle can read from local FS
+- [ ] Bundle can write to local FS
+- [ ] Temporary files cleaned up after execution
+- [ ] No leftover files after bundle crash
+- [ ] Local FS full handled gracefully
+
+### Redis Cache Tests
+- [ ] Bundle reads config from Redis
+- [ ] Bundle writes config to Redis
+- [ ] TTL set correctly (`KV_CACHE_TTL_SECONDS`)
+- [ ] Namespace isolation works (tenant/project/bundle)
+- [ ] Redis unavailable → fallback to defaults
+- [ ] Expired keys return None (not crash)
+- [ ] Missing keys handled gracefully
+
+### Storage Integration Tests
+- [ ] Multi-storage workflow works (Redis → Local FS → Cloud)
+- [ ] Storage fallback chain follows expected order
+- [ ] Storage paths properly scoped to bundle context
+- [ ] Cross-tenant access prevented
+- [ ] Concurrent storage access works
