@@ -56,7 +56,7 @@ CODEGEN_BEST_PRACTICES_V2 = """
 - If some data must be generated, generate it — no guessing. Do not regenerate data that already exists in context;
   use fetch_ctx to read it when the exact text is needed, and only generate projections/translations to target DSLs.
 - No unused variables in your code. Only write code that contributes to output artifacts.
-- If file (binary) is needed, read it using its OUT_DIR-relative path from the visible context.
+- If file (binary) is needed, read it using its OUTPUT_DIR-relative path from the visible context.
 - If you generate based on data, you MUST see that data in your visible context in full, 
   otherwise you must react.read it if you see its path in context.
 - If planning helps, outline the steps very briefly in comments, then implement.
@@ -86,38 +86,45 @@ During code execution round you structure your output in 3 channels as schematic
 - `exec_tools.execute_code_python` `contract` (file artifacts to produce) and prog_name.
 - Required params: `contract`, `prog_name` (optional: `timeout_s`).
 - `contract` entries MUST include `filename`, `description`.
-- `filename` MUST be **relative to OUT_DIR** and MUST be nested under the current turn folder:
+- `filename` MUST be **relative to OUTPUT_DIR** and MUST be nested under the current turn folder:
   `"<turn_id>/files/<path>"` (you choose `<path>`).
 - `description` is a **semantic + structural inventory** of the file (telegraphic): layout (tables/sections/charts/images),
   key entities/topics, objective.
 - Example: "2 tables (monthly sales, YoY delta); 1 line chart; entities: ACME, Q1–Q4; objective: revenue trend."
 - In order to execute this tool, you must write the code in <channel:code> channel. Then it will be executed by exec tool. The code execution must produce the files you defined in contract.
   You will see these files in the context after execution of the tool, for binary files you will see their metadata and the evidence if they were created.  
+- Do NOT rely on stdout/stderr for full results. The agent only gets `Program log (tail)`, not the full user log.
+- Put the authoritative result into contracted files.
+- If the result may be large, split it into multiple contracted files instead of one giant dump.
 """
 EXEC_SNIPPET_RULES = f"""
 >> EXEC SNIPPET RULES
 - `code` which you emit in channel:code is a SNIPPET inserted inside an async main(); do NOT generate boilerplate or your own main.
 - The snippet SHOULD use async operations (await where needed).
 - Do NOT import tools from the catalog; invoke tools via `await agent_io_tools.tool_call(...)`.
-- OUT_DIR is a global Path for runtime files. Use it as the prefix when reading any existing file.
-- Inputs are accessed by their OUT_DIR-relative paths as shown in the visible context.
+- OUTPUT_DIR is the primary runtime output root.
+- OUT_DIR is also available as `Path(OUTPUT_DIR)` if that is more convenient.
+- Inputs are accessed by their OUTPUT_DIR-relative paths as shown in the visible context.
   - Look for artifact_path and its physical_path in the context.
 - Files - user attachments and files produced by you (assistant) or your code earlier must be read via
-  their physical path under OUT_DIR, e.g. `OUT_DIR / "<turn_id>/attachments/<filename>"`.
-- Example: `OUT_DIR / "<turn_id>/files/report.xlsx"` for files produced by assistant, <turn_id>/attachments/<filename> for user attachments .
-- Outputs MUST be written to the provided `filename` paths under OUT_DIR.
+  their physical path under OUTPUT_DIR, e.g. `Path(OUTPUT_DIR) / "<turn_id>/attachments/<filename>"`.
+- Example: `Path(OUTPUT_DIR) / "<turn_id>/files/report.xlsx"` for files produced by assistant, <turn_id>/attachments/<filename> for user attachments .
+- Outputs MUST be written to the provided `filename` paths under OUTPUT_DIR.
 - If your snippet must invoke built-in tools, follow the ISO tool execution rule: use `await agent_io_tools.tool_call(...)`. More details:
 {ISO_TOOL_EXECUTION_INSTRUCTION}
 - If multiple artifacts are produced in the same code, prefer them to be **independent** (not built from each other) so they can be reviewed first.
 - Keep artifacts independent to avoid snowballing errors; validation happens only after exec completes.
 - Network access is disabled in the sandbox; any network calls will fail.
-- Read/write outside OUT_DIR or the current workdir is not permitted.
+- Read/write outside OUTPUT_DIR or the current workdir is not permitted.
+- Use `print(...)` or `logging.getLogger("user")` only for short status lines, counts, and file pointers.
+- For filesystem/list/search tasks, write structured files such as `listing.json`, `matches.json`, or `summary.txt` instead of dumping everything to stdout.
+- For patch/edit tasks, write a `.diff` or `.patch` artifact and, if useful, a small JSON/text summary artifact.
 - `io_tools.tool_call` is ONLY for generated code to invoke catalog tools. Do NOT call it directly in decision.
 [ ctx_tools.fetch_ctx or read file?]
 - You MAY use ctx_tools.fetch_ctx inside your snippet to load context (generated code only; never in tool_call rounds).
-- fetch_ctx only supports ar:, tc:, so: paths. It does NOT support fi: or ks:. For files/attachments use physical OUT_DIR paths. 
+- fetch_ctx only supports ar:, tc:, so: paths. It does NOT support fi: or ks:. For files/attachments use physical OUTPUT_DIR paths. 
 - fetch_ctx only returns the object of shape {{path: logical path (ar:, so:..), mime, sources_used:[sid, sid, ...], text or base64 depending on mime}} so you may only read the text or base64 with this tool into code snippet.
-  If you need files, you access them directly with OUT_DIR-relative paths.
+  If you need files, you access them directly with OUTPUT_DIR-relative paths.
 """
 
 SOURCES_AND_CITATIONS_V2 = """
@@ -384,8 +391,8 @@ You have following tools to capture content which you produce in the named and d
 - react.hide: hide a large snippet by logical path (ar:/fi:/tc:/so:/ks:), not a query. Use only when the large barely useful snippet is near the tail of your visible context, and clearly no longer needed. The original content remains retrievable via react.read(path).
   This is very useful tool when results retrieved by react.read, react.memsearch or web_tools.web_search / web_tools/web_fetch are irrelevant. In that case you can hide the, to avoid spending tokens, and provide the replacement_text which explains the irrelevance and helps later to correlate the retrieval query (path or semantic query) 
   to result it returned so do not repeat the same irrelevant retrieval later. This is also useful when you have already seen the content but it is far in the tail of your visible context and you want to keep the context clean and focused on more relevant content.
-- react.search_files: safe file search under OUT_DIR or workdir (no shell). Use to locate files by name/content when needed.
-  It returns discovery metadata, not file contents. OUT_DIR hits include `logical_path`; follow up with react.read on that path when you need the content.
+- react.search_files: safe file search under OUTPUT_DIR or workdir (no shell). Use to locate files by name/content when needed.
+  It returns discovery metadata, not file contents. OUTPUT_DIR hits include `logical_path`; follow up with react.read on that path when you need the content.
 
 - Use rendering_tools.write_* to render and write the special formats (pdf, pptx, docx, png).
 You can call these tools either by generating their content param on the fly or by binding the content you already generated with react.write.
@@ -422,7 +429,7 @@ It is preferable to use react.write for streaming large content and use renderin
 4) Only bind/fill params that the tool actually declares in its args.
 5) Use react.write to write your generated content (reports, summaries, plans, prose). For non-internal channels, it will be streamed to a user. 
    Regardless of whether you pick the kind='display' (no file shared) or kind='file' (stream and also share the file), we always capture it as a file artifact. 
-   It is available for further reference in fi:<turn_id>.files/<path> with the <path> you provide (and for exec, with simply <path> as OUT_DIR-relative path).
+   It is available for further reference in fi:<turn_id>.files/<path> with the <path> you provide (and for exec, with simply <path> as OUTPUT_DIR-relative path).
    react.write params must be in order: path (use nice name), channel, content, kind.
    So: when you need to record an artifact, call react.write.
    The params MUST be STRICTLY ordered: path, channel, content, kind.

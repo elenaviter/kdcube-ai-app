@@ -74,6 +74,17 @@ That means the tool is not "files only". It is "contracted files, with logs fold
 
 If the agent wants its runtime progress or notes to appear in the execution result, it should write code that emits to `user.log`.
 
+Use `OUTPUT_DIR` as the primary runtime root.
+`OUT_DIR` is simply `Path(OUTPUT_DIR)` if Path operations are more convenient.
+
+Normal pattern:
+
+```python
+from pathlib import Path
+
+out_path = Path(OUTPUT_DIR) / "turn_123/files/result.json"
+```
+
 For `user.log`:
 
 - normal `print(...)` goes there
@@ -113,6 +124,83 @@ So the concrete guidance for React agents is:
 3. Do not assume that generic `logging.getLogger(__name__)` will always appear in `Program log (tail)`.
 4. Remember that the current public `execute_code_python(...)` tool still requires a non-empty file contract, even though the returned result already includes logs.
 
+### Concrete recommendation for copilot-style exec tasks
+
+If the agent wants to use exec as a copilot-style helper for tasks such as:
+
+- list files
+- search for content
+- inspect a workspace
+- compute a patch
+- summarize filesystem state
+
+then the agent should **not** treat stdout as the authoritative output channel.
+
+Current immediate-result limits:
+
+- `Program log (tail)` is only the tail of `out/logs/user.log` and is currently capped by `USER_LOG_TAIL_CHARS = 4000`
+- text file previews in returned artifacts are currently capped by `EXEC_TEXT_PREVIEW_MAX_BYTES = 20000`
+
+So the concrete pattern should be:
+
+1. Put the authoritative result into contracted files.
+2. Use `print(...)` or `logging.getLogger("user")` only for a short summary:
+   - counts
+   - high-level status
+   - names of produced files
+3. If the result may be large, split it into several files so each one stays readable in the immediate tool result.
+4. Prefer structured outputs over giant free-form dumps.
+
+Recommended file patterns:
+
+- filesystem listing / inventory:
+  - `listing.json`
+  - `summary.txt`
+- content search / grep-like scan:
+  - `matches.json`
+  - `matches.txt`
+- code edit / patch proposal:
+  - `changes.diff` or `changes.patch`
+  - `changes_summary.json`
+- diagnostics / inspection:
+  - `report.json`
+  - `summary.txt`
+
+Concrete snippet pattern:
+
+```python
+import json
+import logging
+from pathlib import Path
+
+log = logging.getLogger("user")
+root = Path("..")
+
+rows = []
+for path in sorted(root.rglob("*.py")):
+    rows.append({"path": str(path)})
+
+out_path = Path(OUTPUT_DIR) / "turn_123/files/listing.json"
+out_path.parent.mkdir(parents=True, exist_ok=True)
+out_path.write_text(json.dumps(rows, indent=2), encoding="utf-8")
+
+print(f"scanned {len(rows)} files")
+log.info("wrote listing.json")
+```
+
+That pattern is correct because:
+
+- the full result is in a contracted file
+- the program log stays short
+- the tool result can still show a useful summary immediately
+
+If the agent wants the result "fully" in one immediate tool response, the current public surface has a practical limit:
+
+- logs are tail-only
+- large text artifacts are preview-truncated
+
+So for large results the best current strategy is to shard the output into multiple files and keep each file reasonably small.
+
 ### Logs-only and hybrid modes
 
 Current state:
@@ -127,6 +215,19 @@ So the platform already has the building blocks for:
 - hybrid execution with both files and `user.log`-derived output
 
 But today only the hybrid-with-required-contract variant is exposed to the React agent through `execute_code_python`.
+
+### What is still missing for a more convenient copilot-style interface
+
+The current public tool is usable, but two ergonomic gaps remain:
+
+1. There is no public logs-only / empty-contract mode for simple "run and show me the output" tasks.
+2. There is no special public mode that says "treat this one text artifact as the primary inline result".
+
+So today the safest public contract for agentic/copilot-like exec is still:
+
+- always declare files
+- write the authoritative result to those files
+- keep logs brief
 
 ### Snapshot + merge flow
 - Host creates input snapshot via `snapshot_exec_input`  

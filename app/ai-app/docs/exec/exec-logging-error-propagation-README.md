@@ -339,6 +339,63 @@ So if you want guidance for the agent, it should write code like:
 - use `logging.getLogger("user")` if it wants structured log lines in the program log
 - still write contracted files when files are required by the tool call
 
+### How an agent should get the result back fully
+
+If an agent wants exec to behave like a copilot helper for tasks such as:
+
+- filesystem listing
+- content search
+- patch generation
+- repository inspection
+
+then it should not rely on `Program log (tail)` as the authoritative result channel.
+
+Current immediate-result limits in `exec_tools.py`:
+
+- `USER_LOG_TAIL_CHARS = 4000`
+- `EXEC_TEXT_PREVIEW_MAX_BYTES = 20000`
+
+That means:
+
+- the immediate `Program log (tail)` is tail-only
+- large text artifacts are only previewed inline
+
+So the concrete recommendation is:
+
+1. Put the authoritative result into contracted files.
+2. Use `print(...)` or `logging.getLogger("user")` only for short progress lines, counts, and file pointers.
+3. Prefer structured files such as JSON, text summaries, or unified diffs.
+4. If the result may be large, split it into multiple contracted files instead of one giant file or one giant stdout dump.
+
+Recommended patterns:
+
+- filesystem inventory:
+  - `listing.json`
+  - `summary.txt`
+- search results:
+  - `matches.json`
+  - `matches.txt`
+- patch/edit output:
+  - `changes.diff` or `changes.patch`
+  - `changes_summary.json`
+
+The current public agent-facing surface is therefore:
+
+- good for file-oriented execution with short logs
+- not ideal yet for pure logs-only copilot workflows
+
+### Public-surface ergonomics still missing
+
+The platform already has internal helpers for no-contract and side-effects-first execution, but the public React tool still lacks:
+
+1. a public logs-only / empty-contract mode
+2. a public "primary text result" mode for one inline text artifact
+
+So today the safest rule is:
+
+- authoritative result in files
+- brief logs in `user.log`
+
 ### Visual composition
 
 ```mermaid
