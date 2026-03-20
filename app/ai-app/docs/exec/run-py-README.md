@@ -28,11 +28,12 @@ Related docs:
 - Execute untrusted Python in a **network‑isolated executor**.
 - Use **bundle tools** from the supervisor (network, KB, etc.).
 - Receive artifacts + logs in `out/`.
+- If the bundle uses prepared readonly local data, make that data physically available inside isolated exec too.
 
-Two execution modes:
+Current public React-facing tool surface:
 1) **Contract-based** (`exec_tools.execute_code_python`)
-2) **Side‑effects** (`exec_tools.execute_code_python_side_effect`)  
-   (illustrative; may be commented out to avoid agent selection)
+
+Additional internal helpers exist for no-contract and side-effects execution, but they are not the normal public React tool surface.
 
 ---
 
@@ -52,6 +53,8 @@ PY_CODE_EXEC_NETWORK_MODE=host
 - `HOST_EXEC_WORKSPACE_PATH` → `/exec-workspace`
 - If bundle tools are used:
   - `HOST_BUNDLES_PATH` → `AGENTIC_BUNDLES_ROOT`
+- If bundle readonly local data is used:
+  - `HOST_BUNDLE_STORAGE_PATH` → `BUNDLE_STORAGE_ROOT`
 
 ### Required paths
 
@@ -59,6 +62,8 @@ PY_CODE_EXEC_NETWORK_MODE=host
 HOST_EXEC_WORKSPACE_PATH=/abs/path/to/exec-workspace
 HOST_BUNDLES_PATH=/abs/path/to/bundles
 AGENTIC_BUNDLES_ROOT=/bundles
+HOST_BUNDLE_STORAGE_PATH=/abs/path/to/bundle-storage
+BUNDLE_STORAGE_ROOT=/bundle-storage
 ```
 
 ---
@@ -79,6 +84,15 @@ await agent_io_tools.tool_call(
 
 This means networked tools stay **in the supervisor**, while untrusted code
 stays **in the executor**.
+
+If a bundle also depends on prepared local readonly data, the runtime passes a concrete absolute path in:
+
+```
+BUNDLE_STORAGE_DIR
+```
+
+That path points at the per-bundle readonly storage dir physically available inside isolated exec.
+Example: `react.doc` reads its built knowledge space from `BUNDLE_STORAGE_DIR`.
 
 ---
 
@@ -116,30 +130,15 @@ await agent_io_tools.tool_call(
 
 ---
 
-## Tool 2 — Side-effects execution
+## Internal side-effects mode
 
-**Tool:** `exec_tools.execute_code_python_side_effect`  
-(illustrative; can be commented out in tools registry)
+There is also an internal side-effects execution helper in `exec_tools.py`.
+It can diff `out/` before and after the run and report created/modified files.
 
-**Behavior**
-- No contract is provided.
-- The runtime diffs `out/` before and after the run.
-- Created/modified files become artifacts.
-- Deleted files are reported as notices.
+Important:
 
-**Example**
-```python
-await agent_io_tools.tool_call(
-    fn=exec_tools.execute_code_python_side_effect,
-    params={
-        "timeout_s": 300,
-        "prog_name": "side_effects_run"
-    },
-    tool_id="exec_tools.execute_code_python_side_effect",
-)
-```
-
----
+- this is not the normal public React-facing tool surface today
+- the public documented path remains `exec_tools.execute_code_python(...)` with a non-empty file contract
 
 ## Logging and diagnostics
 
@@ -158,6 +157,7 @@ Summary:
 - Executor has **no network access**.
 - Only `/workspace/work` and `/workspace/out` are writable.
 - Use `OUTPUT_DIR` and write to `turn_<id>/files/...`.
+- Treat `BUNDLE_STORAGE_DIR` as readonly when it is present.
 
 ---
 

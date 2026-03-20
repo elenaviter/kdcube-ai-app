@@ -131,12 +131,15 @@ async def test_run_py_in_docker_skips_opaque_host_path_preflight_inside_proc(tmp
     workdir = tmp_path / "work"
     outdir = tmp_path / "out"
     bundle_root = tmp_path / "bundle"
+    bundle_storage_dir = tmp_path / "bundle-storage" / "tenant" / "project" / "react.doc@2026-03-02-22-10"
     workdir.mkdir(parents=True, exist_ok=True)
     outdir.mkdir(parents=True, exist_ok=True)
     bundle_root.mkdir(parents=True, exist_ok=True)
+    bundle_storage_dir.mkdir(parents=True, exist_ok=True)
     (workdir / "main.py").write_text("print('ok')\n", encoding="utf-8")
     (bundle_root / "tools").mkdir(parents=True, exist_ok=True)
     (bundle_root / "tools" / "react_tools.py").write_text("x = 1\n", encoding="utf-8")
+    (bundle_storage_dir / "index.json").write_text("{}", encoding="utf-8")
 
     calls = []
 
@@ -159,6 +162,11 @@ async def test_run_py_in_docker_skips_opaque_host_path_preflight_inside_proc(tmp
             return pathlib.Path("/Users/elenaviter/.kdcube/kdcube-runtime/data/exec-workspace/ctx/out")
         if p == bundle_root.resolve():
             return pathlib.Path("/Users/elenaviter/.kdcube/kdcube-runtime/data/bundles/react.doc@2026-03-02-22-10")
+        if p == bundle_storage_dir.resolve():
+            return pathlib.Path(
+                "/Users/elenaviter/.kdcube/kdcube-runtime/data/bundle-storage/"
+                "tenant/project/react.doc@2026-03-02-22-10"
+            )
         return p
 
     monkeypatch.setattr(docker_runtime, "_translate_container_path_to_host", _fake_translate)
@@ -171,6 +179,7 @@ async def test_run_py_in_docker_skips_opaque_host_path_preflight_inside_proc(tmp
             "TOOL_MODULE_FILES": {
                 "react_tools": str((bundle_root / "tools" / "react_tools.py").resolve()),
             },
+            "BUNDLE_STORAGE_DIR": str(bundle_storage_dir.resolve()),
         },
         tool_module_names=[],
         logger=SimpleNamespace(log=lambda *_args, **_kwargs: None),
@@ -179,6 +188,11 @@ async def test_run_py_in_docker_skips_opaque_host_path_preflight_inside_proc(tmp
 
     assert result["ok"] is True
     assert calls, "docker run should proceed when translated host paths are opaque from proc"
+    argv = calls[0][0]
+    assert any(
+        arg.endswith(f":{bundle_storage_dir.resolve()}:ro")
+        for arg in argv
+    )
 
 
 @pytest.mark.asyncio

@@ -159,6 +159,8 @@ def _docker_mount_preflight(
         host_outdir: pathlib.Path,
         proc_bundle_root: pathlib.Path | None,
         host_bundle_root: pathlib.Path | None,
+        proc_bundle_storage_dir: pathlib.Path | None,
+        host_bundle_storage_dir: pathlib.Path | None,
         raw_tool_module_files: Dict[str, Any],
 ) -> list[str]:
     problems: list[str] = []
@@ -169,6 +171,8 @@ def _docker_mount_preflight(
     host_outdir = _resolved_path(host_outdir)
     proc_bundle_root = _resolved_path(proc_bundle_root) if proc_bundle_root is not None else None
     host_bundle_root = _resolved_path(host_bundle_root) if host_bundle_root is not None else None
+    proc_bundle_storage_dir = _resolved_path(proc_bundle_storage_dir) if proc_bundle_storage_dir is not None else None
+    host_bundle_storage_dir = _resolved_path(host_bundle_storage_dir) if host_bundle_storage_dir is not None else None
 
     if not proc_workdir.exists():
         problems.append(f"proc workdir does not exist: {proc_workdir}")
@@ -189,6 +193,8 @@ def _docker_mount_preflight(
                     checked_bundle_label="proc bundle path",
                 )
             )
+    if proc_bundle_storage_dir is not None and not proc_bundle_storage_dir.exists():
+        problems.append(f"proc bundle storage dir does not exist: {proc_bundle_storage_dir}")
 
     if host_workdir != proc_workdir:
         if _can_preflight_translated_host_path(host_workdir):
@@ -234,6 +240,20 @@ def _docker_mount_preflight(
                 f"skipping local existence check: {host_bundle_root}",
                 level="INFO",
             )
+    if (
+            host_bundle_storage_dir is not None
+            and proc_bundle_storage_dir is not None
+            and host_bundle_storage_dir != proc_bundle_storage_dir
+    ):
+        if _can_preflight_translated_host_path(host_bundle_storage_dir):
+            if not host_bundle_storage_dir.exists():
+                problems.append(f"translated host bundle storage dir does not exist: {host_bundle_storage_dir}")
+        else:
+            log.log(
+                f"[docker.exec] translated host bundle storage dir is not locally visible from proc; "
+                f"skipping local existence check: {host_bundle_storage_dir}",
+                level="INFO",
+            )
     return problems
 
 def _build_docker_argv(
@@ -245,6 +265,7 @@ def _build_docker_argv(
         extra_args: list[str] | None = None,
         bundle_root: pathlib.Path | None = None,
         bundle_id: str | None = None,
+        readonly_mounts: list[tuple[pathlib.Path, str]] | None = None,
         network_mode: str | None = None,
 ) -> list[str]:
     """
@@ -292,6 +313,11 @@ def _build_docker_argv(
         argv += [
             "-v",
             f"{_path(bundle_root)}:{subpath}:ro",  # ← :ro is important
+        ]
+    for host_path, container_path in (readonly_mounts or []):
+        argv += [
+            "-v",
+            f"{_path(host_path)}:{container_path}:ro",
         ]
 
     # Propagate selected host env if you want (keys can be tuned)
@@ -360,6 +386,10 @@ async def run_py_in_docker(
     outdir.mkdir(parents=True, exist_ok=True)
     raw_tool_module_files = dict(runtime_globals.get("TOOL_MODULE_FILES") or {})
     proc_bundle_root: pathlib.Path | None = bundle_root.resolve() if bundle_root is not None else None
+    proc_bundle_storage_dir_raw = runtime_globals.get("BUNDLE_STORAGE_DIR")
+    proc_bundle_storage_dir = None
+    if isinstance(proc_bundle_storage_dir_raw, str) and proc_bundle_storage_dir_raw.strip():
+        proc_bundle_storage_dir = pathlib.Path(proc_bundle_storage_dir_raw).resolve()
 
     exec_id = (extra_env or {}).get("EXECUTION_ID") or runtime_globals.get("EXECUTION_ID") or runtime_globals.get("RESULT_FILENAME")
     if not exec_id:
@@ -391,6 +421,8 @@ async def run_py_in_docker(
         bundle_dir=bundle_dir,
         bundle_id=(bundle_spec.get("id") if isinstance(bundle_spec, dict) else None) or bundle_dir,
     )
+    if proc_bundle_storage_dir is not None:
+        base_env["BUNDLE_STORAGE_DIR"] = str(proc_bundle_storage_dir)
     base_env = build_external_exec_env(
         base_env=base_env,
         runtime_globals=runtime_globals,
@@ -408,9 +440,12 @@ async def run_py_in_docker(
     # Translate paths for Docker-in-Docker
     host_workdir = _translate_container_path_to_host(workdir)
     host_outdir = _translate_container_path_to_host(outdir)
+    host_bundle_storage_dir = None
 
     if bundle_root is not None:
         bundle_root = _translate_container_path_to_host(bundle_root)
+    if proc_bundle_storage_dir is not None:
+        host_bundle_storage_dir = _translate_container_path_to_host(proc_bundle_storage_dir)
 
     if _is_running_in_docker():
         log.log(f"[docker.exec] Running in Docker-in-Docker mode", level="INFO")
@@ -419,6 +454,11 @@ async def run_py_in_docker(
     log.log(f"[docker.exec] Host paths: workdir={host_workdir}, outdir={host_outdir}")
     if proc_bundle_root is not None:
         log.log(f"[docker.exec] Bundle paths: container={proc_bundle_root}, host={bundle_root}", level="INFO")
+    if proc_bundle_storage_dir is not None:
+        log.log(
+            f"[docker.exec] Bundle storage paths: container={proc_bundle_storage_dir}, host={host_bundle_storage_dir}",
+            level="INFO",
+        )
 
     preflight_problems = _docker_mount_preflight(
         log=log,
@@ -428,6 +468,8 @@ async def run_py_in_docker(
         host_outdir=host_outdir,
         proc_bundle_root=proc_bundle_root,
         host_bundle_root=bundle_root,
+        proc_bundle_storage_dir=proc_bundle_storage_dir,
+        host_bundle_storage_dir=host_bundle_storage_dir,
         raw_tool_module_files=raw_tool_module_files,
     )
     if preflight_problems:
@@ -449,6 +491,13 @@ async def run_py_in_docker(
         extra_args=extra_docker_args or [],
         bundle_root=bundle_root,
         bundle_id=bundle_dir,
+        readonly_mounts=[
+            (host_bundle_storage_dir, str(proc_bundle_storage_dir))
+            for host_bundle_storage_dir, proc_bundle_storage_dir in (
+                (host_bundle_storage_dir, proc_bundle_storage_dir),
+            )
+            if host_bundle_storage_dir is not None and proc_bundle_storage_dir is not None
+        ],
         network_mode=network_mode or "host",
     )
 

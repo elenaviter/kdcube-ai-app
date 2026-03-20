@@ -492,6 +492,8 @@ async def execute_tool_in_isolation(
         "EXEC_CONTEXT": exec_context,
         **runtime_globals,  # TOOL_ALIAS_MAP, TOOL_MODULE_FILES, BUNDLE_SPEC, RAW_TOOL_SPECS
     }
+    if runtime_ctx.bundle_storage:
+        globals_for_runtime["BUNDLE_STORAGE_DIR"] = str(runtime_ctx.bundle_storage)
 
     isolation = isolation_override or tools_insights.tool_isolation(tool_id=tool_id)
     # Unless there's no third-party blackboxed tools, and the tools are all verified, it is safe. TODO.

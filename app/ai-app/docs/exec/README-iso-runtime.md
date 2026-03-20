@@ -82,7 +82,8 @@ When isolation is required, `docker.run_py_in_docker(...)` starts a **py-code-ex
 - Root filesystem is read-only (`--read-only`).
 - Only `/workspace/work` and `/workspace/out` are writable.
 - `/tmp` is tmpfs.
-- Bundles are mounted read-only (if used).
+- Bundle code roots are mounted read-only (if used).
+- If a bundle exposes prepared readonly local data, its per-bundle storage dir is also mounted read-only.
 
 ```
 Host
@@ -90,13 +91,26 @@ Host
    ├─ work/   <----- bind mount to /workspace/work (RW)
    └─ out/    <----- bind mount to /workspace/out  (RW)
 
+Host bundle surfaces (optional)
+├─ /bundles/<bundle_id>/                 <----- bind mount to /bundles/<bundle_id> (RO)
+└─ /bundle-storage/<tenant>/<project>/...<----- bind mount to that same absolute path in child (RO)
+
 Chat container (UID/GID 1000:1000)
 └─ /exec-workspace/ (bind from host)
 
 Exec container (entrypoint runs as root)
 └─ /workspace/work (RW)
 └─ /workspace/out  (RW)
+└─ /bundles/<bundle_id> (RO, if bundle-local tools are used)
+└─ <BUNDLE_STORAGE_DIR> (RO, if bundle-local readonly data is used)
 ```
+
+Important:
+
+- bundle code and bundle readonly data are separate surfaces
+- bundle code contains tool modules such as `tools/react_tools.py`
+- bundle readonly data contains prepared local assets such as built knowledge indexes or cloned docs repos
+- inside isolated exec, the physical readonly data path is exposed as `BUNDLE_STORAGE_DIR`
 
 ## Supervisor vs executor
 
@@ -177,8 +191,12 @@ sudo chmod -R g+rwX /path/to/exec-workspace
   - Host path mounted to `/exec-workspace` in the chat container.
 - `HOST_BUNDLES_PATH`
   - Host path of bundles root (mounted into chat container).
+- `HOST_BUNDLE_STORAGE_PATH`
+  - Host path of shared bundle storage root (used to translate proc-visible bundle storage paths into host-visible paths for Docker-in-Docker).
 - `AGENTIC_BUNDLES_ROOT`
   - Container path for bundles in chat container.
+- `BUNDLE_STORAGE_ROOT`
+  - Shared bundle storage root inside the chat container (typically `/bundle-storage`).
 
 ### Chat container runtime
 - `PY_CODE_EXEC_IMAGE`
@@ -197,6 +215,8 @@ sudo chmod -R g+rwX /path/to/exec-workspace
   - List of tool module names to bind.
 - `EXECUTION_ID`
   - Used for log headers and result file names.
+- `BUNDLE_STORAGE_DIR`
+  - Absolute per-bundle readonly storage dir available inside the isolated runtime when the calling bundle needs prepared local data.
 - `SUPERVISOR_SOCKET_PATH`
   - Unix socket between executor and supervisor (default `/tmp/supervisor.sock`).
 - `LOG_DIR=/workspace/out/logs`

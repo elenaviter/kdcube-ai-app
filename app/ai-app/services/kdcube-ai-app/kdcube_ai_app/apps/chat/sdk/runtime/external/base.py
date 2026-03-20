@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pathlib
 import json
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -35,6 +36,27 @@ class ExternalRuntime:
 
     async def run(self, request: ExternalExecRequest, *, logger: Optional[AgentLogger] = None) -> ExternalExecResult:
         raise NotImplementedError
+
+
+def is_isolated_exec_process(env: Optional[Mapping[str, str]] = None) -> bool:
+    """
+    Best-effort detection for code already running inside an isolated exec process.
+
+    We key primarily off RUNTIME_GLOBALS_JSON because it is injected into actual
+    exec children (local, Docker, Fargate) but is not normally present for
+    in-memory tool calls in the main proc runtime.
+    """
+    environ = env or os.environ
+    runtime_globals = str(environ.get("RUNTIME_GLOBALS_JSON") or "").strip()
+    if not runtime_globals:
+        return False
+    if str(environ.get("OUTPUT_DIR") or "").strip() and str(environ.get("WORKDIR") or "").strip():
+        return True
+    if str(environ.get("EXECUTION_ID") or "").strip():
+        return True
+    if str(environ.get("EXECUTION_SANDBOX") or "").strip():
+        return True
+    return True
 
 
 def payload_size_bytes(payload: Any) -> int:

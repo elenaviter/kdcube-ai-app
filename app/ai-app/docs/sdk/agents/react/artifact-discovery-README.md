@@ -14,6 +14,15 @@ see_also:
 This document defines how artifacts are discovered from timeline blocks and how logical/physical paths
 are resolved for tools (`react.read`, `fetch_ctx`, `react.patch`, exec code).
 
+Important distinction:
+- this document is about artifact discovery and OUT_DIR-relative artifact paths
+- it is not the contract for bundle namespace resolution inside isolated exec
+
+For bundle namespace browsing such as `ks:` via generated exec code, the relevant model is:
+- a bundle may expose an exec-only namespace resolver tool
+- that tool returns an exec-visible path contract for code
+- this is separate from timeline artifact discovery
+
 ## Key Concepts
 
 **Logical path**  
@@ -33,6 +42,22 @@ Common forms:
 - `<turn_id>/files/<relpath>` (files; current or historical)
 - `<turn_id>/attachments/<name>` (attachments)
 - `logs/<name>` and other runtime-managed files already present in OUT_DIR
+
+This `physical_path` means:
+- OUT_DIR-relative artifact location for normal artifact/tool workflows
+
+It does **not** mean:
+- bundle namespace resolution for readonly bundle data inside isolated exec
+
+That other case uses a different contract:
+- bundle-defined exec-only resolver
+- returns `ret = {physical_path: str | null, access: 'r' | 'rw', browseable: bool}`
+- the returned `physical_path` is valid only inside the current isolated execution runtime
+- it must not be reused by the agent outside exec, copied into normal react tool calls, or treated as a stable artifact path
+- generated code may use it only according to `access`:
+  - `access='r'` means read-only
+  - `access='rw'` means the code may read and write there
+- if generated code wants the agent to continue later with `react.read(...)`, it should use the resolver input logical_ref as the logical base and emit derived logical refs itself
 
 **Block metadata**  
 Artifacts are described by a **metadata JSON result block** plus one or more **content blocks**:
@@ -121,6 +146,26 @@ The rewrite is recorded as a **protocol notice** in the timeline so the agent ca
   - `logical_path` for OUT_DIR hits, suitable for `react.read`
 - This is the bridge from filesystem discovery to content loading.
 
+**bundle_data.resolve_namespace** (bundle-defined, exec-only)
+- Not a general artifact-discovery tool.
+- Not driven by timeline blocks.
+- Intended only for generated code inside `execute_code_python(...)`.
+- Resolves a logical bundle namespace/path to:
+  - `physical_path: str | null`
+  - `access: 'r' | 'rw'`
+  - `browseable: bool`
+- Use the resolver input logical_ref itself as the logical base if generated code wants the agent to follow up later with `react.read(...)`.
+- Example:
+  - set `logical_base = "ks:src"` and resolve it
+  - code inspects files under the returned `physical_path`
+  - if code finds `foo/bar.py`, it should emit logical ref `ks:src/foo/bar.py` in an `OUTPUT_DIR` file or short `user.log` note
+- The returned `physical_path` is an exec-runtime path only.
+- It is not an artifact `physical_path`, not an OUT_DIR-relative path, and not a valid input to normal react tools.
+- Generated code must respect `access` exactly; for example, `access='r'` means browse/read only.
+- The generated code must then decide what to do and propagate any useful result back through:
+  - files written under `OUTPUT_DIR`
+  - and/or short `user.log` output
+
 ## Compaction Notes
 
 Compaction summarizes **blocks**, not artifacts. Artifact metadata must remain visible:
@@ -170,6 +215,19 @@ Rendering tools run in isolated workspaces and only see **OUT_DIR**. Rehosting e
 - Tool outputs are reproducible even when prior turns are compacted
 
 ## Examples
+
+### Namespace resolver result inside exec
+```python
+{
+  "physical_path": "/exec-visible/resolved/src",
+  "access": "r",
+  "browseable": True,
+}
+```
+
+This is intentionally different from artifact metadata `physical_path` like:
+- `turn_abc/files/report.pdf`
+- `turn_abc/attachments/photo.png`
 
 ### File artifact (exec output)
 ```

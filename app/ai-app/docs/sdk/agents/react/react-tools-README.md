@@ -32,8 +32,27 @@ Data spaces (quick guide)
 - OUT_DIR (`fi:`): per‑turn output artifacts (read/write during the turn).
 - Conversation Workspace (future): shared writable workspace across turns (not implemented yet).
 
+Accepted path families (built-in react tools)
+- `react.read` accepts logical paths, not raw host/runtime paths:
+  - `fi:...`
+  - `ar:...`
+  - `so:...`
+  - `su:...`
+  - `tc:...`
+  - bundle-provided logical namespaces such as `ks:...` when the active bundle supports them
+- `react.file`, `react.patch`, and `react.stream` accept OUT_DIR-relative file targets under the current turn's `files/` area. They do not accept logical `fi:` paths.
+- `react.search_files` accepts only rooted search prefixes:
+  - `outdir`
+  - `outdir/<subdir>`
+  - `workdir`
+  - `workdir/<subdir>`
+- `react.hide` accepts logical block paths such as `ar:`, `fi:`, `tc:`, `so:`, and bundle-provided logical namespaces such as `ks:`.
+- Built-in `react.*` tools do not accept exec-runtime `physical_path` values returned by bundle namespace resolvers.
+- Bundles may extend the React tool surface with additional tools and additional logical path families, but those are bundle-specific contracts.
+
 react.read
 - Purpose: load an existing artifact into the timeline for inspection.
+- Accepts logical paths only. Do not pass exec-runtime resolver `physical_path` values here.
 - Effect:
   - Emits a **status block first** (at `tc:<turn>.<call>.result`) with `paths`, `missing`,
     and `exists_in_visible_context` (dedup).
@@ -62,6 +81,7 @@ react.stream
 - Purpose: generate or stream content for a new artifact.
 - Effect: emits tool.result blocks with streamed content and metadata.
 - If kind='display', content is shown to the user (external). If kind='file', it is recorded as a file.
+- Path contract: OUT_DIR-relative path under the current turn's `files/` area, not a logical `fi:` path.
 Params:
 - path: str (FIRST FIELD). Artifact path under <turn_id>/files/.
 - channel: str (SECOND FIELD). 'canvas' or 'timeline_text'.
@@ -75,6 +95,7 @@ Example result (simplified):
 react.file
 - Purpose: write content to a file path (relative under <turn_id>/files/).
 - Effect: records a file artifact and emits tool.result metadata; content is stored on disk.
+- Path contract: OUT_DIR-relative path under the current turn's `files/` area, not a logical `fi:` path.
 Params:
 - path: str (FIRST FIELD). File path under <turn_id>/files/.
 - content: str (SECOND FIELD). File content.
@@ -85,6 +106,7 @@ Example result (simplified):
 
 react.patch
 - Purpose: patch an existing file and stream the patch.
+- Path contract: OUT_DIR-relative path under the current turn's `files/` area, not a logical `fi:` path and not an exec-runtime resolver `physical_path`.
 - Patch format:
   - If patch starts with ---/+++/@@, treat as unified diff.
   - Otherwise replace the entire file with the patch text.
@@ -124,6 +146,7 @@ react.search_knowledge (bundle‑provided)
 - Purpose: search knowledge space (read‑only reference materials).
 - Availability: only when the active bundle registers this tool (e.g., `react.doc`).
 - Use when you need docs/KB, not conversation history.
+- This is a logical bundle tool surface, separate from exec-only namespace resolver tools.
 Params:
 - query: str (FIRST FIELD). Search query.
 - root: str (optional). `ks:<relpath>` or namespace like `kb` (treated as `ks:kb`).
@@ -140,6 +163,7 @@ react.hide
 - The original content remains retrievable via react.read(path).
 - Enforced tail window: only paths within `RuntimeCtx.cache.editable_tail_size_in_tokens` from the static tail are allowed.
 - Uses a logical path (ar: fi: tc: so: ks:), not a search query.
+- Does not accept exec-runtime resolver `physical_path` values.
 Params:
 - path: str (FIRST FIELD). Block path to hide.
 - replacement: str (SECOND FIELD). Replacement text.
@@ -163,6 +187,7 @@ Params:
   - `react.search_files` does not load file content.
   - For OUT_DIR hits, call `react.read` on the returned `logical_path`.
   - workdir hits are discovery-only with the current toolset.
+  - Do not pass exec-runtime bundle resolver `physical_path` values as `root`.
 Example result (simplified):
 ```json
 {
@@ -176,3 +201,7 @@ Example result (simplified):
 Notes
 - react.* tools are only valid inside the react loop.
 - The React agent must order params exactly as specified in each tool signature.
+- If generated exec code uses a bundle-defined namespace resolver and gets back
+  `{physical_path, access, browseable}`:
+  - `physical_path` is valid only inside that exec runtime and only with the returned access mode
+  - use the resolver input logical_ref itself as the logical base if code wants the agent to continue later with `react.read(...)`

@@ -35,6 +35,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.external.base import (
 from kdcube_ai_app.apps.chat.sdk.runtime.external.distributed_snapshot import (
     snapshot_exec_input,
     ensure_bundle_snapshot,
+    ensure_bundle_storage_snapshot,
     restore_zip_to_dir,
     resolve_exec_snapshot_uri,
 )
@@ -229,6 +230,29 @@ class FargateRuntime(ExternalRuntime):
         except Exception as e:
             if logger:
                 logger.log(f"[fargate] Failed to snapshot bundle: {e}", level="WARNING")
+
+        try:
+            bundle_spec = runtime_globals.get("BUNDLE_SPEC") or {}
+            bundle_id = bundle_spec.get("id") if isinstance(bundle_spec, dict) else None
+            bundle_storage_dir_raw = runtime_globals.get("BUNDLE_STORAGE_DIR")
+            bundle_storage_dir = (
+                pathlib.Path(bundle_storage_dir_raw).resolve()
+                if isinstance(bundle_storage_dir_raw, str) and bundle_storage_dir_raw.strip()
+                else None
+            )
+            if bundle_id and bundle_storage_dir and bundle_storage_dir.exists() and exec_ctx:
+                s = ensure_bundle_storage_snapshot(
+                    tenant=exec_ctx.get("tenant") or exec_ctx.get("tenant_id") or "unknown",
+                    project=exec_ctx.get("project") or exec_ctx.get("project_id") or "unknown",
+                    bundle_id=str(bundle_id),
+                    storage_dir=bundle_storage_dir,
+                )
+                runtime_globals["BUNDLE_STORAGE_SNAPSHOT_URI"] = s.snapshot_uri
+                payload_env["BUNDLE_STORAGE_DIR"] = str(bundle_storage_dir)
+                inline_env["BUNDLE_STORAGE_DIR"] = str(bundle_storage_dir)
+        except Exception as e:
+            if logger:
+                logger.log(f"[fargate] Failed to snapshot bundle storage: {e}", level="WARNING")
 
         try:
             import boto3  # type: ignore

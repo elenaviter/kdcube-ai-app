@@ -145,6 +145,8 @@ WORKSPACE_MODEL_GUIDE = """
 - Conversation artifact memory is broader than the current turn workspace. Historical artifacts live in timeline blocks, turn logs, sources pool, summaries, and hosting, and are pulled into the current turn only when needed.
 - `fi:` is a logical artifact reference and retrieval handle. It is not a general browsable filesystem for the whole conversation history.
 - `ks:` is a read-only permanent space exposed by the loaded bundle. It is separate from turn OUT_DIR. Access it through exact `ks:` paths, bundle search tools, and bundle-specific helpers if they exist.
+- Some bundles may expose exec-only namespace resolver helpers for custom browseable spaces. Those helpers are for generated code inside isolated exec only, not for normal planning-time tool use.
+- If generated code uses a namespace resolver, treat the resolver input logical_ref as the logical base. The returned physical_path is exec-local only.
 - `react.search_files` is only for current-turn physical spaces such as `outdir`, `outdir/<subdir>`, `workdir`, and `workdir/<subdir>`. It does not browse conversation artifact memory.
 - `workdir` is scratch for isolated execution, not stable collaboration state.
 - Write only to the current turn `files/` namespace. Do not treat older turn files as mutable in place.
@@ -204,6 +206,9 @@ HARD:
 - `ctx_tools.fetch_ctx` expects LOGICAL paths, but only supports `ar:`, `tc:`, `so:` namespaces. `fi:`, `ks:`, `sk:`, or `su:` are not supported.
 - Tools that take paths (`react.patch`, `rendering_tools.write_*`) expect PHYSICAL paths.
 - Exec code reads and writes PHYSICAL OUTPUT_DIR-relative paths.
+- Bundle namespace resolvers used inside exec return exec-local physical paths plus access mode. Those physical paths are not valid inputs to react.read or other normal react tools.
+- If exec code browses a resolved namespace root and finds useful descendants, emit logical refs by combining the original resolver input logical_ref with the discovered relative path.
+- Example: resolve `ks:src`, inspect the returned directory in exec, find `foo/bar.py`, then emit `ks:src/foo/bar.py` in an OUTPUT_DIR file or short user.log note so the agent can later call `react.read(["ks:src/foo/bar.py"])`.
 - If you have a physical path, derive logical as above before calling react.read.
 - react.search_files returns `root` plus hits with `path`, `size_bytes`, and optional `logical_path`.
 - `path` is relative to the searched root and does not include that root prefix.
@@ -248,6 +253,19 @@ Physical relative paths can be only used in exec snippets, in react.patch tool a
 Using physical relative paths with react.read will result in protocol violation error.  
 Using physical relative paths with fetch_ctx tool in exec snippets does not work.
 Using unsupported logical namespaces with fetch_ctx returns an error rather than guessing.
+
+#### Custom namespace browsing in exec
+- Some bundles may expose exec-only namespace resolver tools for custom namespaces.
+- Call those tools only from generated code running inside `execute_code_python(...)`.
+- Resolver result shape is `{ok, error, ret}` where `ret` is `{physical_path, access, browseable}`.
+- The returned `physical_path` is valid only inside that isolated exec runtime.
+- Keep the original resolver input `logical_ref` as the logical base.
+- If code browses descendants under the returned `physical_path`, emit follow-up logical refs by combining that original `logical_ref` with the discovered relative path.
+- Example:
+  - input `logical_ref = "ks:src"`
+  - discovered relative path `foo/bar.py`
+  - emit logical ref `ks:src/foo/bar.py`
+- Emit those logical refs in an `OUTPUT_DIR` file or short `user.log` note so the agent can later use `react.read(...)`.
 
 #### react.search_files results
 - `react.search_files` does not load file contents into context.

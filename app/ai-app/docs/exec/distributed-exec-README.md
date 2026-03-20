@@ -46,6 +46,19 @@ Important:
 - it does **not** change the logical result contract seen by the agent
 - the final agent-visible result is still assembled by `exec_tools.py` after the runtime backend returns
 
+Important distinction:
+- `BUNDLE_STORAGE_DIR` is runtime plumbing for the isolated child
+- it is not the agent-facing browsing contract
+- if a bundle wants generated code to browse bundle readonly data safely, the agent-facing contract should be a bundle-defined exec-only namespace resolver tool
+- that tool can return:
+  - `physical_path: str | null`
+  - `access: 'r' | 'rw'`
+  - `browseable: bool`
+- generated code should use the resolver input logical_ref itself as the logical base for any later `react.read(...)` follow-up refs
+- that `physical_path` is valid only inside the current isolated execution runtime
+- generated code may use it only with the permission stated by `access`
+- it is not a stable artifact path and must not be fed back into normal react tool calls
+
 ---
 
 ## Architecture diagrams
@@ -110,23 +123,31 @@ chat-proc (FargateRuntime.run)
 │  3. ensure_bundle_snapshot()  (if bundle tools requested)
 │     → zip bundle dir from EFS
 │     → upload to S3:
-│         cb/tenants/{t}/projects/{p}/ai-bundle-storage/{bundle_id}/bundle.zip
+│         cb/tenants/{t}/projects/{p}/ai-bundle-snapshots/{bundle_id}.{version}.zip
 │     → returns BundleSnapshotInfo with bundle_uri
 │
-│  4. Rewrite TOOL_MODULE_FILES host paths → container paths
+│  4. ensure_bundle_storage_snapshot()  (if bundle readonly storage requested)
+│     → zip the per-bundle storage dir from proc
+│     → upload to S3:
+│         cb/tenants/{t}/projects/{p}/ai-bundle-storage-snapshots/{bundle_id}.{sha}.zip
+│     → returns snapshot URI
+│     → this is transport of readonly bundle data, not direct agent-facing path semantics
+│
+│  5. Rewrite TOOL_MODULE_FILES host paths → container paths
 │       /efs/bundles/{bundle_dir}/tool.py  →  /workspace/bundles/{bundle_dir}/tool.py
 │     Also sets:  BUNDLE_ID, BUNDLE_DIR, BUNDLE_ROOT_CONTAINER in runtime_globals
 │     SKILLS_DESCRIPTOR.custom_skills_root rewritten if within bundle_root
 │
-│  5. Embed into runtime_globals:
+│  6. Embed into runtime_globals:
 │       EXEC_SNAPSHOT.input_work_uri  = s3://bucket/.../input/work.zip
 │       EXEC_SNAPSHOT.input_out_uri   = s3://bucket/.../input/out.zip
 │       EXEC_SNAPSHOT.output_work_uri = s3://bucket/.../output/work.zip
 │       EXEC_SNAPSHOT.output_out_uri  = s3://bucket/.../output/out.zip
 │       BUNDLE_SNAPSHOT_URI           = s3://bucket/.../bundle.zip
+│       BUNDLE_STORAGE_SNAPSHOT_URI   = s3://bucket/.../bundle-storage.zip
 │       BUNDLE_DIR / BUNDLE_ID / BUNDLE_ROOT_CONTAINER
 │
-│  6. ecs.run_task(  [asyncio.to_thread]
+│  7. ecs.run_task(  [asyncio.to_thread]
 │       cluster=FARGATE_CLUSTER,
 │       taskDefinition=FARGATE_TASK_DEFINITION,
 │       launchType=FARGATE,
@@ -135,10 +156,10 @@ chat-proc (FargateRuntime.run)
 │     )
 │     → returns task_arn
 │
-│  7. Poll ecs.describe_tasks every 2s until lastStatus == "STOPPED"  [asyncio.to_thread]
+│  8. Poll ecs.describe_tasks every 2s until lastStatus == "STOPPED"  [asyncio.to_thread]
 │     or deadline exceeded → ecs.stop_task(reason="exec-timeout")
 │
-│  8. restore_zip_to_dir(output_work_uri, local_workdir)
+│  9. restore_zip_to_dir(output_work_uri, local_workdir)
 │     restore_zip_to_dir(output_out_uri, tmp_dir)
 │     → selective merge into local outdir:
 │         logs/    → append
@@ -196,6 +217,26 @@ ECS FARGATE EXEC TASK
 │  │               (rewrites TOOL_MODULE_FILES paths to /workspace/bundles/…)
 │  │       no  → _maybe_restore_bundle_from_git()  (BUNDLE_REPO fallback)
 │  │
+│  ├── _restore_bundle_storage_if_present()
+│  │     BUNDLE_STORAGE_SNAPSHOT_URI present?
+│  │       yes → restore_zip_to_dir → BUNDLE_STORAGE_DIR
+│  │       no  → continue
+│  │
+│  │     Bundle-local exec-only tools may then resolve logical namespace refs
+│  │     (for example ks:docs or ks:src) to exec-visible physical paths under
+│  │     that restored readonly subtree.
+│  │
+│  │     Those returned physical paths are runtime-local only:
+│  │       • valid only inside this exec task
+│  │       • subject to the returned access mode ('r' or 'rw')
+│  │       • not valid as normal react logical or physical artifact paths
+│  │
+│  │     If code wants the agent to follow up later with react.read(...), it must
+│  │     emit logical refs derived from the resolver input logical_ref, for example:
+│  │       logical_ref = "ks:src"
+│  │       discovered relative file = "foo/bar.py"
+│  │       emitted follow-up ref = "ks:src/foo/bar.py"
+│  │
 │  ├── baseline_work = build_manifest(workdir)   (for delta upload)
 │  ├── baseline_out  = build_manifest(outdir)
 │  │
@@ -237,9 +278,45 @@ cb/tenants/{tenant}/projects/{project}/
         work.zip      ← workdir delta after execution
         out.zip       ← outdir delta after execution (turn_*, logs/)
 
-  ai-bundle-storage/
-    {bundle_id}/
-      bundle.zip      ← bundle snapshot (written once, reused across exec calls)
+  ai-bundle-snapshots/
+    {bundle_id}.{version}.zip
+    {bundle_id}.{version}.sha256
+      ← bundle code snapshot
+
+  ai-bundle-storage-snapshots/
+    {bundle_id}.{sha}.zip
+    {bundle_id}.{sha}.sha256
+      ← per-bundle readonly data snapshot (content-addressed)
+
+---
+
+## Namespace resolution on top of readonly bundle data
+
+Distributed exec transports three physical classes of data into the child runtime:
+- `WORKDIR=/workspace/work`
+- `OUTPUT_DIR=/workspace/out`
+- readonly per-bundle data restored to `BUNDLE_STORAGE_DIR`
+
+But the agent should not be taught to browse `BUNDLE_STORAGE_DIR` directly.
+
+Preferred model:
+1. a bundle exposes an exec-only resolver tool for its own namespace semantics
+2. generated code calls that tool inside exec
+3. the tool returns:
+   - `physical_path: str | null`
+   - `access: 'r' | 'rw'`
+   - `browseable: bool`
+4. generated code reads that path if appropriate
+5. if code wants later `react.read(...)` follow-up, it emits logical refs derived from the original resolver input logical_ref
+   - example: `logical_ref="ks:src"` plus discovered relative file `foo/bar.py` becomes `ks:src/foo/bar.py`
+6. generated code propagates useful results back through:
+   - files under `OUTPUT_DIR`
+   - and/or short `user.log` output
+
+This keeps:
+- transport concerns in the distributed exec runtime
+- namespace semantics in the bundle
+- agent-visible outcome in the normal exec reporting path
 ```
 
 **Snapshot filter** — excluded from both input and output zips:

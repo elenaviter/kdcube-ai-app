@@ -53,7 +53,7 @@ knowledge:
   validate_refs: true
 ```
 
-The repo is cloned into **bundle local storage** (shared bundle storage root):
+The repo is cloned into **bundle local storage** under this bundle's own storage subtree:
 ```
 <bundle_storage>/repos/<repo>__<bundle_id>__<ref>/
 ```
@@ -69,6 +69,113 @@ Then `knowledge.docs_root` and `knowledge.src_root` are resolved against that re
   index.json
   index.md
 ```
+
+For this bundle specifically:
+- `self.bundle_storage_root()` returns the bundle's per-bundle storage directory
+- `entrypoint.py` passes that path as `knowledge_root=ws_root`
+
+So in `react.doc`:
+- `knowledge_root == self.bundle_storage_root()`
+- but `knowledge_root` is **not** the same thing as the shared `BUNDLE_STORAGE_ROOT`
+- it is one bundle-specific subtree under that shared root
+
+That subtree contains both:
+- the built knowledge-space files (`docs/`, `src/`, `deploy/`, `index.json`, `index.md`)
+- and helper storage such as `repos/...` used to clone/fetch the source repository
+
+In external isolated execution, this directory is now transported too:
+
+- Docker external exec: the per-bundle storage dir is bind-mounted read-only into the child container
+- Fargate external exec: the per-bundle storage dir is snapshotted and restored into the exec task
+
+Inside isolated exec, `BUNDLE_STORAGE_DIR` points at that physical directory.
+`knowledge/resolver.py` falls back to `BUNDLE_STORAGE_DIR` when `KNOWLEDGE_ROOT`
+has not already been initialized by the main bundle entrypoint.
+
+### Where the data is physically
+
+This bundle uses three distinct physical areas during external exec:
+- `workdir` — generated Python program and scratch runtime files
+- `outdir` — writable outputs and logs
+- bundle storage / `knowledge_root` — readonly knowledge space data for the child runtime
+
+#### Path matrix
+
+| Area | Host-side root in Docker-on-EC2 mode | `chat-proc` visible path | Isolated exec visible path | Notes |
+| --- | --- | --- | --- | --- |
+| workdir | `HOST_EXEC_WORKSPACE_PATH/ctx_<id>/work` | `EXEC_WORKSPACE_ROOT/ctx_<id>/work` | `WORKDIR=/workspace/work` | generated `main.py`, scratch files |
+| outdir | `HOST_EXEC_WORKSPACE_PATH/ctx_<id>/out` | `EXEC_WORKSPACE_ROOT/ctx_<id>/out` | `OUTPUT_DIR=/workspace/out` | contract files, logs, execution results |
+| shared bundle-storage root | `HOST_BUNDLE_STORAGE_PATH` | `BUNDLE_STORAGE_ROOT` | not directly exposed as an agent contract | shared parent root |
+| `react.doc` per-bundle subtree | `HOST_BUNDLE_STORAGE_PATH/<bundle-subdir>` | `BUNDLE_STORAGE_ROOT/<bundle-subdir>` | `BUNDLE_STORAGE_DIR=<same bundle subdir path>` | readonly in external exec |
+
+Notes:
+- `knowledge_root` for this bundle is that per-bundle storage subtree.
+- The exact `<bundle-subdir>` is not a public agent contract. Bundle/runtime code computes it.
+- Inside that subtree, `react.doc` stores both `repos/...` and the built knowledge-space files.
+- In external exec, the child should treat `BUNDLE_STORAGE_DIR` as readonly.
+
+#### What `react.doc` stores in that subtree
+
+```text
+<per-bundle-subtree>/              # this bundle's knowledge_root
+  repos/
+    <repo>__react.doc.knowledge__<ref>/...
+  docs/
+  src/
+  deploy/
+  index.json
+  index.md
+```
+
+#### Docker external exec on ECS/EC2
+
+```mermaid
+flowchart LR
+    subgraph H["Host filesystem"]
+        HWD["HOST_EXEC_WORKSPACE_PATH/ctx_<id>/work"]
+        HOD["HOST_EXEC_WORKSPACE_PATH/ctx_<id>/out"]
+        HBS["HOST_BUNDLE_STORAGE_PATH"]
+        HKS["HOST_BUNDLE_STORAGE_PATH/<bundle-subdir>"]
+    end
+
+    subgraph P["chat-proc container"]
+        PWD["EXEC_WORKSPACE_ROOT/ctx_<id>/work"]
+        POD["EXEC_WORKSPACE_ROOT/ctx_<id>/out"]
+        PBS["BUNDLE_STORAGE_ROOT"]
+        PKS["BUNDLE_STORAGE_ROOT/<bundle-subdir> = knowledge_root"]
+    end
+
+    subgraph X["Isolated exec sandbox"]
+        XWD["/workspace/work  (WORKDIR)"]
+        XOD["/workspace/out   (OUTPUT_DIR)"]
+        XKS["BUNDLE_STORAGE_DIR  (readonly knowledge_root)"]
+    end
+
+    HWD --> PWD --> XWD
+    HOD --> POD --> XOD
+    HBS --> PBS
+    HKS --> PKS --> XKS
+```
+
+Interpretation:
+- `workdir` and `outdir` are rebased into `/workspace/...` inside the sandbox.
+- `BUNDLE_STORAGE_ROOT` is the shared parent root in `chat-proc`.
+- `knowledge_root` is the `react.doc` per-bundle subtree under that parent root.
+- `knowledge_root` is not rebased into `OUTPUT_DIR`.
+- The knowledge space is exposed as its own readonly subtree through `BUNDLE_STORAGE_DIR`.
+
+#### Fargate external exec
+
+In Fargate mode there is no shared host bind mount into the child runtime.
+Instead:
+- `workdir` is snapshotted and restored into `/workspace/work`
+- `outdir` is snapshotted and restored into `/workspace/out`
+- bundle storage / `knowledge_root` is snapshotted and restored into `BUNDLE_STORAGE_DIR`
+
+So the child runtime still sees the same three classes of data:
+- scratch `workdir`
+- writable `outdir`
+- readonly knowledge space
 
 4) **Path scheme**
 - `ks:index.md` — short index for navigation.
@@ -90,8 +197,27 @@ React tooling (bundle‑provided):
 - `react.read(["ks:src/<path>"])` — open a source file.
 - `react.search_knowledge(query, root="ks:deploy")` — search deployment docs.
 - `react.read(["ks:deploy/<path>"])` — open deployment files.
+- `bundle_data.resolve_namespace(logical_ref)` — exec-only resolver for generated code. Returns `{ok, error, ret}` where `ret` is `{physical_path: str | null, access: 'r' | 'rw', browseable: bool}`.
+  - `physical_path` is usable only inside isolated exec.
+  - use the input `logical_ref` itself as the logical base for later `react.read(...)` follow-up.
 You can optionally pass `keywords=[...]` to `react.search_knowledge` to bias ranking
 toward specific tags or terms.
+
+Important:
+- `bundle_data.resolve_namespace(...)` is **not** a normal planning-time browsing tool.
+- It is intended only for generated Python running inside `execute_code_python(...)`.
+- Outside isolated exec it returns an error by design.
+- Because this tool runs only inside generated exec code, the agent sees its result only if that code propagates it out:
+  - write a summary/result file under `OUTPUT_DIR/...`
+  - and/or print short diagnostics to `user.log`
+- Practical pattern:
+  - set `logical_base = "ks:src"`
+  - resolve `logical_base`
+  - inspect files under the returned `physical_path`
+  - if code finds a useful file at relative path `foo/bar.py`, emit logical ref `f"{logical_base}/foo/bar.py"`
+  - the agent can later call `react.read(["ks:src/foo/bar.py"])`
+- For the exact propagation model, see:
+  - `ks:docs/exec/exec-logging-error-propagation-README.md`
 
 The **product skill** (`skills/product/kdcube/SKILL.md`) tells the agent to:
 1) Read `ks:index.md` for entry points.
@@ -100,7 +226,9 @@ The **product skill** (`skills/product/kdcube/SKILL.md`) tells the agent to:
 
 Tool registration:
 - The bundle defines `react.search_knowledge` in `tools/react_tools.py`.
+- The bundle defines `bundle_data.resolve_namespace` in `tools/exec_space_tools.py`.
 - Tools are registered via `tools_descriptor.py` with alias `react`.
+  The exec-only resolver is registered separately with alias `bundle_data`.
 
 ## Search resolver (how it works)
 

@@ -58,6 +58,13 @@ class BundleSnapshotInfo:
     bundle_sha256: str
 
 
+@dataclass
+class BundleStorageSnapshotInfo:
+    bundle_id: str
+    snapshot_uri: str
+    snapshot_sha256: str
+
+
 def build_exec_storage_prefix(
     *,
     tenant: str,
@@ -384,6 +391,42 @@ def ensure_bundle_snapshot(
     uri = _uri_for_path(storage_uri, rel_zip)
 
     return BundleSnapshotInfo(bundle_id=bundle_id, bundle_version=version, bundle_uri=uri, bundle_sha256=sha256)
+
+
+def ensure_bundle_storage_snapshot(
+    *,
+    tenant: str,
+    project: str,
+    bundle_id: str,
+    storage_dir: pathlib.Path,
+    storage_uri: Optional[str] = None,
+) -> BundleStorageSnapshotInfo:
+    storage_uri = storage_uri or _storage_uri()
+
+    backend = create_storage_backend(storage_uri)
+    data, _ = _zip_dir(storage_dir, skip_dirs=_SKIP_DIRS_DEFAULT, skip_files=set())
+    sha256 = _sha256_bytes(data)
+    version = sha256[:12]
+
+    rel_zip = (
+        f"cb/tenants/{tenant}/projects/{project}/ai-bundle-storage-snapshots/"
+        f"{bundle_id}.{version}.zip"
+    )
+    rel_sha = (
+        f"cb/tenants/{tenant}/projects/{project}/ai-bundle-storage-snapshots/"
+        f"{bundle_id}.{version}.sha256"
+    )
+
+    if not backend.exists(rel_zip):
+        backend.write_bytes(rel_zip, data, meta={"ContentType": "application/zip"})
+        backend.write_bytes(rel_sha, (sha256 + "\n").encode("utf-8"), meta={"ContentType": "text/plain"})
+
+    uri = _uri_for_path(storage_uri, rel_zip)
+    return BundleStorageSnapshotInfo(
+        bundle_id=bundle_id,
+        snapshot_uri=uri,
+        snapshot_sha256=sha256,
+    )
 
 
 def restore_zip_to_dir(uri: str, dest_dir: pathlib.Path) -> None:

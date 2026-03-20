@@ -20,6 +20,42 @@ For the runtime/deployment internals, see:
 - [exec-logging-error-propagation-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/exec/exec-logging-error-propagation-README.md)
 - [distributed-exec-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/exec/distributed-exec-README.md)
 
+### Bundle code vs bundle readonly data
+
+External exec transports two different bundle-side inputs:
+
+- bundle code root
+- per-bundle readonly storage dir
+
+The bundle code root is where bundle-local tools live, for example:
+
+- `tools/react_tools.py`
+- `knowledge/resolver.py`
+
+The per-bundle readonly storage dir is where bundles keep prepared local data such as:
+
+- cloned docs repos
+- built indexes
+- cached read-only knowledge space files
+
+Inside isolated exec, that directory is exposed at `BUNDLE_STORAGE_DIR`.
+
+Current transport behavior:
+
+- Docker external exec:
+  - bundle code root is mounted read-only
+  - `BUNDLE_STORAGE_DIR` is mounted read-only
+- Fargate external exec:
+  - bundle code root is snapshotted and restored
+  - `BUNDLE_STORAGE_DIR` is snapshotted and restored
+
+Example: `react.doc`
+
+- bundle code lives under `/bundles/react.doc@...`
+- its built knowledge space lives under the per-bundle storage dir
+- `react.search_knowledge(...)` reads that physical knowledge space through `knowledge/resolver.py`
+- if isolated exec loads the resolver without having run the bundle entrypoint first, the resolver falls back to `BUNDLE_STORAGE_DIR`
+
 ### What the agent calls
 
 The public tool is `exec_tools.execute_code_python(...)` in [exec_tools.py](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/services/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/tools/exec_tools.py).

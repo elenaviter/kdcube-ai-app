@@ -86,6 +86,11 @@ TOOLS_SPECS: List[Dict[str, Any]] = [
         "alias": "react",
         "use_sk": True,
     },
+    {
+        "ref": "tools/exec_space_tools.py",     # Exec-only namespace resolver for generated code
+        "alias": "bundle_data",
+        "use_sk": True,
+    },
 ]
 
 # ──────────────────────────────────────────────────────────────

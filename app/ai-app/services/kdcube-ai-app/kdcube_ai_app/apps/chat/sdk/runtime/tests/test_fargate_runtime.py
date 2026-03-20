@@ -461,6 +461,109 @@ async def test_fargate_runtime_logs_run_task_exception(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fargate_runtime_snapshots_bundle_storage_when_present(monkeypatch, tmp_path):
+    class _Snapshot:
+        storage_uri = "s3://bucket"
+        base_prefix = "cb/tenants/demo/projects/demo/executions/registered/user/conv/turn/run/exec"
+        input_work_uri = "s3://bucket/in-work.zip"
+        input_out_uri = "s3://bucket/in-out.zip"
+        output_work_uri = "s3://bucket/out-work.zip"
+        output_out_uri = "s3://bucket/out-out.zip"
+
+    class _BundleSnapshot:
+        bundle_uri = "s3://bucket/bundle.zip"
+
+    class _BundleStorageSnapshot:
+        snapshot_uri = "s3://bucket/bundle-storage.zip"
+
+    class _FakeEcsClient:
+        def run_task(self, **_kwargs):
+            return {"tasks": []}
+
+    captured_payload = {}
+    fake_ecs = _FakeEcsClient()
+
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.external.fargate.snapshot_exec_input",
+        lambda **_kwargs: _Snapshot(),
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.external.fargate.build_exec_snapshot_workspace",
+        lambda **kwargs: {"workdir": kwargs["workdir"], "outdir": kwargs["outdir"]},
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.external.fargate.ensure_bundle_snapshot",
+        lambda **_kwargs: _BundleSnapshot(),
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.external.fargate.ensure_bundle_storage_snapshot",
+        lambda **_kwargs: _BundleStorageSnapshot(),
+    )
+    def _capture_payload(**kwargs):
+        captured_payload["payload"] = kwargs["payload"]
+        return "secret-id"
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.external.fargate.put_exec_payload_secret",
+        _capture_payload,
+    )
+    monkeypatch.setattr(
+        "kdcube_ai_app.apps.chat.sdk.runtime.external.fargate.delete_exec_payload_secret",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "boto3",
+        types.SimpleNamespace(client=lambda *_args, **_kwargs: fake_ecs),
+    )
+
+    workdir = tmp_path / "work"
+    outdir = tmp_path / "out"
+    bundle_root = tmp_path / "bundle"
+    bundle_storage_dir = tmp_path / "bundle-storage" / "tenant" / "project" / "react.doc__main"
+    workdir.mkdir()
+    outdir.mkdir()
+    bundle_root.mkdir()
+    bundle_storage_dir.mkdir(parents=True)
+    logger = _CaptureLogger()
+    request = ExternalExecRequest(
+        workdir=pathlib.Path(workdir),
+        outdir=pathlib.Path(outdir),
+        bundle_root=pathlib.Path(bundle_root),
+        runtime_globals={
+            "BUNDLE_SPEC": {
+                "id": "react.doc",
+                "module": "entrypoint",
+                "version": "main",
+            },
+            "EXEC_CONTEXT": {
+                "tenant": "tenant",
+                "project": "project",
+            },
+            "BUNDLE_STORAGE_DIR": str(bundle_storage_dir),
+            "EXEC_RUNTIME_CONFIG": {
+                "mode": "fargate",
+                "enabled": True,
+                "region": "eu-west-1",
+                "cluster": "arn:aws:ecs:eu-west-1:123456789012:cluster/demo",
+                "task_definition": "demo-exec",
+                "container_name": "exec",
+                "subnets": ["subnet-a"],
+                "security_groups": ["sg-a"],
+            },
+        },
+        tool_module_names=[],
+        timeout_s=30,
+    )
+
+    res = await FargateRuntime().run(request, logger=logger)
+
+    assert res.ok is False
+    payload = captured_payload["payload"]
+    assert payload["runtime_globals"]["BUNDLE_STORAGE_SNAPSHOT_URI"] == "s3://bucket/bundle-storage.zip"
+    assert payload["env"]["BUNDLE_STORAGE_DIR"] == str(bundle_storage_dir)
+
+
+@pytest.mark.asyncio
 async def test_fargate_runtime_fails_before_run_task_when_overrides_too_large(monkeypatch, tmp_path):
     class _Snapshot:
         storage_uri = "file:///tmp"

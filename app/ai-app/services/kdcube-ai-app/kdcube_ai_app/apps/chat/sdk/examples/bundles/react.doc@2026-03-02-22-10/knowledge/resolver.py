@@ -23,7 +23,9 @@ from __future__ import annotations
 import json
 import pathlib
 import importlib.util
+import os
 import sys
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
 try:
@@ -46,6 +48,32 @@ except Exception:
 
 # Set by prepare_knowledge_space(); shared across entrypoint + tools
 KNOWLEDGE_ROOT: Optional[pathlib.Path] = None
+
+
+def _safe_knowledge_relpath(rel: str) -> bool:
+    if rel is None:
+        return False
+    raw = str(rel).replace("\\", "/").strip()
+    if not raw:
+        return True
+    p = PurePosixPath(raw)
+    if p.is_absolute():
+        return False
+    return all(part not in {"..", ""} for part in p.parts)
+
+
+def _ensure_knowledge_root() -> Optional[pathlib.Path]:
+    global KNOWLEDGE_ROOT
+    if KNOWLEDGE_ROOT:
+        return KNOWLEDGE_ROOT
+    raw = (os.environ.get("BUNDLE_STORAGE_DIR") or "").strip()
+    if not raw:
+        return None
+    candidate = pathlib.Path(raw).expanduser().resolve()
+    if not candidate.exists():
+        return None
+    KNOWLEDGE_ROOT = candidate
+    return KNOWLEDGE_ROOT
 
 
 def prepare_knowledge_space(
@@ -81,6 +109,50 @@ def _load_index(root: pathlib.Path) -> Dict[str, Any]:
         return {}
 
 
+def resolve_exec_namespace(*, logical_ref: str, **kwargs: Any) -> Dict[str, Any]:
+    """
+    Resolve a react.doc knowledge-space selector or path to an exec-visible physical path.
+
+    This bundle currently exposes ks: against KNOWLEDGE_ROOT / BUNDLE_STORAGE_DIR.
+    The returned physical_path is valid only inside isolated exec.
+    If generated code browses descendants under that path, it should use the
+    input logical_ref as the logical base when emitting follow-up refs for later
+    react.read(...) calls.
+    """
+    raw = str(logical_ref or "").strip()
+    unavailable = {
+        "physical_path": None,
+        "access": "r",
+        "browseable": False,
+    }
+    if not raw:
+        return unavailable
+    if not raw.startswith("ks:"):
+        return unavailable
+    if not _ensure_knowledge_root():
+        return unavailable
+
+    rel = raw[len("ks:"):].lstrip("/")
+    if not _safe_knowledge_relpath(rel):
+        return unavailable
+
+    root = pathlib.Path(KNOWLEDGE_ROOT).resolve()
+    target = (root / rel).resolve() if rel else root
+    try:
+        target.relative_to(root)
+    except Exception:
+        return unavailable
+
+    if not target.exists():
+        return unavailable
+
+    return {
+        "physical_path": str(target),
+        "access": "r",
+        "browseable": bool(target.is_dir()),
+    }
+
+
 def _tokenize(text: str) -> List[str]:
     parts = []
     for raw in text.lower().strip().split():
@@ -104,7 +176,7 @@ def search_knowledge(
     """
     if not query:
         return []
-    if not KNOWLEDGE_ROOT:
+    if not _ensure_knowledge_root():
         return []
     index = _load_index(KNOWLEDGE_ROOT)
     items = list(index.get("items") or [])
@@ -200,7 +272,7 @@ def read_knowledge(*, path: str, **kwargs: Any) -> Dict[str, Any]:
     """
     if not path or not isinstance(path, str):
         return {"missing": True}
-    if not KNOWLEDGE_ROOT:
+    if not _ensure_knowledge_root():
         return {"missing": True}
     raw = path.strip()
     if raw.startswith("ks:"):

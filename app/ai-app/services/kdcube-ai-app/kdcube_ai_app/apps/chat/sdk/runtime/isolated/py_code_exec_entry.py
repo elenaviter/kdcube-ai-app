@@ -196,6 +196,25 @@ def _restore_bundle_if_present(
         return runtime_globals
 
 
+def _restore_bundle_storage_if_present(
+    runtime_globals: Dict[str, Any],
+    logger: AgentLogger,
+) -> None:
+    uri = runtime_globals.get("BUNDLE_STORAGE_SNAPSHOT_URI")
+    if not uri:
+        return
+    dest_raw = os.environ.get("BUNDLE_STORAGE_DIR") or runtime_globals.get("BUNDLE_STORAGE_DIR")
+    if not dest_raw:
+        logger.log("[exec.bundle_storage] Snapshot provided but BUNDLE_STORAGE_DIR is unset", "WARNING")
+        return
+    dest_dir = pathlib.Path(str(dest_raw)).resolve()
+    try:
+        restore_zip_to_dir(str(uri), dest_dir)
+        logger.log(f"[exec.bundle_storage] Restored readonly bundle storage to {dest_dir} from {uri}", "INFO")
+    except Exception as e:
+        logger.log(f"[exec.bundle_storage] Failed to restore readonly bundle storage: {e}", "ERROR")
+
+
 def _maybe_restore_bundle_from_git(
     runtime_globals: Dict[str, Any],
     logger: AgentLogger,
@@ -590,6 +609,7 @@ async def _async_main() -> int:
 
     runtime_globals = _load_runtime_globals()
     runtime_globals = _restore_bundle_if_present(runtime_globals, logger)
+    _restore_bundle_storage_if_present(runtime_globals, logger)
     tool_module_names = _load_tool_module_names()
     spec_str = _portable_spec_str(runtime_globals)
 

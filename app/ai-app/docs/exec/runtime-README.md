@@ -11,6 +11,13 @@ see_also:
 ---
 # **Isolated Code Execution Architecture (Docker + External Modes)**
 
+Important distinction used throughout this document:
+
+- **bundle code root** = bundle-local Python/code files such as `tools/react_tools.py`
+- **bundle readonly data** = prepared local bundle data such as built knowledge indexes, cloned docs repos, and other per-bundle cached assets
+
+These are transported separately in external exec.
+
 ## **Diagram 1: Detailed Execution Flow (Docker Mode)**
 
 ```
@@ -33,6 +40,8 @@ see_also:
 │  │ docker run --network host --cap-add=SYS_ADMIN                 │    │
 │  │   -v /host/workdir:/workspace/work:rw                         │    │
 │  │   -v /host/outdir:/workspace/out:rw                           │    │
+│  │   -v /host/bundles/<bundle_id>:/bundles/<bundle_id>:ro        │    │
+│  │   -v /host/bundle-storage/...:/bundle-storage/...:ro          │    │
 │  │   -e RUNTIME_GLOBALS_JSON='{"PORTABLE_SPEC_JSON":{...},...}'  │    │
 │  │   py-code-exec:latest                                         │    │
 │  └───────────────────────────────────┬─────────────────────────────┘    │
@@ -130,8 +139,8 @@ see_also:
 │                                                                       │  │
 │  Results written to: /workspace/out/result.json                      │  │
 │  Tool calls logged:  /workspace/out/<tool>_<ts>.json                 │  │
-│  Runtime logs:       /workspace/out/runtime.out.log                  │  │
-│                      /workspace/out/runtime.err.log                  │  │
+│  Runtime logs:       /workspace/out/logs/...                         │  │
+│  Readonly bundle data: BUNDLE_STORAGE_DIR                            │  │
 └─────────────────────────────────────────────────────────────────────────┘
                                        │
                                        ▼
@@ -205,6 +214,10 @@ see_also:
 │  │ Remote task (ECS/Fargate/other)                                │    │
 │  │                                                                │    │
 │  │  • Host snapshots workdir/outdir to storage                    │    │
+│  │  • Host snapshots bundle code root when bundle-local tools     │    │
+│  │    are needed                                                   │    │
+│  │  • Host snapshots per-bundle readonly data when bundle-local   │    │
+│  │    prepared data is needed                                      │    │
 │  │  • Remote restores input snapshot                              │    │
 │  │  • Executes same supervisor+executor entrypoint                │    │
 │  │  • Uploads output snapshots                                    │    │
@@ -351,15 +364,28 @@ cb/tenants/<tenant>/projects/<project>/executions/<user_type>/<user_or_fp>/<conv
   output/
     work.zip
     out.zip
+
+cb/tenants/<tenant>/projects/<project>/ai-bundle-snapshots/
+  <bundle_id>.<version>.zip
+  <bundle_id>.<version>.sha256
+
+cb/tenants/<tenant>/projects/<project>/ai-bundle-storage-snapshots/
+  <bundle_id>.<sha>.zip
+  <bundle_id>.<sha>.sha256
 ```
 
 ### Flow summary
 - Host creates input snapshots (workdir + outdir).
+- If bundle-local tools are used, host snapshots the bundle code root.
+- If bundle-local readonly data is used, host snapshots the per-bundle readonly storage dir.
 - Remote executor restores input zips before supervisor bootstrap.
+- Remote executor restores bundle code snapshot and bundle readonly data snapshot before running user code.
 - After execution, remote uploads output zips (delta-only by default).
 - Host downloads output zips and merges into local workdir/outdir.
 
 ### Notes
 - Tool call files are timestamp-suffixed; index file is still used for grouping.
-- Bundle snapshot is restored when tools are bundle-local (see `external-exec-README.md`).
+- Bundle code snapshot is restored when tools are bundle-local.
+- Bundle readonly data snapshot is restored to `BUNDLE_STORAGE_DIR` when the bundle needs prepared local data.
+- Example: `react.doc` keeps its built knowledge space in per-bundle storage and reads it in isolated exec via `BUNDLE_STORAGE_DIR`.
 - Additional implementation notes: [external-exec-README.md](../sdk/agents/react/external-exec-README.md)
