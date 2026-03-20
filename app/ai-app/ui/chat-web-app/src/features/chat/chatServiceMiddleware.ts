@@ -4,7 +4,8 @@ import {
     ChatEventHandlers,
     ChatMessage,
     ChatRequest,
-    ChatServiceEnvelope
+    ChatServiceEnvelope,
+    RateLimitPayload,
 } from "../chatController/chatBase.ts";
 import {v4 as uuidv4} from "uuid";
 import {AppStore, RootState} from "../../app/store.ts";
@@ -153,26 +154,27 @@ export const chatServiceMiddleware = (transportType: TransportType): Middleware 
             }
         }
 
-        const formatResetTime = (retryAfterSec: number): string => {
-            const resetAt = new Date(Date.now() + retryAfterSec * 1000);
-            const now = new Date();
-
-            const timeStr = resetAt.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
-
-            const todayDate = now.toDateString();
-            const resetDate = resetAt.toDateString();
-
-            const tomorrowDate = new Date(now);
-            tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-
-            if (resetDate === todayDate) {
-                return `today at ${timeStr}`;
-            } else if (resetDate === tomorrowDate.toDateString()) {
-                return `tomorrow at ${timeStr}`;
-            } else {
-                const dateStr = resetAt.toLocaleDateString([], {month: "long", day: "numeric"});
-                return `on ${dateStr} at ${timeStr}`;
+        const _fallbackRateLimitMessage = (rateLimit: RateLimitPayload | undefined, data: Record<string, unknown>): string => {
+            const retryAfterSec = rateLimit?.retry_after_sec ?? null;
+            const reason = data.reason as string | undefined;
+            if (retryAfterSec && retryAfterSec > 0 && rateLimit) {
+                const resetText = rateLimit.reset_text ?? (() => {
+                    const resetAt = new Date(Date.now() + retryAfterSec * 1000);
+                    const now = new Date();
+                    const timeStr = resetAt.toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+                    const tomorrow = new Date(now);
+                    tomorrow.setDate(tomorrow.getDate() + 1);
+                    if (resetAt.toDateString() === now.toDateString()) return `today at ${timeStr}`;
+                    if (resetAt.toDateString() === tomorrow.toDateString()) return `tomorrow at ${timeStr}`;
+                    return `on ${resetAt.toLocaleDateString([], {month: "long", day: "numeric"})} at ${timeStr}`;
+                })();
+                return `You've reached your usage limit. Your quota resets ${resetText}.`;
             }
+            if (reason === "concurrency" || reason?.includes("concurrent")) return "You have too many requests running at once. Please wait for one to complete.";
+            if (reason === "quota_lock_timeout") return "Too many requests are being processed right now. Please try again in a moment.";
+            if (reason?.includes("token")) return "You've reached your token limit. Try again later or upgrade your plan.";
+            if (reason?.includes("request")) return "You've reached your request limit. Try again later or upgrade your plan.";
+            return "You've reached your usage limit. Please try again later.";
         };
 
         const handleServiceMessage = (env: ChatServiceEnvelope) => {
@@ -219,47 +221,15 @@ export const chatServiceMiddleware = (transportType: TransportType): Middleware 
                     break;
                 }
                 case "rate_limit.denied": {
-                    const retryAfterSec = rateLimit?.retry_after_sec ?? null;
-                    const reason = data.reason as string | undefined;
-
-                    let message: string;
-
-                    if (retryAfterSec && retryAfterSec > 0) {
-                        const resetText = formatResetTime(retryAfterSec);
-                        message = `You've reached your usage limit. Your quota resets ${resetText}.`;
-                    } else if (reason === "concurrency" || reason?.includes("concurrent")) {
-                        message = "You have too many requests running at once. Please wait for one to complete.";
-                    } else if (reason === "quota_lock_timeout") {
-                        message = "Too many requests are being processed right now. Please try again in a moment.";
-                    } else if (reason?.includes("tokens")) {
-                        message = "You've reached your token limit. Try again later or upgrade your plan.";
-                    } else if (reason?.includes("requests")) {
-                        message = "You've reached your request limit. Try again later or upgrade your plan.";
-                    } else {
-                        message = "You've reached your usage limit. Please try again later.";
-                    }
-
-                    dispatch(pushNotification({
-                        type: "error",
-                        text: message,
-                    }))
+                    const serverMessage = rateLimit?.user_message ?? (data.user_message as string | undefined) ?? null;
+                    const message = serverMessage ?? _fallbackRateLimitMessage(rateLimit, data);
+                    dispatch(pushNotification({type: "error", text: message}))
                     break;
                 }
                 case "rate_limit.post_run_exceeded": {
-                    const retryAfterSec = rateLimit?.retry_after_sec ?? null;
-
-                    let message: string;
-                    if (retryAfterSec && retryAfterSec > 0) {
-                        const resetText = formatResetTime(retryAfterSec);
-                        message = `You've reached your usage limit. Your quota resets ${resetText}.`;
-                    } else {
-                        message = "You've reached your usage limit. Please try again later.";
-                    }
-
-                    dispatch(pushNotification({
-                        type: "error",
-                        text: message,
-                    }))
+                    const serverMessage = rateLimit?.user_message ?? null;
+                    const message = serverMessage ?? _fallbackRateLimitMessage(rateLimit, data);
+                    dispatch(pushNotification({type: "error", text: message}))
                     break;
                 }
                 case "rate_limit.project_exhausted": {

@@ -141,6 +141,8 @@ export interface RateLimitPayload {
     retry_scope: "hour" | "day" | "month" | "total" | null;
 
     retry_after_hours?: number | null;
+    reset_text?: string | null;
+    user_message?: string | null;
 
     snapshot?: RateLimitSnapshot;
     reason?: string | null;

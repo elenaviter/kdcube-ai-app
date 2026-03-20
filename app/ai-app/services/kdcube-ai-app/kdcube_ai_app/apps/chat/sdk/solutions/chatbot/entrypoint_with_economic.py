@@ -13,6 +13,7 @@ import json
 import math
 import secrets
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from uuid import uuid4, UUID
 
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
@@ -275,6 +276,40 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 return _merge_policy_with_plan_override(base_policy, plan_balance)
             return fallback_policy
 
+        def _format_reset_time(
+            *,
+            retry_after_sec: int,
+            now: Optional[datetime] = None,
+            user_timezone: Optional[str] = None,
+        ) -> str:
+            try:
+                tz = ZoneInfo(user_timezone) if user_timezone else timezone.utc
+            except ZoneInfoNotFoundError:
+                tz = timezone.utc
+            base = (now or datetime.now(timezone.utc)).astimezone(tz)
+            reset_at = base + timedelta(seconds=retry_after_sec)
+            time_str = reset_at.strftime("%-I:%M %p")
+            if reset_at.date() == base.date():
+                return f"today at {time_str}"
+            tomorrow = (base + timedelta(days=1)).date()
+            if reset_at.date() == tomorrow:
+                return f"tomorrow at {time_str}"
+            date_str = reset_at.strftime("%B %-d")
+            return f"on {date_str} at {time_str}"
+
+        def _build_user_message(*, reason: Optional[str], reset_text: Optional[str]) -> str:
+            if reset_text:
+                return f"You've reached your usage limit. Your quota resets {reset_text}."
+            if reason == "quota_lock_timeout":
+                return "Too many requests are being processed right now. Please try again in a moment."
+            if reason in ("concurrency", "max_concurrent") or (reason and "concurrent" in reason):
+                return "You have too many requests running at once. Please wait for one to complete."
+            if reason and "token" in reason:
+                return "You've reached your token limit. Try again later or upgrade your plan."
+            if reason and "request" in reason:
+                return "You've reached your request limit. Try again later or upgrade your plan."
+            return "You've reached your usage limit. Please try again later."
+
         def _retry_after_for_turn_shortfall(
             *,
             policy: QuotaPolicy,
@@ -367,9 +402,17 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                 payload["retry_scope"] = retry_scope
 
             retry_after_hours = None
+            reset_text = None
             if retry_after_sec:
                 retry_after_hours = math.ceil(int(retry_after_sec) / 3600)
+                reset_text = _format_reset_time(
+                    retry_after_sec=int(retry_after_sec),
+                    now=now,
+                    user_timezone=getattr(getattr(getattr(self, "comm_context", None), "user", None), "timezone", None),
+                )
             payload["retry_after_hours"] = retry_after_hours
+            payload["reset_text"] = reset_text
+            payload["user_message"] = _build_user_message(reason=reason, reset_text=reset_text)
             if needed_tokens is not None:
                 payload["needed_tokens"] = int(needed_tokens)
             return payload
@@ -477,6 +520,7 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                         event_type="rate_limit.denied",
                         data={
                             "reason": "quota_lock_timeout",
+                            "user_message": _build_user_message(reason="quota_lock_timeout", reset_text=None),
                             "bundle_id": bundle_id,
                             "subject_id": self.subj,
                             "user_type": user_type,
