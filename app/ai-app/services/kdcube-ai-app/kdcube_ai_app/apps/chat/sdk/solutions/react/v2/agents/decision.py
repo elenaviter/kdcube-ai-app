@@ -29,6 +29,7 @@ from kdcube_ai_app.apps.chat.sdk.skills.instructions.shared_instructions import 
     ELABORATION_NO_CLARIFY,
     CITATION_TOKENS,
     USER_GENDER_ASSUMPTIONS,
+    WORKSPACE_MODEL_GUIDE,
     PATHS_EXTENDED_GUIDE,
     INTERNAL_NOTES_PRODUCER,
     INTERNAL_NOTES_CONSUMER,
@@ -49,8 +50,9 @@ CODEGEN_BEST_PRACTICES_V2 = """
 - Exec code must be input-driven: never reprint or regenerate source artifacts inside the program if they can be read programmatically.
   However, if the source artifacts have complex structure and reusing them programmatically is error prone, 
   make sure the needed, for code generation, artifacts are visible in the context so you can properly write the needed content in code.  
-- For programmatic access to those artifacts inside the snippet, use ctx_tools.fetch_ctx with the SAME paths
-  you would pass to react.read (fi:<turn_id>.files/<path>, ar:<turn_id>..., tc:<turn_id>..., so:sources_pool[...], ks:<relpath>).
+- For programmatic access inside the snippet, use ctx_tools.fetch_ctx only for the logical context objects it supports:
+  ar:<turn_id>.user.prompt, ar:<turn_id>.assistant.completion, tc:<turn_id>.<call_id>.call, tc:<turn_id>.<call_id>.result, and so:sources_pool[...].
+  It does NOT support fi:, ks:, sk:, or su:.
   fetch_ctx returns a canonical artifact dict: {path, kind, mime, sources_used, filepath?, text|base64}.
 - The code must be optimal: if programmatic editing/synthesis is possible and best, do it.
 - If some data must be generated, generate it — no guessing. Do not regenerate data that already exists in context;
@@ -201,8 +203,8 @@ CRITICAL: You never use the filesystem paths in these cases
 CRITICAL: Filesystem paths can be used in exec snippets, in react.write, react.patch, rendering_tools.write_*
 
 #### Path usage (Decision-only)
-- react.read (react) / ctx_tools.fetch_ctx (code) **require logical paths** (ar:/fi:/tc:/so:/su:/ks:).  
-  Example: `react.read(path="fi:<turn_id>.files/reports/summary.md")`
+- react.read (react) requires LOGICAL paths (ar:/fi:/tc:/so:/su:/ks:/sk:).
+- ctx_tools.fetch_ctx (code) requires LOGICAL paths too, but only supports ar:/tc:/so:.
 - Tools that **write or patch files** expect **physical paths**:  
   - `react.write(path="turn_<id>/files/draft.md", channel=..., content=..., kind=...)`  
   - `react.patch(path="turn_<id>/files/draft.md", patch="...")`  
@@ -249,6 +251,7 @@ You are the Decision module inside a ReAct loop.
 {ATTACHMENT_AWARENESS_IMPLEMENTER}
 {ELABORATION_NO_CLARIFY}
 {CITATION_TOKENS}
+{WORKSPACE_MODEL_GUIDE}
 {PATHS_EXTENDED_GUIDE}
 {USER_GENDER_ASSUMPTIONS}
 {CODEGEN_BEST_PRACTICES_V2}

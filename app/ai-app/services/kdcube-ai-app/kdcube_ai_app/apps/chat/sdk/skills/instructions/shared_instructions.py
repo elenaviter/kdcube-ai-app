@@ -139,38 +139,78 @@ Below are rules you need to follow in order to insert markers to cite the source
 If you do not see sources pool, you cannot cite non-existing sources.
 """
 
+WORKSPACE_MODEL_GUIDE = """
+[WORKSPACE MODEL]
+- The current turn workspace is the current turn OUT_DIR working set. It starts small and grows only with current-turn outputs, logs, current-turn attachments, and artifacts explicitly rehosted into this turn.
+- Conversation artifact memory is broader than the current turn workspace. Historical artifacts live in timeline blocks, turn logs, sources pool, summaries, and hosting, and are pulled into the current turn only when needed.
+- `fi:` is a logical artifact reference and retrieval handle. It is not a general browsable filesystem for the whole conversation history.
+- `ks:` is a read-only permanent space exposed by the loaded bundle. It is separate from turn OUT_DIR. Access it through exact `ks:` paths, bundle search tools, and bundle-specific helpers if they exist.
+- `react.search_files` is only for current-turn physical spaces such as `outdir`, `outdir/<subdir>`, `workdir`, and `workdir/<subdir>`. It does not browse conversation artifact memory.
+- `workdir` is scratch for isolated execution, not stable collaboration state.
+- Write only to the current turn `files/` namespace. Do not treat older turn files as mutable in place.
+- If you need deeper filesystem-style exploration than the current tools expose, use isolated code or bundle-specific helpers when available. Never assume host shell access.
+"""
+
 PATHS_GUIDE = """
 [PATHS & ARTIFACT IDS — HOW TO REFERENCE DATA]
-Agents see PHYSICAL paths in the timeline and can derive LOGICAL paths for react.read/fetch_ctx.
+Agents see PHYSICAL relative paths in the timeline and tool results, and they also see LOGICAL paths which address conversation/context data directly.
+For loading content into visible context, prefer LOGICAL paths.
 
 Physical → Logical mapping:
 - User prompt:
-  physical: (n/a) → logical: ar:<turn_id>.user.prompt
+  physical: (none)
+  logical : ar:<turn_id>.user.prompt
+  meaning : full text of the user prompt in that turn
 - Assistant completion:
-  physical: (n/a) → logical: ar:<turn_id>.assistant.completion
+  physical: (none)
+  logical : ar:<turn_id>.assistant.completion
+  meaning : full text of the assistant completion in that turn
 - User attachment:
   physical: <turn_id>/attachments/<name>
   logical : fi:<turn_id>.user.attachments/<name>
+  meaning : user-provided file artifact from that turn
 - File artifact (from tools):
   physical: <turn_id>/files/<relpath>
   logical : fi:<turn_id>.files/<relpath>
+  meaning : assistant/tool-produced file artifact from that turn
+- Other readable files already present inside current-turn OUT_DIR:
+  physical: <outdir-relative-path>
+  logical : fi:<outdir-relative-path>
+  meaning : readable file already present under current-turn OUT_DIR but not under a turn-scoped files/ or attachments/ namespace
 - Tool call results:
+  physical: (none)
   logical : tc:<turn_id>.<call_id>.call / .result
+  meaning : saved tool call input or rendered tool result block in timeline memory
+- Source pool:
+  physical: (none)
+  logical : so:sources_pool[sid1, sid2, ...] or so:sources_pool[start_sid:end_sid]
+  meaning : selected sources from the sources pool
 - Summaries:
+  physical: (none)
   logical : su:<turn_id>.conv.range.summary
+  meaning : conversation summary artifact
 - Knowledge space (react.read only):
+  physical: (not a normal tool path)
   logical : ks:<relpath> (reads from system-prepared knowledge space; not supported by fetch_ctx)
+  meaning : read-only bundle knowledge content
 
 Skills (react.read only):
+  physical: (none)
 - logical : sk:<skill_id> (loads skill text into visible timeline; not supported by fetch_ctx)
+  meaning : skill content loaded into visible context
 
 HARD:
-- Tools that take paths (react.patch, rendering_tools.write_*) expect PHYSICAL paths.
-- react.read / fetch_ctx expect LOGICAL paths.
+- `react.read` expects LOGICAL paths.
+- `ctx_tools.fetch_ctx` expects LOGICAL paths, but only supports `ar:`, `tc:`, `so:` namespaces. `fi:`, `ks:`, `sk:`, or `su:` are not supported.
+- Tools that take paths (`react.patch`, `rendering_tools.write_*`) expect PHYSICAL paths.
+- Exec code reads and writes PHYSICAL OUTPUT_DIR-relative paths.
 - If you have a physical path, derive logical as above before calling react.read.
 - react.search_files returns `root` plus hits with `path`, `size_bytes`, and optional `logical_path`.
 - `path` is relative to the searched root and does not include that root prefix.
 - OUT_DIR hits include `logical_path` and are readable with react.read.
+- Using a physical path with `react.read` is a protocol violation and results in an error.
+- Using unsupported logical namespaces with `fetch_ctx` returns an error rather than guessing.
+- If you pass a logical path to a physical-path tool (or vice versa), the engineering layer may rewrite it and log a protocol notice, but you must not rely on that recovery path.
 """
 
 PATHS_EXTENDED_GUIDE = """
@@ -186,9 +226,11 @@ PATHS_EXTENDED_GUIDE = """
       For pdf/image files, they will be attached as multimodal attachments. Filepath can be / and . delimited. relative path)
       Example (nested path): `fi:<turn_id>.files/reports/weekly/summary.v2.md`
 - Other files already present inside OUT_DIR:
-    - `fi:<outdir-relative-path>` (brings full text/base64 content of any readable file already present under OUT_DIR, for example `fi:logs/docker.err.log`)
+    - `fi:<outdir-relative-path>` (brings full text/base64 content of any readable file already present under OUT_DIR)
 - Source pool items:
     - `so:sources_pool[sid1, sid2, ...]` or `so:sources_pool[start_sid:end_sid]`
+- Summaries:
+    - `su:<turn_id>.conv.range.summary` (loads a saved conversation summary into visible context; not supported by fetch_ctx)
 - Skills (react.read only):
   - `sk:<skill_id>` (loads a skill into visible timeline; not supported by fetch_ctx)
 - Knowledge space (react.read only):
@@ -205,6 +247,7 @@ For artifacts in the **fi:** namespace you will also see their physical relative
 Physical relative paths can be only used in exec snippets, in react.patch tool and as a param to rendering_tools.*. 
 Using physical relative paths with react.read will result in protocol violation error.  
 Using physical relative paths with fetch_ctx tool in exec snippets does not work.
+Using unsupported logical namespaces with fetch_ctx returns an error rather than guessing.
 
 #### react.search_files results
 - `react.search_files` does not load file contents into context.
@@ -214,20 +257,20 @@ Using physical relative paths with fetch_ctx tool in exec snippets does not work
   - `logical_path`: for OUT_DIR hits, suitable for `react.read`
 - OUT_DIR hits are readable via `react.read(logical_path)`.
 - workdir hits remain discovery-only with the current toolset.
+- For exec diagnostics, prefer the exec tool result first because it already extracts the relevant exec-specific log segment. Read raw log files directly only when you specifically need that file itself.
 
 #### Tool path usage examples (Decision)
-- react.read / fetch_ctx use LOGICAL paths:
-  - `react.read(path="fi:<turn_id>.files/reports/summary.md")`
-  - `react.read(path="ks:docs/README.md")`
+- react.read uses LOGICAL paths.
+- ctx_tools.fetch_ctx uses LOGICAL paths, but only for the supported namespaces listed above.
 - react.patch uses PHYSICAL paths:
   - `react.patch(path="turn_<id>/files/draft.md", patch="...")`
 - rendering_tools.write_* use PHYSICAL paths:
   - `rendering_tools.write_pdf(path="turn_<id>/files/report.pdf", content=...)`
-- exec code uses PHYSICAL paths:
-  - `open("turn_<id>/files/report.pdf", "wb")`
+- exec code uses PHYSICAL OUTPUT_DIR-relative paths:
+  - `Path(OUTPUT_DIR) / "<turn_id>/files/report.pdf"`
 - If `react.search_files` returns `logical_path`, prefer that for react.read.
 
-If you pass a logical path to a physical-path tool (or vice‑versa), runtime rewrites it and logs a protocol notice.
+If you pass a logical path to a physical-path tool (or vice‑versa), runtime may rewrite it and logs a protocol notice, but you must not rely on that recovery path.
 """
 
 ISO_TOOL_EXECUTION_INSTRUCTION = """

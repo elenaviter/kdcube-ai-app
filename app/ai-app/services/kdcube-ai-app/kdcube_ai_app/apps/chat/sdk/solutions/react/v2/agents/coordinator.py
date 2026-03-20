@@ -28,6 +28,7 @@ from kdcube_ai_app.apps.chat.sdk.skills.instructions.shared_instructions import 
     ATTACHMENT_AWARENESS_COORDINATOR,
     ELABORATION_NO_CLARIFY,
     CITATION_TOKENS,
+    WORKSPACE_MODEL_GUIDE,
     PATHS_EXTENDED_GUIDE,
     USER_GENDER_ASSUMPTIONS,
 )
@@ -130,6 +131,7 @@ async def coordinator_planner_stream_v2(
         f"{INTERNAL_NOTES_CONSUMER}\n"
         f"{ATTACHMENT_AWARENESS_COORDINATOR}\n"
         f"{CITATION_TOKENS}\n"
+        f"{WORKSPACE_MODEL_GUIDE}\n"
         f"{PATHS_EXTENDED_GUIDE}\n"
         f"{USER_GENDER_ASSUMPTIONS}\n"
         "\n"
