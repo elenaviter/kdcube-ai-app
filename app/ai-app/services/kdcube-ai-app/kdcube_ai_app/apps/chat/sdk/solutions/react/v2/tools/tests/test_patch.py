@@ -191,3 +191,36 @@ async def test_patch_accepts_generic_outdir_fi_path_without_rewrite(tmp_path):
         b.get("type") == "react.notice" and "path_rewritten" in (b.get("text") or "")
         for b in ctx.timeline.blocks
     )
+
+
+@pytest.mark.asyncio
+async def test_patch_failure_emits_result_block(tmp_path):
+    runtime = RuntimeCtx(turn_id="turn_new", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+
+    state = {
+        "last_decision": {
+            "tool_call": {
+                "params": {
+                    "path": "turn_new/files/missing.txt",
+                    "channel": "canvas",
+                    "patch": "@@ -1 +1 @@\n-old\n+new\n",
+                    "kind": "display",
+                }
+            }
+        },
+        "outdir": str(tmp_path),
+    }
+
+    out = await handle_react_patch(react=FakeReact(), ctx_browser=ctx, state=state, tool_call_id="p_fail")
+
+    assert "exit_reason" not in out
+    assert "error" not in out
+    json_blocks = [
+        b for b in ctx.timeline.blocks
+        if b.get("type") == "react.tool.result" and b.get("mime") == "application/json"
+    ]
+    assert json_blocks
+    payload = json.loads(json_blocks[-1]["text"])
+    assert payload["ok"] is False
+    assert payload["error"] == "patch_target_missing"

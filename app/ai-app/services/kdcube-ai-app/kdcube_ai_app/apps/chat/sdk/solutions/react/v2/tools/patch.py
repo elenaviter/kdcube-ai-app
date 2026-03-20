@@ -78,11 +78,52 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
     patch_text = params.get("patch")
     channel = str(params.get("channel") or "canvas").strip().lower()
     kind = str(params.get("kind") or "display").strip().lower()
+    turn_id = (ctx_browser.runtime_ctx.turn_id or "")
+
+    tool_call_block(
+        ctx_browser=ctx_browser,
+        tool_call_id=tool_call_id,
+        tool_id=tool_id,
+        payload={
+            "tool_id": tool_id,
+            "tool_call_id": tool_call_id,
+            "params": tool_call.get("params") or {},
+        },
+    )
+
+    def _fail(error_code: str, message: str, *, extra: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        notice_block(
+            ctx_browser=ctx_browser,
+            tool_call_id=tool_call_id,
+            code=error_code,
+            message=message,
+            extra=extra,
+            rel="result",
+        )
+        add_block(ctx_browser, {
+            "turn": turn_id,
+            "type": "react.tool.result",
+            "call_id": tool_call_id,
+            "mime": "application/json",
+            "path": tc_result_path(turn_id=turn_id, call_id=tool_call_id),
+            "text": json.dumps({
+                "ok": False,
+                "error": error_code,
+                "message": message,
+                **(extra or {}),
+            }, ensure_ascii=False),
+            "meta": {
+                "tool_call_id": tool_call_id,
+                "tool_id": tool_id,
+            },
+        })
+        state["last_tool_result"] = []
+        state.pop("exit_reason", None)
+        state.pop("error", None)
+        return state
 
     if not artifact_name:
-        state["exit_reason"] = "error"
-        state["error"] = {"where": "tool_execution", "error": "missing_artifact_name", "managed": True}
-        return state
+        return _fail("missing_artifact_name", "react.patch requires params.path.")
     original_path = artifact_name
     phys_path, rel_path, rewritten = normalize_physical_path(
         artifact_name, turn_id=ctx_browser.runtime_ctx.turn_id or "", allow_generic_fi=True
@@ -97,26 +138,10 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
             rel="call",
         )
     if not phys_path or not is_safe_relpath(rel_path):
-        state["exit_reason"] = "error"
-        state["error"] = {"where": "tool_execution", "error": "unsafe_path", "managed": True}
-        return state
+        return _fail("unsafe_path", "react.patch path is unsafe or invalid.", extra={"path": params.get("path")})
     artifact_name = phys_path
     if not isinstance(patch_text, str) or not patch_text.strip():
-        state["exit_reason"] = "error"
-        state["error"] = {"where": "tool_execution", "error": "missing_patch", "managed": True}
-        return state
-
-    turn_id = (ctx_browser.runtime_ctx.turn_id or "")
-    tool_call_block(
-        ctx_browser=ctx_browser,
-        tool_call_id=tool_call_id,
-        tool_id=tool_id,
-        payload={
-            "tool_id": tool_id,
-            "tool_call_id": tool_call_id,
-            "params": tool_call.get("params") or {},
-        },
-    )
+        return _fail("missing_patch", "react.patch requires non-empty params.patch.")
 
     outdir = pathlib.Path(state["outdir"])
     abs_path = outdir / artifact_name
@@ -149,9 +174,7 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
             elif old_abs.exists() and not target_preexisting:
                 source_abs = old_abs
     if not abs_path.exists():
-        state["exit_reason"] = "error"
-        state["error"] = {"where": "tool_execution", "error": "patch_target_missing", "managed": True}
-        return state
+        return _fail("patch_target_missing", "react.patch target file does not exist.", extra={"path": artifact_name})
 
     is_unified = any(patch_text.lstrip().startswith(x) for x in ("---", "+++", "@@"))
     display_patch_text = patch_text
@@ -162,9 +185,11 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
             source_path=source_abs,
         )
         if patched is None:
-            state["exit_reason"] = "error"
-            state["error"] = {"where": "tool_execution", "error": err or "patch_failed", "managed": True}
-            return state
+            return _fail(
+                err or "patch_failed",
+                "react.patch failed to apply the unified diff.",
+                extra={"path": artifact_name},
+            )
     else:
         patched = patch_text
     abs_path.parent.mkdir(parents=True, exist_ok=True)

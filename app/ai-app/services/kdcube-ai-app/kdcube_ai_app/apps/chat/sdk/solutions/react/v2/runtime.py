@@ -793,6 +793,12 @@ class ReactSolverV2:
             return None
 
     def _route_after_decision(self, state: Dict[str, Any]) -> str:
+        if state.get("exit_reason"):
+            try:
+                self.log.log(f"[react.v2] route=exit exit_reason={state.get('exit_reason')}", level="INFO")
+            except Exception:
+                pass
+            return "exit"
         if state.get("retry_decision"):
             try:
                 self.log.log("[react.v2] retry_decision=True -> route=decision", level="INFO")
@@ -815,6 +821,8 @@ class ReactSolverV2:
         return "exit"
 
     async def _decision_node(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        if state.get("exit_reason"):
+            return state
         iteration = int(state.get("iteration") or 0)
         if iteration >= int(state.get("max_iterations") or 0):
             state["exit_reason"] = "max_iterations"
