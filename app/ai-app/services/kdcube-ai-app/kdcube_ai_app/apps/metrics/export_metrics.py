@@ -43,6 +43,16 @@ def extract_metrics(ingress: Optional[Dict[str, Any]], proc: Optional[Dict[str, 
             cur = cur.get(key)
         return _num(cur)
 
+    def _latency_window_p95(data: Optional[Dict[str, Any]], metric_key: str) -> Optional[float]:
+        # Current system monitoring shape is windowed:
+        # components.proc.latency.<metric>.1m.p95
+        # Keep compatibility with the older flat shape:
+        # components.proc.latency.<metric>.p95
+        return (
+            _nested_num(data, "components", "proc", "latency", metric_key, "1m", "p95")
+            or _nested_num(data, "components", "proc", "latency", metric_key, "p95")
+        )
+
     if isinstance(ingress, dict) and "sse_connections" in ingress:
         sse = ingress.get("sse_connections") or {}
         total = _num(sse.get("global_total_connections") or sse.get("total_connections"))
@@ -63,8 +73,8 @@ def extract_metrics(ingress: Optional[Dict[str, Any]], proc: Optional[Dict[str, 
         queue_util = _num(proc.get("queue_utilization"))
         pressure_ratio = _num((proc.get("capacity_info") or {}).get("pressure_ratio"))
         wait_times = (proc.get("queue_analytics") or {}).get("wait_times") or {}
-        queue_wait_p95_ms = _nested_num(proc, "components", "proc", "latency", "queue_wait_ms", "p95")
-        exec_p95_ms = _nested_num(proc, "components", "proc", "latency", "exec_ms", "p95")
+        queue_wait_p95_ms = _latency_window_p95(proc, "queue_wait_ms")
+        exec_p95_ms = _latency_window_p95(proc, "exec_ms")
         queue_depth_1m = _nested_num(proc, "components", "proc", "queue", "windows", "depth", "1m")
         queue_pressure_1m = _nested_num(proc, "components", "proc", "queue", "windows", "pressure_ratio", "1m")
 

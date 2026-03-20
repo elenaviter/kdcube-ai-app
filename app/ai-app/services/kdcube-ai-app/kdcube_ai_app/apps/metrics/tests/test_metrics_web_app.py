@@ -39,8 +39,8 @@ def test_extract_metrics_exports_proc_autoscaling_signals():
                     }
                 },
                 "latency": {
-                    "queue_wait_ms": {"p95": 5400},
-                    "exec_ms": {"p95": 1600},
+                    "queue_wait_ms": {"1m": {"p95": 5400}},
+                    "exec_ms": {"1m": {"p95": 1600}},
                 },
             }
         },
@@ -61,3 +61,21 @@ def test_extract_metrics_exports_proc_autoscaling_signals():
     assert metrics["proc.queue.pressure_ratio.1m"] == 0.81
     assert metrics["proc.queue.avg_wait_seconds.registered"] == 1.4
     assert metrics["proc.queue.avg_wait_seconds.privileged"] == 0.2
+
+
+def test_extract_metrics_falls_back_to_legacy_flat_latency_shape():
+    system_data = {
+        "components": {
+            "proc": {
+                "latency": {
+                    "queue_wait_ms": {"p95": 2100},
+                    "exec_ms": {"p95": 900},
+                },
+            }
+        },
+    }
+
+    metrics = extract_metrics(system_data, system_data)
+
+    assert metrics["proc.queue.wait.p95_ms"] == 2100.0
+    assert metrics["proc.exec.p95_ms"] == 900.0
