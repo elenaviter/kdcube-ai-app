@@ -11,14 +11,15 @@
 #   2. Builds a LangGraph StateGraph with a single "orchestrate" node
 #   3. The "orchestrate" node initializes all dependencies (DB, indexes, RAG)
 #      and delegates execution to WithReactWorkflow.process()
-#   4. Manages knowledge space — on each turn, ensures the docs index is built
-#      and up-to-date (signature-based caching avoids redundant rebuilds)
+#   4. Manages knowledge space — builds it on bundle load and reconciles it only
+#      when runtime bundle props change or load-time preparation did not happen
 #   5. Defines role_models mapping logical roles → concrete LLM models
 #
 # Key base class: BaseEntrypoint
 #   Your bundle overrides:
 #     - configuration       → role_models + knowledge repo/docs/src/deploy config
-#     - pre_run_hook()       → ensure knowledge space is ready before each turn
+#     - on_bundle_load()     → build knowledge space for this tenant/project bundle instance
+#     - pre_run_hook()       → reconcile knowledge space only if runtime props changed
 #     - execute_core()       → the async method that runs the compiled LangGraph
 #
 # Knowledge space:
@@ -162,10 +163,15 @@ class ReactWorkflow(BaseEntrypoint):
         g.add_edge("orchestrate", END)
         return g.compile()
 
+    def on_bundle_load(self, **kwargs) -> None:
+        """Build bundle knowledge space once when this tenant/project bundle instance is loaded."""
+        self._ensure_knowledge_space(reason="on_bundle_load")
+        return None
+
     async def pre_run_hook(self, *, state: Dict[str, Any]) -> None:
-        """Called before every turn — ensures knowledge index is built and current."""
+        """Reconcile knowledge space only if load-time prep did not happen or config changed."""
         await super().pre_run_hook(state=state)
-        self._ensure_knowledge_space()
+        self._reconcile_knowledge_space(reason="pre_run_hook")
         return None
 
     def _resolve_knowledge_paths(
@@ -298,31 +304,106 @@ class ReactWorkflow(BaseEntrypoint):
                 tests_root = (base_root / tests_root).resolve()
         return docs_root, src_root, deploy_root, tests_root, validate_refs, repo, ref or None
 
-    def _ensure_knowledge_space(self) -> None:
+    def _resolve_knowledge_setup(
+        self,
+    ) -> tuple[
+        pathlib.Path | None,
+        pathlib.Path,
+        pathlib.Path | None,
+        pathlib.Path | None,
+        pathlib.Path | None,
+        pathlib.Path | None,
+        bool,
+        str | None,
+        str | None,
+        str | None,
+    ]:
+        ws_root = self.bundle_storage_root()
+        bundle_root = None
+        try:
+            spec = getattr(self.config, "ai_bundle_spec", None)
+            if spec and getattr(spec, "path", None):
+                bundle_root = pathlib.Path(spec.path).resolve()
+        except Exception:
+            bundle_root = None
+        if not bundle_root:
+            bundle_root = pathlib.Path(__file__).resolve().parent
+
+        if not ws_root:
+            return (
+                None,
+                bundle_root,
+                None,
+                None,
+                None,
+                None,
+                True,
+                None,
+                None,
+                None,
+            )
+
+        docs_root, src_root, deploy_root, tests_root, validate_refs, repo, ref = self._resolve_knowledge_paths(
+            bundle_root=bundle_root,
+            storage_root=ws_root,
+        )
+        signature = f"{repo}|{ref}|{docs_root}|{src_root}|{deploy_root}|{tests_root}|{validate_refs}"
+        return (
+            ws_root,
+            bundle_root,
+            docs_root,
+            src_root,
+            deploy_root,
+            tests_root,
+            validate_refs,
+            repo,
+            ref,
+            signature,
+        )
+
+    def _ensure_knowledge_space(self, *, reason: str) -> None:
         """
         Build or refresh the knowledge index under bundle storage.
         Uses a signature (repo|ref|roots) to skip rebuilding when nothing changed.
         """
         try:
-            ws_root = self.bundle_storage_root()
+            (
+                ws_root,
+                bundle_root,
+                docs_root,
+                src_root,
+                deploy_root,
+                tests_root,
+                validate_refs,
+                repo,
+                ref,
+                signature,
+            ) = self._resolve_knowledge_setup()
             if not ws_root:
+                self.logger.log(
+                    f"[react.doc] knowledge build skipped ({reason}): bundle storage root is unavailable.",
+                    "WARNING",
+                )
                 return None
-            bundle_root = None
-            try:
-                spec = getattr(self.config, "ai_bundle_spec", None)
-                if spec and getattr(spec, "path", None):
-                    bundle_root = pathlib.Path(spec.path).resolve()
-            except Exception:
-                bundle_root = None
-            if not bundle_root:
-                bundle_root = pathlib.Path(__file__).resolve().parent
-
-            docs_root, src_root, deploy_root, tests_root, validate_refs, repo, ref = self._resolve_knowledge_paths(
-                bundle_root=bundle_root,
-                storage_root=ws_root,
+            self.logger.log(
+                f"[react.doc] knowledge build start ({reason}): storage={ws_root}",
+                "INFO",
             )
-            signature = f"{repo}|{ref}|{docs_root}|{src_root}|{deploy_root}|{tests_root}|{validate_refs}"
+            self.logger.log(
+                (
+                    f"[react.doc] resolved knowledge paths ({reason}): "
+                    f"repo={repo or '<local>'} ref={ref or '<default>'} "
+                    f"docs={docs_root or '<missing>'} src={src_root or '<missing>'} "
+                    f"deploy={deploy_root or '<missing>'} tests={tests_root or '<missing>'} "
+                    f"validate_refs={validate_refs}"
+                ),
+                "INFO",
+            )
             if self._knowledge_signature == signature:
+                self.logger.log(
+                    f"[react.doc] knowledge build skipped ({reason}): signature cache hit for storage={ws_root}",
+                    "INFO",
+                )
                 return None
             # Build or refresh the knowledge index under bundle storage.
             knowledge_resolver.prepare_knowledge_space(
@@ -336,7 +417,68 @@ class ReactWorkflow(BaseEntrypoint):
                 logger=self.logger,
             )
             self._knowledge_signature = signature
+            self.logger.log(
+                (
+                    f"[react.doc] knowledge build done ({reason}): "
+                    f"storage={ws_root} "
+                    f"docs={(ws_root / 'docs').exists()} "
+                    f"src={(ws_root / 'src').exists()} "
+                    f"deploy={(ws_root / 'deploy').exists()} "
+                    f"tests={(ws_root / 'tests').exists()} "
+                    f"index_json={(ws_root / 'index.json').exists()} "
+                    f"index_md={(ws_root / 'index.md').exists()}"
+                ),
+                "INFO",
+            )
         except Exception:
+            self.logger.log(f"[react.doc] knowledge build failed ({reason})", "WARNING")
+            self.logger.log(traceback.format_exc(), "WARNING")
+        return None
+
+    def _reconcile_knowledge_space(self, *, reason: str) -> None:
+        """
+        Re-check current bundle props at run time and rebuild only if load-time prep
+        never happened or the effective knowledge signature changed.
+        """
+        try:
+            (
+                ws_root,
+                _bundle_root,
+                docs_root,
+                src_root,
+                deploy_root,
+                tests_root,
+                validate_refs,
+                repo,
+                ref,
+                signature,
+            ) = self._resolve_knowledge_setup()
+            if not ws_root:
+                self.logger.log(
+                    f"[react.doc] knowledge reconcile skipped ({reason}): bundle storage root is unavailable.",
+                    "WARNING",
+                )
+                return None
+            if self._knowledge_signature is None:
+                self.logger.log(
+                    f"[react.doc] knowledge reconcile ({reason}): load-time signature missing, building now.",
+                    "INFO",
+                )
+                return self._ensure_knowledge_space(reason=reason)
+            if self._knowledge_signature != signature:
+                self.logger.log(
+                    (
+                        f"[react.doc] knowledge reconcile ({reason}): signature changed. "
+                        f"repo={repo or '<local>'} ref={ref or '<default>'} "
+                        f"docs={docs_root or '<missing>'} src={src_root or '<missing>'} "
+                        f"deploy={deploy_root or '<missing>'} tests={tests_root or '<missing>'} "
+                        f"validate_refs={validate_refs}"
+                    ),
+                    "INFO",
+                )
+                return self._ensure_knowledge_space(reason=reason)
+        except Exception:
+            self.logger.log(f"[react.doc] knowledge reconcile failed ({reason})", "WARNING")
             self.logger.log(traceback.format_exc(), "WARNING")
         return None
 
