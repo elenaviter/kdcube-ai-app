@@ -25,11 +25,35 @@ react.doc: "Which bundle would you like me to test?"
   - eco
 ```
 
-### Step 2: Run pytest with bundle ID
-Use the `exec_tools.run_command()` tool to execute:
+### Step 2: Run pytest using exec_tools.execute_code_python
 
-```bash
-pytest /path/to/kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py --bundle-id=<bundle_name> -v
+Use `exec_tools.execute_code_python` to run the following Python code snippet:
+
+```python
+import subprocess
+import sys
+
+result = subprocess.run(
+    [
+        sys.executable, "-m", "pytest",
+        "/opt/app/kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py",
+        "--bundle-id=<bundle_name>",
+        "-v", "--tb=short"
+    ],
+    capture_output=True,
+    text=True,
+    cwd="/opt/app"
+)
+
+output = result.stdout + result.stderr
+print(output)
+
+# Write results to output file so react.doc can read them
+import os
+out_path = os.path.join(OUTPUT_DIR, "<turn_id>/files/test_results.txt")
+os.makedirs(os.path.dirname(out_path), exist_ok=True)
+with open(out_path, "w") as f:
+    f.write(output)
 ```
 
 Where `<bundle_name>` is one of:
@@ -68,9 +92,9 @@ Recommendation: Bundle initialization looks good
 
 ## Test File Locations
 
-Tests are located at:
+Tests are located inside the sandbox at:
 ```
-kdcube_ai_app/apps/chat/sdk/bundle_tests/
+/opt/app/kdcube_ai_app/apps/chat/sdk/bundle_tests/
   ├── __init__.py
   ├── conftest.py         ← pytest configuration
   └── test_initialization.py ← initialization tests
@@ -80,7 +104,7 @@ kdcube_ai_app/apps/chat/sdk/bundle_tests/
 
 The conftest.py automatically:
 1. Accepts `--bundle-id` parameter from command line
-2. Discovers bundle from system BundleStore
+2. Discovers bundle via `_reserved_bundle_entry()` — no database or Redis needed
 3. Initializes bundle with mock dependencies
 4. Provides initialized bundle to tests
 
@@ -93,19 +117,28 @@ Tests then verify:
 
 ## Commands for React.doc
 
-### Test single bundle initialization
-```bash
-pytest kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py --bundle-id=react.doc -v
+### Test single bundle initialization (Python snippet for exec_tools.execute_code_python)
+```python
+import subprocess, sys, os
+result = subprocess.run(
+    [sys.executable, "-m", "pytest",
+     "/opt/app/kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py",
+     "--bundle-id=react.doc", "-v", "--tb=short"],
+    capture_output=True, text=True, cwd="/opt/app"
+)
+print(result.stdout + result.stderr)
 ```
 
-### Test with verbose output
-```bash
-pytest kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py --bundle-id=react -v --tb=short
-```
-
-### Discover available tests (dry run)
-```bash
-pytest kdcube_ai_app/apps/chat/sdk/bundle_tests/ --co -q --bundle-id=react.doc
+### Test openrouter-data bundle
+```python
+import subprocess, sys, os
+result = subprocess.run(
+    [sys.executable, "-m", "pytest",
+     "/opt/app/kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py",
+     "--bundle-id=openrouter-data", "-v", "--tb=short"],
+    capture_output=True, text=True, cwd="/opt/app"
+)
+print(result.stdout + result.stderr)
 ```
 
 ## User Requests and Actions
@@ -118,9 +151,10 @@ When user says:
 React.doc should:
 1. Search knowledge for "bundle testing"
 2. Find this guide and methodology docs
-3. Extract command: `pytest ... --bundle-id=react.doc -v`
-4. Use `exec_tools.run_command()` to execute
-5. Parse results and report
+3. Extract the Python snippet with correct `--bundle-id`
+4. Use `exec_tools.execute_code_python` to execute the snippet
+5. Read test_results.txt from output artifacts
+6. Parse results and report
 
 ## Test Results Interpretation
 
@@ -155,14 +189,13 @@ React.doc can test any registered bundle. Common ones:
 
 If tests fail, react.doc should:
 1. Check if bundle ID is correct
-2. Verify bundle exists: `pytest ... --bundle-id=<id> -v`
-3. Report which specific test failed
-4. Suggest next steps (check bundle config, dependencies, etc.)
+2. Report which specific test failed
+3. Suggest next steps (check bundle config, dependencies, etc.)
 
 ## Summary for React.doc
 
 To test a bundle:
 1. Ask user which bundle
-2. Run: `pytest sdk/bundle_tests/test_initialization.py --bundle-id=<bundle> -v`
-3. Parse: Count PASSED/FAILED
+2. Run Python snippet via `exec_tools.execute_code_python` with `cwd="/opt/app"` and full path `/opt/app/kdcube_ai_app/apps/chat/sdk/bundle_tests/test_initialization.py`
+3. Parse: Count PASSED/FAILED from output
 4. Report: Show results and recommendation
