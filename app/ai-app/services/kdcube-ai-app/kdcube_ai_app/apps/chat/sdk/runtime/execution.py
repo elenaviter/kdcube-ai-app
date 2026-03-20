@@ -543,6 +543,21 @@ async def execute_tool_in_isolation(
     )
     if bundle_storage_dir is not None:
         globals_for_runtime["BUNDLE_STORAGE_DIR"] = str(bundle_storage_dir)
+        logger.log(
+            f"[exec] Final BUNDLE_STORAGE_DIR for isolated exec: {bundle_storage_dir}",
+            level="INFO",
+        )
+    else:
+        bundle_spec = getattr(tool_manager, "bundle_spec", None)
+        bundle_id = getattr(bundle_spec, "id", None) if bundle_spec is not None else None
+        bundle_version = getattr(bundle_spec, "version", None) if bundle_spec is not None else None
+        bundle_ref = getattr(bundle_spec, "ref", None) if bundle_spec is not None else None
+        logger.log(
+            "[exec] Final BUNDLE_STORAGE_DIR for isolated exec is <unset>; "
+            f"runtime_ctx.bundle_storage={getattr(runtime_ctx, 'bundle_storage', None)!r} "
+            f"bundle_spec.id={bundle_id!r} bundle_spec.version={bundle_version!r} bundle_spec.ref={bundle_ref!r}",
+            level="WARNING",
+        )
 
     isolation = isolation_override or tools_insights.tool_isolation(tool_id=tool_id)
     # Unless there's no third-party blackboxed tools, and the tools are all verified, it is safe. TODO.

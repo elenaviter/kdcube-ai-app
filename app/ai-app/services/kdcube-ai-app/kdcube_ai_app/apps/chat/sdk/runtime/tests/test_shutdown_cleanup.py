@@ -1,4 +1,5 @@
 import asyncio
+import json
 import pathlib
 from types import SimpleNamespace
 
@@ -190,9 +191,68 @@ async def test_run_py_in_docker_skips_opaque_host_path_preflight_inside_proc(tmp
     assert calls, "docker run should proceed when translated host paths are opaque from proc"
     argv = calls[0][0]
     assert any(
+        arg == f"BUNDLE_STORAGE_DIR={bundle_storage_dir.resolve()}"
+        for arg in argv
+    )
+    assert any(
         arg.endswith(f":{bundle_storage_dir.resolve()}:ro")
         for arg in argv
     )
+
+
+@pytest.mark.asyncio
+async def test_run_py_in_docker_mounts_local_kdcube_storage_rw(tmp_path, monkeypatch):
+    workdir = tmp_path / "work"
+    outdir = tmp_path / "out"
+    proc_storage_dir = pathlib.Path("/kdcube-storage")
+    host_storage_dir = tmp_path / "host-kdcube-storage"
+    workdir.mkdir(parents=True, exist_ok=True)
+    outdir.mkdir(parents=True, exist_ok=True)
+    host_storage_dir.mkdir(parents=True, exist_ok=True)
+    (workdir / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    calls = []
+
+    async def _fake_create_subprocess_exec(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _FakeCompletedProc(returncode=0)
+
+    monkeypatch.setattr(docker_runtime.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+    monkeypatch.setattr(docker_runtime, "check_and_apply_cloud_environment", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(docker_runtime, "_resolve_redis_url_for_container", lambda url, logger=None: url)
+    monkeypatch.setattr(docker_runtime, "_is_running_in_docker", lambda: True)
+    monkeypatch.setattr(docker_runtime, "_can_preflight_translated_host_path", lambda path: False)
+    monkeypatch.setattr(docker_runtime, "get_settings", lambda: SimpleNamespace(REDIS_URL="redis://example"))
+
+    def _fake_translate(path):
+        p = pathlib.Path(path)
+        if p == workdir.resolve():
+            return pathlib.Path("/Users/elenaviter/.kdcube/kdcube-runtime/data/exec-workspace/ctx/work")
+        if p == outdir.resolve():
+            return pathlib.Path("/Users/elenaviter/.kdcube/kdcube-runtime/data/exec-workspace/ctx/out")
+        if p == proc_storage_dir:
+            return host_storage_dir
+        return p
+
+    monkeypatch.setattr(docker_runtime, "_translate_container_path_to_host", _fake_translate)
+
+    result = await docker_runtime.run_py_in_docker(
+        workdir=workdir,
+        outdir=outdir,
+        runtime_globals={
+            "EXECUTION_ID": "exec-kdcube-storage",
+            "PORTABLE_SPEC_JSON": json.dumps(
+                {"accounting_storage": {"storage_path": "file:///kdcube-storage"}}
+            ),
+        },
+        tool_module_names=[],
+        logger=SimpleNamespace(log=lambda *_args, **_kwargs: None),
+    )
+
+    assert result["ok"] is True
+    assert calls, "docker run should proceed with a writable KDCUBE storage mount"
+    argv = calls[0][0]
+    assert any(arg.endswith(f":{proc_storage_dir}:rw") for arg in argv)
 
 
 @pytest.mark.asyncio

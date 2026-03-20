@@ -200,6 +200,11 @@ class BaseWorkflow():
 
     def _resolve_runtime_ctx_bundle_storage(self) -> Optional[str]:
         try:
+            bundle_storage_root = getattr(self, "bundle_storage_root", None)
+            if callable(bundle_storage_root):
+                resolved = bundle_storage_root()
+                if resolved:
+                    return str(resolved)
             from kdcube_ai_app.infra.plugin.bundle_storage import storage_for_spec
 
             bundle_ws = storage_for_spec(

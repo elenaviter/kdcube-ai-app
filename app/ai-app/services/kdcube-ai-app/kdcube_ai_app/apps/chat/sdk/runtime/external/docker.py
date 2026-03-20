@@ -6,10 +6,12 @@
 import asyncio
 import re
 import datetime as _dt
+import json
 import os
 import pathlib
 import time
 from typing import Dict, Any, Optional
+from urllib.parse import unquote, urlparse
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -40,11 +42,13 @@ def _log_path_translation_context(log: AgentLogger) -> None:
     host_bundles = os.environ.get("HOST_BUNDLES_PATH")
     host_exec_workspace = os.environ.get("HOST_EXEC_WORKSPACE_PATH")
     host_bundle_storage = os.environ.get("HOST_BUNDLE_STORAGE_PATH")
+    host_kdcube_storage = os.environ.get("HOST_KDCUBE_STORAGE_PATH")
     log.log(
         "[docker.exec] path translation env "
         f"HOST_BUNDLES_PATH={host_bundles or '<unset>'} "
         f"HOST_EXEC_WORKSPACE_PATH={host_exec_workspace or '<unset>'} "
-        f"HOST_BUNDLE_STORAGE_PATH={host_bundle_storage or '<unset>'}",
+        f"HOST_BUNDLE_STORAGE_PATH={host_bundle_storage or '<unset>'} "
+        f"HOST_KDCUBE_STORAGE_PATH={host_kdcube_storage or '<unset>'}",
         level="INFO",
     )
     if not host_bundles:
@@ -120,6 +124,36 @@ def _can_preflight_translated_host_path(path: pathlib.Path) -> bool:
         if _is_relative_to(resolved, root):
             return True
     return False
+
+
+def _extract_accounting_storage_uri(runtime_globals: Dict[str, Any], base_env: Dict[str, str]) -> str:
+    spec_json = runtime_globals.get("PORTABLE_SPEC_JSON")
+    if isinstance(spec_json, str) and spec_json.strip():
+        try:
+            payload = json.loads(spec_json)
+            accounting = payload.get("accounting_storage") or {}
+            storage_path = accounting.get("storage_path")
+            if isinstance(storage_path, str) and storage_path.strip():
+                return storage_path.strip()
+        except Exception:
+            pass
+    raw = str(base_env.get("KDCUBE_STORAGE_PATH") or "").strip()
+    return raw
+
+
+def _resolve_local_storage_mount(storage_uri: str) -> tuple[pathlib.Path, pathlib.Path] | None:
+    raw = str(storage_uri or "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme and parsed.scheme != "file":
+        return None
+    container_raw = unquote(parsed.path if parsed.scheme == "file" else raw).strip()
+    if not container_raw or not container_raw.startswith("/"):
+        return None
+    container_path = pathlib.Path(container_raw)
+    host_path = _translate_container_path_to_host(container_path)
+    return container_path, host_path
 
 
 def _bundle_tool_mount_checks(
@@ -266,6 +300,7 @@ def _build_docker_argv(
         bundle_root: pathlib.Path | None = None,
         bundle_id: str | None = None,
         readonly_mounts: list[tuple[pathlib.Path, str]] | None = None,
+        rw_mounts: list[tuple[pathlib.Path, str]] | None = None,
         network_mode: str | None = None,
 ) -> list[str]:
     """
@@ -318,6 +353,11 @@ def _build_docker_argv(
         argv += [
             "-v",
             f"{_path(host_path)}:{container_path}:ro",
+        ]
+    for host_path, container_path in (rw_mounts or []):
+        argv += [
+            "-v",
+            f"{_path(host_path)}:{container_path}:rw",
         ]
 
     # Propagate selected host env if you want (keys can be tuned)
@@ -390,6 +430,16 @@ async def run_py_in_docker(
     proc_bundle_storage_dir = None
     if isinstance(proc_bundle_storage_dir_raw, str) and proc_bundle_storage_dir_raw.strip():
         proc_bundle_storage_dir = pathlib.Path(proc_bundle_storage_dir_raw).resolve()
+    storage_uri = _extract_accounting_storage_uri(runtime_globals, base_env)
+    proc_kdcube_storage_dir = None
+    host_kdcube_storage_dir = None
+    local_storage_mount = _resolve_local_storage_mount(storage_uri)
+    if local_storage_mount is not None:
+        proc_kdcube_storage_dir, host_kdcube_storage_dir = local_storage_mount
+        try:
+            host_kdcube_storage_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
 
     exec_id = (extra_env or {}).get("EXECUTION_ID") or runtime_globals.get("EXECUTION_ID") or runtime_globals.get("RESULT_FILENAME")
     if not exec_id:
@@ -459,6 +509,11 @@ async def run_py_in_docker(
             f"[docker.exec] Bundle storage paths: container={proc_bundle_storage_dir}, host={host_bundle_storage_dir}",
             level="INFO",
         )
+    if proc_kdcube_storage_dir is not None and host_kdcube_storage_dir is not None:
+        log.log(
+            f"[docker.exec] KDCUBE storage paths: container={proc_kdcube_storage_dir}, host={host_kdcube_storage_dir}",
+            level="INFO",
+        )
 
     preflight_problems = _docker_mount_preflight(
         log=log,
@@ -497,6 +552,13 @@ async def run_py_in_docker(
                 (host_bundle_storage_dir, proc_bundle_storage_dir),
             )
             if host_bundle_storage_dir is not None and proc_bundle_storage_dir is not None
+        ],
+        rw_mounts=[
+            (host_kdcube_storage_dir, str(proc_kdcube_storage_dir))
+            for host_kdcube_storage_dir, proc_kdcube_storage_dir in (
+                (host_kdcube_storage_dir, proc_kdcube_storage_dir),
+            )
+            if host_kdcube_storage_dir is not None and proc_kdcube_storage_dir is not None
         ],
         network_mode=network_mode or "host",
     )
