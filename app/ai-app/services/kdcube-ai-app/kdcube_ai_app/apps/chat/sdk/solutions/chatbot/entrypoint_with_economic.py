@@ -19,6 +19,22 @@ from uuid import uuid4, UUID
 from kdcube_ai_app.apps.chat.sdk.protocol import ChatTaskPayload
 from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint import BaseEntrypoint
 from kdcube_ai_app.infra.service_hub.inventory import Config, _mid
+from kdcube_ai_app.apps.chat.sdk.infra.economics.events_resources import (
+    msg_denied_quota_reset,
+    MSG_DENIED_LOCK_TIMEOUT,
+    MSG_DENIED_CONCURRENCY,
+    MSG_DENIED_TOKEN_LIMIT,
+    MSG_DENIED_REQUEST_LIMIT,
+    MSG_DENIED_GENERIC,
+    msg_warning_last_msg_reset,
+    MSG_WARNING_LAST_MSG_SOON,
+    MSG_WARNING_ONE_REQUEST_REMAINING,
+    msg_warning_low_tokens,
+    MSG_WARNING_APPROACHING,
+    MSG_NO_FUNDING,
+    MSG_SUBSCRIPTION_EXHAUSTED,
+    MSG_PROJECT_EXHAUSTED,
+)
 
 
 class BaseEntrypointWithEconomics(BaseEntrypoint):
@@ -299,16 +315,16 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
 
         def _build_user_message(*, reason: Optional[str], reset_text: Optional[str]) -> str:
             if reset_text:
-                return f"You've reached your usage limit. Your quota resets {reset_text}."
+                return msg_denied_quota_reset(reset_text)
             if reason == "quota_lock_timeout":
-                return "Too many requests are being processed right now. Please try again in a moment."
+                return MSG_DENIED_LOCK_TIMEOUT
             if reason in ("concurrency", "max_concurrent") or (reason and "concurrent" in reason):
-                return "You have too many requests running at once. Please wait for one to complete."
+                return MSG_DENIED_CONCURRENCY
             if reason and "token" in reason:
-                return "You've reached your token limit. Try again later or upgrade your plan."
+                return MSG_DENIED_TOKEN_LIMIT
             if reason and "request" in reason:
-                return "You've reached your request limit. Try again later or upgrade your plan."
-            return "You've reached your usage limit. Please try again later."
+                return MSG_DENIED_REQUEST_LIMIT
+            return MSG_DENIED_GENERIC
 
         def _retry_after_for_turn_shortfall(
             *,
@@ -974,15 +990,12 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                             "funding_source": funding_source,
                             "user_budget_tokens": user_budget_tokens_int,
                             "user_budget_usd": user_budget_tokens_int * usd_per_token,
-                            "user_message": "This service is not available for your account type. Please contact support.",
+                            "user_message": MSG_NO_FUNDING,
                             "notification_type": "error",
                         },
                     )
                 usd_short = max(0.0, (int(est_turn_tokens) - user_budget_tokens_int) * usd_per_token)
-                if funding_source == "subscription":
-                    sub_user_message = "Your subscription balance is exhausted. Please top up your subscription to continue."
-                else:
-                    sub_user_message = "Project budget exhausted. Please contact your administrator to add funds."
+                sub_user_message = MSG_SUBSCRIPTION_EXHAUSTED if funding_source == "subscription" else MSG_PROJECT_EXHAUSTED
                 await _econ_fail(
                     code=f"{funding_source}_budget_exhausted",
                     title=f"{funding_label.title()} exhausted",
@@ -2015,26 +2028,24 @@ class BaseEntrypointWithEconomics(BaseEntrypoint):
                             user_timezone=getattr(self.comm_context.user, "timezone", None) if self.comm_context and self.comm_context.user else None,
                         ) if exhausted_insight.retry_after_sec else None
                         if reset_text:
-                            warning_user_message = f"You've used your last message. Your quota resets {reset_text}."
+                            warning_user_message = msg_warning_last_msg_reset(reset_text)
                         else:
-                            warning_user_message = "You've used your last message. Your quota will reset soon."
+                            warning_user_message = MSG_WARNING_LAST_MSG_SOON
                     elif pr_mr is not None and pr_mr == 1:
                         # Check if the binding constraint is requests or tokens
                         rem = post_insight.remaining
                         req_candidates = [rem.get(k) for k in ("requests_per_day", "requests_per_month", "total_requests") if rem.get(k) is not None]
                         request_remaining = min(req_candidates) if req_candidates else None
                         if request_remaining is not None and request_remaining <= 1:
-                            warning_user_message = "You have 1 message remaining in your current quota."
+                            warning_user_message = MSG_WARNING_ONE_REQUEST_REMAINING
                         elif pr_tok is not None:
-                            tokens_k = pr_tok // 1000
-                            warning_user_message = f"You're running low on tokens (~{tokens_k}K remaining). Consider upgrading."
+                            warning_user_message = msg_warning_low_tokens(pr_tok // 1000)
                         else:
-                            warning_user_message = "You have 1 message remaining in your current quota."
+                            warning_user_message = MSG_WARNING_ONE_REQUEST_REMAINING
                     elif pr_tok is not None:
-                        tokens_k = pr_tok // 1000
-                        warning_user_message = f"You're running low on tokens (~{tokens_k}K remaining). Consider upgrading."
+                        warning_user_message = msg_warning_low_tokens(pr_tok // 1000)
                     else:
-                        warning_user_message = "You're approaching your usage limit."
+                        warning_user_message = MSG_WARNING_APPROACHING
                     warning_rate_limit = dataclasses.asdict(post_insight)
                     warning_rate_limit["user_message"] = warning_user_message
                     warning_rate_limit["notification_type"] = "warning"
