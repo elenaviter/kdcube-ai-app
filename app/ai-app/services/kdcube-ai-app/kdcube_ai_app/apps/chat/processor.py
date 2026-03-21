@@ -849,6 +849,10 @@ class EnhancedChatRequestProcessor:
 
                     if evt.get("type") == "bundles.cleanup":
                         from kdcube_ai_app.infra.plugin.agentic_loader import evict_inactive_specs, AgenticBundleSpec
+                        from kdcube_ai_app.infra.plugin.bundle_store import (
+                            _discover_example_bundle_ids,
+                            cleanup_old_shared_example_bundles,
+                        )
                         from kdcube_ai_app.infra.plugin.git_bundle import (
                             cleanup_old_git_bundles_async,
                             resolve_bundles_root,
@@ -886,6 +890,12 @@ class EnhancedChatRequestProcessor:
                                 base_dir = bundle_dir_for_git(_bid, entry.get("ref"))
                                 await cleanup_old_git_bundles_async(
                                     bundle_id=base_dir,
+                                    bundles_root=resolve_bundles_root(),
+                                    active_paths=active_paths,
+                                )
+                            for _bid in _discover_example_bundle_ids():
+                                cleanup_old_shared_example_bundles(
+                                    bundle_id=_bid,
                                     bundles_root=resolve_bundles_root(),
                                     active_paths=active_paths,
                                 )

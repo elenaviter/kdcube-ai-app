@@ -429,6 +429,10 @@ async def _run_bundle_cleanup_once() -> None:
 
     try:
         from kdcube_ai_app.infra.plugin.bundle_registry import get_all
+        from kdcube_ai_app.infra.plugin.bundle_store import (
+            _discover_example_bundle_ids,
+            cleanup_old_shared_example_bundles,
+        )
         from kdcube_ai_app.infra.plugin.git_bundle import (
             cleanup_old_git_bundles_async,
             resolve_bundles_root,
@@ -450,6 +454,12 @@ async def _run_bundle_cleanup_once() -> None:
                 active_paths=active_paths,
             )
             total_removed += removed
+        for bid in _discover_example_bundle_ids():
+            total_removed += cleanup_old_shared_example_bundles(
+                bundle_id=bid,
+                bundles_root=resolve_bundles_root(),
+                active_paths=active_paths,
+            )
         if total_removed:
             logger.info("[Bundles] Cleanup removed %d old bundle dirs", total_removed)
     except Exception:

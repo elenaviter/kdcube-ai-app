@@ -6,6 +6,7 @@ from __future__ import annotations
 import json, os, time
 import logging
 import shutil
+import fcntl
 from typing import Dict, Optional, Tuple, Any, Set
 from pathlib import Path
 from functools import lru_cache
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 import kdcube_ai_app.infra.namespaces as namespaces
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.runtime.external.service_discovery import _is_running_in_docker
+from kdcube_ai_app.apps.chat.sdk.runtime.external.distributed_snapshot import compute_dir_sha256
 
 REDIS_KEY_FMT = namespaces.CONFIG.BUNDLES.BUNDLE_MAPPING_KEY_FMT
 REDIS_CHANNEL_FMT = namespaces.CONFIG.BUNDLES.UPDATE_CHANNEL
@@ -36,6 +38,112 @@ def _admin_bundle_entry() -> "BundleEntry":
 def _examples_root() -> Path:
     return (Path(__file__).resolve().parents[2] / _EXAMPLES_REL_PATH).resolve()
 
+def _example_bundle_lock_path(bundle_name: str) -> Path:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".", "@") else "-" for ch in bundle_name)
+    lock_dir = _SHARED_BUNDLES_ROOT / ".example-bundle-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir / f"{safe}.lock"
+
+def _sanitize_example_version_part(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in (value or ""))
+    safe = safe.strip("-_.")
+    return safe or "unknown"
+
+def _current_platform_ref() -> Optional[str]:
+    direct = (
+        os.getenv("PLATFORM_REF")
+        or os.getenv("APP_IMAGE_TAG")
+        or os.getenv("IMAGE_TAG")
+        or ""
+    ).strip()
+    if direct:
+        return _sanitize_example_version_part(direct)
+
+    image_ref = (os.getenv("PY_CODE_EXEC_IMAGE") or "").strip()
+    if image_ref and ":" in image_ref:
+        tail = image_ref.rsplit(":", 1)[-1].strip()
+        if tail and "/" not in tail:
+            return _sanitize_example_version_part(tail)
+    return None
+
+def _shared_example_bundle_dir(bundle_name: str, version: str) -> Path:
+    platform_ref = _current_platform_ref()
+    if platform_ref:
+        return _SHARED_BUNDLES_ROOT / f"{bundle_name}__{platform_ref}__{version[:12]}"
+    return _SHARED_BUNDLES_ROOT / f"{bundle_name}__{version[:12]}"
+
+def cleanup_old_shared_example_bundles(
+    *,
+    bundle_id: str,
+    bundles_root: Optional[Path] = None,
+    keep: Optional[int] = None,
+    ttl_hours: Optional[int] = None,
+    active_paths: Optional[set[str] | list[str] | tuple[str, ...]] = None,
+) -> int:
+    root = bundles_root or _SHARED_BUNDLES_ROOT
+    if not root.exists():
+        return 0
+
+    keep = keep if keep is not None else int(os.environ.get("BUNDLE_GIT_KEEP", "3") or "3")
+    ttl_hours = ttl_hours if ttl_hours is not None else int(os.environ.get("BUNDLE_GIT_TTL_HOURS", "0") or "0")
+    active_set: set[Path] = set()
+    for ap in active_paths or ():
+        try:
+            active_set.add(Path(ap).resolve())
+        except Exception:
+            continue
+
+    def _is_candidate_dir(path: Path) -> bool:
+        return path.name == bundle_id or path.name.startswith(f"{bundle_id}__")
+
+    def _is_active_dir(path: Path) -> bool:
+        if not active_set:
+            return False
+        for ap in active_set:
+            try:
+                ap.relative_to(path)
+                return True
+            except Exception:
+                continue
+        return False
+
+    candidates: list[Path] = []
+    for p in root.iterdir():
+        if not p.is_dir():
+            continue
+        if not _is_candidate_dir(p):
+            continue
+        candidates.append(p)
+
+    candidates.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+    removed = 0
+
+    if ttl_hours and ttl_hours > 0:
+        cutoff = time.time() - (ttl_hours * 3600)
+        for p in list(candidates):
+            try:
+                if _is_active_dir(p):
+                    continue
+                if p.stat().st_mtime < cutoff:
+                    shutil.rmtree(p, ignore_errors=True)
+                    removed += 1
+                    candidates = [c for c in candidates if c != p]
+            except Exception:
+                continue
+
+    for p in candidates[keep:]:
+        try:
+            if _is_active_dir(p):
+                continue
+            shutil.rmtree(p, ignore_errors=True)
+            removed += 1
+        except Exception:
+            continue
+
+    if removed:
+        _log.info("Cleaned %s old shared example bundle dirs for %s", removed, bundle_id)
+    return removed
+
 def _ensure_example_bundle_shared(bundle_root: Path) -> Path:
     """
     If running in Docker, copy example bundles from the image into /bundles
@@ -44,14 +152,31 @@ def _ensure_example_bundle_shared(bundle_root: Path) -> Path:
     if not _is_running_in_docker():
         return bundle_root
 
-    dest_root = _SHARED_BUNDLES_ROOT / bundle_root.name
+    version = compute_dir_sha256(bundle_root, skip_files=set())
+    dest_root = _shared_example_bundle_dir(bundle_root.name, version)
+    lock_path = _example_bundle_lock_path(bundle_root.name)
     try:
-        if dest_root.exists() and (dest_root / "entrypoint.py").exists():
+        with lock_path.open("a+") as fh:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            if dest_root.exists() and (dest_root / "entrypoint.py").exists():
+                return dest_root
+
+            dest_root.parent.mkdir(parents=True, exist_ok=True)
+            tmp_root = dest_root.parent / f".{dest_root.name}.tmp-{os.getpid()}-{time.time_ns()}"
+            try:
+                shutil.copytree(bundle_root, tmp_root, dirs_exist_ok=False)
+                tmp_root.replace(dest_root)
+            finally:
+                if tmp_root.exists():
+                    shutil.rmtree(tmp_root, ignore_errors=True)
+
+            _log.info(
+                "Copied example bundle to shared versioned root: %s -> %s (sha=%s)",
+                bundle_root,
+                dest_root,
+                version[:12],
+            )
             return dest_root
-        dest_root.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(bundle_root, dest_root, dirs_exist_ok=True)
-        _log.info("Copied example bundle to shared root: %s -> %s", bundle_root, dest_root)
-        return dest_root
     except Exception as exc:
         _log.warning("Failed to copy example bundle to %s: %s", dest_root, exc)
         return bundle_root

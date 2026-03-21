@@ -1,55 +1,130 @@
 ---
 id: ks:docs/ops/ecs/components/metric-server-README.md
-title: "Metric Server"
-summary: "Sample ECS task definitions for the metrics service (templates to customize)."
-tags: ["ops", "ecs", "metrics", "task-definition", "templates"]
-keywords: ["metrics service", "task definition", "CloudWatch", "Prometheus", "ECS", "JSON template"]
+title: "ECS Metric Server"
+summary: "How the metrics service is deployed on ECS and how it feeds CloudWatch autoscaling metrics."
+tags: ["ops", "ecs", "metrics", "cloudwatch", "autoscaling"]
+keywords: ["metrics service", "metric server", "CloudWatch", "ECS", "autoscaling", "kdcube-metrics"]
 see_also:
+  - ks:docs/service/scale/metric-server-README.md
+  - ks:docs/service/scale/metrics-README.md
   - ks:docs/ops/ecs/ecs-deployment-README.md
-  - ks:docs/ops/s3-README.md
-  - ks:docs/service/environment/service-ecs-env-README.md
 ---
-# Metrics Service (ECS) – Sample Task Definitions
+# ECS Metric Server
 
-This folder contains **sample ECS task definitions** for the metrics service.
-They are templates — replace placeholders (cluster, subnets, security groups, image).
+This document describes the **current ECS deployment shape** of the Metrics service.
 
-## Files
+It is not the source of truth for metric semantics or exporter internals.
+Those live in:
 
-- `metrics-task-definition.json`  
-  Long‑running metrics service (exposes `/metrics`, `/metrics/combined`, etc.).
+- [metric-server-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/service/scale/metric-server-README.md)
+- [metrics-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/service/scale/metrics-README.md)
 
-- `metrics-scheduled-task.json`  
-  One‑shot exporter task (uses `METRICS_RUN_ONCE=1`) for EventBridge scheduling.
+The ECS wiring described here comes from:
 
-- `metrics-eventbridge-rule.json`  
-  Example EventBridge rule (cron/rate).
+- [/Users/elenaviter/src/kdcube/kdcube-internal-demo/ops/ecs/terraform/modules/ecs/task_remaining.tf](/Users/elenaviter/src/kdcube/kdcube-internal-demo/ops/ecs/terraform/modules/ecs/task_remaining.tf)
 
-## Usage outline (AWS CLI)
+---
 
-1) Register task definition:
-```bash
-aws ecs register-task-definition --cli-input-json file://metrics-task-definition.json
-```
+## 1. What Runs On ECS
 
-2) Create an ECS Service (long‑running):
-```bash
-aws ecs create-service \
-  --cluster <cluster> \
-  --service-name kdcube-metrics \
-  --task-definition kdcube-metrics \
-  --desired-count 1 \
-  --launch-type FARGATE \
-  --network-configuration file://network-config.json
-```
+The Metrics service is deployed as:
 
-3) Schedule one‑shot exporter (optional):
-```bash
-aws ecs register-task-definition --cli-input-json file://metrics-scheduled-task.json
-aws events put-rule --cli-input-json file://metrics-eventbridge-rule.json
-aws events put-targets --rule kdcube-metrics-export --targets file://metrics-eventbridge-targets.json
-```
+- ECS service name: `${name_prefix}-metrics`
+- task family: `${name_prefix}-metrics`
+- launch type: `FARGATE`
+- desired count: `1`
+- container name: `metrics`
+- container port: `8002`
 
-Notes:
-- The **long‑running service** already has an internal scheduler.
-- The **scheduled task** is only needed if you prefer EventBridge‑driven exports.
+It also registers into Cloud Map as:
+
+- service discovery name: `metrics`
+
+Deployment settings:
+
+- `deployment_minimum_healthy_percent = 100`
+- `deployment_maximum_percent = 200`
+
+So ECS can start a replacement before stopping the old task.
+
+---
+
+## 2. Runtime Mode In ECS
+
+The current ECS deployment runs the Metrics service in:
+
+- `METRICS_MODE=redis`
+
+That means:
+
+- it reads monitoring state from Redis rather than calling protected upstream monitoring endpoints
+- it uses its own internal scheduler
+- it exports a scalar subset of metrics to CloudWatch
+
+Important ECS env currently set by Terraform:
+
+- `METRICS_PORT=8002`
+- `METRICS_MODE=redis`
+- `METRICS_SCHEDULER_ENABLED=1`
+- `METRICS_EXPORT_INTERVAL_SEC=60`
+- `METRICS_EXPORT_ON_START=1`
+- `METRICS_PROM_SCRAPE_TTL_SEC=120`
+- `METRICS_EXPORT_CLOUDWATCH=1`
+- `METRICS_CLOUDWATCH_NAMESPACE=kdcube/${name_prefix}`
+- `METRICS_CLOUDWATCH_REGION=<aws_region>`
+- `METRICS_CLOUDWATCH_DIMENSIONS_JSON={"Environment":"${name_prefix}"}`
+
+Secrets currently injected:
+
+- `REDIS_URL`
+- `GATEWAY_CONFIG_JSON`
+
+---
+
+## 3. CloudWatch Export In ECS
+
+The ECS deployment explicitly maps the main autoscaling signals to stable CloudWatch names:
+
+- `ingress.sse.saturation_ratio` -> `chat/ingress/sse/saturation`
+- `proc.queue.utilization_ratio` -> `chat/proc/queue/utilization`
+- `proc.queue.wait.p95_ms` -> `chat/proc/queue/wait/p95`
+- `proc.exec.p95_ms` -> `chat/proc/exec/p95`
+
+Current namespace and dimensions:
+
+- namespace: `kdcube/${name_prefix}`
+- dimension: `Environment=${name_prefix}`
+
+So in a staging deployment with `name_prefix=kdcube-staging`, the main metrics appear under:
+
+- namespace: `kdcube/kdcube-staging`
+- dimension: `Environment=kdcube-staging`
+
+---
+
+## 4. What This Doc Does Not Cover
+
+This document does not define:
+
+- the full metrics data model
+- proc/ingress metric semantics
+- percentile window logic
+- autoscaling threshold design
+
+Use instead:
+
+- [metric-server-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/service/scale/metric-server-README.md)
+- [metrics-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/service/scale/metrics-README.md)
+- [ecs-deployment-README.md](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/docs/ops/ecs/ecs-deployment-README.md)
+
+---
+
+## 5. Historical Note
+
+Older versions of this doc described sample ECS task-definition JSON files.
+That is no longer the current model in this repo.
+
+The current source of truth is:
+
+- Terraform ECS task/service definitions in `kdcube-internal-demo`
+- service-scale metrics docs in this repo

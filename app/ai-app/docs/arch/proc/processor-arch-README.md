@@ -480,7 +480,60 @@ Current message-kind rule:
 
 ---
 
-## 10. Remaining Gap To Full Steer/Followup
+## 10. Bundle Code Loading, Cutover, And Shared Example Bundles
+
+Processor workers do not hardcode built-in bundle directories such as `/bundles/react.doc@...`.
+They load bundles through the current registry entry and therefore through the current resolved `BundleSpec.path`.
+
+Current behavior:
+
+- startup and bundle-update paths load or rebuild the effective registry for the worker scope
+- built-in example bundles are merged into that registry in [bundle_store.py](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/plugin/bundle_store.py)
+- request-time bundle resolution then uses the in-memory registry in [bundle_registry.py](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/plugin/bundle_registry.py)
+- module/singleton cache keys are based on the resolved bundle path in [agentic_loader.py](/Users/elenaviter/src/kdcube/kdcube-ai-app/app/ai-app/services/kdcube-ai-app/kdcube_ai_app/infra/plugin/agentic_loader.py)
+
+For built-in example bundles on Docker/ECS proc:
+
+- proc copies the image bundle into shared `/bundles`
+- the shared copy is versioned rather than overwritten in place
+- current path shape is:
+
+```text
+/bundles/{bundle_id}__{platform.ref}__{content_sha12}
+```
+
+Why this matters:
+
+- a new proc task can load the new bundle version without mutating the old directory
+- already-running turns can continue on the older loaded path safely
+- once a worker applies the updated registry and clears loader caches, the next bundle load on that worker uses the new path
+
+Processor-side bundle update flow:
+
+1. proc receives a bundles snapshot/update broadcast
+2. proc replaces its in-memory registry
+3. proc clears loader caches
+4. new requests on that worker resolve through the new bundle path
+
+This applies both to:
+
+- normal processor bundle execution
+- proc-side bundle loading in integration/admin APIs
+
+Operationally:
+
+- old shared built-in bundle directories are not rewritten in place
+- active bundle paths are tracked through bundle refs
+- cleanup removes inactive old shared bundle directories later under the periodic cleanup loop and Redis cleanup lock
+
+So the cutover rule is:
+
+- already-running work stays on its already-loaded bundle path
+- new work loads the currently published bundle path for that worker after the registry update is applied
+
+---
+
+## 11. Remaining Gap To Full Steer/Followup
 
 The current mailbox slice is intentionally conservative.
 
@@ -504,7 +557,7 @@ This is why the current slice was implementable as an extension, but the full de
 The missing piece is not "another Redis key".
 It is a new scheduling model whose primary unit is the **conversation**, not the global lane item.
 
-### 10.1 Why this is more complex than the current queue
+### 11.1 Why this is more complex than the current queue
 
 The current queue is optimized for:
 
@@ -524,7 +577,7 @@ The full steer/followup model needs to handle:
 
 That is why the right next step is a conversation scheduler, not another refinement of the global ready queue.
 
-## 11. Steer/Followup: Desired Product Semantics
+## 12. Steer/Followup: Desired Product Semantics
 
 The target behavior should be:
 
@@ -544,7 +597,7 @@ Steer/followup does not change the non-idempotent nature of an already-started t
 
 ---
 
-## 12. Proposed Full Conversation Scheduler
+## 13. Proposed Full Conversation Scheduler
 
 The recommended target model is:
 
@@ -553,7 +606,7 @@ ingress append -> conversation mailbox -> shard wake-up stream -> owner lease ->
 active conversation loop -> reactive consume or deferred next turn -> lease handoff
 ```
 
-### 12.1 Core primitives
+### 13.1 Core primitives
 
 The full design should introduce five first-class primitives.
 
@@ -656,7 +709,7 @@ Current policy note:
 - all normal inbound chat messages are currently treated as non-idempotent after turn start
 - if the platform ever introduces idempotent replay, it must be an explicit task/queue contract rather than inferred from generic processor recovery
 
-### 12.2 Proposed end-to-end flow
+### 13.2 Proposed end-to-end flow
 
 ```mermaid
 flowchart TD
@@ -682,7 +735,7 @@ flowchart TD
     P -- no --> R[Clear scheduled marker and release lease]
 ```
 
-### 12.3 Ingress write path
+### 13.3 Ingress write path
 
 Ingress should become append-oriented, not enqueue-oriented.
 
@@ -716,7 +769,7 @@ Ingress only decides:
 - which conversation mailbox it belongs to
 - whether the scheduler must be nudged
 
-### 12.4 Worker acquisition path
+### 13.4 Worker acquisition path
 
 Proc workers consume shard wake-up events through a consumer group.
 
@@ -734,7 +787,7 @@ Recommended flow:
 
 The worker is now responsible for the conversation, not just one popped queue item.
 
-### 12.5 Active owner conversation loop
+### 13.5 Active owner conversation loop
 
 This is the core behavior that the current implementation still lacks.
 
@@ -755,7 +808,7 @@ The important difference from today:
 - the owner loop itself can continue with the next mailbox turn in order
 - lease handoff happens only when the conversation becomes idle, the owner reaches a fairness boundary, or the owner dies
 
-### 12.6 Fairness policy
+### 13.6 Fairness policy
 
 One risk of the full owner-loop model is starvation:
 
@@ -776,7 +829,7 @@ Example:
 
 This preserves order while preventing one conversation from monopolizing a worker forever.
 
-### 12.7 Reactive vs non-reactive bundles in the target model
+### 13.7 Reactive vs non-reactive bundles in the target model
 
 Reactive bundle:
 
@@ -794,7 +847,7 @@ Non-reactive bundle:
 
 This is how the design avoids sticky processors while still preserving order.
 
-### 12.8 Does this still apply to one-shot or non-conversational bundles?
+### 13.8 Does this still apply to one-shot or non-conversational bundles?
 
 Yes.
 
@@ -819,7 +872,7 @@ In practice:
 
 The same scheduler can support both.
 
-### 12.9 Message-kind propagation and pass-through policy
+### 13.9 Message-kind propagation and pass-through policy
 
 The bundle entrypoint or workflow context must be able to see the message kind it is receiving.
 
@@ -870,7 +923,7 @@ So the rule is:
 - yes, the framework should pass the ordered accepted message through unchanged
 - no, the framework should not silently degrade one message kind into another on behalf of the bundle
 
-### 12.10 Can there be more message kinds later?
+### 13.10 Can there be more message kinds later?
 
 Yes, but the scheduler-facing taxonomy should stay small and stable.
 
@@ -892,7 +945,7 @@ In other words:
 - not every new UI or payload subtype should become a new scheduler kind
 - only kinds that change execution ownership or continuation semantics should live at the scheduler layer
 
-### 12.11 Failure and recovery model
+### 13.11 Failure and recovery model
 
 Recovery should become conversation-oriented, not just task-oriented.
 
@@ -922,7 +975,7 @@ This preserves the current product rule:
 - pre-start work is recoverable
 - started turns are interrupted, not replayed
 
-### 12.12 Data model sketch
+### 13.12 Data model sketch
 
 One workable Redis-Streams-oriented shape is:
 
@@ -954,7 +1007,7 @@ Wake-up events should be tiny and cheap:
 
 ---
 
-## 13. Why Redis Streams Are The Better Next Step
+## 14. Why Redis Streams Are The Better Next Step
 
 The current processor uses Redis Lists.
 That is still acceptable for the current coarse proc queue, but it is a weak fit for a full conversation scheduler.
@@ -999,7 +1052,7 @@ Important:
 
 ---
 
-## 14. Smooth Migration Path
+## 15. Smooth Migration Path
 
 The recommended migration is incremental.
 
@@ -1045,7 +1098,7 @@ This protects bundle code from the backend change.
 
 ---
 
-## 15. Architecture Rules To Keep
+## 16. Architecture Rules To Keep
 
 These rules should survive the redesign:
 
@@ -1060,7 +1113,7 @@ These rules should survive the redesign:
 
 ---
 
-## 16. Bottom Line
+## 17. Bottom Line
 
 Today the processor is still primarily a lane-based, turn-at-a-time worker, but with an implemented continuation mailbox layer for busy conversations.
 
