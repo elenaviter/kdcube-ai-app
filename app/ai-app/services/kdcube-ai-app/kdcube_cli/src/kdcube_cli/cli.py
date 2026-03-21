@@ -97,6 +97,39 @@ def _run_compose_optional(console: Console, cmd: list[str], *, cwd: Path, label:
     return True
 
 
+def stop_compose_stack(
+    console: Console,
+    *,
+    repo_root: Path,
+    workdir: Path,
+    remove_volumes: bool = False,
+) -> None:
+    ctx = _build_paths_for_repo(repo_root, workdir)
+    env_file = ctx.config_dir / ".env"
+    if not env_file.exists():
+        raise SystemExit(
+            f"Compose env file not found: {env_file}. "
+            "Pass --workdir for the runtime you want to stop or re-run the installer first."
+        )
+
+    cmd = [
+        "docker",
+        "compose",
+        "--env-file",
+        str(env_file),
+        "down",
+        "--remove-orphans",
+    ]
+    if remove_volumes:
+        cmd.append("-v")
+
+    _run_compose(console, cmd, cwd=ctx.docker_dir)
+    console.print("[green]Docker compose stopped.[/green]")
+    console.print(f"[dim]Workdir:[/dim] {workdir}")
+    if not remove_volumes:
+        console.print("[dim]Host data under the workdir was preserved.[/dim]")
+
+
 def clean_docker_images(console: Console) -> None:
     console.print("[bold]Cleaning Docker cache and unused KDCube images...[/bold]")
     try:
@@ -432,6 +465,16 @@ def main() -> None:
         help="Clean dangling images, build cache, and old KDCube image tags",
     )
     parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the local Docker Compose stack for the selected workdir",
+    )
+    parser.add_argument(
+        "--remove-volumes",
+        action="store_true",
+        help="With --stop, also pass -v to docker compose down",
+    )
+    parser.add_argument(
         "--secrets-set",
         action="append",
         default=[],
@@ -477,6 +520,8 @@ def main() -> None:
         if args.clean:
             clean_docker_images(console)
             return
+        if args.remove_volumes and not args.stop:
+            raise SystemExit("--remove-volumes can only be used together with --stop.")
         if args.proxy_ssl and args.no_proxy_ssl:
             raise SystemExit("Choose only one of --proxy-ssl or --no-proxy-ssl.")
         if args.proxy_ssl:
@@ -486,6 +531,14 @@ def main() -> None:
         if args.dry_run_print_env:
             os.environ["KDCUBE_DRY_RUN_PRINT_ENV"] = "1"
         workdir = Path(os.path.expanduser(args.workdir)).expanduser().resolve()
+        if args.stop:
+            stop_compose_stack(
+                console,
+                repo_root=repo_path,
+                workdir=workdir,
+                remove_volumes=args.remove_volumes,
+            )
+            return
         workdir_arg = _arg_provided("--workdir")
         if not args.secrets_set and not args.secrets_prompt and not (args.dry_run and workdir_arg):
             workdir = Path(

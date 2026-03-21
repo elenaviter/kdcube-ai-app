@@ -79,6 +79,21 @@ docker compose --env-file ./config/.env up -d --build
 Open the UI:
 - `http://localhost:${KDCUBE_UI_PORT}/chatbot/chat` (via proxy, omit `:${KDCUBE_UI_PORT}` if it is `80`)
 
+6. Stop the stack:
+
+```bash
+kdcube-cli --path /path/to/kdcube-ai-app --workdir /path/to/kdcube-runtime --stop
+```
+
+This runs `docker compose down --remove-orphans` against the selected workdir.
+Host data under `<workdir>/data` is preserved by default.
+
+To also pass `-v` to `docker compose down`:
+
+```bash
+kdcube-cli --path /path/to/kdcube-ai-app --workdir /path/to/kdcube-runtime --stop --remove-volumes
+```
+
 ## Prepare data + logs directories
 
 ```shell
