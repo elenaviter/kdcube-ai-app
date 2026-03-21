@@ -1,33 +1,45 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.3.21.410"
+  ref: "2026.3.22.013"
   description: |
-    This release is in SDK area mostly and significantly extends the React copilot’s bundle-authoring and isolated-execution capabilities.
+    Compared with `2026.3.21.410`, this release is smaller in scope but fixes an important deployment/runtime correctness problem around built-in bundles on shared ECS storage.
 
-    A major addition is the new bundle-owned namespace resolver model for readonly bundle data. This allows agents to browse bundle-managed knowledge and validation content
-    efficiently in isolated exec without hardcoding storage paths or depending on raw filesystem conventions. react.doc now exposes docs, source, deploy assets, and reusable bundle
-    smoke tests through its knowledge space, and provides an exec-only namespace resolution tool for generated code. The bundle’s knowledge-space lifecycle was also hardened with
-    build-on-load behavior, stale-link replacement, relative symlink materialization, and per-storage-root locking.
-  
-    The isolated execution stack was improved end to end. External exec now transports per-bundle readonly storage into Docker and Fargate correctly, propagates BUNDLE_STORAGE_DIR,
-    mounts local KDCUBE_STORAGE_PATH writable when local filesystem storage is used, and returns clearer managed errors when bundle-managed namespaces cannot be browsed.
-    execute_code_python was reworked so the agent’s program is preserved verbatim in user_code.py, executed through a stable loader main.py with top-level await support, and stored
-    for debugging under executed_programs/<execution_id>/. This removes a class of code-corruption issues caused by wrapper indentation and makes exec failures much easier to
-    inspect.
-  
-    On the copilot side, this release also improves compliance with user intent and documented workflows. React now better respects explicit user framing such as “plan only”, treats
-    mandatory skill/protocol requirements more carefully, and avoids silently inventing substitute paths when required flows fail. Instead, it reports blockers clearly and asks
-    before proceeding with workarounds. In parallel, proc long-run protection and ECS behavior were documented more thoroughly, proc latency metric export was corrected, and the
-    exec/runtime/workspace documentation set was substantially expanded so the copilot can answer product questions from docs and support bundle creation with more accurate
-    operational guidance.
-  
-    Key Areas
-  
-    - Bundle readonly-data namespace resolution for exec
-    - react.doc knowledge/test-space exposure and lifecycle hardening
-    - External exec storage propagation and mount fixes
-    - Verbatim user-code preservation and improved executed-program debugging
-    - Stronger agent compliance with user scope and documented workflows
-    - Proc metrics/export fixes and expanded architecture/operations documentation
+    The main change is that built-in example bundles copied into shared `/bundles` are no longer treated as a single stable directory that survives image upgrades forever.
+    Previously, on ECS/EC2 with EFS-backed shared bundle storage, a built-in bundle such as `react.doc@2026-03-02-22-10` could remain stale after a new platform image was deployed,
+    because proc reused an already-existing `/bundles/<bundle-id>` copy instead of refreshing it from the image. This made new bundle code and skills invisible even after a
+    successful rollout.
+    
+    This release changes built-in shared bundle materialization to a versioned-path model. Shared example bundles are now copied under paths of the form:
+    
+    `/bundles/{bundle_id}__{platform.ref}__{content_sha12}`
+    
+    where `platform.ref` is the deployed release/image tag and `content_sha12` is the content hash of the bundled source. This gives two important guarantees:
+      - new proc tasks resolve and load the new bundle code from a new shared directory after rollout
+      - already-running requests can continue safely on the old loaded bundle path, without in-place mutation of code under active workers
+    
+    The loader behavior remains registry-driven. Processor workers and proc-side integration/admin bundle loaders resolve bundles through the current registry entry and therefore
+    through the current `BundleSpec.path`, not through a hardcoded `/bundles/<bundle-id>` filesystem shortcut. After a bundle registry update is applied and loader caches are
+    cleared, subsequent bundle loads on that worker use the new published shared path automatically. This keeps bundle cutover safe while preserving the current request model.
+    
+    This release also extends stale-bundle cleanup to these new versioned shared example bundle paths. Old shared built-in bundle copies are now cleaned through the existing bundle
+    cleanup flows, using the same active-path tracking and Redis-locked cleanup coordination already used for bundle lifecycle maintenance. That means the system can safely retain
+    active bundle paths while eventually removing inactive old bundle versions from shared EFS storage.
+    
+    On the documentation side, processor architecture documentation was updated to explain current bundle code loading, cutover behavior, and shared built-in bundle versioning/
+    cleanup in the context of proc workers and proc-side APIs. The stale ECS metrics component document was also replaced with a current description of how the Metrics service is
+    actually deployed on ECS today, including its Fargate service shape, CloudWatch export wiring, and the authoritative service-scale metrics docs and Terraform sources to use.
+    
+    In practical terms, this release makes built-in bundle upgrades on ECS much more reliable:
+      - new bundle code is no longer masked by an older persistent `/bundles` copy
+      - rollouts no longer depend on manually deleting stale shared built-in bundle directories
+      - old bundle versions can coexist safely during transition and then be cleaned later
+      - proc and proc-side APIs continue to load bundle code from the current published registry path
+    
+    Key areas:
+      - Versioned shared built-in bundle paths using `platform.ref` and content hash
+      - Safe new-bundle cutover without in-place mutation of active bundle directories
+      - Cleanup support for old shared built-in bundle versions on EFS
+      - Processor architecture documentation updated for bundle cutover semantics
+      - ECS metrics component documentation refreshed to match current deployment reality
 config:
-    version: "2026.3.21.410"
+    version: "2026.3.22.013"
