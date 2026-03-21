@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import shutil
 from typing import Iterable, Dict, Any, List, Optional, Tuple
@@ -57,7 +58,11 @@ def _safe_symlink(src: pathlib.Path, dst: pathlib.Path) -> bool:
                 pass
             _remove_target(dst)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.symlink_to(src, target_is_directory=src.is_dir())
+        try:
+            link_target = pathlib.Path(os.path.relpath(str(src), start=str(dst.parent.resolve())))
+        except Exception:
+            link_target = src
+        dst.symlink_to(link_target, target_is_directory=src.is_dir())
         return dst.exists()
     except Exception:
         return False

@@ -115,7 +115,9 @@ def test_prepare_knowledge_space_replaces_stale_symlinks(tmp_path):
     replaced_tests = knowledge_root / "tests"
     assert replaced_tests.is_symlink()
     assert replaced_tests.exists() is True
+    assert replaced_tests.readlink().is_absolute() is False
     assert replaced_tests.resolve() == fresh_tests.resolve()
+    assert (knowledge_root / "docs").readlink().is_absolute() is False
     assert (knowledge_root / "docs").resolve() == fresh_docs.resolve()
     assert (knowledge_root / "src").resolve() == fresh_src.resolve()
     assert (knowledge_root / "deploy").resolve() == fresh_deploy.resolve()
