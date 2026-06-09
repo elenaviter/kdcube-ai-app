@@ -917,6 +917,25 @@ SELECT
 FROM <SCHEMA>.llm_usage_events
 GROUP BY tenant, project, user_id, service_type, provider, model, day, month;
 
+-- Effective-dated model pricing (fallback when a provider does not report cost).
+-- Each row is a price version; the rate in effect for an event is the latest
+-- row with effective_from <= event time. Seeded from the code price table;
+-- updated via UsageLedger/ModelPricingStore so a change applies from a chosen
+-- date forward while historical events keep the price that was in effect.
+CREATE TABLE IF NOT EXISTS <SCHEMA>.model_pricing (
+    id BIGSERIAL PRIMARY KEY,
+    service_type   VARCHAR(64)  NOT NULL,         -- llm | embedding | web_search
+    provider       VARCHAR(128) NOT NULL,
+    model          VARCHAR(255) NOT NULL,
+    rates          JSONB        NOT NULL,         -- {input_tokens_1M, output_tokens_1M, cache_pricing, tokens_1M, cost_per_1k_requests, tier, aliases}
+    effective_from TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    note           TEXT         DEFAULT NULL,
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_pricing_lookup
+  ON <SCHEMA>.model_pricing (service_type, provider, model, effective_from DESC);
+
 -- =========================================
 -- USER SUBSCRIPTION PERIOD BUDGET (per-billing-cycle)
 -- =========================================
