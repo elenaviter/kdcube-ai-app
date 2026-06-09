@@ -1004,7 +1004,13 @@ class AccountingCalculator:
         for key_tuple, usage in result["groups"].items():
             user_id = usage.get("user_id")
             if user_id:
-                by_user[user_id] = {"total": usage}
+                # Surface a per-user request count (summed usage.requests) so the
+                # raw-scan path matches the aggregate path's event_count instead of
+                # leaving it unset/None.
+                by_user[user_id] = {
+                    "total": usage,
+                    "event_count": int(usage.get("requests", 0) or 0),
+                }
 
         # Add compact rollup per user (raw)
         for user_id in list(by_user.keys()):
@@ -1038,11 +1044,16 @@ class AccountingCalculator:
         Spendings for a SINGLE user in given timeframe: {total, rollup, event_count}.
 
         Prefers per-user daily aggregates (so a single user's spend matches exactly
-        what the cross-user view reports); when aggregates are unavailable, falls
-        back to a user-scoped raw scan that uses prefix filtering, so it never
-        scans other users' events.
+        what the cross-user view reports). Falls back to a user-scoped raw scan
+        (prefix-optimized via query.user_id, so it reads only this user's events)
+        whenever the aggregates do NOT cover this user with content -- i.e. when
+        there are no aggregates at all, OR aggregates exist for the project but not
+        for this user/window (e.g. recent usage not yet aggregated, or partial
+        aggregates). This prevents reporting "$0 / no spend" for a user who has
+        real raw events that simply haven't been rolled up yet.
         """
-        # Fast path: reuse the per-user daily aggregates.
+        # Fast path: reuse the per-user daily aggregates when they actually
+        # contain this user's usage.
         try:
             agg = await self._usage_by_user_with_aggregates(
                 tenant_id=tenant_id,
@@ -1055,10 +1066,13 @@ class AccountingCalculator:
             agg = None
 
         if agg is not None:
-            return agg.get(user_id) or {"total": {}, "rollup": [], "event_count": 0}
+            data = agg.get(user_id)
+            if data and (data.get("rollup") or data.get("total")):
+                return data
+            # Aggregates exist but don't cover this user -> do not trust the empty
+            # result; fall through to the authoritative raw scan below.
 
-        # Fallback: user-scoped raw scan (prefix-optimized via query.user_id), so
-        # we read only this user's events rather than the whole workspace.
+        # Fallback: user-scoped raw scan.
         query = AccountingQuery(
             tenant_id=tenant_id,
             project_id=project_id,

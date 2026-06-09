@@ -132,3 +132,75 @@ class TestAggregation:
         assert res["users"][0]["total_cost_usd"] == 10.0
         assert round(res["total_cost_usd"], 2) == 13.0
         assert res["users"][1]["event_count"] == 4
+
+
+# ---------------------------------------------------------------------------
+# RateCalculator.usage_for_user aggregate/raw fallback (root cause of "no spend")
+# ---------------------------------------------------------------------------
+
+class TestUsageForUserFallback:
+    """Regression: aggregates that don't cover a user must NOT report $0 when raw
+    events for that user exist. The aggregate fast-path is only trusted when it
+    actually contains the user with content; otherwise we raw-scan."""
+
+    def _calc(self):
+        from kdcube_ai_app.infra.accounting.calculator import RateCalculator
+        return RateCalculator(object(), base_path="accounting", agg_base="analytics")
+
+    def _wire(self, calc, *, agg_result, raw_rollup, raw_events=2):
+        scanned = {"raw": False}
+
+        async def _agg(**kw):
+            return agg_result
+
+        async def _qu(query, **kw):
+            scanned["raw"] = True
+            return {"total": {"requests": raw_events}, "event_count": raw_events}
+
+        async def _roll(query, **kw):
+            scanned["raw"] = True
+            return list(raw_rollup)
+
+        calc._usage_by_user_with_aggregates = _agg
+        calc.query_usage = _qu
+        calc.usage_rollup_compact = _roll
+        return scanned
+
+    def test_raw_fallback_when_aggregates_omit_user(self):
+        calc = self._calc()
+        raw = [{"service": "llm", "provider": "anthropic", "model": SONNET,
+                "spent": {"input": 10, "output": 20}}]
+        scanned = self._wire(
+            calc,
+            agg_result={"other-user": {"total": {}, "rollup": [{"x": 1}], "event_count": 1}},
+            raw_rollup=raw,
+        )
+        res = asyncio.run(calc.usage_for_user(
+            tenant_id="t", project_id="p", user_id="u",
+            date_from="2026-06-01", date_to="2026-06-09"))
+        assert res["rollup"] == raw          # raw data, not the empty aggregate
+        assert res["event_count"] == 2
+        assert scanned["raw"] is True
+
+    def test_raw_fallback_when_no_aggregates(self):
+        calc = self._calc()
+        raw = [{"service": "llm", "provider": "anthropic", "model": SONNET,
+                "spent": {"input": 1, "output": 1}}]
+        scanned = self._wire(calc, agg_result=None, raw_rollup=raw)
+        res = asyncio.run(calc.usage_for_user(
+            tenant_id="t", project_id="p", user_id="u", date_from="a", date_to="b"))
+        assert res["rollup"] == raw
+        assert scanned["raw"] is True
+
+    def test_uses_aggregate_when_user_present(self):
+        calc = self._calc()
+        agg = {"u": {"total": {"requests": 5},
+                     "rollup": [{"service": "llm", "provider": "a", "model": "m",
+                                 "spent": {"input": 1}}],
+                     "event_count": 5}}
+        scanned = self._wire(calc, agg_result=agg, raw_rollup=[{"should": "not be used"}])
+        res = asyncio.run(calc.usage_for_user(
+            tenant_id="t", project_id="p", user_id="u", date_from="a", date_to="b"))
+        assert res["event_count"] == 5
+        assert res["rollup"][0]["model"] == "m"
+        assert scanned["raw"] is False       # aggregate fast-path, no raw scan
