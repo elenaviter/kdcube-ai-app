@@ -33,10 +33,16 @@ class FakeCalc:
     def __init__(self, by_user):
         self._by_user = by_user
         self.calls = []
+        self.single_calls = []
 
     async def usage_by_user(self, *, tenant_id, project_id, date_from, date_to, **kw):
         self.calls.append((tenant_id, project_id, date_from, date_to))
         return self._by_user
+
+    async def usage_for_user(self, *, tenant_id, project_id, user_id, date_from, date_to, **kw):
+        # Single-user path: must NOT build other users' data.
+        self.single_calls.append((tenant_id, project_id, user_id, date_from, date_to))
+        return self._by_user.get(user_id) or {"total": {}, "rollup": [], "event_count": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -82,9 +88,10 @@ class TestAggregation:
             return {"total_cost_usd": tot / 1000.0,
                     "breakdown": [{"service": it.get("service"), "provider": it.get("provider"),
                                    "model": it.get("model"), "cost_usd": None} for it in (rollup or [])]}
-        monkeypatch.setattr(cost_mod, "compute_cost_estimate", _stub)
+        # assemble_cost prices via usage.compute_rollup_cost, re-exported on cost_mod.
+        monkeypatch.setattr(cost_mod, "compute_rollup_cost", _stub)
 
-    def test_cost_for_user_self_filters(self, monkeypatch):
+    def test_cost_for_user_uses_single_user_path(self, monkeypatch):
         self._stub_cost(monkeypatch)
         by_user = {
             "alice": {"rollup": _llm_rollup(SONNET, 1000, 2000), "event_count": 4},
@@ -97,7 +104,9 @@ class TestAggregation:
         assert res["user_id"] == "alice"
         assert res["total_cost_usd"] == 3.0          # (1000+2000)/1000
         assert res["event_count"] == 4
-        assert calc.calls == [("t", "p", "2026-06-01", "2026-06-09")]
+        # Must take the single-user path, never the all-users scan.
+        assert calc.single_calls == [("t", "p", "alice", "2026-06-01", "2026-06-09")]
+        assert calc.calls == []
 
     def test_cost_for_user_missing_user_is_zero(self, monkeypatch):
         self._stub_cost(monkeypatch)
