@@ -57,6 +57,18 @@ class TestPerEventCost:
         hai = ul.cost_usd_for_event(service_type="llm", provider="anthropic", model=HAIKU, usage={"output_tokens": 1_000_000})
         assert round(son, 2) == 15.00 and round(hai, 2) == 5.00 and son > hai
 
+    def test_prefers_provider_reported_cost(self):
+        # When the provider reports the billed cost, use it verbatim.
+        c = ul.cost_usd_for_event(service_type="llm", provider="anthropic", model=SONNET,
+                                  usage={"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cost_usd": 0.42})
+        assert c == 0.42
+
+    def test_reported_zero_is_ignored(self):
+        # A non-positive reported cost is ignored; we compute from the table.
+        c = ul.cost_usd_for_event(service_type="llm", provider="anthropic", model=SONNET,
+                                  usage={"output_tokens": 1_000_000, "cost_usd": 0})
+        assert round(c, 2) == 15.00
+
 
 class TestReadSide:
     ROWS = [

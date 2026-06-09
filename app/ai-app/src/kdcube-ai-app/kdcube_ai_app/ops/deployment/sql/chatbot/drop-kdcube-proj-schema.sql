@@ -90,6 +90,7 @@ DROP TABLE IF EXISTS <SCHEMA>.user_memory CASCADE;
 DROP TABLE IF EXISTS <SCHEMA>.conv_messages CASCADE;
 
 -- ---------- Economics tables ----------
+DROP TABLE IF EXISTS <SCHEMA>.model_pricing CASCADE;
 DROP VIEW IF EXISTS <SCHEMA>.llm_usage_by_user_model;
 DROP TABLE IF EXISTS <SCHEMA>.llm_usage_events CASCADE;
 DROP VIEW IF EXISTS <SCHEMA>.tenant_project_budget_absorption_detail;

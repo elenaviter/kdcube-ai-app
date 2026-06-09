@@ -48,11 +48,27 @@ def _spent_from_usage(usage: dict) -> dict:
     return spent
 
 
-def cost_usd_for_event(*, service_type: str, provider: str, model: str, usage: dict) -> float:
-    """Real USD cost for a single usage event, via the canonical pricing engine."""
+def cost_usd_for_event(*, service_type: str, provider: str, model: str, usage: dict,
+                       pricing_table: Optional[dict] = None) -> float:
+    """Real USD cost for a single usage event.
+
+    Prefers the provider-REPORTED cost (usage.cost_usd) when present and positive
+    -- that is the ground truth the provider billed. Otherwise computes from the
+    price table via the canonical engine. `pricing_table`, when given, is a
+    price_table()-shaped dict resolved as-of the event's time (see
+    ModelPricingStore); when omitted, the current code price table is used.
+    """
+    reported = (usage or {}).get("cost_usd")
+    if reported is not None:
+        try:
+            v = float(reported)
+            if v > 0:
+                return round(v, 6)
+        except (TypeError, ValueError):
+            pass
     rollup = [{"service": service_type, "provider": provider, "model": model,
                "spent": _spent_from_usage(usage)}]
-    est = compute_rollup_cost(rollup) or {}
+    est = compute_rollup_cost(rollup, pricing_table=pricing_table) or {}
     return round(float(est.get("total_cost_usd", 0.0) or 0.0), 6)
 
 
@@ -82,10 +98,12 @@ class UsageLedgerStore:
         model: Optional[str],
         usage: dict,
         created_at=None,
+        pricing_table: Optional[dict] = None,
     ) -> None:
         """Insert one usage row. Idempotent on event_id (ON CONFLICT DO NOTHING)."""
         spent = _spent_from_usage(usage)
-        cost = cost_usd_for_event(service_type=service_type, provider=provider or "", model=model or "", usage=usage)
+        cost = cost_usd_for_event(service_type=service_type, provider=provider or "", model=model or "",
+                                  usage=usage, pricing_table=pricing_table)
         cache_write = int(spent.get("cache_5m_write", 0)) + int(spent.get("cache_1h_write", 0)) + int(spent.get("cache_creation", 0))
 
         sql = f"""
@@ -259,3 +277,75 @@ class SQLUsageAccountingStorage:
             model=d.get("model_or_service"),
             usage=d.get("usage") or {},
         )
+
+
+async def backfill_usage_ledger(
+    *,
+    pg_pool,
+    storage_backend,
+    tenant: str,
+    project: str,
+    date_from: str,
+    date_to: str,
+    base_path: str = "accounting",
+    agg_base: str = "analytics",
+    pricing_table: Optional[dict] = None,
+) -> Dict[str, int]:
+    """Import existing file accounting events into <schema>.llm_usage_events.
+
+    Idempotent (ON CONFLICT event_id DO NOTHING) -- safe to re-run. Each row keeps
+    the original event timestamp so historical time-window queries stay correct.
+    Returns {"scanned": <files seen>, "recorded": <usage rows written>}.
+    """
+    import json
+    from datetime import datetime
+    from kdcube_ai_app.infra.accounting.calculator import RateCalculator, AccountingQuery
+
+    calc = RateCalculator(storage_backend, base_path=base_path, agg_base=agg_base)
+    store = UsageLedgerStore(pg_pool, tenant=tenant, project=project)
+    q = AccountingQuery(tenant_id=tenant, project_id=project, date_from=date_from, date_to=date_to)
+
+    def _parse_ts(s):
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    scanned = 0
+    recorded = 0
+    async for path in calc._iter_event_paths(q):
+        scanned += 1
+        try:
+            raw = await calc.fs.read_text_a(path)
+            ev = json.loads(raw)
+        except Exception:
+            logger.debug("backfill: unreadable event %s", path, exc_info=True)
+            continue
+        service = str(ev.get("service_type") or "").strip()
+        if service not in ("llm", "embedding", "web_search"):
+            continue
+        ctx = ev.get("context") or {}
+        try:
+            await store.record_event(
+                event_id=ev.get("event_id"),
+                user_id=ev.get("user_id") or ctx.get("user_id"),
+                request_id=ev.get("request_id") or ctx.get("request_id"),
+                conversation_id=ctx.get("conversation_id") or ev.get("conversation_id"),
+                turn_id=ctx.get("turn_id") or ev.get("turn_id"),
+                agent=(ev.get("metadata") or {}).get("agent_name") or ctx.get("component"),
+                bundle_id=ev.get("app_bundle_id") or ctx.get("app_bundle_id"),
+                service_type=service,
+                provider=ev.get("provider"),
+                model=ev.get("model_or_service"),
+                usage=ev.get("usage") or {},
+                created_at=_parse_ts(ev.get("timestamp")),
+                pricing_table=pricing_table,
+            )
+            recorded += 1
+        except Exception:
+            logger.debug("backfill: insert failed for %s", path, exc_info=True)
+    logger.info("backfill_usage_ledger %s/%s [%s..%s]: scanned=%d recorded=%d",
+                tenant, project, date_from, date_to, scanned, recorded)
+    return {"scanned": scanned, "recorded": recorded}
