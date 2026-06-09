@@ -1417,7 +1417,16 @@ class BaseEntrypoint:
 
         storage = _get_storage()
         if storage is None or storage.__class__.__name__ == "NoOpAccountingStorage":
-            AccountingSystem.init_storage(create_storage_backend(get_settings().STORAGE_PATH), enabled=True)
+            base_storage = create_storage_backend(get_settings().STORAGE_PATH)
+            # Mirror each event into the SQL usage ledger (authoritative source for
+            # cost-per-user). Fail-safe: never blocks the file write / the turn.
+            if getattr(self, "pg_pool", None) is not None:
+                try:
+                    from kdcube_ai_app.apps.chat.sdk.infra.economics.usage_ledger import SQLUsageAccountingStorage
+                    base_storage = SQLUsageAccountingStorage(base_storage, self.pg_pool)
+                except Exception:
+                    logger.debug("Could not attach SQL usage sink to accounting storage", exc_info=True)
+            AccountingSystem.init_storage(base_storage, enabled=True)
 
         async with with_accounting(
             bundle_id or "chat.orchestrator",

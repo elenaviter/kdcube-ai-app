@@ -838,6 +838,86 @@ SELECT
 FROM <SCHEMA>.tenant_project_budget;
 
 -- =========================================
+-- LLM USAGE LEDGER (raw per-call usage + computed cost)
+-- =========================================
+-- Authoritative, transactional record of actual model usage and its USD cost,
+-- written once per accounting event (LLM / embedding / web_search). Unlike the
+-- budget ledger (per-turn aggregate USD, provider=NULL), this captures the
+-- per-model input/output token split so true "cost per user" can be served by
+-- plain SQL instead of scanning the file accounting store.
+CREATE TABLE IF NOT EXISTS <SCHEMA>.llm_usage_events (
+    id BIGSERIAL PRIMARY KEY,
+
+    tenant  VARCHAR(255) NOT NULL,
+    project VARCHAR(255) NOT NULL,
+
+    user_id         VARCHAR(255) DEFAULT NULL,
+    request_id      VARCHAR(255) DEFAULT NULL,
+    conversation_id VARCHAR(255) DEFAULT NULL,
+    turn_id         VARCHAR(255) DEFAULT NULL,
+    agent           VARCHAR(255) DEFAULT NULL,
+    bundle_id       VARCHAR(255) DEFAULT NULL,
+
+    service_type VARCHAR(64)  NOT NULL,          -- llm | embedding | web_search
+    provider     VARCHAR(128) DEFAULT NULL,
+    model        VARCHAR(255) DEFAULT NULL,
+
+    input_tokens       BIGINT NOT NULL DEFAULT 0,
+    output_tokens      BIGINT NOT NULL DEFAULT 0,
+    cache_read_tokens  BIGINT NOT NULL DEFAULT 0,
+    cache_write_tokens BIGINT NOT NULL DEFAULT 0,
+    embedding_tokens   BIGINT NOT NULL DEFAULT 0,
+    search_queries     BIGINT NOT NULL DEFAULT 0,
+    requests           BIGINT NOT NULL DEFAULT 0,
+
+    cost_usd NUMERIC(18,6) NOT NULL DEFAULT 0,
+
+    event_id   VARCHAR(128) DEFAULT NULL,        -- source accounting event id (idempotency)
+    created_at TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+-- Idempotent writes: the same accounting event is never counted twice.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_llm_usage_event_id
+  ON <SCHEMA>.llm_usage_events (event_id)
+  WHERE event_id IS NOT NULL;
+
+-- Indexes on the raw table to back the aggregation view and time-window scans.
+CREATE INDEX IF NOT EXISTS idx_llm_usage_tenant_project_time
+  ON <SCHEMA>.llm_usage_events (tenant, project, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_llm_usage_user_time
+  ON <SCHEMA>.llm_usage_events (tenant, project, user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_llm_usage_model_time
+  ON <SCHEMA>.llm_usage_events (tenant, project, model, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_llm_usage_request
+  ON <SCHEMA>.llm_usage_events (tenant, project, request_id);
+
+-- Plain aggregation view: spend per user / model / day / month.
+CREATE OR REPLACE VIEW <SCHEMA>.llm_usage_by_user_model AS
+SELECT
+    tenant,
+    project,
+    user_id,
+    service_type,
+    provider,
+    model,
+    date_trunc('day', created_at)   AS day,
+    date_trunc('month', created_at) AS month,
+    SUM(input_tokens)       AS input_tokens,
+    SUM(output_tokens)      AS output_tokens,
+    SUM(cache_read_tokens)  AS cache_read_tokens,
+    SUM(cache_write_tokens) AS cache_write_tokens,
+    SUM(embedding_tokens)   AS embedding_tokens,
+    SUM(search_queries)     AS search_queries,
+    SUM(requests)           AS requests,
+    SUM(cost_usd)           AS cost_usd,
+    COUNT(*)                AS events
+FROM <SCHEMA>.llm_usage_events
+GROUP BY tenant, project, user_id, service_type, provider, model, day, month;
+
+-- =========================================
 -- USER SUBSCRIPTION PERIOD BUDGET (per-billing-cycle)
 -- =========================================
 CREATE TABLE IF NOT EXISTS <SCHEMA>.user_subscription_period_budget (
