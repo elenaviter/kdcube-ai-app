@@ -1022,6 +1022,61 @@ class AccountingCalculator:
 
         return by_user
 
+    async def usage_for_user(
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            user_id: str,
+            date_from: str,
+            date_to: str,
+            app_bundle_id: Optional[str] = None,
+            service_types: Optional[List[str]] = None,
+            hard_file_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Spendings for a SINGLE user in given timeframe: {total, rollup, event_count}.
+
+        Prefers per-user daily aggregates (so a single user's spend matches exactly
+        what the cross-user view reports); when aggregates are unavailable, falls
+        back to a user-scoped raw scan that uses prefix filtering, so it never
+        scans other users' events.
+        """
+        # Fast path: reuse the per-user daily aggregates.
+        try:
+            agg = await self._usage_by_user_with_aggregates(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        except Exception:
+            logger.exception("[usage_for_user] aggregate path failed")
+            agg = None
+
+        if agg is not None:
+            return agg.get(user_id) or {"total": {}, "rollup": [], "event_count": 0}
+
+        # Fallback: user-scoped raw scan (prefix-optimized via query.user_id), so
+        # we read only this user's events rather than the whole workspace.
+        query = AccountingQuery(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            app_bundle_id=app_bundle_id,
+            service_types=service_types,
+            hard_file_limit=hard_file_limit,
+        )
+        usage = await self.query_usage(query)
+        rollup = await self.usage_rollup_compact(query)
+        return {
+            "total": usage.get("total", {}) or {},
+            "rollup": rollup,
+            "event_count": int(usage.get("event_count", 0) or 0),
+        }
+
     async def usage_all_users(
             self,
             *,

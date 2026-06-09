@@ -128,14 +128,18 @@ async def cost_for_user(
     date_from: str,
     date_to: str,
 ) -> Dict[str, Any]:
-    """True spend for a single user over [date_from, date_to] (YYYY-MM-DD)."""
-    by_user = await calc.usage_by_user(
+    """True spend for a single user over [date_from, date_to] (YYYY-MM-DD).
+
+    Uses the calculator's single-user path so we never build or price every
+    other user's usage just to report one user's spend.
+    """
+    user_data = await calc.usage_for_user(
         tenant_id=tenant,
         project_id=project,
+        user_id=user_id,
         date_from=date_from,
         date_to=date_to,
-    )
-    user_data = by_user.get(user_id) or {}
+    ) or {}
     rollup = user_data.get("rollup") or []
     out = assemble_cost(rollup)
     out.update(
