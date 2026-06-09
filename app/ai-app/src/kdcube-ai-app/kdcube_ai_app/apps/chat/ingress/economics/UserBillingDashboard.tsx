@@ -102,6 +102,33 @@ interface QuotaBreakdown {
     } | null;
 }
 
+interface CostLine {
+    service: string;
+    provider: string;
+    model: string;
+    cost_usd: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    embedding_tokens?: number;
+}
+
+interface CostBreakdown {
+    status?: string;
+    user_id?: string;
+    date_from: string;
+    date_to: string;
+    total_cost_usd: number;
+    by_model: CostLine[];
+    tokens: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_tokens: number;
+        cache_write_tokens: number;
+        embedding_tokens: number;
+    };
+    event_count?: number;
+}
+
 // =============================================================================
 // Settings Manager
 // =============================================================================
@@ -332,6 +359,15 @@ class BillingAPI {
         return response.json();
     }
 
+    async getCostBreakdown(dateFrom?: string, dateTo?: string): Promise<CostBreakdown> {
+        const params = new URLSearchParams();
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+        const qs = params.toString();
+        const response = await this.fetchWithAuth(this.getMeUrl(`/cost-breakdown${qs ? `?${qs}` : ''}`));
+        return response.json();
+    }
+
     async listSubscriptionPlans(): Promise<{ plans: SubscriptionPlan[] }> {
         const response = await this.fetchWithAuth(this.getMeUrl('/subscription-plans'));
         return response.json();
@@ -432,6 +468,20 @@ function formatUsdMaybe(value: number | null | undefined): string {
     return formatUsd(value);
 }
 
+function todayUtcISO(): string {
+    return new Date().toISOString().slice(0, 10);
+}
+
+function monthStartUtcISO(): string {
+    const d = new Date();
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}
+
+function costRange(period: 'month' | 'today'): { from: string; to: string } {
+    const to = todayUtcISO();
+    return { from: period === 'today' ? to : monthStartUtcISO(), to };
+}
+
 function formatDateTime(value: string | null | undefined): string {
     if (!value) return 'Not available';
     return new Date(value).toLocaleString();
@@ -488,6 +538,8 @@ const UserBillingDashboard: React.FC = () => {
     const [breakdown, setBreakdown] = useState<QuotaBreakdown | null>(null);
     const [plans, setPlans] = useState<SubscriptionPlan[]>([]);
     const [subscription, setSubscription] = useState<Subscription | null>(null);
+    const [cost, setCost] = useState<CostBreakdown | null>(null);
+    const [costPeriod, setCostPeriod] = useState<'month' | 'today'>('month');
 
     const [topupAmount, setTopupAmount] = useState<string>('10');
     const [cancelConfirm, setCancelConfirm] = useState(false);
@@ -508,19 +560,28 @@ const UserBillingDashboard: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            const [brk, pData, subData] = await Promise.all([
+            const range = costRange(costPeriod);
+            const [brk, pData, subData, costData] = await Promise.all([
                 api.getBudgetBreakdown().catch(() => null),
                 api.listSubscriptionPlans().catch(() => ({ plans: [] })),
-                api.getSubscription().catch(() => ({ subscription: null }))
+                api.getSubscription().catch(() => ({ subscription: null })),
+                api.getCostBreakdown(range.from, range.to).catch(() => null)
             ]);
             if (brk) setBreakdown(brk);
             if (pData) setPlans(pData.plans);
             if (subData) setSubscription(subData.subscription);
+            setCost(costData);
         } catch (err: any) {
             setError(err.message);
         } finally {
             setLoading(false);
         }
+    };
+
+    const loadCost = async (period: 'month' | 'today') => {
+        const range = costRange(period);
+        const costData = await api.getCostBreakdown(range.from, range.to).catch(() => null);
+        setCost(costData);
     };
 
     const handleTopup = async () => {
@@ -641,7 +702,7 @@ const UserBillingDashboard: React.FC = () => {
                                 <div className="mt-6 rounded-xl border border-sky-100 bg-sky-50 px-4 py-3 text-sm text-sky-900">
                                     <div className="font-semibold">Usage windows are rolling</div>
                                     <p className="mt-1 text-sky-800">
-                                        The numbers below reflect your combined usage across all apps in this workspace. The hourly numbers are for the last 60 minutes, the daily numbers are for the last 24 hours, and the monthly numbers are for a rolling 30-day window.
+                                        The numbers below reflect your combined usage across all apps in this workspace. The hourly numbers are for the last 60 minutes, the daily numbers are for the last 24 hours, and the monthly numbers are for a rolling 30-day window. Dollar amounts here are <span className="font-semibold">quota-equivalent</span> (used to enforce rate limits); see <span className="font-semibold">Actual spend</span> for your real billed cost.
                                     </p>
                                 </div>
                                 <div className="mt-6 space-y-4">
@@ -760,6 +821,74 @@ const UserBillingDashboard: React.FC = () => {
                                         )}
                                     </div>
                                 )}
+                            </Card>
+
+                            {/* Actual Spend (true, per-model cost) */}
+                            <Card className="p-6">
+                                <div className="flex items-start justify-between gap-4 mb-4">
+                                    <div>
+                                        <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider">Actual spend</h3>
+                                        <p className="text-xs text-gray-400 mt-1">Real billed cost of your usage, priced per model (input + output rates).</p>
+                                    </div>
+                                    <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs shrink-0">
+                                        <button
+                                            onClick={() => { setCostPeriod('month'); loadCost('month'); }}
+                                            className={`px-3 py-1.5 font-medium ${costPeriod === 'month' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                                        >
+                                            This month
+                                        </button>
+                                        <button
+                                            onClick={() => { setCostPeriod('today'); loadCost('today'); }}
+                                            className={`px-3 py-1.5 font-medium ${costPeriod === 'today' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                                        >
+                                            Today
+                                        </button>
+                                    </div>
+                                </div>
+                                <div className="text-3xl font-bold">{formatUsd(cost?.total_cost_usd)}</div>
+                                <div className="text-xs text-gray-500 mt-1">
+                                    {cost ? `${cost.date_from} → ${cost.date_to}` : '—'}
+                                    {cost?.tokens ? ` • ${formatCount(cost.tokens.input_tokens)} in / ${formatCount(cost.tokens.output_tokens)} out tokens` : ''}
+                                </div>
+                                {cost && cost.by_model.length > 0 ? (
+                                    <div className="mt-5 overflow-x-auto">
+                                        <table className="w-full text-sm">
+                                            <thead>
+                                                <tr className="text-left text-xs uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                                                    <th className="py-2 pr-3 font-semibold">Model</th>
+                                                    <th className="py-2 px-3 font-semibold text-right">Input</th>
+                                                    <th className="py-2 px-3 font-semibold text-right">Output</th>
+                                                    <th className="py-2 pl-3 font-semibold text-right">Cost</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {[...cost.by_model].sort((a, b) => b.cost_usd - a.cost_usd).map((m, i) => (
+                                                    <tr key={`${m.provider}/${m.model}/${i}`} className="border-b border-gray-50">
+                                                        <td className="py-2 pr-3">
+                                                            <span className="font-medium text-gray-900">{m.model || m.service}</span>
+                                                            <span className="text-gray-400"> · {m.provider}</span>
+                                                        </td>
+                                                        <td className="py-2 px-3 text-right text-gray-600">
+                                                            {m.service === 'llm' ? formatCount(m.input_tokens || 0) : (m.embedding_tokens ? formatCount(m.embedding_tokens) : '—')}
+                                                        </td>
+                                                        <td className="py-2 px-3 text-right text-gray-600">
+                                                            {m.service === 'llm' ? formatCount(m.output_tokens || 0) : '—'}
+                                                        </td>
+                                                        <td className="py-2 pl-3 text-right font-medium text-gray-900">{formatUsd(m.cost_usd)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="mt-5 text-sm text-gray-500 border-2 border-dashed border-gray-100 rounded-xl py-6 text-center">
+                                        No usage recorded for this period yet.
+                                    </div>
+                                )}
+                                <p className="mt-4 text-xs text-gray-400">
+                                    This is your billed cost. The plan-usage dollar figures above are
+                                    <span className="font-medium"> quota-equivalent</span> (used to enforce rate limits) and may differ.
+                                </p>
                             </Card>
 
                             {/* Lifetime Tokens Overview */}
