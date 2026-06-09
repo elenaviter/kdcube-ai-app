@@ -114,20 +114,36 @@ async def get_my_cost_breakdown(
     df = date_from or today.replace(day=1).isoformat()
     dt = date_to or today.isoformat()
 
-    from kdcube_ai_app.apps.chat.ingress.opex.cost import build_rate_calculator, cost_for_user
-    calc = build_rate_calculator()
-    try:
-        res = await cost_for_user(
-            calc,
-            tenant=settings.TENANT,
-            project=settings.PROJECT,
-            user_id=user_id,
-            date_from=df,
-            date_to=dt,
-        )
-    except Exception as e:
-        logger.exception("User cost-breakdown failed")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Authoritative source: the SQL usage ledger. Fall back to the file-based
+    # accounting scan only if the DB is unavailable or has no rows for the window
+    # (e.g. before the migration / sink is deployed).
+    pg_pool = getattr(router.state, "pg_pool", None)
+    res = None
+    if pg_pool is not None:
+        try:
+            from kdcube_ai_app.apps.chat.sdk.infra.economics.usage_ledger import UsageLedgerStore
+            store = UsageLedgerStore(pg_pool, tenant=settings.TENANT, project=settings.PROJECT)
+            if await store.has_data(date_from=df, date_to=dt):
+                res = await store.cost_for_user(user_id=user_id, date_from=df, date_to=dt)
+        except Exception:
+            logger.exception("SQL usage ledger read failed; falling back to file accounting")
+            res = None
+
+    if res is None:
+        from kdcube_ai_app.apps.chat.ingress.opex.cost import build_rate_calculator, cost_for_user
+        calc = build_rate_calculator()
+        try:
+            res = await cost_for_user(
+                calc,
+                tenant=settings.TENANT,
+                project=settings.PROJECT,
+                user_id=user_id,
+                date_from=df,
+                date_to=dt,
+            )
+        except Exception as e:
+            logger.exception("User cost-breakdown failed")
+            raise HTTPException(status_code=500, detail=str(e))
 
     return {"status": "ok", **res}
 
