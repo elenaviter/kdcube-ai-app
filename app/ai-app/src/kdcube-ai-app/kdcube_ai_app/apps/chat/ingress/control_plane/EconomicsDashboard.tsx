@@ -351,6 +351,38 @@ interface EconomicsReference {
     usd_per_token: number;
 }
 
+interface CostLine {
+    service: string;
+    provider: string;
+    model: string;
+    cost_usd: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    embedding_tokens?: number;
+}
+
+interface CostByUserRow {
+    user_id: string;
+    total_cost_usd: number;
+    by_model: CostLine[];
+    tokens: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_read_tokens: number;
+        cache_write_tokens: number;
+        embedding_tokens: number;
+    };
+    event_count?: number;
+}
+
+interface CostByUserReport {
+    date_from: string;
+    date_to: string;
+    total_cost_usd: number;
+    total_users: number;
+    users: CostByUserRow[];
+}
+
 // =============================================================================
 // Settings Manager
 // =============================================================================
@@ -885,6 +917,17 @@ class ControlPlaneAPI {
     async getEconomicsReference(): Promise<{ status: string; } & EconomicsReference> {
         const response = await this.fetchWithAuth(
             this.getFullUrl('/economics/reference')
+        );
+        return response.json();
+    }
+
+    async getCostByUser(dateFrom?: string, dateTo?: string): Promise<{ status: string; } & CostByUserReport> {
+        const queryParams = new URLSearchParams();
+        if (dateFrom) queryParams.set('date_from', dateFrom);
+        if (dateTo) queryParams.set('date_to', dateTo);
+        const qs = queryParams.toString();
+        const response = await this.fetchWithAuth(
+            this.getStripeUrl(`/admin/cost-by-user${qs ? `?${qs}` : ''}`)
         );
         return response.json();
     }
@@ -1646,6 +1689,12 @@ const ControlPlaneAdmin: React.FC = () => {
     const [loadingData, setLoadingData] = useState<boolean>(false);
     const [loadingAction, setLoadingAction] = useState<boolean>(false);
 
+    // Cost-per-user (true, ledger-derived spend) view state
+    const [costByUser, setCostByUser] = useState<CostByUserReport | null>(null);
+    const [costByUserPeriod, setCostByUserPeriod] = useState<'month' | 'today'>('month');
+    const [costByUserLoading, setCostByUserLoading] = useState<boolean>(false);
+    const [expandedCostUser, setExpandedCostUser] = useState<string | null>(null);
+
     const [error, setError] = useState<string | null>(null);
     const [success, setSuccess] = useState<string | null>(null);
 
@@ -1844,7 +1893,30 @@ const ControlPlaneAdmin: React.FC = () => {
         loadEconomicsRef();
     }, [api, configStatus]);
 
+    const loadCostByUser = async (period: 'month' | 'today') => {
+        setCostByUserLoading(true);
+        setError(null);
+        try {
+            const now = new Date();
+            const to = now.toISOString().slice(0, 10);
+            const from = period === 'today'
+                ? to
+                : `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01`;
+            const res = await api.getCostByUser(from, to);
+            setCostByUser(res);
+        } catch (err) {
+            setError((err as Error).message);
+            setCostByUser(null);
+        } finally {
+            setCostByUserLoading(false);
+        }
+    };
+
     const loadDataForView = async (mode: string) => {
+        if (mode === 'costByUser') {
+            await loadCostByUser(costByUserPeriod);
+            return;
+        }
         const needsData = ['quotaPolicies', 'budgetPolicies', 'appBudget', 'subscriptions'].includes(mode);
         if (!needsData) return;
 
@@ -2539,6 +2611,7 @@ const ControlPlaneAdmin: React.FC = () => {
         { id: 'lifetimeCredits', label: 'Lifetime Credits' },
         { id: 'appBudget', label: 'App Budget' },
         { id: 'subscriptions', label: 'Subscriptions' },
+        { id: 'costByUser', label: 'Cost / User' },
     ];
 
     const usdPerToken =
@@ -2579,6 +2652,118 @@ const ControlPlaneAdmin: React.FC = () => {
 
                 {/* Views */}
                 <div className="max-w-5xl mx-auto space-y-6">
+                    {/* Cost per user (true, ledger-derived spend) */}
+                    {viewMode === 'costByUser' && (
+                        <Card>
+                            <CardHeader
+                                title="Cost per user (actual spend)"
+                                subtitle="Real, ledger-derived cost attributed per user, priced per model (input + output rates). This is true spend — not the quota-equivalent dollars used for rate limiting."
+                                action={
+                                    <div className="flex items-center gap-2">
+                                        <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+                                            <button
+                                                onClick={() => { setCostByUserPeriod('month'); loadCostByUser('month'); }}
+                                                className={`px-3 py-1.5 font-medium ${costByUserPeriod === 'month' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                                            >
+                                                This month
+                                            </button>
+                                            <button
+                                                onClick={() => { setCostByUserPeriod('today'); loadCostByUser('today'); }}
+                                                className={`px-3 py-1.5 font-medium ${costByUserPeriod === 'today' ? 'bg-gray-900 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                                            >
+                                                Today
+                                            </button>
+                                        </div>
+                                        <Button variant="secondary" onClick={() => loadCostByUser(costByUserPeriod)} disabled={costByUserLoading}>
+                                            {costByUserLoading ? 'Loading…' : 'Refresh'}
+                                        </Button>
+                                    </div>
+                                }
+                            />
+                            <CardBody className="space-y-4">
+                                {costByUserLoading && !costByUser ? (
+                                    <div className="text-sm text-gray-500">Loading…</div>
+                                ) : costByUser && costByUser.users.length > 0 ? (
+                                    <>
+                                        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+                                            <div className="text-2xl font-bold text-gray-900">{formatUsd(costByUser.total_cost_usd)}</div>
+                                            <div className="text-sm text-gray-500">
+                                                total across {costByUser.total_users} user{costByUser.total_users === 1 ? '' : 's'} · {costByUser.date_from} → {costByUser.date_to}
+                                            </div>
+                                        </div>
+                                        <div className="overflow-x-auto">
+                                            <table className="w-full text-sm">
+                                                <thead>
+                                                    <tr className="text-left text-xs uppercase tracking-wider text-gray-400 border-b border-gray-200">
+                                                        <th className="py-2 pr-3 font-semibold">User</th>
+                                                        <th className="py-2 px-3 font-semibold text-right">Input</th>
+                                                        <th className="py-2 px-3 font-semibold text-right">Output</th>
+                                                        <th className="py-2 px-3 font-semibold text-right">Requests</th>
+                                                        <th className="py-2 pl-3 font-semibold text-right">Cost</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    {costByUser.users.map((u) => {
+                                                        const open = expandedCostUser === u.user_id;
+                                                        return (
+                                                            <React.Fragment key={u.user_id}>
+                                                                <tr
+                                                                    className="border-b border-gray-100 cursor-pointer hover:bg-gray-50"
+                                                                    onClick={() => setExpandedCostUser(open ? null : u.user_id)}
+                                                                >
+                                                                    <td className="py-2 pr-3">
+                                                                        <span className="text-gray-400 mr-1">{open ? '▾' : '▸'}</span>
+                                                                        <span className="font-medium text-gray-900 break-all">{u.user_id}</span>
+                                                                    </td>
+                                                                    <td className="py-2 px-3 text-right text-gray-600">{Number(u.tokens?.input_tokens || 0).toLocaleString()}</td>
+                                                                    <td className="py-2 px-3 text-right text-gray-600">{Number(u.tokens?.output_tokens || 0).toLocaleString()}</td>
+                                                                    <td className="py-2 px-3 text-right text-gray-600">{Number(u.event_count || 0).toLocaleString()}</td>
+                                                                    <td className="py-2 pl-3 text-right font-semibold text-gray-900">{formatUsd(u.total_cost_usd)}</td>
+                                                                </tr>
+                                                                {open && (
+                                                                    <tr className="bg-gray-50/60">
+                                                                        <td colSpan={5} className="px-4 py-3">
+                                                                            {u.by_model.length > 0 ? (
+                                                                                <table className="w-full text-xs">
+                                                                                    <thead>
+                                                                                        <tr className="text-left uppercase tracking-wider text-gray-400">
+                                                                                            <th className="py-1 pr-3 font-semibold">Model</th>
+                                                                                            <th className="py-1 px-3 font-semibold text-right">Input</th>
+                                                                                            <th className="py-1 px-3 font-semibold text-right">Output</th>
+                                                                                            <th className="py-1 pl-3 font-semibold text-right">Cost</th>
+                                                                                        </tr>
+                                                                                    </thead>
+                                                                                    <tbody>
+                                                                                        {[...u.by_model].sort((a, b) => b.cost_usd - a.cost_usd).map((m, i) => (
+                                                                                            <tr key={`${m.provider}/${m.model}/${i}`}>
+                                                                                                <td className="py-1 pr-3 text-gray-700">{m.model || m.service} <span className="text-gray-400">· {m.provider}</span></td>
+                                                                                                <td className="py-1 px-3 text-right text-gray-600">{m.service === 'llm' ? Number(m.input_tokens || 0).toLocaleString() : (m.embedding_tokens ? Number(m.embedding_tokens).toLocaleString() : '—')}</td>
+                                                                                                <td className="py-1 px-3 text-right text-gray-600">{m.service === 'llm' ? Number(m.output_tokens || 0).toLocaleString() : '—'}</td>
+                                                                                                <td className="py-1 pl-3 text-right font-medium text-gray-900">{formatUsd(m.cost_usd)}</td>
+                                                                                            </tr>
+                                                                                        ))}
+                                                                                    </tbody>
+                                                                                </table>
+                                                                            ) : (
+                                                                                <div className="text-gray-500">No model-level detail.</div>
+                                                                            )}
+                                                                        </td>
+                                                                    </tr>
+                                                                )}
+                                                            </React.Fragment>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </>
+                                ) : (
+                                    <Callout tone="info" title="No usage">No recorded usage for this period.</Callout>
+                                )}
+                            </CardBody>
+                        </Card>
+                    )}
+
                     {/* Grant Trial */}
                     {viewMode === 'grantTrial' && (
                         <Card>
