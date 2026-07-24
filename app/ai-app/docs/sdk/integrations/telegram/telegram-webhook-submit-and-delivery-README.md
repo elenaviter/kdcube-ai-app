@@ -6,6 +6,7 @@ tags: ["sdk", "integrations", "telegram", "webhook", "chat-ingress", "queued-del
 keywords: ["telegram webhook", "telegram submitter", "telegram queued delivery", "submit_telegram_turn", "run_with_queued_telegram_delivery", "TelegramActivityStreamer", "deliver_turn_to_telegram"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-react-events-and-artifact-history-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-external-prereq-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/event-ingress-to-react-turn-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-conversation-events-and-react-output-README.md
@@ -361,6 +362,14 @@ should be disabled.
 
 The wrapper passes `delivered_file_keys` from the streamer to final delivery so
 file artifacts already sent during progress streaming are not sent twice.
+
+File keys are content-scoped. An exact live-versus-final duplicate is
+suppressed, while a changed file emitted at the same path is a new Telegram
+snapshot. Telegram retains every distinct snapshot successfully delivered
+during the live pass. The web view of the same conversation projects only the
+latest artifact per turn and logical path. This difference is intentional and
+is documented with the complete event mapping in
+[ReAct Events To Telegram And Artifact History](telegram-react-events-and-artifact-history-README.md).
 
 ## What Not To Build In A Bundle
 

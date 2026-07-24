@@ -7,6 +7,7 @@ keywords: ["telegram integration", "telegram bot", "telegram webhook", "telegram
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-webhook-submit-and-delivery-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-react-events-and-artifact-history-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/event-ingress-to-react-turn-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-conversation-events-and-react-output-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-external-prereq-README.md
@@ -27,6 +28,11 @@ Use these docs in this order:
   exact runtime boundaries for bot messages: webhook acknowledgement, chat
   ingress submission, processor-side app execution, progress streaming, and
   final Telegram rendering/delivery for ReAct, LangGraph, or custom runners.
+- [ReAct Events To Telegram And Artifact History](telegram-react-events-and-artifact-history-README.md) -
+  exact conversion of ReAct/common `chat.*` events into Telegram progress,
+  files, errors, and final messages; also documents why Telegram keeps every
+  distinct file snapshot delivered live while web chat projects the latest
+  artifact per turn and logical path.
 - [Telegram External Prerequisites](telegram-external-prereq-README.md) - work
   that must happen outside KDCube before the integration can function,
   including BotFather setup, public HTTPS exposure, webhook registration,

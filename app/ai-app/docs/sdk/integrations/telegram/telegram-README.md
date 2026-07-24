@@ -6,6 +6,7 @@ tags: ["sdk", "integrations", "telegram", "webhooks", "mini-apps", "bundles"]
 keywords: ["telegram bot", "telegram webhook", "telegram mini app", "telegram web app", "telegram activity streamer", "chat submitter", "signed download"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-webhook-submit-and-delivery-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-react-events-and-artifact-history-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/telegram/telegram-external-prereq-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/event-ingress-to-react-turn-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-conversation-events-and-react-output-README.md
@@ -696,6 +697,19 @@ the fingerprint automatically and keeps it in transport metadata, outside the
 model-facing artifact digest. Custom `chat.files` producers should provide
 `content_sha256` when same-path rewrites are possible; without it, the size/path
 fallback cannot distinguish a same-size rewrite.
+
+Telegram and web chat intentionally project those revisions differently.
+Telegram is a copy channel, so every distinct file version successfully
+delivered live remains as a physical Telegram message. Web chat is a
+current-state view: for one turn and logical artifact path, it exposes the
+latest artifact record and stable hosted URI. A write followed by a patch can
+therefore leave two file messages in Telegram and one current artifact in web
+chat. Both expose the latest bytes, but their visible artifact histories are
+not expected to have the same length.
+
+See [ReAct Events To Telegram And Artifact History](telegram-react-events-and-artifact-history-README.md)
+for the complete live-event mapping, final reduction pass, file-version rules,
+and regression checks.
 
 Two bundle properties control this behavior:
 
