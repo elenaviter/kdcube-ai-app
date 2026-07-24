@@ -606,7 +606,36 @@ def _sources_text_from_timeline(timeline: Mapping[str, Any], *, answer_texts: li
 def _artifact_files_from_timeline(timeline: Mapping[str, Any]) -> list[dict[str, Any]]:
     files: list[dict[str, Any]] = []
     seen: set[str] = set()
+    represented_paths: set[str] = set()
     turn_id = _timeline_turn_id(timeline)
+
+    blocks = timeline.get("blocks") if isinstance(timeline, Mapping) else None
+    if isinstance(blocks, list):
+        # Artifact blocks are authoritative because they carry the hosted
+        # content fingerprint. Process them before sources_pool, which may hold
+        # a second, presentation-only representation of the same image.
+        for block in blocks:
+            if not isinstance(block, Mapping):
+                continue
+            path = str(block.get("path") or "").strip()
+            if not path.startswith("conv:fi:"):
+                continue
+            if not _matches_timeline_turn(block, turn_id):
+                continue
+            if ".user.attachments/" in path or ".external." in path:
+                continue
+            meta = _merged_block_file_meta(block)
+            visibility = str(meta.get("visibility") or block.get("visibility") or "external").strip().lower()
+            if visibility == "internal":
+                continue
+            if not (".files/" in path or ".git/projects/" in path or meta.get("hosted_uri") or meta.get("url")):
+                continue
+            logical_path = str(meta.get("artifact_path") or path).strip()
+            file_item = _file_item_from_meta(meta, logical_path=logical_path)
+            represented_path = _file_delivery_path(file_item)
+            if represented_path:
+                represented_paths.add(represented_path)
+            _append_file(files, seen, file_item)
 
     sources_pool = timeline.get("sources_pool") if isinstance(timeline, Mapping) else None
     if isinstance(sources_pool, list):
@@ -618,30 +647,9 @@ def _artifact_files_from_timeline(timeline: Mapping[str, Any]) -> list[dict[str,
             if not _matches_timeline_turn(row, turn_id):
                 continue
             file_item = _file_item_from_meta(dict(row), logical_path=str(row.get("artifact_path") or ""))
+            if _file_delivery_path(file_item) in represented_paths:
+                continue
             _append_file(files, seen, file_item)
-
-    blocks = timeline.get("blocks") if isinstance(timeline, Mapping) else None
-    if not isinstance(blocks, list):
-        return files
-    for block in blocks:
-        if not isinstance(block, Mapping):
-            continue
-        path = str(block.get("path") or "").strip()
-        if not path.startswith("conv:fi:"):
-            continue
-        if not _matches_timeline_turn(block, turn_id):
-            continue
-        if ".user.attachments/" in path or ".external." in path:
-            continue
-        meta = _merged_block_file_meta(block)
-        visibility = str(meta.get("visibility") or block.get("visibility") or "external").strip().lower()
-        if visibility == "internal":
-            continue
-        if not (".files/" in path or ".git/projects/" in path or meta.get("hosted_uri") or meta.get("url")):
-            continue
-        logical_path = str(meta.get("artifact_path") or path).strip()
-        file_item = _file_item_from_meta(meta, logical_path=logical_path)
-        _append_file(files, seen, file_item)
     return files
 
 
@@ -655,11 +663,8 @@ def _append_file(files: list[dict[str, Any]], seen: set[str], file_item: dict[st
     files.append(file_item)
 
 
-def _file_delivery_key(file_item: Mapping[str, Any]) -> str:
-    # Key on (path, content): a rewrite of the same path is a new delivery, a
-    # true duplicate is dropped. content_sha256 preferred; size is the fallback;
-    # neither present falls back to the legacy path-only key.
-    path = str(
+def _file_delivery_path(file_item: Mapping[str, Any]) -> str:
+    return str(
         file_item.get("url")
         or file_item.get("hosted_uri")
         or file_item.get("rn")
@@ -669,6 +674,13 @@ def _file_delivery_key(file_item: Mapping[str, Any]) -> str:
         or file_item.get("filename")
         or ""
     ).strip()
+
+
+def _file_delivery_key(file_item: Mapping[str, Any]) -> str:
+    # Key on (path, content): a rewrite of the same path is a new delivery, a
+    # true duplicate is dropped. content_sha256 preferred; size is the fallback;
+    # neither present falls back to the legacy path-only key.
+    path = _file_delivery_path(file_item)
     if not path:
         return ""
     signature = str(

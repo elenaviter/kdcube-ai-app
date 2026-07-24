@@ -1021,6 +1021,58 @@ def test_telegram_renderer_final_delivery_dedup_is_content_scoped():
     assert rewritten[1].files[0].get("content_sha256") == sha
 
 
+def test_telegram_renderer_coalesces_image_source_and_artifact_representations():
+    """The image sources_pool row and its artifact block describe one file.
+
+    sources_pool intentionally has no transport fingerprint; the authoritative
+    artifact block must win so final delivery neither duplicates the image nor
+    defeats the live-delivery exclusion key.
+    """
+    from kdcube_ai_app.apps.chat.sdk.integrations.telegram.bot import render_telegram_messages_from_timeline
+
+    sha = "e" * 64
+    hosted_uri = "file:///store/turn_1/files/chart.png"
+    artifact_path = "conv:fi:conv-1.turn_1.files/chart.png"
+    timeline = {
+        "turn_id": "turn_1",
+        "blocks": [
+            {"path": "tc:turn_1.react.final_answer.0", "text": "done"},
+            {
+                "path": artifact_path,
+                "type": "react.tool.result",
+                "meta": {
+                    "digest": (
+                        '{"artifact_path":"' + artifact_path + '",'
+                        '"hosted_uri":"' + hosted_uri + '",'
+                        '"mime":"image/png","visibility":"external","size_bytes":100}'
+                    ),
+                    "content_sha256": sha,
+                },
+            },
+        ],
+        "sources_pool": [
+            {
+                "source_type": "file",
+                "url": hosted_uri,
+                "artifact_path": artifact_path,
+                "mime": "image/png",
+                "size_bytes": 100,
+                "turn_id": "turn_1",
+            }
+        ],
+    }
+
+    rendered = render_telegram_messages_from_timeline(timeline=timeline)
+    assert [message.kind for message in rendered] == ["text", "photo"]
+    assert rendered[1].files[0]["content_sha256"] == sha
+
+    after_live_delivery = render_telegram_messages_from_timeline(
+        timeline=timeline,
+        exclude_file_keys={f"{hosted_uri}::{sha}"},
+    )
+    assert [message.kind for message in after_live_delivery] == ["text"]
+
+
 @pytest.mark.asyncio
 async def test_telegram_activity_streamer_sends_timeline_notes():
     from kdcube_ai_app.apps.chat.sdk.integrations.telegram.stream import TelegramActivityStreamer

@@ -66,10 +66,9 @@ def build_artifact_meta_block(
     size_bytes = (artifact.get("value") or {}).get("size_bytes") or artifact.get("size_bytes")
     if size_bytes is not None:
         meta_json["size_bytes"] = size_bytes
-    # Content fingerprint for delivery-side dedup. Not added to meta.digest.
+    # Delivery fingerprint stays in block metadata, outside the model-facing
+    # artifact digest stored in this block's text.
     content_sha256 = (artifact.get("value") or {}).get("content_sha256") or artifact.get("content_sha256")
-    if content_sha256:
-        meta_json["content_sha256"] = content_sha256
     text_symbols = (artifact.get("value") or {}).get("text_symbols") or artifact.get("text_symbols")
     if text_symbols is not None:
         meta_json["text_symbols"] = text_symbols
@@ -107,6 +106,8 @@ def build_artifact_meta_block(
     block_meta = {
         "tool_call_id": tool_call_id,
     }
+    if content_sha256:
+        block_meta["content_sha256"] = str(content_sha256).strip()
     return {
         "turn": turn_id,
         "type": "react.tool.result",
@@ -117,6 +118,15 @@ def build_artifact_meta_block(
         "ts": ts,
         "meta": block_meta,
     }
+
+
+def artifact_transport_metadata(meta_block: Dict[str, Any]) -> Dict[str, Any]:
+    """Return non-model-facing metadata that must follow an artifact block."""
+    meta = meta_block.get("meta") if isinstance(meta_block, dict) else None
+    if not isinstance(meta, dict):
+        return {}
+    content_sha256 = str(meta.get("content_sha256") or "").strip()
+    return {"content_sha256": content_sha256} if content_sha256 else {}
 
 
 def build_artifact_binary_block(
@@ -355,12 +365,12 @@ class ReactArtifactView(WorkspaceArtifact):
     @staticmethod
     def extract_files_from_contrib_log(contrib_log: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Build assistant file records from contrib_log blocks.
+        Build the latest assistant file record per path from contrib_log blocks.
         We only include external files (visibility=external, kind=file).
         """
         files: List[Dict[str, Any]] = []
         seen: set[str] = set()
-        for blk in contrib_log or []:
+        for blk in reversed(contrib_log or []):
             if not isinstance(blk, dict):
                 continue
             if (blk.get("type") or "") != "react.tool.result":
@@ -403,6 +413,7 @@ class ReactArtifactView(WorkspaceArtifact):
                 "tool_call_id": meta.get("tool_call_id") or "",
             }
             files.append(rec)
+        files.reverse()
         return files
 
     def to_historical_format(self, *, max_tokens: int = 200) -> List[str]:

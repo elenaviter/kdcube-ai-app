@@ -913,9 +913,9 @@ async def host_artifact_file(
                 artifact["value"]["rn"] = hosted_rn
             if hosted_physical:
                 artifact["value"]["physical_path"] = hosted_physical
-            if hosted_size is not None and artifact["value"].get("size_bytes") is None:
+            if hosted_size is not None:
                 artifact["value"]["size_bytes"] = hosted_size
-            if hosted_sha and not artifact["value"].get("content_sha256"):
+            if hosted_sha:
                 artifact["value"]["content_sha256"] = hosted_sha
             enrich_artifact_file_metadata(
                 artifact=artifact,
@@ -923,6 +923,10 @@ async def host_artifact_file(
                 physical_path=hosted_physical or str(artifact["value"].get("path") or ""),
                 mime=str(artifact_log.get("mime") or ""),
             )
+        if hosted_size is not None:
+            artifact["size_bytes"] = hosted_size
+        if hosted_sha:
+            artifact["content_sha256"] = hosted_sha
         if hosted_uri:
             artifact["hosted_uri"] = hosted_uri
         if hosted_key:

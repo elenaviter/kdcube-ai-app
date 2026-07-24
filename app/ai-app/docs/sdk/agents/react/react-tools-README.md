@@ -240,7 +240,7 @@ Use it when React needs an editable runnable/searchable/testable project tree in
 
 ### `react.write`
 
-Creates a new text artifact.
+Creates or intentionally replaces a current-turn text artifact.
 
 - input: `path`, `content`, optional `channel`, optional `kind`
 - accepted paths: current-turn relative paths, not logical `conv:fi:` paths
@@ -248,10 +248,17 @@ Creates a new text artifact.
 - channels: `canvas`, `timeline_text`, `internal`
 - kinds: `display`, `file`
 - output: local text artifact plus timeline/result blocks
+- same-path behavior: a later successful write in the same turn replaces the
+  current workspace file; the latest version is the one stored and projected
+  as the current assistant file, while the timeline retains both write events
 - external file behavior: hosts and emits a downloadable file only when external and `kind=file`
 - internal behavior: `channel=internal` writes Internal Memory Beacons as `react.note`
 
 Use it for text artifacts only. For PDFs, PPTX, DOCX, PNG, and other binary deliverables, use `rendering_tools.write_*` or exec tools.
+
+Prefer one complete `react.write`. Use `react.patch` for a targeted correction.
+When a full rewrite is genuinely required later in the turn, write the exact
+same path again; do not invent a second path merely to retry the same artifact.
 
 ### `react.patch`
 

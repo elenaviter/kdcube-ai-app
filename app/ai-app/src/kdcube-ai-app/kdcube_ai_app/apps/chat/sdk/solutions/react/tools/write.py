@@ -20,6 +20,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     qualify_conversation_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.artifacts import (
+    artifact_transport_metadata,
     materialize_inline_artifact_to_file,
     build_artifact_view,
 )
@@ -37,7 +38,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.common import (
 TOOL_SPEC = {
     "id": "react.write",
     "purpose": (
-        "Author content and stream it to the user. "
+        "Author content and stream it to the user. Prefer one complete write and use react.patch for targeted revisions. "
+        "A later successful same-turn write to the exact same path replaces that file's current stored version. "
         "If kind='display', content is streamed only; if kind='file', content is streamed and also shared as a file. "
         "Pick the channel by the SHAPE of the content, not by a default. "
         "Use channel='canvas' for LARGE MARKDOWN OR any non‑markdown (HTML/JSON/YAML/XML/Mermaid) — produced as an external artifact that the connected interface presents to the user somewhere outside the inline chat stream. Markdown is first-class on canvas: full reports, multi-section briefs, big markdown tables, slide sources all live here. For short inline, mid-turn information the user should see now (an observation, an early finding, a milestone), use the action's root `notes` instead of an artifact. "
@@ -350,6 +352,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         tokens=tokens_written,
     )
     meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id}
+    meta_extra.update(artifact_transport_metadata(meta_block))
     try:
         meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
         if isinstance(meta_text, str) and meta_text.strip():

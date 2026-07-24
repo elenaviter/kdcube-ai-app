@@ -21,6 +21,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     split_physical_artifact_path,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.artifacts import (
+    artifact_transport_metadata,
     build_artifact_meta_block,
     build_artifact_view,
     detect_edit,
@@ -455,6 +456,7 @@ async def handle_react_patch(*, react: Any, ctx_browser: Any, state: Dict[str, A
     )
     add_block(ctx_browser, meta_block)
     meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id, "tool_id": tool_id}
+    meta_extra.update(artifact_transport_metadata(meta_block))
     try:
         meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
         if isinstance(meta_text, str) and meta_text.strip():
