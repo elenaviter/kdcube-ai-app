@@ -20,6 +20,7 @@ import pathlib
 from typing import Any, Dict, List
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.artifacts import (
+    artifact_transport_metadata,
     build_artifact_meta_block,     # Metadata block for an artifact (filename, mime, etc.)
     build_artifact_binary_block,   # Binary content block (images, PDFs)
     build_artifact_view,           # Unified artifact view (normalizes different output formats)
@@ -188,6 +189,7 @@ async def build_exec_timeline(
         raw_val = artifact_view.raw or {}
         raw_value = raw_val.get("value") if isinstance(raw_val.get("value"), dict) else {}
         meta_extra = {"tool_call_id": tool_call_id, "turn_id": runtime_ctx.turn_id or ""}
+        meta_extra.update(artifact_transport_metadata(meta_block))
         try:
             meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
             if isinstance(meta_text, str) and meta_text.strip():

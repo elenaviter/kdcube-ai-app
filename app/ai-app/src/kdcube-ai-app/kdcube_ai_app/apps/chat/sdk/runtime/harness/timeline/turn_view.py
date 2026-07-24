@@ -245,10 +245,10 @@ def extract_user_attachments_from_blocks(
 def extract_assistant_files_from_blocks(
     blocks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Extract externally visible file records from result metadata blocks."""
+    """Project the latest externally visible file record for each path."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for block in blocks or []:
+    for block in reversed(blocks or []):
         if not isinstance(block, dict):
             continue
         if (
@@ -320,6 +320,7 @@ def extract_assistant_files_from_blocks(
         if summary:
             payload["summary"] = summary
         out.append(payload)
+    out.reverse()
     return out
 
 

@@ -293,12 +293,22 @@ class TelegramActivityStreamer:
             return str(index)
         data = item.get("data") if isinstance(item.get("data"), Mapping) else {}
         meta = data.get("meta") if isinstance(data.get("meta"), Mapping) else {}
-        for source in (item, meta, data):
-            for key in ("hosted_uri", "url", "rn", "key", "artifact_path", "logical_path", "physical_path", "filename", "sid", "href", "title"):
-                value = source.get(key) if isinstance(source, Mapping) else None
-                if value not in ("", None):
-                    return str(value)
-        return str(index)
+
+        def _first(*keys: str) -> str:
+            for source in (item, meta, data):
+                for key in keys:
+                    value = source.get(key) if isinstance(source, Mapping) else None
+                    if value not in ("", None):
+                        return str(value)
+            return ""
+
+        path = _first("hosted_uri", "url", "rn", "key", "artifact_path", "logical_path", "physical_path", "filename", "sid", "href", "title")
+        if not path:
+            return str(index)
+        # A rewrite reuses the path; fold in a content fingerprint so an updated
+        # file yields a distinct signature and is not debounced as a duplicate.
+        signature = _first("content_sha256", "size", "size_bytes")
+        return f"{path}::{signature}" if signature else path
 
     async def _run(self) -> None:
         while True:
@@ -509,6 +519,7 @@ class TelegramActivityStreamer:
             "base64",
             "size",
             "size_bytes",
+            "content_sha256",
         ):
             if item.get(key) not in ("", None) and meta.get(key) in ("", None):
                 meta[key] = item.get(key)

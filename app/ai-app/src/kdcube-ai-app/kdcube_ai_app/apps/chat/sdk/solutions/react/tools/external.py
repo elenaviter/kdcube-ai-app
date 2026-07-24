@@ -16,6 +16,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     qualify_conversation_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.artifacts import (
+    artifact_transport_metadata,
     build_artifact_meta_block,
     build_artifact_binary_block,
     build_artifact_view,
@@ -269,6 +270,7 @@ def _declared_files_to_tool_items(
             "filename": filename,
             "mime": mime,
             "size": row.get("size") if row.get("size") is not None else row.get("size_bytes"),
+            "content_sha256": row.get("content_sha256") or "",
             "tool_id": tool_id,
             "description": description,
             "owner_id": row.get("owner_id") or "",
@@ -1763,6 +1765,7 @@ async def _handle_external_tool_legacy(*,
         raw_val = artifact_view.raw or {}
         raw_value = raw_val.get("value") if isinstance(raw_val.get("value"), dict) else {}
         meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id, "visibility": visibility}
+        meta_extra.update(artifact_transport_metadata(meta_block))
         items_stats = _items_stats_for_output(output)
         if items_stats:
             meta_extra["items_stats"] = items_stats
@@ -2043,6 +2046,7 @@ async def _handle_external_tool_legacy(*,
         raw_val = artifact_view.raw or {}
         raw_value = raw_val.get("value") if isinstance(raw_val.get("value"), dict) else {}
         meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id, "visibility": visibility}
+        meta_extra.update(artifact_transport_metadata(meta_block))
         try:
             meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
             if isinstance(meta_text, str) and meta_text.strip():

@@ -975,6 +975,104 @@ def test_telegram_renderer_skips_already_delivered_artifacts():
     assert [message.kind for message in messages] == ["text"]
 
 
+def test_telegram_renderer_final_delivery_dedup_is_content_scoped():
+    """Live delivery records content-scoped keys (path::content_sha256); final
+    delivery must exclude the SAME content (no duplicate) but still deliver a
+    rewrite of the same path (different content) that was not streamed live."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.telegram.bot import render_telegram_messages_from_timeline
+
+    sha = "c" * 64
+    hosted_uri = "file:///store/turn_1/files/tx/tx.md"
+
+    def _timeline():
+        return {
+            "blocks": [
+                {"path": "tc:turn_1.react.final_answer.0", "text": "done"},
+                {
+                    "path": "conv:fi:conv-1.turn_1.files/tx/tx.md",
+                    "type": "react.tool.result",
+                    "meta": {
+                        "artifact_path": "conv:fi:conv-1.turn_1.files/tx/tx.md",
+                        "hosted_uri": hosted_uri,
+                        "filename": "tx.md",
+                        "mime": "text/markdown",
+                        "visibility": "external",
+                        "size_bytes": 500,
+                        "content_sha256": sha,
+                    },
+                },
+            ],
+            "sources_pool": [],
+        }
+
+    # Same content already delivered live -> final delivery excludes it (no duplicate).
+    same = render_telegram_messages_from_timeline(
+        timeline=_timeline(),
+        exclude_file_keys={f"{hosted_uri}::{sha}"},
+    )
+    assert [message.kind for message in same] == ["text"]
+
+    # A rewrite (different content) that was NOT streamed live -> delivered at final.
+    rewritten = render_telegram_messages_from_timeline(
+        timeline=_timeline(),
+        exclude_file_keys={f"{hosted_uri}::{'d' * 64}"},
+    )
+    assert [message.kind for message in rewritten] == ["text", "document"]
+    assert rewritten[1].files[0].get("content_sha256") == sha
+
+
+def test_telegram_renderer_coalesces_image_source_and_artifact_representations():
+    """The image sources_pool row and its artifact block describe one file.
+
+    sources_pool intentionally has no transport fingerprint; the authoritative
+    artifact block must win so final delivery neither duplicates the image nor
+    defeats the live-delivery exclusion key.
+    """
+    from kdcube_ai_app.apps.chat.sdk.integrations.telegram.bot import render_telegram_messages_from_timeline
+
+    sha = "e" * 64
+    hosted_uri = "file:///store/turn_1/files/chart.png"
+    artifact_path = "conv:fi:conv-1.turn_1.files/chart.png"
+    timeline = {
+        "turn_id": "turn_1",
+        "blocks": [
+            {"path": "tc:turn_1.react.final_answer.0", "text": "done"},
+            {
+                "path": artifact_path,
+                "type": "react.tool.result",
+                "meta": {
+                    "digest": (
+                        '{"artifact_path":"' + artifact_path + '",'
+                        '"hosted_uri":"' + hosted_uri + '",'
+                        '"mime":"image/png","visibility":"external","size_bytes":100}'
+                    ),
+                    "content_sha256": sha,
+                },
+            },
+        ],
+        "sources_pool": [
+            {
+                "source_type": "file",
+                "url": hosted_uri,
+                "artifact_path": artifact_path,
+                "mime": "image/png",
+                "size_bytes": 100,
+                "turn_id": "turn_1",
+            }
+        ],
+    }
+
+    rendered = render_telegram_messages_from_timeline(timeline=timeline)
+    assert [message.kind for message in rendered] == ["text", "photo"]
+    assert rendered[1].files[0]["content_sha256"] == sha
+
+    after_live_delivery = render_telegram_messages_from_timeline(
+        timeline=timeline,
+        exclude_file_keys={f"{hosted_uri}::{sha}"},
+    )
+    assert [message.kind for message in after_live_delivery] == ["text"]
+
+
 @pytest.mark.asyncio
 async def test_telegram_activity_streamer_sends_timeline_notes():
     from kdcube_ai_app.apps.chat.sdk.integrations.telegram.stream import TelegramActivityStreamer
@@ -1317,6 +1415,78 @@ async def test_telegram_activity_streamer_does_not_dedupe_different_file_events(
         await comm.emit("two.pdf", "https://example.test/two.pdf")
 
     assert [message.files[0]["filename"] for message in sent] == ["one.pdf", "two.pdf"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_activity_streamer_delivers_rewritten_same_path_file():
+    """A rewrite of the same artifact path within a turn must be delivered, not
+    dropped as a duplicate. Telegram is a copy channel, so dedup keys on
+    (path, content) — a different content_sha256 is a new delivery; the same
+    content stays deduped through both the activity signature and the file key."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.telegram.stream import TelegramActivityStreamer
+
+    class _FakeComm:
+        def __init__(self):
+            self.listeners = []
+
+        def add_activity_listener(self, cb):
+            self.listeners.append(cb)
+
+        def remove_activity_listener(self, cb):
+            self.listeners.remove(cb)
+
+        async def emit(self, activity):
+            for cb in list(self.listeners):
+                await cb(activity)
+
+    sent = []
+
+    async def _send(messages):
+        sent.extend(messages)
+        return {"ok": True}
+
+    def _files_event(*, sha: str, size: int):
+        # Same hosted path across all revisions; only the content fingerprint moves.
+        item = {
+            "filename": "tx.md",
+            "mime": "text/markdown",
+            "hosted_uri": "file:///store/turn-1/files/tx/tx.md",
+            "key": "store/turn-1/files/tx/tx.md",
+            "physical_path": "turn-1/files/tx/tx.md",
+            "artifact_path": "conv:fi:conv-1.turn-1.files/tx/tx.md",
+            "size": size,
+            "content_sha256": sha,
+            "visibility": "external",
+        }
+        return {
+            "event": "chat_step",
+            "data": {
+                "type": "chat.files",
+                "conversation": {"session_id": "conv-1", "conversation_id": "conv-1", "turn_id": "turn-1"},
+                "event": {"step": "files", "status": "completed", "title": "Files Ready (1)"},
+                "data": {"count": 1, "items": [item]},
+            },
+        }
+
+    comm = _FakeComm()
+    async with TelegramActivityStreamer(
+        comm=comm,
+        bot_token="token",
+        chat_id="chat",
+        turn_id="turn-1",
+        send_messages=_send,
+    ) as streamer:
+        await comm.emit(_files_event(sha="a" * 64, size=100))   # v1
+        await comm.emit(_files_event(sha="b" * 64, size=500))   # v2: same path, new content
+        await comm.emit(_files_event(sha="a" * 64, size=100))   # exact duplicate of v1
+
+    docs = [message for message in sent if message.kind == "document"]
+    # v1 and v2 both delivered; the exact duplicate is not re-sent.
+    assert [doc.files[0].get("content_sha256") for doc in docs] == ["a" * 64, "b" * 64]
+    assert streamer.delivered_file_keys() == {
+        f"file:///store/turn-1/files/tx/tx.md::{'a' * 64}",
+        f"file:///store/turn-1/files/tx/tx.md::{'b' * 64}",
+    }
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     qualify_conversation_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.react.artifacts import (
+    artifact_transport_metadata,
     materialize_inline_artifact_to_file,
     build_artifact_view,
 )
@@ -33,11 +34,19 @@ from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.common import (
     infer_format_from_path,
     enrich_artifact_file_metadata,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.write_path_policy import (
+    WRITE_PATH_ALREADY_EXISTS,
+    duplicate_write_message,
+    react_write_target_is_materialized,
+    react_write_target_is_visible,
+    resolve_react_write_target,
+)
 
 TOOL_SPEC = {
     "id": "react.write",
     "purpose": (
-        "Author content and stream it to the user. "
+        "Create one new text artifact and stream it to the user. A current-turn path may be created by react.write once; "
+        "use react.patch for a targeted edit or choose a different filename for a separate full version. "
         "If kind='display', content is streamed only; if kind='file', content is streamed and also shared as a file. "
         "Pick the channel by the SHAPE of the content, not by a default. "
         "Use channel='canvas' for LARGE MARKDOWN OR any non‑markdown (HTML/JSON/YAML/XML/Mermaid) — produced as an external artifact that the connected interface presents to the user somewhere outside the inline chat stream. Markdown is first-class on canvas: full reports, multi-section briefs, big markdown tables, slide sources all live here. For short inline, mid-turn information the user should see now (an observation, an early finding, a milestone), use the action's root `notes` instead of an artifact. "
@@ -199,6 +208,32 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
     artifact_namespace = infer_artifact_namespace(artifact_name, default=ARTIFACT_NAMESPACE_FILES)
     artifact_display_path = f"{artifact_namespace}/{rel_path}" if rel_path else artifact_name
 
+    turn_id = str(ctx_browser.runtime_ctx.turn_id or "").strip()
+    conversation_id = str(getattr(getattr(ctx_browser, "runtime_ctx", None), "conversation_id", "") or "").strip()
+    write_target = resolve_react_write_target(
+        path=artifact_name,
+        turn_id=turn_id,
+        conversation_id=conversation_id,
+    )
+    if write_target is not None and (
+        react_write_target_is_visible(ctx_browser=ctx_browser, target=write_target)
+        or react_write_target_is_materialized(
+            outdir=pathlib.Path(state["outdir"]),
+            target=write_target,
+        )
+    ):
+        notice_block(
+            ctx_browser=ctx_browser,
+            tool_call_id=tool_call_id,
+            code=f"protocol_violation.{WRITE_PATH_ALREADY_EXISTS}",
+            message=duplicate_write_message(write_target),
+            extra={**write_target.violation_extra(), "protocol_violation": True},
+            rel="call",
+        )
+        state["retry_decision"] = True
+        state["last_tool_result"] = []
+        return state
+
     text = None
     if isinstance(generated_data, str):
         text = generated_data
@@ -208,8 +243,6 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         except Exception:
             text = str(generated_data)
 
-    turn_id = (ctx_browser.runtime_ctx.turn_id or "")
-    conversation_id = str(getattr(getattr(ctx_browser, "runtime_ctx", None), "conversation_id", "") or "").strip()
     artifact_rel = (rel_path or "").strip()
     artifact_path = (
         qualify_conversation_ref(
@@ -350,6 +383,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
         tokens=tokens_written,
     )
     meta_extra = {"tool_call_id": tool_call_id, "turn_id": turn_id}
+    meta_extra.update(artifact_transport_metadata(meta_block))
     try:
         meta_text = meta_block.get("text") if isinstance(meta_block, dict) else None
         if isinstance(meta_text, str) and meta_text.strip():

@@ -1355,7 +1355,7 @@ class ApplicationHostingService:
     ) -> List[Dict[str, Any]]:
         """
         Copy deliverable file artifacts from local outdir → ConversationStore.
-        Returns rows: [{slot, key, hosted_uri, filename, mime, size, tool_id, description, owner_id, rn, physical_path}]
+        Returns rows: [{slot, key, hosted_uri, filename, mime, size, content_sha256, tool_id, description, owner_id, rn, physical_path}]
 
         The file OWNER (``user``) is the download-critical key component: it must be
         the same user the download resolver reconstructs. When a caller omits it, it
@@ -1365,6 +1365,7 @@ class ApplicationHostingService:
         explicitly, so this default only fills in for callers that don't.
         """
         import pathlib as _pathlib
+        import hashlib as _hashlib
 
         if not str(user or "").strip():
             from kdcube_ai_app.apps.chat.sdk.event_identity import resolve_request_identity
@@ -1394,6 +1395,8 @@ class ApplicationHostingService:
             except Exception as ex:
                 self.log.log(f"[host_files] Failed to read file {p}: {ex}", level="ERROR")
                 continue
+            # Content fingerprint over the bytes already read (no extra I/O).
+            content_sha256 = _hashlib.sha256(data).hexdigest()
 
             name = p.name
             physical_path = str(p)
@@ -1444,6 +1447,7 @@ class ApplicationHostingService:
                 "filename": name,
                 "mime": info.get("mime") or "application/octet-stream",
                 "size": len(data),
+                "content_sha256": content_sha256,
                 "tool_id": info.get("tool_id") or "",
                 "description": info.get("description") or "",
                 "owner_id": user,

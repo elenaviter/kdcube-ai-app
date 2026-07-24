@@ -1,11 +1,28 @@
 # SPDX-License-Identifier: MIT
 
+import json
+
 import pytest
 
 from kdcube_ai_app.apps.chat.sdk.solutions.react.proto import RuntimeCtx
 from kdcube_ai_app.apps.chat.sdk.solutions.react.events import block_event_id, block_event_source_id
+from kdcube_ai_app.apps.chat.sdk.runtime.harness.timeline.turn_view import (
+    extract_assistant_files_from_blocks,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.write import handle_react_write
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v2.tools.tests.helpers import FakeBrowser, FakeReact
+from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.patch import TOOL_SPEC as PATCH_TOOL_SPEC
+from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.write import TOOL_SPEC as WRITE_TOOL_SPEC
+
+
+def test_write_and_patch_tool_specs_expose_create_once_vs_in_place_edit_contract():
+    write_purpose = str(WRITE_TOOL_SPEC.get("purpose") or "")
+    patch_purpose = str(PATCH_TOOL_SPEC.get("purpose") or "")
+
+    assert "path may be created by react.write once" in write_purpose
+    assert "Intentionally edit" in patch_purpose
+    assert "preserving its path" in patch_purpose
+    assert "instead of calling react.write again" in patch_purpose
 
 
 @pytest.mark.asyncio
@@ -218,3 +235,106 @@ async def test_write_unqualified_path_defaults_to_files_namespace(tmp_path):
 
     assert (tmp_path / "workdir" / "turn_cur" / "files" / "demo_proj" / "report.md").read_text() == "# Report\n"
     assert any(b.get("path") == "conv:fi:turn_cur.files/demo_proj/report.md" for b in ctx.timeline.blocks)
+
+
+@pytest.mark.asyncio
+async def test_write_same_path_is_rejected_and_keeps_original_version(tmp_path):
+    runtime = RuntimeCtx(turn_id="turn_cur", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+    state = {"outdir": str(tmp_path)}
+
+    def _decision(content: str) -> dict:
+        return {
+            "tool_call": {
+                "params": {
+                    "path": "turn_cur/files/report.md",
+                    "channel": "canvas",
+                    "content": content,
+                    "kind": "file",
+                }
+            }
+        }
+
+    state["last_decision"] = _decision("first version\n")
+    await handle_react_write(
+        react=FakeReact(),
+        ctx_browser=ctx,
+        state=state,
+        tool_call_id="write_first",
+    )
+    state["last_decision"] = _decision("corrected final version\n")
+    await handle_react_write(
+        react=FakeReact(),
+        ctx_browser=ctx,
+        state=state,
+        tool_call_id="write_second",
+    )
+
+    path = tmp_path / "workdir" / "turn_cur" / "files" / "report.md"
+    assert path.read_text() == "first version\n"
+    assert state["retry_decision"] is True
+
+    artifact_ref = "conv:fi:turn_cur.files/report.md"
+    resolved = ctx.timeline.resolve_artifact(artifact_ref)
+    assert resolved is not None
+    assert resolved["text"] == "first version\n"
+    assert resolved["tool_call_id"] == "write_first"
+
+    write_meta = []
+    for block in ctx.timeline.blocks:
+        if block.get("mime") != "application/json":
+            continue
+        try:
+            meta = json.loads(block.get("text") or "")
+        except json.JSONDecodeError:
+            continue
+        if meta.get("artifact_path") == artifact_ref:
+            write_meta.append(meta)
+    assert [row["tool_call_id"] for row in write_meta] == ["write_first"]
+    assert any(
+        block.get("type") == "react.notice"
+        and "protocol_violation.write_path_already_exists" in str(block.get("text") or "")
+        and block.get("call_id") == "write_second"
+        for block in ctx.timeline.blocks
+    )
+
+    assistant_files = extract_assistant_files_from_blocks(ctx.timeline.blocks)
+    assert len(assistant_files) == 1
+    assert assistant_files[0]["artifact_path"] == artifact_ref
+    assert assistant_files[0]["tool_call_id"] == "write_first"
+
+
+@pytest.mark.asyncio
+async def test_write_rejects_materialized_path_missing_from_timeline(tmp_path):
+    runtime = RuntimeCtx(turn_id="turn_cur", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+    state = {
+        "outdir": str(tmp_path),
+        "last_decision": {
+            "tool_call": {
+                "params": {
+                    "path": "turn_cur/files/report.md",
+                    "channel": "canvas",
+                    "content": "replacement\n",
+                    "kind": "file",
+                }
+            }
+        },
+    }
+    path = tmp_path / "workdir" / "turn_cur" / "files" / "report.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("created by another current-turn tool\n")
+
+    await handle_react_write(
+        react=FakeReact(),
+        ctx_browser=ctx,
+        state=state,
+        tool_call_id="write_duplicate",
+    )
+
+    assert path.read_text() == "created by another current-turn tool\n"
+    assert state["retry_decision"] is True
+    assert any(
+        "protocol_violation.write_path_already_exists" in str(block.get("text") or "")
+        for block in ctx.timeline.blocks
+    )
