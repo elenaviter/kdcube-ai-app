@@ -1,45 +1,46 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.20.444"
+  ref: "2026.07.25.151"
   description: |
-    This release follows 2026.07.16.140.
+    This release follows 2026.07.20.444.
 
-    Agent-neutral runtime harness modules now own conversation records, timeline
-    projection, event resolution, workspace references, artifact storage, and
-    out-of-band file delivery. ReAct and hosted-agent implementations consume
-    these shared contracts instead of carrying parallel artifact and timeline
-    systems, while conversation-file references remain stable across turns,
-    agent frameworks, and materialization boundaries.
+    Agent and application configuration gains a governed instruction-authoring
+    system. Versioned instruction sets are composed from reusable, tagged
+    blocks; presentation facets and token projections explain the effective
+    prompt before application. Agent Forge and the app/agent configuration
+    surfaces support staged edits, assignment, validation, and apply through a
+    shared structured contract rather than independent UI-specific formats.
 
-    Connection Hub now models delegated access at both agent and external-account
-    scope. Per-agent grants can select concrete connected accounts, consent is
-    editable in place, provider claims are enforced per account, and denial
-    produces a scoped demand that can guide the user back to the correct consent
-    surface. Reusable SDK contracts cover credential views, delegated MCP calls,
-    consent state, result normalization, and claim-aware authorization without
-    coupling application code to the Connection Hub bundle.
+    ReAct runtime correctness is tighter around streamed completion, external
+    events, tool contracts, and artifacts. The external-listener ownership race
+    is closed, a streamed accepted final answer is no longer duplicated by an
+    unnecessary retry, compact tool parameter descriptions remain useful for
+    smaller models, and generated artifact references are qualified at their
+    source. A current-turn path can be created by react.write once; intentional
+    in-place revisions use react.patch and duplicate writes are rejected online
+    before replacement content is accepted.
 
-    Named services gain agent-neutral discovery and instruction surfaces,
-    connected-account routing, explicit provider ownership, and governed MCP
-    integration paths. The built-in and ported LangGraph examples demonstrate
-    platform services, web tools, conversation and memory access, per-agent
-    consent, and bounded output delivery without making Slack or mail mandatory
-    defaults.
+    Telegram turn handling now uses the same framework-neutral runner boundary
+    for ReAct, LangGraph, CrewAI, and custom async applications. Bot /stop is the
+    standard active-turn event.user.steer control, webhook submission no longer
+    relies on process-local conversation ordering, and activity streaming maps
+    common chat events into Telegram progress and delivery. File deduplication
+    is content-scoped: exact live/final repeats are suppressed while distinct
+    same-path snapshots are delivered and documented against the web chat's
+    latest-artifact projection.
 
-    ReAct v3 now handles streamed decision feedback, rejected completions,
-    final-answer salvage, and retry lineage more deterministically. Lightweight
-    instruction profiles retain full protocol signal at smaller prompt sizes.
-    The model gateway adds custom-provider streaming, LangChain integration,
-    configurable serving context, disconnect cancellation, and a documented
-    local Ollama setup.
+    Economics and accounting add app-scoped spend, fresh aggregate reads,
+    reported-cost pricing, true cost-by-user and cost-by-application reports,
+    bounded day-scan processing, and a database index for spend rollups. The
+    accompanying documentation links the accounting boundary, emitted records,
+    operational reports, and implementation map without overstating coverage.
 
-    CLI initialization and config application now reconcile Cognito and
-    application-hosted authentication, Telegram companion settings, CORS, and
-    generated descriptors with expanded tests. Shared UI builds survive request
-    cancellation and expose clearer save, reload, preload, and retry boundaries.
-    User and application property paths are fully asynchronous, and the
-    crawler-visible architecture, execution-profile, security, and trust
-    documentation now states the deployed boundaries and operator
-    responsibilities precisely.
+    Authentication, delegated access, and public project guidance are aligned
+    with the runtime. Simple authentication is available as a full Connection
+    Hub platform provider, per-account agent bindings remain default-closed with
+    guided consent, and architecture/security pages describe the two-gate model.
+    README, AGENTS, app-building, agent configuration, accounting, and Telegram
+    integration docs now provide clearer discovery paths for people and coding
+    agents.
 config:
-  version: "2026.07.20.444"
+  version: "2026.07.25.151"
