@@ -59,6 +59,20 @@ export interface ComposedSegment {
   /** token weight of this segment (cl100k) */
   tokens?: number
 }
+/** The server projection of a DRAFT agent config: the token breakdown of
+ *  the REAL system instruction it would produce. */
+export interface ProjectionResult {
+  tokens: {
+    total: number
+    protocol_and_instructions: number
+    tool_catalog: number
+    skill_gallery: number
+  }
+  facets: Record<string, unknown>
+  tools: { included_ids: string[]; skipped: string[] }
+  items_expanded: string[]
+  text?: string
+}
 export interface OpError {
   code: string
   message: string
@@ -231,6 +245,30 @@ export function createAgenticConfigApi(transport: AgenticConfigTransport) {
   async function tokensForItems(items: string[]): Promise<number> {
     const result = await previewBody(items)
     return result.tokens
+  }
+
+  /** The forge's cost meter: project a DRAFT agent config server-side and
+   *  return the token breakdown of the REAL system instruction it would
+   *  produce. `draft` mirrors the two config roots: {react?, consumer?}. */
+  async function projectAgentConfig(
+    draft: Record<string, unknown>,
+    includeText = false,
+  ): Promise<ProjectionResult> {
+    const envelope = (await call({
+      action: 'project',
+      draft,
+      include_text: includeText,
+    })) as unknown as Partial<ProjectionResult> & { ok: boolean }
+    if (!envelope.ok) throw new Error(errorText(envelope as OpEnvelope))
+    return {
+      tokens: envelope.tokens ?? {
+        total: 0, protocol_and_instructions: 0, tool_catalog: 0, skill_gallery: 0,
+      },
+      facets: envelope.facets ?? {},
+      tools: envelope.tools ?? { included_ids: [], skipped: [] },
+      items_expanded: envelope.items_expanded ?? [],
+      text: envelope.text,
+    }
   }
 
   // ── assignment: wire a stored instruction to an application agent ────────────
@@ -506,6 +544,7 @@ export function createAgenticConfigApi(transport: AgenticConfigTransport) {
     retireInstruction,
     previewBody,
     tokensForItems,
+    projectAgentConfig,
     listApps,
     getAppAgents,
     writeAppProps,
@@ -516,6 +555,7 @@ export function createAgenticConfigApi(transport: AgenticConfigTransport) {
     assignInstruction,
     getBundleSecretsRedacted,
     setBundleSecrets,
+    deepMerge,
   }
 }
 

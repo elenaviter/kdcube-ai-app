@@ -741,6 +741,12 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                       instruction body exactly as the runtime would build it
                       (stored refs expanded, capability tokens resolved),
                       with token counts (total + per segment).
+        - ``project`` ``{draft: {react, consumer, workspace_implementation?},
+                      include_text?}`` → the token breakdown of the REAL
+                      system instruction the draft agent config would
+                      produce (tool roster loaded and rendered at the
+                      draft's catalog detail; unloadable tool kinds
+                      reported in ``tools.skipped``).
         """
         from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import get_current_user_identity
         from kdcube_ai_app.apps.chat.sdk.solutions.agentic_config.instructions import (
@@ -772,6 +778,46 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
 
         if action == "blocks":
             return {"ok": True, "blocks": builtin_block_catalog()}
+
+        if action == "project":
+            from kdcube_ai_app.apps.chat.sdk.solutions.agentic_config.projection import (
+                project_agent_config,
+            )
+            draft = payload.get("draft")
+            if not isinstance(draft, dict):
+                return {
+                    "ok": False,
+                    "error": "invalid_request",
+                    "message": "body.data.draft must be {react?, consumer?, workspace_implementation?}",
+                }
+            store = None
+            if self.pg_pool is not None:
+                store = AgenticInstructionsStore(
+                    pg_pool=self.pg_pool,
+                    tenant=base["tenant"],
+                    project=base["project"],
+                )
+            bundle_root = None
+            try:
+                from kdcube_ai_app.infra.plugin.bundle_registry import resolve_bundle_root
+                spec = self.config.ai_bundle_spec
+                if spec and spec.path and spec.module:
+                    bundle_root = resolve_bundle_root(spec.path, spec.module)
+            except Exception:
+                bundle_root = None
+            try:
+                projection = await project_agent_config(
+                    draft,
+                    store=store,
+                    bundle_root=bundle_root,
+                    include_text=bool(payload.get("include_text")),
+                )
+            except Exception as exc:
+                self.logger.log(
+                    f"[agentic_instructions] project failed: {traceback.format_exc()}", "ERROR"
+                )
+                return {"ok": False, "error": str(exc), "status": 500}
+            return {"ok": True, **projection}
 
         if action == "preview":
             raw_items = payload.get("items")
@@ -882,7 +928,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                 return {
                     "ok": False,
                     "error": "invalid_action",
-                    "message": "body.data.action must be list | get | save | retire | preview",
+                    "message": "body.data.action must be list | blocks | get | save | retire | preview | project",
                 }
         except Exception as exc:
             self.logger.log(f"[agentic_instructions] {action} failed: {traceback.format_exc()}", "ERROR")

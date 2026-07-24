@@ -418,3 +418,25 @@
   white-space: nowrap; vertical-align: middle;
 }
 .agc-tok-total { font-size: 11px; }
+
+/* ── forge: projection meter + draft bar + staged chips ────────────────── */
+.agc-projection {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 8px 12px; margin-bottom: 10px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+}
+.agc-projection-title {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--muted);
+}
+.agc-draftbar {
+  border: 1px solid var(--accent, #14b8a6); border-radius: 10px;
+  padding: 8px 12px; margin-bottom: 10px; background: var(--card);
+}
+.agc-draftbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.agc-draftbar-list { flex: 1 1 auto; font-size: 12px; color: var(--muted); }
+.agc-chip-staged {
+  background: color-mix(in srgb, var(--accent, #14b8a6) 18%, transparent);
+  color: var(--accent-strong, #0f766e);
+  border-color: transparent;
+}

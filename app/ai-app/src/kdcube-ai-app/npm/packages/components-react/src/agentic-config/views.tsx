@@ -780,15 +780,15 @@ function slotLabel(slot: AgentSlot): string {
 }
 
 // ═══════════════════════════════ AGENTS VIEW ═════════════════════════════
-// The FULL per-agent configuration from one interface: everything an agent
-// declares across its two config roots — the as_consumer inventory (tools +
-// traits, skills, event sources, model, capabilities) and the react runtime
-// block (instruction profiles, instructions, supported models, subagents,
-// presentation facets, pipeline/snapshot toggles). Quick controls edit the
-// high-value scalars; every section opens as YAML for full power; each save
-// merge-writes to the agent's REAL location and lands live.
+// The Agent FORGE: the full per-agent configuration, edited as a STAGED
+// DRAFT. Every control and section stages into a local overlay over the
+// stored config; nothing reaches the application until one explicit Apply
+// (a single merge-write covering both roots). While forging, the projection
+// meter shows what the TOTAL system instruction would weigh under the draft
+// — reacting to instruction sets, tool catalog detail, the connected tool
+// roster, the skill gallery, subagents, and the action protocol.
 
-import type { AgentProfile, AgentRoot } from './api.ts'
+import type { AgentProfile, AgentRoot, ProjectionResult } from './api.ts'
 
 interface SectionSpec {
   root: AgentRoot
@@ -826,12 +826,12 @@ const AGENT_SECTIONS: SectionSpec[] = [
   },
   {
     root: 'react', section: 'subagents', title: 'Subagents',
-    hint: 'Helper-agent delegation: availability and defaults.',
+    hint: 'Helper-agent delegation: availability and defaults. Enabling adds the delegation tool to the instruction.',
     summarize: (v) => (v === undefined ? '(not offered)' : JSON.stringify(v)),
   },
   {
     root: 'consumer', section: 'tools', title: 'Tools & traits',
-    hint: 'The tool connections (modules, MCP, named services) with allow-lists, runtimes, and tool_traits (parallel-execution strategy: exploration/exploitation).',
+    hint: 'The tool connections (modules, MCP, named services) with allow-lists, runtimes, and tool_traits (parallel-execution strategy: exploration/exploitation). The connected roster sizes the catalog inside the instruction.',
     summarize: (v) => {
       if (!Array.isArray(v)) return '(none)'
       const names = (v as { name?: string; tool_traits?: unknown }[]).map(
@@ -872,6 +872,8 @@ const AGENT_SECTIONS: SectionSpec[] = [
   },
 ]
 
+type Overlay = Record<string, unknown>
+
 function AgentsView() {
   const api = useApi()
   const { notice, setNotice, fail, ok } = useNotice()
@@ -880,13 +882,26 @@ function AgentsView() {
   const [profiles, setProfiles] = useState<AgentProfile[]>([])
   const [config, setConfig] = useState<Record<string, unknown>>({})
   const [selected, setSelected] = useState<AgentProfile | null>(null)
+  const [draftReact, setDraftReact] = useState<Overlay>({})
+  const [draftConsumer, setDraftConsumer] = useState<Overlay>({})
+  const [draftOnly, setDraftOnly] = useState<AgentProfile[]>([])
   const [newAgentKey, setNewAgentKey] = useState('')
   const [busy, setBusy] = useState(false)
+  const [projection, setProjection] = useState<ProjectionResult | null>(null)
+  const [projBusy, setProjBusy] = useState(false)
+
+  const dirty = Object.keys(draftReact).length > 0 || Object.keys(draftConsumer).length > 0
 
   useEffect(() => {
     void load().catch(fail)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  const clearDraft = () => {
+    setDraftReact({})
+    setDraftConsumer({})
+    setProjection(null)
+  }
 
   const reload = async (id: string, keepKey?: string) => {
     const result = await api.getAgentProfiles(id)
@@ -894,14 +909,18 @@ function AgentsView() {
     setConfig(result.config)
     if (keepKey) {
       setSelected(result.agents.find((a) => a.key === keepKey) ?? null)
+      setDraftOnly((list) => list.filter((a) => !result.agents.some((r) => r.key === a.key)))
     }
   }
 
   const pickApp = async (id: string) => {
+    if (dirty && !window.confirm('Discard the staged draft?')) return
     setBundleId(id)
     setProfiles([])
+    setDraftOnly([])
     setConfig({})
     setSelected(null)
+    clearDraft()
     setNotice(null)
     if (!id) return
     try {
@@ -911,15 +930,81 @@ function AgentsView() {
     }
   }
 
-  const saveSection = async (agent: AgentProfile, root: AgentRoot, section: string, text: string) => {
+  const pickAgent = (agent: AgentProfile) => {
+    if (agent.key === selected?.key) return
+    if (dirty && !window.confirm('Discard the staged draft?')) return
+    setSelected(agent)
+    clearDraft()
+    setNotice(null)
+  }
+
+  const storedReact = selected ? (api.agentReactBlock(config, selected) as Overlay) : {}
+  const storedConsumer = selected ? (api.agentConsumerBlock(config, selected) as Overlay) : {}
+  const effectiveReact = api.deepMerge(storedReact, draftReact) as Overlay
+  const effectiveConsumer = api.deepMerge(storedConsumer, draftConsumer) as Overlay
+
+  /** Stage a value: section === null merges a partial object at the root. */
+  const stage = (root: AgentRoot, section: string | null, value: unknown) => {
+    const update = (prev: Overlay): Overlay =>
+      section === null ? { ...prev, ...(value as Overlay) } : { ...prev, [section]: value }
+    if (root === 'react') setDraftReact(update)
+    else setDraftConsumer(update)
+  }
+  const unstage = (root: AgentRoot, section: string) => {
+    const drop = (prev: Overlay): Overlay => {
+      const next = { ...prev }
+      delete next[section]
+      return next
+    }
+    if (root === 'react') setDraftReact(drop)
+    else setDraftConsumer(drop)
+  }
+
+  // The projection meter: debounced server projection of the EFFECTIVE draft.
+  const projKey = selected
+    ? JSON.stringify({ r: effectiveReact, c: effectiveConsumer })
+    : ''
+  const projSeq = useRef(0)
+  useEffect(() => {
+    if (!selected) {
+      setProjection(null)
+      return
+    }
+    const seq = ++projSeq.current
+    setProjBusy(true)
+    const timer = window.setTimeout(() => {
+      api.projectAgentConfig({ react: effectiveReact, consumer: effectiveConsumer })
+        .then((result) => {
+          if (projSeq.current === seq) setProjection(result)
+        })
+        .catch(() => {
+          if (projSeq.current === seq) setProjection(null)
+        })
+        .finally(() => {
+          if (projSeq.current === seq) setProjBusy(false)
+        })
+    }, 700)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projKey])
+
+  const apply = async () => {
+    if (!selected || !dirty) return
     setBusy(true)
     setNotice(null)
     try {
-      const value: unknown = yamlLoad(text)
-      if (value === undefined || value === null) throw new Error('the section payload is empty')
-      await api.writeAgentSection(bundleId, agent, root, section, value)
-      ok(`Saved ${agent.key} · ${section} (merge). The change is live.`)
-      await reload(bundleId, agent.key)
+      const props: Record<string, unknown> = {}
+      if (Object.keys(draftReact).length) {
+        const agentPatch = { [selected.key]: draftReact }
+        props.react = selected.reactContainer === 'root' ? agentPatch : { agents: agentPatch }
+      }
+      if (Object.keys(draftConsumer).length) {
+        props.surfaces = { as_consumer: { agents: { [selected.key]: draftConsumer } } }
+      }
+      await api.writeAppProps(bundleId, props)
+      ok(`Applied the draft to ${selected.key}. The change is live.`)
+      clearDraft()
+      await reload(bundleId, selected.key)
     } catch (err) {
       fail(err)
     } finally {
@@ -927,42 +1012,22 @@ function AgentsView() {
     }
   }
 
-  const saveQuick = async (agent: AgentProfile, root: AgentRoot, section: string | null, value: unknown) => {
-    setBusy(true)
-    setNotice(null)
-    try {
-      await api.writeAgentSection(bundleId, agent, root, section, value)
-      ok(`Saved ${agent.key}. The change is live.`)
-      await reload(bundleId, agent.key)
-    } catch (err) {
-      fail(err)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const addAgent = async () => {
+  const addAgent = () => {
     const key = newAgentKey.trim()
     if (!bundleId || !key) return
+    if (profiles.some((a) => a.key === key) || draftOnly.some((a) => a.key === key)) return
+    if (dirty && !window.confirm('Discard the staged draft?')) return
     const agent: AgentProfile = { key, reactContainer: 'agents', hasConsumer: false }
-    setBusy(true)
-    try {
-      await api.writeAgentSection(bundleId, agent, 'react', null, {
-        model: { max_tokens: 8192 },
-      })
-      setNewAgentKey('')
-      ok(`Created react.agents.${key} — configure its sections below.`)
-      await reload(bundleId, key)
-    } catch (err) {
-      fail(err)
-    } finally {
-      setBusy(false)
-    }
+    setDraftOnly((list) => [...list, agent])
+    setSelected(agent)
+    clearDraft()
+    setNewAgentKey('')
+    setNotice(null)
   }
 
-  const reactBlock = selected ? api.agentReactBlock(config, selected) : {}
-  const consumerBlock = selected ? api.agentConsumerBlock(config, selected) : {}
-  const blockFor = (root: AgentRoot) => (root === 'react' ? reactBlock : consumerBlock)
+  const allAgents = [...profiles, ...draftOnly.filter((d) => !profiles.some((p) => p.key === d.key))]
+  const blockFor = (root: AgentRoot) => (root === 'react' ? effectiveReact : effectiveConsumer)
+  const stagedIn = (root: AgentRoot) => (root === 'react' ? draftReact : draftConsumer)
 
   return (
     <div className="agc-root">
@@ -977,22 +1042,27 @@ function AgentsView() {
           </select>
         </div>
         <div className="agc-list">
-          {profiles.map((agent) => (
+          {allAgents.map((agent) => (
             <button
               key={agent.key}
               className={'agc-list-row' + (selected?.key === agent.key ? ' is-active' : '')}
-              onClick={() => { setSelected(agent); setNotice(null) }}
+              onClick={() => pickAgent(agent)}
             >
-              <span className="agc-list-name">{agent.key}</span>
+              <span className="agc-list-name">
+                {agent.key}
+                {draftOnly.some((d) => d.key === agent.key) ? (
+                  <span className="agc-chip agc-chip-staged">draft</span>
+                ) : null}
+              </span>
               <span className="agc-list-ref">
                 {[
                   agent.reactContainer ? (agent.reactContainer === 'agents' ? 'react.agents' : 'react') : null,
                   agent.hasConsumer ? 'as_consumer' : null,
-                ].filter(Boolean).join(' + ')}
+                ].filter(Boolean).join(' + ') || 'new'}
               </span>
             </button>
           ))}
-          {bundleId && !profiles.length ? <div className="agc-empty">No agents found.</div> : null}
+          {bundleId && !allAgents.length ? <div className="agc-empty">No agents found.</div> : null}
         </div>
         {bundleId ? (
           <div className="agc-side-pad agc-add-agent">
@@ -1001,7 +1071,7 @@ function AgentsView() {
               placeholder="new-agent-key"
               onChange={(e) => setNewAgentKey(e.target.value)}
             />
-            <button className="agc-btn" disabled={busy || !newAgentKey.trim()} onClick={() => void addAgent()}>
+            <button className="agc-btn" disabled={!newAgentKey.trim()} onClick={addAgent}>
               Add agent
             </button>
           </div>
@@ -1010,31 +1080,41 @@ function AgentsView() {
 
       <main className="agc-main">
         <div className="agc-help">
-          Everything one agent declares, from one interface: quick controls for
-          the presentation and runtime scalars, and a section per configurable
-          area — instructions, models, tools &amp; traits, skills, event
-          sources, capabilities, subagents. Each section opens as YAML; Save
-          merge-writes to the agent's REAL location
-          (<code>surfaces.as_consumer.agents</code> for the inventory,
-          <code> react…</code> for the runtime) and lands live.
+          The agent forge. Every edit STAGES into a draft — nothing reaches the
+          application until <strong>Apply</strong> writes the whole draft in one
+          merge to the agent's real config
+          (<code>surfaces.as_consumer.agents</code> + <code>react…</code>).
+          The projection meter shows what the TOTAL system instruction would
+          weigh under the draft: instruction sets, catalog detail, the
+          connected tool roster, skill gallery, subagents, protocol.
         </div>
         {notice ? <div className={`agc-notice agc-notice-${notice.kind}`}>{notice.text}</div> : null}
         {selected ? (
           <>
+            <ProjectionMeter projection={projection} busy={projBusy} />
+            {dirty ? (
+              <DraftBar
+                draftReact={draftReact}
+                draftConsumer={draftConsumer}
+                busy={busy}
+                onApply={() => void apply()}
+                onDiscard={() => { clearDraft(); setNotice(null) }}
+              />
+            ) : null}
             <QuickControls
-              agent={selected}
-              reactBlock={reactBlock}
-              consumerBlock={consumerBlock}
-              busy={busy}
-              onSave={saveQuick}
+              reactBlock={effectiveReact}
+              consumerBlock={effectiveConsumer}
+              stagedReact={draftReact}
+              onStage={stage}
             />
             {AGENT_SECTIONS.map((spec) => (
               <AgentSection
                 key={`${spec.root}:${spec.section}`}
                 spec={spec}
-                value={(blockFor(spec.root) as Record<string, unknown>)[spec.section]}
-                busy={busy}
-                onSave={(text) => void saveSection(selected, spec.root, spec.section, text)}
+                value={(blockFor(spec.root))[spec.section]}
+                staged={spec.section in stagedIn(spec.root)}
+                onStage={(value) => stage(spec.root, spec.section, value)}
+                onUnstage={() => unstage(spec.root, spec.section)}
               />
             ))}
           </>
@@ -1046,20 +1126,97 @@ function AgentsView() {
   )
 }
 
-/** The high-value scalars as typed controls (selects/toggles/number). A blank
- *  choice leaves the stored config untouched; picking writes immediately. */
+/** The forge's cost meter: total + breakdown of the projected instruction. */
+function ProjectionMeter({
+  projection,
+  busy,
+}: {
+  projection: ProjectionResult | null
+  busy: boolean
+}) {
+  return (
+    <section className="agc-projection">
+      <span className="agc-projection-title">Projected instruction</span>
+      {projection ? (
+        <>
+          <span className="agc-tok agc-tok-total">{formatTokens(projection.tokens.total)} total</span>
+          <span className="agc-tok">base+instructions {formatTokens(projection.tokens.protocol_and_instructions)}</span>
+          <span className="agc-tok">tool catalog {formatTokens(projection.tokens.tool_catalog)}</span>
+          <span className="agc-tok">skill gallery {formatTokens(projection.tokens.skill_gallery)}</span>
+          <span className="agc-muted">
+            {projection.tools.included_ids.length} tool(s) projected
+            {projection.tools.skipped.length
+              ? ` · not projected: ${projection.tools.skipped.join('; ')}`
+              : ''}
+          </span>
+        </>
+      ) : (
+        <span className="agc-muted">{busy ? '' : 'no projection yet'}</span>
+      )}
+      {busy ? <span className="agc-muted">projecting…</span> : null}
+    </section>
+  )
+}
+
+/** The staged draft: what Apply will merge-write, per root. */
+function DraftBar({
+  draftReact,
+  draftConsumer,
+  busy,
+  onApply,
+  onDiscard,
+}: {
+  draftReact: Record<string, unknown>
+  draftConsumer: Record<string, unknown>
+  busy: boolean
+  onApply: () => void
+  onDiscard: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const staged = [
+    ...Object.keys(draftReact).map((k) => `react.${k}`),
+    ...Object.keys(draftConsumer).map((k) => `as_consumer.${k}`),
+  ]
+  return (
+    <section className="agc-draftbar">
+      <div className="agc-draftbar-row">
+        <span className="agc-chip agc-chip-staged">staged</span>
+        <span className="agc-draftbar-list">{staged.join(' · ')}</span>
+        <button className="agc-btn" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Hide' : 'Show'} draft
+        </button>
+        <button className="agc-btn" disabled={busy} onClick={onDiscard}>Discard</button>
+        <button className="agc-btn agc-btn-primary" disabled={busy} onClick={onApply}>
+          Apply draft
+        </button>
+      </div>
+      {open ? (
+        <pre className="agc-block-text">
+          {yamlDump(
+            {
+              ...(Object.keys(draftReact).length ? { react: draftReact } : {}),
+              ...(Object.keys(draftConsumer).length ? { as_consumer: draftConsumer } : {}),
+            },
+            { lineWidth: 100 },
+          )}
+        </pre>
+      ) : null}
+    </section>
+  )
+}
+
+/** The high-value scalars as typed controls. Picking STAGES into the draft;
+ *  the blank option shows the current effective (stored ⊕ staged) value. */
 function QuickControls({
-  agent,
   reactBlock,
   consumerBlock,
-  busy,
-  onSave,
+  stagedReact,
+  onStage,
 }: {
-  agent: AgentProfile
   reactBlock: Record<string, unknown>
   consumerBlock: Record<string, unknown>
-  busy: boolean
-  onSave: (agent: AgentProfile, root: AgentRoot, section: string | null, value: unknown) => Promise<void>
+  stagedReact: Record<string, unknown>
+  onStage: (root: AgentRoot, section: string | null, value: unknown) => void
 }) {
   const instructions = (reactBlock.instructions ?? {}) as Record<string, unknown>
   const instructionsObj = typeof instructions === 'object' && !Array.isArray(instructions) ? instructions : {}
@@ -1067,6 +1224,12 @@ function QuickControls({
   const snapshots = (reactBlock.story_snapshots ?? {}) as Record<string, unknown>
   const model = (consumerBlock.model ?? {}) as Record<string, unknown>
   const [maxTokens, setMaxTokens] = useState('')
+
+  const stageInstructionFacet = (facet: string, value: unknown) => {
+    const stagedInstr = (stagedReact.instructions ?? {}) as Record<string, unknown>
+    const base = typeof stagedInstr === 'object' && !Array.isArray(stagedInstr) ? stagedInstr : {}
+    onStage('react', 'instructions', { ...base, [facet]: value })
+  }
 
   const enumControl = (
     label: string,
@@ -1076,7 +1239,7 @@ function QuickControls({
   ) => (
     <label className="agc-quick" key={label}>
       <span>{label}</span>
-      <select value="" disabled={busy} onChange={(e) => { if (e.target.value) write(e.target.value) }}>
+      <select value="" onChange={(e) => { if (e.target.value) write(e.target.value) }}>
         <option value="">{current === undefined ? '(inherit)' : String(current)}</option>
         {values.map((v) => <option key={v} value={v}>{v}</option>)}
       </select>
@@ -1086,17 +1249,17 @@ function QuickControls({
   return (
     <section className="agc-quickbar">
       {enumControl('Tool catalog', instructionsObj.tool_catalog_detail, ['full', 'compact'], (v) =>
-        void onSave(agent, 'react', 'instructions', { tool_catalog_detail: v }))}
+        stageInstructionFacet('tool_catalog_detail', v))}
       {enumControl('Skills form', instructionsObj.skills_form, ['full', 'compact'], (v) =>
-        void onSave(agent, 'react', 'instructions', { skills_form: v }))}
+        stageInstructionFacet('skills_form', v))}
       {enumControl('Skill gallery', instructionsObj.include_skill_gallery, ['true', 'false'], (v) =>
-        void onSave(agent, 'react', 'instructions', { include_skill_gallery: v === 'true' }))}
+        stageInstructionFacet('include_skill_gallery', v === 'true'))}
       {enumControl('Multi-action', reactBlock.multi_action_mode, ['off', 'on'], (v) =>
-        void onSave(agent, 'react', null, { multi_action_mode: v }))}
+        onStage('react', null, { multi_action_mode: v }))}
       {enumControl('Event pipeline', pipeline.enabled, ['true', 'false'], (v) =>
-        void onSave(agent, 'react', 'event_source_pipeline', { enabled: v === 'true' }))}
+        onStage('react', 'event_source_pipeline', { enabled: v === 'true' }))}
       {enumControl('Story snapshots', snapshots.enabled, ['true', 'false'], (v) =>
-        void onSave(agent, 'react', 'story_snapshots', { enabled: v === 'true' }))}
+        onStage('react', 'story_snapshots', { enabled: v === 'true' }))}
       <label className="agc-quick">
         <span>max_tokens</span>
         <span className="agc-quick-pair">
@@ -1107,10 +1270,10 @@ function QuickControls({
           />
           <button
             className="agc-btn"
-            disabled={busy || !/^\d+$/.test(maxTokens.trim())}
-            onClick={() => { void onSave(agent, 'consumer', 'model', { max_tokens: Number(maxTokens) }); setMaxTokens('') }}
+            disabled={!/^\d+$/.test(maxTokens.trim())}
+            onClick={() => { onStage('consumer', 'model', { max_tokens: Number(maxTokens) }); setMaxTokens('') }}
           >
-            Set
+            Stage
           </button>
         </span>
       </label>
@@ -1118,24 +1281,40 @@ function QuickControls({
   )
 }
 
-/** One configurable area: human summary + YAML editor on demand. */
+/** One configurable area: human summary + YAML editor staging into the draft. */
 function AgentSection({
   spec,
   value,
-  busy,
-  onSave,
+  staged,
+  onStage,
+  onUnstage,
 }: {
   spec: SectionSpec
   value: unknown
-  busy: boolean
-  onSave: (text: string) => void
+  staged: boolean
+  onStage: (value: unknown) => void
+  onUnstage: () => void
 }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
+  const [error, setError] = useState('')
 
   const openEditor = () => {
     setText(value === undefined ? '' : yamlDump(value, { lineWidth: 100 }))
+    setError('')
     setOpen(true)
+  }
+
+  const stageText = () => {
+    try {
+      const parsed: unknown = yamlLoad(text)
+      if (parsed === undefined || parsed === null) throw new Error('the section payload is empty')
+      onStage(parsed)
+      setError('')
+      setOpen(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   return (
@@ -1146,8 +1325,12 @@ function AgentSection({
           <span className="agc-chip agc-chip-muted">
             {spec.root === 'consumer' ? 'as_consumer' : 'react'}
           </span>
+          {staged ? <span className="agc-chip agc-chip-staged">staged</span> : null}
         </div>
         <span className="agc-muted">{spec.summarize(value)}</span>
+        {staged ? (
+          <button className="agc-btn" onClick={onUnstage}>Unstage</button>
+        ) : null}
         <button className="agc-btn" onClick={() => (open ? setOpen(false) : openEditor())}>
           {open ? 'Close' : 'Edit'}
         </button>
@@ -1155,6 +1338,7 @@ function AgentSection({
       {open ? (
         <>
           <p className="agc-assign-hint">{spec.hint}</p>
+          {error ? <div className="agc-notice agc-notice-error">{error}</div> : null}
           <textarea
             className="agc-yaml-editor agc-yaml-editor-small"
             spellCheck={false}
@@ -1163,8 +1347,8 @@ function AgentSection({
             onChange={(e) => setText(e.target.value)}
           />
           <div className="agc-actions">
-            <button className="agc-btn agc-btn-primary" disabled={busy || !text.trim()} onClick={() => onSave(text)}>
-              Save section (merge)
+            <button className="agc-btn agc-btn-primary" disabled={!text.trim()} onClick={stageText}>
+              Stage section
             </button>
           </div>
         </>
