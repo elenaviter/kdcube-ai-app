@@ -240,7 +240,7 @@ Use it when React needs an editable runnable/searchable/testable project tree in
 
 ### `react.write`
 
-Creates or intentionally replaces a current-turn text artifact.
+Creates a new current-turn text artifact.
 
 - input: `path`, `content`, optional `channel`, optional `kind`
 - accepted paths: current-turn relative paths, not logical `conv:fi:` paths
@@ -248,21 +248,23 @@ Creates or intentionally replaces a current-turn text artifact.
 - channels: `canvas`, `timeline_text`, `internal`
 - kinds: `display`, `file`
 - output: local text artifact plus timeline/result blocks
-- same-path behavior: a later successful write in the same turn replaces the
-  current workspace file; the latest version is the one stored and projected
-  as the current assistant file, while the timeline retains both write events
+- same-path behavior: a second `react.write` to a path that already exists in
+  the current turn is interrupted as soon as its streamed `path` is parsed,
+  before the `content` field is processed; the tool handler enforces the same
+  rule before materialization, leaving the existing file unchanged
 - external file behavior: hosts and emits a downloadable file only when external and `kind=file`
 - internal behavior: `channel=internal` writes Internal Memory Beacons as `react.note`
 
 Use it for text artifacts only. For PDFs, PPTX, DOCX, PNG, and other binary deliverables, use `rendering_tools.write_*` or exec tools.
 
-Prefer one complete `react.write`. Use `react.patch` for a targeted correction.
-When a full rewrite is genuinely required later in the turn, write the exact
-same path again; do not invent a second path merely to retry the same artifact.
+Use `react.patch` for an intentional in-place edit to the existing artifact.
+When the agent needs to publish a separate full version, it chooses a different
+filename.
 
 ### `react.patch`
 
-Updates an existing current-turn materialized text file under `git/projects/...`, `files/...`, or `git/snapshots/...`.
+Intentionally edits an existing current-turn materialized text file in place,
+preserving its path. Use it instead of calling `react.write` again for that path.
 
 - input: `path`, `patch`
 - accepted paths: current-turn artifact-root-relative paths; prefer concise paths such as `git/projects/<scope>/file.py` for project edits or `files/<scope>/page.html` for produced artifacts, not logical `conv:fi:` paths

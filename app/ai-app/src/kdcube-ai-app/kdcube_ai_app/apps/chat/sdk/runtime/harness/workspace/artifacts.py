@@ -132,13 +132,10 @@ class WorkspaceArtifact:
                 file_path = pathlib.Path(path)
                 if not file_path.is_absolute():
                     file_path = workdir / file_path
-                text = value.get("text")
-                if text is None:
-                    text = value.get("content")
-                # Inline content is authoritative. A later write to the same
-                # current-turn path replaces the current workspace bytes; a
-                # path-only artifact still leaves an existing file untouched.
-                if text is not None or not file_path.exists():
+                if not file_path.exists():
+                    text = value.get("text")
+                    if text is None:
+                        text = value.get("content")
                     if text is None:
                         try:
                             text = json.dumps(

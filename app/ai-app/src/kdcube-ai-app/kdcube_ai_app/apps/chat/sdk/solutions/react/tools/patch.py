@@ -45,7 +45,8 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import resolve_artifa
 TOOL_SPEC = {
     "id": "react.patch",
     "purpose": (
-        "Apply a text patch to an existing current-turn materialized text file under the canonical turn_<current>/files/... or turn_<current>/git/projects/... namespace and stream the patch to the user. "
+        "Intentionally edit an existing current-turn text artifact in place, preserving its path; use react.patch instead of calling react.write again for that path. "
+        "The target must be materialized under the canonical turn_<current>/files/... or turn_<current>/git/projects/... namespace, and the change is streamed to the user. "
         "If patch starts with ---/+++/@@ it is treated as unified diff and generated hunk counts are normalized, otherwise replaces the whole file. "
         "Unified diffs are applied against exact old/context bytes; hunk line counts may be wrong, but old/context lines must match the actual current file. "
         "Keep targeted hunks small and anchored by nearby exact context from the target file. "

@@ -75,6 +75,13 @@ from kdcube_ai_app.apps.chat.sdk.runtime.tool_traits import (
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.action_overseer import (
     RoundActionOverseer,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.write_stream_guard import (
+    ReactWriteStreamGuard,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.react.tools.write_path_policy import (
+    WRITE_PATH_ALREADY_EXISTS,
+    duplicate_write_message_for_path,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.early_tool_execution import (
     EarlyToolExecutionListener,
     consumed_early_tool_record,
@@ -1065,6 +1072,7 @@ class ReactSolverV2:
         sources_list: Optional[List[Dict[str, object]]] = None,
         artifact_name: Optional[str] = None,
         emit_delta: Optional[Callable[..., Awaitable[None]]] = None,
+        on_react_write_path: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> tuple[List[Callable[[str], Awaitable[None]]], List[Any]]:
         safe_name = artifact_name or f"react.record.{uuid.uuid4().hex[:8]}"
         sources_getter = None
@@ -1081,6 +1089,7 @@ class ReactSolverV2:
         react_streamer = ReactWriteContentStreamer(
             **base_args,
             stream_tool_id="react.write",
+            on_write_path=on_react_write_path,
         )
         patch_streamer = ReactPatchContentStreamer(
             **base_args,
@@ -1305,6 +1314,9 @@ class ReactSolverV2:
             return f"Action '{action}' is not allowed. Allowed: call_tool | complete | exit."
         if code == "final_answer_required":
             return "final_answer is required for action=complete/exit."
+        if code == WRITE_PATH_ALREADY_EXISTS:
+            path = str((extra or {}).get("path") or "that path").strip()
+            return duplicate_write_message_for_path(path)
         if code == "decision_preamble_before_first_channel":
             return (
                 "Your response started with text outside the ReAct channel protocol, so the runtime interrupted generation before channel parsing. "
@@ -3492,6 +3504,12 @@ class ReactSolverV2:
             artifact_suffix = f"{pending_tool_call_id}.i{safe_idx}"
             action_gate = action_overseer.gate_for(action_index=safe_idx, emit_delta=self.comm.delta, lane="action")
             answer_gate = action_overseer.gate_for(action_index=safe_idx, emit_delta=self.comm.delta, lane="final_answer")
+            write_stream_guard = ReactWriteStreamGuard(
+                ctx_browser=self.ctx_browser,
+                action_gate=action_gate,
+                answer_gate=answer_gate,
+                action_index=safe_idx,
+            )
 
             async def _timeline_emit_delta(**kwargs: Any) -> None:
                 marker = str(kwargs.get("marker") or "")
@@ -3520,10 +3538,14 @@ class ReactSolverV2:
                     sources_list=sources_list,
                     artifact_name=f"react.record.{artifact_suffix}",
                     emit_delta=action_gate.emit_delta,
+                    on_react_write_path=write_stream_guard.observe_path,
                 )
             except TypeError as exc:
-                if "emit_delta" not in str(exc):
+                unsupported = str(exc)
+                if "emit_delta" not in unsupported and "on_react_write_path" not in unsupported:
                     raise
+                # Compatibility overrides without the stream hook still get
+                # the authoritative duplicate check in handle_react_write.
                 record_streamer_fns, instance_record_streamers = self._mk_content_streamers(
                     f"decision.record ({iteration}).{safe_idx}",
                     sources_list=sources_list,

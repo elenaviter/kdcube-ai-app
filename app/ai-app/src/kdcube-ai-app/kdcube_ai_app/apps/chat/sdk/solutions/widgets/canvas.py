@@ -592,6 +592,34 @@ class ToolContentStreamerBase:
 
 
 class ReactWriteContentStreamer(ToolContentStreamerBase):
+    def __init__(
+        self,
+        *,
+        on_write_path: Optional[Callable[[str], Awaitable[None]]] = None,
+        **kwargs: Any,
+    ) -> None:
+        self.on_write_path = on_write_path
+        self._write_path_reported = False
+        super().__init__(**kwargs)
+
+    def _start_tool_call(self) -> None:
+        super()._start_tool_call()
+        self._write_path_reported = False
+
+    async def _close_active_string(self) -> None:
+        if (
+            not self._write_path_reported
+            and self.on_write_path is not None
+            and self.active_key
+            and self._matches_path_path()
+            and self.current_tool_id == self.stream_tool_id
+        ):
+            path = self.active_value_buf.strip()
+            if path:
+                self._write_path_reported = True
+                await self.on_write_path(path)
+        await super()._close_active_string()
+
     def _tool_allows_stream(self) -> bool:
         return self.current_tool_id == self.stream_tool_id
 

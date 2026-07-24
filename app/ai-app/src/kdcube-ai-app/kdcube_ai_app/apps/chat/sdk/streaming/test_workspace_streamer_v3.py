@@ -656,6 +656,73 @@ async def test_stream_policy_interrupts_before_denied_action_channel_closes():
 
 
 @pytest.mark.asyncio
+async def test_react_write_path_guard_interrupts_before_content_is_processed():
+    content = "CONTENT_THAT_MUST_NOT_BE_GENERATED_" * 40
+    action = {
+        "action": "call_tool",
+        "notes": "writing report",
+        "tool_call": {
+            "tool_id": "react.write",
+            "params": {
+                "path": "turn_1/files/report.md",
+                "channel": "canvas",
+                "content": content,
+                "kind": "file",
+            },
+        },
+        "final_answer": None,
+        "suggested_followups": None,
+    }
+    chunks = _chunk_text(_json_channel("action", action), size=7)
+    svc = _InterruptAwareService(chunks)
+    collector = _Collector()
+    observed_paths = []
+
+    async def _reject_existing_path(path: str) -> None:
+        observed_paths.append(path)
+        raise StreamPolicyViolation(
+            code="write_path_already_exists",
+            message="existing path",
+            extra={"path": path},
+        )
+
+    def _factory(channel: str, instance_idx: int):
+        del channel
+        streamer = ReactWriteContentStreamer(
+            emit_delta=collector.emit,
+            agent=f"test.write.{instance_idx}",
+            artifact_name=f"react.record.{instance_idx}",
+            turn_id="turn_1",
+            stream_tool_id="react.write",
+            on_write_path=_reject_existing_path,
+        )
+        return [_wrap_json_widget(streamer)]
+
+    with pytest.raises(StreamPolicyViolation) as exc:
+        await stream_with_channels(
+            svc=svc,
+            messages=["sys", "user"],
+            role="answer.generator.regular",
+            channels=[
+                ChannelSpec(name="action", format="json", replace_citations=False, emit_marker="answer"),
+            ],
+            emit=collector.emit,
+            agent="test.agent",
+            artifact_name="react.decision",
+            subscribers=ChannelSubscribers().subscribe_factory("action", _factory),
+            max_tokens=500,
+            temperature=0.0,
+            return_full_raw=True,
+        )
+
+    assert exc.value.code == "write_path_already_exists"
+    assert observed_paths == ["turn_1/files/report.md"]
+    assert not svc.stream_finished
+    assert content not in "".join(svc.yielded)
+    assert collector.text_for_artifact("report.md") == ""
+
+
+@pytest.mark.asyncio
 async def test_raw_stream_policy_interrupts_before_channel_parser_and_subscribers():
     chunks = [
         "Draft outside the protocol.",
