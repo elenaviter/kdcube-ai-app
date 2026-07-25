@@ -47,6 +47,13 @@ def _clean_roles(roles: Optional[list]) -> list[str]:
 def ensure_platform_registered_role(user: Optional[User]) -> Optional[User]:
     """Attach the baseline platform role to an authenticated platform user.
 
+    The baseline is ALWAYS present for an authenticated platform user, on top
+    of whatever roles the identity provider supplied. IdP-supplied roles may
+    be outside the kdcube:role:* vocabulary entirely (Cognito puts federated
+    users into an automatic "<pool>_<Provider>" group, which arrives here as
+    a role) - carrying such a role must never cost the user their registered
+    standing.
+
     This is deliberately platform-auth scoped. Channel/request authenticators
     that only prove an external actor, such as a raw Telegram Mini App proof,
     must not call this helper unless they have resolved a platform authority.
@@ -55,8 +62,8 @@ def ensure_platform_registered_role(user: Optional[User]) -> Optional[User]:
     if user is None:
         return None
     roles = _clean_roles(getattr(user, "roles", None))
-    if not roles:
-        roles = [REGISTERED_ROLE]
+    if REGISTERED_ROLE not in roles:
+        roles.append(REGISTERED_ROLE)
     user.roles = roles
     return user
 

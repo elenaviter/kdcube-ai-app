@@ -74,7 +74,10 @@ async def test_request_auth_resolver_standard_auth_creates_session():
     assert auth.called is True
     assert session.user_id == "platform-user"
     assert session.user_type == UserType.PRIVILEGED
-    assert created["user_data"]["roles"] == ["kdcube:role:super-admin"]
+    assert created["user_data"]["roles"] == [
+        "kdcube:role:super-admin",
+        "kdcube:role:registered",
+    ]
 
 
 async def test_request_auth_resolver_adds_platform_registered_role():

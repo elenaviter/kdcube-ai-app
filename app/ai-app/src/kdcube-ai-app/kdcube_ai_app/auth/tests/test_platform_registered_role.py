@@ -36,7 +36,21 @@ def test_ensure_platform_registered_role_preserves_existing_roles():
     )
 
     assert user is not None
-    assert user.roles == ["kdcube:role:super-admin"]
+    assert user.roles == ["kdcube:role:super-admin", REGISTERED_ROLE]
+
+
+def test_federated_provider_group_does_not_cost_registered_standing():
+    """Cognito puts federated users into an automatic "<pool>_<Provider>"
+    group, which arrives as a role. Carrying it must not suppress the
+    registered baseline - that regression made role-gated surfaces (e.g.
+    Connection Hub delegable grants) deny every federated user."""
+    user = ensure_platform_registered_role(
+        User(username="linkedin_j0uobyv4pr", roles=["eu-west-1_YWvNG7xvm_LinkedIn"])
+    )
+
+    assert user is not None
+    assert REGISTERED_ROLE in user.roles
+    assert "eu-west-1_YWvNG7xvm_LinkedIn" in user.roles
 
 
 @pytest.mark.asyncio
