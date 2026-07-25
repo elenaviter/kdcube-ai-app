@@ -640,6 +640,46 @@ async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dic
         set_agent_identity(client_id=client_id, resource=str(state.get("resource") or ""))
         if not state.get("governed") or state.get("granted"):
             return None
+        # Demand ordering (operator ruling 2026-07-25): when this operation is
+        # account-backed and the user has ZERO connected accounts on the
+        # backing provider, the CONNECT demand leads — the guided plan ends in
+        # the agent-grant hand-off. Granting the agent first would bind
+        # nothing. Fail-safe: any state-read failure keeps the agent-grant
+        # demand below.
+        try:
+            from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.consent_denial import (
+                connect_first_denial_for_identity,
+            )
+
+            gate_claims = [str(c) for c in (state.get("claims") or [])]
+            connect_first = await connect_first_denial_for_identity(
+                grantor_user_id=user_id,
+                agent_client_id=client_id,
+                agent_resource=str(state.get("resource") or ""),
+                namespace=base_ns,
+                tool=tool_name,
+                operation=operation,
+                required=gate_claims,
+                missing=gate_claims,
+                tenant=str(identity.get("tenant_id") or ""),
+                project=str(identity.get("project_id") or ""),
+            )
+        except Exception:
+            connect_first = None
+        if connect_first is not None:
+            from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.consent import (
+                raise_named_service_consent_demand,
+            )
+
+            await raise_named_service_consent_demand(
+                connect_first, namespace=base_ns, tool_name=tool_name,
+            )
+            LOGGER.info(
+                "Named-service agent gate: connect-first demand\n"
+                "  namespace: %s\n  operation: %s\n  tool: %s\n  agent_client: %s\n  provider: %s",
+                base_ns, operation, tool_name, client_id, connect_first.get("provider_id"),
+            )
+            return connect_first
         from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
             announce_agent_consent,
             mcp_consent_from_denial,

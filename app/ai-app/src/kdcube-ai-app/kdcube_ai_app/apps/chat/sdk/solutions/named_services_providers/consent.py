@@ -68,8 +68,14 @@ async def raise_named_service_consent_demand(
         # is why the agent banner never appeared. Detected by agent_client_id;
         # provider_id is absent for it. Emitted directly (get_comm) so the
         # once-per-conversation record gate cannot swallow it on a retry.
+        #
+        # A connect-first demand (reason=connect_required) also carries the
+        # agent identity — for the guided plan's grant HAND-OFF — but its
+        # banner is the CONNECT one: with zero accounts on the provider there
+        # is nothing an agent-grant card could bind yet.
         agent_client_id = str(consent.get("agent_client_id") or "").strip()
-        if agent_client_id:
+        consent_reason = str(consent.get("reason") or "").strip()
+        if agent_client_id and consent_reason != "connect_required":
             ns_token = str(namespace or "").split(":", 1)[0].strip()
             banner_payload = {
                 "ok": False,

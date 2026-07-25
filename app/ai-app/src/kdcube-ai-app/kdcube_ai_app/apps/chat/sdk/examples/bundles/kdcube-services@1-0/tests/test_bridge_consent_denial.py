@@ -62,12 +62,12 @@ def _bridge(m, request):
     return m.NamedServicesMcpBridge(config={}, tenant="t", project="p", request=request)
 
 
-def test_agent_caller_denial_carries_the_consent_block():
+async def test_agent_caller_denial_carries_the_consent_block():
     m = _bridge_module()
     client = "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react"
     bridge = _bridge(m, _request(client))
 
-    denial = bridge._authorize(_Policy(), "object.search", tool_name="search")
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
 
     assert denial["error"] == "delegated_consent_required"
     assert denial["missing_grants"] == ["mail:read"]
@@ -83,7 +83,7 @@ def test_agent_caller_denial_carries_the_consent_block():
     assert "Connection Hub" in denial["next_step"]
 
 
-def test_external_caller_gets_identity_block_and_reconnect_fallback():
+async def test_external_caller_gets_identity_block_and_reconnect_fallback():
     # An external delegated client (Claude Code) is part of the SAME universal
     # contract: its denial carries the consent block naming the client and the
     # missing claims. Without a configured public base URL there is no hub deep
@@ -91,7 +91,7 @@ def test_external_caller_gets_identity_block_and_reconnect_fallback():
     m = _bridge_module()
     bridge = _bridge(m, _request("claude"))
 
-    denial = bridge._authorize(_Policy(), "object.search", tool_name="search")
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
 
     assert denial["error"] == "delegated_consent_required"
     consent = denial["consent"]
@@ -117,13 +117,13 @@ def _request_via_subject():
     }))
 
 
-def test_agent_identity_falls_back_to_the_delegate_subject():
+async def test_agent_identity_falls_back_to_the_delegate_subject():
     # Regression (live 2026-07-19): the projected grant_record carried no
     # client_id, so the denial went out bare (block={}) and no banner rose.
     m = _bridge_module()
     bridge = _bridge(m, _request_via_subject())
 
-    denial = bridge._authorize(_Policy(), "object.search", tool_name="search")
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
 
     assert denial["missing_grants"] == ["mail:read"]
     consent = denial["consent"]

@@ -74,6 +74,10 @@ export interface ConsentPlanAgentHandoff {
   resource: string;
   accountId: string;
   claim: string;
+  /** The DOOR claims the agent grant must cover — the hand-off card submits
+   *  these. Without them a FRESH flow (no recorded pending demand) grants
+   *  nothing and the create fails with requires_resource_grants. */
+  claims?: string[];
 }
 
 export interface ConsentPlanProps {
@@ -104,9 +108,14 @@ function agentCardHref(handoff: ConsentPlanAgentHandoff): string {
   if (handoff.accountId) url.searchParams.set('account_id', handoff.accountId);
   if (handoff.claim) url.searchParams.set('account_claim', handoff.claim);
   // Drop the connect step's own params so the agent card reads a clean state.
-  ['provider_id', 'connector_app_id', 'claims', 'agent_resource', 'tool_name'].forEach(
+  ['provider_id', 'connector_app_id', 'claims', 'agent_resource', 'agent_claims', 'tool_name'].forEach(
     (key) => url.searchParams.delete(key),
   );
+  if (handoff.claims && handoff.claims.length) {
+    // After the cleanup above: these are the AGENT-GRANT claims the card
+    // submits, not the connect step's provider claims.
+    url.searchParams.set('claims', handoff.claims.join(','));
+  }
   return url.toString();
 }
 

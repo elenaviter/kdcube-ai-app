@@ -230,7 +230,7 @@ class NamedServicesMcpBridge:
             )
         return endpoint
 
-    def _authorize(self, policy: NamespaceBoundaryPolicy, operation: str, tool_name: str) -> dict[str, Any] | None:
+    async def _authorize(self, policy: NamespaceBoundaryPolicy, operation: str, tool_name: str) -> dict[str, Any] | None:
         if not policy.tool_configured(tool_name):
             return {
                 "ok": False,
@@ -278,15 +278,34 @@ class NamedServicesMcpBridge:
         missing = sorted(required - available)
         if not missing:
             return None
+        # Demand ordering: when this operation is account-backed and the
+        # grantor has ZERO connected accounts on the backing provider, the
+        # CONNECT demand leads (the guided plan ends in the agent-grant
+        # hand-off) — granting an agent access to a provider with no accounts
+        # binds nothing. Falls through to the gate-1 denial otherwise.
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.consent_denial import (
+            agent_grant_consent_denial,
+            connect_first_denial,
+        )
+
+        connect_first = await connect_first_denial(
+            self._request,
+            namespace=policy.namespace,
+            tool=tool_name,
+            operation=operation,
+            required=sorted(required),
+            missing=missing,
+            tenant=self._tenant,
+            project=self._project,
+        )
+        if connect_first is not None:
+            return connect_first
+
         # The uniform per-agent grant denial every KDCube-served MCP surface
         # returns: exact missing grants; for a hosted-agent caller the full
         # consent block (agent identity, granted resource, one-click grant);
         # for external clients the reconnect guidance. One shared helper — the
         # bridge holds no consent-shape knowledge of its own.
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.consent_denial import (
-            agent_grant_consent_denial,
-        )
-
         return agent_grant_consent_denial(
             self._request,
             namespace=policy.namespace,
@@ -383,7 +402,7 @@ class NamedServicesMcpBridge:
                 ),
             }
 
-        denial = self._authorize(policy, op, tool_name=tool_name)
+        denial = await self._authorize(policy, op, tool_name=tool_name)
         if denial is not None:
             LOGGER.warning(
                 "[kdcube-services.named_services_mcp] denied tool=%s operation=%s namespace=%s error=%s missing_grants=%s available_grants=%s delegate=%s grantor=%s",

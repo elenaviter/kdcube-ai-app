@@ -57,6 +57,7 @@ def _connection_hub_widget_url(
     account_id: str = "",
     agent_client_id: str = "",
     agent_resource: str = "",
+    agent_claims: Iterable[str] = (),
 ) -> str:
     if not tenant or not project:
         return ""
@@ -81,6 +82,12 @@ def _connection_hub_widget_url(
         query["agent_client_id"] = agent_client_id
     if agent_resource:
         query["agent_resource"] = agent_resource
+    # The DOOR claims the agent grant must cover after the connect step - the
+    # hand-off card submits these (they can differ from the provider claims
+    # above: mail connects gmail:* while the agent grant names mail:*).
+    agent_claim_list = _clean_list(agent_claims)
+    if agent_claim_list:
+        query["agent_claims"] = ",".join(agent_claim_list)
     path = (
         "/api/integrations/bundles/"
         f"{quote(tenant, safe='')}/{quote(project, safe='')}/"
@@ -235,6 +242,7 @@ def connected_account_consent_payload(
     missing: list[dict[str, Any]],
     agent_client_id: str = "",
     agent_resource: str = "",
+    agent_claims: Iterable[str] = (),
 ) -> dict[str, Any]:
     failure = _first_failure(missing)
     tool_names = _clean_list(item.get("tool_name") for item in missing)
@@ -285,6 +293,7 @@ def connected_account_consent_payload(
         account_id=account_id,
         agent_client_id=as_str(agent_client_id),
         agent_resource=as_str(agent_resource),
+        agent_claims=agent_claims,
     )
     if reason == REASON_AGENT_GRANT_REQUIRED and as_str(agent_client_id) and as_str(agent_resource):
         # The provider side is FINE here — the account holds the claim; what is

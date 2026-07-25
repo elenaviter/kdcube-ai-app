@@ -208,9 +208,210 @@ def agent_grant_consent_denial(
     return denial
 
 
+async def connect_first_denial(
+    request: Any,
+    *,
+    namespace: str,
+    tool: str,
+    operation: str,
+    required: Sequence[str],
+    missing: Sequence[str],
+    tenant: str,
+    project: str,
+    hub_bundle_id: str = "connection-hub@1-0",
+) -> dict[str, Any] | None:
+    """Demand ordering for an account-backed operation: connect comes first.
+
+    A gate-1 (agent grant) miss on an operation whose realm requires a
+    connected account is meaningless to fix while the grantor has ZERO
+    accounts on the backing provider - granting an agent access to a provider
+    with no accounts binds nothing. In that state the demand LEADS with the
+    connect flow (the guided plan, which ends in the agent-grant hand-off);
+    the agent-grant demand is raised only when an account exists and the
+    agent is merely unbound.
+
+    Returns the gate-2 ``needs_connected_account_consent``/``connect_required``
+    denial to send instead of the gate-1 denial, or None when ordering does
+    not apply (no account-backed realm behind this operation, an account
+    exists, or state cannot be read) - the caller then falls back to the
+    gate-1 denial unchanged.
+    """
+    view = delegated_credential_view(request)
+    return await connect_first_denial_for_identity(
+        grantor_user_id=str(view.grantor_user_id or "").strip(),
+        agent_client_id=view.agent_client_id,
+        agent_resource=view.resource,
+        namespace=namespace,
+        tool=tool,
+        operation=operation,
+        required=required,
+        missing=missing,
+        tenant=tenant,
+        project=project,
+        hub_bundle_id=hub_bundle_id,
+    )
+
+
+async def connect_first_denial_for_identity(
+    *,
+    grantor_user_id: str,
+    agent_client_id: str,
+    agent_resource: str,
+    namespace: str,
+    tool: str,
+    operation: str,
+    required: Sequence[str],
+    missing: Sequence[str],
+    tenant: str,
+    project: str,
+    hub_bundle_id: str = "connection-hub@1-0",
+) -> dict[str, Any] | None:
+    """Core of :func:`connect_first_denial` for callers that already hold the
+    identity explicitly (the workspace-side native-tools agent gate shapes its
+    demand BEFORE any door call, so there is no request credential to view)."""
+    grantor = str(grantor_user_id or "").strip()
+    if not grantor:
+        return None
+    try:
+        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery import (
+            RedisNamedServiceDiscovery,
+            _redis_client_from_settings,
+        )
+
+        discovery = RedisNamedServiceDiscovery(
+            _redis_client_from_settings(), tenant=tenant, project=project,
+        )
+        entries = await discovery.entries_for_namespace(namespace)
+    except Exception:
+        LOGGER.debug(
+            "[connect-first] provider discovery unavailable (namespace=%s)",
+            namespace, exc_info=True,
+        )
+        return None
+    requirements: list[Mapping[str, Any]] = []
+    for entry in entries or []:
+        spec = getattr(entry, "spec", None)
+        metadata = dict(getattr(spec, "metadata", None) or {})
+        raw = metadata.get("connected_accounts")
+        if isinstance(raw, (list, tuple)):
+            requirements.extend(item for item in raw if isinstance(item, Mapping))
+    if not requirements:
+        return None
+    op = str(operation or "").strip()
+    for req in requirements:
+        provider_id = str(req.get("provider_id") or "").strip()
+        if not provider_id:
+            continue
+        by_op = req.get("claims_by_operation")
+        if isinstance(by_op, Mapping) and by_op:
+            provider_claims = [
+                str(c).strip() for c in (by_op.get(op) or []) if str(c or "").strip()
+            ]
+            if not provider_claims:
+                # The realm differentiates and THIS operation does not need
+                # this provider's account.
+                continue
+        else:
+            provider_claims = [
+                str(c).strip() for c in (req.get("claims") or []) if str(c or "").strip()
+            ]
+            if not provider_claims:
+                continue
+            # Scope the ask to what the tool actually needs. A flat claim list
+            # is the provider's whole vocabulary (slack declares every claim);
+            # the connect demand must request only the claims this attempt is
+            # missing — the user approves the tool's need, not the world.
+            asked = [c for c in provider_claims if c in {str(m).strip() for m in missing}]
+            if asked:
+                provider_claims = asked
+        try:
+            from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.store import (
+                DelegatedToKdcubeStore,
+            )
+
+            accounts = await DelegatedToKdcubeStore(user_id=grantor).list_accounts(
+                provider_id=provider_id,
+            )
+        except Exception:
+            LOGGER.debug(
+                "[connect-first] account store unavailable (provider=%s)",
+                provider_id, exc_info=True,
+            )
+            return None
+        if accounts:
+            continue
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.preflight import (
+            connected_account_consent_payload,
+        )
+
+        connector_app_id = str(req.get("connector_app_id") or "").strip()
+        payload = connected_account_consent_payload(
+            tenant=tenant,
+            project=project,
+            connection_hub_bundle_id=hub_bundle_id,
+            missing=[{
+                "tool_name": namespace,
+                "failures": [
+                    {
+                        "provider_id": provider_id,
+                        "connector_app_id": connector_app_id,
+                        "claim": claim,
+                        "reason": "connect_required",
+                        "retry_hint": True,
+                    }
+                    for claim in provider_claims
+                ],
+            }],
+            agent_client_id=agent_client_id,
+            agent_resource=agent_resource,
+            # The DOOR claims the hand-off grant must cover (they can differ
+            # from the provider connect claims: mail:* vs gmail:*).
+            agent_claims=sorted({str(c) for c in missing if str(c or "").strip()}),
+        )
+        error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+        consent = dict(payload.get("consent") or {})
+        consent.setdefault("namespace", namespace)
+        consent.setdefault(
+            "agent_claims", sorted({str(c) for c in missing if str(c or "").strip()})
+        )
+        url = str(consent.get("url") or "").strip()
+        denial: dict[str, Any] = {
+            "ok": False,
+            "error": {
+                "code": "needs_connected_account_consent",
+                "message": str(error.get("message") or (
+                    f"Connect a {provider_id} account in Connection Hub to continue."
+                )),
+            },
+            "reason": "connect_required",
+            "retry_hint": True,
+            "namespace": namespace,
+            "tool": tool,
+            "operation": op,
+            "provider_id": provider_id,
+            "required_grants": sorted({str(c) for c in required if str(c or "").strip()}),
+            "missing_grants": sorted({str(c) for c in missing if str(c or "").strip()}),
+            "consent": consent,
+            "next_step": (
+                f"Connect a {provider_id} account in Connection Hub first; the guided "
+                "plan then hands off to granting THIS agent the access it asked for. "
+                "Retry the same call after both steps."
+            ),
+        }
+        if url:
+            denial["connection_hub_url"] = url
+        LOGGER.info(
+            "[connect-first] gate-2 connect leads (namespace=%s operation=%s provider=%s grantor=%s agent=%s)",
+            namespace, op, provider_id, grantor, agent_client_id,
+        )
+        return denial
+    return None
+
+
 __all__ = [
     "agent_client_id_from_request",
     "agent_grant_consent_denial",
+    "connect_first_denial",
     "granted_resource_from_request",
     "CONSENT_NEEDED_CODE",
     "DELEGATED_CONSENT_REQUIRED",

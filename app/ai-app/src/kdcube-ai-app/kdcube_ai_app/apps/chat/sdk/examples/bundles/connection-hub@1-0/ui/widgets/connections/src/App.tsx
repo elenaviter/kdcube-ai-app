@@ -245,7 +245,7 @@ export default function App() {
       } else if (tab === 'delegatedToKdcube') {
         try {
           const url = new URL(window.location.href);
-          (['provider_id', 'connector_app_id', 'claims', 'account_id', 'agent_client_id', 'agent_resource'] as const).forEach((key) => {
+          (['provider_id', 'connector_app_id', 'claims', 'account_id', 'agent_client_id', 'agent_resource', 'agent_claims'] as const).forEach((key) => {
             const value = (params[key] || '').trim();
             if (value) url.searchParams.set(key, value);
             else url.searchParams.delete(key);

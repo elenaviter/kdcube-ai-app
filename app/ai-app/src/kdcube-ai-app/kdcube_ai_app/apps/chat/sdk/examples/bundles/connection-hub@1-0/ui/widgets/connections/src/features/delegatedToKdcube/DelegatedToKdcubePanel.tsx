@@ -25,6 +25,9 @@ interface ConsentDeepLink {
   // grant it to this agent.
   agentClientId: string;
   agentResource: string;
+  // The DOOR claims the hand-off agent grant must cover (can differ from the
+  // provider connect claims: mail connects gmail:*, the grant names mail:*).
+  agentClaims: string[];
 }
 
 function consentDeepLink(openParams?: Record<string, string>): ConsentDeepLink {
@@ -42,6 +45,7 @@ function consentDeepLink(openParams?: Record<string, string>): ConsentDeepLink {
     accountId: get('account_id'),
     agentClientId: get('agent_client_id'),
     agentResource: get('agent_resource'),
+    agentClaims: get('agent_claims').split(',').map((item) => item.trim()).filter(Boolean),
   };
 }
 
@@ -470,6 +474,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
             resource: deepLink.agentResource,
             accountId: planAccount?.account_id || deepLink.accountId,
             claim: planRequestedClaims[0] || '',
+            claims: deepLink.agentClaims,
           } : undefined}
         />
       ) : null}
