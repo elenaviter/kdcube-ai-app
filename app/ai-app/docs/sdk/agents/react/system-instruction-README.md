@@ -4,7 +4,7 @@ title: "React System Instruction"
 summary: "How React decision system instructions are composed, how to use extended and lite instruction bodies, and how to audit signal coverage."
 tags: ["sdk", "agents", "react", "instructions", "system-prompt", "lite", "configuration"]
 keywords: ["React system instruction", "React lite instructions", "instruction_body", "instruction_blocks", "default_lite_system_instruction", "React prompt composition", "signal coverage"]
-updated_at: 2026-07-22
+updated_at: 2026-07-25
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/context-caching-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/react-round-README.md
@@ -42,6 +42,16 @@ v2/v3 decision agent
 
 The strict channel protocol is not customizable. The runtime parser depends on
 it. Bundle authors customize the instruction body below that protocol.
+
+The protocol teaches the BASE channels (`thinking`, `action`, optional
+`summary`) and states that a connected tool may extend the protocol with a
+channel of its own. The `<channel:code>` teaching is such an extension: it
+renders — together with the exec instruction blocks, the exec sections of
+the extended body, and the code-snippet-only tool catalog section — only
+when `exec_tools.execute_code_python` is in the effective adapter roster.
+The effective roster is the single authority for capability teaching: an
+agent whose exec tool is off receives an instruction with no
+code-execution teaching anywhere (protocol, body, or catalogs).
 
 The tool catalog and skill catalog are not substitutes for the instruction
 body. They tell the model what is currently available. The instruction body
@@ -203,11 +213,16 @@ the file.
 This rule lives in the full body's `CODEGEN_BEST_PRACTICES_V2` and
 `EXEC_SNIPPET_RULES`, the moderate `REACT_LITE_EXEC_TOOL`, and the extra-lite
 `REACT_XLITE_EXEC` block. The exec tool's parameter description repeats it, so
-the rule also survives the compact tool catalog. Named Lite and Extra-lite
-profiles without an effective exec tool intentionally omit their exec blocks.
-The legacy Full body is monolithic and retains its exec guidance. A fully
-custom body that hides the tool catalog must carry its own complete exec
-contract.
+the rule also survives the compact tool catalog. Every tier is
+roster-conditional: Lite and Extra-lite profiles without an effective exec
+tool omit their exec blocks, and the legacy Full body drops its exec
+sections (`CODEGEN_BEST_PRACTICES_V2`, `EXEC_SNIPPET_RULES`, the exec
+subsection of the paths guide) the same way. Generic surfaces — the react
+tool docs, the protocol, paths/workspace guidance — speak in class rules
+(file-processing tools, computation tools, capped tool outputs) and never
+name the exec tool; everything exec-specific renders only with the tool
+present. A fully custom body that hides the tool catalog must carry its own
+complete exec contract.
 
 Exec code itself is preserved as a Python module body and evaluated with
 top-level `await` enabled. Do not generate an event-loop runner or a separate
@@ -395,7 +410,7 @@ signals and tools exposed to the agent.
 | Attachments | Summaries are hints; read originals for precise extraction or visual/layout work. | `ATTACHMENT_AWARENESS_IMPLEMENTER`. | `REACT_LITE_ATTACHMENTS`; all profiles. |
 | Sources/citations | Use source pool ids for source-backed claims. | `CITATION_TOKENS`, `SOURCES_AND_CITATIONS_V2`. | `REACT_LITE_SOURCES_CITATIONS`; all profiles. |
 | Skills | Load detailed skill instructions through `sk:<skill_id>` when needed. | `REACT_SKILL_SELECTION_GUIDE`. | `REACT_LITE_SKILLS`; all profiles. |
-| Workspace mental model | React uses timeline/logical paths plus current-turn artifact root, not arbitrary host fs. | `get_workspace_implementation_guide(...)`, exec/path guidance. | `REACT_LITE_WORKSPACE_BASE`; all profiles. |
+| Workspace mental model | React uses timeline/logical paths plus current-turn artifact root, not arbitrary host fs. | `get_workspace_implementation_guide(...)`, path guidance (class rules). | `REACT_LITE_WORKSPACE_BASE`; all profiles. |
 | Artifact tree | Physical materialized shape for exec/code: current turn and pulled older turns under artifact root; logs stay in runtime metadata root. | Workspace guide, `EXEC_SNIPPET_RULES`. | `REACT_LITE_WORKSPACE_BASE`; all profiles. |
 | `git/projects/` vs `files/` | `git/projects/<scope>` is durable workspace/project state; `files/<scope>` is produced artifacts. | Workspace guide plus realm refs docs. | `REACT_LITE_PROJECTS_AND_FILES`; all profiles. |
 | Pull/checkout | Pull historical `conv:fi:` refs, then checkout maintained `git/projects/<scope>` into current workspace before editing. | Workspace guide. | `REACT_LITE_WORKSPACE_PULL_CHECKOUT`; workspace profiles except `core`. |

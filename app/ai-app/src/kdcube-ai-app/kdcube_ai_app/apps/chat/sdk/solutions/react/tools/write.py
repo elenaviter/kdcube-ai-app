@@ -57,7 +57,7 @@ TOOL_SPEC = {
         "The file extension MUST match the content format (e.g., HTML -> .html, Markdown -> .md). "
         "When channel='canvas', the file extension MUST match a supported canvas format: "
         ".md/.markdown, .html/.htm, .mermaid/.mmd, .json, .yaml/.yml, .txt, .xml. "
-        "react.write only writes text-based files. For binary outputs (PDF/PPTX/DOCX/PNG), use the appropriate renderer tool or exec tools to generate the artifact. "
+        "react.write only writes text-based files. For binary outputs (PDF/PPTX/DOCX/PNG), use a tool that produces binary artifacts. "
         "Include citations with SIDs from sources_pool when using sources. "
         "If you build your content based on prior artifacts or sources, ensure those are visible in the journal. Otherwise read them first via react.read and wait for the next round to review the result. "
         "For recorder to work properly, fill the function params in the order they are stated below. "
@@ -134,7 +134,7 @@ async def handle_react_write(*, react: Any, ctx_browser: Any, state: Dict[str, A
             message=" ".join(dict.fromkeys(details)) or (
                 "One or more ref: bindings are not visible to this tool call. channel=internal artifacts are private. "
                 "For rendering_tools.write_* source refs, write the source as an external artifact first "
-                "(react.write channel=canvas, or exec visibility=external)."
+                "(react.write channel=canvas, or the producing tool's external visibility)."
             ),
             extra={"violations": violations, "tool_id": tool_id, "protocol_violation": True},
         )

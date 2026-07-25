@@ -53,8 +53,8 @@ TOOL_SPEC = {
         "For targeted diffs, use exact old/context lines from raw file content; if you need to inspect a range first, call react.read with line_numbers='disabled' on that range. "
         "If a hunk_mismatch result returns mismatch_diagnostic, read the suggested range and retry a smaller hunk against the actual file shape; do not jump to full-file replacement unless the intended edit is a whole-file rewrite. "
         "Line-number prefixes from rendered previews are rejected because they are not file content. "
-        "The target file must already exist locally — current-turn files produced by exec, checkout, or earlier rounds' react.write/react.patch are patchable. "
-        "ANTI-PATTERN (HARD): do NOT use react.patch as a fill-in-later mechanism. If you do not have the final content right now, do NOT write a placeholder with react.write and then patch it with the real content — write the file ONCE with the final content. Patch is for genuine revisions to a file you already finished (e.g. a small correction next round, or editing a file that exec/checkout produced). Placeholder-then-patch is wasted streaming the user sees twice and is the leading cause of \"write then patch the same file in the same round\" violations. "
+        "The target file must already exist locally — current-turn files produced by your tools or earlier rounds' react.write/react.patch are patchable. "
+        "ANTI-PATTERN (HARD): do NOT use react.patch as a fill-in-later mechanism. If you do not have the final content right now, do NOT write a placeholder with react.write and then patch it with the real content — write the file ONCE with the final content. Patch is for genuine revisions to a file you already finished (e.g. a small correction next round, or editing a file another tool produced). Placeholder-then-patch is wasted streaming the user sees twice and is the leading cause of \"write then patch the same file in the same round\" violations. "
         "If kind='file' the updated file is shared; if kind='display' it is streamed only."
     ),
     "args": {

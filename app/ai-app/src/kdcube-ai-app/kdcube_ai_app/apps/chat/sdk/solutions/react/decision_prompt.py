@@ -72,18 +72,41 @@ def head_tail_preview(text: str, limit: int = 220) -> tuple[str, str]:
     return compact[:limit], compact[-limit:]
 
 
+_PATHS_EXEC_SUBSECTION_HEADER = "#### External owner namespace browsing in exec"
+
+
+def _paths_guide(include_exec: bool) -> str:
+    """The paths guide; its exec-only browsing subsection renders only when
+    the exec tool is in the effective roster."""
+    if include_exec:
+        return PATHS_EXTENDED_GUIDE
+    text = PATHS_EXTENDED_GUIDE
+    start = text.find(_PATHS_EXEC_SUBSECTION_HEADER)
+    if start < 0:
+        return text
+    end = text.find("####", start + len(_PATHS_EXEC_SUBSECTION_HEADER))
+    return (text[:start] + (text[end:] if end >= 0 else "")).strip("\n") + "\n"
+
+
 def build_default_decision_instruction_body(
     *,
     module_label: str,
     workspace_implementation: str = "custom",
+    include_exec: bool = True,
 ) -> str:
     """Build the legacy/default body below the strict protocol.
 
     This preserves the previous default ReAct onboarding order. It deliberately
     does not include the channel protocol; callers prepend the version-specific
-    protocol before this body.
+    protocol before this body. ``include_exec`` keys the exec-teaching
+    sections (codegen practices, snippet rules, exec-only namespace browsing)
+    to the effective roster — an agent whose roster has no exec tool receives
+    a body with no code-execution teaching at all.
     """
     workspace_guide = get_workspace_implementation_guide(workspace_implementation)
+    codegen_sections = (
+        f"{CODEGEN_BEST_PRACTICES_V2}\n{EXEC_SNIPPET_RULES}\n" if include_exec else ""
+    )
     return f"""
 [{module_label}]
 You are the Decision module inside a ReAct loop.
@@ -100,12 +123,10 @@ You are the Decision module inside a ReAct loop.
 {SUGGESTED_FOLLOWUPS_GUIDE}
 {workspace_guide}
 {SCENARIO_FAILURE_STRICTNESS}
-{PATHS_EXTENDED_GUIDE}
+{_paths_guide(include_exec)}
 {MEMORY_RECOVERY_GUIDE}
 {USER_GENDER_ASSUMPTIONS}
-{CODEGEN_BEST_PRACTICES_V2}
-{EXEC_SNIPPET_RULES}
-{SOURCES_AND_CITATIONS_V2}
+{codegen_sections}{SOURCES_AND_CITATIONS_V2}
 {WORK_WITH_DOCUMENTS_AND_IMAGES}
 {REACT_PLANNING}
 {REACT_SKILL_SELECTION_GUIDE}
@@ -131,6 +152,9 @@ def normalize_instruction_blocks(
     protocol is always prepended and the tool/skill catalogs appended by the
     decision agent; this composes only the body between them.
     """
+    # The same exclusion set that drops the exec instruction BLOCKS also
+    # keys the exec sections of the legacy full body — one authority.
+    include_exec = not (_CAPABILITY_INSTRUCTION_BLOCKS["exec"] & set(exclude_blocks or ()))
     return compose_instruction_body(
         blocks,
         workspace_implementation=workspace_implementation,
@@ -138,6 +162,7 @@ def normalize_instruction_blocks(
         full_body_provider=lambda: build_default_decision_instruction_body(
             module_label=module_label,
             workspace_implementation=workspace_implementation,
+            include_exec=include_exec,
         ),
     )
 
@@ -172,6 +197,9 @@ def build_decision_instruction_body(
     return build_default_decision_instruction_body(
         module_label=module_label,
         workspace_implementation=workspace_implementation,
+        include_exec=not (
+            _CAPABILITY_INSTRUCTION_BLOCKS["exec"] & set(exclude_blocks or ())
+        ),
     )
 
 

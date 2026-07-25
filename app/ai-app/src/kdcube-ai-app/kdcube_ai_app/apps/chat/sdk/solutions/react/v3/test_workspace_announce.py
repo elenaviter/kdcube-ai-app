@@ -191,7 +191,7 @@ def test_build_announce_text_includes_context_caps(tmp_path):
     assert "regular text" in announce_text
     assert "skills are always uncapped" in announce_text
     assert "ranged react.read items" in announce_text
-    assert "exec_stdout=capped" in announce_text
+    assert "tool outputs are capped" in announce_text
 
 
 def test_build_announce_text_recomputes_runtime_limits_each_round(tmp_path):

@@ -63,7 +63,7 @@ TOOL_SPEC = {
         "Built-in examples include conv:ar:, conv:fi:, conv:tc:, conv:ev:, conv:so:, conv:su:, conv:ws:, and sk:. "
         "External namespace refs such as mem:, cnv:, or task: are not read directly. "
         "When exact content from an external ref is needed, first use react.pull on that ref; "
-        "then use the returned conv:fi: logical_path or physical_path with react.read, react.rg, or exec/code. "
+        "then use the returned conv:fi: logical_path with react.read or react.rg (tools that take physical paths use the returned physical_path). "
         "For an event/object that shows object_ref, use react.pull on that object_ref when exact external content is needed; then read the returned path. "
         "For event payload bytes or snapshot bodies carried through another field, read a visible conv:fi: path or first use react.pull on that referenced artifact ref. "
         "For old-turn recovery, conv:ar:conv_<conversation_id>.turn_<id>.react.turn.index reconstructs a compact semantic inventory; "
@@ -77,15 +77,15 @@ TOOL_SPEC = {
         "For conv:so:conv_<conversation_id>.sources_pool[...] paths, react.read returns JSON source rows; web rows use content for full fetched text "
         "when available and text for the search preview/snippet. Source rows are materialized in full by default. "
         "⚠️ BINARY FILE RESTRICTION (HARD): Other binary files such as xlsx/xls/pptx/docx/zip are not decoded into usable content by react.read; "
-        "calling react.read on unsupported binary files returns only metadata, NOT content."
-        "Inspect those with code and exec tool against their physical OUTPUT_DIR path. "
+        "calling react.read on unsupported binary files returns only metadata, NOT content. "
+        "Inspect binary files with a tool that processes files by physical path. "
         "If your own earlier tools produced the binary file, inspect the generating tool call/result (conv:tc:) and any related text/code source artifacts (conv:fi:) "
         "from that generating step; do not expect react.read on the binary conv:fi: file itself to reveal its content. "
         "Oversized regular text results are rematerialized as bounded visible previews using configured text/token/byte caps. "
         "Caps apply independently per requested path. "
         "To recover large text into model-visible context, use stats_only to get size/line metadata, then read bounded ranges "
         "with params.items line_start/line_count or offset_text_symbols/max_text_symbols. "
-        "Do not use exec output as an uncapped read channel; exec output is capped too."
+        "Output caps apply to every tool's output; no tool output is an uncapped read channel."
     ),
     "args": {
         "paths": (
@@ -129,7 +129,7 @@ TOOL_SPEC = {
         "Oversized non-source text payloads return status=truncated_for_visible_context with a bounded preview. "
         "Oversized PDFs and images that cannot be downscaled return status=too_large_for_visible_context_bytes. "
         "For large text, recover the needed content through repeated react.read range items. "
-        "Exec can compute over files or create smaller derived artifacts, but it is not an uncapped way to put full content into model context."
+        "Tools that compute over files can create smaller derived artifacts, but no tool output is an uncapped way to put full content into model context."
     ),
 }
 
@@ -460,7 +460,7 @@ def _large_byte_marker_text(*, path: str, size_bytes: int, byte_cap: Optional[in
         "exact_content: recoverable by logical path",
         "note: PDFs and unsupported binary payloads are not partially read into visible context; images are downscaled when possible",
         "text_recovery: for text paths, use react.read stats_only then line_start/line_count or offset_text_symbols/max_text_symbols ranges",
-        "note: exec output is capped and is not an uncapped model-visible read channel",
+        "note: every tool output is capped; none is an uncapped model-visible read channel",
     ])
 
 

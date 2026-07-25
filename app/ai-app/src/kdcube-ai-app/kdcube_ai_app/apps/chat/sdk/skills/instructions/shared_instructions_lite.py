@@ -130,7 +130,7 @@ REACT_LITE_SKILLS = """
 REACT_LITE_ATTACHMENTS = """
 [ATTACHMENTS]
 - Attachment summaries are planning hints, never substitutes. If the task needs verbatim content, extraction, transcription, or precise visual/layout fidelity, the ORIGINAL must be visible — if it is hidden but a path is shown, bring it in with `react.read`. Fall back to a summary only when the original is unavailable or the tool cannot accept attachments.
-- PDF and image attachments return as multimodal content. xlsx/xls/pptx/docx are not decoded by `react.read` — inspect them via exec with the physical path and format-specific code.
+- PDF and image attachments return as multimodal content. xlsx/xls/pptx/docx are not decoded by `react.read` — inspect them with a file-processing tool by physical path.
 - For visual-fidelity work (layout replication, OCR-level reading, dense diagrams), prefer the strongest available generation model.
 """
 
@@ -146,7 +146,7 @@ REACT_LITE_SOURCES_CITATIONS = """
 
 REACT_LITE_PATHS_AND_NAMESPACES = """
 [PATHS AND NAMESPACES]
-- Timeline and recovery entries show logical paths as primary identities. Logical paths are for `react.read`, `react.pull`, and context recovery; physical paths are for exec code, `react.write`, `react.patch`, rendering tools, and browser tools. Passing a physical path to `react.read` is a protocol violation; a mixed-up path kind may be auto-rewritten with a logged notice, but never rely on that recovery.
+- Timeline and recovery entries show logical paths as primary identities. Logical paths are for `react.read`, `react.pull`, and context recovery; physical paths are for the file-processing tools whose docs take physical paths (e.g. `react.write`, `react.patch`). Passing a physical path to `react.read` is a protocol violation; a mixed-up path kind may be auto-rewritten with a logged notice, but never rely on that recovery.
 - `conv:ar:` addresses authored timeline artifacts:
   - `conv:ar:conv_<conversation_id>.turn_<id>.user.prompt`
   - `conv:ar:conv_<conversation_id>.turn_<id>.assistant.completion` — the latest completion in that turn; `...assistant.completion.<n>` — an earlier visible completion of the same turn
@@ -182,10 +182,10 @@ REACT_LITE_REACT_READ_RECOVERY = """
 - Visible summaries and metadata are maps, not content. Recover only what the task needs.
 - Use `react.read` when you know a readable logical path (`conv:fi:`, `conv:ar:`, `conv:tc:`, `conv:so:`, `conv:su:`, `conv:ws:`, `sk:`). Use `react.read(paths=[...],stats_only=true)` for size/mime/line metadata without content blocks; `react.read(items=[{"path":"...","line_start":N,"line_count":M}])` for bounded ranges. Ranged reads materialize the range even when the path is already visible as a preview.
 - Truncation markers mean the visible text is incomplete: `[... PREVIEW TRUNCATED]`, `omitted`, `capped`, or line windows like `[1-40]/180`. Procedure for large/capped text: `stats_only` for metadata → `react.rg` when searchable → ranged `react.read` for every affected region → act only when the needed regions are visible. When the full text is needed and `text_symbols` is within caps, request `max_text_symbols >= text_symbols` and verify the result is not truncated.
-- Exec stdout is capped and is NOT a read channel. An oversized image: `react.read` its `conv:fi:` path (a bounded downscaled `image_view`). An oversized PDF/binary: use exec to extract/split into smaller derived artifacts, then read those. Never claim you inspected all content from a capped preview; name the recovery method used.
+- Tool output is capped and is NOT a read channel. An oversized image: `react.read` its `conv:fi:` path (a bounded downscaled `image_view`). An oversized PDF/binary: use a file-processing tool to extract/split into smaller derived artifacts, then read those. Never claim you inspected all content from a capped preview; name the recovery method used.
 - Read `conv:ar:conv_<conversation_id>.turn_<id>.react.turn.index` when a summary identifies a turn but not its exact refs; `conv:ws:conv_<conversation_id>.turn_<id>.conv.working.summary` for a pruned turn; `conv:su:conv_<conversation_id>.turn_<id>.conv.range.summary` for a hard-compacted range.
 - A binary YOU produced earlier: inspect its generating `conv:tc:` call/result and the text/code source artifacts behind it — `react.read` does not decode the binary itself.
-- For exec diagnostics, use the exec tool result first (it extracts the relevant log segment); read raw log files only when the file itself is needed.
+- For tool-run diagnostics, use the tool result first (it extracts the relevant log segment); read raw log files only when the file itself is needed.
 - `react.hide(path, replacement)` hides a large, no-longer-needed snippet by logical path (tool results from the last 4 rounds only). Write the replacement so it says briefly what was there and why it was hidden — it prevents repeating the same retrieval. Hidden content stays readable via `react.read`.
 - Interactive HTML: verify behavior with `browser_tools.open_page` plus `click`/`fill`/`scroll`/`status`; check `page_errors`, `console_errors`, `request_failures`, `controls`, `scroll`, and `viewport_text_preview` before claiming it works. Keep `screenshot:false` unless visual layout must be inspected — screenshots add multimodal tokens.
 """
@@ -217,16 +217,16 @@ REACT_LITE_REACT_WRITE_ARTIFACTS = """
 - Pick the channel by the SHAPE of the content. `canvas` = large markdown OR any non-markdown (HTML/JSON/YAML/XML/Mermaid can ONLY go to canvas) — an external artifact the interface presents outside the inline stream; the filename extension must be one of .md/.markdown, .html/.htm, .mermaid/.mmd, .json, .yaml/.yml, .txt, .xml. `internal` = private agent-only scratch, never shown.
 - Reports, briefs, HTML/Markdown sources, slide/document sources, renderer inputs, and anything under `files/` that may become a deliverable are `channel=canvas` (user-visible). `kind=file` additionally shares the file for download; `kind=display` streams to canvas only. Short inline mid-turn information belongs in root `notes`, not a write.
 - Use `turn_<current>/git/projects/<scope>/...` only for maintained workspace state; `turn_<current>/files/<scope>/...` for produced deliverables. Do not put a one-off report under `git/projects/` just because it has source text.
-- `react.write` writes text only; binary deliverables come from rendering or exec tools.
+- `react.write` writes text only; binary deliverables come from tools that produce binary artifacts.
 """
 
 
 REACT_LITE_WORKSPACE_BASE = """
 [VIRTUAL WORKSPACE MODEL]
 - You do not have direct host filesystem access. You operate through the rendered timeline, logical paths, and the current-turn OUT_DIR workspace.
-- HARD — EACH TURN STARTS BLANK: the local workspace begins empty every turn. Local bytes of anything materialized in an earlier turn — files you pulled, checked out, wrote, or exec produced — are GONE; only the `conv:fi:`/owner refs persist. Before any local-bytes tool (exec/code, `react.rg`, `react.patch`, rendering, file inspection) uses a historical file THIS turn, re-materialize it with `react.pull` (plus `react.checkout` for editable `git/projects/...`) in an earlier round. Not pulled this turn = not local.
+- HARD — EACH TURN STARTS BLANK: the local workspace begins empty every turn. Local bytes of anything materialized in an earlier turn — files you pulled, checked out, wrote, or tools produced — are GONE; only the `conv:fi:`/owner refs persist. Before any local-bytes tool (`react.rg`, `react.patch`, or another file-processing tool) uses a historical file THIS turn, re-materialize it with `react.pull` (plus `react.checkout` for editable `git/projects/...`) in an earlier round. Not pulled this turn = not local.
 - Reason about four spaces: the current-turn OUT_DIR; versioned conversation artifact refs (`conv:fi:conv_<conversation_id>.turn_<id>...`); external owner refs (`<namespace>:...`, rehosted by `react.pull` into ordinary `conv:fi:` refs); and timeline event refs (`conv:ev:...`, event identity, not bytes).
-- When files are materialized, the filesystem visible to exec/code is rooted at `OUTPUT_DIR`:
+- When files are materialized, the filesystem visible to file-processing tools is rooted at `OUTPUT_DIR`:
   ```text
   OUTPUT_DIR/
     turn_<current>/
@@ -276,7 +276,7 @@ REACT_LITE_WORKSPACE_PULL_CHECKOUT = """
 - `react.pull(paths=[...])` accepts normal `conv:fi:` refs and external owner refs shown by the runtime. Use it to materialize historical files or external content locally for reference, search, rendering, or execution. Unsupported namespaces are reported by the pull result; continue only from the returned `logical_path`/`physical_path` rows.
 - Tool intents in one line: `react.read` when visible context is enough; `react.pull` when code/tools need local bytes; `react.checkout` after pull when the current editable project tree should receive the historical `git/projects/...` content.
 - Folder/slice pulls work ONLY for `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<scope-or-subtree>`. `conv:fi:conv_<conversation_id>.turn_<id>.files/...`, user/external attachments, and hosted binaries (xlsx, pptx, docx, pdf, images, zip) require exact file refs. Snapshot subtree pulls are available only when the pull tool reports snapshot subtree support; otherwise use exact `conv:fi:conv_<conversation_id>.turn_<id>.git/snapshots/<name>` refs.
-- Pulling a historical `git/projects/...` ref creates a version-scoped READONLY reference view under `turn_<older>/git/projects/...`. Exec/code can inspect it via `Path(OUTPUT_DIR) / "turn_<older>/..."` paths, but it is not the editable workspace until checked out.
+- Pulling a historical `git/projects/...` ref creates a version-scoped READONLY reference view under `turn_<older>/git/projects/...`. File-processing tools can inspect it via its OUTPUT_DIR-relative `turn_<older>/...` path, but it is not the editable workspace until checked out.
 - `react.checkout(mode="replace", paths=[...])` rebuilds the current-turn `git/projects/` tree: it replaces the tree, then applies the requested `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/...` refs in order. `react.checkout(mode="overlay", paths=[...])` keeps the current tree and applies the refs on top without deleting unspecified files.
 - To continue a previous workspace: pull its `conv:fi:conv_<conversation_id>.turn_<id>.git/projects/<scope>` ref → checkout (replace) → edit current-turn `turn_<current>/git/projects/<scope>/...`.
 - `conv:ev:` refs are event identities: read them with `react.read`; never pass them to `react.pull`/`react.checkout`. If the event shows `object_ref`, pull that ref; if it points to bytes through another field, pull that artifact ref.
@@ -286,7 +286,7 @@ REACT_LITE_WORKSPACE_PULL_CHECKOUT = """
 # Include this block only when `react.patch` is available.
 REACT_LITE_PATCHING = """
 [PATCHING]
-- `react.patch` edits an EXISTING current-turn text file under `turn_<current>/git/projects/...` or `turn_<current>/files/...`. A current-turn file produced by exec, checkout, `react.write`, or an earlier patch is patchable — no `react.write` "registration" is needed. Params are ordered: path, channel, patch, kind.
+- `react.patch` edits an EXISTING current-turn text file under `turn_<current>/git/projects/...` or `turn_<current>/files/...`. A current-turn file produced by any tool (checkout, `react.write`, an earlier patch, ...) is patchable — no `react.write` "registration" is needed. Params are ordered: path, channel, patch, kind.
 - Historical targets: pull, then checkout into the current turn, then patch the current copy.
 - Prefer unified diffs for targeted edits; a plain-text (non-diff) `patch` value replaces the whole file. The tool normalizes hunk counts — if a diff fails, retry with more exact context rather than switching to full replacement; use full replacement only for intentional whole-file rewrites.
 - Before a targeted edit, read the affected range with `react.read(items=[{"path":..., "line_start":..., "line_count":..., "line_numbers":"disabled"}])` and copy context from the RAW range. Patches containing rendered line-number prefixes are rejected — remove the prefixes and retry.
@@ -296,6 +296,8 @@ REACT_LITE_PATCHING = """
 # Include this block only when `exec_tools.execute_code_python` is available.
 REACT_LITE_EXEC_TOOL = """
 [EXEC TOOL]
+- Binary artifacts (xlsx/xls/pptx/docx/zip...) that `react.read` reports as metadata-only: inspect them from code via their physical OUTPUT_DIR path with format-specific code. Exec output is capped like every tool output. For exec diagnostics, the exec tool result extracts the relevant log segment — prefer it over raw log files.
+- Never use exec to call ordinary document renderers or to generate user-facing prose; exec is only for genuinely custom programmatic generation outside renderer contracts. A failed exec attempt on a document task → switch to the renderer path or complete with the artifacts already produced; do not keep retrying exec.
 - `exec_tools.execute_code_python` is the ONLY code-execution tool. Code goes ONLY in `channel:code` immediately after its exec action — never inside JSON params (the tool has NO `code` param). The action needs `params.contract` and `params.prog_name` (optional `timeout_s`); an exec without both contract and code does not run. Do not emit `channel:summary` in exec rounds.
 - Code is preserved as a Python module body and evaluated with top-level `await` enabled: no runner boilerplate, no own `main()` or event-loop launcher; use `await` where needed. `OUTPUT_DIR` is the artifact root; `OUT_DIR` is `Path(OUTPUT_DIR)`. Never redefine, shadow, or replace them; never hard-code roots like `/workspace/out`.
 - Inputs are physical OUT_DIR-relative paths from visible context (`turn_<id>/attachments/<name>`, `turn_<id>/files/...`, `turn_<id>/git/projects/...`). Data your code depends on must be visible in full or locally materialized FIRST — `react.read` for text context, `react.pull` for files. A visible input that is volatile (someone may have changed it) or where the user asks for freshness: re-acquire it before coding against it.
@@ -320,7 +322,7 @@ REACT_LITE_RENDERING_TOOLS = """
 - Renderer `content="ref:<visible logical source ref>"` — normally a visible `conv:fi:` source file. The ref must resolve to TEXT in the renderer's documented input format. Never physical paths, never `channel=internal` refs, never external owner refs (pull first and use the returned logical path). Inline content is valid when needed; do not mix inline content and `ref:` in one param. A source written earlier in the SAME response is not visible yet.
 - Use the input type documented by the target tool; do not reuse one source across output formats unless the tool supports it.
 - Load the authoring skill before substantial content: `sk:public.pdf-press`, `sk:public.pptx-press`, `sk:public.docx-press`.
-- Never use exec to call ordinary document renderers or to generate user-facing prose. If a renderer fails, fix the renderer content/layout and retry the renderer; exec is only for genuinely custom programmatic generation outside renderer contracts. An exec attempt that failed on a document task (code missing, non-code in the code channel) — switch to the renderer path or complete with the artifacts already produced; do not keep retrying exec.
+- Ordinary document rendering and user-facing prose go through the renderer tools and `react.write`. If a renderer fails, fix the renderer content/layout and retry the renderer; do not reroute a document task through another tool when a renderer contract fits.
 """
 
 

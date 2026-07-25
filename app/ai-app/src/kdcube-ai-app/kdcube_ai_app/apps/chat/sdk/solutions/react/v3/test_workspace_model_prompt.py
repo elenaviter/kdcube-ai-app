@@ -5,6 +5,12 @@ from kdcube_ai_app.apps.chat.sdk.skills.instructions.shared_instructions_lite im
 from kdcube_ai_app.apps.chat.sdk.solutions.react.v3.agents.decision import build_decision_system_text
 
 
+
+# The exec-teaching text is roster-conditional (see
+# test_exec_conditional_instruction.py); these pins assert the
+# exec-PRESENT variant, so their fixtures carry the exec adapter.
+EXEC_ADAPTERS = [{"id": "exec_tools.execute_code_python", "doc": {"purpose": "run python"}, "call_template": "t"}]
+
 def test_get_workspace_implementation_guide_custom_mentions_hosting_backed_mode():
     guide = get_workspace_implementation_guide("custom")
     assert "react.pull(paths=[...])" in guide
@@ -96,7 +102,7 @@ def test_build_decision_system_text_appends_agent_admin_customization():
 
 def test_build_decision_system_text_single_action_mode_uses_action_channel_wording():
     text = build_decision_system_text(
-        adapters=[],
+        adapters=EXEC_ADAPTERS,
         infra_adapters=[],
         workspace_implementation="custom",
         multi_action_mode="off",
@@ -125,7 +131,7 @@ def test_build_decision_system_text_single_action_mode_uses_action_channel_wordi
 
 def test_build_decision_system_text_safe_fanout_explains_no_intermediate_review_and_exec_completion_rule():
     text = build_decision_system_text(
-        adapters=[],
+        adapters=EXEC_ADAPTERS,
         infra_adapters=[],
         workspace_implementation="custom",
         multi_action_mode="safe_fanout",
@@ -155,7 +161,7 @@ def test_build_decision_system_text_safe_fanout_explains_no_intermediate_review_
 
 def test_build_decision_system_text_on_enables_multi_action_protocol():
     text = build_decision_system_text(
-        adapters=[],
+        adapters=EXEC_ADAPTERS,
         infra_adapters=[],
         workspace_implementation="custom",
         multi_action_mode="on",
@@ -172,7 +178,7 @@ def test_build_decision_system_text_on_enables_multi_action_protocol():
 
 def test_build_decision_system_text_prefers_direct_document_renderers():
     text = build_decision_system_text(
-        adapters=[],
+        adapters=EXEC_ADAPTERS,
         infra_adapters=[],
         workspace_implementation="custom",
         multi_action_mode="on",
@@ -182,7 +188,7 @@ def test_build_decision_system_text_prefers_direct_document_renderers():
     assert "Preferred: then call the renderer with `content=\"ref:<visible text source ref>\"`" in text
     assert "Inline renderer content is accepted when needed." in text
     assert "Do not bind physical paths,\n  external owner refs, or internal artifacts into rendering_tools.write_*" in text
-    assert "exec output with" in text and "visibility=external" in text
+    assert "externally-visible output is also valid" in text
     assert "If generated content is meant for the user to see, download, approve, or use" in text
     assert "Internal text artifacts are still valid for private notes" in text
     assert "shape is wrong" in text

@@ -76,12 +76,21 @@ def build_decision_system_text(
 
     # Protocol contract sketch.
     # v2 is single-action only. The contract: one <channel:thinking>, one
-    # <channel:action>, one <channel:code> (empty unless exec), and an
-    # optional final-only <channel:summary>. Tool results are visible only in
-    # the NEXT round; the agent must never assert a result it has not seen.
+    # <channel:action>, an optional final-only <channel:summary> — and
+    # <channel:code> ONLY when the exec tool is in the effective roster.
+    # Tool results are visible only in the NEXT round; the agent must never
+    # assert a result it has not seen.
     #
     # See v3/agents/decision.py (else branch) for the canonical version of
     # this prompt — they are kept in lockstep on purpose.
+    protocol_tool_ids = {
+        str((a or {}).get("id") or "").strip()
+        for a in list(adapters or []) + list(infra_adapters or [])
+    }
+    exec_present = "exec_tools.execute_code_python" in protocol_tool_ids
+    channel_extension_note = (
+        "A connected tool may extend the protocol with a channel of its own; when such a tool is available, this instruction carries that channel's rules.\n"
+    )
     protocol = (
         "CRITICAL: you are the agent which must form output in a custom protocol you must obey. This is not similar to tool calling protocol.\n"
         "CRITICAL: This protocol is SINGLE-ACTION. Emit EXACTLY ONE <channel:action> per response. Emitting more than one action in the same response is a gross protocol violation.\n"
@@ -89,37 +98,63 @@ def build_decision_system_text(
         f"{SINGLE_ACTION_CAUSALITY.strip()}\n"
         "\n"
         "[HOW SINGLE-ACTION CAUSALITY LOOKS IN THIS PROTOCOL]\n"
-        "The protocol uses <channel:thinking>, <channel:action>, <channel:code>, and optional <channel:summary>. Emit exactly one <channel:action>, then stop. Do not reference that action's result anywhere in the same response (not in `thinking`, `notes`, `final_answer`, or code).\n"
-        "Allowed (one action, no result claim in same response):\n"
-        "<channel:thinking>Creating the Excel file...</channel:thinking>\n"
-        "<channel:action>```json {{ \"action\":\"call_tool\", \"tool_call\":{{\"tool_id\":\"exec_tools.execute_code_python\", \"params\":{{...}}}} }} ```</channel:action>\n"
-        "<channel:code>...Python that produces report.xlsx...</channel:code>\n"
-        "Forbidden (action emitted + result asserted in the same response):\n"
-        "<channel:thinking>report.xlsx is ready — here is the summary...</channel:thinking>  (BAD: result not seen yet)\n"
-        "<channel:action>```json {{ ...exec that produces report.xlsx... }} ```</channel:action>\n"
-        "Fix: emit the action this round, stop; next round will see the `conv:fi:...xlsx` ref and you can then say it is ready.\n"
+        + (
+            "The protocol uses <channel:thinking>, <channel:action>, <channel:code>, and optional <channel:summary>. Emit exactly one <channel:action>, then stop. Do not reference that action's result anywhere in the same response (not in `thinking`, `notes`, `final_answer`, or code).\n"
+            if exec_present else
+            "The protocol uses <channel:thinking>, <channel:action>, and optional <channel:summary>. Emit exactly one <channel:action>, then stop. Do not reference that action's result anywhere in the same response (not in `thinking`, `notes`, or `final_answer`).\n"
+        )
+        + channel_extension_note
+        + (
+            "Allowed (one action, no result claim in same response):\n"
+            "<channel:thinking>Creating the Excel file...</channel:thinking>\n"
+            "<channel:action>```json {{ \"action\":\"call_tool\", \"tool_call\":{{\"tool_id\":\"exec_tools.execute_code_python\", \"params\":{{...}}}} }} ```</channel:action>\n"
+            "<channel:code>...Python that produces report.xlsx...</channel:code>\n"
+            "Forbidden (action emitted + result asserted in the same response):\n"
+            "<channel:thinking>report.xlsx is ready — here is the summary...</channel:thinking>  (BAD: result not seen yet)\n"
+            "<channel:action>```json {{ ...exec that produces report.xlsx... }} ```</channel:action>\n"
+            if exec_present else
+            "Allowed (one action, no result claim in same response):\n"
+            "<channel:thinking>Writing the report draft...</channel:thinking>\n"
+            "<channel:action>```json {{ \"action\":\"call_tool\", \"tool_call\":{{\"tool_id\":\"react.write\", \"params\":{{...}}}} }} ```</channel:action>\n"
+            "Forbidden (action emitted + result asserted in the same response):\n"
+            "<channel:thinking>report.md is ready — here is the summary...</channel:thinking>  (BAD: result not seen yet)\n"
+            "<channel:action>```json {{ ...react.write that produces report.md... }} ```</channel:action>\n"
+        )
+        + "Fix: emit the action this round, stop; next round will see the `conv:fi:...` ref and you can then say it is ready.\n"
         "\n"
         "[VISIBILITY & RENDER]\n"
-        "Visibility rule: content meant for the user to see, download, approve, or use as a renderer source must be EXTERNAL — `react.write channel=canvas` or exec `visibility=external`. `channel=internal` is only for private scratch that will not be presented or rendered.\n"
+        "Visibility rule: content meant for the user to see, download, approve, or use as a renderer source must be EXTERNAL — `react.write channel=canvas`, or the producing tool's external visibility. `channel=internal` is only for private scratch that will not be presented or rendered.\n"
         "Default write rule: reports, briefs, HTML, Markdown, slide source, DOCX/PDF/PPTX source, and anything under `files/` that may become a deliverable must be written with `react.write channel=canvas`.\n"
         "Renderer source rule: `rendering_tools.write_*` `content='ref:...'` MUST resolve to text in the renderer's requested input format and must be visible at the START of this response. A source written or modified earlier in this same response is NOT visible yet — write now, render next round. Inline content is valid when the tool input type allows it.\n"
         "After `react.write`, stop. Review the visible write result next round, then render or patch if needed. Do not write a placeholder now to patch later — write the final content once.\n"
         "\n"
         "[CHANNELS — FORMAT MECHANICS]\n"
         "The first literal channel in your response must be the opening `channel:thinking` tag. Never emit legacy <thinking>...</thinking> tags.\n"
-        "You have 4 channel types. Three are required every round; summary is allowed ONLY on complete/exit final-answer rounds.\n"
-        "Output protocol (strict): one round = exactly one `channel:thinking`, exactly one `channel:action`, and `channel:code` (empty unless an exec action is in this round).\n"
-        "<channel:thinking> ... </channel:thinking>\n"
-        "<channel:action> ... </channel:action>\n"
-        "<channel:code> code generated </channel:code>\n"
-        "Do not include summary unless action is complete or exit. The optional `channel:summary` may appear exactly once, and only when the action is complete or exit.\n"
+        + (
+            "You have 4 channel types. Three are required every round; summary is allowed ONLY on complete/exit final-answer rounds.\n"
+            "Output protocol (strict): one round = exactly one `channel:thinking`, exactly one `channel:action`, and `channel:code` (empty unless an exec action is in this round).\n"
+            "<channel:thinking> ... </channel:thinking>\n"
+            "<channel:action> ... </channel:action>\n"
+            "<channel:code> code generated </channel:code>\n"
+            if exec_present else
+            "You have 3 channel types. Two are required every round; summary is allowed ONLY on complete/exit final-answer rounds.\n"
+            "Output protocol (strict): one round = exactly one `channel:thinking` and exactly one `channel:action`.\n"
+            "<channel:thinking> ... </channel:thinking>\n"
+            "<channel:action> ... </channel:action>\n"
+        )
+        + "Do not include summary unless action is complete or exit. The optional `channel:summary` may appear exactly once, and only when the action is complete or exit.\n"
         "`channel:thinking`: short user-facing markdown status (1–2 sentences, no lists). It is shown to the user; do NOT use it to claim a pending action's result is in.\n"
         "\n"
         "`channel:action` carries one action. Inside the single `channel:action` instance, output exactly one ```json fenced block with an action JSON object matching the shape hint below (no extra text):\n"
         "```json\n"
         f"{json_hint}\n"
         "```\n\n"
-        "CRITICAL: The runtime which reads your response will attempt to convert it to one round: one `channel:thinking`, one `channel:action`, one `channel:code`, and optional final-only `channel:summary`.\n"
+        + (
+            "CRITICAL: The runtime which reads your response will attempt to convert it to one round: one `channel:thinking`, one `channel:action`, one `channel:code`, and optional final-only `channel:summary`.\n"
+            if exec_present else
+            "CRITICAL: The runtime which reads your response will attempt to convert it to one round: one `channel:thinking`, one `channel:action`, and optional final-only `channel:summary`.\n"
+        )
+        +
         "DO NOT DO THIS: emit a sequence of channel groups twice in the same response — this protocol allows exactly one of each per response.\n"
         "DO NOT DO THIS: include multiple JSON objects or fenced JSON blocks inside the single `channel:action` instance. This does not work in single-action mode. Emit exactly one tool call now and continue in a later round if more tools are needed.\n"
         "If you need a plan, use the plan tool (single action) or include a short note in `notes` — but you may not call more than one tool. Generating a second instance of any channel in the same response is a contract violation.\n"
@@ -127,8 +162,8 @@ def build_decision_system_text(
         "Minimal valid shape:\n"
         "<channel:thinking>...short status...</channel:thinking>\n"
         "<channel:action>```json { ...one action JSON object... } ```</channel:action>\n"
-        "<channel:code></channel:code>\n"
-        "\n"
+        + ("<channel:code></channel:code>\n" if exec_present else "")
+        + "\n"
         "[FINAL ANSWER — complete / exit]\n"
         "complete/exit closes the turn and streams a final user-facing answer. You may emit complete/exit only when every tool result the answer depends on is ALREADY VISIBLE in your timeline. If any required result is missing, complete is premature — emit only the tool now and complete in a later round.\n"
         "complete/exit must be the ONLY action in its round. Pairing it with a tool call (a `final_answer` field alongside `action=call_tool`, or `tool_call` alongside `action=complete`) claims the work is done before that tool's result exists.\n"
@@ -138,18 +173,26 @@ def build_decision_system_text(
         "Final answer shape (only when action is complete or exit):\n"
         "<channel:thinking>...short final status...</channel:thinking>\n"
         "<channel:action>```json { ...one complete/exit action JSON object... } ```</channel:action>\n"
-        "<channel:code></channel:code>\n"
-        "<channel:summary>Goal: ...\nOutcome: ...\nKey facts: ...\nRefs: ...\nRetrieval-anchors:\n  phrases: [\"verbatim string the user might re-quote\", ...]\n  entities: [\"HighIDFProperNoun\", ...]</channel:summary>\n"
+        + ("<channel:code></channel:code>\n" if exec_present else "")
+        + "<channel:summary>Goal: ...\nOutcome: ...\nKey facts: ...\nRefs: ...\nRetrieval-anchors:\n  phrases: [\"verbatim string the user might re-quote\", ...]\n  entities: [\"HighIDFProperNoun\", ...]</channel:summary>\n"
         "\n"
-        "[CODE & SUMMARY CHANNEL DETAILS]\n"
-        "In `channel:code`, output ONLY the raw Python code snippet (no fencing, no auxiliary text).\n"
-        "Use non-empty `channel:code` only immediately after an `exec_tools.execute_code_python` action; otherwise emit an empty `channel:code` block.\n"
-        "Exec tool DOES NOT have a `code` parameter. Putting code in the tool_call params is WRONG. Code goes only in `channel:code`.\n"
-        "For call_tool rounds, omit `channel:summary` entirely. For complete/exit rounds, include exactly one `channel:summary` with: Goal, Outcome, Key facts, Refs, Retrieval-anchors. Scale the summary to the turn: for trivial exchanges (greeting, acknowledgment, tiny answer), one line or a few words per field. Refs should be logical paths for the user prompt, decisive tool calls/results, produced artifacts, and the assistant completion when known. Retrieval-anchors feed a lexical (BM25F-style) retrieval layer that runs ALONGSIDE semantic search: each anchor is indexed as a high-weight token, so future searches by the user's LITERAL phrasing find this turn even when the prose summary paraphrased it. Discipline: `phrases` = verbatim strings the user might re-quote (exact filenames, exact error messages, exact titles, the user's exact wording — never paraphrases); `entities` = high-IDF proper nouns (product/tool/project/person/bundle ids — would this token uniquely identify this turn among hundreds? if no, drop it; never generic nouns like \"file\"/\"data\"/\"report\"). Both keys are optional; emit empty lists or omit the block entirely for trivial turns. Concrete example for a turn that built a Q2 forecast spreadsheet and hit an openpyxl error while renaming a column: phrases: [\"Forecast-Q2-2026.xlsx\", \"openpyxl IndexError\", \"rename ARR contribution column\"]; entities: [\"Forecast-Q2-2026.xlsx\", \"openpyxl\", \"ARR contribution\"]. This summary is for future cold-start continuity, not for the user-facing final_answer.\n"
+        + (
+            "[CODE & SUMMARY CHANNEL DETAILS]\n"
+            "In `channel:code`, output ONLY the raw Python code snippet (no fencing, no auxiliary text).\n"
+            "Use non-empty `channel:code` only immediately after an `exec_tools.execute_code_python` action; otherwise emit an empty `channel:code` block.\n"
+            "Exec tool DOES NOT have a `code` parameter. Putting code in the tool_call params is WRONG. Code goes only in `channel:code`.\n"
+            if exec_present else
+            "[SUMMARY CHANNEL DETAILS]\n"
+        )
+        + "For call_tool rounds, omit `channel:summary` entirely. For complete/exit rounds, include exactly one `channel:summary` with: Goal, Outcome, Key facts, Refs, Retrieval-anchors. Scale the summary to the turn: for trivial exchanges (greeting, acknowledgment, tiny answer), one line or a few words per field. Refs should be logical paths for the user prompt, decisive tool calls/results, produced artifacts, and the assistant completion when known. Retrieval-anchors feed a lexical (BM25F-style) retrieval layer that runs ALONGSIDE semantic search: each anchor is indexed as a high-weight token, so future searches by the user's LITERAL phrasing find this turn even when the prose summary paraphrased it. Discipline: `phrases` = verbatim strings the user might re-quote (exact filenames, exact error messages, exact titles, the user's exact wording — never paraphrases); `entities` = high-IDF proper nouns (product/tool/project/person/bundle ids — would this token uniquely identify this turn among hundreds? if no, drop it; never generic nouns like \"file\"/\"data\"/\"report\"). Both keys are optional; emit empty lists or omit the block entirely for trivial turns. Concrete example for a turn that built a Q2 forecast spreadsheet and hit an openpyxl error while renaming a column: phrases: [\"Forecast-Q2-2026.xlsx\", \"openpyxl IndexError\", \"rename ARR contribution column\"]; entities: [\"Forecast-Q2-2026.xlsx\", \"openpyxl\", \"ARR contribution\"]. This summary is for future cold-start continuity, not for the user-facing final_answer.\n"
         "\n"
         "[CHANNEL CITATION] (CRITICAL — streaming infra sensitive)\n"
-        "Whenever you REFER to a channel BY NAME inside prose — in `notes`, in `thinking`, in `final_answer`, in a tool param, in code comments, or anywhere that is NOT the actual channel boundary — you MUST write it in BACKTICKS, e.g. `channel:thinking`, `channel:action`, `channel:code`, `channel:summary`.\n"
-        "Do NOT write the angle-bracket form of a channel name anywhere except where you are actually opening or closing that channel. The streaming layer treats any literal channel-opening token as a channel boundary; writing one inside `notes`, `final_answer`, or a tool param will break the parse and corrupt the response.\n"
+        + (
+            "Whenever you REFER to a channel BY NAME inside prose — in `notes`, in `thinking`, in `final_answer`, in a tool param, in code comments, or anywhere that is NOT the actual channel boundary — you MUST write it in BACKTICKS, e.g. `channel:thinking`, `channel:action`, `channel:code`, `channel:summary`.\n"
+            if exec_present else
+            "Whenever you REFER to a channel BY NAME inside prose — in `notes`, in `thinking`, in `final_answer`, in a tool param, or anywhere that is NOT the actual channel boundary — you MUST write it in BACKTICKS, e.g. `channel:thinking`, `channel:action`, `channel:summary`.\n"
+        )
+        + "Do NOT write the angle-bracket form of a channel name anywhere except where you are actually opening or closing that channel. The streaming layer treats any literal channel-opening token as a channel boundary; writing one inside `notes`, `final_answer`, or a tool param will break the parse and corrupt the response.\n"
     )
     sys_msg = compose_decision_system_text(
         protocol=protocol,

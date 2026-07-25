@@ -846,7 +846,7 @@ async def _handle_external_tool_policy_pipeline(*,
             message=" ".join(dict.fromkeys(details)) or (
                 "One or more ref: bindings are not visible to this tool call. channel=internal artifacts are private. "
                 "For rendering_tools.write_* source refs, write the source as an external artifact first "
-                "(react.write channel=canvas, or exec visibility=external)."
+                "(react.write channel=canvas, or the producing tool's external visibility)."
             ),
             extra={"violations": violations, "tool_id": tool_id, "protocol_violation": True},
         )
@@ -1070,7 +1070,7 @@ async def _handle_external_tool_legacy(*,
             message=" ".join(dict.fromkeys(details)) or (
                 "One or more ref: bindings are not visible to this tool call. channel=internal artifacts are private. "
                 "For rendering_tools.write_* source refs, write the source as an external artifact first "
-                "(react.write channel=canvas, or exec visibility=external)."
+                "(react.write channel=canvas, or the producing tool's external visibility)."
             ),
             extra={"violations": violations, "tool_id": tool_id, "protocol_violation": True},
         )

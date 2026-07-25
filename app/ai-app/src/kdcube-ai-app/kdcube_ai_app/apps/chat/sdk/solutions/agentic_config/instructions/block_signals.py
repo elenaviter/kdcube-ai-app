@@ -90,7 +90,7 @@ BLOCK_SIGNALS: dict[str, dict[str, list[str]]] = {
     "REACT_LITE_WORKSPACE_BASE": {
         "signals": [
             "React works over timeline/logical paths plus the current-turn artifact root.",
-            "The physical artifact tree for exec/code.",
+            "The physical artifact tree for file-processing tools.",
         ],
         "tags": ["workspace", "artifacts"],
     },

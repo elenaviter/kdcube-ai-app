@@ -39,7 +39,7 @@ TOOL_SPEC = {
         "refs": (
             "[str] (SECOND FIELD, optional). Logical paths from this conversation "
             "backing the report. Use conv:fi: FILE refs (files you produced with "
-            "react.write / exec / rendering) — those are directly pullable by the "
+            "react.write and other producing tools) — those are directly pullable by the "
             "delegating agent. Other ref namespaces ride along as provenance only."
         ),
     },

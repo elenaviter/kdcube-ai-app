@@ -70,7 +70,7 @@ def test_build_decision_system_text_appends_agent_admin_customization():
 
 def test_build_decision_system_text_explains_one_response_is_one_round():
     text = build_decision_system_text(
-        adapters=[],
+        adapters=[{"id": "exec_tools.execute_code_python", "doc": {"purpose": "run python"}, "call_template": "t"}],  # exec-PRESENT protocol variant (conditional teaching pinned in v3/test_exec_conditional_instruction.py)
         infra_adapters=[],
         workspace_implementation="custom",
     )
@@ -126,7 +126,7 @@ def test_build_decision_system_text_prefers_visible_document_source_refs():
     assert "Preferred: then call the renderer with `content=\"ref:<visible text source ref>\"`" in text
     assert "Inline renderer content is accepted when needed." in text
     assert "Do not bind physical paths,\n  external owner refs, or internal artifacts into rendering_tools.write_*" in text
-    assert "exec output with" in text and "visibility=external" in text
+    assert "externally-visible output is also valid" in text
     assert "If generated content is meant for the user to see, download, approve, or use" in text
     assert "Internal text artifacts are still valid for private notes" in text
     assert "shape is wrong" in text

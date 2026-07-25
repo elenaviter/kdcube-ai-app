@@ -983,7 +983,7 @@ def build_announce_workspace_lines(
     lines.append("  This tree lists actual files already present under the artifact workdir.")
     lines.append("  Timeline conv:fi: refs that are not listed here are hosted/unhydrated; use react.pull to hydrate them before local-byte tools.")
     lines.append("  react.read may inspect provider-rendered text for a hosted ref, but it does not make local bytes appear here.")
-    lines.append("  react.rg / react.patch / exec can touch only paths listed here or paths you create in this turn.")
+    lines.append("  File-touching tools (react.rg, react.patch, code) can touch only paths listed here or paths you create in this turn.")
     local_entries = _workdir_entries()
     local_lines: List[str] = []
     for entry in local_entries:
@@ -1296,7 +1296,7 @@ def build_announce_context_cap_lines(*, runtime_ctx: Optional[RuntimeCtx]) -> Li
             f"  read text={read_text} tok={read_tokens} bytes={_bytes_label(read_bytes)} ctx_frac={read_fraction:g}; "
             f"tool_result_preview={tool_preview}; exec_file_preview={exec_preview}; line_numbers={line_numbers_mode}"
         ),
-        "  regular text is capped; skills are always uncapped; use stats_only plus ranged react.read items for capped text; exec_stdout=capped",
+        "  regular text is capped; skills are always uncapped; use stats_only plus ranged react.read items for capped text; tool outputs are capped",
     ]
 
 
@@ -2788,10 +2788,18 @@ def build_instruction_catalog_block(
             if t.get("id") not in react_ids and t.get("id") not in exec_ids
         ]
 
+        # Execution-only tools are callable ONLY from generated code, so
+        # their catalog section exists only when the exec tool itself is in
+        # the effective roster — otherwise it advertises uncallable tools
+        # and teaches an agent it can execute code.
+        exec_tool_present = any(
+            (t or {}).get("id") == "exec_tools.execute_code_python" for t in tools_list
+        )
+
         parts_tools: List[str] = []
         react_block = build_tools_block(
             react_only,
-            header="[AVAILABLE REACT TOOLS]",
+            header="[AVAILABLE REACT-LOOP TOOLS]",
             detail=tool_catalog_detail,
         )
         if react_block:
@@ -2803,13 +2811,14 @@ def build_instruction_catalog_block(
         )
         if common_block:
             parts_tools.append(common_block)
-        exec_block = build_tools_block(
-            exec_only,
-            header="[TOOLS AVAILABLE ONLY IN CODE SNIPPET]",
-            detail=tool_catalog_detail,
-        )
-        if exec_block:
-            parts_tools.append(exec_block)
+        if exec_tool_present:
+            exec_block = build_tools_block(
+                exec_only,
+                header="[TOOLS AVAILABLE ONLY IN CODE SNIPPET]",
+                detail=tool_catalog_detail,
+            )
+            if exec_block:
+                parts_tools.append(exec_block)
         tool_block = "\n\n".join([p for p in parts_tools if p.strip()])
 
     skill_block = ""
