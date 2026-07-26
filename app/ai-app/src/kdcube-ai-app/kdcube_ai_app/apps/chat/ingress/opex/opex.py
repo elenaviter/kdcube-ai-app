@@ -878,8 +878,13 @@ async def admin_run_aggregation_range(
     """
     Manually backfill daily + monthly aggregates for a date range.
 
-    This uses the same Redis locking as the scheduler, so it is safe to call
-    on multiple API instances concurrently.
+    Starts a BACKGROUND job and returns immediately — completion is state, not
+    a held connection (large windows outlive proxy timeouts). Track it via
+    GET /admin/run-aggregation-range/status; the job record advances day by
+    day. One job per tenant/project at a time; a repeat call while one runs
+    returns that job (`status: "already_running"`). Per-day Redis locks keep
+    concurrent instances double-work-safe, and the run is resumable: re-start
+    after a stall skips completed days.
 
     Examples:
       - /admin/run-aggregation-range?start_date=2025-01-01
@@ -920,12 +925,22 @@ async def admin_run_aggregation_range(
             detail="end_date must be greater than or equal to start_date",
         )
 
-    # This will loop date-by-date and use Redis locks inside.
-    await routines.run_aggregation_range(start, end)
-
+    job, started = await routines.start_range_job(start, end)
     return {
-        "status": "ok",
-        "start_date": start.isoformat(),
-        "end_date": end.isoformat(),
-        "message": "Aggregation triggered for date range",
+        "status": "started" if started else "already_running",
+        "job": job,
     }
+
+
+@router.get("/admin/run-aggregation-range/status")
+async def admin_aggregation_range_status(
+        session: UserSession = Depends(auth_without_pressure())
+):
+    """Current (or last) range-rebuild job record; `job` is null when none ran.
+
+    `stalled: true` on a running job means no heartbeat for a while — the
+    worker may have restarted mid-run, or it is still chewing a very large
+    day. Re-starting is always safe (completed days are skipped)."""
+    import kdcube_ai_app.apps.chat.ingress.opex.routines as routines
+    job = await routines.read_range_job()
+    return {"status": "ok", "job": job}

@@ -129,6 +129,18 @@ type CostDimension = 'user' | 'agent' | 'app';
 
 type CostSortBy = 'cost' | 'input_tokens' | 'output_tokens' | 'events' | 'id';
 
+interface AggRangeJob {
+    job_id: string;
+    status: 'running' | 'done' | 'failed';
+    start_date: string;
+    end_date: string;
+    days_total: number;
+    days_done: number;
+    current_day: string | null;
+    error: string | null;
+    stalled?: boolean;
+}
+
 interface OpexPagedRow {
     id: string;
     cost_usd: number;
@@ -974,7 +986,7 @@ class EconomicsAPI {
     // Backfill daily + monthly aggregates for a window (adds newly introduced
     // dimension files — e.g. per-app — to already-aggregated days). Safe to
     // re-run; shares the scheduler's per-date Redis lock.
-    async runAggregationRange(startDate: string, endDate: string, includeToday: boolean): Promise<any> {
+    async runAggregationRange(startDate: string, endDate: string, includeToday: boolean): Promise<{ status: string; job: AggRangeJob }> {
         const baseUrl = settings.getBaseUrl();
         const queryParams = new URLSearchParams({
             start_date: startDate,
@@ -985,6 +997,12 @@ class EconomicsAPI {
             `${baseUrl}/api/opex/admin/run-aggregation-range?${queryParams}`,
             { method: 'POST' },
         );
+        return response.json();
+    }
+
+    async getAggregationJob(): Promise<{ status: string; job: AggRangeJob | null }> {
+        const baseUrl = settings.getBaseUrl();
+        const response = await this.fetchWithAuth(`${baseUrl}/api/opex/admin/run-aggregation-range/status`);
         return response.json();
     }
 
@@ -1829,6 +1847,7 @@ const EconomicsAdmin: React.FC = () => {
     const [costRows, setCostRows] = useState<CostRow[]>([]);
     const [costTotals, setCostTotals] = useState<{ count: number; costUsd: number; events: number }>({ count: 0, costUsd: 0, events: 0 });
     const [costSource, setCostSource] = useState<'rollup' | 'aggregates' | null>(null);
+    const [rebuildJob, setRebuildJob] = useState<AggRangeJob | null>(null);
     const [costLoaded, setCostLoaded] = useState<boolean>(false);
     const [loadingCost, setLoadingCost] = useState<boolean>(false);
     const [costExpanded, setCostExpanded] = useState<Record<string, boolean>>({});
@@ -2361,20 +2380,90 @@ const EconomicsAdmin: React.FC = () => {
     const handleRebuildAggregates = async () => {
         if (!window.confirm(
             `Rebuild spend aggregates for ${costFrom} — ${costTo}? This re-reads that window's raw events ` +
-            `(needed once after new report dimensions are introduced). Safe to re-run.`
+            `(needed once after new report dimensions are introduced). Runs in the background; safe to re-run.`
         )) return;
         clearMessages();
-        setLoadingCost(true);
         try {
             const today = new Date().toISOString().slice(0, 10);
-            await api.runAggregationRange(costFrom, costTo, costTo >= today);
-            setSuccess('Aggregates rebuilt.');
-            await handleLoadCostReport();
+            const res = await api.runAggregationRange(costFrom, costTo, costTo >= today);
+            setRebuildJob(res.job);
+            if (res.status === 'already_running') {
+                setSuccess('A rebuild is already running — showing its progress.');
+            }
         } catch (err) {
             setError((err as Error).message);
-            setLoadingCost(false);
         }
     };
+
+    // Live progress rides the project data bus: while a rebuild runs, this
+    // subscribes to project events over SSE and updates from the
+    // kdcube.opex.aggregation_job broadcasts the job emits on every state
+    // change. The status endpoint is used only to sync once after subscribing
+    // (nothing missed between POST and stream-open) and as a slow liveness
+    // guard for the one case the bus cannot signal — a worker that died
+    // without a final broadcast (surfaces as `stalled`).
+    useEffect(() => {
+        if (!rebuildJob || rebuildJob.status !== 'running') return;
+        let closed = false;
+
+        const applyJob = (job: AggRangeJob) => {
+            if (closed) return;
+            setRebuildJob(job);
+            if (job.status === 'done') {
+                setSuccess(`Aggregates rebuilt: ${job.days_total} day(s), ${job.start_date} — ${job.end_date}.`);
+                void handleLoadCostReport();
+            } else if (job.status === 'failed') {
+                setError(`Rebuild failed: ${job.error || 'unknown error'}. Re-running is safe — completed days are skipped.`);
+            }
+        };
+        const syncStatus = async () => {
+            try {
+                const res = await api.getAggregationJob();
+                if (closed) return;
+                if (!res.job) { setRebuildJob(null); return; }
+                applyJob(res.job);
+            } catch { /* transient; the bus keeps driving progress */ }
+        };
+
+        const url = new URL(`${settings.getBaseUrl().replace(/\/$/, '')}/sse/stream`);
+        url.searchParams.set('stream_id', `econ-agg-${Math.random().toString(16).slice(2, 10)}`);
+        url.searchParams.set('project_events', '1');
+        if (settings.getDefaultTenant()) url.searchParams.set('tenant', settings.getDefaultTenant());
+        if (settings.getDefaultProject()) url.searchParams.set('project', settings.getDefaultProject());
+        const accessToken = settings.getAccessToken();
+        if (accessToken) url.searchParams.set('bearer_token', accessToken);
+        const idToken = settings.getIdToken();
+        if (idToken) url.searchParams.set('id_token', idToken);
+
+        const es = new EventSource(url.toString());
+        es.addEventListener('open', () => { void syncStatus(); });
+        es.addEventListener('chat_service', (event: MessageEvent) => {
+            try {
+                const env = JSON.parse((event as MessageEvent).data);
+                if (!env || env.type !== 'kdcube.opex.aggregation_job') return;
+                const job = env.data?.job as AggRangeJob | undefined;
+                if (job) applyJob(job);
+            } catch { /* malformed frame — ignore */ }
+        });
+        // EventSource reconnects on its own; 'open' fires again and re-syncs.
+
+        const liveness = window.setInterval(() => { void syncStatus(); }, 60000);
+        return () => {
+            closed = true;
+            window.clearInterval(liveness);
+            es.close();
+        };
+    }, [rebuildJob?.status]);
+
+    // Re-attach to a rebuild that was started before this page load.
+    useEffect(() => {
+        void (async () => {
+            try {
+                const res = await api.getAggregationJob();
+                if (res.job && res.job.status === 'running') setRebuildJob(res.job);
+            } catch { /* no job endpoint reachable — nothing to attach to */ }
+        })();
+    }, []);
 
     const handleExportCostCsv = async () => {
         clearMessages();
@@ -3676,9 +3765,11 @@ const EconomicsAdmin: React.FC = () => {
                                             <Button
                                                 variant="secondary"
                                                 onClick={handleRebuildAggregates}
-                                                disabled={loadingCost}
+                                                disabled={rebuildJob?.status === 'running'}
                                             >
-                                                Rebuild aggregates
+                                                {rebuildJob?.status === 'running'
+                                                    ? `Rebuilding ${rebuildJob.days_done}/${rebuildJob.days_total}…`
+                                                    : 'Rebuild aggregates'}
                                             </Button>
                                             <Button
                                                 variant="secondary"
@@ -3691,6 +3782,16 @@ const EconomicsAdmin: React.FC = () => {
                                     }
                                 />
                                 <CardBody className="flex min-h-0 flex-1 flex-col gap-2.5">
+                                    {rebuildJob?.status === 'running' && (
+                                        <div className="shrink-0 rounded-md border border-[#E6ECEE] bg-[#F7FAFA] px-2.5 py-1.5 text-[11.5px] text-[#3A5672]">
+                                            Rebuilding aggregates {rebuildJob.start_date} — {rebuildJob.end_date}:{' '}
+                                            {rebuildJob.days_done}/{rebuildJob.days_total} days done
+                                            {rebuildJob.current_day ? `, working on ${rebuildJob.current_day}` : ''}.
+                                            {rebuildJob.stalled
+                                                ? ' No progress for a while — the worker may have restarted, or a very large day is still processing. Re-running later is safe.'
+                                                : ''}
+                                        </div>
+                                    )}
                                     <div className="grid shrink-0 grid-cols-6 gap-2.5 max-w-5xl">
                                         <Select
                                             label="Group by"

@@ -248,9 +248,19 @@ the opex lifespan):
 `aggregates_only=True`: latency-sensitive callers (user-facing dashboards)
 skip the raw-scan fallback — which reads every event file in the window — and
 report "window not aggregated" instead. `POST
-/api/opex/admin/run-aggregation-range` backfills a window synchronously and is
-resumable: a day is skipped only when **all** its dimension files exist, so a
-range aggregated before a new dimension was introduced regenerates cleanly.
+/api/opex/admin/run-aggregation-range` backfills a window as a **background
+job**: it returns immediately with a job record (one per tenant/project at a
+time) that advances day by day, and `GET
+/api/opex/admin/run-aggregation-range/status` serves it from Redis on any
+instance — completion is state, not a held connection, so proxy timeouts on
+large windows cannot lose the signal. Each state change is also broadcast on
+the project data bus (`kdcube.opex.aggregation_job` project events), which is
+how the Cost Report tab shows live progress; see
+[Aggregations](../aggregations/README-AGGREGATIONS.md) §2.4 for the event
+contract. The run is resumable: a day is skipped
+only when **all** its dimension files exist, so a range aggregated before a
+new dimension was introduced regenerates cleanly, and re-starting after a
+stalled job (heartbeat-flagged in the record) never repeats completed days.
 
 **Reported-cost rule** (shared with turn settlement): when pricing a rollup
 line, a price-table entry wins; a line without one is priced at the

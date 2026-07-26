@@ -7,7 +7,7 @@ import asyncio
 from typing import Optional
 import importlib.util
 from pathlib import Path
-import uuid, os, logging
+import uuid, os, logging, json, time
 from datetime import datetime, timedelta, date, timezone
 from zoneinfo import ZoneInfo
 from croniter import croniter
@@ -290,6 +290,185 @@ async def run_aggregation_range(start: date, end: date) -> None:
     while current <= end:
         await _run_daily_and_monthly_for_date(current)
         current += timedelta(days=1)
+
+
+# =============================================================================
+# Range-rebuild job: observable completion state for the admin backfill.
+# =============================================================================
+# The admin rebuild used to be answered by the HTTP response itself, which
+# breaks under proxy timeouts on large windows (the work survives, the signal
+# does not). Completion is now STATE, not a held connection: a job record in
+# Redis (any instance can serve status; falls back to a process-local record
+# when Redis is unconfigured), updated day by day, read by a status endpoint.
+# The run itself stays resumable and per-day locked, so re-starting after a
+# stall never double-works a day.
+
+RANGE_JOB_TTL_SECONDS = 24 * 3600
+RANGE_JOB_STALL_SECONDS = 30 * 60  # no heartbeat for this long => flagged stalled
+
+# Project data-bus event type carrying the job record; widgets subscribed to
+# project events (SSE `project_events=1`) receive live progress — no polling.
+RANGE_JOB_EVENT_TYPE = "kdcube.opex.aggregation_job"
+
+_local_range_job: Optional[dict] = None  # fallback store when Redis is off
+_range_job_relay = None  # lazily built ChatRelayCommunicator for bus emits
+
+
+async def _emit_range_job_event(record: dict) -> None:
+    """Broadcast the job record on the project data bus. Fire-and-forget: a
+    bus failure never fails the job — the status endpoint stays authoritative."""
+    global _range_job_relay
+    try:
+        from kdcube_ai_app.apps.chat.emitters import ChatRelayCommunicator, PROJECT_BROADCAST_ROOM
+
+        settings = get_settings()
+        tenant, project = settings.TENANT, settings.PROJECT
+        if _range_job_relay is None:
+            _range_job_relay = ChatRelayCommunicator()
+        payload = {
+            "type": RANGE_JOB_EVENT_TYPE,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": {
+                "request_id": f"agg-range-{record.get('job_id')}",
+                "tenant": tenant,
+                "project": project,
+                "user": "opex-aggregator",
+            },
+            "conversation": {"session_id": PROJECT_BROADCAST_ROOM, "conversation_id": "", "turn_id": ""},
+            "event": {
+                "agent": "opex-aggregator",
+                "title": "Spend aggregates rebuild",
+                "status": record.get("status"),
+                "step": "opex.aggregation.range",
+            },
+            "data": {"job": dict(record)},
+            "route": "chat_service",
+        }
+        await _range_job_relay.emit_project(
+            event="chat_service", data=payload, tenant=tenant, project=project,
+        )
+    except Exception:
+        logger.debug(
+            "[OPEX Aggregator] range-job bus emit failed (status endpoint still authoritative)",
+            exc_info=True,
+        )
+
+
+async def _publish_range_job(record: dict) -> None:
+    """Persist the record, then broadcast it — every state change is one call."""
+    await _save_range_job(record)
+    await _emit_range_job_event(record)
+
+
+def _range_job_key() -> str:
+    settings = get_settings()
+    return f"acct:agg:rangejob:{settings.TENANT}:{settings.PROJECT}"
+
+
+async def _save_range_job(record: dict) -> None:
+    global _local_range_job
+    redis = await _get_agg_redis()
+    if redis:
+        await redis.set(_range_job_key(), json.dumps(record), ex=RANGE_JOB_TTL_SECONDS)
+    else:
+        _local_range_job = record
+
+
+async def read_range_job() -> Optional[dict]:
+    """Current job record, with `stalled` computed from the heartbeat."""
+    redis = await _get_agg_redis()
+    record = None
+    if redis:
+        raw = await redis.get(_range_job_key())
+        if raw:
+            try:
+                record = json.loads(raw)
+            except Exception:
+                record = None
+    else:
+        record = _local_range_job
+    if record and record.get("status") == "running":
+        record = dict(record)
+        record["stalled"] = (time.time() - float(record.get("heartbeat", 0))) > RANGE_JOB_STALL_SECONDS
+    return record
+
+
+async def _run_range_job(record: dict) -> None:
+    start = date.fromisoformat(record["start_date"])
+    end = date.fromisoformat(record["end_date"])
+    try:
+        current = start
+        while current <= end:
+            record["current_day"] = current.isoformat()
+            record["heartbeat"] = time.time()
+            await _publish_range_job(record)
+
+            await _run_daily_and_monthly_for_date(current)
+
+            record["days_done"] += 1
+            record["heartbeat"] = time.time()
+            await _publish_range_job(record)
+            current += timedelta(days=1)
+
+        record["status"] = "done"
+        record["finished_at"] = datetime.now(timezone.utc).isoformat()
+        await _publish_range_job(record)
+        logger.info("[OPEX Aggregator] Range job %s done (%s..%s)",
+                    record["job_id"], record["start_date"], record["end_date"])
+    except Exception as e:
+        logger.exception("[OPEX Aggregator] Range job %s failed", record["job_id"])
+        record["status"] = "failed"
+        record["error"] = str(e)
+        record["finished_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            await _publish_range_job(record)
+        except Exception:
+            logger.exception("[OPEX Aggregator] Could not persist failure for job %s", record["job_id"])
+
+
+async def start_range_job(start: date, end: date) -> tuple[dict, bool]:
+    """Start a background rebuild for [start, end].
+
+    Returns (record, started). started=False means a live (non-stalled) job is
+    already running — its record is returned instead. A done/failed/stalled
+    record is replaced; per-day Redis locks make an overlap with a stalled but
+    still-working task safe (days are skipped, not repeated).
+    """
+    existing = await read_range_job()
+    if existing and existing.get("status") == "running" and not existing.get("stalled"):
+        return existing, False
+
+    record = {
+        "job_id": str(uuid.uuid4()),
+        "status": "running",
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "days_total": (end - start).days + 1,
+        "days_done": 0,
+        "current_day": None,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "finished_at": None,
+        "error": None,
+        "heartbeat": time.time(),
+    }
+
+    redis = await _get_agg_redis()
+    if redis:
+        # Atomic claim: NX wins the slot; on loss re-check whether the winner
+        # (or a pre-existing record) is live, and only replace a finished or
+        # stalled one. Per-day locks keep even a lost race double-work-safe.
+        claimed = await redis.set(_range_job_key(), json.dumps(record), ex=RANGE_JOB_TTL_SECONDS, nx=True)
+        if not claimed:
+            current = await read_range_job()
+            if current and current.get("status") == "running" and not current.get("stalled"):
+                return current, False
+            await redis.set(_range_job_key(), json.dumps(record), ex=RANGE_JOB_TTL_SECONDS)
+    else:
+        await _save_range_job(record)
+
+    await _emit_range_job_event(record)
+    asyncio.create_task(_run_range_job(record))
+    return record, True
 
 async def _run_daily_and_monthly_for_date(run_date: date, *, recompute: bool = False) -> None:
     """

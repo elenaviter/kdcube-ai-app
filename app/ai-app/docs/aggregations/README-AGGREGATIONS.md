@@ -452,17 +452,20 @@ POST /accounting/opex/admin/run-aggregation-range
 
 * Validates `start_date` / `end_date` (must satisfy `end >= start`).
 
-* Calls:
+* Starts a **background job** (`routines.start_range_job`) and returns
+  immediately — completion is a job record you poll, not a held connection,
+  so proxy timeouts on large windows cannot lose the signal.
 
-  ```python
-  await routines.run_aggregation_range(start, end)
-  ```
+* The job:
 
-* `run_aggregation_range`:
-
-    * Iterates day-by-day.
-    * For each date, does the same work as the scheduler (daily + monthly).
-    * Uses the same Redis locks (safe across multiple instances, safe to re-run).
+    * Iterates day-by-day; for each date it does the same work as the
+      scheduler (daily + monthly, plus the spend-rollup index).
+    * Uses the same per-day Redis locks (safe across multiple instances,
+      safe to re-run).
+    * Updates its record (days done, current day, heartbeat) in Redis after
+      each day, so any instance can serve progress. One job per
+      tenant/project at a time; a POST while one runs returns
+      `"status": "already_running"` with that job's record.
 
 **Examples:**
 
@@ -480,16 +483,46 @@ curl -X POST \
   "http://localhost:8010/accounting/opex/admin/run-aggregation-range?start_date=2025-01-01&end_date=2025-01-10"
 ```
 
-Response:
+Response (job started):
 
 ```json
 {
-  "status": "ok",
-  "start_date": "2025-01-01",
-  "end_date": "2025-01-10",
-  "message": "Aggregation triggered for date range"
+  "status": "started",
+  "job": {
+    "job_id": "…",
+    "status": "running",
+    "start_date": "2025-01-01",
+    "end_date": "2025-01-10",
+    "days_total": 10,
+    "days_done": 0,
+    "current_day": null,
+    "started_at": "…",
+    "finished_at": null,
+    "error": null
+  }
 }
 ```
+
+Track progress until `job.status` is `done` (or `failed`, with `error`):
+
+```bash
+curl "http://localhost:8010/accounting/opex/admin/run-aggregation-range/status"
+```
+
+Live progress also rides the **project data bus**: every state change of the
+job (claim, each day, done/failed) is broadcast as a project event of type
+`kdcube.opex.aggregation_job` (SSE `chat_service` frames; connect
+`/sse/stream` with `project_events=1`), with the job record in `data.job`.
+The status endpoint stays authoritative — subscribers sync from it once on
+stream-open and lean on it when the bus cannot signal (a worker that died
+without a final broadcast).
+
+A running job with a stale heartbeat is reported with `"stalled": true` —
+the worker may have restarted mid-run, or a very large day is still
+processing. Re-POSTing then starts a fresh job that skips completed days.
+The Cost Report tab's **Rebuild aggregates** button drives exactly this
+flow: it subscribes to the bus for day-by-day progress and re-attaches to a
+running job after a page reload.
 
 ---
 
