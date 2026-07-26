@@ -665,7 +665,20 @@ async def _agent_grant_gate(base_ns: str, operation: str, tool_name: str) -> Dic
                 project=str(identity.get("project_id") or ""),
             )
         except Exception:
+            LOGGER.warning(
+                "[agent-gate] connect-first shaping raised (namespace=%s operation=%s) - "
+                "falling back to agent-grant demand",
+                base_ns, operation, exc_info=True,
+            )
             connect_first = None
+        LOGGER.info(
+            "[agent-gate] namespace=%s operation=%s user=%s tenant=%s project=%s gate_claims=%s "
+            "connect_first=%s",
+            base_ns, operation, user_id or "<EMPTY>",
+            str(identity.get("tenant_id") or "") or "<EMPTY>",
+            str(identity.get("project_id") or "") or "<EMPTY>",
+            gate_claims, "SET" if connect_first is not None else "None(->agent-grant)",
+        )
         if connect_first is not None:
             from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.consent import (
                 raise_named_service_consent_demand,

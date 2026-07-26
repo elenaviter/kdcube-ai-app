@@ -281,7 +281,13 @@ async def connect_first_denial_for_identity(
     unmapped-operation-falls-back-to-declared-claims behavior are identical
     on both paths. An empty ``requirements`` keeps the discovery path."""
     grantor = str(grantor_user_id or "").strip()
+    LOGGER.info(
+        "[connect-first] enter namespace=%s operation=%s grantor=%s tenant=%s project=%s missing=%s explicit_reqs=%s",
+        namespace, operation, grantor or "<EMPTY>", tenant or "<EMPTY>",
+        project or "<EMPTY>", list(missing), len(list(requirements or ())),
+    )
     if not grantor:
+        LOGGER.info("[connect-first] -> None (no grantor)")
         return None
     explicit = [dict(item) for item in (requirements or ()) if isinstance(item, Mapping)]
     if explicit:
@@ -298,8 +304,8 @@ async def connect_first_denial_for_identity(
             )
             entries = await discovery.entries_for_namespace(namespace)
         except Exception:
-            LOGGER.debug(
-                "[connect-first] provider discovery unavailable (namespace=%s)",
+            LOGGER.warning(
+                "[connect-first] -> None (provider discovery raised, namespace=%s)",
                 namespace, exc_info=True,
             )
             return None
@@ -310,8 +316,14 @@ async def connect_first_denial_for_identity(
             raw = metadata.get("connected_accounts")
             if isinstance(raw, (list, tuple)):
                 discovered.extend(item for item in raw if isinstance(item, Mapping))
+        LOGGER.info(
+            "[connect-first] discovery namespace=%s entries=%s requirements=%s providers=%s",
+            namespace, len(list(entries or [])), len(discovered),
+            [r.get("provider_id") for r in discovered],
+        )
         requirements = discovered
     if not requirements:
+        LOGGER.info("[connect-first] -> None (no account-backed requirements for namespace=%s)", namespace)
         return None
     op = str(operation or "").strip()
     for req in requirements:
@@ -366,17 +378,26 @@ async def connect_first_denial_for_identity(
                 provider_id=provider_id,
             )
         except Exception:
-            LOGGER.debug(
-                "[connect-first] account store unavailable (provider=%s)",
+            LOGGER.warning(
+                "[connect-first] -> None (account store raised, provider=%s)",
                 provider_id, exc_info=True,
             )
             return None
+        connected = [a for a in accounts if a.connected]
+        LOGGER.info(
+            "[connect-first] provider=%s ask=%s accounts_total=%s connected=%s",
+            provider_id, provider_claims, len(accounts), len(connected),
+        )
         # A USABLE account is what decides the order - not any record. A
         # disconnected or revoked account (a prior connect the user removed)
         # leaves a record but cannot back the claim, so connect must still
         # lead. Filtering to `connected` keeps the ordering honest across
         # connect/disconnect cycles.
-        if any(account.connected for account in accounts):
+        if connected:
+            LOGGER.info(
+                "[connect-first] provider=%s has a connected account -> agent-grant leads",
+                provider_id,
+            )
             continue
         from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.preflight import (
             connected_account_consent_payload,
