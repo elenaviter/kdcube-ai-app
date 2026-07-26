@@ -330,45 +330,32 @@ async def connect_first_denial_for_identity(
         provider_id = str(req.get("provider_id") or "").strip()
         if not provider_id:
             continue
+        # Only operations that actually need a PROVIDER claim lead with connect.
+        # A metadata operation (object.schema, provider.about, capabilities)
+        # needs only door admission (named_services:use); it must NOT ask the
+        # user to connect an account. When the operation-specific provider
+        # claims are empty, this provider is not in play for this call - skip
+        # it (the missing door claim falls to a plain agent-grant instead).
         by_op = req.get("claims_by_operation")
         if isinstance(by_op, Mapping) and by_op:
+            # A differentiated realm (mail) maps each account-touching operation
+            # to its claims. An operation with no mapping needs no account.
             provider_claims = [
                 str(c).strip() for c in (by_op.get(op) or []) if str(c or "").strip()
             ]
             if not provider_claims:
-                # The operation itself is not claim-mapped (provider.about,
-                # object.schema, ...) but the REALM is account-backed and the
-                # gate still tripped - with zero accounts, granting the agent
-                # first would bind nothing (operator ruling: connect leads for
-                # the whole realm). Ask the realm's declared claims, deduped
-                # in declaration order; the user unticks what they keep.
-                seen: set[str] = set()
-                for op_claims in by_op.values():
-                    for c in op_claims or []:
-                        text = str(c or "").strip()
-                        if text and text not in seen:
-                            seen.add(text)
-                            provider_claims.append(text)
-                for c in req.get("claims") or []:
-                    text = str(c or "").strip()
-                    if text and text not in seen:
-                        seen.add(text)
-                        provider_claims.append(text)
-            if not provider_claims:
                 continue
         else:
-            provider_claims = [
+            # A flat realm (slack) declares its whole vocabulary. The operation
+            # needs only the claims that are actually missing on this attempt;
+            # if none of them are this provider's claims, the operation does not
+            # touch the account.
+            vocabulary = {
                 str(c).strip() for c in (req.get("claims") or []) if str(c or "").strip()
-            ]
+            }
+            provider_claims = [c for c in (str(m).strip() for m in missing) if c in vocabulary]
             if not provider_claims:
                 continue
-            # Scope the ask to what the tool actually needs. A flat claim list
-            # is the provider's whole vocabulary (slack declares every claim);
-            # the connect demand must request only the claims this attempt is
-            # missing — the user approves the tool's need, not the world.
-            asked = [c for c in provider_claims if c in {str(m).strip() for m in missing}]
-            if asked:
-                provider_claims = asked
         try:
             from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.store import (
                 DelegatedToKdcubeStore,

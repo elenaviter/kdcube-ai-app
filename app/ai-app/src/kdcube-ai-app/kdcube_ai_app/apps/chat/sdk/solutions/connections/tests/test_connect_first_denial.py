@@ -142,11 +142,11 @@ async def test_disconnected_account_still_leads_with_connect(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unmapped_operation_on_account_realm_still_leads_with_connect(monkeypatch):
-    """provider.about is not claim-mapped, but the realm is account-backed and
-    the gate tripped - with zero accounts, connect still leads (operator
-    ruling: never grant-the-agent-first on a provider with no accounts). The
-    ask falls back to the realm's declared claims."""
+async def test_metadata_operation_does_not_lead_with_connect_mail(monkeypatch):
+    """A metadata operation (provider.about, object.schema, capabilities) needs
+    no account claim - it must NOT ask the user to connect an account. The
+    differentiated mail realm has no mapping for it, so connect-first skips it
+    (the missing door claim falls to a plain agent-grant)."""
     _wire(monkeypatch, requirements=[_MAIL_REQUIREMENT], accounts=[])
 
     denial = await connect_first_denial(
@@ -154,17 +154,34 @@ async def test_unmapped_operation_on_account_realm_still_leads_with_connect(monk
         namespace="mail",
         tool="about",
         operation="provider.about",
-        required=["mail:read"],
-        missing=["mail:read"],
+        required=["named_services:use"],
+        missing=["named_services:use"],
         tenant="t",
         project="p",
     )
 
-    assert denial is not None
-    assert denial["reason"] == "connect_required"
-    assert denial["provider_id"] == "google-mail"
-    consent_claims = denial["consent"].get("claims") or []
-    assert consent_claims == ["gmail:read", "gmail:send"]
+    assert denial is None
+
+
+@pytest.mark.asyncio
+async def test_schema_operation_does_not_lead_with_connect_slack(monkeypatch):
+    """object.schema on the flat slack realm needs only door admission; none of
+    the missing claims are slack claims, so connect-first must NOT fire (never
+    ask to connect the account, let alone for the whole vocabulary)."""
+    _wire(monkeypatch, requirements=[_SLACK_REQUIREMENT], accounts=[])
+
+    denial = await connect_first_denial(
+        object(),
+        namespace="slack",
+        tool="schema",
+        operation="object.schema",
+        required=["named_services:use"],
+        missing=["named_services:use"],
+        tenant="t",
+        project="p",
+    )
+
+    assert denial is None
 
 
 @pytest.mark.asyncio
@@ -291,3 +308,47 @@ async def test_explicit_requirements_with_connected_account_return_none(monkeypa
     )
 
     assert denial is None
+
+
+@pytest.mark.asyncio
+async def test_slack_action_still_leads_with_connect(monkeypatch):
+    """An account-touching action (post) whose claim is missing MUST still lead
+    with connect - the metadata-op skip never suppresses a real account need."""
+    _wire(monkeypatch, requirements=[_SLACK_REQUIREMENT], accounts=[])
+
+    denial = await connect_first_denial(
+        object(),
+        namespace="slack",
+        tool="action",
+        operation="object.action",
+        required=["named_services:use", "slack:post"],
+        missing=["named_services:use", "slack:post"],
+        tenant="t",
+        project="p",
+    )
+
+    assert denial is not None
+    assert denial["reason"] == "connect_required"
+    assert denial["consent"].get("claims") == ["slack:post"]
+
+
+@pytest.mark.asyncio
+async def test_mail_send_action_still_leads_with_connect(monkeypatch):
+    """The differentiated mail realm maps object.action.send -> gmail:send; a
+    send with no account MUST lead with connect for exactly that claim."""
+    _wire(monkeypatch, requirements=[_MAIL_REQUIREMENT], accounts=[])
+
+    denial = await connect_first_denial(
+        object(),
+        namespace="mail",
+        tool="action",
+        operation="object.action.send",
+        required=["mail:send", "named_services:use"],
+        missing=["mail:send", "named_services:use"],
+        tenant="t",
+        project="p",
+    )
+
+    assert denial is not None
+    assert denial["reason"] == "connect_required"
+    assert denial["consent"].get("claims") == ["gmail:send"]
