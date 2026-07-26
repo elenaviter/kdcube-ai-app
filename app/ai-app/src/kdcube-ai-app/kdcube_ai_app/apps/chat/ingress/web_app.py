@@ -409,6 +409,15 @@ async def lifespan(app: FastAPI):
         logger.exception("Could not start legacy middleware")
         raise
 
+    # Defense-in-depth: recycle a worker whose event loop stalls (blocking call
+    # on the loop). Disabled unless CHAT_INGRESS_LOOP_WATCHDOG_ENABLED=1.
+    try:
+        from kdcube_ai_app.apps.chat.ingress.loop_watchdog import LoopWatchdog
+        app.state.loop_watchdog = LoopWatchdog()
+        app.state.loop_watchdog.start()
+    except Exception:
+        logger.exception("Failed to start loop watchdog")
+
     logger.info("Lifespan startup complete: port=%s pid=%s", CHAT_APP_PORT, os.getpid())
 
     yield
@@ -416,6 +425,11 @@ async def lifespan(app: FastAPI):
     # mark shutdown so SSE generators can exit; mark draining so /health returns 503
     app.state.draining = True
     app.state.shutting_down = True
+
+    if hasattr(app.state, "loop_watchdog"):
+        await _safe_shutdown_step(
+            "loop_watchdog.stop", app.state.loop_watchdog.stop(), timeout=5.0
+        )
 
     # Shutdown
     try:

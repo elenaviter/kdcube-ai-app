@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -94,9 +96,79 @@ def build_frontend_config() -> dict[str, Any]:
     )
 
 
+# ---------------------------------------------------------------------------
+# Serving the frontend config
+#
+# ``build_frontend_config`` performs synchronous, blocking I/O: it reads
+# ``assembly.yaml`` (typically from a network mount such as EFS) and resolves
+# plain-YAML settings on *every* call. Previously the route below was an
+# ``async def`` that invoked it directly, so the read ran on the event loop.
+# When the underlying storage stalled, a single request could wedge a uvicorn
+# worker's event loop indefinitely; under low traffic the workers froze one by
+# one until chat-ingress stopped serving *every* route.
+#
+# We now (a) run the blocking build in a worker thread so it can never block
+# the event loop, (b) bound it with a timeout, and (c) cache the result with a
+# short TTL, falling back to the last-known-good value if a rebuild fails or
+# times out. The payload is derived from deployment-static descriptors, so a
+# few seconds of staleness is harmless.
+# ---------------------------------------------------------------------------
+
+_CONFIG_TTL_SECONDS = float(os.getenv("CP_FRONTEND_CONFIG_TTL_SECONDS", "30") or 30)
+_CONFIG_RETRY_SECONDS = float(os.getenv("CP_FRONTEND_CONFIG_RETRY_SECONDS", "5") or 5)
+_CONFIG_BUILD_TIMEOUT_SECONDS = float(
+    os.getenv("CP_FRONTEND_CONFIG_BUILD_TIMEOUT_SECONDS", "10") or 10
+)
+
+_config_lock = asyncio.Lock()
+_config_cache: dict[str, Any] | None = None
+_config_expiry: float = 0.0
+
+
+async def _get_frontend_config() -> dict[str, Any]:
+    """Return the frontend config without ever blocking the event loop.
+
+    Serves a cached payload while it is fresh, rebuilds it off-thread when
+    stale, and returns the last-known-good value if a rebuild fails or times
+    out. This keeps a stalled descriptor read (e.g. a hung EFS mount) from
+    freezing the uvicorn worker's event loop.
+    """
+    global _config_cache, _config_expiry
+
+    if _config_cache is not None and time.monotonic() < _config_expiry:
+        return _config_cache
+
+    # A rebuild is needed. Only one runs at a time; concurrent callers that
+    # already have a cached value serve it rather than piling up behind the lock
+    # (and rather than spawning additional blocking build threads).
+    if _config_cache is not None and _config_lock.locked():
+        return _config_cache
+
+    async with _config_lock:
+        # Re-check: another coroutine may have refreshed while we waited.
+        if _config_cache is not None and time.monotonic() < _config_expiry:
+            return _config_cache
+        try:
+            fresh = await asyncio.wait_for(
+                asyncio.to_thread(build_frontend_config),
+                timeout=_CONFIG_BUILD_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            logger.exception("Failed to (re)build frontend config")
+            if _config_cache is not None:
+                # Back off before retrying so a stalled backend doesn't cause a
+                # tight rebuild loop; keep serving the last-known-good payload.
+                _config_expiry = time.monotonic() + _CONFIG_RETRY_SECONDS
+                return _config_cache
+            raise
+        _config_cache = fresh
+        _config_expiry = time.monotonic() + _CONFIG_TTL_SECONDS
+        return _config_cache
+
+
 @router.get("/api/cp-frontend-config")
 async def cp_frontend_config() -> JSONResponse:
     return JSONResponse(
-        content=build_frontend_config(),
+        content=await _get_frontend_config(),
         headers={"Cache-Control": "no-store, no-cache"},
     )
