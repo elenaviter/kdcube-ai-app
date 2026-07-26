@@ -109,7 +109,7 @@ geopy
 folium
 
 stripe==14.3.0
-mcp
+mcp>=1.26,<2  # v2 = MCP spec 2026-07-28, breaking (FastMCP -> MCPServer); deliberate migration, see journal 26/07/mcp-conformance
 
 # faiss vector backend for the generic hybrid index (infra/index/faiss); used by any bundle.
 faiss-cpu==1.14.3
