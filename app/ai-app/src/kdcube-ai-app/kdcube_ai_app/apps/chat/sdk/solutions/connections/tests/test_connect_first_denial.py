@@ -97,7 +97,7 @@ async def test_existing_account_keeps_gate1_order(monkeypatch):
     _wire(
         monkeypatch,
         requirements=[_MAIL_REQUIREMENT],
-        accounts=[SimpleNamespace(account_id="acc-1", provider_id="google-mail")],
+        accounts=[SimpleNamespace(account_id="acc-1", provider_id="google-mail", connected=True)],
     )
 
     denial = await connect_first_denial(
@@ -112,6 +112,32 @@ async def test_existing_account_keeps_gate1_order(monkeypatch):
     )
 
     assert denial is None
+
+
+@pytest.mark.asyncio
+async def test_disconnected_account_still_leads_with_connect(monkeypatch):
+    """A stale/disconnected account record (a prior connect the user removed)
+    cannot back the claim - connect must still lead, not the agent grant. Only
+    a CONNECTED account keeps gate-1 order."""
+    _wire(
+        monkeypatch,
+        requirements=[_MAIL_REQUIREMENT],
+        accounts=[SimpleNamespace(account_id="acc-1", provider_id="google-mail", connected=False)],
+    )
+
+    denial = await connect_first_denial(
+        object(),
+        namespace="mail",
+        tool="search",
+        operation="object.search",
+        required=["mail:read"],
+        missing=["mail:read"],
+        tenant="t",
+        project="p",
+    )
+
+    assert denial is not None
+    assert denial["reason"] == "connect_required"
 
 
 @pytest.mark.asyncio

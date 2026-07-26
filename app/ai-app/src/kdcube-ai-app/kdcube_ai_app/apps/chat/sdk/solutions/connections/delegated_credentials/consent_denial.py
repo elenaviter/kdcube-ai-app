@@ -265,36 +265,52 @@ async def connect_first_denial_for_identity(
     tenant: str,
     project: str,
     hub_bundle_id: str = "connection-hub@1-0",
+    requirements: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any] | None:
     """Core of :func:`connect_first_denial` for callers that already hold the
     identity explicitly (the workspace-side native-tools agent gate shapes its
-    demand BEFORE any door call, so there is no request credential to view)."""
+    demand BEFORE any door call, so there is no request credential to view).
+
+    ``requirements`` lets a caller that already KNOWS its connected-account
+    requirements pass them directly - each mapping is the provider
+    self-description shape ``{provider_id, claims, claims_by_operation?}``.
+    When provided, named-service discovery is skipped entirely, which makes
+    this helper usable from a plain MCP tool that declares its own
+    requirements (no named-service registration behind it). The per-operation
+    scoping, flat-claims narrowing to ``missing``, and the
+    unmapped-operation-falls-back-to-declared-claims behavior are identical
+    on both paths. An empty ``requirements`` keeps the discovery path."""
     grantor = str(grantor_user_id or "").strip()
     if not grantor:
         return None
-    try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery import (
-            RedisNamedServiceDiscovery,
-            _redis_client_from_settings,
-        )
+    explicit = [dict(item) for item in (requirements or ()) if isinstance(item, Mapping)]
+    if explicit:
+        requirements = explicit
+    else:
+        try:
+            from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery import (
+                RedisNamedServiceDiscovery,
+                _redis_client_from_settings,
+            )
 
-        discovery = RedisNamedServiceDiscovery(
-            _redis_client_from_settings(), tenant=tenant, project=project,
-        )
-        entries = await discovery.entries_for_namespace(namespace)
-    except Exception:
-        LOGGER.debug(
-            "[connect-first] provider discovery unavailable (namespace=%s)",
-            namespace, exc_info=True,
-        )
-        return None
-    requirements: list[Mapping[str, Any]] = []
-    for entry in entries or []:
-        spec = getattr(entry, "spec", None)
-        metadata = dict(getattr(spec, "metadata", None) or {})
-        raw = metadata.get("connected_accounts")
-        if isinstance(raw, (list, tuple)):
-            requirements.extend(item for item in raw if isinstance(item, Mapping))
+            discovery = RedisNamedServiceDiscovery(
+                _redis_client_from_settings(), tenant=tenant, project=project,
+            )
+            entries = await discovery.entries_for_namespace(namespace)
+        except Exception:
+            LOGGER.debug(
+                "[connect-first] provider discovery unavailable (namespace=%s)",
+                namespace, exc_info=True,
+            )
+            return None
+        discovered: list[Mapping[str, Any]] = []
+        for entry in entries or []:
+            spec = getattr(entry, "spec", None)
+            metadata = dict(getattr(spec, "metadata", None) or {})
+            raw = metadata.get("connected_accounts")
+            if isinstance(raw, (list, tuple)):
+                discovered.extend(item for item in raw if isinstance(item, Mapping))
+        requirements = discovered
     if not requirements:
         return None
     op = str(operation or "").strip()
@@ -355,7 +371,12 @@ async def connect_first_denial_for_identity(
                 provider_id, exc_info=True,
             )
             return None
-        if accounts:
+        # A USABLE account is what decides the order - not any record. A
+        # disconnected or revoked account (a prior connect the user removed)
+        # leaves a record but cannot back the claim, so connect must still
+        # lead. Filtering to `connected` keeps the ordering honest across
+        # connect/disconnect cycles.
+        if any(account.connected for account in accounts):
             continue
         from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.preflight import (
             connected_account_consent_payload,
