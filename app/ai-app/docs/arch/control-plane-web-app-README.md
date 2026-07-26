@@ -4,7 +4,7 @@ title: "Control Plane Web App"
 summary: "Browser architecture of the KDCube control-plane web app: runtime configuration, provider-neutral authentication, app selection, main-view and automatic-scene presentation, quick-access controls, chat transport, and site boundaries."
 status: current
 tags: ["arch", "control-plane", "web-app", "browser", "apps", "chat", "auth"]
-updated_at: 2026-07-14
+updated_at: 2026-07-27
 keywords: ["KDCube web app", "control plane web app", "cp frontend config", "automatic app scene", "default chat", "quick access rail"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
@@ -52,6 +52,10 @@ select app
 The client must not reconstruct provider, app, tenant, project, or cookie
 configuration from internal URLs or deployment assumptions.
 
+This endpoint is public deployment metadata. Ingress builds it from the mounted,
+mtime-cached `assembly.yaml` and `bundles.yaml` descriptors. It does not create a
+user session, call a Connection Hub operation, or wait on Redis or Postgres.
+
 `/profile` is the source of logged-in state. A visible email, local OIDC cache,
 or client-readable cookie is not sufficient evidence of an authenticated
 platform user.
@@ -62,9 +66,10 @@ The backend can select Cognito, multi-Cognito, SimpleIDP, or an
 application-hosted authority provider. The browser consumes the resolved auth
 contract rather than branching on provider internals.
 
-For application-hosted auth, the frontend config may carry a concrete login URL
-or a Connection Hub authority/provider reference. When the URL is absent, the
-web app asks Connection Hub to resolve the configured provider entrypoint.
+For application-hosted auth, ingress reads the selected provider entrypoint from
+the mounted authority registry, constructs its public app-operation URL, and
+returns that concrete URL in frontend config. The browser does not call
+Connection Hub to resolve it.
 
 Connection Hub remains the authority/provider registry and policy owner even
 when another app hosts login, session-issue, or consent presentation.

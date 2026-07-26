@@ -553,7 +553,7 @@ async def gateway_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def ingress_latency_middleware(request: Request, call_next):
-    if request.url.path.startswith("/sse/"):
+    if request.url.path.startswith(("/sse/", "/api/cp-frontend-config")):
         return await call_next(request)
     start = time.monotonic()
     response = await call_next(request)
