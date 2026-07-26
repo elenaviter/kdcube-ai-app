@@ -24,10 +24,14 @@ class GoogleOAuthAdapter(DelegatedToKdcubeAdapter):
     oauth_default_scopes = ("openid", "email", "profile")
 
     def authorize_extra_params(self) -> dict:
+        # No include_granted_scopes: KDCube's own claim selection (and the
+        # add/replace union on re-connect) is the single source of truth for
+        # the requested scopes. Google's incremental carry-forward would grant
+        # scopes beyond what the user ticked here, so the consent screen and
+        # the issued token must reflect exactly this request.
         return {
             "access_type": "offline",
             "prompt": "consent",
-            "include_granted_scopes": "true",
         }
 
     async def fetch_profile(self, *, access_token: str, token: dict | None = None) -> dict:

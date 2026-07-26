@@ -576,6 +576,25 @@ Three verifications prove enforcement on the door after a `refresh`:
    `productivity_mail_get`) verifies identically against the `google`
    provider row.
 
+## Connecting an account: least privilege at the provider
+
+When a user connects a provider account, KDCube requests from the provider the
+OAuth scopes for exactly the claims the user ticked - no more. Each claim maps
+to its `provider_scopes` in the provider config (`gmail:read` ->
+`gmail.readonly`, `gmail:send` -> `gmail.send`), and the authorize request
+carries only the selected claims' scopes. An empty selection is rejected, not
+widened to the connector app's ceiling. Re-approving an existing account
+defaults to `claims_mode="add"` (the union of held and newly-ticked claims, so
+incremental consent never silently drops access); the hub's manage form uses
+`claims_mode="replace"` to narrow. KDCube does not enable Google's
+`include_granted_scopes`, so the provider grants exactly what this request
+asks for rather than carrying a scope the OAuth client held before.
+
+Independently of the provider token's scope, what a caller may DO is gated on
+the KDCube claim plus the per-agent, per-account binding (default-closed): a
+tool can send mail only if the account holds `gmail:send` AND an agent is
+bound to send on it.
+
 ## The three scenarios, end to end
 
 Each scenario is one issuance path over the same catalog, and each maps to an

@@ -53,10 +53,11 @@ SECRET_INPUT_KEYS = {
 
 
 def _clean_claims(provider: IntegrationProvider, connector_app_id: str, raw: Any) -> tuple[str, ...]:
+    # Fail CLOSED: an empty selection stays empty (the caller rejects it), never
+    # defaults to the connector app's whole ceiling. A connect must request only
+    # the claims the user actually ticked - a dropped/empty selection must not
+    # silently request read+send when the user chose read.
     requested = set(as_str_list(raw))
-    if not requested:
-        app = provider.connector_apps.get(as_str(connector_app_id))
-        requested = set(app.allowed_claims) if app and app.allowed_claims else set(provider.claims)
     known = set(provider.claims)
     selected = tuple(sorted(item for item in requested if item in known))
     unknown = sorted(item for item in requested if item not in known)

@@ -2229,3 +2229,31 @@ def test_account_claim_scope_sentinel_distinguishes_agent_turns():
         assert account_claim_scope_for("slack") == {}  # other providers stay closed
     finally:
         clear_agent_account_scope()
+
+
+def test_clean_claims_fails_closed_on_empty_selection():
+    """A dropped/empty claim selection must NOT default to the connector app's
+    whole ceiling - a connect requests only what the user ticked. Ticking read
+    must never silently request read+send (least-privilege at connect)."""
+    from types import SimpleNamespace
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.operations import (
+        _clean_claims,
+    )
+
+    provider = SimpleNamespace(
+        claims=["gmail:read", "gmail:send"],
+        connector_apps={"gmail": SimpleNamespace(allowed_claims=["gmail:read", "gmail:send"])},
+    )
+    assert _clean_claims(provider, "gmail", []) == ()
+    assert _clean_claims(provider, "gmail", ["gmail:read"]) == ("gmail:read",)
+
+
+def test_google_adapter_requests_only_selected_scopes():
+    """No include_granted_scopes: Google must grant exactly what KDCube
+    requests, not carry forward a scope the OAuth client held before."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers.google import (
+        GoogleOAuthAdapter,
+    )
+
+    assert "include_granted_scopes" not in GoogleOAuthAdapter().authorize_extra_params()
