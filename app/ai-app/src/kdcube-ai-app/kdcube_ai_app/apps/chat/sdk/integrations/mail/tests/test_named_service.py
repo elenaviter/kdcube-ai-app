@@ -881,3 +881,19 @@ async def test_schema_keeps_staged_and_inline_forms_for_turnless_clients(monkeyp
     # inline stays available for byte-holding clients, marked last resort
     assert "content_base64" in send
     assert "last resort" in send
+
+
+def test_registered_spec_carries_connected_accounts_requirement():
+    """The spec builder used at registration - not the decorator metadata - is
+    what discovery reads for proactive consent, the capability picker, and
+    connect-first demand ordering. It must carry connected_accounts, or an
+    account-backed realm silently falls back to the agent-grant view instead
+    of leading with connect (the mail regression 2026-07-26)."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service import (
+        mail_named_service_spec,
+    )
+
+    ca = mail_named_service_spec().metadata.get("connected_accounts")
+    assert ca, "mail registered spec must declare connected_accounts"
+    assert ca[0]["provider_id"] == "google"
+    assert "claims_by_operation" in ca[0]

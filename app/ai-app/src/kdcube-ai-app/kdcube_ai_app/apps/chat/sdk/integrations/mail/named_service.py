@@ -392,6 +392,11 @@ def mail_named_service_spec(*, bundle_id: str | None = None) -> NamedServiceProv
         metadata={
             "provider_catalog": MAIL_PROVIDER_CATALOG,
             "grant_hints": MAIL_GRANT_HINTS,
+            # The account-backed requirement MUST be on the registered spec
+            # (this builder is what __init__ registers, not the decorator
+            # metadata) - discovery reads it for proactive consent, the
+            # capability picker, and connect-first demand ordering.
+            "connected_accounts": MAIL_CONNECTED_ACCOUNT_REQUIREMENTS,
             "canonical_ref": "mail:<provider>:<account_id>:message:<message_id>",
         },
     )
