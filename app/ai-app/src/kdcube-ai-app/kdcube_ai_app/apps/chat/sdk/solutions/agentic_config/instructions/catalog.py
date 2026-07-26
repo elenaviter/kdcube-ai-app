@@ -7,7 +7,7 @@ Built-in blocks come from the two in-tree registries (moderate
 ``REACT_LITE_*``, extra-lite ``REACT_XLITE_*``). Each entry carries its
 MEANING: the curated SIGNALS the block protects/teaches and semantic tags
 that reflect them (``block_signals.py``; the signal table in
-``docs/sdk/agents/react/system-instruction-README.md`` is the long form),
+``docs/sdk/skills/instruction-blocks-and-signals-README.md`` is the long form),
 plus a derived text hint, its profile memberships, and the full block text
 for the constructor's details view. Stored custom units author their own
 signals/tags at save time (served by the store, not here).

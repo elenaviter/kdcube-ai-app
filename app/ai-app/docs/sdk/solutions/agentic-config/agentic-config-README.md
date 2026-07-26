@@ -6,7 +6,7 @@ status: active
 tags: ["sdk", "solutions", "agentic-config", "instructions", "agents", "admin", "widget", "named-services", "forge", "tokens"]
 updated_at: 2026-07-25
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/system-instruction-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/skills/instruction-blocks-and-signals-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
 ---
@@ -21,7 +21,7 @@ wired to any agent by ref.
 
 The composition vocabulary itself (what a `blocks` list may contain, the
 predefined profiles, capability-conditional exclusions) is owned by
-[the ReAct system-instruction doc](../../agents/react/system-instruction-README.md)
+[the instruction-blocks-and-signals doc](../../skills/instruction-blocks-and-signals-README.md)
 — this page owns the STORE, the namespace, and the authoring surface.
 
 ## Stored instruction sets
@@ -59,7 +59,7 @@ The constructor composes from three kinds of units:
    or teaches, from `block_signals.py`) and semantic **tags** reflecting
    them — tier and profile memberships are separate fields, never tags —
    plus the full block text and its **token weight** (cl100k, counted
-   server-side). The signal table in the system-instruction doc remains the
+   server-side). The signal table in the instruction-blocks-and-signals doc remains the
    authoritative long-form purpose map.
 3. **Stored units** — including "blocks" you author yourself: a stored unit
    whose items are one literal text IS a custom block, composable into other
@@ -175,4 +175,4 @@ write-only.
 
 Presentation facets (`tool_catalog`, `skills_form`) are the companion picker
 surface — profile defaults the user overrides — documented with the
-composition vocabulary in the system-instruction doc.
+composition vocabulary in the instruction-blocks-and-signals doc.

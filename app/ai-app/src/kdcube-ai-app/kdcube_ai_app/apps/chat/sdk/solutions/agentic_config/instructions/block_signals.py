@@ -5,7 +5,7 @@
 
 Each block carries runtime signals — the behaviors it protects or teaches.
 This map states them in the signal-table language
-(``docs/sdk/agents/react/system-instruction-README.md`` is the authoritative
+(``docs/sdk/skills/instruction-blocks-and-signals-README.md`` is the authoritative
 long form) so the constructor can show WHAT a block means and offer tags that
 reflect meaning, not mechanics. Custom blocks author their own signals and
 keywords at save time; this map covers the in-tree registries.
