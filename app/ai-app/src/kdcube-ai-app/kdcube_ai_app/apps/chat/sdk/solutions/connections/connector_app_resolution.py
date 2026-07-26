@@ -28,8 +28,11 @@ from __future__ import annotations
 from contextvars import ContextVar
 from typing import Mapping
 
-_SERVICE_CONNECTOR_APPS: ContextVar[dict[str, str]] = ContextVar(
-    "kdcube_service_connector_apps", default={}
+# default=None (not {}): a mutable contextvar default is shared across contexts
+# and does not survive a reconstructed/copied context (the detached agent
+# runtime), where `.get()` then yields None. resolve reads defensively.
+_SERVICE_CONNECTOR_APPS: ContextVar[dict[str, str] | None] = ContextVar(
+    "kdcube_service_connector_apps", default=None
 )
 
 
@@ -52,7 +55,7 @@ def resolve_connector_app_id(provider_id: str) -> str:
     provider = str(provider_id or "").strip()
     if not provider:
         return ""
-    return _SERVICE_CONNECTOR_APPS.get().get(provider, "")
+    return (_SERVICE_CONNECTOR_APPS.get() or {}).get(provider, "")
 
 
 __all__ = ["resolve_connector_app_id", "set_service_connector_apps"]

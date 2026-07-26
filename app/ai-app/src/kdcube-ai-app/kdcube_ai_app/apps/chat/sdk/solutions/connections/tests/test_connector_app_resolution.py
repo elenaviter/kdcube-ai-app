@@ -39,3 +39,16 @@ def test_blank_entries_are_ignored():
         assert resolve_connector_app_id("slack") == ""
     finally:
         set_service_connector_apps(None)
+
+
+def test_resolve_never_crashes_when_context_unset():
+    """The contextvar default does not survive a reconstructed context (the
+    detached agent runtime), where `.get()` yields None. Resolve must read it
+    defensively and return "" (provider-wide), never raise - a raise here was
+    swallowed at the agent gate and wrongly fell back to the agent-grant view."""
+    import kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution as mod
+    mod._SERVICE_CONNECTOR_APPS.set(None)
+    try:
+        assert resolve_connector_app_id("slack") == ""
+    finally:
+        set_service_connector_apps(None)
