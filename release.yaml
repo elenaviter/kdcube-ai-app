@@ -1,46 +1,45 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.25.151"
+  ref: "2026.07.27.007"
   description: |
-    This release follows 2026.07.20.444.
+    This release follows 2026.07.25.151.
 
-    Agent and application configuration gains a governed instruction-authoring
-    system. Versioned instruction sets are composed from reusable, tagged
-    blocks; presentation facets and token projections explain the effective
-    prompt before application. Agent Forge and the app/agent configuration
-    surfaces support staged edits, assignment, validation, and apply through a
-    shared structured contract rather than independent UI-specific formats.
+    Connection Hub and delegated access now provide a stricter connect-first
+    path. Operations that need an external account advertise that requirement
+    before tool execution, only the provider scopes selected by the user are
+    requested at connection time, and consent denial is modeled explicitly so
+    agents receive actionable missing-access feedback instead of silent
+    failures. Connector-app resolution is carried through portable context and
+    survives unset runtime context, keeping Connection Hub redirects stable
+    across ReAct, MCP, and named-service calls.
 
-    ReAct runtime correctness is tighter around streamed completion, external
-    events, tool contracts, and artifacts. The external-listener ownership race
-    is closed, a streamed accepted final answer is no longer duplicated by an
-    unnecessary retry, compact tool parameter descriptions remain useful for
-    smaller models, and generated artifact references are qualified at their
-    source. A current-turn path can be created by react.write once; intentional
-    in-place revisions use react.patch and duplicate writes are rejected online
-    before replacement content is accepted.
+    Authenticated MCP and named-service surfaces are more coherent. The guarded
+    productivity MCP surface is split from generic named-service MCP exposure,
+    service-declared connector apps are part of the access declaration, and
+    named-service schemas remain the full operation contract instead of being
+    trimmed from compact tool catalogs. Namespace operations consistently carry
+    `named_services:use`, and the new authenticated-MCP documentation gives the
+    canonical chain from delegated credentials through managed enforcement to
+    tool invocation.
 
-    Telegram turn handling now uses the same framework-neutral runner boundary
-    for ReAct, LangGraph, CrewAI, and custom async applications. Bot /stop is the
-    standard active-turn event.user.steer control, webhook submission no longer
-    relies on process-local conversation ordering, and activity streaming maps
-    common chat events into Telegram progress and delivery. File deduplication
-    is content-scoped: exact live/final repeats are suppressed while distinct
-    same-path snapshots are delivered and documented against the web chat's
-    latest-artifact projection.
+    ReAct instruction and tool guidance is reorganized around reusable,
+    agent-neutral concepts. Instruction blocks/signals are documented separately
+    from the system prompt, the tool catalog describes tool-shape expectations,
+    exec guidance is emitted only when the roster actually includes execution
+    tools, and read/pull/write/patch/contribute tool text is tightened so agents
+    can recover from parameter and workspace mistakes without learning bundle or
+    transport internals.
 
-    Economics and accounting add app-scoped spend, fresh aggregate reads,
-    reported-cost pricing, true cost-by-user and cost-by-application reports,
-    bounded day-scan processing, and a database index for spend rollups. The
-    accompanying documentation links the accounting boundary, emitted records,
-    operational reports, and implementation map without overstating coverage.
+    OPEX aggregation can now be rebuilt as an observable background job. The
+    control-plane dashboard can trigger a bounded range rebuild, proc routines
+    emit progress through the data bus, and aggregation docs describe the job
+    source, progress relay, and operational boundaries. Accounting docs are
+    aligned with the current app-spend and aggregation model.
 
-    Authentication, delegated access, and public project guidance are aligned
-    with the runtime. Simple authentication is available as a full Connection
-    Hub platform provider, per-account agent bindings remain default-closed with
-    guided consent, and architecture/security pages describe the two-gate model.
-    README, AGENTS, app-building, agent configuration, accounting, and Telegram
-    integration docs now provide clearer discovery paths for people and coding
-    agents.
+    Platform authentication keeps registered-role behavior stable. Authenticated
+    users always carry the registered baseline even when more specific roles are
+    present, the interactive consenting user remains the registered subject for
+    delegated flows, and mail/Slack/file-delivery registered specs declare the
+    connected-account capability needed for connect-first behavior.
 config:
-  version: "2026.07.25.151"
+  version: "2026.07.27.007"
