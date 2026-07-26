@@ -6,6 +6,7 @@ status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "oauth", "claude", "mcp", "consent"]
 updated_at: 2026-07-18
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
@@ -16,6 +17,10 @@ see_also:
 
 Use this recipe to understand the user journey when a person connects an
 external client, such as Claude, to a KDCube service.
+
+The full configuration reference - every layer, the provider connected-accounts
+contract, both consent gates, and all three scenarios - is
+[Authenticated MCP: The Full Configuration Chain](../../sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md).
 
 Example:
 

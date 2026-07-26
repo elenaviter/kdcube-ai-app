@@ -6,6 +6,7 @@ status: active
 tags: ["recipes", "kdcube-for-agents", "mcp", "as-provider", "fastmcp", "governance", "economics"]
 updated_at: 2026-07-16
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
@@ -16,6 +17,10 @@ see_also:
 
 Use this recipe when an external agent, another KDCube app, or one of your own
 agents should call capabilities implemented by a KDCube app through MCP.
+
+The full configuration reference - every layer, the provider connected-accounts
+contract, both consent gates, and all three scenarios - is
+[Authenticated MCP: The Full Configuration Chain](../../sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md).
 
 In builder-facing language, a KDCube **app** is the deployable unit still named a
 **bundle** in current routes, descriptors, and SDK identifiers. This recipe says

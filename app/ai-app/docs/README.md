@@ -85,6 +85,7 @@ Curated index of platform, service, and SDK documentation.
 * Tool Subsystem: [tool-subsystem-README.md](sdk/tools/tool-subsystem-README.md)
 * Custom Tools: [custom-tools-README.md](sdk/tools/custom-tools-README.md)
 * MCP Integration: [mcp-README.md](sdk/tools/mcp-README.md)
+* Authenticated MCP (Full Configuration Chain): [authenticated-mcp-README.md](sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md)
 * Skills: [skills-README.md](sdk/skills/skills-README.md)
 * Custom Skills: [custom-skills-README.md](sdk/skills/custom-skills-README.md)
 * Per-User Agent Capabilities: [capabilities-README.md](sdk/solutions/user-settings/capabilities-README.md)

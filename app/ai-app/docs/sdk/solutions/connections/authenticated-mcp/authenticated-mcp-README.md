@@ -1,0 +1,534 @@
+---
+id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
+title: "Authenticated MCP: The Full Configuration Chain"
+summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, DCR redirect fence, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates with their full error vocabulary, the demand-ordering rule, and the three scenarios this chain enables - hosted agents, external MCP connections, and bounded automation tokens."
+status: active
+tags: ["sdk", "connections", "connection-hub", "mcp", "managed-auth", "delegated-credentials", "delegated-accounts", "named-services", "consent", "connected-accounts", "automation", "agents"]
+updated_at: 2026-07-26
+keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
+---
+# Authenticated MCP: The Full Configuration Chain
+
+This page is the whole authenticated-MCP chain in one place, in configuration
+order: a builder starting from zero reads top to bottom and ends with a
+protected MCP surface, delegable capabilities, per-operation boundary policy, a
+self-describing provider, and working consent at call time.
+
+The same chain enables three scenarios:
+
+1. **A hosted agent** - an agent inside a KDCube app, with the client identity
+   `kdcube-agent:<app>:<agent>`, acting on the user's connected accounts with
+   demand-driven consent raised in chat.
+2. **An external MCP connection** - Claude Code or another MCP-speaking app
+   connects to a KDCube MCP URL via OAuth with dynamic client registration and
+   works under a KDCube-issued delegated credential.
+3. **User-created automation access** - a bounded token minted in Connection
+   Hub for scripts and integrations, narrowed to selected resources, grants,
+   and named-service operations, with a TTL.
+
+Each configuration layer below names its owner and shows the real shape from
+the shipped reference descriptor
+([`deployment/bundles.yaml`](../../../../../deployment/bundles.yaml)).
+Neighbouring docs own their concepts in depth; this page links to them and
+never restates their material.
+
+## Layer 1 - the door: a managed MCP surface
+
+The app that exposes the MCP endpoint declares the surface under
+`surfaces.as_provider.mcp` with `mode: managed`. Managed means the platform's
+delegated-credential guard authenticates the bearer before the app's MCP code
+runs; the app never parses OAuth tokens itself:
+
+```yaml
+surfaces:
+  as_provider:
+    mcp:
+      named_services:
+        auth:
+          mode: managed
+          authority_id: delegated_client
+          selected_tool_grants: true
+```
+
+`authority_id: delegated_client` names the managed authority accepted at this
+boundary; `selected_tool_grants: true` requires the concrete MCP tool to be
+present in the caller's grant record. The surface declares only how the
+endpoint is protected - the tool/grant catalog lives in Connection Hub config
+(next layers). Handler mechanics (the `@mcp` entrypoint, stateless FastMCP,
+`mode: bundle` for app-owned auth) are in
+[Protect Bundle MCP With Managed Credentials](../../../../recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md).
+
+## Layer 2 - the delegated resource: the tool ceiling
+
+The Connection Hub app (`connection-hub@1-0`) declares each protected resource
+under `connections.delegated_credentials.oauth.resources[]`: the resource URL
+pattern, a label, and per-tool grant requirements. This is the CEILING - no
+issuance path (OAuth consent, hosted-agent grant, automation token) can exceed
+it:
+
+```yaml
+connections:
+  delegated_credentials:
+    oauth:
+      resources:
+        - resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
+          label: KDCube named services MCP
+          tools:
+            named_services_list:
+              label: List named services
+              description: List configured named-service namespaces and operation grants.
+              grants:
+              - named_services:use
+            named_services_search:
+              label: Named service search
+              description: Search objects in a configured namespace.
+              grants:
+              - named_services:use
+            named_services_action:
+              label: Named service action
+              description: Run a bounded provider action on one object.
+              grants:
+              - named_services:use
+```
+
+The `resource` pattern is also the grant key: a consuming connection's
+`resource` field must byte-match it, because grant creation, validation, and
+per-call lookup all key under it. A tool needing several grants lists the full
+set on that one tool row.
+
+## Layer 3 - delegable capabilities: who may delegate a grant
+
+Each grant used anywhere in the catalog gets a capability row: the label and
+description the consent screens show, plus **who may delegate it** - by role
+AND by permission. Both axes exist; a user qualifies through either:
+
+```yaml
+connections:
+  delegated_credentials:
+    oauth:
+      capabilities:
+        - grant: mail:read
+          label: Read connected mail
+          description: Search and read messages and attachments from mail accounts connected to KDCube.
+          delegable_roles:
+          - kdcube:role:registered
+          - kdcube:role:paid
+          - kdcube:role:privileged
+          - kdcube:role:super-admin
+          delegable_permissions:
+          - mail:read
+        - grant: slack:post
+          label: Post to Slack
+          description: Post messages through connected Slack accounts.
+          delegable_roles: [kdcube:role:registered, kdcube:role:paid, kdcube:role:privileged, kdcube:role:super-admin]
+          delegable_permissions: [slack:post]
+```
+
+Consent screens show only capabilities the signed-in user may delegate; a
+grant whose `delegable_roles`/`delegable_permissions` match nothing the user
+holds is filtered out (and a direct automation request for it fails with
+`delegated_access_grants_not_delegable` - see the troubleshooting table).
+
+## Layer 4 - the registration fence: DCR redirect allowlist
+
+External MCP-speaking apps not pre-listed in `public_clients` register
+themselves via dynamic client registration. DCR runs **before any user
+authenticates**, so the only thing keeping an authorization code deliverable
+solely to a known callback is the redirect allowlist:
+
+```yaml
+connections:
+  delegated_credentials:
+    oauth:
+      dynamic_client_registration:
+        allowed_redirect_uris:
+        - https://claude.ai/api/mcp/auth_callback
+        - http://localhost/callback
+        - http://127.0.0.1/callback
+```
+
+Loopback entries match any port (RFC 8252); scheme, host, and path must match
+exactly. The connect journey this fences is
+[Delegate A KDCube Service To An External Client](../../../../recipes/connections/delegate-kdcube-service-to-external-client-README.md).
+
+## Layer 5 - namespace boundary policy: door claims per operation
+
+The generic named-services bridge exposes namespace-agnostic tools
+(`named_services_search`, `named_services_action`, ...), so the per-tool
+grants of layer 2 only admit the caller to the bridge. Which grants each
+NAMESPACE OPERATION consumes is the nested boundary tree
+`resources[].named_services.namespaces.<ns>.tools.<tool>.grants`, checked by
+the bridge on every call:
+
+```yaml
+resources:
+  - resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*'
+    named_services:
+      namespaces:
+        slack:
+          label: Slack
+          authority_id: delegated_client
+          tools:
+            search:
+              operation: object.search
+              label: Search Slack
+              description: Search Slack messages/files through connected Slack accounts.
+              grants:
+              - named_services:use
+              - slack:search
+            get:
+              operation: object.get
+              label: Read Slack object
+              description: Read Slack account/channel/file objects by ref.
+              grants:
+              - named_services:use
+              - slack:history
+            action:
+              operation: object.action
+              label: Slack action
+              description: Post messages, upload files, download files, or inspect Slack assistant search availability.
+              operations:
+                object.action:
+                  grants:
+                  - named_services:use
+                  - slack:post
+                  - slack:files:write
+                  - slack:files:read
+                  - slack:assistant:search
+```
+
+**Every namespace operation lists `named_services:use`.** Door admission is
+its own consent, distinct from the realm claim, and the gate checks the
+tool's grants as one set - so every operation exposed through named services
+lists `named_services:use` alongside its realm claim(s), making each tool
+row state its complete requirement.
+
+**The claim rule** - which vocabulary sits at the door:
+
+- A **single-provider realm** (Slack is one provider) uses its REAL provider
+  claims as door claims: `slack:search`, `slack:history`, `slack:post`, ... -
+  the exact capabilities the Slack API needs per operation. The door demand,
+  the connected-account consent, and the per-account binding all speak one
+  vocabulary, checked twice.
+- A **multi-provider realm** (mail spans Gmail OAuth today, with app-password
+  mail providers reserved in the same catalog) uses a provider-neutral
+  NAMESPACE claim at the door - `mail:read` / `mail:send` - and the real
+  per-account claim (`gmail:read` / `gmail:send`) is resolved by the account
+  broker behind the door.
+- **Account-backed claims never sit in a connection `scope`.** A consuming
+  connection's `scopes` carry door admission (`named_services:use`) plus
+  namespace claims only for realms with no account behind them (conv,
+  memories, tasks). Read/write on an account-backed realm is decided per
+  account at gate 2, so the user consents per account, not per connection.
+
+## The provider self-description contract: `connected_accounts`
+
+A named-service provider that runs on the user's connected accounts declares
+WHICH provider backs its operations, and which per-account claims each
+operation needs, in its registration metadata:
+
+```python
+@named_service_provider(
+    ...,
+    metadata={
+        "connected_accounts": [
+            {
+                "provider_id": ...,          # Delegated-to-KDCube provider id
+                "provider_label": ...,       # human name for consent surfaces
+                "claims": [...],             # the realm's full claim vocabulary
+                "claim_labels": {...},       # human label per claim
+                "claims_by_operation": {...} # optional: exact claims per operation
+            }
+        ],
+    },
+)
+```
+
+**Two ``provider_id`` fields, two registries - do not conflate them.** The
+decorator's own ``provider_id`` names THIS SERVICE in the named-services
+registry ("who I am" - mail's is ``sdk.integrations.mail``). The
+``provider_id`` inside a ``connected_accounts`` entry names the
+Delegated-to-KDCube ACCOUNT PROVIDER row whose accounts the service consumes
+("whose accounts I use" - ``google``, ``slack``, ``acme-crm``). The
+declaration reads as one sentence: "I, service X, serving namespace N, run my
+operations on user accounts from account-provider P, needing these of its
+claims per operation."
+
+This is the contract every catalog consumer reads. Two real registrations ship
+in the SDK.
+
+**Mail - differentiated claims per operation.** The mail realm maps each
+operation to exactly the claims it needs, so consumers can scope a shown ask
+to the operations a configuration actually allows. From
+[`sdk/integrations/mail/named_service.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/mail/named_service.py):
+
+```python
+MAIL_CONNECTED_ACCOUNT_REQUIREMENTS = [
+    {
+        "provider_id": GMAIL_PROVIDER_ID,
+        "provider_label": "Google",
+        "claims": [GMAIL_READ_CLAIM, GMAIL_SEND_CLAIM],
+        "claim_labels": {
+            GMAIL_READ_CLAIM: "read mail",
+            GMAIL_SEND_CLAIM: "send mail",
+        },
+        "claims_by_operation": {
+            "object.list": [GMAIL_READ_CLAIM],
+            "object.search": [GMAIL_READ_CLAIM],
+            "object.get": [GMAIL_READ_CLAIM],
+            "object.action.download_attachments": [GMAIL_READ_CLAIM],
+            "object.action.send": [GMAIL_SEND_CLAIM],
+            "object.action.forward": [GMAIL_READ_CLAIM, GMAIL_SEND_CLAIM],
+        },
+    }
+]
+```
+
+(the constants resolve to `provider_id="google"`, `gmail:read`, `gmail:send`), registered as:
+
+```python
+@named_service_provider(
+    provider_id=PROVIDER_ID,            # "sdk.integrations.mail"
+    namespace=MAIL_NAMESPACE,           # "mail"
+    ...,
+    metadata={
+        "provider_catalog": MAIL_PROVIDER_CATALOG,
+        "grant_hints": MAIL_GRANT_HINTS,
+        "connected_accounts": MAIL_CONNECTED_ACCOUNT_REQUIREMENTS,
+        ...
+    },
+)
+class MailNamedServiceProvider(NamedServiceProvider):
+```
+
+**Slack - one flat claim set.** The Slack realm does not differentiate claims
+per operation in this contract; consumers show the whole set. From
+[`sdk/integrations/slack/named_service.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/slack/named_service.py):
+
+```python
+SLACK_CONNECTED_ACCOUNT_REQUIREMENTS = [
+    {
+        "provider_id": SLACK_PROVIDER_ID,
+        "provider_label": "Slack",
+        "claims": sorted(set(SLACK_CONNECTED_ACCOUNT_CLAIMS.values())),
+        "claim_labels": {
+            SLACK_SEARCH_CLAIM: "search messages",
+            SLACK_CHANNELS_CLAIM: "list channels",
+            SLACK_HISTORY_CLAIM: "read history",
+            SLACK_FILES_READ_CLAIM: "read files",
+            SLACK_FILES_WRITE_CLAIM: "upload files",
+            SLACK_POST_CLAIM: "post messages",
+            SLACK_ASSISTANT_SEARCH_CLAIM: "assistant search",
+        },
+    }
+]
+```
+
+(the claim constants resolve to `slack:search`, `slack:channels`,
+`slack:history`, `slack:files:read`, `slack:files:write`, `slack:post`,
+`slack:assistant:search`).
+
+**A custom service** - a namespace over your own OAuth/OIDC provider
+(configured as a Delegated-to-KDCube provider row, see
+[Delegated Provider Accounts](../delegated-accounts/delegated-accounts-README.md))
+declares the same shape. Invented but realistic:
+
+```python
+# Example only - a custom CRM realm over its own OAuth provider.
+ACME_CRM_CONNECTED_ACCOUNT_REQUIREMENTS = [
+    {
+        "provider_id": "acme-crm",
+        "provider_label": "Acme CRM",
+        "claims": ["acme:contacts:read", "acme:deals:write"],
+        "claim_labels": {
+            "acme:contacts:read": "read contacts",
+            "acme:deals:write": "update deals",
+        },
+        "claims_by_operation": {
+            "object.search": ["acme:contacts:read"],
+            "object.get": ["acme:contacts:read"],
+            "object.action.update_deal": ["acme:deals:write"],
+        },
+    }
+]
+```
+
+**Who consumes this metadata.** Runtime named-service discovery publishes it
+with the provider's spec, and every surface that reasons about
+account-backed access reads the SAME contract:
+
+- the composer menu's proactive consent (which claims to offer before the
+  agent ever calls);
+- the capabilities picker and agent inventory (which operations a selection
+  implies, per `claims_by_operation`);
+- the Create Automation Access screen (showing provider prerequisites and
+  deep-linking Delegated to KDCube);
+- the demand-ordering rule at denial time (next sections).
+
+Declare it once, on the provider; nothing else should hardcode which provider
+backs a namespace.
+
+**Which connector app serves a provider is the guarded service's decision** -
+never a user pick. A provider may configure several connector apps (OAuth
+client registrations); the service declares which one its auth scenarios use,
+one per provider type, in its named-services config block:
+
+```yaml
+named_services:
+  connector_apps:
+    slack: demo
+    google: gmail
+  namespaces:
+    ...
+```
+
+The bridge binds this per request. One rule: the service's declaration, or
+empty - which means provider-wide: any connector app's account qualifies.
+Requirements metadata never names a connector app; which app serves a
+provider is deployment configuration, not code.
+
+## The two gates at call time
+
+A single tool call crosses two sequential gates - the agent's own grant, then
+the user's connected account plus the per-account binding. The gate diagram
+and the configuration of each side are in
+[Configuring Agent Access To Services And Accounts](../configuring-agent-service-access/configuring-agent-service-access-README.md);
+here is the complete error vocabulary each gate answers with.
+
+**Gate 1 denies with `delegated_consent_required`** - the caller's delegated
+credential lacks a grant the operation needs. The denial names the exact
+grants, per operation:
+
+```text
+error = delegated_consent_required
+  namespace / tool / operation
+  required_grants / missing_grants / available_grants   exact, per operation
+  code = connections.consent_needed                     (delegated-client callers)
+  connection_hub_url  deep link landing on the caller's card, missing claims
+                      pre-checked
+  consent             the full grant block: kind delegated_agent_grant,
+                      agent_client_id, resource, claims (= missing_grants);
+                      for hosted agents also the one-click
+                      delegated_agent_grant_create action
+  next_step           Connection Hub grant extension for agent callers;
+                      the hub link (or reconnect with incremental consent)
+                      for external OAuth connections
+```
+
+A hosted agent's tool wrap raises this block as the standard scoped chat
+demand; the approval merges into the agent's existing grant record. The
+uniform denial builder is
+[`consent_denial.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/consent_denial.py).
+
+**Gate 2 denies with `needs_connected_account_consent`** (status 403) - the
+caller holds the MCP grant, but the user-to-provider side cannot satisfy the
+call:
+
+```text
+error.code = needs_connected_account_consent
+error.details:
+  reason               connect_required | claim_upgrade_required |
+                       reconnect_required | account_required |
+                       agent_grant_required
+  retry_hint           true -> the same call succeeds after the user acts
+                       (for account_required: when resent with account_id)
+  provider_id / connector_app_id / claims / account_id
+  candidates           labeled account summaries
+                       [{account_id, label, email, workspace, status, claims}]
+  connection_hub_url   open this to connect / approve / reconnect
+  consent              the full Connection Hub consent block (action_label, ...)
+```
+
+How a caller acts on `reason`:
+
+| reason | state | user action |
+| --- | --- | --- |
+| `connect_required` | no eligible account on the backing provider | connect the provider at `connection_hub_url` |
+| `claim_upgrade_required` | an account exists, claim not approved | approve the listed claims |
+| `reconnect_required` | the stored credential no longer works | reconnect that account |
+| `account_required` | several accounts match | resend the SAME call with `account_id` from `candidates` |
+| `agent_grant_required` | account connected and claim-capable, but THIS caller has no per-account binding (default-closed) | tick the claim for an account on the caller's grant card (Delegated by KDCube) |
+
+The reasons originate in the account broker's `ensure_claim()` resolution and
+flow verbatim into tool envelopes, named-service errors, and MCP results -
+broker mechanics, credential health, and the refresh-retry-once contract are
+[Delegated Provider Accounts](../delegated-accounts/delegated-accounts-README.md).
+
+## Demand ordering: connect leads on zero accounts
+
+Current behavior (in code:
+[`consent_denial.connect_first_denial`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/consent_denial.py)).
+When an operation is account-backed and the grantor has ZERO connected
+accounts on the backing provider, fixing the gate-1 agent grant first is
+meaningless - granting an agent access to a provider with no accounts binds
+nothing. So the CONNECT demand leads: the gate-1 denial is replaced by a
+gate-2 `needs_connected_account_consent` / `connect_required` denial carrying
+the Connection Hub guided plan, scoped to the claims the attempt actually
+needs, and the plan ends in the agent-grant hand-off. The agent-grant demand
+(`agent_grant_required`) leads only when an account exists and the agent is
+merely unbound.
+
+Scoping of the connect ask, per the provider's `connected_accounts` contract:
+
+- `claims_by_operation` present: the ask is that operation's claims.
+- The operation is not listed in `claims_by_operation` (for example
+  `provider.about` on an account-backed realm): connect still leads for the
+  whole realm; the ask falls back to the realm's declared claims, deduped in
+  declaration order - the user unticks what they keep.
+- Flat `claims` only (Slack): the ask narrows to the claims the attempt is
+  missing - the user approves the tool's need, never the provider's whole
+  vocabulary.
+
+## The three scenarios, end to end
+
+Each scenario is one issuance path over the same catalog, and each maps to an
+exact Connection Hub surface.
+
+**1. Hosted agent acting on the user's accounts.** The agent attempts an
+account-backed tool; the denial (ordered as above) surfaces as a chat consent
+banner. The banner opens the guided connect plan on the **Delegated to
+KDCube** tab - account connected, access working, requested approvals as
+per-claim chips, one primary button for the first unmet step. The plan ends
+with the hand-off: "Continue - grant it to \<agent\>". That lands the agent's
+card under **Delegated by KDCube**, where the user ticks claims per account -
+default-closed, nothing pre-checked, an untouched account grants nothing.
+Retrying the same call then succeeds. The per-account binding
+(`account_scope`) semantics are in
+[Configuring Agent Access To Services And Accounts](../configuring-agent-service-access/configuring-agent-service-access-README.md).
+
+**2. External MCP connection.** The MCP-speaking app probes the URL, gets the
+protected-resource challenge, registers via DCR (layer 4 fence), and opens
+the OAuth authorize page: the DCR-issued client id, a review of the resource's
+ceiling with collapsible capability sections, and per-account default-closed
+binding for account-backed namespaces - with links into the hub for
+connecting more accounts and to where the connection's card will live. After
+approval the card sits under **Delegated by KDCube**, editable and revocable;
+an edit or revocation applies on the connection's next call. Step-by-step
+journey and identity-scope choices:
+[Delegate A KDCube Service To An External Client](../../../../recipes/connections/delegate-kdcube-service-to-external-client-README.md).
+
+**3. Automation access.** The **Delegated by KDCube -> Create automation
+access** panel renders the same catalog: the user selects a resource, its
+grants (only ones delegable to them, layer 3), narrows named-service
+operations to an exact selection of existing operation ids, and sets a TTL.
+The token's grant record stores the narrowed boundary tree, which the bridge
+prefers over the deployment default - so the token reaches exactly the
+selected operations and nothing else. Provider-backed namespaces keep the
+connected account as a separate upstream prerequisite; the panel shows it and
+deep-links Delegated to KDCube. Details:
+[Protect Bundle MCP With Managed Credentials](../../../../recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md).
+
+## Troubleshooting
+
+| symptom | cause | fix |
+| --- | --- | --- |
+| `delegated_access_grants_not_delegable` | the signed-in user's roles/permissions match no `delegable_roles`/`delegable_permissions` on the requested grant's capability row | grant the user a qualifying role/permission, or extend the capability row (layer 3) |
+| `needs_connected_account_consent` with `reason=connect_required` | no connected account on the provider backing the operation | connect the provider at `connection_hub_url` (the guided plan ends in the agent hand-off) |
+| `needs_connected_account_consent` with `reason=agent_grant_required` | the account is connected and claim-capable; the calling agent/connection has no per-account binding (default-closed) | on the caller's Delegated-by-KDCube card, tick the claim for the account of choice |
+| `delegated_access_requires_resource_grants` | an automation-access request submitted a resource without claims | select at least one grant for the resource before creating the token |

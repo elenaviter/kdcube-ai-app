@@ -6,6 +6,7 @@ status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "mcp", "managed-auth", "bundle-surfaces", "named-services", "least-privilege"]
 updated_at: 2026-07-17
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/delegated-credential-protocol-adapters-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-platform-integration-README.md
@@ -16,6 +17,10 @@ see_also:
 Use this recipe when a bundle exposes MCP tools and wants KDCube/Connection Hub
 to manage external-client delegation, consent, token issuance, and tool
 enforcement.
+
+The full configuration reference - every layer, the provider connected-accounts
+contract, both consent gates, and all three scenarios - is
+[Authenticated MCP: The Full Configuration Chain](../../sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md).
 
 This is for cases like:
 

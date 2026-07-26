@@ -511,6 +511,7 @@ grantor's full platform session.
 | Understand token/proof routing metadata | [Authority Credential Envelope](authority-providers/credential-envelope-README.md) |
 | Carry roles/economics across runtime boundaries | [Authority Projection](authority-projection/authority-projection-README.md) |
 | Open Data Bus from Telegram or another non-browser actor | [Federated Data Bus Session Tokens](../../bundle/auth-bundle-federated-README.md) |
+| Configure authenticated MCP from zero - every layer, the provider connected-accounts contract, both consent gates, and all three scenarios (hosted agent, external MCP connection, automation token) | [Authenticated MCP: The Full Configuration Chain](authenticated-mcp/authenticated-mcp-README.md) |
 | Understand delegated representatives, manual automation selection, and OAuth grants | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | See and revoke access a user granted to automations and external clients | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Build an app that exposes a governed service over MCP (uses Gmail + your own OAuth server) | [Expose a Governed Service over MCP](../../../recipes/quickstart/expose-governed-service-mcp-README.md) |

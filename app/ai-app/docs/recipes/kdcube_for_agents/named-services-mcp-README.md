@@ -6,6 +6,7 @@ status: active
 tags: ["recipes", "kdcube-for-agents", "named-services", "mcp", "conv", "mail", "slack", "search", "files", "schema", "agent"]
 updated_at: 2026-07-18
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
@@ -21,6 +22,10 @@ Claude) connects to it, discovers the namespaces on it, and works purely through
 **object refs** such as `conv:conversation:<id>`, `conv:turn:<id>`, and
 `conv:fi:<path>`. The agent carries no KDCube session, no ambient conversation,
 and no prior knowledge of your realm.
+
+The full configuration reference - every layer, the provider connected-accounts
+contract, both consent gates, and all three scenarios - is
+[Authenticated MCP: The Full Configuration Chain](../../sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md).
 
 Agent-friendliness is the set of choices that let that agent succeed on the first
 try: honest discovery, lean results, self-contained refs, and file bytes that stay
