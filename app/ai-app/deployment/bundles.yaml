@@ -942,6 +942,24 @@ bundles:
                             - slack:files:write
                             - slack:files:read
                             - slack:assistant:search
+            - resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/productivity*'
+              label: KDCube productivity MCP
+              tools:
+                productivity_slack_search:
+                  label: Search Slack
+                  description: Search Slack messages through connected Slack accounts.
+                  grants:
+                  - slack:search
+                productivity_mail_search:
+                  label: Search mail
+                  description: Search messages in connected mail accounts.
+                  grants:
+                  - mail:read
+                productivity_mail_get:
+                  label: Read mail message
+                  description: Read one message from connected mail accounts.
+                  grants:
+                  - mail:read
             - resource: '*/api/integrations/bundles/*/*/user-memories@2026-06-26/public/mcp/memories*'
               identity_scope: grantor_identity_family
               tools:
@@ -1232,6 +1250,14 @@ bundles:
                 mode: managed
                 authority_id: delegated_client
                 selected_tool_grants: true
+            productivity:
+              auth:
+                mode: managed
+                authority_id: delegated_client
+                selected_tool_grants: true
+              connector_apps:
+                slack: slack-demo
+                google: gmail
   - id: website@2026-07-12
     name: Website
     singleton: false

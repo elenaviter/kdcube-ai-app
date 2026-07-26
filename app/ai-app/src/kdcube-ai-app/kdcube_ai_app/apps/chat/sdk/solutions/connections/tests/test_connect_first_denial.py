@@ -16,6 +16,7 @@ import kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.sto
 import kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery as discovery_mod
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.consent_denial import (
     connect_first_denial,
+    connect_first_denial_for_identity,
 )
 
 _MAIL_REQUIREMENT = {
@@ -215,3 +216,78 @@ async def test_flat_claims_scope_to_the_missing_ask(monkeypatch):
     assert denial is not None
     consent_claims = denial["consent"].get("claims") or []
     assert consent_claims == ["slack:search"]
+
+
+def _wire_no_discovery(monkeypatch, *, accounts):
+    """Explicit-requirements callers never touch discovery: wire a discovery
+    that fails loudly if constructed, plus the account store."""
+
+    class _ExplodingDiscovery:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("discovery must not be used when requirements are explicit")
+
+    class _FakeStore:
+        def __init__(self, *, user_id, **kwargs):
+            assert user_id == "user-1"
+
+        async def list_accounts(self, *, provider_id=""):
+            return list(accounts)
+
+    monkeypatch.setattr(discovery_mod, "RedisNamedServiceDiscovery", _ExplodingDiscovery)
+    monkeypatch.setattr(discovery_mod, "_redis_client_from_settings", lambda: None)
+    monkeypatch.setattr(store_mod, "DelegatedToKdcubeStore", _FakeStore)
+
+
+@pytest.mark.asyncio
+async def test_explicit_requirements_skip_discovery_zero_accounts(monkeypatch):
+    """A plain MCP tool passes its own declared requirement: discovery is
+    skipped entirely and the connect-first denial still shapes the same."""
+    _wire_no_discovery(monkeypatch, accounts=[])
+
+    denial = await connect_first_denial_for_identity(
+        grantor_user_id="user-1",
+        agent_client_id="kdcube-agent:app:main",
+        agent_resource="*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/productivity*",
+        namespace="productivity_slack_search",
+        tool="productivity_slack_search",
+        operation="search",
+        required=["slack:search"],
+        missing=["slack:search"],
+        tenant="t",
+        project="p",
+        requirements=[{"provider_id": "slack", "claims": ["slack:search"]}],
+    )
+
+    assert denial is not None
+    assert denial["error"]["code"] == "needs_connected_account_consent"
+    assert denial["reason"] == "connect_required"
+    assert denial["retry_hint"] is True
+    assert denial["provider_id"] == "slack"
+    assert denial["namespace"] == "productivity_slack_search"
+    assert denial["consent"].get("claims") == ["slack:search"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_requirements_with_connected_account_return_none(monkeypatch):
+    """With a usable account present the ordering does not apply - the caller
+    falls back to the resolver's own account-level consent."""
+    _wire_no_discovery(
+        monkeypatch,
+        accounts=[SimpleNamespace(account_id="acc-1", provider_id="slack", connected=True)],
+    )
+
+    denial = await connect_first_denial_for_identity(
+        grantor_user_id="user-1",
+        agent_client_id="kdcube-agent:app:main",
+        agent_resource="*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/productivity*",
+        namespace="productivity_slack_search",
+        tool="productivity_slack_search",
+        operation="search",
+        required=["slack:search"],
+        missing=["slack:search"],
+        tenant="t",
+        project="p",
+        requirements=[{"provider_id": "slack", "claims": ["slack:search"]}],
+    )
+
+    assert denial is None

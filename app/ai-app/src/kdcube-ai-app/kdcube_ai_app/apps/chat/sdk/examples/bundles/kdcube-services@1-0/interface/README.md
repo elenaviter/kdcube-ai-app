@@ -19,7 +19,7 @@ Current declared surface families:
 | --- | --- |
 | Widgets | `bundle_storage`, `control_plane`, `conversation_browser`, `svc_gateway`, `redis_browser`, `ai_bundles` |
 | Operations | `bundle_storage_widget`, `control_plane`, `conversation_browser`, `svc_gateway`, `redis_browser`, `ai_bundles` |
-| MCP | `conversations`, `named_services` |
+| MCP | `conversations`, `named_services`, `productivity` |
 | Signed public files | `integration_file_upload`, `integration_file_download`, `conv_file_download` |
 | Data Bus | `kdcube.named_service.relay.v1` |
 

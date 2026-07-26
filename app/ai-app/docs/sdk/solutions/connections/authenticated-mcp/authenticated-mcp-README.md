@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
 title: "Authenticated MCP: The Full Configuration Chain"
-summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, DCR redirect fence, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates with their full error vocabulary, the demand-ordering rule, and the three scenarios this chain enables - hosted agents, external MCP connections, and bounded automation tokens."
+summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, DCR redirect fence, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates with their full error vocabulary, the demand-ordering rule, the declaration-parity pattern for plain MCP tools, and the three scenarios this chain enables - hosted agents, external MCP connections, and bounded automation tokens."
 status: active
 tags: ["sdk", "connections", "connection-hub", "mcp", "managed-auth", "delegated-credentials", "delegated-accounts", "named-services", "consent", "connected-accounts", "automation", "agents"]
 updated_at: 2026-07-26
-keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL"]
+keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
@@ -484,6 +484,97 @@ Scoping of the connect ask, per the provider's `connected_accounts` contract:
 - Flat `claims` only (Slack): the ask narrows to the claims the attempt is
   missing - the user approves the tool's need, never the provider's whole
   vocabulary.
+
+## Declaration parity for plain MCP tools
+
+A PLAIN ``@mcp`` tool - a FastMCP tool on a managed bundle surface with no
+named-service registration behind it - participates in the same chain. The
+tool declares which connected-account provider claims it needs, per tool, in
+the existing application tool shape
+(`ToolClaimPolicy.from_tool_config`), and enforces the declaration in the
+tool body with one call:
+
+```python
+PRODUCTIVITY_TOOLS = {
+    "productivity_slack_search": {
+        "label": "Search Slack",
+        "description": "Search Slack messages through the user's connected Slack account.",
+        "connections": {
+            "delegated_to_kdcube": {
+                "connected_accounts": [
+                    {"provider_id": "slack", "claims": ["slack:search"]},
+                ],
+            },
+        },
+    },
+}
+
+@mcp.tool(name="productivity_slack_search", ...)
+async def _productivity_slack_search(query: str, ...) -> dict:
+    denial = await enforce_tool_requirements(
+        request,
+        tool_name="productivity_slack_search",
+        operation="search",
+        requirements=tool_requirements("productivity_slack_search"),
+    )
+    if denial is not None:
+        return denial
+    return await slack.search_slack(query=query, ...)
+```
+
+The ``claims`` speak the PROVIDER's claim vocabulary - the claims a
+connected account of that Delegated-to-KDCube provider row can hold
+(`slack:search`, `gmail:read`). The enforcement helper
+([`mcp_tool_enforcement.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/mcp_tool_enforcement.py))
+resolves each declared claim through the same account broker the
+named-services door uses and answers with the SAME demand ordering:
+every claim resolves - the tool body proceeds; zero usable accounts on the
+backing provider - the connect-first denial (the declared requirement is
+passed to `connect_first_denial_for_identity` explicitly, no discovery
+involved); an account exists but cannot satisfy the call - the account-level
+consent (claim upgrade / agent grant / reconnect / account pick).
+
+Two bindings complete the parity, per tool call: the surface's
+connector-app declaration
+(`bind_service_connector_apps_from_config` over the surface config's
+`connector_apps` block) and the calling client's delegated identity plus
+per-account claim scope from the request credential - so resolution stays
+default-closed for delegated callers.
+
+The worked example is the `productivity` MCP surface of the
+`kdcube-services@1-0` example bundle
+([`surfaces/mcp/productivity.py`](../../../../../src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/kdcube-services@1-0/surfaces/mcp/productivity.py)):
+a pure-MCP door wrapping Slack search plus mail search/read, with its own
+layer-2 resource entry whose per-tool grants ARE the claims each tool needs
+(gate-1 ceiling = the tool's need):
+
+```yaml
+- resource: '*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/productivity*'
+  label: KDCube productivity MCP
+  tools:
+    productivity_slack_search:
+      grants: [slack:search]
+    productivity_mail_search:
+      grants: [mail:read]
+    productivity_mail_get:
+      grants: [mail:read]
+```
+
+### Testing the productivity door
+
+Three verifications prove enforcement on the door after a `refresh`:
+
+1. Call `productivity_slack_search` as a caller whose grantor has NO Slack
+   account: the result is the gate-2 `needs_connected_account_consent` /
+   `connect_required` denial carrying the guided connect plan (agent
+   hand-off included).
+2. Connect a Slack account but leave the calling agent/connection unbound on
+   it: the same call returns the account-level consent
+   (`agent_grant_required`) deep-linking the caller's grant card.
+3. Bind the account claim to the caller and retry: the call returns real
+   Slack search results. The mail pair (`productivity_mail_search`,
+   `productivity_mail_get`) verifies identically against the `google`
+   provider row.
 
 ## The three scenarios, end to end
 

@@ -56,6 +56,7 @@ from .services.named_services import NamedServicesMcpBridge
 from .services.named_services.request_scope import get_public_base_url
 from .surfaces.mcp import conversations as conversations_mcp_module
 from .surfaces.mcp import named_services as named_services_mcp_module
+from .surfaces.mcp import productivity as productivity_mcp_module
 
 
 LOGGER = logging.getLogger("kdcube.bundles.kdcube-services")
@@ -132,6 +133,13 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                             },
                         },
                         "named_services": {
+                            "auth": {
+                                "mode": "managed",
+                                "authority_id": "delegated_client",
+                                "selected_tool_grants": True,
+                            },
+                        },
+                        "productivity": {
                             "auth": {
                                 "mode": "managed",
                                 "authority_id": "delegated_client",
@@ -275,6 +283,44 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             project_factory=lambda: str(getattr(actor, "project_id", None) or ""),
             request=request,
             bridge_factory=NamedServicesMcpBridge,
+        )
+
+    @mcp(
+        alias="productivity",
+        route="public",
+        transport="streamable-http",
+        auth_config="surfaces.as_provider.mcp.productivity.auth",
+    )
+    def productivity_mcp(self, request=None, **kwargs):
+        """The reference PURE-MCP door: plain tools over connected accounts.
+
+        Each tool declares its connected-account requirements (ToolClaimPolicy
+        shape) and enforces them in the tool body via
+        ``enforce_tool_requirements`` - see ``surfaces/mcp/productivity.py``.
+        """
+        del kwargs
+        # Bind the wrapped provider tool modules to THIS entrypoint so their
+        # internal credential resolution reaches the Connection Hub registry
+        # (redis/bundle props) - the same binding the mail/slack named-service
+        # providers apply.
+        from kdcube_ai_app.apps.chat.sdk.integrations.google import (
+            gmail_tools as gmail_tools_module,
+        )
+        from kdcube_ai_app.apps.chat.sdk.integrations.slack import (
+            tools as slack_tools_module,
+        )
+
+        gmail_tools_module.bind_service(self)
+        slack_tools_module.bind_service(self)
+        actor = getattr(self.comm_context, "actor", None)
+        return productivity_mcp_module.build_productivity_mcp_app(
+            name="KDCube productivity",
+            config_factory=lambda: dict(
+                self.bundle_prop("surfaces.as_provider.mcp.productivity", {}) or {}
+            ),
+            tenant_factory=lambda: str(getattr(actor, "tenant_id", None) or ""),
+            project_factory=lambda: str(getattr(actor, "project_id", None) or ""),
+            request=request,
         )
 
     @data_bus_handler(

@@ -276,6 +276,34 @@ paths:
         "401": { $ref: "#/components/responses/JsonError" }
         "403": { $ref: "#/components/responses/JsonError" }
 
+  /bundles/{tenant}/{project}/{bundle_id}/public/mcp/productivity:
+    post:
+      tags: [MCP]
+      summary: Invoke the managed productivity MCP resource.
+      description: |
+        Stateless streamable-HTTP MCP endpoint serving plain tools over the
+        approving user's connected accounts (Slack search, mail search/read).
+        Each tool declares its connected-account requirements and enforces
+        them at execution time; consent envelopes carry the Connection Hub
+        next step.
+      operationId: productivity_mcp
+      security:
+        - DelegatedBearerAuth: []
+      x-kdcube-auth-config: surfaces.as_provider.mcp.productivity.auth
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonRpcRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/McpResponse" }
+        "401": { $ref: "#/components/responses/JsonError" }
+        "403": { $ref: "#/components/responses/JsonError" }
+
   /bundles/{tenant}/{project}/{bundle_id}/public/integration_file_upload:
     post:
       tags: [Signed Files]
