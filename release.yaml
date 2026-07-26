@@ -1,45 +1,23 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.27.007"
+  ref: "2026.07.27.125"
   description: |
-    This release follows 2026.07.25.151.
+    This release follows 2026.07.27.007.
 
-    Connection Hub and delegated access now provide a stricter connect-first
-    path. Operations that need an external account advertise that requirement
-    before tool execution, only the provider scopes selected by the user are
-    requested at connection time, and consent denial is modeled explicitly so
-    agents receive actionable missing-access feedback instead of silent
-    failures. Connector-app resolution is carried through portable context and
-    survives unset runtime context, keeping Connection Hub redirects stable
-    across ReAct, MCP, and named-service calls.
+    The SDK now includes a focused two-level MCP client example for governed
+    managed doors. The example shows how a caller reads the first-level consent
+    envelope, detects required grants, and then invokes the second-level managed
+    service call with the access context that the door returns. This makes the
+    delegated-MCP contract easier to test and easier for app builders to copy
+    without relying on hidden runtime assumptions.
 
-    Authenticated MCP and named-service surfaces are more coherent. The guarded
-    productivity MCP surface is split from generic named-service MCP exposure,
-    service-declared connector apps are part of the access declaration, and
-    named-service schemas remain the full operation contract instead of being
-    trimmed from compact tool catalogs. Namespace operations consistently carry
-    `named_services:use`, and the new authenticated-MCP documentation gives the
-    canonical chain from delegated credentials through managed enforcement to
-    tool invocation.
+    Public frontend configuration is decoupled from runtime service internals.
+    The control-plane frontend config path now returns only the browser-facing
+    contract needed by public shells and embedded widgets, while service/runtime
+    values stay server-side. Regression coverage was added for the public
+    frontend config response so route prefixes, tenant/project identity, and
+    public app configuration remain stable without leaking implementation-only
+    settings.
 
-    ReAct instruction and tool guidance is reorganized around reusable,
-    agent-neutral concepts. Instruction blocks/signals are documented separately
-    from the system prompt, the tool catalog describes tool-shape expectations,
-    exec guidance is emitted only when the roster actually includes execution
-    tools, and read/pull/write/patch/contribute tool text is tightened so agents
-    can recover from parameter and workspace mistakes without learning bundle or
-    transport internals.
-
-    OPEX aggregation can now be rebuilt as an observable background job. The
-    control-plane dashboard can trigger a bounded range rebuild, proc routines
-    emit progress through the data bus, and aggregation docs describe the job
-    source, progress relay, and operational boundaries. Accounting docs are
-    aligned with the current app-spend and aggregation model.
-
-    Platform authentication keeps registered-role behavior stable. Authenticated
-    users always carry the registered baseline even when more specific roles are
-    present, the interactive consenting user remains the registered subject for
-    delegated flows, and mail/Slack/file-delivery registered specs declare the
-    connected-account capability needed for connect-first behavior.
 config:
-  version: "2026.07.27.007"
+  version: "2026.07.27.125"
