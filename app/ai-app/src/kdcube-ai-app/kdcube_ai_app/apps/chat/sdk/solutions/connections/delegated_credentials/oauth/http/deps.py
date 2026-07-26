@@ -26,6 +26,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_projection impo
     authority_has_platform_privilege,
 )
 from kdcube_ai_app.apps.middleware.token_extract import resolve_auth_from_headers_and_cookies
+from kdcube_ai_app.auth.AuthManager import ensure_platform_registered_role
 
 AuthenticateFn = Callable[[str], Awaitable[Optional[dict]]]
 
@@ -71,11 +72,22 @@ def get_authenticate(request: Request) -> AuthenticateFn:
     from kdcube_ai_app.auth.bundle import BundleSessionAuthManager, get_bundle_session_authority
 
     tenant, project = oauth_tenant_project(request)
+    # (manager, apply_registered_baseline). The bundle-session authority
+    # resolves DELEGATED-CREDENTIAL bearers whose roles are EXACTLY the
+    # grant's roles - a bounded token (e.g. feedback-reader) must never widen
+    # to registered by transport, so NO baseline. The gateway session manager
+    # resolves the INTERACTIVE platform user consenting on the authorize page;
+    # they are a real authenticated platform user and get the registered
+    # baseline (a federated user whose IdP group is not a kdcube role must
+    # still be able to delegate registered-level grants).
     managers = [
-        BundleSessionAuthManager(
-            authority=get_bundle_session_authority(tenant=tenant, project=project)
+        (
+            BundleSessionAuthManager(
+                authority=get_bundle_session_authority(tenant=tenant, project=project)
+            ),
+            False,
         ),
-        create_auth_manager(),
+        (create_auth_manager(), True),
     ]
 
     def _user_dict(user: Any) -> dict:
@@ -110,16 +122,11 @@ def get_authenticate(request: Request) -> AuthenticateFn:
             or request.headers.get(_auth_cfg.ID_TOKEN_HEADER_NAME.lower()),
             request.cookies,
         )
-        for manager in managers:
+        for manager, apply_baseline in managers:
             try:
-                # No registered-role baseline here, deliberately. The
-                # bundle-session authority resolves DELEGATED-CREDENTIAL
-                # bearers whose roles are EXACTLY the grant's roles - a
-                # bounded token (e.g. feedback-reader) must never widen to
-                # registered by transport. Interactive platform users get
-                # their baseline at the gateway/session layer, not in this
-                # resolver.
                 user = await manager.authenticate_with_both(token, id_token)
+                if apply_baseline:
+                    user = ensure_platform_registered_role(user)
             except Exception:
                 continue
             if user is None:

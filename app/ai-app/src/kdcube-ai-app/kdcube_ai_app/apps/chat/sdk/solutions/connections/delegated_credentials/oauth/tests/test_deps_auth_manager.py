@@ -93,12 +93,15 @@ async def test_access_token_resolves_feedback_reader_not_empty_roles(monkeypatch
 
 
 async def test_web_session_falls_through_to_gateway(monkeypatch):
+    # The interactive platform user consenting on the authorize page gets the
+    # registered baseline (only the gateway session manager applies it); the
+    # bounded delegated-credential bearer above does not.
     _patch_managers(monkeypatch, _GreedyGatewayManager(), _BundleManager())
     authenticate = deps.get_authenticate(_request_without_override())
     assert await authenticate("web-session") == {
         "sub": "google:admin@example.test",
         "user_id": "google:admin@example.test",
-        "roles": ["kdcube:role:super-admin"],
+        "roles": ["kdcube:role:super-admin", "kdcube:role:registered"],
     }
 
 
