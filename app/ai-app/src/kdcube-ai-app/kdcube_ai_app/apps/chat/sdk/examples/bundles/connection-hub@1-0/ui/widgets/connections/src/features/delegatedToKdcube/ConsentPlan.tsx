@@ -10,6 +10,9 @@ import type { DelegatedToKdcubeAccount, DelegatedToKdcubeProvider } from '../../
 
 export interface ConsentPlanRequest {
   provider?: DelegatedToKdcubeProvider;
+  /** The connector app the guarded service resolved for this connect - its
+   *  allowed_claims narrow the listed vocabulary. */
+  connectorAppId?: string;
   providerLabel: string;
   requestedClaims: string[];
   account?: DelegatedToKdcubeAccount;
@@ -134,13 +137,30 @@ export function ConsentPlan({ request, claimLabel, busy, onAction, onDismiss, ag
     ));
   };
 
-  // Submit = held ∪ ticked. Ticks only count for claims still to approve, so
-  // a catalog refresh that promotes a claim to approved keeps the set honest.
-  const selectedMissing = state.missingClaims.filter((claimId) => selected.includes(claimId));
-  const submitClaims = [...state.approvedClaims, ...selectedMissing];
+  // The list shows the provider's WHOLE claim vocabulary (the connect pane
+  // convention), not only the tool's ask: already-consented claims render
+  // granted, the tool's ask starts ticked, everything else is opt-in.
+  const connectorApp = request.connectorAppId
+    ? request.provider?.connector_apps?.[request.connectorAppId]
+    : undefined;
+  const allowed = connectorApp?.allowed_claims?.length
+    ? new Set(connectorApp.allowed_claims)
+    : null;
+  const vocabulary = Object.keys(request.provider?.claims || {})
+    .filter((claimId) => !allowed || allowed.has(claimId))
+    .sort();
+  const listedClaims = vocabulary.length
+    ? [...vocabulary, ...request.requestedClaims.filter((c) => !vocabulary.includes(c))]
+    : request.requestedClaims;
+  // Held = everything the ACCOUNT already approved (account-wide, not just the
+  // tool's ask) - submitting must never narrow an existing authorization.
+  const heldSet = new Set(request.account?.claims || []);
+  // Submit = held ∪ ticked-and-not-yet-held (ticks may extend past the ask).
+  const selectedNew = listedClaims.filter((claimId) => !heldSet.has(claimId) && selected.includes(claimId));
+  const submitClaims = [...heldSet, ...selectedNew];
   const actionDisabled = busy
     || submitClaims.length === 0
-    || (state.action === 'approve' && selectedMissing.length === 0);
+    || (state.action === 'approve' && selectedNew.length === 0);
 
   return (
     <div className="plan">
@@ -167,8 +187,8 @@ export function ConsentPlan({ request, claimLabel, busy, onAction, onDismiss, ag
         <PlanStep done={state.connected && state.missingClaims.length === 0} index={3}>
           <span className="plan-claims">
             Approve what the tool needs — untick anything you keep to yourself:{' '}
-            {request.requestedClaims.map((claimId) => {
-              const granted = state.approvedClaims.includes(claimId);
+            {listedClaims.map((claimId) => {
+              const granted = heldSet.has(claimId);
               if (granted) {
                 return (
                   <span key={claimId} className="claim-chip claim-chip-done">

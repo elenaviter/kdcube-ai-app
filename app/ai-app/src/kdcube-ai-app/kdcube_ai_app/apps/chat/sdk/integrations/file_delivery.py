@@ -24,7 +24,6 @@ from typing import Any
 import httpx
 
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
-    GMAIL_CONNECTOR_APP_ID,
     GMAIL_PROVIDER_ID,
     GMAIL_READ_CLAIM,
     _extract_message_content,
@@ -33,7 +32,6 @@ from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import (
     SLACK_API,
-    SLACK_CONNECTOR_APP_ID,
     SLACK_FILES_READ_CLAIM,
     SLACK_PROVIDER_ID,
 )
@@ -43,6 +41,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube impor
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
     ClaimResolution,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import resolve_connector_app_id
 
 LOGGER = logging.getLogger("kdcube.sdk.integrations.file_delivery")
 
@@ -131,7 +130,7 @@ async def fetch_mail_attachment(
         tenant=tenant,
         project=project,
         provider_id=GMAIL_PROVIDER_ID,
-        connector_app_id=GMAIL_CONNECTOR_APP_ID,
+        connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
         claim=GMAIL_READ_CLAIM,
         account_id=account_id,
     )
@@ -206,7 +205,7 @@ async def fetch_slack_file(
         tenant=tenant,
         project=project,
         provider_id=SLACK_PROVIDER_ID,
-        connector_app_id=SLACK_CONNECTOR_APP_ID,
+        connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
         claim=SLACK_FILES_READ_CLAIM,
         account_id=account_id,
     )

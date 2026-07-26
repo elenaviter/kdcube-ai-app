@@ -31,10 +31,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     physical_path_to_logical_path,
     split_logical_artifact_ref,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import resolve_connector_app_id
 
 
 SLACK_PROVIDER_ID = "slack"
-SLACK_CONNECTOR_APP_ID = "demo"
 SLACK_SEARCH_CLAIM = "slack:search"
 SLACK_POST_CLAIM = "slack:post"
 SLACK_CHANNELS_CLAIM = "slack:channels"
@@ -342,7 +342,7 @@ class SlackTools:
         return await resolve_connected_account_claim(
             globals(),
             provider_id=SLACK_PROVIDER_ID,
-            connector_app_id=SLACK_CONNECTOR_APP_ID,
+            connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
             claim=claim,
             account_id=account_id,
             tool_name=tool_name,
@@ -1112,7 +1112,6 @@ __all__ = [
     "SLACK_API",
     "SLACK_ASSISTANT_SEARCH_CLAIM",
     "SLACK_CHANNELS_CLAIM",
-    "SLACK_CONNECTOR_APP_ID",
     "SLACK_FILES_READ_CLAIM",
     "SLACK_FILES_WRITE_CLAIM",
     "SLACK_HISTORY_CLAIM",

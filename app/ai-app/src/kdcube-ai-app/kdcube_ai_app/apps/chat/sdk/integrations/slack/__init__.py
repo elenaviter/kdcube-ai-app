@@ -9,7 +9,6 @@ from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import (
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import (
     SLACK_ASSISTANT_SEARCH_CLAIM,
     SLACK_CHANNELS_CLAIM,
-    SLACK_CONNECTOR_APP_ID,
     SLACK_FILES_READ_CLAIM,
     SLACK_FILES_WRITE_CLAIM,
     SLACK_HISTORY_CLAIM,
@@ -22,7 +21,6 @@ from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import (
 __all__ = [
     "SLACK_ASSISTANT_SEARCH_CLAIM",
     "SLACK_CHANNELS_CLAIM",
-    "SLACK_CONNECTOR_APP_ID",
     "SLACK_FILES_READ_CLAIM",
     "SLACK_FILES_WRITE_CLAIM",
     "SLACK_HISTORY_CLAIM",

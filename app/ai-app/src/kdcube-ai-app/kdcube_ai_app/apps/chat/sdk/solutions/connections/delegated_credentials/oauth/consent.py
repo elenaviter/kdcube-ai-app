@@ -242,8 +242,15 @@ def render_consent_html(
     return_to: str = "",
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
+    connection_hub_url: str = "",
 ) -> str:
     esc = _html.escape
+    # Base URL of the Connection Hub widget (no query). The consent page must
+    # not be a dead end: from here the user can open the hub to connect more
+    # accounts (Delegated to KDCube) or find this client's card after approval
+    # (Delegated by KDCube). Links open a NEW tab - this page is mid-OAuth and
+    # navigating away would abandon the flow.
+    hub_base = str(connection_hub_url or "").strip().rstrip("?&")
     tools = tools_for_scopes(req.scopes, config=config, resource=req.resource)
     platform_edge_grants = platform_edge_grants_for_scopes(req.scopes, config=config)
     named_service_rows = named_service_rows_for_scopes(req.scopes, config=config, resource=req.resource)
@@ -344,6 +351,11 @@ def render_consent_html(
                 + "\n".join(rows)
                 + "\n    </section>"
             )
+        connect_more = (
+            f'    <p class="desc"><a class="hub-link" target="_blank" rel="noopener" '
+            f'href="{esc(hub_base)}?tab=delegated_to_kdcube">Connect another provider account '
+            f'in Connection Hub &#8599;</a> — then reload this page to bind it here.</p>\n'
+        ) if hub_base else ""
         per_account_section = f"""
     <p class="pick">Which of your connected accounts may this app use?</p>
     <p class="desc">Nothing is granted until you tick it. The capabilities above are only the
@@ -351,15 +363,20 @@ def render_consent_html(
     account and per permission. You can change or revoke any of this later in Connection Hub
     &#8594; Delegated by KDCube, and a call that needs more will ask then.</p>
 {"".join(provider_blocks)}
-"""
+{connect_more}"""
     else:
-        per_account_section = """
+        connect_more = (
+            f'    <p class="desc"><a class="hub-link" target="_blank" rel="noopener" '
+            f'href="{esc(hub_base)}?tab=delegated_to_kdcube">Connect a provider account in '
+            f'Connection Hub &#8599;</a> — then reload this page to bind it here.</p>\n'
+        ) if hub_base else ""
+        per_account_section = f"""
     <p class="pick">Your connected provider accounts:</p>
     <p class="desc">This approval covers the capabilities above only. None of your connected
     provider accounts is usable by this app until you grant it — per account and per
     permission — in Connection Hub &#8594; Delegated by KDCube, or through the approval that
     rises on the app's first use.</p>
-"""
+{connect_more}"""
 
     hidden_fields = [
         ("client_id", req.client_id),
@@ -405,6 +422,16 @@ def render_consent_html(
       </form>
     </div>
 """
+
+    # The card this approval creates is editable/revocable in the hub - name
+    # the exact place, deep-linked to THIS client, so the page is a doorway
+    # rather than a dead end.
+    manage_card_html = (
+        f'    <p class="desc">After approving, this connection\'s card lives in '
+        f'<a class="hub-link" target="_blank" rel="noopener" '
+        f'href="{esc(hub_base)}?tab=delegated_by_kdcube&agent_client_id={esc(req.client_id)}">'
+        f'Connection Hub &#8594; Delegated by KDCube &#8599;</a> — narrow, extend, or revoke it there anytime.</p>\n'
+    ) if hub_base else ""
 
     # Never present an arbitrary client with a hardcoded trusted brand. Show the
     # exact client_id + where the code will be sent, and flag clients that are not
@@ -461,6 +488,12 @@ def render_consent_html(
     .account code {{ display: inline-block; margin-top: .2rem; max-width: 100%; word-break: break-all; }}
     .account-form {{ margin: 0; flex: 0 0 auto; }}
     .hub-link {{ color: var(--accent, #0f766e); font-weight: 600; text-decoration: underline; }}
+    details.fold {{ border: 1px solid var(--line); border-radius: 8px; margin: .55rem 0; padding: 0 .7rem .35rem; background: #fff; }}
+    details.fold > summary {{
+      cursor: pointer; padding: .55rem 0; font-size: .82rem; font-weight: 600; color: var(--ink);
+      list-style-position: inside;
+    }}
+    details.fold[open] > summary {{ border-bottom: 1px solid var(--line); margin-bottom: .35rem; }}
     code, .scope {{ font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .82rem; }}
     code {{ background: var(--panel); border: 1px solid var(--line); padding: .06rem .32rem; border-radius: 5px; color: var(--ink); }}
     .badge {{ font-size: .68rem; padding: .12rem .45rem; border-radius: 999px; white-space: nowrap; font-weight: 600; }}
@@ -538,13 +571,21 @@ def render_consent_html(
 {account_html}
     <form method="post" action="{esc(form_action)}">
 {hidden}
-    <p class="pick">Platform account delegation edge:</p>
-    <p class="desc">These grants let the external client represent your KDCube account only when this resource later needs platform authority.</p>
+    <details class="fold">
+      <summary>Platform account delegation edge — informational, review if needed</summary>
+      <p class="desc">These grants let the external client represent your KDCube account only when this resource later needs platform authority.</p>
 {edge_rows}
-{namespace_section}
+    </details>
+    <details class="fold">
+      <summary>Named-service namespace boundaries — informational</summary>
+{namespace_section or '      <p class="desc">No namespace boundaries for the requested scope.</p>'}
+    </details>
 {per_account_section}
-    <p class="pick">Select which capabilities to authorize for this connection:</p>
+    <details class="fold" open>
+      <summary>Capabilities to authorize for this connection ({len(tools)}) — review and narrow</summary>
 {tool_rows}
+    </details>
+{manage_card_html}
     <div class="actions">
       <button class="approve" type="submit" name="decision" value="approve">Approve</button>
       <button class="deny" type="submit" name="decision" value="deny">Deny</button>

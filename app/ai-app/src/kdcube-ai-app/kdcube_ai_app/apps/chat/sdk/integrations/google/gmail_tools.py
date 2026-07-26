@@ -37,10 +37,10 @@ from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
     physical_path_to_logical_path,
     split_logical_artifact_ref,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import resolve_connector_app_id
 
 
 GMAIL_PROVIDER_ID = "google"
-GMAIL_CONNECTOR_APP_ID = "gmail"
 GMAIL_READ_CLAIM = "gmail:read"
 GMAIL_SEND_CLAIM = "gmail:send"
 GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me"
@@ -497,7 +497,7 @@ class GmailTools:
         return await resolve_connected_account_claim(
             globals(),
             provider_id=GMAIL_PROVIDER_ID,
-            connector_app_id=GMAIL_CONNECTOR_APP_ID,
+            connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
             claim=claim,
             account_id=account_id,
             tool_name=tool_name,
@@ -1124,7 +1124,6 @@ kernel.add_plugin(tools, "gmail")
 
 
 __all__ = [
-    "GMAIL_CONNECTOR_APP_ID",
     "GMAIL_PROVIDER_ID",
     "GMAIL_READ_CLAIM",
     "GMAIL_SEND_CLAIM",

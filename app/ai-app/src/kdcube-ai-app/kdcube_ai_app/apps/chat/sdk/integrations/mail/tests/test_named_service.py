@@ -326,7 +326,7 @@ async def test_search_without_readable_account_returns_connect_required():
     assert details["reason"] == REASON_CONNECT_REQUIRED
     assert details["retry_hint"] is True
     assert details["provider_id"] == "google"
-    assert details["connector_app_id"] == "gmail"
+    assert details["connector_app_id"] == ""  # no service declaration bound -> provider-wide
     assert details["claims"] == ["gmail:read"]
     assert details["connection_hub_url"].startswith("/api/integrations/bundles/demo/project/")
     assert details["consent"]["kind"] == "delegated_to_kdcube.connected_account"

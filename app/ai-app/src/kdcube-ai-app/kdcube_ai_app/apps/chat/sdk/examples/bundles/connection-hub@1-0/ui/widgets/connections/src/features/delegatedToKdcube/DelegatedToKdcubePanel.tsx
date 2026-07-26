@@ -461,6 +461,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
         <ConsentPlan
           request={{
             provider: planProvider,
+            connectorAppId: deepLink.connectorAppId,
             providerLabel: providerLabel(planProvider),
             requestedClaims: planRequestedClaims,
             account: planAccount,

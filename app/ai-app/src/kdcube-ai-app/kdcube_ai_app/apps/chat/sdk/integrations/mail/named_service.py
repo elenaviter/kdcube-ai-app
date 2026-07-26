@@ -17,7 +17,6 @@ import logging
 from typing import Any, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
-    GMAIL_CONNECTOR_APP_ID,
     GMAIL_PROVIDER_ID,
     GMAIL_READ_CLAIM,
     GMAIL_SEND_CLAIM,
@@ -74,6 +73,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     PROVIDER_ABOUT,
     PROVIDER_CAPABILITIES,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import resolve_connector_app_id
 
 
 LOGGER = logging.getLogger("kdcube.sdk.integrations.mail.named_service")
@@ -114,7 +114,6 @@ MAIL_GRANT_HINTS = {
 MAIL_CONNECTED_ACCOUNT_REQUIREMENTS = [
     {
         "provider_id": GMAIL_PROVIDER_ID,
-        "connector_app_id": GMAIL_CONNECTOR_APP_ID,
         "provider_label": "Google",
         "claims": [GMAIL_READ_CLAIM, GMAIL_SEND_CLAIM],
         "claim_labels": {
@@ -135,7 +134,6 @@ MAIL_CONNECTED_ACCOUNT_REQUIREMENTS = [
 MAIL_PROVIDER_CATALOG = {
     "gmail": {
         "provider_id": GMAIL_PROVIDER_ID,
-        "connector_app_id": GMAIL_CONNECTOR_APP_ID,
         "label": "Gmail",
         "claims": {
             "read": GMAIL_READ_CLAIM,
@@ -793,8 +791,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
         accounts = await client.list_accounts(provider_id=GMAIL_PROVIDER_ID)
         out = [
             account for account in accounts
-            if account.connector_app_id == GMAIL_CONNECTOR_APP_ID
-            and account.connected
+            if account.connected
             and (not claim or account.allows(claim))
         ]
         return out
@@ -819,7 +816,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 ok=False,
                 provider_id=GMAIL_PROVIDER_ID,
                 claim=claim,
-                connector_app_id=GMAIL_CONNECTOR_APP_ID,
+                connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
                 account_id=account_id,
                 error=REASON_CONNECT_REQUIRED,
                 message="Connect a mail account in Connection Hub.",
@@ -833,7 +830,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
         )
         return await client.ensure_claim(
             provider_id=GMAIL_PROVIDER_ID,
-            connector_app_id=GMAIL_CONNECTOR_APP_ID,
+            connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
             claim=claim,
             account_id=account_id or None,
             account_claim_scope=account_claim_scope_for(GMAIL_PROVIDER_ID),
@@ -864,7 +861,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 ok=False,
                 provider_id=GMAIL_PROVIDER_ID,
                 claim="",
-                connector_app_id=GMAIL_CONNECTOR_APP_ID,
+                connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
                 error=REASON_CONNECT_REQUIRED,
                 message="Connect a mail account in Connection Hub.",
                 retry_hint=True,
@@ -923,7 +920,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 account = ConnectedAccount(
                     account_id=account_id,
                     provider_id=GMAIL_PROVIDER_ID,
-                    connector_app_id=GMAIL_CONNECTOR_APP_ID,
+                    connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
                 )
             return [account], None
         if not eligible:
@@ -934,7 +931,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 ConnectedAccount(
                     account_id=resolution.account_id,
                     provider_id=GMAIL_PROVIDER_ID,
-                    connector_app_id=GMAIL_CONNECTOR_APP_ID,
+                    connector_app_id=resolve_connector_app_id(GMAIL_PROVIDER_ID),
                 )
             ], None
         return eligible, None

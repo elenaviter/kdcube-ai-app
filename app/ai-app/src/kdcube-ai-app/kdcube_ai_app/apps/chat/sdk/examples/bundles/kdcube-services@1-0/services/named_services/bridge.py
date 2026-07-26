@@ -191,9 +191,19 @@ class NamedServicesMcpBridge:
             client_id=view.client_id,
             resource=view.resources[0] if view.resources else "",
         )
-        self._catalog = NamedServiceBoundaryCatalog(
-            _named_service_catalog_config_from_request(request) or self._config
+        catalog_config = _named_service_catalog_config_from_request(request) or self._config
+        # The guarded service decides which connector app serves each provider
+        # in auth scenarios (never a user pick): bind its declaration so realm
+        # integrations and consent composers resolve it for this request.
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+            set_service_connector_apps,
         )
+
+        set_service_connector_apps(
+            (catalog_config or {}).get("connector_apps")
+            if isinstance(catalog_config, Mapping) else None
+        )
+        self._catalog = NamedServiceBoundaryCatalog(catalog_config)
 
     def list_services(self) -> dict[str, Any]:
         return {

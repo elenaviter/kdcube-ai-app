@@ -301,7 +301,7 @@ async def test_search_without_searchable_account_returns_connect_required():
     assert details["reason"] == REASON_CONNECT_REQUIRED
     assert details["retry_hint"] is True
     assert details["provider_id"] == "slack"
-    assert details["connector_app_id"] == "demo"
+    assert details["connector_app_id"] == ""  # no service declaration bound -> provider-wide
     assert details["claims"] == ["slack:search"]
     assert details["connection_hub_url"].startswith("/api/integrations/bundles/demo/project/")
     assert details["consent"]["kind"] == "delegated_to_kdcube.connected_account"

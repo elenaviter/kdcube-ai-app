@@ -115,7 +115,11 @@ async def test_existing_account_keeps_gate1_order(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_operation_outside_account_realm_is_untouched(monkeypatch):
+async def test_unmapped_operation_on_account_realm_still_leads_with_connect(monkeypatch):
+    """provider.about is not claim-mapped, but the realm is account-backed and
+    the gate tripped - with zero accounts, connect still leads (operator
+    ruling: never grant-the-agent-first on a provider with no accounts). The
+    ask falls back to the realm's declared claims."""
     _wire(monkeypatch, requirements=[_MAIL_REQUIREMENT], accounts=[])
 
     denial = await connect_first_denial(
@@ -129,7 +133,11 @@ async def test_operation_outside_account_realm_is_untouched(monkeypatch):
         project="p",
     )
 
-    assert denial is None
+    assert denial is not None
+    assert denial["reason"] == "connect_required"
+    assert denial["provider_id"] == "google-mail"
+    consent_claims = denial["consent"].get("claims") or []
+    assert consent_claims == ["gmail:read", "gmail:send"]
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,6 @@ from typing import Any, Mapping
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import (
     SLACK_ASSISTANT_SEARCH_CLAIM,
     SLACK_CHANNELS_CLAIM,
-    SLACK_CONNECTOR_APP_ID,
     SLACK_FILES_READ_CLAIM,
     SLACK_FILES_WRITE_CLAIM,
     SLACK_HISTORY_CLAIM,
@@ -78,6 +77,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     PROVIDER_ABOUT,
     PROVIDER_CAPABILITIES,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import resolve_connector_app_id
 
 
 LOGGER = logging.getLogger("kdcube.sdk.integrations.slack.named_service")
@@ -130,7 +130,6 @@ SLACK_CONNECTED_ACCOUNT_CLAIMS = {
 SLACK_CONNECTED_ACCOUNT_REQUIREMENTS = [
     {
         "provider_id": SLACK_PROVIDER_ID,
-        "connector_app_id": SLACK_CONNECTOR_APP_ID,
         "provider_label": "Slack",
         "claims": sorted(set(SLACK_CONNECTED_ACCOUNT_CLAIMS.values())),
         "claim_labels": {
@@ -793,8 +792,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
         accounts = await client.list_accounts(provider_id=SLACK_PROVIDER_ID)
         return [
             account for account in accounts
-            if account.connector_app_id == SLACK_CONNECTOR_APP_ID
-            and account.connected
+            if account.connected
             and (not claim or account.allows(claim))
         ]
 
@@ -818,7 +816,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 ok=False,
                 provider_id=SLACK_PROVIDER_ID,
                 claim=claim,
-                connector_app_id=SLACK_CONNECTOR_APP_ID,
+                connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
                 account_id=account_id,
                 error=REASON_CONNECT_REQUIRED,
                 message="Connect a Slack account in Connection Hub.",
@@ -832,7 +830,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
         )
         return await client.ensure_claim(
             provider_id=SLACK_PROVIDER_ID,
-            connector_app_id=SLACK_CONNECTOR_APP_ID,
+            connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
             claim=claim,
             account_id=account_id or None,
             account_claim_scope=account_claim_scope_for(SLACK_PROVIDER_ID),
@@ -863,7 +861,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 ok=False,
                 provider_id=SLACK_PROVIDER_ID,
                 claim="",
-                connector_app_id=SLACK_CONNECTOR_APP_ID,
+                connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
                 error=REASON_CONNECT_REQUIRED,
                 message="Connect a Slack account in Connection Hub.",
                 retry_hint=True,
@@ -898,7 +896,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 account = ConnectedAccount(
                     account_id=account_id,
                     provider_id=SLACK_PROVIDER_ID,
-                    connector_app_id=SLACK_CONNECTOR_APP_ID,
+                    connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
                 )
             return [account], None
         if not eligible:
@@ -909,7 +907,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 ConnectedAccount(
                     account_id=resolution.account_id,
                     provider_id=SLACK_PROVIDER_ID,
-                    connector_app_id=SLACK_CONNECTOR_APP_ID,
+                    connector_app_id=resolve_connector_app_id(SLACK_PROVIDER_ID),
                 )
             ], None
         return eligible, None

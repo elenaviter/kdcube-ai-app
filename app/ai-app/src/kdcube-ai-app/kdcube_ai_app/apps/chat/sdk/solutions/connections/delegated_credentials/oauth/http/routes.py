@@ -627,6 +627,7 @@ async def authorize(request: Request) -> Response:
         render_consent_html(
             render_req,
             issuer,
+            connection_hub_url=_connection_hub_widget_base(request),
             csrf_token=csrf,
             trusted=trusted,
             brand=cfg.brand,
@@ -640,6 +641,34 @@ async def authorize(request: Request) -> Response:
             seeded_account_scope=seeded_account_scope,
         )
     )
+
+
+def _connection_hub_widget_base(request: Any) -> str:
+    """Absolute base URL of the Connection Hub widget (no query), so the
+    consent page can deep-link the hub (connect more accounts; this client's
+    card after approval) instead of dead-ending. Empty when the deployment's
+    public base is unknown - the page then simply renders no hub links."""
+    try:
+        from urllib.parse import quote
+
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
+            DEFAULT_CONNECTION_HUB_BUNDLE_ID,
+        )
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.public_base import (
+            connection_hub_public_base_url,
+        )
+
+        base = connection_hub_public_base_url()
+        tenant, project = oauth_tenant_project(request)
+        if not base or not tenant or not project:
+            return ""
+        return (
+            f"{base}/api/integrations/bundles/"
+            f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"
+            f"{quote(DEFAULT_CONNECTION_HUB_BUNDLE_ID, safe='')}/widgets/connections_settings"
+        )
+    except Exception:
+        return ""
 
 
 async def _connected_accounts_for_consent(subject: str) -> list[dict]:

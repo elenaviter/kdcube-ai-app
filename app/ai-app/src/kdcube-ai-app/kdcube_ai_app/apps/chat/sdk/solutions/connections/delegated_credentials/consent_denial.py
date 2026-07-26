@@ -308,8 +308,25 @@ async def connect_first_denial_for_identity(
                 str(c).strip() for c in (by_op.get(op) or []) if str(c or "").strip()
             ]
             if not provider_claims:
-                # The realm differentiates and THIS operation does not need
-                # this provider's account.
+                # The operation itself is not claim-mapped (provider.about,
+                # object.schema, ...) but the REALM is account-backed and the
+                # gate still tripped - with zero accounts, granting the agent
+                # first would bind nothing (operator ruling: connect leads for
+                # the whole realm). Ask the realm's declared claims, deduped
+                # in declaration order; the user unticks what they keep.
+                seen: set[str] = set()
+                for op_claims in by_op.values():
+                    for c in op_claims or []:
+                        text = str(c or "").strip()
+                        if text and text not in seen:
+                            seen.add(text)
+                            provider_claims.append(text)
+                for c in req.get("claims") or []:
+                    text = str(c or "").strip()
+                    if text and text not in seen:
+                        seen.add(text)
+                        provider_claims.append(text)
+            if not provider_claims:
                 continue
         else:
             provider_claims = [
@@ -344,7 +361,12 @@ async def connect_first_denial_for_identity(
             connected_account_consent_payload,
         )
 
-        connector_app_id = str(req.get("connector_app_id") or "").strip()
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+            resolve_connector_app_id,
+        )
+
+        # One rule: the guarded service's declaration, or provider-wide.
+        connector_app_id = resolve_connector_app_id(provider_id)
         payload = connected_account_consent_payload(
             tenant=tenant,
             project=project,
