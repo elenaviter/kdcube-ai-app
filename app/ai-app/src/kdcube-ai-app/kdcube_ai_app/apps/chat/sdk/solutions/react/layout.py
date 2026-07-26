@@ -2410,11 +2410,10 @@ def build_tools_block(
     return "\n".join([l for l in lines if l is not None])
 
 
-def _compact_catalog_text(value: Any, *, limit: int) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)].rstrip() + "..."
+def _compact_catalog_text(value: Any) -> str:
+    """Whitespace-normalize catalog contract text. NEVER truncates — a cut
+    purpose/param/return description is a lost contract."""
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _annotation_node_name(node: ast.AST) -> str:
@@ -2602,7 +2601,13 @@ def build_compact_tools_block(
     *,
     header: str,
 ) -> str:
-    """Render the exact effective tools without full prose/examples schemas."""
+    """Render the exact effective tools without prose examples.
+
+    Compactness comes from FORMAT (dense lines, no examples), never from
+    cutting contract text: purpose, every parameter description, the return
+    description, and every constraint render in full — a truncated contract
+    is a lost contract (the model acts on the missing half).
+    """
     tools = [tool for tool in (tool_catalog or []) if isinstance(tool, dict)]
     if not tools:
         return ""
@@ -2616,7 +2621,7 @@ def build_compact_tools_block(
         tool_id = str(tool.get("id") or "unknown")
         async_suffix = " [async]" if tool.get("is_async") else ""
         lines.append(f"- {tool_id}{async_suffix}")
-        purpose = _compact_catalog_text(tool.get("purpose"), limit=240)
+        purpose = _compact_catalog_text(tool.get("purpose"))
         if purpose:
             lines.append(f"  purpose: {purpose}")
         args = tool.get("args")
@@ -2624,16 +2629,20 @@ def build_compact_tools_block(
             lines.append("  params:")
             for name, info in args.items():
                 lines.append(f"    - {_compact_arg_spec(name, info)}")
+        returns = _compact_catalog_text(tool.get("returns"))
+        if returns:
+            lines.append(f"  returns: {returns}")
         namespaces = tool.get("namespaces_applicable")
         if isinstance(namespaces, list) and namespaces:
             lines.append("  namespaces: " + ", ".join(str(item) for item in namespaces))
         constraints = tool.get("constraints")
         if isinstance(constraints, str):
             constraints = [constraints]
-        if isinstance(constraints, list) and constraints:
-            constraint = _compact_catalog_text(constraints[0], limit=180)
-            if constraint:
-                lines.append(f"  constraint: {constraint}")
+        if isinstance(constraints, list):
+            for entry in constraints:
+                constraint = _compact_catalog_text(entry)
+                if constraint:
+                    lines.append(f"  constraint: {constraint}")
     return "\n".join(lines)
 
 

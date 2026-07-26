@@ -31,11 +31,17 @@ Use this workflow:
 1. Call named_services_list first, unless the user explicitly named a namespace
    and operation.
 2. Use namespaces exactly as returned by named_services_list.
-3. For an unfamiliar namespace, call named_services_capabilities and
-   named_services_schema before search/get/write operations; when a namespace
-   does not serve object.schema, provider.about carries the same guidance.
+3. CONTRACT FIRST: a namespace's schema is your working map of it — the
+   search filters and what query text matches, object kinds, action
+   payloads. Before an operation on a namespace (search, get, list, action,
+   upsert, delete, host), have its schema visible — the result of an
+   earlier named_services_schema call in your context is exactly that; when
+   none is visible, call named_services_schema once. A namespace that serves
+   no schema says so in that result; such a provider documents its usage in
+   provider.about instead. When the contract cannot express the user's
+   request, say so and ask.
 4. Use named_services_search to find objects before named_services_get when the
-   exact object ref is not known.
+   exact object ref is not known, with the filters the schema names.
 5. Only use write, action, host-file, delete, or generic call tools when the
    user clearly asks for that operation and the namespace capability allows it.
    Read the available actions from named_services_capabilities.

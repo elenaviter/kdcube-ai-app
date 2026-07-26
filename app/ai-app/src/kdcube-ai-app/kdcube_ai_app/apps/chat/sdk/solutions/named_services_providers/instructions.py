@@ -7,6 +7,8 @@ Named services expose bridges to external namespace refs. A namespace service ex
 
 The tool catalog is authoritative. A `named_services.*` tool may be used for the namespaces listed in that tool's `namespaces applicable` scope. For search, prefer provider search scopes rendered under that tool when present; the namespace argument is the search scope, so a scoped namespace searches objects in that provider-declared object space. If the rendered scope list or semantics are not enough, call `provider_about`.
 
+CONTRACT FIRST. A namespace's schema is your working map of it: the object kinds, the search filters and what query text matches, account targeting, and each action's payload keys. Before an operation on a namespace — `search_objects`, `list_objects`, `get_object`, `object_action`, `upsert_object`, `delete_object`, `host_file` — have that schema visible: the rendered result of an earlier `named_services.object_schema(namespace=...)` call in your timeline is exactly that; when none is visible, read it once. A namespace that serves no schema says so in that result; such a provider documents its usage in `provider_about` instead. Plan each call from what the visible contract names; when it cannot express the user's request (say, no sender/recipient filter), say so and ask.
+
 ReAct starts each turn with a sparse local workspace. It can directly use only current-turn `conv:su:`, `conv:so:`, `conv:fi:`, and `conv:ar:` refs that were produced in this turn or explicitly materialized in this turn. Any other namespace ref is only a handle until it is materialized.
 
 When a namespace ref or request appears, pick the visible path that fits the goal:
@@ -17,24 +19,22 @@ When a namespace ref or request appears, pick the visible path that fits the goa
 
 2. Understand an unfamiliar namespace -> `named_services.provider_about(namespace=...)`. It gives purpose, searchable ref scopes, refs/stories/attachments, and domain language.
 
-3. Know exact object fields or search filters -> `named_services.object_schema(namespace=..., object_kind=... or object_ref=...)`. It gives the object body shape, search filter contract (`ret.extra.schema.search.filters`), and concrete tool recipes when available. It is also the contract source for actions and upserts (see 5 and 6).
+3. The schema read itself -> `named_services.object_schema(namespace=..., object_kind=... or object_ref=...)`; `object_kind`/`object_ref` narrow it to one object shape when the namespace serves several. Its result carries the object body shape, the search filter contract (rendered under `ret.extra.schema.search.filters`), each action's payload contract, and concrete tool recipes when available — everything the CONTRACT FIRST rule keeps visible for 4, 5, and 6.
 
-4. Discover objects when no exact ref is in hand -> `named_services.search_objects(namespace=..., query=...)` for text/semantic lookup, or `named_services.list_objects(namespace=..., ...)` for bounded browsing/pagination. Respect cursor/limit; avoid broad scans unless the user asks.
-   Accounts: a namespace whose `object_schema` shows an `account_id` field (in the object body or in `ret.extra.schema.search.filters`) serves several connected accounts at once. Working with a particular account is two steps: LIST the namespace's connected accounts — each row pairs the machine half (`account_id`, `ref`) with the human half (`label`, plus the raw address / workspace / display name) — then TARGET the chosen account by passing that row's `account_id` (or `ref`) in the filter or payload key the schema names. Speak to the user only in the human name; when the request is about one particular account and the user has not named it, ask, listing the candidates by their human labels. Pass ids only from list rows — an id is opaque and comes from the table, never from memory or construction. A request that spans accounts ("search all my mail") may stay un-targeted; the platform fans out across the eligible accounts. A result that asks for an account choice carries the same candidate rows — resolve by the human label and resend with that `account_id`.
+4. Discover objects when no exact ref is in hand -> `named_services.search_objects(namespace=..., query=...)` for text/semantic lookup, or `named_services.list_objects(namespace=..., ...)` for bounded browsing/pagination. The visible schema is the search vocabulary here: the filters that exist and what the query matches are the ones it names. Respect cursor/limit; broad scans are for when the user asks for breadth.
+   Accounts: a namespace whose `object_schema` shows an `account_id` field (in the object body or among its search filters) serves several connected accounts at once. Working with a particular account is two steps: LIST the namespace's connected accounts — each row pairs the machine half (`account_id`, `ref`) with the human half (`label`, plus the raw address / workspace / display name) — then TARGET the chosen account by passing that row's `account_id` (or `ref`) in the filter or payload key the schema names. Speak to the user only in the human name; when the request is about one particular account and the user has not named it, ask, listing the candidates by their human labels. Pass ids only from list rows — an id is opaque and comes from the table, never from memory or construction. A request that spans accounts ("search all my mail") may stay un-targeted; the platform fans out across the eligible accounts. A result that asks for an account choice carries the same candidate rows — resolve by the human label and resend with that `account_id`.
 
-5. Run a provider verb on an object (send, forward, download, upload, ...) -> `named_services.object_action`. Before your FIRST `object_action` or `upsert_object` on a namespace in a conversation, read `named_services.object_schema(namespace=...)` for it — an action is a realm-defined named protocol: the schema names each action's exact payload keys, value shapes, and file forms, and no general API pattern or other namespace predicts them. The platform holds this order: an action or upsert sent before that namespace's contract has been read in this conversation returns a protocol notice naming the schema call to make — read the contract, then retry with the documented arguments. Build the payload only from keys the contract names:
-   - `named_services.object_schema(namespace=...)` carries each action's payload keys, recipes, and object semantics;
-   - `named_services.provider_about(namespace=...)` carries the same guidance for namespaces that serve no schema.
+5. Run a provider verb on an object (send, forward, download, upload, ...) -> `named_services.object_action`. An action is a realm-defined named protocol: the visible schema names each action's exact payload keys, value shapes, and file forms, and no general API pattern or other namespace predicts them — build the payload only from keys the contract names. The platform holds the same order here: an action or upsert sent before that namespace's contract is visible in the conversation returns a protocol notice naming the schema call to make; read the contract, then retry with the documented arguments.
    Files travel in action payloads BY REF: put the file's workspace path (a `conv:fi:` logical path or the physical path a pull/exec returned) in the payload key the contract names for paths (e.g. `attachment_paths`, `file_path`), and the service reads the bytes itself. Keys carrying encoded content exist for clients that hold raw bytes outside a chat turn; inside a turn the path form is the correct one, and file content stays out of payload fields and out of your visible context.
    Files coming BACK ride the same by-ref rule: when an action result says a file was delivered as a file card (`download.encoding: "chat"`), the user already sees that card in the chat — mention it in words. Links you share with the user travel the same governed way; a download URL typed by hand into a message arrives broken, so no URL is ever constructed, guessed, or re-typed from memory.
    After a state-changing action, read the result back and confirm it matches what you asked — counts, recipients, ids. A mismatch is a failure to investigate, not a success to report.
 
-6. Create/update or delete (only when the tool is visible and scoped to that namespace) -> `named_services.upsert_object` for create/update, `named_services.delete_object` for delete/archive. The contract-first rule in 5 covers `upsert_object`: read the namespace's `object_schema` before your first upsert in a conversation — it names which fields exist, each field's shape, and its `update_strategy`. After a mutation, treat the returned ref/revision/body as the source of truth.
+6. Create/update or delete (only when the tool is visible and scoped to that namespace) -> `named_services.upsert_object` for create/update, `named_services.delete_object` for delete/archive. The contract-first rule above covers `upsert_object`: the visible schema names which fields exist, each field's shape, and its `update_strategy`. After a mutation, treat the returned ref/revision/body as the source of truth.
    - Mutating collection (array) fields on a namespace object: a collection field in `upsert_object` accepts EITHER a bare list or a `{ "add": [...], "remove": [...] }` delta. These delta semantics are platform-level and hold across namespaces:
      - Bare list -> set/append per the field's `update_strategy`: `replace` overwrites the whole list with what you send; `append` adds the item(s) you send. Omit the field to leave it unchanged.
      - Delta `{add, remove}` -> incremental edit applied as removes first, then adds. `add` appends item(s); `remove` removes matching item(s) (by value for value-lists; by ref or `dedup_key` for ref-lists).
-     - Replace ONE item -> add it with a matching `dedup_key` (e.g. an attachment keyed by filename); the new item supersedes the old one with that key. Do NOT add-then-delete.
-     - Remove ONE item -> use the field's `{remove: [...]}` delta. This is the only way to take an item off a list. `delete_object` is NOT a list tool: it destroys the underlying object itself (e.g. the file everywhere it is used) and is never used to edit a list.
+     - Replace ONE item -> add it with a matching `dedup_key` (e.g. an attachment keyed by filename); the new item supersedes the old one with that key.
+     - Remove ONE item -> the field's `{remove: [...]}` delta. `delete_object` has a different job: it destroys the underlying object itself, everywhere it is used; list membership is edited through the field's delta.
      - The field's exact `update_strategy`/`dedup_key`, and which fields exist at all, come from `named_services.object_schema`.
 
 7. Send a ReAct/runtime file INTO a namespace service — the reverse of pull -> `named_services.host_file(namespace=..., object_ref=..., file_ref=<conv:fi:...>, ...)`. `react.pull` brings an external namespace ref into ReAct as a `conv:fi:` artifact; `host_file` sends your `conv:fi:`/runtime file to the namespace service so it creates or registers a namespace file ref. `file_ref` is the ref/path itself — the platform moves the bytes. Hosting a file does NOT attach or cite it on a domain object. If the object schema supports attachments or file links, call `host_file` first, then cite the returned namespace ref in a separate `named_services.upsert_object` call according to that schema.
@@ -138,19 +138,25 @@ def named_services_bridge_instructions(
     )
     n = 3 if services_list else 2
     steps.append(
-        f"{n}. Know exact object fields, search filters, action payloads -> `{schema}(namespace=..., object_kind=...)`. "
-        "It is THE contract source for searches, actions, and upserts — including the search filter contract "
-        "(`ret.extra.schema.search.filters`)."
+        f"{n}. The schema read -> `{schema}(namespace=..., object_kind=...)`; `object_kind` narrows it to one "
+        "object shape when the namespace serves several. Its result carries the object body shape, the search "
+        "filter contract (rendered under `ret.extra.schema.search.filters`), and each action's payload contract. "
+        "CONTRACT FIRST: before an operation on a namespace (search, list, get, action, upsert, delete, host), "
+        "have its schema visible — the result of an earlier schema call in your context is exactly that; when "
+        "none is visible, read it once. A namespace that serves no schema says so in that result; such a provider "
+        f"documents its usage in `{about}` instead. Plan each call from what the visible contract names; when it "
+        "cannot express the user's request, say so and ask."
     )
     find_tail = f", or `{list_objects}(namespace=..., ...)` for bounded browsing/pagination" if list_objects else ""
     get_tail = f" `{get}` reads one object when its exact ref is in hand." if get else ""
     list_op = f"`{list_objects}`" if list_objects else "the namespace's list operation"
     steps.append(
         f"{n+1}. Discover objects when no exact ref is in hand -> `{search}(namespace=..., query=...)` for "
-        f"text/semantic lookup{find_tail}. Each namespace declares its OWN filters — read them from `{schema}` "
-        f"before searching.{get_tail} Respect cursor/limit; avoid broad scans unless the user asks.\n"
-        f"   Accounts: a namespace whose `{schema}` shows an `account_id` field (in the object body or in "
-        "`ret.extra.schema.search.filters`) serves several connected accounts at once. Working with a particular "
+        f"text/semantic lookup{find_tail}. The visible schema is the search vocabulary here: the filters that "
+        f"exist and what the query matches are the ones it names.{get_tail} Respect cursor/limit; broad scans are "
+        "for when the user asks for breadth.\n"
+        f"   Accounts: a namespace whose `{schema}` shows an `account_id` field (in the object body or among its "
+        "search filters) serves several connected accounts at once. Working with a particular "
         f"account is two steps: LIST the namespace's connected accounts with {list_op} — each row pairs the machine "
         "half (`account_id`, `ref`) with the human half (`label`, plus the raw address / workspace / display name) — "
         "then TARGET the chosen account by passing that row's `account_id` (or `ref`) in the filter or payload key "
@@ -161,12 +167,11 @@ def named_services_bridge_instructions(
     )
     steps.append(
         f"{n+2}. Run a provider verb on an object (send, forward, download, upload, ...) -> `{action}`. "
-        f"CONTRACT FIRST: before your FIRST `{action}` or `{upsert}` on a namespace in a conversation, read that "
-        f"namespace's `{schema}` — an action is a realm-defined named protocol: the schema names each action's exact "
-        "payload keys, value shapes, and file forms, and no general API pattern or other namespace predicts them. "
-        "NOTHING checks this order for you on this connection: an action sent without the contract produces payloads "
-        "the service rejects — or, worse, accepts with the wrong meaning. Owning this order is on you: read the "
-        "contract, then act, and build the payload only from keys the contract names.\n"
+        "An action is a realm-defined named protocol: the visible schema names each action's exact payload keys, "
+        "value shapes, and file forms, and no general API pattern or other namespace predicts them — build the "
+        "payload only from keys the contract names. On this connection, keeping the contract order is yours: the "
+        "service answers an off-contract payload with a rejection, and an accepted one carries whatever meaning "
+        "the service read into it.\n"
         "   Files travel in action payloads BY REF: put the file's reference (its conversation file link, or the "
         "local path your file tools report) in the payload key the contract names for paths, and the service reads "
         "the bytes itself. Inside a turn the ref/path form is the correct one; file content stays out of payload fields.\n"
@@ -184,9 +189,10 @@ def named_services_bridge_instructions(
         "`append` adds the item(s). Omit the field to leave it unchanged.\n"
         "     - Delta `{add, remove}` -> incremental edit applied as removes first, then adds (`remove` matches by "
         "value for value-lists; by ref or `dedup_key` for ref-lists).\n"
-        "     - Replace ONE item -> add it with a matching `dedup_key`; the new item supersedes the old. Do NOT add-then-delete.\n"
-        f"     - Remove ONE item -> the field's `{{remove: [...]}}` delta — the only way to take an item off a list. "
-        f"`{delete}` is NOT a list tool: it destroys the underlying object itself everywhere it is used."
+        "     - Replace ONE item -> add it with a matching `dedup_key`; the new item supersedes the old.\n"
+        f"     - Remove ONE item -> the field's `{{remove: [...]}}` delta. `{delete}` has a different job: it "
+        "destroys the underlying object itself, everywhere it is used; list membership is edited through the "
+        "field's delta."
     )
     steps.append(
         f"{n+4}. Send a local/workspace file INTO a namespace service -> `{host}(namespace=..., object_ref=..., "

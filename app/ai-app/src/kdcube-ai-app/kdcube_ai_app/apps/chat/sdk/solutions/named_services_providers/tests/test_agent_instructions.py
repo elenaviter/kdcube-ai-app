@@ -69,7 +69,7 @@ def test_bridge_surface_teaches_by_operation_name_with_bundle_file_tools():
     # contract-first + delta semantics survive on the bridge surface — and the
     # bridge is honest that no platform gate enforces the order here
     assert "CONTRACT FIRST" in block
-    assert "NOTHING checks this order" in block
+    assert "keeping the contract order is yours" in block
     assert "protocol notice" not in block
     assert '"add"' in block and '"remove"' in block
     assert "dedup_key" in block
@@ -115,8 +115,12 @@ def test_bridge_surface_binds_the_door_tool_names_when_given():
     assert "`object_schema`" not in block
     assert "`search_objects`" not in block
     # the door adds the list-first step; contract-first binds to the real name
+    # and covers EVERY operation (search included), not only mutations
     assert "source of truth for the namespaces" in block
-    assert "read that namespace's `named_services_schema`" in block
+    assert "CONTRACT FIRST" in block
+    assert "`named_services_schema(namespace=..., object_kind=...)`" in block
+    # anchored to what the model can inspect: an earlier schema result IS the contract
+    assert "in your context is exactly that" in block
 
 
 def test_bridge_surface_without_read_tool_drops_read_hint():
@@ -181,3 +185,27 @@ async def test_gatherer_uses_prebuilt_discovery_intros():
         discovery=_Discovery(),
     )
     assert "- `mem` — Durable user memory" in block
+
+
+def test_contract_first_covers_reads_not_only_mutations():
+    """Surfaced 2026-07-26: the rule read 'before your FIRST object_action or
+    upsert_object' — the model concluded schema was a pre-mutation check,
+    skipped it for search_objects, and searched Slack with imagined filters.
+    The rule now names EVERY operation, search first among them."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.instructions import (
+        NAMED_SERVICES_REACT_ADDITIONAL_INSTRUCTIONS as block,
+    )
+    assert "CONTRACT FIRST" in block
+    rule = block.split("CONTRACT FIRST", 1)[1].split("\n\n", 1)[0]
+    # positive teaching only — a "not only mutations/writes" denial would
+    # plant the mutation-scoped concept the model was never taught
+    assert "not only" not in rule
+    for op in ("`search_objects`", "`list_objects`", "`get_object`",
+               "`object_action`", "`upsert_object`", "`delete_object`", "`host_file`"):
+        assert op in rule, f"{op} not covered by the contract-first rule"
+    # the old mutation-scoped phrasing must not survive anywhere
+    assert "Before your FIRST `object_action` or `upsert_object`" not in block
+    # capability honesty: when the contract cannot express the request, ask
+    assert "say so and ask" in block
+    # visible-context anchored: the model can recognize the schema in its timeline
+    assert "in your timeline is exactly that" in block

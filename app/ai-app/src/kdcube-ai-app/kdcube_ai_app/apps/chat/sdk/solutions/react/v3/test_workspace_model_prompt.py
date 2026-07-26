@@ -316,7 +316,11 @@ def test_compact_tool_catalog_keeps_exact_ids_and_params_without_long_examples()
     assert "large example" not in text
     assert "exploration" not in text.lower()
     assert "exploitation" not in text.lower()
-    assert len(text) < 25_000
+    # Compactness comes from FORMAT (no examples, dense lines) — NEVER from
+    # cutting contract text. The full purpose must survive uncut: a truncated
+    # description is a lost contract (operator ruling 2026-07-26).
+    assert ("Search a demo corpus. " + "Long explanation. " * 80).strip() in text
+    assert "..." not in text.split("purpose: Search a demo corpus.", 1)[1].split("\n", 1)[0]
 
 
 def test_build_decision_system_text_includes_exec_guidance_only_when_lite_exec_block_selected():
