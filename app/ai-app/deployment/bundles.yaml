@@ -302,6 +302,11 @@ bundles:
                   grants:
                   - named_services:use
               named_services:
+                # The guarded service declares which connector app serves each
+                # provider in its auth scenarios - one per provider type.
+                connector_apps:
+                  slack: slack-demo
+                  google: gmail
                 namespaces:
                   instr:
                     label: Agent instruction sets
@@ -313,36 +318,42 @@ bundles:
                         label: About instruction sets
                         description: Explain the instruction-set namespace and its refs.
                         grants:
+                          - named_services:use
                           - instr:read
                       capabilities:
                         operation: provider.capabilities
                         label: Instruction-set capabilities
                         description: Read provider capabilities for the instruction-set namespace.
                         grants:
+                          - named_services:use
                           - instr:read
                       list:
                         operation: object.list
                         label: List instruction sets
                         description: List stored instruction sets (latest version per id).
                         grants:
+                          - named_services:use
                           - instr:read
                       get:
                         operation: object.get
                         label: Read one instruction set
                         description: Read one stored instruction set by ref, with its version history.
                         grants:
+                          - named_services:use
                           - instr:read
                       upsert:
                         operation: object.upsert
                         label: Save instruction-set version
                         description: Save the next immutable version of a stored instruction set (administrator operation).
                         grants:
+                          - named_services:use
                           - instr:write
                       delete:
                         operation: object.delete
                         label: Retire instruction set
                         description: Retire one version or every version of a stored instruction set (administrator operation).
                         grants:
+                          - named_services:use
                           - instr:write
                   mem:
                     label: User memories
@@ -354,54 +365,63 @@ bundles:
                         label: About memories
                         description: Explain the memory namespace and how to use it.
                         grants:
+                        - named_services:use
                         - memories:read
                       capabilities:
                         operation: provider.capabilities
                         label: Memory capabilities
                         description: Read provider capabilities for the memory namespace.
                         grants:
+                        - named_services:use
                         - memories:read
                       list:
                         operation: object.list
                         label: List memories
                         description: List memory notes visible to the delegated connection.
                         grants:
+                        - named_services:use
                         - memories:read
                       schema:
                         operation: object.schema
                         label: Memory schema
                         description: Read the object schema for memory notes.
                         grants:
+                        - named_services:use
                         - memories:read
                       search:
                         operation: object.search
                         label: Search memories
                         description: Search memory notes visible to the delegated connection.
                         grants:
+                        - named_services:use
                         - memories:read
                       get:
                         operation: object.get
                         label: Read one memory
                         description: Read one memory note by object ref.
                         grants:
+                        - named_services:use
                         - memories:read
                       upsert:
                         operation: object.upsert
                         label: Write memory
                         description: Create or update a memory note.
                         grants:
+                        - named_services:use
                         - memories:write
                       action:
                         operation: object.action
                         label: Memory action
                         description: Run a bounded provider action on a memory note.
                         grants:
+                        - named_services:use
                         - memories:read
                       delete:
                         operation: object.delete
                         label: Delete memory
                         description: Delete or archive a memory note.
                         grants:
+                        - named_services:use
                         - memories:write
                       call:
                         label: Generic memory call
@@ -411,46 +431,55 @@ bundles:
                             label: About memories
                             description: Explain the memory namespace and how to use it.
                             grants:
+                            - named_services:use
                             - memories:read
                           provider.capabilities:
                             label: Memory capabilities
                             description: Read provider capabilities for the memory namespace.
                             grants:
+                            - named_services:use
                             - memories:read
                           object.list:
                             label: List memories
                             description: List memory notes visible to the delegated connection.
                             grants:
+                            - named_services:use
                             - memories:read
                           object.schema:
                             label: Memory schema
                             description: Read the object schema for memory notes.
                             grants:
+                            - named_services:use
                             - memories:read
                           object.search:
                             label: Search memories
                             description: Search memory notes visible to the delegated connection.
                             grants:
+                            - named_services:use
                             - memories:read
                           object.get:
                             label: Read one memory
                             description: Read one memory note by object ref.
                             grants:
+                            - named_services:use
                             - memories:read
                           object.upsert:
                             label: Write memory
                             description: Create or update a memory note.
                             grants:
+                            - named_services:use
                             - memories:write
                           object.action:
                             label: Memory action
                             description: Run a bounded provider action on a memory note.
                             grants:
+                            - named_services:use
                             - memories:read
                           object.delete:
                             label: Delete memory
                             description: Delete or archive a memory note.
                             grants:
+                            - named_services:use
                             - memories:write
                   task:
                     label: Tasks
@@ -462,42 +491,49 @@ bundles:
                         label: About tasks
                         description: Explain the task namespace and how to use it.
                         grants:
+                        - named_services:use
                         - tasks:read
                       list:
                         operation: object.list
                         label: List tasks
                         description: List task objects visible to the delegated connection.
                         grants:
+                        - named_services:use
                         - tasks:read
                       schema:
                         operation: object.schema
                         label: Task schema
                         description: Read the object schema for tasks.
                         grants:
+                        - named_services:use
                         - tasks:read
                       search:
                         operation: object.search
                         label: Search tasks
                         description: Search task objects visible to the delegated connection.
                         grants:
+                        - named_services:use
                         - tasks:read
                       upsert:
                         operation: object.upsert
                         label: Write task
                         description: Create or update a task object.
                         grants:
+                        - named_services:use
                         - tasks:write
                       host_file:
                         operation: object.host_file
                         label: Host task file
                         description: Host or register a file/ref in the task namespace.
                         grants:
+                        - named_services:use
                         - tasks:write
                       delete:
                         operation: object.delete
                         label: Delete task
                         description: Delete or archive a task object.
                         grants:
+                        - named_services:use
                         - tasks:write
                       call:
                         label: Generic task call
@@ -507,36 +543,43 @@ bundles:
                             label: About tasks
                             description: Explain the task namespace and how to use it.
                             grants:
+                            - named_services:use
                             - tasks:read
                           object.list:
                             label: List tasks
                             description: List task objects visible to the delegated connection.
                             grants:
+                            - named_services:use
                             - tasks:read
                           object.schema:
                             label: Task schema
                             description: Read the object schema for tasks.
                             grants:
+                            - named_services:use
                             - tasks:read
                           object.search:
                             label: Search tasks
                             description: Search task objects visible to the delegated connection.
                             grants:
+                            - named_services:use
                             - tasks:read
                           object.upsert:
                             label: Write task
                             description: Create or update a task object.
                             grants:
+                            - named_services:use
                             - tasks:write
                           object.host_file:
                             label: Host task file
                             description: Host or register a file/ref in the task namespace.
                             grants:
+                            - named_services:use
                             - tasks:write
                           object.delete:
                             label: Delete task
                             description: Delete or archive a task object.
                             grants:
+                            - named_services:use
                             - tasks:write
                   cnv:
                     label: Canvas
@@ -548,30 +591,35 @@ bundles:
                         label: About canvas
                         description: Explain the canvas namespace and how to use it.
                         grants:
+                        - named_services:use
                         - canvas:read
                       list:
                         operation: object.list
                         label: List canvas objects
                         description: List canvas objects visible to the delegated connection.
                         grants:
+                        - named_services:use
                         - canvas:read
                       schema:
                         operation: object.schema
                         label: Canvas schema
                         description: Read the object schema for canvas objects.
                         grants:
+                        - named_services:use
                         - canvas:read
                       search:
                         operation: object.search
                         label: Search canvas
                         description: Search canvas objects visible to the delegated connection.
                         grants:
+                        - named_services:use
                         - canvas:read
                       upsert:
                         operation: object.upsert
                         label: Write canvas
                         description: Create or update a canvas object.
                         grants:
+                        - named_services:use
                         - canvas:write
                       call:
                         label: Generic canvas call
@@ -581,26 +629,31 @@ bundles:
                             label: About canvas
                             description: Explain the canvas namespace and how to use it.
                             grants:
+                            - named_services:use
                             - canvas:read
                           object.list:
                             label: List canvas objects
                             description: List canvas objects visible to the delegated connection.
                             grants:
+                            - named_services:use
                             - canvas:read
                           object.schema:
                             label: Canvas schema
                             description: Read the object schema for canvas objects.
                             grants:
+                            - named_services:use
                             - canvas:read
                           object.search:
                             label: Search canvas
                             description: Search canvas objects visible to the delegated connection.
                             grants:
+                            - named_services:use
                             - canvas:read
                           object.upsert:
                             label: Write canvas
                             description: Create or update a canvas object.
                             grants:
+                            - named_services:use
                             - canvas:write
                   conv:
                     label: Conversations
@@ -612,30 +665,35 @@ bundles:
                         label: About conversations
                         description: Explain the conversations namespace and how to use it.
                         grants:
+                        - named_services:use
                         - conversations:read
                       list:
                         operation: object.list
                         label: List conversations
                         description: List the delegated user's conversations.
                         grants:
+                        - named_services:use
                         - conversations:read
                       schema:
                         operation: object.schema
                         label: Conversation schema
                         description: Read the object schema for conversations.
                         grants:
+                        - named_services:use
                         - conversations:read
                       search:
                         operation: object.search
                         label: Search conversations
                         description: Search the delegated user's conversations.
                         grants:
+                        - named_services:use
                         - conversations:read
                       get:
                         operation: object.get
                         label: Read one conversation
                         description: Read one full conversation by ref.
                         grants:
+                        - named_services:use
                         - conversations:read
                       call:
                         label: Generic conversations call
@@ -645,26 +703,31 @@ bundles:
                             label: About conversations
                             description: Explain the conversations namespace and how to use it.
                             grants:
+                            - named_services:use
                             - conversations:read
                           object.list:
                             label: List conversations
                             description: List the delegated user's conversations.
                             grants:
+                            - named_services:use
                             - conversations:read
                           object.schema:
                             label: Conversation schema
                             description: Read the object schema for conversations.
                             grants:
+                            - named_services:use
                             - conversations:read
                           object.search:
                             label: Search conversations
                             description: Search the delegated user's conversations.
                             grants:
+                            - named_services:use
                             - conversations:read
                           object.get:
                             label: Read one conversation
                             description: Read one full conversation by ref.
                             grants:
+                            - named_services:use
                             - conversations:read
                   mail:
                     label: Mail
@@ -677,36 +740,42 @@ bundles:
                         label: About mail
                         description: Explain the mail namespace and connected-account model.
                         grants:
+                        - named_services:use
                         - mail:read
                       capabilities:
                         operation: provider.capabilities
                         label: Mail capabilities
                         description: Read provider capabilities for connected mail accounts.
                         grants:
+                        - named_services:use
                         - mail:read
                       list:
                         operation: object.list
                         label: List mail accounts
                         description: List connected mail accounts available to the delegated connection.
                         grants:
+                        - named_services:use
                         - mail:read
                       schema:
                         operation: object.schema
                         label: Mail schema
                         description: Read the mail object schema and ref format.
                         grants:
+                        - named_services:use
                         - mail:read
                       search:
                         operation: object.search
                         label: Search mail
                         description: Search messages in connected mail accounts.
                         grants:
+                        - named_services:use
                         - mail:read
                       get:
                         operation: object.get
                         label: Read mail message
                         description: Read one mail message and its attachment metadata by ref.
                         grants:
+                        - named_services:use
                         - mail:read
                       action:
                         operation: object.action
@@ -718,6 +787,7 @@ bundles:
                             description: Run a bounded mail action. download_attachments requires mail:read; send requires
                               mail:send; forward requires mail:read and mail:send.
                             grants:
+                            - named_services:use
                             - mail:read
                             - mail:send
                       call:
@@ -728,36 +798,43 @@ bundles:
                             label: About mail
                             description: Explain the mail namespace and connected-account model.
                             grants:
+                            - named_services:use
                             - mail:read
                           provider.capabilities:
                             label: Mail capabilities
                             description: Read provider capabilities for connected mail accounts.
                             grants:
+                            - named_services:use
                             - mail:read
                           object.list:
                             label: List mail accounts
                             description: List connected mail accounts available to the delegated connection.
                             grants:
+                            - named_services:use
                             - mail:read
                           object.schema:
                             label: Mail schema
                             description: Read the mail object schema and ref format.
                             grants:
+                            - named_services:use
                             - mail:read
                           object.search:
                             label: Search mail
                             description: Search messages in connected mail accounts.
                             grants:
+                            - named_services:use
                             - mail:read
                           object.get:
                             label: Read mail message
                             description: Read one mail message and its attachment metadata by ref.
                             grants:
+                            - named_services:use
                             - mail:read
                           object.action:
                             label: Mail action
                             description: Download attachments, send mail, or forward a message through a connected mail account.
                             grants:
+                            - named_services:use
                             - mail:read
                             - mail:send
                   slack:
@@ -947,11 +1024,11 @@ bundles:
               adapter: slack.oauth_user_token
               enabled: true
               connector_apps:
-                demo:
+                slack-demo:
                   label: KDCube Slack
                   enabled: true
                   client_id: <FILL_ME>
-                  client_secret_ref: connections.delegated_to_kdcube.providers.slack.connector_apps.demo.client_secret
+                  client_secret_ref: connections.delegated_to_kdcube.providers.slack.connector_apps.slack-demo.client_secret
                   allowed_claims:
                   - slack:search
                   - slack:post
