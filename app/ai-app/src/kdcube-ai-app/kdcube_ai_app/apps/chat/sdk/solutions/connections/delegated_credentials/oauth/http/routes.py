@@ -623,7 +623,7 @@ async def authorize(request: Request) -> Response:
     seeded_account_scope = await _seed_account_scope_for_consent(
         request, subject=subject, client_id=req.client_id, resource=req.resource, cfg=cfg,
     )
-    accounts_needed = _accounts_needed_for_consent(request, render_req.scopes, connected_accounts)
+    accounts_needed = _accounts_needed_for_consent(request, render_req.scopes, connected_accounts, cfg=cfg)
     return HTMLResponse(
         render_consent_html(
             render_req,
@@ -707,7 +707,7 @@ async def _connected_accounts_for_consent(subject: str) -> list[dict]:
     return [entry for entry in out if entry["provider_id"] and entry["account_id"]]
 
 
-def _accounts_needed_for_consent(request, scopes, connected_accounts):
+def _accounts_needed_for_consent(request, scopes, connected_accounts, *, cfg=None):
     """Which provider accounts the requested scope needs, for the consent
     page's 'Accounts this connection needs' panel. Best-effort: returns None on
     any failure or when the delegated-to config is unavailable (the panel then
@@ -734,11 +734,21 @@ def _accounts_needed_for_consent(request, scopes, connected_accounts):
                 claims=claims,
             )
 
+        # Door claims (mail:read) whose backing provider claim differs from the
+        # requested token, from the OAuth capability declarations.
+        door_claim_providers: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
+        if cfg is not None:
+            for grant, requirements in (cfg.connected_account_requirements() or {}).items():
+                door_claim_providers[grant] = [
+                    (req.provider_id, tuple(req.claims)) for req in requirements
+                ]
+
         return accounts_needed_for_scopes(
             scopes,
             config=config,
             connected_accounts=connected_accounts,
             connect_url_builder=_connect_url,
+            door_claim_providers=door_claim_providers or None,
         )
     except Exception:
         LOGGER.exception("[connection-hub.oauth] accounts-needed resolution failed")

@@ -123,6 +123,38 @@ def test_door_claims_without_a_provider_vocab_are_unresolved_not_invented():
     assert result.unresolved_claims == ("mail:read",)
 
 
+def test_door_claim_maps_to_provider_and_merges_into_its_row():
+    # mail:read is a door claim (no provider owns it in the vocabulary); the
+    # door mapping resolves it to google/gmail:read, which must MERGE into the
+    # same Google row as sheets:read rather than becoming unresolved.
+    result = accounts_needed_for_scopes(
+        ["mail:read", "sheets:read"],
+        config=_config(),
+        connected_accounts=[],
+        connect_url_builder=_connect_url,
+        door_claim_providers={"mail:read": [("google", ["gmail:read"])]},
+    )
+    assert [row.provider_id for row in result.providers] == ["google"]
+    google = result.providers[0]
+    assert google.needed_claims == ("gmail:read", "sheets:read")
+    assert result.unresolved_claims == ()
+    # least-privilege connect covers both door-backed and direct claims
+    assert google.connect_url == "hub://google/gmail?claims=gmail:read,sheets:read"
+
+
+def test_door_claim_provider_not_in_config_is_ignored():
+    result = accounts_needed_for_scopes(
+        ["mail:read"],
+        config=_config(),
+        connected_accounts=[],
+        connect_url_builder=_connect_url,
+        door_claim_providers={"mail:read": [("nonesuch", ["x:read"])]},
+    )
+    assert result.providers == ()
+    # token was matched by the door map (consumed), so it is not "unresolved"
+    assert result.unresolved_claims == ()
+
+
 def test_missing_config_returns_no_providers():
     result = accounts_needed_for_scopes(["sheets:read"], config=None)
     assert result.providers == ()

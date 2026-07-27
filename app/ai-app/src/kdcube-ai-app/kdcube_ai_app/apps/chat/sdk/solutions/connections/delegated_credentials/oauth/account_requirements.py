@@ -134,8 +134,17 @@ def accounts_needed_for_scopes(
     config: DelegatedToKdcubeConfig | None,
     connected_accounts: Iterable[Mapping[str, Any]] | None = None,
     connect_url_builder: Callable[[str, str, Sequence[str]], str] | None = None,
+    door_claim_providers: Mapping[str, Sequence[tuple[str, Sequence[str]]]] | None = None,
 ) -> AccountRequirements:
     """Resolve requested scopes to the provider accounts they need.
+
+    A requested claim maps to a provider two ways: directly, when it is a
+    provider-claim token in some provider's vocabulary (``sheets:read`` ->
+    Google); or through ``door_claim_providers`` for provider-neutral "door"
+    claims (``mail:read`` -> [(``google``, [``gmail:read``])]) whose backing
+    provider claim differs from the door token. Door-claim providers merge into
+    the same provider rows, so ``mail:read`` and ``sheets:read`` both land on the
+    one Google row.
 
     ``connect_url_builder(provider_id, connector_app_id, claims)`` returns the
     Connection Hub deep-link that pre-selects the provider, connector app, and
@@ -146,23 +155,40 @@ def accounts_needed_for_scopes(
         return AccountRequirements(providers=(), unresolved_claims=_norm_list(scopes))
 
     claim_index = _claim_to_providers(config)
+    door_index = door_claim_providers or {}
 
     # Group requested claims by the provider that owns them, preserving order.
+    # The value stored per provider is the PROVIDER claim to connect for
+    # (identical to the requested token for provider-claim scopes; the mapped
+    # provider claim for door claims).
     needed_by_provider: dict[str, list[str]] = {}
     unresolved: list[str] = []
+
+    def _add(provider_id: str, provider_claim: str) -> None:
+        bucket = needed_by_provider.setdefault(provider_id, [])
+        if provider_claim and provider_claim not in bucket:
+            bucket.append(provider_claim)
+
     for scope in scopes or ():
         token = str(scope or "").strip()
         if not token:
             continue
         owners = claim_index.get(token)
-        if not owners:
-            if token not in unresolved:
-                unresolved.append(token)
+        if owners:
+            for provider_id in owners:
+                _add(provider_id, token)
             continue
-        for provider_id in owners:
-            bucket = needed_by_provider.setdefault(provider_id, [])
-            if token not in bucket:
-                bucket.append(token)
+        door = door_index.get(token)
+        if door:
+            for provider_id, provider_claims in door:
+                pid = str(provider_id or "").strip()
+                if not pid or config.provider(pid) is None:
+                    continue
+                for provider_claim in (provider_claims or ()):
+                    _add(pid, str(provider_claim or "").strip())
+            continue
+        if token not in unresolved:
+            unresolved.append(token)
 
     # Index the operator's connected accounts by provider.
     accounts_by_provider: dict[str, list[ConnectedAccountView]] = {}

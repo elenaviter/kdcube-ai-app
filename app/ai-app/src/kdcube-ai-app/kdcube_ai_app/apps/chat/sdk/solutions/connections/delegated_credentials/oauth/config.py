@@ -50,6 +50,21 @@ class OAuthDelegatedToolConfig:
 
 
 @dataclass(frozen=True)
+class OAuthDelegatedAccountRequirement:
+    """One provider account a door claim is backed by, for the consent page.
+
+    A door claim (e.g. ``mail:read``) is provider-neutral: the connected account
+    that satisfies it holds a PROVIDER claim (``gmail:read``) that differs from
+    the door token. This declares that mapping so the consent page can resolve
+    which account to connect for a door claim, not just for provider-claim
+    tokens whose provider is discoverable from the claim vocabulary alone.
+    """
+
+    provider_id: str
+    claims: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OAuthDelegatedCapabilityConfig:
     grant: str
     label: str
@@ -57,6 +72,7 @@ class OAuthDelegatedCapabilityConfig:
     tools: tuple[OAuthDelegatedToolConfig, ...] = ()
     delegable_roles: tuple[str, ...] = ()
     delegable_permissions: tuple[str, ...] = ()
+    connected_accounts: tuple[OAuthDelegatedAccountRequirement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -103,6 +119,16 @@ class OAuthDelegatedClientConfig:
 
     def capability_map(self) -> dict[str, OAuthDelegatedCapabilityConfig]:
         return {item.grant: item for item in self.capabilities}
+
+    def connected_account_requirements(self) -> dict[str, tuple[OAuthDelegatedAccountRequirement, ...]]:
+        """Door claim -> the provider account(s) that back it. Used by the
+        consent page to resolve door claims (mail:read) whose provider is not
+        discoverable from the provider claim vocabulary alone."""
+        return {
+            item.grant: item.connected_accounts
+            for item in self.capabilities
+            if item.connected_accounts
+        }
 
     def resource_config(self, resource: str | None) -> OAuthDelegatedResourceConfig | None:
         text = str(resource or "").strip().rstrip("/")
@@ -279,6 +305,26 @@ def _parse_capabilities(raw: Any) -> tuple[OAuthDelegatedCapabilityConfig, ...]:
                 delegable_permissions=_coerce_string_tuple(
                     item.get("delegable_permissions") or item.get("permissions")
                 ),
+                connected_accounts=_parse_account_requirements(item.get("connected_accounts")),
+            )
+        )
+    return tuple(out)
+
+
+def _parse_account_requirements(raw: Any) -> tuple[OAuthDelegatedAccountRequirement, ...]:
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    out: list[OAuthDelegatedAccountRequirement] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            continue
+        provider_id = _coerce_str(item.get("provider_id") or item.get("provider"))
+        if not provider_id:
+            continue
+        out.append(
+            OAuthDelegatedAccountRequirement(
+                provider_id=provider_id,
+                claims=_coerce_string_tuple(item.get("claims")),
             )
         )
     return tuple(out)
