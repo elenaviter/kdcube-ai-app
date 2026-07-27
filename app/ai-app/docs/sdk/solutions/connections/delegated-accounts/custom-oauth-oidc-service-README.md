@@ -295,7 +295,6 @@ tool_claims:
       delegated_to_kdcube:
         connected_accounts:
           - provider_id: s1
-            connector_app_id: default
             claims:
               - s1:read
 ```
@@ -328,6 +327,9 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     resolve_connected_account_claim,
     run_with_connected_account_retry,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+    resolve_connector_app_id,
+)
 
 
 async def read_s1_object(source, object_id: str, account_id: str | None = None):
@@ -335,7 +337,7 @@ async def read_s1_object(source, object_id: str, account_id: str | None = None):
         credential = await resolve_connected_account_claim(
             source,
             provider_id="s1",
-            connector_app_id="default",
+            connector_app_id=resolve_connector_app_id("s1"),  # resolved, never hardcoded
             claim="s1:read",
             tool_name="s1.read_s1_object",
             account_id=account_id,

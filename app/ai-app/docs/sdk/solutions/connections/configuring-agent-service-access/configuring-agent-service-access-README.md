@@ -154,7 +154,7 @@ send_gmail:
   connections:
     delegated_to_kdcube:
       connected_accounts:
-        - { provider_id: google, connector_app_id: gmail, claims: [gmail:send] }
+        - { provider_id: google, claims: [gmail:send] }
 ```
 
 Either way the axis the runtime resolves on is the **provider** — which is why
