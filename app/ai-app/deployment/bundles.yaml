@@ -190,6 +190,16 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - mail:send
+            - grant: sheets:read
+              label: Read Google Sheets
+              description: Find spreadsheets and read their metadata and values through a connected Google account.
+              delegable_roles: [kdcube:role:registered, kdcube:role:paid, kdcube:role:privileged, kdcube:role:super-admin]
+              delegable_permissions: [sheets:read]
+            - grant: sheets:write
+              label: Edit Google Sheets
+              description: Create and edit spreadsheets, tabs, values, and formatting through a connected Google account.
+              delegable_roles: [kdcube:role:registered, kdcube:role:paid, kdcube:role:privileged, kdcube:role:super-admin]
+              delegable_permissions: [sheets:write]
             # Slack is a single provider, so it uses its OWN real claims (the
             # exact capabilities the Slack API needs), not an invented namespace
             # claim. These match SLACK_CONNECTED_ACCOUNT_CLAIMS.
@@ -960,6 +970,50 @@ bundles:
                   description: Read one message from connected mail accounts.
                   grants:
                   - mail:read
+                productivity_sheets_search:
+                  label: Find Google Sheets
+                  description: Find spreadsheets visible to a connected Google account.
+                  grants: [sheets:read]
+                productivity_sheets_describe:
+                  label: Describe Google Sheet
+                  description: Inspect spreadsheet tabs, dimensions, locale, time zone, and named ranges.
+                  grants: [sheets:read]
+                productivity_sheets_read:
+                  label: Read Google Sheet
+                  description: Read bounded ranges from a spreadsheet.
+                  grants: [sheets:read]
+                productivity_sheets_update_values:
+                  label: Update Google Sheet values
+                  description: Replace values in explicit spreadsheet ranges.
+                  grants: [sheets:write]
+                productivity_sheets_append_rows:
+                  label: Append Google Sheet rows
+                  description: Append rows to an explicit spreadsheet table range.
+                  grants: [sheets:write]
+                productivity_sheets_clear_values:
+                  label: Clear Google Sheet values
+                  description: Clear values from explicit spreadsheet ranges.
+                  grants: [sheets:write]
+                productivity_sheets_create_spreadsheet:
+                  label: Create Google spreadsheet
+                  description: Create a spreadsheet with optional initial values.
+                  grants: [sheets:write]
+                productivity_sheets_add_tab:
+                  label: Add Google Sheet tab
+                  description: Add a bounded tab to an existing spreadsheet.
+                  grants: [sheets:write]
+                productivity_sheets_update_tab:
+                  label: Update Google Sheet tab
+                  description: Rename, resize, or freeze rows and columns on a tab.
+                  grants: [sheets:write]
+                productivity_sheets_delete_tab:
+                  label: Delete Google Sheet tab
+                  description: Delete one spreadsheet tab by stable sheet id.
+                  grants: [sheets:write]
+                productivity_sheets_format_range:
+                  label: Format Google Sheet range
+                  description: Apply bounded common formatting to a spreadsheet range.
+                  grants: [sheets:write]
             - resource: '*/api/integrations/bundles/*/*/user-memories@2026-06-26/public/mcp/memories*'
               identity_scope: grantor_identity_family
               tools:
@@ -1020,6 +1074,8 @@ bundles:
                   allowed_claims:
                   - gmail:read
                   - gmail:send
+                  - sheets:read
+                  - sheets:write
               claims:
                 gmail:read:
                   label: Read Gmail
@@ -1037,6 +1093,24 @@ bundles:
                   - email
                   - profile
                   - https://www.googleapis.com/auth/gmail.send
+                sheets:read:
+                  label: Read Google Sheets
+                  description: Find spreadsheets and read their metadata and values.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  - https://www.googleapis.com/auth/spreadsheets.readonly
+                  - https://www.googleapis.com/auth/drive.metadata.readonly
+                sheets:write:
+                  label: Edit Google Sheets
+                  description: Create and edit spreadsheets, tabs, values, and formatting.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  - https://www.googleapis.com/auth/spreadsheets
+                  - https://www.googleapis.com/auth/drive.metadata.readonly
             slack:
               label: Slack
               adapter: slack.oauth_user_token

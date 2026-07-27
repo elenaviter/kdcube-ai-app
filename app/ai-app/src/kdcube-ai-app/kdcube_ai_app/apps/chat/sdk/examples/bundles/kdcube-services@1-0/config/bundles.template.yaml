@@ -24,6 +24,14 @@ bundles:
                   mode: "managed"
                   authority_id: "delegated_client"
                   selected_tool_grants: true
+              productivity:
+                auth:
+                  mode: "managed"
+                  authority_id: "delegated_client"
+                  selected_tool_grants: true
+                connector_apps:
+                  google: "gmail"
+                  slack: "slack-demo"
         ui:
           widgets:
             bundle_storage:

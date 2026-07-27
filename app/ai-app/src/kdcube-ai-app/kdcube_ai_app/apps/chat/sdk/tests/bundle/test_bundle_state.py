@@ -109,7 +109,7 @@ class TestBundleState:
         assert "turn_log" in annotations
         assert "timeline" in annotations
 
-    def test_state_does_not_leak_between_bundle_instances(self, bundle_dir):
+    def test_state_does_not_leak_between_bundle_instances(self, bundle_dir, bundle_id):
         """Two separate bundle instances do not share state."""
         try:
             from kdcube_ai_app.infra.plugin.bundle_loader import (

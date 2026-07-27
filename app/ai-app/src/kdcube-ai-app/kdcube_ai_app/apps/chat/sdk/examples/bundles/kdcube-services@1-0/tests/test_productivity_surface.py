@@ -11,9 +11,34 @@ from pathlib import Path
 
 import pytest
 
-from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
+from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
+    load_dynamic_module_for_path,
+)
 
 BUNDLE_ROOT = Path(__file__).resolve().parents[1]
+
+SHEETS_READ_TOOLS = {
+    "productivity_sheets_search",
+    "productivity_sheets_describe",
+    "productivity_sheets_read",
+}
+SHEETS_WRITE_TOOLS = {
+    "productivity_sheets_update_values",
+    "productivity_sheets_append_rows",
+    "productivity_sheets_clear_values",
+    "productivity_sheets_create_spreadsheet",
+    "productivity_sheets_add_tab",
+    "productivity_sheets_update_tab",
+    "productivity_sheets_delete_tab",
+    "productivity_sheets_format_range",
+}
+ALL_TOOLS = {
+    "productivity_slack_search",
+    "productivity_mail_search",
+    "productivity_mail_get",
+    *SHEETS_READ_TOOLS,
+    *SHEETS_WRITE_TOOLS,
+}
 
 
 def _surface_module():
@@ -25,19 +50,17 @@ def _surface_module():
 
 def test_every_tool_declares_provider_claims():
     module = _surface_module()
-    declared = {
-        name: config
-        for name, config in module.PRODUCTIVITY_TOOLS.items()
-    }
-    assert set(declared) == {
-        "productivity_slack_search",
-        "productivity_mail_search",
-        "productivity_mail_get",
-    }
+    declared = {name: config for name, config in module.PRODUCTIVITY_TOOLS.items()}
+    assert set(declared) == ALL_TOOLS
     expectations = {
         "productivity_slack_search": ("slack", ["slack:search"]),
         "productivity_mail_search": ("google", ["gmail:read"]),
         "productivity_mail_get": ("google", ["gmail:read"]),
+        **{name: ("google", ["sheets:read"]) for name in SHEETS_READ_TOOLS},
+        **{
+            name: ("google", ["sheets:read", "sheets:write"])
+            for name in SHEETS_WRITE_TOOLS
+        },
     }
     for name, (provider_id, claims) in expectations.items():
         requirements = module.tool_requirements(name)
@@ -51,14 +74,22 @@ async def test_surface_builds_with_declared_tool_roster():
     module = _surface_module()
     app = module.build_productivity_mcp_app(
         name="KDCube productivity",
-        config_factory=lambda: {"connector_apps": {"slack": "slack-demo", "google": "gmail"}},
+        config_factory=lambda: {
+            "connector_apps": {"slack": "slack-demo", "google": "gmail"}
+        },
         tenant_factory=lambda: "t",
         project_factory=lambda: "p",
         request=None,
     )
     tools = {tool.name for tool in await app.list_tools()}
-    assert tools == {
-        "productivity_slack_search",
-        "productivity_mail_search",
-        "productivity_mail_get",
-    }
+    assert tools == ALL_TOOLS
+
+    schemas = {tool.name: tool.inputSchema for tool in await app.list_tools()}
+    assert schemas["productivity_sheets_search"]["properties"]["query"]["description"]
+    assert schemas["productivity_sheets_read"]["properties"]["ranges"]["description"]
+    assert schemas["productivity_sheets_update_values"]["properties"]["updates"][
+        "description"
+    ]
+    assert schemas["productivity_sheets_format_range"]["properties"]["sheet_id"][
+        "description"
+    ]

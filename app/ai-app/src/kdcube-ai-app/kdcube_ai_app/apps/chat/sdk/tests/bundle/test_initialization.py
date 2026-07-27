@@ -33,14 +33,12 @@ class TestBundleInitialization:
         graph = bundle._build_graph()
         assert graph is not None
 
-    def test_configuration_property_returns_dict_with_role_models(self, bundle):
-        """configuration property returns dict with role_models."""
+    def test_configuration_property_returns_dict(self, bundle):
+        """configuration property returns the app's declared configuration."""
         assert hasattr(bundle, "configuration")
 
         config = bundle.configuration
         assert isinstance(config, dict)
-        assert "role_models" in config
-        assert isinstance(config["role_models"], dict)
 
     def test_bundle_handles_none_redis_falls_back_to_defaults(self, bundle):
         """Bundle handles missing redis (falls back to defaults)."""

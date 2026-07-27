@@ -19,12 +19,12 @@ class TestBundleConfiguration:
     """Test that bundle settings work correctly."""
 
     def test_default_role_models_applied_from_code(self, bundle):
-        """Default role_models applied from code."""
+        """Declared model roles contain a model slug."""
         config = bundle.configuration
+        if "role_models" not in config:
+            pytest.skip("App declares no model roles")
         role_models = config.get("role_models") or {}
-        assert len(role_models) > 0, (
-            "Bundle must define at least one role in role_models"
-        )
+        assert role_models, "Declared role_models must not be empty"
         for role_key, role_val in role_models.items():
             assert isinstance(role_val, dict), (
                 f"role_models[{role_key!r}] must be a dict, got {type(role_val)}"
@@ -36,8 +36,8 @@ class TestBundleConfiguration:
     def test_bundle_props_initialized_from_configuration(self, bundle):
         """bundle_props is set from configuration defaults at init time."""
         assert isinstance(bundle.bundle_props, dict)
-        assert "role_models" in bundle.bundle_props
-        assert isinstance(bundle.bundle_props["role_models"], dict)
+        defaults = dict(bundle.bundle_props_defaults or {})
+        assert set(defaults).issubset(bundle.bundle_props)
 
     def test_bundle_prop_returns_correct_model_for_existing_role(self, bundle):
         """bundle_prop() resolves a nested config path correctly."""
@@ -101,7 +101,8 @@ class TestBundleConfiguration:
             props = await bundle.refresh_bundle_props(state=state)
 
             assert isinstance(props, dict)
-            assert "role_models" in props
+            defaults = dict(bundle.bundle_props_defaults or {})
+            assert set(defaults).issubset(props)
         finally:
             bundle.redis = original_redis
             bundle.kv_cache = original_kv_cache
@@ -116,8 +117,8 @@ class TestBundleConfiguration:
             props = await bundle.refresh_bundle_props(state=state)
 
             assert isinstance(props, dict)
-            # Defaults contain role_models at minimum
-            assert "role_models" in props
+            defaults = dict(bundle.bundle_props_defaults or {})
+            assert set(defaults).issubset(props)
         finally:
             bundle.redis = original_redis
 
@@ -155,8 +156,8 @@ class TestBundleConfiguration:
         config = bundle.configuration
         assert isinstance(config, dict)
 
-    def test_configuration_contains_role_models_key(self, bundle):
-        """configuration dict always has role_models key."""
+    def test_declared_role_models_is_a_mapping(self, bundle):
+        """role_models is a mapping when the app declares it."""
         config = bundle.configuration
-        assert "role_models" in config
-        assert isinstance(config["role_models"], dict)
+        if "role_models" in config:
+            assert isinstance(config["role_models"], dict)

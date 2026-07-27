@@ -18,7 +18,8 @@ see_also:
 # Resolve a Connected Credential in Tool Code
 
 Every integration recipe - [Gmail](google-gmail-README.md),
-[Slack](slack-README.md), a [custom OAuth/OIDC service](custom-oauth-oidc-service-README.md) -
+[Google Sheets](google-sheets-README.md), [Slack](slack-README.md), or a
+[custom OAuth/OIDC service](custom-oauth-oidc-service-README.md) -
 wires a specific provider. This recipe covers the one step they all share: how
 your tool code, at call time, obtains the user's provider credential without any
 token ever living in your code.
@@ -104,7 +105,7 @@ value comes from - nothing is hardcoded magic:**
 | --- | --- | --- |
 | `source` | the request scope | The platform threads it to your tool; the SDK reads tenant/project/user from it (or the ambient request context). Not something you invent. |
 | `provider_id` | the Delegated-to-KDCube **provider row** | A key under `connections.delegated_to_kdcube.providers.<id>` in `bundles.yaml` (`google`, `slack`, or your own). It names a provider you (or a platform integration) registered - adding a new one is step 1 of *Adding a new service* below. |
-| `connector_app_id` | which OAuth **connector app** of that provider | **Resolved, never hardcoded.** `resolve_connector_app_id(provider_id)` reads the guarded service's declaration (`surfaces.as_provider.mcp.<door>.connector_apps: {google: gmail}`), which names one of `providers.<provider>.connector_apps.<app_id>`. A provider can have several (gmail, sheets); the service picks. Empty = provider-wide (any connector app's account qualifies). |
+| `connector_app_id` | which OAuth **connector app** of that provider | **Resolved, never hardcoded.** `resolve_connector_app_id(provider_id)` reads the guarded service's declaration (`surfaces.as_provider.mcp.<door>.connector_apps: {google: gmail}`), which names one of `providers.<provider>.connector_apps.<app_id>`. A provider can have several connector apps; the service picks one. Empty = provider-wide (any connector app's account qualifies). |
 | `claim` | the exact provider **claim** the op needs | A key under `providers.<provider>.claims.<claim>` (e.g. `gmail:read`), each mapping to the real OAuth `provider_scopes`; also fenced by the connector app's `allowed_claims`. |
 | `tool_name` | your label for logs + consent surfaces | Free-form; name it after the tool/operation (`mail.read_message`). |
 | `account_id` | which of the user's connected accounts | Runtime. Empty lets the broker pick or ask - `account_required` returns labeled `candidates`, and you resend with the chosen id. |
@@ -234,12 +235,15 @@ steps - each string you pass in section 2 becomes a config key here:
    (`connections.delegated_to_kdcube.providers.<provider>`): the OAuth client
    (`client_id`, `client_secret_ref`), the connector app's `allowed_claims`,
    and each claim's real `provider_scopes`. For a Google service like Sheets you
-   reuse the `google` provider and add a claim (`sheets:read` ->
-   `.../auth/spreadsheets.readonly`) - either on the existing `gmail` connector
-   app or a dedicated `sheets` connector app if it needs its own OAuth client.
+   reuse the `google` provider and add claims such as `sheets:read`. The built-in
+   productivity door deliberately reuses the stable `gmail` connector-app id,
+   so an existing Google account can serve both Gmail and Sheets without
+   changing stored account identity.
    Worked references:
    - [Google Gmail Integration](google-gmail-README.md) - the Google example end
      to end (console setup, redirect URIs, scopes); the pattern Sheets follows.
+   - [Google Sheets Through the Productivity MCP Door](google-sheets-README.md) -
+     the complete built-in Sheets configuration, tool, consent, and verification path.
    - [Custom OAuth/OIDC Service Integration](custom-oauth-oidc-service-README.md) -
      a brand-new provider (your own S1), including resolving its credential in
      tool code.
@@ -254,9 +258,8 @@ steps - each string you pass in section 2 becomes a config key here:
    claim, then call the provider API with `credential.access_token`.
 4. **Declare the tool's need** - the `connected_accounts` policy
    `{provider_id, claims}` so the gates, consent surfaces, and demand ordering
-   know what to ask for. (In the productivity door, the Google Sheets and
-   LinkedIn slots are already stubbed as commented `TODO` policies of this exact
-   shape.)
+   know what to ask for. The productivity door's Sheets tools are a complete
+   reference implementation of this shape.
 
 The user connects the account once ([Delegated to KDCube], per provider and
 connector app); from then on your tool gets a live token per call, at the

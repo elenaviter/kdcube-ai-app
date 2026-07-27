@@ -32,13 +32,21 @@ from kdcube_ai_app.infra.plugin.bundle_loader import venv
 
 
 @venv(requirements="requirements.txt", timeout_seconds=120)
-def build_report(payload: dict) -> dict:
-    ...
+async def build_report(payload: dict) -> dict:
+    # This body runs in the dedicated child process. Blocking optional-library
+    # calls are isolated from the shared proc event loop here.
+    return blocking_report_library.build(payload)
+
+
+async def handle_request(payload: dict) -> dict:
+    return await build_report(payload)
 ```
 
 Important:
 
 - the decorated callable is the boundary
+- use an `async def` decorated callable when calling it from proc; the runtime
+  waits for its subprocess off the shared proc event loop
 - arguments and return values must be serializable
 - bundle code reload and venv rebuild are separate concerns
 

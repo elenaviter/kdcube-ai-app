@@ -1,5 +1,5 @@
 bundle:
-  repo: "kdcube/kdcube-ai-app"
+  repo: "kdcube/kdcube"
   ref: "unreleased"
   description: |
     Initial built-in KDCube services bundle.
@@ -18,6 +18,10 @@ bundle:
       file transfer without placing binary bytes in MCP/model context.
     - Uses Connection Hub delegated credentials and descriptor-managed
       tool-centric grants.
+    - Adds bounded Google Sheets discovery, read, values, tab, and formatting
+      tools to the managed productivity MCP surface. Google credentials remain
+      behind the connected-account boundary and optional dependencies remain
+      in the app-owned venv.
     - Declares the complete interface in OpenAPI and documents storage
       ownership, retention, backup, cleanup, and temporary staging constraints.
 

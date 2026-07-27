@@ -46,7 +46,8 @@ class TestRefreshBundlePropsNoRedis:
             bundle.kv_cache = None
             props = await bundle.refresh_bundle_props(state={"tenant": "t", "project": "p"})
             assert isinstance(props, dict)
-            assert "role_models" in props
+            defaults = dict(bundle.bundle_props_defaults or {})
+            assert set(defaults).issubset(props)
         finally:
             bundle.redis = orig_redis
             bundle.kv_cache = orig_kv
@@ -58,7 +59,8 @@ class TestRefreshBundlePropsNoRedis:
         try:
             props = await bundle.refresh_bundle_props(state={})
             assert isinstance(props, dict)
-            assert "role_models" in props
+            defaults = dict(bundle.bundle_props_defaults or {})
+            assert set(defaults).issubset(props)
         finally:
             bundle.redis = orig_redis
 
@@ -83,10 +85,12 @@ class TestRefreshBundlePropsWithMockCache:
     @pytest.mark.anyio
     async def test_kv_cache_override_merged_into_props(self, bundle):
         """Overrides from kv_cache are deep-merged with defaults."""
+        orig_redis = bundle.redis
         orig_kv = bundle.kv_cache
         orig_props = dict(bundle.bundle_props)
         try:
             override = {"role_models": {"overridden-role": {"provider": "openai", "model": "gpt-4o-kv"}}}
+            bundle.redis = None
             bundle.kv_cache = _make_mock_kv_cache(override)
 
             # Need bundle_spec.id to trigger cache lookup
@@ -102,15 +106,18 @@ class TestRefreshBundlePropsWithMockCache:
             )
             assert role_models["overridden-role"]["model"] == "gpt-4o-kv"
         finally:
+            bundle.redis = orig_redis
             bundle.kv_cache = orig_kv
             bundle.bundle_props = orig_props
 
     @pytest.mark.anyio
     async def test_kv_cache_none_data_uses_defaults(self, bundle):
         """When kv_cache returns None, defaults are used."""
+        orig_redis = bundle.redis
         orig_kv = bundle.kv_cache
         orig_props = dict(bundle.bundle_props)
         try:
+            bundle.redis = None
             bundle.kv_cache = _make_mock_kv_cache(None)
 
             if not getattr(getattr(bundle.config, "ai_bundle_spec", None), "id", None):
@@ -120,8 +127,10 @@ class TestRefreshBundlePropsWithMockCache:
                 state={"tenant": "t", "project": "p"}
             )
             assert isinstance(props, dict)
-            assert "role_models" in props
+            defaults = dict(bundle.bundle_props_defaults or {})
+            assert set(defaults).issubset(props)
         finally:
+            bundle.redis = orig_redis
             bundle.kv_cache = orig_kv
             bundle.bundle_props = orig_props
 

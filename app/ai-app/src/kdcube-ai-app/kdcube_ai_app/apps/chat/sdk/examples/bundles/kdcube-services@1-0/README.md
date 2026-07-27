@@ -1,7 +1,7 @@
 ---
 id: kdcube-services@1-0
 title: "KDCube Services App"
-summary: "Built-in KDCube service surfaces for delegated external clients. It exposes managed MCP tools for KDCube conversations and configured named-service namespaces."
+summary: "Built-in KDCube service surfaces for delegated clients: conversations, named services, and connected-account productivity tools."
 status: active
 tags: ["app", "bundle", "mcp", "storage", "connection-hub", "delegated-credentials", "conversations"]
 module: entrypoint
@@ -11,6 +11,7 @@ primary_surfaces:
   - "Privileged platform administration widgets — economics, conversations, gateway, Redis, and apps"
   - "MCP endpoint `conversations` — delegated access to conversations_export"
   - "MCP endpoint `named_services` — delegated access to configured named-service namespaces"
+  - "MCP endpoint `productivity` — governed Slack, mail, and Google Sheets tools over connected accounts"
   - "Signed public file transfer — conversation, mail, Slack, and staged uploads"
 links:
   config: config/bundles.template.yaml
@@ -189,6 +190,32 @@ reliably convert that tool result into a new OAuth consent flow, so production
 resources should advertise likely namespace grants during initial Connection
 Hub consent.
 
+### Productivity
+
+MCP endpoint:
+
+```text
+/api/integrations/bundles/{tenant}/{project}/kdcube-services@1-0/public/mcp/productivity
+```
+
+This typed MCP surface runs over accounts the approving user connected through
+Connection Hub. It currently exposes Slack search, mail search/read, and Google
+Sheets tools.
+
+| Sheets tools | Caller grant | Connected Google claim |
+| --- | --- | --- |
+| `productivity_sheets_search`, `productivity_sheets_describe`, `productivity_sheets_read` | `sheets:read` | `sheets:read` |
+| values, spreadsheet, tab, and formatting mutations | `sheets:write` | `sheets:read` + `sheets:write` |
+
+The caller grant is selected under **Delegated by KDCube**. The Google claim is
+approved under **Delegated to KDCube**. The app resolves the credential only
+after both controls pass and never returns it to the MCP client or model.
+
+Sheets calls use the app-owned `requirements.txt` and async `@venv` helper in
+`services/productivity/google_sheets.py`; provider normalization lives in the
+SDK proxy. The [Google Sheets recipe](../../../../../../../../../docs/recipes/connections/integrations/google-sheets-README.md)
+contains the exact setup and regression walk.
+
 ### Signed File Transfer
 
 The named-service MCP surface keeps binary bytes out of model context through
@@ -213,11 +240,16 @@ kdcube-services@1-0/
     mcp/
       conversations.py           # FastMCP tool registration
       named_services.py          # FastMCP named-service bridge registration
+      productivity.py            # productivity surface composition
+      productivity_sheets.py     # typed Google Sheets MCP registrations
   services/
     conversations/
       export.py                  # conversation export product logic
     named_services/
       bridge.py                  # grant-record namespace policy + dispatch
+    productivity/
+      google_sheets.py           # credential orchestration + app-owned @venv
+  requirements.txt               # optional app dependencies (gspread)
   config/
     bundles.template.yaml
     bundles.secrets.template.yaml

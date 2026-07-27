@@ -44,17 +44,23 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_tool_enforcement impo
 )
 
 from ...services.named_services.request_scope import set_public_base_url_from_request
+from .productivity_sheets import (
+    SHEETS_PRODUCTIVITY_TOOLS,
+    register_google_sheets_tools,
+)
 
 ConfigFactory = Callable[[], Mapping[str, Any]]
 
 PRODUCTIVITY_MCP_INSTRUCTIONS = """\
 This MCP server exposes productivity tools that run on the approving user's
-connected accounts (Slack, mail). Each tool names the account access it needs;
-when a call reports a consent requirement, relay the reason and the
-connection_hub_url to the user instead of retrying blindly: connect_required,
-claim_upgrade_required, and reconnect_required are fixed by the user at
-connection_hub_url; account_required is fixed by resending the same call with
-account_id set from candidates.
+connected accounts (Slack, mail, Google Sheets). For Sheets, use search when
+the spreadsheet id is unknown, describe before structural changes, and pass
+the returned stable ids to read or write tools. Each tool names the account
+access it needs. When a call reports a consent requirement, relay the reason
+and connection_hub_url to the user instead of retrying blindly:
+connect_required, claim_upgrade_required, and reconnect_required are fixed by
+the user at connection_hub_url; account_required is fixed by resending the
+same call with account_id set from candidates.
 """
 
 # Declarative per-tool requirements, in the SAME shape application tool
@@ -95,19 +101,7 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
             },
         },
     },
-    # TODO(productivity): Google Sheets - same declaration shape once the
-    # sheets integration ships (provider row + claims in Connection Hub):
-    # "productivity_sheets_read": {
-    #     "label": "Read spreadsheet",
-    #     "description": "Read ranges from the user's connected Google Sheets.",
-    #     "connections": {
-    #         "delegated_to_kdcube": {
-    #             "connected_accounts": [
-    #                 {"provider_id": "google", "claims": ["sheets:read"]},
-    #             ],
-    #         },
-    #     },
-    # },
+    **SHEETS_PRODUCTIVITY_TOOLS,
     # TODO(productivity): LinkedIn - same declaration shape once the linkedin
     # integration ships:
     # "productivity_linkedin_search": {
@@ -309,5 +303,11 @@ def build_productivity_mcp_app(
             include_html=include_html,
             account_id=account_id,
         )
+
+    register_google_sheets_tools(
+        mcp=mcp,
+        tool_annotations_type=ToolAnnotations,
+        enforce=_enforce,
+    )
 
     return mcp

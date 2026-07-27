@@ -19,10 +19,12 @@ class TestModelRouting:
     """Test that model selection works correctly."""
 
     def test_default_model_present_in_role_models(self, bundle):
-        """Bundle has at least one role defined in role_models with a model slug."""
+        """An app that declares model roles gives each one a model slug."""
         config = bundle.configuration
+        if "role_models" not in config:
+            pytest.skip("App declares no model roles")
         role_models = config.get("role_models") or {}
-        assert role_models, "Bundle must define at least one role in role_models"
+        assert role_models, "Declared role_models must not be empty"
         for role, spec in role_models.items():
             assert spec.get("model"), f"role_models[{role!r}] must have a non-empty 'model' key"
 

@@ -54,6 +54,7 @@ from kdcube_ai_app.infra.service_hub.inventory import BundleState, Config
 from .services.conversations.named_service import build_conversation_named_service_provider
 from .services.named_services import NamedServicesMcpBridge
 from .services.named_services.request_scope import get_public_base_url
+from .services.productivity import bind_service as bind_productivity_service
 from .surfaces.mcp import conversations as conversations_mcp_module
 from .surfaces.mcp import named_services as named_services_mcp_module
 from .surfaces.mcp import productivity as productivity_mcp_module
@@ -312,6 +313,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
 
         gmail_tools_module.bind_service(self)
         slack_tools_module.bind_service(self)
+        bind_productivity_service(self)
         actor = getattr(self.comm_context, "actor", None)
         return productivity_mcp_module.build_productivity_mcp_app(
             name="KDCube productivity",
@@ -1185,4 +1187,3 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         except Exception:
             self.logger.log(f"Error loading ai_bundles by user {user_id}: {traceback.format_exc()}", "ERROR")
         return [default_html]
-

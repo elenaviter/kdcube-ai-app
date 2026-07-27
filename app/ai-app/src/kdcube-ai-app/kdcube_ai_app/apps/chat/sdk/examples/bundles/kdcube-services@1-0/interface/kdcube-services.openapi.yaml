@@ -85,6 +85,28 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/WidgetHtml" }
 
+  /bundles/{tenant}/{project}/{bundle_id}/widgets/app_config:
+    get:
+      tags: [Widgets]
+      summary: Serve the privileged app-config editor.
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      responses:
+        "200": { $ref: "#/components/responses/WidgetHtml" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/widgets/agentic_instructions:
+    get:
+      tags: [Widgets]
+      summary: Serve the agent-instruction configuration editor.
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      responses:
+        "200": { $ref: "#/components/responses/WidgetHtml" }
+
   /bundles/{tenant}/{project}/{bundle_id}/widgets/control_plane:
     get:
       tags: [Widgets]
@@ -146,6 +168,48 @@ paths:
       summary: Return the bundle-storage widget bootstrap content.
       operationId: bundle_storage_widget
       x-kdcube-result-alias: bundle_storage_widget
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/app_config_widget:
+    post:
+      tags: [Widget Operations]
+      summary: Return the app-config widget bootstrap content.
+      operationId: app_config_widget
+      x-kdcube-result-alias: app_config_widget
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/agentic_instructions_widget:
+    post:
+      tags: [Widget Operations]
+      summary: Return the agent-instruction widget bootstrap content.
+      operationId: agentic_instructions_widget
+      x-kdcube-result-alias: agentic_instructions_widget
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody: { $ref: "#/components/requestBodies/OperationEnvelope" }
+      responses:
+        "200": { $ref: "#/components/responses/WrappedOperation" }
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/agentic_instructions:
+    post:
+      tags: [Widget Operations]
+      summary: List, preview, project, save, or retire agent instruction sets.
+      operationId: agentic_instructions
+      x-kdcube-result-alias: agentic_instructions
       parameters:
         - $ref: "#/components/parameters/Tenant"
         - $ref: "#/components/parameters/Project"
@@ -282,7 +346,8 @@ paths:
       summary: Invoke the managed productivity MCP resource.
       description: |
         Stateless streamable-HTTP MCP endpoint serving plain tools over the
-        approving user's connected accounts (Slack search, mail search/read).
+        approving user's connected accounts (Slack search, mail search/read,
+        and bounded Google Sheets discovery/read/write operations).
         Each tool declares its connected-account requirements and enforces
         them at execution time; consent envelopes carry the Connection Hub
         next step.

@@ -94,6 +94,7 @@ def test_required_package_contract_is_present() -> None:
     required = [
         "README.md",
         "AGENTS.md",
+        "requirements.txt",
         "release.yaml",
         "config/bundles.template.yaml",
         "config/bundles.secrets.template.yaml",

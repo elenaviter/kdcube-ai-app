@@ -25,8 +25,8 @@ tenant/project Postgres + conversation object storage
 local integration staging
   short-lived, single-use inbound upload bytes
 
-mail / Slack provider storage
-  source binaries fetched on demand; not copied into app state
+Google / mail / Slack provider storage
+  source data fetched or changed on demand; not copied into app state
 
 bundle storage
   generated widget build output and runtime build cache
@@ -44,6 +44,7 @@ Redis
 | File-link signing key | operator/admin | `bundles.secrets.yaml` or configured app secret provider | read | yes |
 | Conversation index/search rows | conversation subsystem | tenant/project Postgres schema | read | no |
 | Conversation turn artifacts and `conv:fi:` bytes | conversation subsystem | `ConversationStore` under configured `STORAGE_PATH` | read | may contain user content |
+| Google Sheets data and metadata | Google account | Sheets and Drive APIs | read/write on demand | may contain user content |
 | Mail and Slack attachment bytes | external provider/account | provider API | read on demand | may contain user content |
 | Inbound integration upload | KDCube Services staging adapter | local `kdcube-integration-staging` directory | temporary write/delete | may contain user content |
 | Widget build output | platform app loader | app-scoped bundle storage | generated write | no domain authority |
@@ -121,9 +122,11 @@ signed token, then materializes the referenced `conv:fi:` bytes from the
 conversation subsystem under the token's tenant/project/user/conversation
 scope.
 
-## Provider-Owned Integration Files
+## Provider-Owned Integration Data
 
-Mail and Slack objects remain provider-owned. `integration_file_download`
+Google Sheets, mail, and Slack objects remain provider-owned. Sheets operations
+return bounded values and metadata but do not copy spreadsheets into app state.
+`integration_file_download`
 verifies the signed token, resolves the delegated provider credential through
 Connection Hub, fetches the exact attachment/file from the provider, and
 streams it with `Cache-Control: private, no-store`.

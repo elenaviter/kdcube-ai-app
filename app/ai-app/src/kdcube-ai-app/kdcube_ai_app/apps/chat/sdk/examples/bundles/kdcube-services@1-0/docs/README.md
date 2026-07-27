@@ -81,7 +81,8 @@ cannot be expressed as authority/grants in the descriptor.
 
 ## Current Implementation
 
-The first service families are `conversations` and `named_services`.
+The current service families are `conversations`, `named_services`, and
+`productivity`.
 
 ```text
 public/mcp/conversations
@@ -132,6 +133,20 @@ signal, but it is not equivalent to an HTTP OAuth challenge. Existing MCP
 clients may not automatically restart consent from a tool result. For reliable
 Claude flows, advertise the grants the resource will likely need during initial
 Connection Hub consent.
+
+```text
+public/mcp/productivity
+  -> typed Slack, mail, and Google Sheets tools
+  -> selected-tool managed guard
+  -> connected-account claim enforcement
+  -> trusted app service resolves one live provider credential
+  -> provider adapter or app-owned @venv subprocess
+```
+
+Google Sheets is the reference optional-dependency path. The app owns the async
+`@venv` boundary and `gspread` requirement; the SDK owns only serializable
+provider operations. Synchronous provider calls therefore run outside the
+shared proc event loop.
 
 ### Conversation named service (`conv`)
 

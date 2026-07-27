@@ -17,8 +17,8 @@ Current declared surface families:
 
 | Family | Aliases |
 | --- | --- |
-| Widgets | `bundle_storage`, `control_plane`, `conversation_browser`, `svc_gateway`, `redis_browser`, `ai_bundles` |
-| Operations | `bundle_storage_widget`, `control_plane`, `conversation_browser`, `svc_gateway`, `redis_browser`, `ai_bundles` |
+| Widgets | `bundle_storage`, `app_config`, `agentic_instructions`, `control_plane`, `conversation_browser`, `svc_gateway`, `redis_browser`, `ai_bundles` |
+| Operations | `bundle_storage_widget`, `app_config_widget`, `agentic_instructions_widget`, `agentic_instructions`, `control_plane`, `conversation_browser`, `svc_gateway`, `redis_browser`, `ai_bundles` |
 | MCP | `conversations`, `named_services`, `productivity` |
 | Signed public files | `integration_file_upload`, `integration_file_download`, `conv_file_download` |
 | Data Bus | `kdcube.named_service.relay.v1` |
@@ -63,6 +63,8 @@ session:
 | Widget alias | Operation alias | Purpose |
 | --- | --- | --- |
 | `bundle_storage` | `bundle_storage_widget` | Browse permitted platform storage roots. |
+| `app_config` | `app_config_widget` | Inspect and edit app configuration. |
+| `agentic_instructions` | `agentic_instructions_widget` | Configure and preview agent instruction sets through the `agentic_instructions` operation. |
 | `control_plane` | `control_plane` | Economics control plane. |
 | `conversation_browser` | `conversation_browser` | Inspect conversation state and artifacts. |
 | `svc_gateway` | `svc_gateway` | Monitor gateway behavior. |
@@ -299,6 +301,38 @@ The protected-resource discovery document exposes this nested catalog as
 `kdcube_named_services`, next to the generic `kdcube_tools` list. The OAuth
 authorization code, refresh token, and access-grant record then preserve the
 same catalog for runtime enforcement.
+
+## MCP Endpoint: Productivity
+
+```text
+POST /api/integrations/bundles/{tenant}/{project}/kdcube-services@1-0/public/mcp/productivity
+```
+
+Transport: `streamable-http`
+
+Auth: managed delegated credential at
+`surfaces.as_provider.mcp.productivity.auth`, with selected tool grants.
+
+The outer guard authorizes the caller and selected tool. Each tool then checks
+its connected-account provider claim before resolving a live credential.
+
+| Group | Tools | Connected-account claims |
+| --- | --- | --- |
+| Find and inspect | `productivity_sheets_search`, `productivity_sheets_describe` | `sheets:read` |
+| Read values | `productivity_sheets_read` | `sheets:read` |
+| Write values | `productivity_sheets_update_values`, `productivity_sheets_append_rows`, `productivity_sheets_clear_values` | `sheets:read`, `sheets:write` |
+| Structure | `productivity_sheets_create_spreadsheet`, `productivity_sheets_add_tab`, `productivity_sheets_update_tab`, `productivity_sheets_delete_tab` | `sheets:read`, `sheets:write` |
+| Presentation | `productivity_sheets_format_range` | `sheets:read`, `sheets:write` |
+
+Search uses Google Drive metadata. Later calls accept the returned stable
+spreadsheet id or a full Google Sheets URL. Describe returns stable tab ids for
+structural and formatting operations. MCP `tools/list` is authoritative for
+the typed parameters and bounds.
+
+The Google token crosses only from Connection Hub into the trusted app service
+and its app-owned venv subprocess. It is never an MCP argument or result. See
+the [Google Sheets recipe](../../../../../../../../../../docs/recipes/connections/integrations/google-sheets-README.md)
+for provider claims, resource configuration, consent, and verification.
 
 ## Signed File Routes
 
