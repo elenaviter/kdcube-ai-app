@@ -4,8 +4,9 @@ title: "Integration Recipes"
 summary: "Recipes for connecting external provider accounts to KDCube through Connection Hub delegated-to-KDCube connected accounts."
 status: active
 tags: ["recipes", "connections", "connection-hub", "integrations", "delegated-to-kdcube", "connected-accounts"]
-updated_at: 2026-07-12
+updated_at: 2026-07-28
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
@@ -28,6 +29,12 @@ external account credential -> Connection Hub -> KDCube tool/named service
 explains the credential-resolution mechanism every recipe below shares - how a
 tool obtains the user's provider credential at the trusted boundary, for one
 call, with no token in your code or the model.
+
+Every integration must also follow the
+[Provider Error And Observability Contract](../../../sdk/integrations/provider-error-contract-README.md).
+It defines how disabled APIs, insufficient scopes, provider denials, transport
+failures, and ambiguous writes reach clients and server logs without exposing
+credentials.
 
 ## Recipes
 

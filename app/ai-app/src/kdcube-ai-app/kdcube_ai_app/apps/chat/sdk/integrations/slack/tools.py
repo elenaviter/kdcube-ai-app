@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import pathlib
 import re
@@ -23,6 +24,13 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     connected_account_auth_failure,
     resolve_connected_account_claim,
     run_with_connected_account_retry,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.provider_errors import (
+    ProviderFailure,
+    log_provider_failure,
+    provider_failure_from_exception,
+    provider_failure_from_payload,
+    provider_failure_from_response,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for, resolve_artifact_path
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
@@ -48,6 +56,7 @@ MAX_SLACK_TEXT_PREVIEW_CHARS = 12000
 
 _SERVICE = None
 _INTEGRATIONS: dict[str, Any] = {}
+LOGGER = logging.getLogger(__name__)
 
 
 def bind_service(svc: Any) -> None:
@@ -77,18 +86,83 @@ def _error_result(*, code: str, message: str, where: str, ret: Any = None) -> di
     }
 
 
-def _slack_error(data: Any, *, fallback: str) -> str:
-    if isinstance(data, dict):
-        return str(data.get("error") or data.get("warning") or fallback)
-    return fallback
+def _slack_failure(
+    response: httpx.Response,
+    *,
+    operation: str,
+    fallback: str,
+    where: str,
+    stage: str = "",
+    mutating: bool = False,
+) -> ProviderFailure:
+    failure = provider_failure_from_response(
+        response,
+        provider=SLACK_PROVIDER_ID,
+        service="slack",
+        operation=operation,
+        fallback=fallback,
+        stage=stage,
+        mutating=mutating,
+    )
+    log_provider_failure(LOGGER, failure, where=where)
+    return failure
 
 
-def _is_auth_failure(data: Any, status_code: int = 200) -> bool:
-    if status_code in {401, 403}:
-        return True
-    if isinstance(data, dict):
-        return str(data.get("error") or "") in {"invalid_auth", "not_authed", "token_revoked", "account_inactive"}
-    return False
+def _slack_payload_failure(
+    data: dict[str, Any],
+    *,
+    status_code: int,
+    operation: str,
+    fallback: str,
+    where: str,
+    stage: str = "",
+    mutating: bool = False,
+) -> ProviderFailure:
+    failure = provider_failure_from_payload(
+        data,
+        provider_status=status_code,
+        provider=SLACK_PROVIDER_ID,
+        service="slack",
+        operation=operation,
+        fallback=fallback,
+        stage=stage,
+        mutating=mutating,
+    )
+    log_provider_failure(LOGGER, failure, where=where)
+    return failure
+
+
+def _auth_failure_message(failure: ProviderFailure) -> str:
+    reason = failure.provider_reason or failure.provider_code
+    if reason and reason.lower() not in failure.message.lower():
+        return f"{failure.message} [{reason}]"
+    return failure.message
+
+
+async def _run_provider_call(
+    *,
+    where: str,
+    operation: str,
+    run: Any,
+    mutating: bool = False,
+) -> dict[str, Any]:
+    try:
+        return await run_with_connected_account_retry(
+            globals(),
+            where=where,
+            run=run,
+        )
+    except httpx.HTTPError as exc:
+        failure = provider_failure_from_exception(
+            exc,
+            provider=SLACK_PROVIDER_ID,
+            service="slack",
+            operation=operation,
+            fallback="Slack did not return a response.",
+            mutating=mutating,
+        )
+        log_provider_failure(LOGGER, failure, where=where, exc=exc)
+        return failure.error_result(where=where)
 
 
 # Live provider rejections return connected_account_auth_failure(credential,
@@ -285,13 +359,18 @@ async def _download_file_to_artifact(
         )
     response = await client.get(download_url, headers={"Authorization": f"Bearer {token}"})
     if response.status_code >= 400:
-        if response.status_code in {401, 403}:
-            return connected_account_auth_failure(credential, f"Slack file download failed with HTTP {response.status_code}.")
-        return _error_result(
-            code="slack_file_download_failed",
-            message=f"Slack file download failed with HTTP {response.status_code}.",
+        failure = _slack_failure(
+            response,
+            operation="download_file",
+            fallback=f"Slack file download failed with HTTP {response.status_code}.",
             where="slack.download_slack_file",
         )
+        if failure.credential_failure:
+            return connected_account_auth_failure(
+                credential,
+                _auth_failure_message(failure),
+            )
+        return failure.error_result(where="slack.download_slack_file")
     data = response.content or b""
     if len(data) > max_bytes:
         return _error_result(
@@ -357,6 +436,7 @@ class SlackTools:
         params: dict[str, Any] | None = None,
         json_payload: dict[str, Any] | None = None,
         where: str,
+        mutating: bool = False,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         async with httpx.AsyncClient(timeout=30.0) as client:
             if http_method.upper() == "POST":
@@ -377,18 +457,19 @@ class SlackTools:
         except Exception:
             data = {}
         if response.status_code >= 400 or not (isinstance(data, dict) and data.get("ok")):
-            if _is_auth_failure(data, response.status_code):
-                return None, _provider_auth_envelope(
-                    credential,
-                    where=where,
-                    message=_slack_error(data, fallback=f"Slack {method} failed."),
-                )
-            return None, _error_result(
-                code="slack_api_error",
-                message=_slack_error(data, fallback=f"Slack {method} failed."),
+            failure = _slack_failure(
+                response,
+                operation=method,
+                fallback=f"Slack {method} failed.",
                 where=where,
-                ret=data if isinstance(data, dict) else None,
+                mutating=mutating,
             )
+            if failure.credential_failure:
+                return None, connected_account_auth_failure(
+                    credential,
+                    _auth_failure_message(failure),
+                )
+            return None, failure.error_result(where=where)
         return data if isinstance(data, dict) else {}, None
 
     @kernel_function(
@@ -406,9 +487,9 @@ class SlackTools:
         cursor: Annotated[str, "Optional Slack pagination cursor returned by the previous search."] = "",
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.search_slack",
+            operation="search.messages",
             run=lambda: self._search_slack(
                 query=query,
                 count=count,
@@ -455,14 +536,18 @@ class SlackTools:
         except Exception:
             data = {}
         if response.status_code >= 400 or not (isinstance(data, dict) and data.get("ok")):
-            if _is_auth_failure(data, response.status_code):
-                return connected_account_auth_failure(credential, _slack_error(data, fallback="Slack search failed."))
-            return _error_result(
-                code="slack_api_error",
-                message=_slack_error(data, fallback="Slack search failed."),
+            failure = _slack_failure(
+                response,
+                operation="search.messages",
+                fallback="Slack search failed.",
                 where="slack.search_slack",
-                ret=data if isinstance(data, dict) else None,
             )
+            if failure.credential_failure:
+                return connected_account_auth_failure(
+                    credential,
+                    _auth_failure_message(failure),
+                )
+            return failure.error_result(where="slack.search_slack")
         messages = data.get("messages") if isinstance(data, dict) else {}
         matches = messages.get("matches") if isinstance(messages, dict) else []
         rows: list[dict[str, Any]] = []
@@ -507,9 +592,9 @@ class SlackTools:
         exclude_archived: Annotated[bool, "Whether to exclude archived conversations."] = True,
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.list_slack_channels",
+            operation="conversations.list",
             run=lambda: self._list_slack_channels(
                 types=types,
                 limit=limit,
@@ -599,9 +684,9 @@ class SlackTools:
         inclusive: Annotated[bool, "Whether oldest/latest bounds are inclusive."] = False,
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.read_slack_channel_history",
+            operation="conversations.history",
             run=lambda: self._read_slack_channel_history(
                 channel=channel,
                 limit=limit,
@@ -678,9 +763,9 @@ class SlackTools:
         max_bytes: Annotated[int, "Maximum file bytes to download."] = MAX_SLACK_FILE_BYTES,
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.download_slack_file",
+            operation="files.info",
             run=lambda: self._download_slack_file(
                 file_id=file_id,
                 save=save,
@@ -719,15 +804,18 @@ class SlackTools:
             except Exception:
                 data = {}
             if response.status_code >= 400 or not (isinstance(data, dict) and data.get("ok")):
-                if _is_auth_failure(data, response.status_code):
-                    return connected_account_auth_failure(credential, _slack_error(data, fallback="Slack file lookup failed."),
-                    )
-                return _error_result(
-                    code="slack_api_error",
-                    message=_slack_error(data, fallback="Slack file lookup failed."),
+                failure = _slack_failure(
+                    response,
+                    operation="files.info",
+                    fallback="Slack file lookup failed.",
                     where="slack.download_slack_file",
-                    ret=data if isinstance(data, dict) else None,
                 )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(
+                        credential,
+                        _auth_failure_message(failure),
+                    )
+                return failure.error_result(where="slack.download_slack_file")
             file_obj = data.get("file") if isinstance(data.get("file"), dict) else {}
             if not _bool_param(save):
                 return _ok_ret_result({"file": _compact_file(file_obj), "account_id": credential.account_id})
@@ -756,9 +844,10 @@ class SlackTools:
         filename: Annotated[str, "Optional filename override."] = "",
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.upload_slack_file",
+            operation="files.upload",
+            mutating=True,
             run=lambda: self._upload_slack_file(
                 channel=channel,
                 file_path=file_path,
@@ -809,14 +898,20 @@ class SlackTools:
                     client, credential.access_token, share_channel
                 )
                 if open_error is not None:
-                    if _is_auth_failure(open_error, int(open_error.get("status_code") or 200)):
-                        return connected_account_auth_failure(credential, _slack_error(open_error, fallback="Slack direct conversation open failed."))
-                    return _error_result(
-                        code="slack_api_error",
-                        message=_slack_error(open_error, fallback="Slack direct conversation open failed."),
+                    failure = _slack_payload_failure(
+                        open_error,
+                        status_code=int(open_error.get("status_code") or 200),
+                        operation="conversations.open",
+                        fallback="Slack direct conversation open failed.",
                         where="slack.upload_slack_file",
-                        ret=open_error,
+                        stage="resolve_channel",
                     )
+                    if failure.credential_failure:
+                        return connected_account_auth_failure(
+                            credential,
+                            _auth_failure_message(failure),
+                        )
+                    return failure.error_result(where="slack.upload_slack_file")
             # files.getUploadURLExternal only reads form/query arguments; a JSON
             # body returns invalid_arguments ("missing required field: length").
             start_response = await client.post(
@@ -829,15 +924,20 @@ class SlackTools:
             except Exception:
                 start_data = {}
             if start_response.status_code >= 400 or not (isinstance(start_data, dict) and start_data.get("ok")):
-                if _is_auth_failure(start_data, start_response.status_code):
-                    return connected_account_auth_failure(credential, _slack_error(start_data, fallback="Slack upload start failed."),
-                    )
-                return _error_result(
-                    code="slack_api_error",
-                    message=_slack_error(start_data, fallback="Slack upload start failed."),
+                failure = _slack_failure(
+                    start_response,
+                    operation="files.getUploadURLExternal",
+                    fallback="Slack upload start failed.",
                     where="slack.upload_slack_file",
-                    ret=start_data if isinstance(start_data, dict) else None,
+                    stage="create_upload",
+                    mutating=True,
                 )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(
+                        credential,
+                        _auth_failure_message(failure),
+                    )
+                return failure.error_result(where="slack.upload_slack_file")
             upload_url = str(start_data.get("upload_url") or "").strip()
             file_id = str(start_data.get("file_id") or "").strip()
             if not upload_url or not file_id:
@@ -853,11 +953,17 @@ class SlackTools:
                 headers={"Content-Type": upload_file["mime_type"]},
             )
             if upload_response.status_code >= 400:
-                return _error_result(
-                    code="slack_upload_bytes_failed",
-                    message=f"Slack file upload failed with HTTP {upload_response.status_code}.",
+                failure = _slack_failure(
+                    upload_response,
+                    operation="files.uploadExternal",
+                    fallback=f"Slack file upload failed with HTTP {upload_response.status_code}.",
                     where="slack.upload_slack_file",
+                    stage="upload_bytes",
+                    mutating=True,
                 )
+                result = failure.error_result(where="slack.upload_slack_file")
+                result["ret"]["partial_result"] = {"file_id": file_id}
+                return result
             complete_payload: dict[str, Any] = {"files": [{"id": file_id, "title": str(title or upload_filename).strip() or upload_filename}]}
             if share_channel:
                 complete_payload["channel_id"] = share_channel
@@ -875,15 +981,22 @@ class SlackTools:
             except Exception:
                 complete_data = {}
             if complete_response.status_code >= 400 or not (isinstance(complete_data, dict) and complete_data.get("ok")):
-                if _is_auth_failure(complete_data, complete_response.status_code):
-                    return connected_account_auth_failure(credential, _slack_error(complete_data, fallback="Slack upload finalize failed."),
-                    )
-                return _error_result(
-                    code="slack_api_error",
-                    message=_slack_error(complete_data, fallback="Slack upload finalize failed."),
+                failure = _slack_failure(
+                    complete_response,
+                    operation="files.completeUploadExternal",
+                    fallback="Slack upload finalize failed.",
                     where="slack.upload_slack_file",
-                    ret=complete_data if isinstance(complete_data, dict) else None,
+                    stage="complete_upload",
+                    mutating=True,
                 )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(
+                        credential,
+                        _auth_failure_message(failure),
+                    )
+                result = failure.error_result(where="slack.upload_slack_file")
+                result["ret"]["partial_result"] = {"file_id": file_id}
+                return result
         return _ok_ret_result(
             {
                 "file_id": file_id,
@@ -908,9 +1021,9 @@ class SlackTools:
         self,
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.slack_assistant_search_info",
+            operation="assistant.search.info",
             run=lambda: self._slack_assistant_search_info(account_id=account_id),
         )
 
@@ -955,9 +1068,9 @@ class SlackTools:
         sort_dir: Annotated[str, "Slack sort direction: asc or desc."] = "desc",
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.slack_assistant_search",
+            operation="assistant.search.context",
             run=lambda: self._slack_assistant_search(
                 query=query,
                 content_types=content_types,
@@ -1043,9 +1156,10 @@ class SlackTools:
         thread_ts: Annotated[str, "Optional Slack thread timestamp to reply in a thread."] = "",
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
-        return await run_with_connected_account_retry(
-            globals(),
+        return await _run_provider_call(
             where="slack.post_slack_message",
+            operation="chat.postMessage",
+            mutating=True,
             run=lambda: self._post_slack_message(
                 channel=channel,
                 text=text,
@@ -1093,14 +1207,20 @@ class SlackTools:
                     client, credential.access_token, target_channel
                 )
                 if open_error is not None:
-                    if _is_auth_failure(open_error, int(open_error.get("status_code") or 200)):
-                        return connected_account_auth_failure(credential, _slack_error(open_error, fallback="Slack direct conversation open failed."))
-                    return _error_result(
-                        code="slack_api_error",
-                        message=_slack_error(open_error, fallback="Slack direct conversation open failed."),
+                    failure = _slack_payload_failure(
+                        open_error,
+                        status_code=int(open_error.get("status_code") or 200),
+                        operation="conversations.open",
+                        fallback="Slack direct conversation open failed.",
                         where="slack.post_slack_message",
-                        ret=open_error,
+                        stage="resolve_channel",
                     )
+                    if failure.credential_failure:
+                        return connected_account_auth_failure(
+                            credential,
+                            _auth_failure_message(failure),
+                        )
+                    return failure.error_result(where="slack.post_slack_message")
             payload["channel"] = target_channel
             response = await client.post(
                 f"{SLACK_API}/chat.postMessage",
@@ -1112,14 +1232,19 @@ class SlackTools:
         except Exception:
             data = {}
         if response.status_code >= 400 or not (isinstance(data, dict) and data.get("ok")):
-            if _is_auth_failure(data, response.status_code):
-                return connected_account_auth_failure(credential, _slack_error(data, fallback="Slack post failed."))
-            return _error_result(
-                code="slack_api_error",
-                message=_slack_error(data, fallback="Slack post failed."),
+            failure = _slack_failure(
+                response,
+                operation="chat.postMessage",
+                fallback="Slack post failed.",
                 where="slack.post_slack_message",
-                ret=data if isinstance(data, dict) else None,
+                mutating=True,
             )
+            if failure.credential_failure:
+                return connected_account_auth_failure(
+                    credential,
+                    _auth_failure_message(failure),
+                )
+            return failure.error_result(where="slack.post_slack_message")
         return _ok_ret_result(
             {
                 "channel": str(data.get("channel") or channel),

@@ -158,6 +158,18 @@ class FakeClient:
 def _execute(monkeypatch, operation: str, payload: dict[str, Any]):
     client = FakeClient()
     monkeypatch.setattr(sheets_proxy, "_authorize", lambda _token: client)
+    if operation == "create_spreadsheet":
+        monkeypatch.setattr(
+            sheets_proxy,
+            "_drive_create_spreadsheet",
+            lambda **_kwargs: {
+                "id": "created-456",
+                "name": str(payload.get("title") or ""),
+                "webViewLink": (
+                    "https://docs.google.com/spreadsheets/d/created-456/edit"
+                ),
+            },
+        )
     result = sheets_proxy.execute_google_sheets_operation(
         operation=operation,
         access_token="secret-token",
@@ -373,11 +385,13 @@ def test_mutating_provider_5xx_reports_unknown_outcome(monkeypatch):
         status = 503
         code = "UNAVAILABLE"
 
-    monkeypatch.setattr(
-        sheets_proxy,
-        "_authorize",
-        lambda _token: (_ for _ in ()).throw(ProviderUnavailable("retry later")),
-    )
+    class UnavailableSpreadsheet(FakeSpreadsheet):
+        def values_append(self, range, params, body):
+            raise ProviderUnavailable("retry later")
+
+    write_client = FakeClient()
+    write_client.spreadsheet = UnavailableSpreadsheet()
+    monkeypatch.setattr(sheets_proxy, "_authorize", lambda _token: write_client)
 
     write_result = sheets_proxy.execute_google_sheets_operation(
         operation="append_rows",
@@ -388,6 +402,11 @@ def test_mutating_provider_5xx_reports_unknown_outcome(monkeypatch):
             "rows": [["A", 1]],
         },
     )
+    monkeypatch.setattr(
+        sheets_proxy,
+        "_authorize",
+        lambda _token: (_ for _ in ()).throw(ProviderUnavailable("retry later")),
+    )
     read_result = sheets_proxy.execute_google_sheets_operation(
         operation="describe",
         access_token="secret-token",
@@ -397,3 +416,164 @@ def test_mutating_provider_5xx_reports_unknown_outcome(monkeypatch):
     assert write_result["error"]["provider_status"] == 503
     assert write_result["error"]["outcome_unknown"] is True
     assert read_result["error"]["outcome_unknown"] is False
+
+
+def test_nested_google_error_preserves_status_reason_and_message(monkeypatch):
+    class Response:
+        status_code = 403
+
+        @staticmethod
+        def json():
+            return {
+                "error": {
+                    "code": 403,
+                    "status": "PERMISSION_DENIED",
+                    "message": "Google Sheets API is disabled for this project.",
+                    "details": [
+                        {
+                            "reason": "SERVICE_DISABLED",
+                            "metadata": {"service": "sheets.googleapis.com"},
+                        }
+                    ],
+                }
+            }
+
+    class ProviderAPIError(RuntimeError):
+        def __init__(self):
+            super().__init__("provider request failed")
+            self.response = Response()
+
+    class WrappedClient(FakeClient):
+        def open_by_key(self, spreadsheet_id: str):
+            try:
+                raise ProviderAPIError()
+            except ProviderAPIError as exc:
+                raise PermissionError from exc
+
+    monkeypatch.setattr(sheets_proxy, "_authorize", lambda _token: WrappedClient())
+    result = sheets_proxy.execute_google_sheets_operation(
+        operation="describe",
+        access_token="secret-token",
+        payload={"spreadsheet_ref": "sheet-123"},
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "google_sheets_provider_configuration_error"
+    assert result["error"]["message"] == (
+        "Google Sheets API is disabled for this project."
+    )
+    assert result["error"]["provider_status"] == 403
+    assert result["error"]["provider_code"] == "PERMISSION_DENIED"
+    assert result["error"]["provider_reason"] == "SERVICE_DISABLED"
+    assert result["error"]["provider"] == "google"
+    assert result["error"]["operation"] == "describe"
+    assert result["error"]["category"] == "provider_configuration_error"
+    assert result["error"]["outcome_unknown"] is False
+    assert [
+        row["type"] for row in result["error"]["_diagnostics"]["exception_chain"]
+    ] == ["PermissionError", "ProviderAPIError"]
+    assert "secret-token" not in str(result)
+
+
+def test_create_reports_known_partial_resource_when_sheets_open_fails(monkeypatch):
+    class Response:
+        status_code = 403
+
+        @staticmethod
+        def json():
+            return {
+                "error": {
+                    "code": 403,
+                    "status": "PERMISSION_DENIED",
+                    "message": "Request had insufficient authentication scopes.",
+                    "details": [{"reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}],
+                }
+            }
+
+    class ProviderAPIError(RuntimeError):
+        def __init__(self):
+            super().__init__("provider request failed")
+            self.response = Response()
+
+    class WrappedClient(FakeClient):
+        def open_by_key(self, spreadsheet_id: str):
+            try:
+                raise ProviderAPIError()
+            except ProviderAPIError as exc:
+                raise PermissionError from exc
+
+    monkeypatch.setattr(sheets_proxy, "_authorize", lambda _token: WrappedClient())
+    monkeypatch.setattr(
+        sheets_proxy,
+        "_drive_create_spreadsheet",
+        lambda **_kwargs: {
+            "id": "created-partial",
+            "name": "KDCube Sheets Test",
+            "webViewLink": (
+                "https://docs.google.com/spreadsheets/d/created-partial/edit"
+            ),
+        },
+    )
+
+    result = sheets_proxy.execute_google_sheets_operation(
+        operation="create_spreadsheet",
+        access_token="secret-token",
+        payload={
+            "title": "KDCube Sheets Test",
+            "first_tab_title": "Sheet1",
+            "initial_values": [["Name"], ["Alpha"]],
+        },
+    )
+
+    error = result["error"]
+    assert error["code"] == "google_sheets_authorization_failed"
+    assert error["provider_status"] == 403
+    assert error["stage"] == "open_created_spreadsheet"
+    assert error["outcome_unknown"] is False
+    assert error["partial_result"] == {
+        "resource_created": True,
+        "spreadsheet_id": "created-partial",
+        "title": "KDCube Sheets Test",
+        "web_url": "https://docs.google.com/spreadsheets/d/created-partial/edit",
+        "completed_stages": ["create_file"],
+    }
+
+
+def test_read_transport_failure_is_retryable_but_not_outcome_unknown(monkeypatch):
+    class TimeoutClient(FakeClient):
+        def open_by_key(self, spreadsheet_id: str):
+            raise TimeoutError("Google request timed out")
+
+    monkeypatch.setattr(sheets_proxy, "_authorize", lambda _token: TimeoutClient())
+    result = sheets_proxy.execute_google_sheets_operation(
+        operation="read",
+        access_token="secret-token",
+        payload={"spreadsheet_ref": "sheet-123", "ranges": ["Sheet1!A1:C10"]},
+    )
+
+    assert result["error"]["code"] == "google_sheets_transport_error"
+    assert result["error"]["provider_status"] == 0
+    assert result["error"]["retryable"] is True
+    assert result["error"]["outcome_unknown"] is False
+
+
+def test_create_transport_failure_before_response_has_unknown_outcome(monkeypatch):
+    monkeypatch.setattr(sheets_proxy, "_authorize", lambda _token: FakeClient())
+    monkeypatch.setattr(
+        sheets_proxy,
+        "_drive_create_spreadsheet",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("Drive create timed out")
+        ),
+    )
+
+    result = sheets_proxy.execute_google_sheets_operation(
+        operation="create_spreadsheet",
+        access_token="secret-token",
+        payload={"title": "KDCube Sheets Test"},
+    )
+
+    assert result["error"]["code"] == "google_sheets_transport_error"
+    assert result["error"]["stage"] == "create_file"
+    assert result["error"]["outcome_unknown"] is True
+    assert result["error"]["partial_result"] == {}

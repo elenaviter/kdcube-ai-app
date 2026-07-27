@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import httpx
+import pytest
+
+from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
+    ConnectedAccountCredential,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.slack import tools
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for, resolve_artifact_path
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace.references import (
@@ -69,3 +75,65 @@ def test_load_upload_file_rejects_absolute_paths_outside_artifacts(monkeypatch, 
     assert upload_file is None
     assert error is not None
     assert error["code"] == "file_not_found"
+
+
+@pytest.mark.asyncio
+async def test_common_slack_call_returns_auth_retry_marker(monkeypatch):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+        async def get(self, *args, **kwargs):
+            return httpx.Response(
+                200,
+                json={"ok": False, "error": "invalid_auth"},
+                request=httpx.Request("GET", "https://slack.com/api/conversations.list"),
+            )
+
+    monkeypatch.setattr(tools.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    credential = ConnectedAccountCredential(
+        ok=True,
+        access_token="secret",
+        account_id="acct-1",
+        provider_id="slack",
+        connector_app_id="slack-demo",
+        claim="slack:channels",
+        tool_name="slack.list_slack_channels",
+        tenant="demo-tenant",
+        project="demo-project",
+    )
+
+    data, error = await tools.SlackTools()._call_json(
+        credential=credential,
+        method="conversations.list",
+        where="slack.list_slack_channels",
+    )
+
+    assert data is None
+    assert error is not None
+    assert set(error) == {"__connected_account_auth_failure__"}
+
+
+def test_generic_slack_403_is_access_denied_not_auth_failure(caplog):
+    response = httpx.Response(
+        403,
+        json={"ok": False, "error": "access_denied"},
+        request=httpx.Request("GET", "https://slack.com/api/files.info"),
+    )
+
+    failure = tools._slack_failure(
+        response,
+        operation="files.info",
+        fallback="Slack file lookup failed.",
+        where="slack.download_slack_file",
+    )
+
+    assert failure.category == "access_denied"
+    assert failure.credential_failure is False
+    assert failure.error_result(where="slack.download_slack_file")["ret"][
+        "provider_status"
+    ] == 403
+    assert "provider_reason=access_denied" in caplog.text

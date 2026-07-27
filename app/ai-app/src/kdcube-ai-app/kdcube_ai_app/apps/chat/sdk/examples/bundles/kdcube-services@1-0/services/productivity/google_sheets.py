@@ -192,7 +192,7 @@ class GoogleSheetsService:
                 payload=dict(payload or {}),
             )
         except Exception as exc:
-            LOGGER.error(
+            LOGGER.exception(
                 "Google Sheets venv operation failed operation=%s error_type=%s",
                 operation,
                 type(exc).__name__,
@@ -211,30 +211,73 @@ class GoogleSheetsService:
         error = result.get("error")
         error_map = dict(error or {}) if isinstance(error, Mapping) else {}
         provider_status = _provider_status(error_map)
-        if provider_status in {401, 403}:
+        error_code = str(
+            error_map.get("code") or "google_sheets_provider_error"
+        )
+        if not bool(result.get("ok")):
+            LOGGER.error(
+                "Google Sheets provider operation failed "
+                "operation=%s code=%s status=%s provider_code=%s "
+                "provider_reason=%s stage=%s retryable=%s "
+                "outcome_unknown=%s partial_result=%r diagnostics=%r",
+                operation,
+                error_code,
+                provider_status,
+                error_map.get("provider_code") or "",
+                error_map.get("provider_reason") or "",
+                error_map.get("stage") or operation,
+                bool(error_map.get("retryable")),
+                bool(error_map.get("outcome_unknown")),
+                error_map.get("partial_result") or {},
+                error_map.get("_diagnostics") or {},
+            )
+        ret = {
+            "provider": str(error_map.get("provider") or "google"),
+            "operation": str(error_map.get("operation") or operation),
+            "category": str(
+                error_map.get("category")
+                or error_code.removeprefix("google_sheets_")
+                or "provider_error"
+            ),
+            "outcome_unknown": bool(error_map.get("outcome_unknown")),
+            "provider_status": provider_status,
+            "provider_code": str(error_map.get("provider_code") or ""),
+            "provider_reason": str(error_map.get("provider_reason") or ""),
+            "retryable": bool(error_map.get("retryable")),
+            "stage": str(error_map.get("stage") or operation),
+        }
+        partial_result = error_map.get("partial_result")
+        if isinstance(partial_result, Mapping) and partial_result:
+            ret["partial_result"] = dict(partial_result)
+        if error_code == "google_sheets_authorization_failed":
             message = str(
                 error_map.get("message")
                 or "Google rejected the connected credential."
             )
+            if "partial_result" in ret:
+                ret["reconnect_required"] = True
+                return _error_result(
+                    code=error_code,
+                    message=message,
+                    where=where,
+                    ret=ret,
+                )
             if credential is not None:
                 return connected_account_auth_failure(credential, message)
             return _error_result(
                 code="google_sheets_authorization_failed",
                 message=message,
                 where=where,
-                ret={"provider_status": provider_status},
+                ret=ret,
             )
         if not bool(result.get("ok")):
             return _error_result(
-                code=str(error_map.get("code") or "google_sheets_provider_error"),
+                code=error_code,
                 message=str(
                     error_map.get("message") or "Google Sheets operation failed."
                 ),
                 where=where,
-                ret={
-                    "outcome_unknown": bool(error_map.get("outcome_unknown")),
-                    "provider_status": provider_status,
-                },
+                ret=ret,
             )
         ret = result.get("ret")
         normalized = dict(ret or {}) if isinstance(ret, Mapping) else {"value": ret}

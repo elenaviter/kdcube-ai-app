@@ -120,6 +120,154 @@ async def test_google_sheets_provider_auth_failure_uses_connected_account_retry(
     assert "expired-provider-token" not in marker["message"]
 
 
+async def test_google_sheets_partial_create_auth_failure_is_not_retried(
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    credential = ConnectedAccountCredential(
+        ok=True,
+        access_token="provider-secret-token",
+        account_id="google-account-1",
+        provider_id="google",
+        connector_app_id="gmail",
+        claim="sheets:write",
+        tool_name="productivity.sheets.create",
+    )
+
+    async def fake_credential(**_kwargs):
+        return credential
+
+    async def fake_venv(**_kwargs):
+        return {
+            "ok": False,
+            "error": {
+                "code": "google_sheets_authorization_failed",
+                "message": "Request had insufficient authentication scopes.",
+                "provider_status": 403,
+                "provider_code": "PERMISSION_DENIED",
+                "provider_reason": "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+                "retryable": False,
+                "stage": "open_created_spreadsheet",
+                "outcome_unknown": False,
+                "partial_result": {
+                    "resource_created": True,
+                    "spreadsheet_id": "created-partial",
+                    "completed_stages": ["create_file"],
+                },
+            },
+        }
+
+    service = module.GoogleSheetsService()
+    monkeypatch.setattr(service, "_credential", fake_credential)
+    monkeypatch.setattr(module, "_execute_google_sheets_in_venv", fake_venv)
+
+    result = await service._execute_once(
+        operation="create_spreadsheet",
+        claim="sheets:write",
+        tool_name="productivity.sheets.create",
+        payload={"title": "KDCube Sheets Test"},
+        account_id="",
+        where="google_sheets.create_spreadsheet",
+    )
+
+    assert "__connected_account_auth_failure__" not in result
+    assert result["error"]["code"] == "google_sheets_authorization_failed"
+    assert result["ret"]["reconnect_required"] is True
+    assert result["ret"]["partial_result"]["spreadsheet_id"] == (
+        "created-partial"
+    )
+
+
+async def test_google_sheets_provider_failure_is_logged_and_promoted_without_diagnostics(
+    monkeypatch,
+    caplog,
+) -> None:
+    module = _load_module()
+    credential = ConnectedAccountCredential(
+        ok=True,
+        access_token="provider-secret-token",
+        account_id="google-account-1",
+        provider_id="google",
+        connector_app_id="gmail",
+        claim="sheets:write",
+        tool_name="productivity.sheets.create",
+    )
+
+    async def fake_credential(**_kwargs):
+        return credential
+
+    async def fake_venv(**_kwargs):
+        return {
+            "ok": False,
+            "error": {
+                "code": "google_sheets_provider_configuration_error",
+                "message": "Google Sheets API is disabled for this project.",
+                "provider_status": 403,
+                "provider_code": "PERMISSION_DENIED",
+                "provider_reason": "SERVICE_DISABLED",
+                "retryable": False,
+                "stage": "open_created_spreadsheet",
+                "outcome_unknown": False,
+                "partial_result": {
+                    "resource_created": True,
+                    "spreadsheet_id": "created-partial",
+                    "web_url": (
+                        "https://docs.google.com/spreadsheets/d/created-partial/edit"
+                    ),
+                    "completed_stages": ["create_file"],
+                },
+                "_diagnostics": {
+                    "exception_chain": [
+                        {"type": "PermissionError", "message": ""},
+                        {"type": "APIError", "message": "provider request failed"},
+                    ]
+                },
+            },
+        }
+
+    service = module.GoogleSheetsService()
+    monkeypatch.setattr(service, "_credential", fake_credential)
+    monkeypatch.setattr(module, "_execute_google_sheets_in_venv", fake_venv)
+    caplog.set_level("ERROR", logger=module.LOGGER.name)
+
+    result = await service._execute_once(
+        operation="create_spreadsheet",
+        claim="sheets:write",
+        tool_name="productivity.sheets.create",
+        payload={"title": "KDCube Sheets Test"},
+        account_id="",
+        where="google_sheets.create_spreadsheet",
+    )
+
+    assert result["error"] == {
+        "code": "google_sheets_provider_configuration_error",
+        "message": "Google Sheets API is disabled for this project.",
+        "where": "google_sheets.create_spreadsheet",
+        "managed": True,
+    }
+    assert result["ret"] == {
+        "outcome_unknown": False,
+        "provider_status": 403,
+        "provider_code": "PERMISSION_DENIED",
+        "provider_reason": "SERVICE_DISABLED",
+        "provider": "google",
+        "operation": "create_spreadsheet",
+        "category": "provider_configuration_error",
+        "retryable": False,
+        "stage": "open_created_spreadsheet",
+        "partial_result": {
+            "resource_created": True,
+            "spreadsheet_id": "created-partial",
+            "web_url": "https://docs.google.com/spreadsheets/d/created-partial/edit",
+            "completed_stages": ["create_file"],
+        },
+    }
+    assert "_diagnostics" not in str(result)
+    assert "SERVICE_DISABLED" in caplog.text
+    assert "APIError" in caplog.text
+    assert "provider-secret-token" not in caplog.text
+
+
 async def test_google_sheets_multi_claim_resolution_stays_on_one_account(
     monkeypatch,
 ) -> None:

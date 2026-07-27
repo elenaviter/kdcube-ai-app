@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 
+import httpx
+
 from kdcube_ai_app.apps.chat.sdk.integrations.google import gmail_tools
 from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import ConnectedAccountCredential
 from kdcube_ai_app.apps.chat.sdk.runtime.harness.workspace import artifact_outdir_for, resolve_artifact_path
@@ -135,3 +137,31 @@ def test_connected_account_provider_auth_failure_returns_consent_envelope():
         "&claims=gmail%3Aread&tool_name=gmail.read_gmail_message&account_id=acct-1"
     )
     assert envelope["consent"]["account_id"] == "acct-1"
+
+
+def test_disabled_gmail_api_preserves_provider_reason(caplog):
+    response = httpx.Response(
+        403,
+        json={
+            "error": {
+                "message": "Gmail API is disabled for this project.",
+                "status": "PERMISSION_DENIED",
+                "details": [{"reason": "SERVICE_DISABLED"}],
+            }
+        },
+        request=httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages"),
+    )
+
+    failure = gmail_tools._gmail_failure(
+        response,
+        operation="search",
+        fallback="Gmail search failed.",
+        where="gmail.search_gmail",
+    )
+    result = failure.error_result(where="gmail.search_gmail")
+
+    assert failure.credential_failure is False
+    assert result["error"]["code"] == "gmail_provider_configuration_error"
+    assert result["ret"]["provider_status"] == 403
+    assert result["ret"]["provider_reason"] == "SERVICE_DISABLED"
+    assert "provider_reason=SERVICE_DISABLED" in caplog.text

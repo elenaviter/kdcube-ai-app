@@ -11,6 +11,7 @@ own bundle venv, and receives plain serializable data back.
 from __future__ import annotations
 
 import re
+import traceback
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -83,6 +84,23 @@ class SheetsProviderError(RuntimeError):
         super().__init__(message)
         self.status = int(status or 0)
         self.code = str(code or "google_sheets_api_error")
+
+
+class SheetsOperationFailure(RuntimeError):
+    """Preserve the provider failure stage and any resource already created."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        cause: Exception,
+        mutation_attempted: bool,
+        partial_result: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(str(cause).strip() or cause.__class__.__name__)
+        self.stage = str(stage or "provider_call")
+        self.mutation_attempted = bool(mutation_attempted)
+        self.partial_result = dict(partial_result or {})
 
 
 def _clean(value: Any) -> str:
@@ -285,6 +303,43 @@ def _drive_files_list(
         )
     body = response.json()
     return dict(body or {}) if isinstance(body, Mapping) else {}
+
+
+def _drive_create_spreadsheet(
+    *, access_token: str, title: str
+) -> dict[str, Any]:
+    import requests
+
+    response = requests.post(
+        "https://www.googleapis.com/drive/v3/files",
+        headers={"Authorization": f"Bearer {access_token}"},
+        params={
+            "supportsAllDrives": "true",
+            "fields": "id,name,webViewLink",
+        },
+        json={
+            "name": title,
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        },
+        timeout=(10, 30),
+    )
+    response.raise_for_status()
+    try:
+        body = response.json()
+    except Exception as exc:
+        raise SheetsProviderError(
+            status=response.status_code,
+            code="google_drive_invalid_response",
+            message="Google Drive created a response that could not be decoded.",
+        ) from exc
+    result = dict(body or {}) if isinstance(body, Mapping) else {}
+    if not _clean(result.get("id")):
+        raise SheetsProviderError(
+            status=response.status_code,
+            code="google_drive_invalid_response",
+            message="Google Drive did not return the created spreadsheet id.",
+        )
+    return result
 
 
 def _open_spreadsheet(client: Any, spreadsheet_ref: Any):
@@ -562,7 +617,12 @@ def _clear_values(*, client: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _create_spreadsheet(*, client: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
+def _create_spreadsheet(
+    *,
+    client: Any,
+    access_token: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
     title = _clean(payload.get("title"))
     if not title or len(title) > MAX_TITLE_CHARS:
         raise SheetsValidationError(
@@ -575,12 +635,9 @@ def _create_spreadsheet(*, client: Any, payload: Mapping[str, Any]) -> dict[str,
             "invalid_tab_title",
             f"first_tab_title must be at most {MAX_TAB_TITLE_CHARS} characters.",
         )
-    spreadsheet = client.create(title)
-    worksheet = spreadsheet.sheet1
-    if first_tab_title != _clean(getattr(worksheet, "title", "")):
-        worksheet.update_title(first_tab_title)
     initial_values = payload.get("initial_values")
-    updated_range = ""
+    values: list[list[Any]] | None = None
+    value_input_option = "USER_ENTERED"
     if initial_values not in (None, []):
         values = _matrix(initial_values, max_cells=MAX_WRITE_CELLS)
         value_input_option = _enum(
@@ -589,14 +646,81 @@ def _create_spreadsheet(*, client: Any, payload: Mapping[str, Any]) -> dict[str,
             field="value_input_option",
             default="USER_ENTERED",
         )
-        result = spreadsheet.values_update(
-            f"{_quote_tab_title(first_tab_title)}!A1",
-            params={"valueInputOption": value_input_option},
-            body={"majorDimension": "ROWS", "values": values},
+
+    try:
+        drive_file = _drive_create_spreadsheet(
+            access_token=access_token,
+            title=title,
         )
+    except Exception as exc:
+        raise SheetsOperationFailure(
+            stage="create_file",
+            cause=exc,
+            mutation_attempted=True,
+        ) from exc
+
+    spreadsheet_id = _clean(drive_file.get("id"))
+    partial_result: dict[str, Any] = {
+        "resource_created": True,
+        "spreadsheet_id": spreadsheet_id,
+        "title": _clean(drive_file.get("name")) or title,
+        "web_url": _clean(drive_file.get("webViewLink"))
+        or _web_url(spreadsheet_id),
+        "completed_stages": ["create_file"],
+    }
+    try:
+        _spreadsheet_id_value, spreadsheet = _open_spreadsheet(
+            client, spreadsheet_id
+        )
+    except Exception as exc:
+        raise SheetsOperationFailure(
+            stage="open_created_spreadsheet",
+            cause=exc,
+            mutation_attempted=False,
+            partial_result=partial_result,
+        ) from exc
+    try:
+        worksheet = spreadsheet.sheet1
+    except Exception as exc:
+        raise SheetsOperationFailure(
+            stage="read_first_tab",
+            cause=exc,
+            mutation_attempted=False,
+            partial_result=partial_result,
+        ) from exc
+
+    partial_result["first_tab"] = _sheet_result(worksheet)
+    if first_tab_title != _clean(getattr(worksheet, "title", "")):
+        try:
+            worksheet.update_title(first_tab_title)
+        except Exception as exc:
+            raise SheetsOperationFailure(
+                stage="rename_first_tab",
+                cause=exc,
+                mutation_attempted=True,
+                partial_result=partial_result,
+            ) from exc
+        partial_result["first_tab"] = _sheet_result(worksheet)
+        partial_result["completed_stages"].append("rename_first_tab")
+
+    updated_range = ""
+    if values is not None:
+        try:
+            result = spreadsheet.values_update(
+                f"{_quote_tab_title(first_tab_title)}!A1",
+                params={"valueInputOption": value_input_option},
+                body={"majorDimension": "ROWS", "values": values},
+            )
+        except Exception as exc:
+            raise SheetsOperationFailure(
+                stage="write_initial_values",
+                cause=exc,
+                mutation_attempted=True,
+                partial_result=partial_result,
+            ) from exc
         if isinstance(result, Mapping):
             updated_range = _clean(result.get("updatedRange"))
-    spreadsheet_id = _clean(getattr(spreadsheet, "id", ""))
+        partial_result["completed_stages"].append("write_initial_values")
     return {
         "spreadsheet_id": spreadsheet_id,
         "title": title,
@@ -864,35 +988,162 @@ _CLIENT_OPERATIONS: dict[str, Callable[..., dict[str, Any]]] = {
 }
 
 
-def _provider_error(exc: Exception, *, operation: str) -> dict[str, Any]:
-    status = _int(getattr(exc, "status", 0))
-    code = _clean(getattr(exc, "code", ""))
-    message = _clean(str(exc)) or "Google Sheets operation failed."
-    response = getattr(exc, "response", None)
-    if response is not None:
+def _exception_chain(exc: Exception) -> list[Exception]:
+    chain: list[Exception] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while isinstance(current, Exception) and id(current) not in seen:
+        chain.append(current)
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _provider_reason(error: Mapping[str, Any]) -> str:
+    for row in error.get("details") or []:
+        if isinstance(row, Mapping) and _clean(row.get("reason")):
+            return _clean(row.get("reason"))
+    for row in error.get("errors") or []:
+        if isinstance(row, Mapping) and _clean(row.get("reason")):
+            return _clean(row.get("reason"))
+    return ""
+
+
+def _redact_error_text(value: Any, *, access_token: str) -> str:
+    text = _clean(value)
+    if access_token:
+        text = text.replace(access_token, "[REDACTED]")
+    return re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", text)
+
+
+def _provider_error(
+    exc: Exception,
+    *,
+    operation: str,
+    access_token: str,
+) -> dict[str, Any]:
+    chain = _exception_chain(exc)
+    status = 0
+    provider_code = ""
+    provider_reason = ""
+    message = ""
+    provider_exception = next(
+        (item for item in chain if isinstance(item, SheetsProviderError)),
+        None,
+    )
+    detail_exception = next(
+        (item for item in chain if not isinstance(item, SheetsOperationFailure)),
+        exc,
+    )
+    provider_error_type = detail_exception.__class__.__name__
+    for candidate in chain:
+        candidate_message = _redact_error_text(candidate, access_token=access_token)
+        if candidate_message and not message:
+            message = candidate_message
+        candidate_status = _int(getattr(candidate, "status", 0))
+        candidate_code = _clean(getattr(candidate, "code", ""))
+        if candidate_status and not status:
+            status = candidate_status
+        if candidate_code and not provider_code:
+            provider_code = candidate_code
+        response = getattr(candidate, "response", None)
+        if response is None:
+            continue
+        provider_error_type = candidate.__class__.__name__
         status = _int(getattr(response, "status_code", status))
         try:
             body = response.json()
             error = body.get("error") if isinstance(body, Mapping) else None
             if isinstance(error, Mapping):
-                code = _clean(error.get("status")) or code
-                message = _clean(error.get("message")) or message
+                provider_code = (
+                    _clean(error.get("status"))
+                    or _clean(error.get("code"))
+                    or provider_code
+                )
+                provider_reason = _provider_reason(error) or provider_reason
+                message = (
+                    _redact_error_text(
+                        error.get("message"), access_token=access_token
+                    )
+                    or message
+                )
         except Exception:
             pass
-    if status in {401, 403}:
+        break
+
+    reason_key = re.sub(r"[^A-Z0-9]", "", provider_reason.upper())
+    error_type_key = provider_error_type.lower()
+    if status == 401 or reason_key in {
+        "ACCESSTOKENSCOPEINSUFFICIENT",
+        "AUTHERROR",
+        "INSUFFICIENTPERMISSIONS",
+        "INVALIDCREDENTIALS",
+        "UNAUTHENTICATED",
+    } or "refresherror" in error_type_key:
         normalized_code = "google_sheets_authorization_failed"
-    elif isinstance(exc, SheetsProviderError):
-        normalized_code = code or "google_sheets_api_error"
+    elif reason_key in {"ACCESSNOTCONFIGURED", "APIDISABLED", "SERVICEDISABLED"}:
+        normalized_code = "google_sheets_provider_configuration_error"
+    elif status == 403:
+        normalized_code = "google_sheets_access_denied"
+    elif status == 404:
+        normalized_code = "google_sheets_not_found"
+    elif status == 429:
+        normalized_code = "google_sheets_rate_limited"
+    elif status >= 500:
+        normalized_code = "google_sheets_provider_unavailable"
+    elif status == 0 and any(
+        marker in error_type_key
+        for marker in ("connection", "timeout", "transport")
+    ):
+        normalized_code = "google_sheets_transport_error"
+    elif provider_exception is not None:
+        normalized_code = (
+            _clean(provider_exception.code) or "google_sheets_api_error"
+        )
     else:
-        normalized_code = code or "google_sheets_provider_error"
+        normalized_code = "google_sheets_provider_error"
+
+    stage_failure = exc if isinstance(exc, SheetsOperationFailure) else None
+    mutation_attempted = (
+        stage_failure.mutation_attempted
+        if stage_failure is not None
+        else operation in _MUTATING_OPERATIONS
+    )
+    partial_result = (
+        dict(stage_failure.partial_result) if stage_failure is not None else {}
+    )
+    outcome_unknown = bool(mutation_attempted and (status == 0 or status >= 500))
+    safe_message = message or "Google Sheets operation failed."
     return {
         "ok": False,
         "error": {
             "code": normalized_code,
-            "message": message[:1_000],
+            "message": safe_message[:1_000],
+            "provider": "google",
+            "operation": operation,
+            "category": normalized_code.removeprefix("google_sheets_"),
             "provider_status": status,
-            "outcome_unknown": operation in _MUTATING_OPERATIONS
-            and (status == 0 or status >= 500),
+            "provider_code": provider_code,
+            "provider_reason": provider_reason,
+            "retryable": status == 0 or status in {408, 429} or status >= 500,
+            "stage": stage_failure.stage if stage_failure is not None else operation,
+            "outcome_unknown": outcome_unknown,
+            "partial_result": partial_result,
+            "_diagnostics": {
+                "traceback": _redact_error_text(
+                    "".join(traceback.format_exception(exc)),
+                    access_token=access_token,
+                )[:8_000],
+                "exception_chain": [
+                    {
+                        "type": item.__class__.__name__,
+                        "message": _redact_error_text(
+                            item, access_token=access_token
+                        )[:1_000],
+                    }
+                    for item in chain
+                ]
+            },
         },
     }
 
@@ -928,7 +1179,22 @@ def execute_google_sheets_operation(
                     "unsupported_operation",
                     f"Unsupported Google Sheets operation: {op or '<empty>'}.",
                 )
-            ret = handler(client=_authorize(token), payload=body)
+            try:
+                client = _authorize(token)
+            except Exception as exc:
+                raise SheetsOperationFailure(
+                    stage="authorize_client",
+                    cause=exc,
+                    mutation_attempted=False,
+                ) from exc
+            if op == "create_spreadsheet":
+                ret = handler(
+                    client=client,
+                    access_token=token,
+                    payload=body,
+                )
+            else:
+                ret = handler(client=client, payload=body)
         return {"ok": True, "error": None, "ret": ret}
     except SheetsValidationError as exc:
         return {
@@ -941,7 +1207,11 @@ def execute_google_sheets_operation(
             },
         }
     except Exception as exc:
-        return _provider_error(exc, operation=op)
+        return _provider_error(
+            exc,
+            operation=op,
+            access_token=token,
+        )
 
 
 __all__ = [

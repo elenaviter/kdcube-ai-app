@@ -4,8 +4,9 @@ title: "Google Sheets Through KDCube MCP"
 summary: "Configure, grant, call, and verify Google Sheets through either typed productivity tools or the provider-neutral sheets named-service namespace."
 status: active
 tags: ["recipes", "connections", "connection-hub", "google", "sheets", "mcp", "connected-accounts", "delegated-access"]
-updated_at: 2026-07-27
+updated_at: 2026-07-28
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
@@ -55,8 +56,11 @@ either one blocks the next call.
 
 In the Google Cloud project used by the existing Google connector:
 
-1. Enable **Google Sheets API**.
-2. Enable **Google Drive API**. Spreadsheet search uses Drive file metadata.
+1. Enable the
+   [Google Sheets API](https://console.cloud.google.com/apis/library/sheets.googleapis.com).
+2. Enable the
+   [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com).
+   Spreadsheet search, file metadata, and spreadsheet creation use Drive.
 3. Keep the existing Web OAuth client and its exact KDCube callback URI. The
    [Gmail recipe](google-gmail-README.md#google-cloud-configuration) lists the
    callback shapes for local, staging, and demo runtimes.
@@ -67,6 +71,15 @@ In the Google Cloud project used by the existing Google connector:
 
 No new OAuth client or secret is required. The built-in surface reuses the
 existing `google` provider and stable `gmail` connector-app id.
+
+Enable both APIs in the **same Google Cloud project that owns that OAuth client**.
+A completed Google OAuth connection proves that identity and consent worked; it
+does not prove that Sheets or Drive API access is enabled for the project.
+
+Enabling a previously disabled API does not by itself require reconnecting the
+Google account. Wait for Google to propagate the change and retry. Reconnect
+when OAuth scopes were added or the provider reports an insufficient-scope
+reason.
 
 ## 2. Add provider claims in `bundles.yaml`
 
@@ -417,6 +430,20 @@ provider; they are not silently truncated.
 transport failure reports `outcome_unknown`, inspect/search before retrying.
 The optional `idempotency_key` is returned as correlation data; it does not
 turn Google into an exactly-once provider.
+
+Provider failures preserve Google's safe message plus `provider_status`,
+`provider_code`, `provider_reason`, `stage`, and `retryable`. For example,
+`SERVICE_DISABLED` means the named Google API must be enabled in the OAuth
+client's Cloud project; `ACCESS_TOKEN_SCOPE_INSUFFICIENT` means the connected
+account must approve the added scope. The server logs the exception chain, but
+never returns it or the bearer to the MCP client.
+
+Creation has two provider stages: Drive creates the spreadsheet file, then the
+Sheets API opens and initializes its tab and values. If the second stage fails,
+the response includes `ret.partial_result` with the created spreadsheet id,
+URL, and completed stages. KDCube does not automatically replay that create;
+the caller can repair or remove the known blank/partial file without producing
+a duplicate.
 
 ## 8. Verify the complete boundary
 

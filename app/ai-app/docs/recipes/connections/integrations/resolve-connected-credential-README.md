@@ -10,6 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/connected_accounts.py
@@ -179,7 +180,23 @@ app*, and the provider config defines *the OAuth client and the real scopes*.
 Each string is a key that must exist in the provider config - change the
 connector app for the whole door in one line (step 2), and no tool code moves.
 
-## 3. The refresh-and-retry contract
+## 3. The provider-error contract
+
+Credential resolution is only one boundary. The provider call must preserve
+the actual failure category as well. Follow the
+[Provider Error And Observability Contract](../../../sdk/integrations/provider-error-contract-README.md)
+for every integration.
+
+In particular:
+
+- a missing account or claim returns the Connection Hub consent envelope;
+- an expired or revoked token enters the refresh/reconnect path;
+- an insufficient scope remains distinguishable from a disabled provider API;
+- a generic provider `403` is not automatically treated as an expired token;
+- transport and provider errors retain safe status/reason/stage details;
+- an ambiguous mutation is not replayed blindly.
+
+## 4. The refresh-and-retry contract
 
 OAuth access tokens expire. `run_with_connected_account_retry` owns the refresh
 cycle so your tool body stays a single happy path:
@@ -197,7 +214,7 @@ A credential that can no longer be refreshed is exactly what surfaces gate 2's
 Report the auth failure with `connected_account_auth_failure(credential, ...)`
 so the wrapper can drive that cycle.
 
-## 4. What the caller sees
+## 5. What the caller sees
 
 Because resolution returns the gate-2 vocabulary, the caller (a hosted agent's
 chat banner, or an external MCP client) always gets an actionable answer:
@@ -213,7 +230,7 @@ chat banner, or an external MCP client) always gets an actionable answer:
 Only `account_required` is fixed by resending; every other reason needs a
 human action at the `connection_hub_url` first.
 
-## 5. Guarantees
+## 6. Guarantees
 
 - **No token in your code.** Your tool resolves a live credential for one call
   and lets it go; the secret lives in Connection Hub.
@@ -226,12 +243,15 @@ human action at the `connection_hub_url` first.
   approved, on the account the binding names - never a broader token than the
   call earned.
 
-## 6. Adding a new service (Google Sheets, or your own)
+## 7. Adding a new service (Google Sheets, or your own)
 
-"I want to support a new service and get its token from code" is these four
+"I want to support a new service and get its token from code" is these five
 steps - each string you pass in section 2 becomes a config key here:
 
-1. **Register the provider, connector app, and claims** in Connection Hub
+1. **Enable the external service APIs** in the provider project/account that
+   owns the OAuth client. OAuth connection success does not prove that Gmail,
+   Sheets, Drive, or another product API is enabled.
+2. **Register the provider, connector app, and claims** in Connection Hub
    (`connections.delegated_to_kdcube.providers.<provider>`): the OAuth client
    (`client_id`, `client_secret_ref`), the connector app's `allowed_claims`,
    and each claim's real `provider_scopes`. For a Google service like Sheets you
@@ -249,14 +269,14 @@ steps - each string you pass in section 2 becomes a config key here:
      tool code.
    - [Slack Integration](slack-README.md) - a single-provider realm with its own
      claim set and connector app.
-2. **Point your door at the connector app** - add it to
+3. **Point your door at the connector app** - add it to
    `surfaces.as_provider.mcp.<door>.connector_apps` (or the named-service
    `connector_apps`), e.g. `google: gmail` (or a dedicated `google: sheets`).
    This is the one line `resolve_connector_app_id` reads.
-3. **Write the tool** - resolve the credential exactly as in section 2
+4. **Write the tool** - resolve the credential exactly as in section 2
    (`resolve_connected_account_claim` + `resolve_connector_app_id`) with the new
    claim, then call the provider API with `credential.access_token`.
-4. **Declare the tool's need** - the `connected_accounts` policy
+5. **Declare the tool's need** - the `connected_accounts` policy
    `{provider_id, claims}` so the gates, consent surfaces, and demand ordering
    know what to ask for. The productivity door's Sheets tools are a complete
    reference implementation of this shape.
@@ -265,7 +285,7 @@ The user connects the account once ([Delegated to KDCube], per provider and
 connector app); from then on your tool gets a live token per call, at the
 trusted boundary, with no secret in your code.
 
-## 7. Expose it over MCP (optional)
+## 8. Expose it over MCP (optional)
 
 A tool that resolves this way is already governed. To let a generic external
 agent reach it, expose the namespace as a named service or a plain MCP door -

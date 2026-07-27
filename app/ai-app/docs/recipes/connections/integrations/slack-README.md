@@ -4,8 +4,9 @@ title: "Slack Integration"
 summary: "Recipe for configuring a Slack OAuth connector app in Connection Hub, letting KDCube users connect their own Slack accounts, and wiring Slack search/post tools through delegated-to-KDCube connected accounts."
 status: active
 tags: ["recipes", "connections", "connection-hub", "slack", "oauth", "connected-accounts", "delegated-to-kdcube"]
-updated_at: 2026-07-27
+updated_at: 2026-07-28
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/slack.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/create-delegated-automation-access-README.md

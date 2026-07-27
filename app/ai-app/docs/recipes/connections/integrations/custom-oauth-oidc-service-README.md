@@ -4,8 +4,9 @@ title: "Custom OAuth/OIDC Service Integration"
 summary: "Recipe for connecting a custom OAuth/OIDC service to KDCube so tools, named services, and agents can request the user's external-service token through Connection Hub."
 status: active
 tags: ["recipes", "connections", "connection-hub", "integrations", "delegated-to-kdcube", "oauth", "oidc", "custom-service", "connector-apps", "mcp", "named-services"]
-updated_at: 2026-07-27
+updated_at: 2026-07-28
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
@@ -65,17 +66,19 @@ claims they need.
 In the external service:
 
 1. Create a web/server OAuth client or OIDC app.
-2. Enable authorization code flow.
-3. Enable refresh tokens if the service should work for long-running
+2. Enable every product API the integration will call. OAuth login can succeed
+   while the provider's data API remains disabled.
+3. Enable authorization code flow.
+4. Enable refresh tokens if the service should work for long-running
    automation.
-4. Enable the provider scopes needed by the claims.
-5. Register the KDCube callback URL:
+5. Enable the provider scopes needed by the claims.
+6. Register the KDCube callback URL:
 
 ```text
 https://<PUBLIC_HOST>/api/integrations/bundles/<TENANT>/<PROJECT>/connection-hub@1-0/public/delegated_to_kdcube_oauth_callback
 ```
 
-6. Copy the client id and client secret.
+7. Copy the client id and client secret.
 
 If S1 is backed by Cognito, use the Cognito hosted UI/OIDC app client:
 

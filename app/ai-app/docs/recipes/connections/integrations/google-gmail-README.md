@@ -4,8 +4,9 @@ title: "Google Gmail Integration"
 summary: "Recipe for configuring a Google OAuth client for Gmail connected accounts, registering KDCube delegated-to-KDCube redirect URIs, and wiring Gmail tools through Connection Hub claims."
 status: active
 tags: ["recipes", "connections", "connection-hub", "google", "gmail", "oauth", "connected-accounts", "delegated-to-kdcube"]
-updated_at: 2026-07-27
+updated_at: 2026-07-28
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-sheets-README.md
@@ -121,6 +122,11 @@ id, route, and callback path must all match the URL KDCube sends in the OAuth
 request. If ngrok changes, add the new callback URL to the Google OAuth client.
 
 9. Copy **Client ID** and **Client Secret**.
+
+If the same Google connector app also serves Sheets, complete the
+[Sheets and Drive API activation checklist](google-sheets-README.md#1-configure-google-cloud)
+in that same Cloud project. Google OAuth can connect successfully while one of
+the product APIs remains disabled.
 
 ## Google OAuth Scopes
 
