@@ -539,18 +539,24 @@ platform:
   services:
     proc:
       bundles:
+        static_widget_delivery_mode: shadow
         bundles_preload_bundle_lock_ttl_seconds: 300
         bundle_scheduler_reconcile_interval_seconds: 0
 ```
 
 | Field | Settings API | Meaning |
 |---|---|---|
+| `static_widget_delivery_mode` | `get_settings().PLATFORM.APPLICATIONS.STATIC_WIDGET_DELIVERY_MODE` | `legacy` resolves the app and checks the stored build signature on the request path; `shadow` also publishes deployment manifests but still serves through legacy; `deployed` prefers the role-guarded manifest path and falls back when its manifest is missing or stale |
 | `bundles_preload_bundle_lock_ttl_seconds` | `get_settings().PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | per-bundle startup preload claim TTL in seconds; stale claims may be retried by another proc |
 | `bundle_scheduler_reconcile_interval_seconds` | `get_settings().PLATFORM.APPLICATIONS.BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS` | periodic scheduler reconciliation interval in seconds; `0` disables the periodic loop |
 
 The scheduler still reconciles on proc startup and on bundle update
 notifications. The periodic loop is only the catch-up path for environments
 that want scheduler convergence even if a notification is missed.
+
+The static-widget deployment mode is assembly-only. See
+[App Deployment And Static Widget Delivery](../sdk/bundle/app-deployment-and-static-widget-delivery-README.md)
+for the lifecycle, policy manifest, local/EFS behavior, and rollback switch.
 
 ### `events`
 

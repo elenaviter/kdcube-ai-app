@@ -89,13 +89,22 @@ from kdcube_ai_app.apps.chat.ingress.resolvers import (
     service_health_checker,
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_settings, log_secret_statuses
+from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
+    app_source_fingerprint,
+    deploy_loaded_bundle_static_surfaces,
+    props_fingerprint,
+)
+from kdcube_ai_app.apps.chat.proc.app_deployment.modes import (
+    static_widget_deployment_enabled,
+    static_widget_runtime_generation,
+)
 from kdcube_ai_app.apps.chat.sdk.infra.economics.policy import EconomicsLimitException
 from kdcube_ai_app.apps.chat.sdk.runtime.local_sidecars import shutdown_all_local_sidecars
 from kdcube_ai_app.apps.chat.proc.rest.integrations import mount_integrations_routers
 from kdcube_ai_app.infra.namespaces import CONFIG
 from kdcube_ai_app.infra.plugin.bundle_store import (
-    _get_bundle_props_from_authority,
     bundle_entry_to_spec,
+    get_bundle_props_from_authority,
     load_registry as load_bundle_runtime_registry,
     resolve_bundle_spec_from_store,
 )
@@ -241,7 +250,11 @@ def _git_resolution_enabled() -> bool:
 
 
 def _bundles_preload_enabled() -> bool:
-    return bool(get_settings().PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_ON_START)
+    settings = get_settings()
+    return bool(
+        settings.PLATFORM.APPLICATIONS.BUNDLES_PRELOAD_ON_START
+        or static_widget_deployment_enabled(settings)
+    )
 
 
 def _bundle_preload_lock_ttl_seconds() -> int:
@@ -260,7 +273,14 @@ def _utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _bundle_preload_generation(bundle_id: str, entry) -> str:
+def _bundle_preload_generation(
+        bundle_id: str,
+        entry,
+        *,
+        static_source_fingerprint: str | None = None,
+        static_runtime_generation: str | None = None,
+        static_props_fingerprint: str | None = None,
+) -> str:
     """
     Stable app-preload generation. Any descriptor-resolved source change must
     move workers to a new done key so old successful preloads do not suppress
@@ -275,6 +295,12 @@ def _bundle_preload_generation(bundle_id: str, entry) -> str:
         "ref": str(getattr(entry, "ref", "") or ""),
         "subdir": str(getattr(entry, "subdir", "") or ""),
         "git_commit": str(getattr(entry, "git_commit", "") or ""),
+        "static_widget_deployment_schema": (
+            1 if static_source_fingerprint is not None else 0
+        ),
+        "static_widget_source_fingerprint": str(static_source_fingerprint or ""),
+        "static_widget_runtime_generation": str(static_runtime_generation or ""),
+        "static_widget_props_fingerprint": str(static_props_fingerprint or ""),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:24]
@@ -358,9 +384,14 @@ def _enabled_configured_widget_aliases_from_props(props: dict | None) -> list[st
     return sorted(aliases)
 
 
-def _load_authoritative_bundle_props_for_preload(*, tenant: str, project: str, bundle_id: str) -> dict:
+async def _load_authoritative_bundle_props_for_preload(
+        *,
+        tenant: str,
+        project: str,
+        bundle_id: str,
+) -> dict:
     try:
-        props = _get_bundle_props_from_authority(
+        props = await get_bundle_props_from_authority(
             tenant=tenant,
             project=project,
             bundle_id=bundle_id,
@@ -373,7 +404,7 @@ def _load_authoritative_bundle_props_for_preload(*, tenant: str, project: str, b
         ) from e
 
 
-def _validate_preloaded_bundle_manifest(
+async def _validate_preloaded_bundle_manifest(
     *,
     bundle_id: str,
     spec: BundleSpec,
@@ -392,7 +423,7 @@ def _validate_preloaded_bundle_manifest(
         load_bundle_manifest,
     )
 
-    props = _load_authoritative_bundle_props_for_preload(
+    props = await _load_authoritative_bundle_props_for_preload(
         tenant=tenant,
         project=project,
         bundle_id=bundle_id,
@@ -612,7 +643,26 @@ async def _preload_bundles_loop(app) -> None:
                 project=settings.PROJECT,
                 bundle_id=bid,
             )
-            generation = _bundle_preload_generation(bid, entry)
+            deployment_enabled = static_widget_deployment_enabled(settings)
+            source_fingerprint = None
+            runtime_generation = None
+            descriptor_props_fingerprint = None
+            if deployment_enabled:
+                source_fingerprint = await app_source_fingerprint(bundle_spec)
+                runtime_generation = static_widget_runtime_generation()
+                descriptor_props = await _load_authoritative_bundle_props_for_preload(
+                    tenant=settings.TENANT,
+                    project=settings.PROJECT,
+                    bundle_id=bid,
+                )
+                descriptor_props_fingerprint = props_fingerprint(descriptor_props)
+            generation = _bundle_preload_generation(
+                bid,
+                entry,
+                static_source_fingerprint=source_fingerprint,
+                static_runtime_generation=runtime_generation,
+                static_props_fingerprint=descriptor_props_fingerprint,
+            )
             bundle_done_key = CONFIG.BUNDLES.PRELOAD_BUNDLE_DONE_FMT.format(
                 tenant=settings.TENANT,
                 project=settings.PROJECT,
@@ -744,7 +794,7 @@ async def _preload_bundles_loop(app) -> None:
                 owner,
             )
             try:
-                await preload_bundle_async(
+                loaded_bundle = await preload_bundle_async(
                     spec,
                     bundle_spec,
                     tenant=settings.TENANT,
@@ -752,12 +802,24 @@ async def _preload_bundles_loop(app) -> None:
                     pg_pool=app.state.pg_pool,
                     redis=app.state.redis_async,
                 )
-                _validate_preloaded_bundle_manifest(
+                await _validate_preloaded_bundle_manifest(
                     bundle_id=bid,
                     spec=spec,
                     tenant=settings.TENANT,
                     project=settings.PROJECT,
                 )
+                if deployment_enabled:
+                    workflow, module = loaded_bundle
+                    await deploy_loaded_bundle_static_surfaces(
+                        workflow=workflow,
+                        module=module,
+                        agentic_spec=spec,
+                        bundle_spec=bundle_spec,
+                        tenant=settings.TENANT,
+                        project=settings.PROJECT,
+                        pg_pool=app.state.pg_pool,
+                        redis=app.state.redis_async,
+                    )
                 ok += 1
                 duration_ms = int((time.time() - started) * 1000)
                 logger.info("[Bundles] Preload succeeded: id=%s path=%s duration_ms=%s", bid, path, duration_ms)

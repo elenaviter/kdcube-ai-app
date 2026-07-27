@@ -1,7 +1,7 @@
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 import yaml
@@ -512,6 +512,7 @@ class ApplicationsConfig(BaseModel):
     BUNDLES_FORCE_ENV_ON_STARTUP: bool = False
     BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS: int = 60
     BUNDLES_PRELOAD_ON_START: bool = False
+    STATIC_WIDGET_DELIVERY_MODE: Literal["legacy", "shadow", "deployed"] = "legacy"
     BUNDLES_PRELOAD_LOCK_TTL_SECONDS: int = 900
     BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS: int = 300
     BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS: int = 60

@@ -3089,7 +3089,7 @@ async def preload_bundle_async(
     project: str,
     pg_pool: Optional[Any] = None,
     redis: Optional[Any] = None,
-) -> None:
+) -> tuple[Any, types.ModuleType]:
     """
     Eagerly load a bundle module and run its on_bundle_load hook (if any).
     Called at proc startup when BUNDLES_PRELOAD_ON_START=1.
@@ -3116,7 +3116,7 @@ async def preload_bundle_async(
     wf_config = create_workflow_config(cfg_req)
     wf_config.ai_bundle_spec = bundle_spec
 
-    await get_workflow_instance_async(
+    return await get_workflow_instance_async(
         spec,
         wf_config,
         comm_context=comm_ctx,

@@ -62,6 +62,7 @@ Curated index of platform, service, and SDK documentation.
 * App Client UI: [bundle-client-ui-README.md](sdk/bundle/bundle-client-ui-README.md)
 * App Widget Integration: [bundle-widget-integration-README.md](sdk/bundle/bundle-widget-integration-README.md)
 * UI Components Lifecycle: [ui-components-lifecycle-README.md](sdk/bundle/ui-components-lifecycle-README.md)
+* App Deployment And Static Widget Delivery: [app-deployment-and-static-widget-delivery-README.md](sdk/bundle/app-deployment-and-static-widget-delivery-README.md)
 * App Frontend Awareness: [bundle-frontend-awareness-README.md](sdk/bundle/bundle-frontend-awareness-README.md)
 * App Client Communication: [client-transport-protocols-README.md](service/comm/client-transport-protocols-README.md)
 * App Chat Stream Events: [chat-stream-events-README.md](sdk/solutions/chat/chat-stream-events-README.md)

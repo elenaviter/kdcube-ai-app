@@ -4,11 +4,12 @@ title: "Bundle Lifecycle"
 summary: "Lifecycle model for bundles: discovery, load, initialization, invocation, hooks, background jobs, singleton state, UI build behavior, and which storage or config surfaces exist at each phase."
 tags: ["sdk", "bundle", "lifecycle", "storage", "configuration", "entrypoint", "background-jobs"]
 keywords: ["bundle discovery and load", "initialization hooks", "invocation phases", "on_job lifecycle", "background job lifecycle", "singleton bundle state", "ui build lifecycle", "storage availability by phase", "configuration availability by phase", "bundle lifecycle model"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-developer-guide-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/ui-components-lifecycle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/app-deployment-and-static-widget-delivery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-storage-and-cache-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-interfaces-README.md
@@ -60,6 +61,8 @@ flowchart TD
     D --> I[Instantiate entrypoint]
     I --> L[on_bundle_load once per process per tenant/project]
     L --> Q[Incoming turn or REST operation request]
+    L -. shadow or deployed .-> AD[on_app_deploy once per shared generation]
+    AD --> P[Publish current static-surface manifest]
     L --> S["@cron due scan"]
     S --> JQ[Redis background job stream]
     JQ --> J["@on_job invocation"]
@@ -133,6 +136,7 @@ Important:
 | Method | Frequency | Purpose |
 |---|---|---|
 | `on_bundle_load(**kwargs)` | once per process per tenant/project | build indexes, warm caches, clone repos, prepare local read-only assets |
+| `on_app_deploy(**kwargs)` | fleet-coordinated per source/config generation when static deployment is enabled; interrupted work may be retried | finish idempotent deployment preparation before the static-surface manifest is published |
 | `on_props_changed(...)` | when effective props changed for the active instance | reconcile long-lived side effects after props refresh |
 | `pre_run_hook(state=...)` | every invocation | last-minute validation or reconciliation |
 | `execute_core(state=..., thread_id=..., params=...)` | every invocation | main bundle logic |
@@ -143,6 +147,9 @@ Important:
 
 Important:
 - `on_bundle_load(...)` is intended to be deterministic and idempotent
+- `on_app_deploy(...)` must be async and idempotent; its shared-filesystem lock
+  provides at-least-once recovery after an interrupted owner, not a transaction
+  around external side effects
 - `on_turn_completed(...)` is for fast cleanup only; do not do expensive reporting or user-facing work there
 - do not store request-local state there
 - use storage for durable state, not instance fields
@@ -154,6 +161,12 @@ Important:
 - it should also be deterministic and idempotent
 - it should not block on slow one-time install/build work that belongs in
   `on_bundle_load(...)`
+
+`on_app_deploy(...)` is also different from `on_bundle_load(...)`. It is an
+opt-in, fleet-coordinated deployment phase used by the experimental prebuilt
+static-widget path. See
+[App Deployment And Static Widget Delivery](app-deployment-and-static-widget-delivery-README.md)
+for its modes, storage contract, and fallback behavior.
 
 `@venv(...)` is separate from `on_bundle_load(...)`:
 - it is not a one-time init hook
@@ -328,13 +341,13 @@ run `npm`, Vite, or another UI build command.
 | Action | Registry and runtime effect | UI effect |
 |---|---|---|
 | Refresh/list/read props | Read-only | No build and no lifecycle transition |
-| Save app | Persist authority, update Redis registry, publish `bundles.update`, evict changed app state | No build inside the Save request |
-| Reload app / reload from authority | Re-read the existing authority and evict/reapply the selected app | No synchronous build; next preload or HTML request may build |
+| Save app | Persist authority, update Redis registry, publish `bundles.update`, evict changed app state | No build inside the Save request; `shadow`/`deployed` reconcile from the event |
+| Reload app / reload from authority | Re-read the existing authority and evict/reapply the selected app | No build inside the reload request; `shadow`/`deployed` reconcile from the event |
 | Reset props from code | Recompute/persist code defaults without `on_bundle_load()` | No build |
 | Open or reload main-view/widget HTML | Load the active app version and inspect the UI signature | Build if output is missing or stale; otherwise serve the current artifact |
 | Proc startup with `bundles_preload_on_start: true` | Load configured app generations once per proc lifespan | May build missing/stale UI before the first browser request |
 
-Therefore:
+In `legacy`:
 
 - after changing a Git ref and pressing **Save**, do not also press **Reload
   app**
@@ -562,8 +575,8 @@ This context is request-bound. Do not cache it as durable bundle state.
 ## Custom bundle UI
 
 A bundle can ship a custom frontend (for example, a Vite/React SPA) that is
-prepared by startup preload or by the first qualifying HTML request and served
-to the browser as a standalone panel.
+prepared by startup preload, the optional app-deployment pipeline, or the first
+qualifying HTML request and served to the browser as a standalone panel.
 
 ### How it works
 

@@ -1203,6 +1203,9 @@ class Settings(PLATFORM_CONFIG):
                 BUNDLES_FORCE_ENV_ON_STARTUP=self._resolve_bool("BUNDLES_FORCE_ENV_ON_STARTUP", f"{bundles_p}.bundles_force_env_on_startup", False),
                 BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS=self._resolve_int("BUNDLES_FORCE_ENV_LOCK_TTL_SECONDS", f"{bundles_p}.bundles_force_env_lock_ttl_seconds", 60),
                 BUNDLES_PRELOAD_ON_START=self._resolve_bool("BUNDLES_PRELOAD_ON_START", f"{bundles_p}.bundles_preload_on_start", False),
+                STATIC_WIDGET_DELIVERY_MODE=(
+                    self._assembly_str(f"{bundles_p}.static_widget_delivery_mode") or "legacy"
+                ).strip().lower(),
                 BUNDLES_PRELOAD_LOCK_TTL_SECONDS=self._resolve_int("BUNDLES_PRELOAD_LOCK_TTL_SECONDS", f"{bundles_p}.bundles_preload_lock_ttl_seconds", 900),
                 BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS=self._resolve_int("BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS", f"{bundles_p}.bundles_preload_bundle_lock_ttl_seconds", 300),
                 BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS=self._resolve_int("BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS", f"{bundles_p}.bundle_scheduler_reconcile_interval_seconds", 60),

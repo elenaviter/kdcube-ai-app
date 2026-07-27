@@ -2029,6 +2029,53 @@ class EnhancedChatRequestProcessor:
                     exc_info=True,
                 )
 
+        async def _deploy_changed_static_surfaces(
+                current: BundlesRegistry,
+                bundle_ids: set[str] | list[str],
+                *,
+                reason: str,
+        ) -> None:
+            from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
+                deploy_registry_bundle_static_surfaces,
+            )
+            from kdcube_ai_app.apps.chat.proc.app_deployment.modes import (
+                static_widget_deployment_enabled,
+            )
+
+            if not static_widget_deployment_enabled(settings):
+                return
+            for bundle_id in sorted(str(value).strip() for value in bundle_ids if str(value).strip()):
+                entry = (current.bundles or {}).get(bundle_id)
+                if entry is None:
+                    continue
+                try:
+                    manifest = await deploy_registry_bundle_static_surfaces(
+                        entry=entry,
+                        tenant=tenant,
+                        project=project,
+                        pg_pool=self.pg_pool,
+                        redis=self.redis,
+                    )
+                    logger.info(
+                        "Static widget deployment reconciled: reason=%s tenant=%s project=%s "
+                        "bundle=%s signature=%s",
+                        reason,
+                        tenant,
+                        project,
+                        bundle_id,
+                        manifest.deployment_signature[:12] if manifest is not None else None,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Static widget deployment failed; legacy serving remains available: "
+                        "reason=%s tenant=%s project=%s bundle=%s",
+                        reason,
+                        tenant,
+                        project,
+                        bundle_id,
+                        exc_info=True,
+                    )
+
         async def _catch_up_runtime_snapshot(reason: str, changed_bundle_ids: Optional[set[str]] = None) -> None:
             current = await store_load(self.redis, tenant, project)
             await set_registry_async(
@@ -2160,6 +2207,12 @@ class EnhancedChatRequestProcessor:
                     )
             except Exception:
                 logger.warning("Failed to stop inactive local sidecars after bundle runtime catch-up", exc_info=True)
+            if normalized_changed_bundle_ids:
+                await _deploy_changed_static_surfaces(
+                    current,
+                    normalized_changed_bundle_ids,
+                    reason=reason,
+                )
             if self._scheduler is not None:
                 await self._scheduler.reconcile(current)
             if self._data_bus_manager is not None:
@@ -2564,6 +2617,19 @@ class EnhancedChatRequestProcessor:
                                         )
                             except Exception:
                                 logger.warning("Cached bundle on_props_changed failed after props update", exc_info=True)
+                            try:
+                                current = await store_load(self.redis, tenant, project)
+                                await _deploy_changed_static_surfaces(
+                                    current,
+                                    [bundle_id],
+                                    reason="bundles.props.update",
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "Static widget deployment catch-up failed after props update: bundle=%s",
+                                    bundle_id,
+                                    exc_info=True,
+                                )
                         continue
 
                     logger.debug("Ignoring unrelated pub/sub message on bundles channel")

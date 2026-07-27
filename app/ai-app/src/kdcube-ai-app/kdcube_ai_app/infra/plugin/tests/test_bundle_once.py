@@ -71,6 +71,36 @@ def test_run_once_for_shared_bundle_storage_skips_when_current(tmp_path):
     assert calls == []
 
 
+def test_run_once_for_shared_bundle_storage_accepts_async_ready(tmp_path):
+    storage_root = tmp_path / "storage"
+    signature_path = storage_root / ".demo.signature"
+    output_path = storage_root / "output.txt"
+    calls = []
+
+    async def _ready():
+        await asyncio.sleep(0)
+        return output_path.exists()
+
+    async def _action():
+        calls.append("run")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("ok", encoding="utf-8")
+
+    result = asyncio.run(
+        run_once_for_shared_bundle_storage(
+            storage_root=storage_root,
+            operation="demo",
+            signature_path=signature_path,
+            signature="sig-1",
+            ready=_ready,
+            action=_action,
+        )
+    )
+
+    assert result.status == "ran"
+    assert calls == ["run"]
+
+
 def test_run_once_for_shared_bundle_storage_requires_async_action(tmp_path):
     storage_root = tmp_path / "storage"
     signature_path = storage_root / ".demo.signature"

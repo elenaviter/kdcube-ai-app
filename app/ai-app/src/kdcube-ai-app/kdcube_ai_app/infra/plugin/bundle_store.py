@@ -762,6 +762,21 @@ def _get_bundle_props_from_authority(
     return dict(props or {})
 
 
+async def get_bundle_props_from_authority(
+    *,
+    tenant: str,
+    project: str,
+    bundle_id: str,
+) -> Dict[str, Any] | None:
+    """Read descriptor-authoritative app props without blocking the event loop."""
+    return await asyncio.to_thread(
+        _get_bundle_props_from_authority,
+        tenant=tenant,
+        project=project,
+        bundle_id=bundle_id,
+    )
+
+
 def resolve_dot_path(obj: Any, path: str) -> Any:
     """
     Resolve a dot-separated path into a nested dict, e.g.

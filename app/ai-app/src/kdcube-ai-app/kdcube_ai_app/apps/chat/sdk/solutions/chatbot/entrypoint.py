@@ -937,6 +937,17 @@ class BaseEntrypoint:
         await self._ensure_public_content_indexes()
         return None
 
+    async def on_app_deploy(self, **kwargs) -> None:
+        """Optional fleet-coordinated application deployment hook.
+
+        The proc deployment coordinator invokes this async hook once for a
+        source/configuration generation across workers sharing bundle storage.
+        Override it for idempotent deployment preparation that must complete
+        before the prebuilt static-surface manifest is published. Per-process
+        initialization remains in ``on_bundle_load``.
+        """
+        return None
+
     # -- public content (platform capability) --------------------------------
 
     async def _ensure_public_content_indexes(self) -> None:

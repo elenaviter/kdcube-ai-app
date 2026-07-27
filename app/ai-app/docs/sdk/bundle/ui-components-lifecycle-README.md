@@ -4,9 +4,10 @@ title: "UI Components Lifecycle"
 summary: "How KDCube discovers, builds, caches, serves, and reloads bundle UI components in single-process and concurrent proc deployments."
 tags: ["sdk", "bundle", "ui", "widget", "main-view", "lifecycle", "preload", "concurrency", "efs", "iframe"]
 keywords: ["bundle ui lifecycle", "bundle widget lifecycle", "ui.widgets", "ui.main_view", "ui_widget decorator", "shared storage ui build", "bundle ui preload", "request triggered widget build", "bundle ui locks", "bundle ui signatures", "static widget route", "concurrent proc workers", "ui source edit auto-rebuild", "signature aware coalescing"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-lifecycle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/app-deployment-and-static-widget-delivery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-widget-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-interfaces-README.md
@@ -320,8 +321,22 @@ platform:
         bundles_preload_bundle_lock_ttl_seconds: 300
 ```
 
-The setting maps to `BUNDLES_PRELOAD_ON_START`. It controls a startup task, not
-a periodic reconciler and not an administrative Save hook.
+The setting maps to `BUNDLES_PRELOAD_ON_START`. In the legacy mode it controls a
+startup task, not a periodic reconciler.
+
+The experimental static-widget deployment path adds a separate mode selector:
+
+```yaml
+platform:
+  services:
+    proc:
+      bundles:
+        static_widget_delivery_mode: shadow  # legacy | shadow | deployed
+```
+
+`shadow` and `deployed` imply preload and also reconcile changed apps after
+registry or props broadcasts. The complete contract belongs to
+[App Deployment And Static Widget Delivery](app-deployment-and-static-widget-delivery-README.md).
 
 Preload does this per worker:
 
@@ -391,8 +406,8 @@ Preload is an optimization and a readiness signal. Serving code still has a
 request-time fallback because bundles can be reloaded or a storage mount can be
 empty after restart.
 
-The preload loop takes its registry snapshot during proc startup. If Bundle
-Admin saves a changed ref after that loop has completed:
+In `legacy`, the preload loop takes its registry snapshot during proc startup.
+If Bundle Admin saves a changed ref after that loop has completed:
 
 - the `bundles.update` event still evicts the old code and static-load state
 - the completed startup preload loop is not rerun
@@ -401,9 +416,9 @@ Admin saves a changed ref after that loop has completed:
 - restarting proc runs startup preload again; the changed `repo/ref/subdir` or
   resolved Git commit creates a new preload generation
 
-There is currently no separate **Preload app now** administration operation.
-Opening/reloading the app UI is the immediate per-app warm-up path; restarting
-proc is the full-registry warm-up path.
+In `shadow` or `deployed`, the config listener performs the per-app deployment
+after a live registry or props update. Opening/reloading remains the safe
+legacy fallback if that deployment fails.
 
 Proc `GET /health` exposes:
 
@@ -632,7 +647,7 @@ browser or proxy. Such a read must never turn a transient timeout into repeated
 
 ## Registry Ref Changes: Save Versus Reload
 
-Bundle Admin registry mutations and UI compilation are intentionally separate.
+In `legacy`, Bundle Admin registry mutations and UI compilation are separate.
 When an administrator edits an app's Git `ref` and presses **Save**, proc:
 
 1. persists the changed app in the authoritative descriptor store
@@ -646,6 +661,11 @@ The next startup preload or main-view/widget **HTML entrypoint** request resolve
 the saved app version and computes its UI signature. It serves an existing
 current artifact or performs the coordinated build when output is stale or
 missing.
+
+With `shadow` or `deployed`, the same `bundles.update` broadcast additionally
+runs the fleet-coordinated `on_app_deploy`/UI publication pipeline. Save still
+returns after publishing the config event; the processor completes deployment
+from that event, and request-time fallback remains available.
 
 ```mermaid
 sequenceDiagram
@@ -691,8 +711,8 @@ Operator rules:
 | Action | Calls `on_bundle_load()` now? | Builds UI now? | What happens next |
 |---|---:|---:|---|
 | Refresh/list/read props | No | No | Nothing is invalidated |
-| Save changed app ref | No | No | Workers evict; next preload/HTML request loads saved ref |
-| Reload app/from authority | No | No | Workers evict; next preload/HTML request reloads |
+| Save changed app ref | No in the HTTP handler | In `shadow`/`deployed`, from the resulting config event | Workers evict; deployment runs or the next HTML request falls back |
+| Reload app/from authority | No in the HTTP handler | In `shadow`/`deployed`, from the resulting config event | Workers evict and republish, with request fallback |
 | Reset props from code | No | No | Runtime lifecycle remains untouched |
 | Open/reload HTML entrypoint | Yes, through static load fallback when needed | If signature is stale/missing | Artifact is served after build/current check |
 | Startup preload | Yes | If signature is stale/missing | Shared artifact becomes warm |

@@ -72,14 +72,25 @@ async def _run_action(action: Callable[[], Awaitable[Any]]) -> Any:
     return await value
 
 
-def _signature_current(
+async def _run_ready(ready: Callable[[], bool | Awaitable[bool]]) -> bool:
+    if inspect.iscoroutinefunction(ready):
+        value = ready()
+    else:
+        value = await asyncio.to_thread(ready)
+    if inspect.isawaitable(value):
+        value = await value
+    return bool(value)
+
+
+async def _signature_current(
     *,
     signature_path: pathlib.Path,
     signature: str,
-    ready: Callable[[], bool],
+    ready: Callable[[], bool | Awaitable[bool]],
 ) -> bool:
     try:
-        return signature_path.read_text(encoding="utf-8").strip() == signature and bool(ready())
+        current = await asyncio.to_thread(signature_path.read_text, encoding="utf-8")
+        return current.strip() == signature and await _run_ready(ready)
     except Exception:
         return False
 
@@ -126,7 +137,7 @@ async def _heartbeat_lock(lock_path: pathlib.Path, *, interval_seconds: float) -
     interval = max(0.01, float(interval_seconds))
     while True:
         try:
-            _touch_lock_heartbeat(lock_path)
+            await asyncio.to_thread(_touch_lock_heartbeat, lock_path)
         except Exception:
             pass
         await asyncio.sleep(interval)
@@ -157,7 +168,7 @@ async def run_once_for_shared_bundle_storage(
     operation: str,
     signature_path: str | os.PathLike[str],
     signature: str,
-    ready: Callable[[], bool],
+    ready: Callable[[], bool | Awaitable[bool]],
     action: Callable[[], Awaitable[Any]],
     logger: Optional[Any] = None,
     owner_metadata: Optional[dict[str, Any]] = None,
@@ -176,33 +187,38 @@ async def run_once_for_shared_bundle_storage(
 
     The action is considered current when both are true:
     - signature_path contains `signature`
-    - ready() returns True
+    - ready() returns True; it may be synchronous or awaitable
 
     The lock is a directory under `<storage_root>/.kdcube.once/`, which works for
-    local filesystems and shared mounts such as EFS.
+    local filesystems and shared mounts such as EFS. Filesystem operations run
+    outside the proc event loop.
     """
-    root = pathlib.Path(storage_root).expanduser().resolve()
-    sig_path = pathlib.Path(signature_path).expanduser().resolve()
+    root, sig_path = await asyncio.to_thread(
+        lambda: (
+            pathlib.Path(storage_root).expanduser().resolve(),
+            pathlib.Path(signature_path).expanduser().resolve(),
+        )
+    )
     op = _sanitize_segment(operation)
     lock_path = root / ".kdcube.once" / f"{op}.lock"
 
-    if _signature_current(signature_path=sig_path, signature=signature, ready=ready):
+    if await _signature_current(signature_path=sig_path, signature=signature, ready=ready):
         _logger_log(logger, f"{log_prefix} skipped: signature cache hit op={op} storage={root}", "INFO")
         return SharedStorageOnceResult("already_current", root, op, lock_path, sig_path, ran=False)
 
-    root.mkdir(parents=True, exist_ok=True)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
+    await asyncio.to_thread(lock_path.parent.mkdir, parents=True, exist_ok=True)
     deadline = time.time() + max(0.0, float(lock_wait_seconds))
     lock_acquired = False
     last_wait_log_at = 0.0
 
     while True:
-        if _signature_current(signature_path=sig_path, signature=signature, ready=ready):
+        if await _signature_current(signature_path=sig_path, signature=signature, ready=ready):
             _logger_log(logger, f"{log_prefix} skipped: became current op={op} storage={root}", "INFO")
             return SharedStorageOnceResult("became_current", root, op, lock_path, sig_path, ran=False)
 
         try:
-            lock_path.mkdir(parents=True, exist_ok=False)
+            await asyncio.to_thread(lock_path.mkdir, parents=True, exist_ok=False)
             lock_acquired = True
             owner = dict(owner_metadata or {})
             owner.update(
@@ -215,23 +231,32 @@ async def run_once_for_shared_bundle_storage(
                 }
             )
             try:
-                (lock_path / "owner.json").write_text(json.dumps(owner, sort_keys=True), encoding="utf-8")
-                _touch_lock_heartbeat(lock_path)
+                await asyncio.to_thread(
+                    (lock_path / "owner.json").write_text,
+                    json.dumps(owner, sort_keys=True),
+                    encoding="utf-8",
+                )
+                await asyncio.to_thread(_touch_lock_heartbeat, lock_path)
             except Exception:
                 pass
             _logger_log(logger, f"{log_prefix} lock acquired op={op} storage={root}", "INFO")
             break
         except FileExistsError:
-            owner_summary = _lock_owner_summary(lock_path)
-            if _remove_stale_lock(lock_path, lock_ttl_seconds=float(lock_ttl_seconds)):
+            owner_summary = await asyncio.to_thread(_lock_owner_summary, lock_path)
+            removed_stale = await asyncio.to_thread(
+                _remove_stale_lock,
+                lock_path,
+                lock_ttl_seconds=float(lock_ttl_seconds),
+            )
+            if removed_stale:
                 _logger_log(
                     logger,
                     f"{log_prefix} removed stale lock op={op} storage={root} {owner_summary}",
                     "WARNING",
                 )
                 continue
-            if allow_existing_while_locked and bool(ready()):
-                age = _lock_age_seconds(lock_path)
+            if allow_existing_while_locked and await _run_ready(ready):
+                age = await asyncio.to_thread(_lock_age_seconds, lock_path)
                 age_part = f" lock_age_sec={age:.1f}" if age is not None else ""
                 _logger_log(
                     logger,
@@ -240,17 +265,18 @@ async def run_once_for_shared_bundle_storage(
                 )
                 return SharedStorageOnceResult("lock_existing", root, op, lock_path, sig_path, ran=False)
             if time.time() >= deadline:
-                if allow_existing_on_timeout and bool(ready()):
+                if allow_existing_on_timeout and await _run_ready(ready):
                     _logger_log(
                         logger,
-                        f"{log_prefix} lock wait timed out; using existing output op={op} storage={root} {owner_summary}",
+                        f"{log_prefix} lock wait timed out; using existing output "
+                        f"op={op} storage={root} {owner_summary}",
                         "WARNING",
                     )
                     return SharedStorageOnceResult("lock_timeout_existing", root, op, lock_path, sig_path, ran=False)
                 raise SharedStorageOnceTimeout(f"{op} lock wait timed out for storage={root}")
             now = time.time()
             if last_wait_log_at <= 0.0 or (now - last_wait_log_at) >= 5.0:
-                age = _lock_age_seconds(lock_path)
+                age = await asyncio.to_thread(_lock_age_seconds, lock_path)
                 age_part = f" lock_age_sec={age:.1f}" if age is not None else ""
                 _logger_log(
                     logger,
@@ -262,7 +288,7 @@ async def run_once_for_shared_bundle_storage(
 
     heartbeat_task: asyncio.Task | None = None
     try:
-        if _signature_current(signature_path=sig_path, signature=signature, ready=ready):
+        if await _signature_current(signature_path=sig_path, signature=signature, ready=ready):
             _logger_log(logger, f"{log_prefix} skipped: signature cache hit under lock op={op} storage={root}", "INFO")
             return SharedStorageOnceResult("became_current", root, op, lock_path, sig_path, ran=False)
 
@@ -276,9 +302,9 @@ async def run_once_for_shared_bundle_storage(
             name=f"bundle-once-heartbeat:{op}",
         )
         await _run_action(action)
-        if not bool(ready()):
+        if not await _run_ready(ready):
             raise RuntimeError(f"{op} action completed but ready() is false for storage={root}")
-        _write_signature(sig_path, signature)
+        await asyncio.to_thread(_write_signature, sig_path, signature)
         _logger_log(logger, f"{log_prefix} done: op={op} storage={root}", "INFO")
         return SharedStorageOnceResult("ran", root, op, lock_path, sig_path, ran=True)
     finally:
@@ -289,4 +315,4 @@ async def run_once_for_shared_bundle_storage(
             except asyncio.CancelledError:
                 pass
         if lock_acquired:
-            shutil.rmtree(lock_path, ignore_errors=True)
+            await asyncio.to_thread(shutil.rmtree, lock_path, ignore_errors=True)

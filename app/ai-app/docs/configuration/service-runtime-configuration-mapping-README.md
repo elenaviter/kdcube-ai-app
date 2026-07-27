@@ -192,6 +192,7 @@ fails fast until Redis Cluster key-slot migration is complete.
 | `BUNDLES_DESCRIPTOR_PROVIDER` | `platform.services.proc.bundles.descriptor_provider` | `assembly.yaml` | proc in all modes |
 | `BUNDLES_FORCE_ENV_ON_STARTUP` | n/a | current bundle descriptor authority | proc in all modes |
 | `BUNDLES_PRELOAD_ON_START` | `platform.services.proc.bundles.bundles_preload_on_start` | `assembly.yaml` | proc in all modes |
+| n/a (assembly-only) | `platform.services.proc.bundles.static_widget_delivery_mode` | `assembly.yaml` | `legacy`, `shadow`, or `deployed`; see the static-widget deployment guide |
 | `BUNDLES_PRELOAD_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_lock_ttl_seconds` | `assembly.yaml` | proc in all modes; coarse preload coordination TTL |
 | `BUNDLES_PRELOAD_BUNDLE_LOCK_TTL_SECONDS` | `platform.services.proc.bundles.bundles_preload_bundle_lock_ttl_seconds` | `assembly.yaml` | proc in all modes; per-bundle preload claim TTL |
 | `BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS` | `platform.services.proc.bundles.bundle_scheduler_reconcile_interval_seconds` | `assembly.yaml` | proc in all modes; `0` disables the periodic loop |
@@ -208,6 +209,9 @@ Important distinction:
   - writable mounted `/config/bundles.yaml` on EFS
 - if bundle admin or bundle code should persist deployment-scoped prop updates, proc must mount that descriptor path writable
 - proc also periodically reconciles scheduled bundle jobs from the active descriptor authority when `BUNDLE_SCHEDULER_RECONCILE_INTERVAL_SECONDS` is greater than `0`; reference descriptors set it to `0`, so startup and Pub/Sub-driven reconciliation are the active paths unless an environment opts in
+- `static_widget_delivery_mode` is intentionally descriptor-only; use `shadow`
+  to publish and validate manifests while keeping legacy request serving, then
+  use `deployed` to prefer the guarded prebuilt path
 
 ### Workspace and Claude session backends
 

@@ -102,9 +102,50 @@ def _manifest(*, widgets: tuple[str, ...] = ()) -> SimpleNamespace:
     )
 
 
+def test_static_preload_generation_tracks_source_runtime_and_props() -> None:
+    entry = bundle_store.BundleEntry(
+        id="bundle.demo",
+        path="/tmp/demo",
+        module="entrypoint",
+        singleton=False,
+    )
+    base = web_app._bundle_preload_generation(
+        "bundle.demo",
+        entry,
+        static_source_fingerprint="source-a",
+        static_runtime_generation="runtime-a",
+        static_props_fingerprint="props-a",
+    )
+    assert base != web_app._bundle_preload_generation(
+        "bundle.demo",
+        entry,
+        static_source_fingerprint="source-b",
+        static_runtime_generation="runtime-a",
+        static_props_fingerprint="props-a",
+    )
+    assert base != web_app._bundle_preload_generation(
+        "bundle.demo",
+        entry,
+        static_source_fingerprint="source-a",
+        static_runtime_generation="runtime-b",
+        static_props_fingerprint="props-a",
+    )
+    assert base != web_app._bundle_preload_generation(
+        "bundle.demo",
+        entry,
+        static_source_fingerprint="source-a",
+        static_runtime_generation="runtime-a",
+        static_props_fingerprint="props-b",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _no_authoritative_props(monkeypatch):
-    monkeypatch.setattr(web_app, "_get_bundle_props_from_authority", lambda **kwargs: {})
+    async def _props(**kwargs):
+        del kwargs
+        return {}
+
+    monkeypatch.setattr(web_app, "get_bundle_props_from_authority", _props)
 
 
 @pytest.mark.asyncio
@@ -273,6 +314,50 @@ async def test_preload_bundles_loop_heartbeats_long_bundle_claim(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_preload_bundles_loop_publishes_static_deployment_in_shadow_mode(monkeypatch):
+    redis = _FakeRedis(acquire=True)
+    app = _app(redis)
+    workflow = object()
+    module = object()
+    deployments: list[dict] = []
+
+    async def _fake_preload(spec, bundle_spec, **kwargs):
+        del spec, bundle_spec, kwargs
+        return workflow, module
+
+    async def _fake_deploy(**kwargs):
+        deployments.append(kwargs)
+        return SimpleNamespace(deployment_signature="deployment-signature")
+
+    async def _load_runtime_registry(redis_arg, tenant, project):
+        del redis_arg, tenant, project
+        return _registry({"bundle.demo": {"path": "/tmp/demo", "module": "entrypoint", "singleton": False}})
+
+    monkeypatch.setattr(web_app, "get_settings", _settings)
+    monkeypatch.setattr(web_app, "static_widget_deployment_enabled", lambda settings=None: True)
+    monkeypatch.setattr(web_app, "static_widget_runtime_generation", lambda: "runtime-a")
+
+    async def _source_fingerprint(spec):
+        del spec
+        return "source-a"
+
+    monkeypatch.setattr(web_app, "app_source_fingerprint", _source_fingerprint)
+    monkeypatch.setattr(web_app, "load_bundle_runtime_registry", _load_runtime_registry)
+    monkeypatch.setattr(web_app, "deploy_loaded_bundle_static_surfaces", _fake_deploy)
+    monkeypatch.setattr(bundle_loader, "preload_bundle_async", _fake_preload)
+    monkeypatch.setattr(bundle_loader, "load_bundle_manifest", lambda *args, **kwargs: _manifest())
+
+    await web_app._preload_bundles_loop(app)
+
+    assert len(deployments) == 1
+    assert deployments[0]["workflow"] is workflow
+    assert deployments[0]["module"] is module
+    assert deployments[0]["tenant"] == "tenant-a"
+    assert deployments[0]["project"] == "project-a"
+    assert app.state.bundles_preload_status["bundle.demo"]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_preload_bundles_loop_reports_static_widget_without_decorator(monkeypatch):
     redis = _FakeRedis(acquire=True)
     app = _app(redis)
@@ -287,7 +372,7 @@ async def test_preload_bundles_loop_reports_static_widget_without_decorator(monk
         del redis_arg, tenant, project
         return _registry({"bundle.demo": {"path": "/tmp/demo", "module": "entrypoint", "singleton": False}})
 
-    def _props(**kwargs):
+    async def _props(**kwargs):
         del kwargs
         return {"ui": {"widgets": {"copilot_webapp": {"enabled": True}}}}
 
@@ -298,7 +383,7 @@ async def test_preload_bundles_loop_reports_static_widget_without_decorator(monk
 
     monkeypatch.setattr(web_app, "get_settings", _settings)
     monkeypatch.setattr(web_app, "load_bundle_runtime_registry", _load_runtime_registry)
-    monkeypatch.setattr(web_app, "_get_bundle_props_from_authority", _props)
+    monkeypatch.setattr(web_app, "get_bundle_props_from_authority", _props)
     monkeypatch.setattr(bundle_loader, "preload_bundle_async", _fake_preload)
     monkeypatch.setattr(bundle_loader, "load_bundle_manifest", lambda *args, **kwargs: _manifest())
     monkeypatch.setattr(bundle_loader, "evict_bundle_scope", _evict)
@@ -324,13 +409,13 @@ async def test_preload_bundles_loop_accepts_static_widget_backed_by_decorator(mo
         del redis_arg, tenant, project
         return _registry({"bundle.demo": {"path": "/tmp/demo", "module": "entrypoint", "singleton": False}})
 
-    def _props(**kwargs):
+    async def _props(**kwargs):
         del kwargs
         return {"ui": {"widgets": {"copilot_webapp": {"enabled": True}}}}
 
     monkeypatch.setattr(web_app, "get_settings", _settings)
     monkeypatch.setattr(web_app, "load_bundle_runtime_registry", _load_runtime_registry)
-    monkeypatch.setattr(web_app, "_get_bundle_props_from_authority", _props)
+    monkeypatch.setattr(web_app, "get_bundle_props_from_authority", _props)
     monkeypatch.setattr(bundle_loader, "preload_bundle_async", _fake_preload)
     monkeypatch.setattr(
         bundle_loader,

@@ -77,6 +77,7 @@ from kdcube_ai_app.infra.plugin.bundle_store import (
     describe_authoritative_bundle_store,
     resolve_bundle_spec_from_store,
     get_bundle_props as store_get_bundle_props,
+    get_bundle_props_from_authority as store_read_bundle_props_from_authority,
     _get_bundle_props_from_authority as store_get_bundle_props_from_authority,
     patch_bundle_props as store_patch_bundle_props,
     put_bundle_props as store_put_bundle_props,
@@ -109,9 +110,27 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
     run_static_bundle_entrypoint_load_once,
     static_bundle_entrypoint_load_key,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.chat import (
-    DEFAULT_CHAT_WIDGET_ALIAS,
-    default_chat_widget_config,
+from kdcube_ai_app.apps.chat.sdk.solutions.chat import DEFAULT_CHAT_WIDGET_ALIAS
+from kdcube_ai_app.apps.chat.proc.app_deployment.coordinator import (
+    props_fingerprint,
+    source_generation_for_spec,
+)
+from kdcube_ai_app.apps.chat.proc.app_deployment.modes import static_widget_delivery_mode
+from kdcube_ai_app.apps.chat.proc.app_deployment.policy import (
+    enabled_section as _enabled_section,
+    is_bundle_enabled,
+    is_truthy_enabled as _is_truthy_enabled,
+    is_widget_enabled,
+    raw_static_widget_config as _raw_static_widget_config,
+    static_widget_config as _static_widget_config,
+    static_widget_explicitly_disabled as _static_widget_explicitly_disabled,
+)
+from kdcube_ai_app.apps.chat.proc.app_deployment.storage import (
+    deployed_widget_target_is_file,
+    invalidate_deployment_manifest,
+    load_deployment_manifest,
+    read_deployed_widget_text,
+    resolve_deployed_widget_target,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.sites import (
     ApplicationSiteCatalog,
@@ -293,39 +312,6 @@ def _inject_application_site_context(content: str, context: Mapping[str, Any]) -
 _integrations_limit: Optional[int] = None
 _integrations_semaphore = None
 
-_DISABLED_PROP_VALUES: frozenset = frozenset({"false", "disable", "disabled", "off", "0"})
-
-
-def _is_truthy_enabled(value: Any) -> bool:
-    """Interpret a bundle-props value as a feature switch (default = enabled)."""
-    if value is None:
-        return True
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    return str(value).strip().lower() not in _DISABLED_PROP_VALUES
-
-
-def _enabled_section(props: Optional[Dict[str, Any]], kind: str) -> Optional[Dict[str, Any]]:
-    """Return the ``enabled.<kind>`` sub-dict from bundle props, or None if absent."""
-    section = (props or {}).get("enabled")
-    if not isinstance(section, dict):
-        return None
-    sub = section.get(kind)
-    if not isinstance(sub, dict):
-        return None
-    return sub
-
-
-def is_bundle_enabled(props: Optional[Dict[str, Any]]) -> bool:
-    """Resolve ``enabled.bundle`` against bundle props (default = enabled)."""
-    section = (props or {}).get("enabled")
-    if not isinstance(section, dict):
-        return True
-    return _is_truthy_enabled(section.get("bundle"))
-
-
 def is_api_enabled(props: Optional[Dict[str, Any]], spec: APIEndpointSpec) -> bool:
     """Resolve API enabled overrides.
 
@@ -340,21 +326,6 @@ def is_api_enabled(props: Optional[Dict[str, Any]], spec: APIEndpointSpec) -> bo
     if route_key in sub:
         return _is_truthy_enabled(sub.get(route_key))
     return _is_truthy_enabled(sub.get(f"{spec.alias}.{spec.http_method}"))
-
-
-def is_widget_enabled(props: Optional[Dict[str, Any]], spec: UIWidgetSpec) -> bool:
-    """Resolve ``enabled.widget.<alias>`` (nested).
-
-    The reserved default-chat widget follows the bundle's
-    ``surfaces.as_provider.bundle.default_chat`` declaration; an explicit
-    ``enabled.widget.chat`` entry still wins.
-    """
-    sub = _enabled_section(props, "widget")
-    if spec.alias == DEFAULT_CHAT_WIDGET_ALIAS and (sub is None or spec.alias not in sub):
-        return bundle_default_chat(props)
-    if sub is None:
-        return True
-    return _is_truthy_enabled(sub.get(spec.alias))
 
 
 def is_mcp_enabled(props: Optional[Dict[str, Any]], spec: MCPEndpointSpec) -> bool:
@@ -2469,6 +2440,26 @@ async def internal_bundle_status(payload: BundleStatusRequest, request: Request)
         }
 
 
+async def _invalidate_deployed_widget_manifests(
+        *,
+        tenant: str,
+        project: str,
+        bundle_ids: Set[str] | List[str],
+) -> None:
+    if static_widget_delivery_mode() == "legacy":
+        return
+    from kdcube_ai_app.infra.plugin.bundle_storage import bundle_storage_dir
+
+    for bundle_id in sorted(str(value).strip() for value in bundle_ids if str(value).strip()):
+        storage_root = bundle_storage_dir(
+            bundle_id=bundle_id,
+            tenant=tenant,
+            project=project,
+            ensure=False,
+        )
+        await invalidate_deployment_manifest(storage_root)
+
+
 async def _do_set_bundles(
         payload: AdminBundlesUpdateRequest,
         request: Request,
@@ -2551,6 +2542,12 @@ async def _do_set_bundles(
     else:
         reg = {bid: be.model_dump() for bid, be in updated.bundles.items()}
         default_id = updated.default_bundle_id
+
+    await _invalidate_deployed_widget_manifests(
+        tenant=tenant_id,
+        project=project_id,
+        bundle_ids=set((payload.bundles or {}).keys()),
+    )
 
     try:
         msg = {
@@ -2689,6 +2686,12 @@ async def _do_reload_bundles_from_authority(
         else sorted(str(bid).strip() for bid in bundles_dict.keys() if str(bid).strip())
     )
 
+    await _invalidate_deployed_widget_manifests(
+        tenant=tenant_id,
+        project=project_id,
+        bundle_ids=changed_bundle_ids,
+    )
+
     msg = {
         "type": "bundles.update",
         "op": "replace",
@@ -2816,7 +2819,12 @@ async def admin_cleanup_bundles(
     return result
 
 
-def _index_html_response(content: str, request: Request) -> Response:
+def _index_html_response(
+        content: str,
+        request: Request,
+        *,
+        extra_headers: Optional[Mapping[str, str]] = None,
+) -> Response:
     """Serve a (base-href-injected) index.html with an ETag so the browser can
     revalidate cheaply (a 304 with no body) instead of re-downloading the entry
     document on every reload. The hashed asset files it references are already
@@ -2824,9 +2832,11 @@ def _index_html_response(content: str, request: Request) -> Response:
     changes when the build changes (the referenced asset hashes change with it)."""
     import hashlib
     etag = '"' + hashlib.sha256(content.encode("utf-8")).hexdigest()[:32] + '"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    headers.update(dict(extra_headers or {}))
     if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
-    return HTMLResponse(content=content, headers={"Cache-Control": "no-cache", "ETag": etag})
+        return Response(status_code=304, headers=headers)
+    return HTMLResponse(content=content, headers=headers)
 
 
 async def serve_static_asset(
@@ -3491,12 +3501,14 @@ async def _fetch_bundle_widget_payload(
         )
         raise HTTPException(status_code=404, detail=f"Bundle does not define widget {widget_alias}")
 
+    if not is_bundle_enabled(workflow_props):
+        raise HTTPException(status_code=404, detail=f"Bundle {spec_resolved.id} is disabled")
+    if not _bundle_allowed_for_session(manifest, session, props=workflow_props):
+        raise HTTPException(status_code=403, detail=f"Bundle {spec_resolved.id} is not visible to this user")
     widget_spec = apply_widget_overrides(widget_spec, workflow_props)
     widget_auth = provider_surface_auth(workflow_props, "widget", alias=widget_spec.alias)
     if not _endpoint_visible(widget_spec.user_types, widget_spec.roles, session, widget_auth):
         raise HTTPException(status_code=403, detail=f"Bundle widget {widget_alias} is not visible to this user")
-    if not is_bundle_enabled(workflow_props):
-        raise HTTPException(status_code=404, detail=f"Bundle {spec_resolved.id} is disabled")
     if not is_widget_enabled(workflow_props, widget_spec):
         raise HTTPException(status_code=404, detail=f"Bundle widget {widget_alias} is not available")
 
@@ -3566,14 +3578,6 @@ async def _fetch_bundle_widget_payload(
     }
 
 
-def _truthy_config_value(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value != 0
-    return str(value).strip().lower() not in {"false", "disable", "disabled", "off", "0"}
-
-
 def _log_bundle_widget_lookup_mismatch(
         *,
         tenant_id: str,
@@ -3631,37 +3635,6 @@ def _log_bundle_widget_lookup_mismatch(
         raw_widget_members,
         os.getpid(),
     )
-
-
-def _raw_static_widget_config(props: Dict[str, Any], *, widget_alias: str) -> Dict[str, Any] | None:
-    ui_cfg = props.get("ui") if isinstance(props, dict) else {}
-    raw_widgets = ui_cfg.get("widgets") if isinstance(ui_cfg, dict) else None
-    cfg = raw_widgets.get(widget_alias) if isinstance(raw_widgets, dict) else None
-    if isinstance(cfg, dict):
-        return cfg
-    # The reserved default-chat widget builds from the SDK chat widget when the
-    # descriptor declares the surface and carries no explicit config for it.
-    if widget_alias == DEFAULT_CHAT_WIDGET_ALIAS and bundle_default_chat(props):
-        return default_chat_widget_config()
-    return None
-
-
-def _static_widget_explicitly_disabled(props: Dict[str, Any], *, widget_alias: str) -> bool:
-    cfg = _raw_static_widget_config(props, widget_alias=widget_alias)
-    return isinstance(cfg, dict) and "enabled" in cfg and not _truthy_config_value(cfg.get("enabled"))
-
-
-def _static_widget_config(props: Dict[str, Any], *, widget_alias: str) -> Dict[str, Any] | None:
-    cfg = _raw_static_widget_config(props, widget_alias=widget_alias)
-    if not isinstance(cfg, dict):
-        return None
-    if "enabled" in cfg and not _truthy_config_value(cfg.get("enabled")):
-        return None
-    has_source = bool(str(cfg.get("src_folder") or cfg.get("source_dir") or "").strip())
-    has_build = bool(str(cfg.get("build_command") or "").strip())
-    if has_source and has_build:
-        return cfg
-    return None
 
 
 def _static_widget_iframe_html(
@@ -3752,7 +3725,113 @@ def _static_widget_iframe_html(
     )
 
 
-async def _serve_static_widget_app(
+_DEPLOYED_STATIC_WIDGET_MISS = object()
+
+
+async def _try_serve_deployed_static_widget_app(
+        *,
+        tenant: str,
+        project: str,
+        bundle_id: str,
+        widget_alias: str,
+        widget_path: str,
+        request: Request,
+        session: UserSession,
+        public: bool = False,
+):
+    """Serve a predeployed widget without importing or instantiating the app.
+
+    A miss falls back to the legacy loader. A manifest policy denial remains a
+    denial and never falls through to a less restrictive path.
+    """
+    from kdcube_ai_app.infra.plugin.bundle_storage import bundle_storage_dir
+
+    tenant_id, project_id = _resolve_path_scope(tenant=tenant, project=project)
+    registry = await load_registry(_get_app_redis(request), tenant_id, project_id)
+    entry = (registry.bundles or {}).get(bundle_id)
+    if entry is None:
+        return _DEPLOYED_STATIC_WIDGET_MISS
+
+    storage_root = bundle_storage_dir(
+        bundle_id=bundle_id,
+        tenant=tenant_id,
+        project=project_id,
+        ensure=False,
+    )
+    manifest = await load_deployment_manifest(storage_root)
+    if manifest is None:
+        return _DEPLOYED_STATIC_WIDGET_MISS
+    if (
+        manifest.schema_version != 1
+        or manifest.tenant != tenant_id
+        or manifest.project != project_id
+        or manifest.bundle_id != bundle_id
+        or manifest.source_generation != source_generation_for_spec(entry)
+    ):
+        return _DEPLOYED_STATIC_WIDGET_MISS
+
+    props = await store_read_bundle_props_from_authority(
+        tenant=tenant_id,
+        project=project_id,
+        bundle_id=bundle_id,
+    ) or {}
+    if manifest.props_fingerprint != props_fingerprint(props):
+        return _DEPLOYED_STATIC_WIDGET_MISS
+
+    widget = manifest.widgets.get(widget_alias)
+    if widget is None:
+        return _DEPLOYED_STATIC_WIDGET_MISS
+    if not manifest.bundle_enabled:
+        raise HTTPException(status_code=404, detail=f"Bundle {bundle_id} is disabled")
+    if not _raw_roles_visible(manifest.bundle_allowed_roles, session):
+        raise HTTPException(status_code=403, detail=f"Bundle {bundle_id} is not visible to this user")
+    if not _endpoint_visible(widget.user_types, widget.roles, session, widget.auth):
+        raise HTTPException(status_code=403, detail=f"Bundle widget {widget_alias} is not visible to this user")
+    if not widget.enabled:
+        raise HTTPException(status_code=404, detail=f"Bundle widget {widget_alias} is not available")
+    if not widget.static:
+        return _DEPLOYED_STATIC_WIDGET_MISS
+    if not widget.artifact_relpath:
+        return _DEPLOYED_STATIC_WIDGET_MISS
+
+    try:
+        ui_root, target = await resolve_deployed_widget_target(
+            storage_root,
+            artifact_relpath=widget.artifact_relpath,
+            widget_path=widget_path,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid widget path") from exc
+    if not await deployed_widget_target_is_file(target):
+        return _DEPLOYED_STATIC_WIDGET_MISS
+
+    delivery_headers = {
+        "X-KDCube-Widget-Delivery": "deployed",
+        "X-KDCube-App-Deployment": manifest.deployment_signature[:16],
+    }
+    if target.name == "index.html":
+        base_route = "public/widgets" if public else "widgets"
+        base_href = f"/api/integrations/bundles/{tenant}/{project}/{bundle_id}/{base_route}/{widget.alias}/"
+        content = await read_deployed_widget_text(target)
+        content = _inject_kdcube_resize_reporter(content, base_href=base_href)
+        return _index_html_response(
+            content,
+            request,
+            extra_headers={
+                **delivery_headers,
+                "Cache-Control": "no-cache" if public else "private, no-cache",
+            },
+        )
+
+    rel_parts = target.relative_to(ui_root).parts
+    cache_scope = "public" if public else "private"
+    headers = {**delivery_headers, "Cache-Control": f"{cache_scope}, max-age=3600"}
+    if rel_parts and rel_parts[0] == "assets":
+        headers["Cache-Control"] = f"{cache_scope}, max-age=31536000, immutable"
+    return FileResponse(str(target), headers=headers)
+
+
+async def _serve_legacy_static_widget_app(
         *,
         tenant: str,
         project: str,
@@ -3821,12 +3900,14 @@ async def _serve_static_widget_app(
         )
         raise HTTPException(status_code=404, detail=f"Bundle does not define widget {widget_alias}")
 
+    if not is_bundle_enabled(workflow_props):
+        raise HTTPException(status_code=404, detail=f"Bundle {spec_resolved.id} is disabled")
+    if not _bundle_allowed_for_session(manifest, session, props=workflow_props):
+        raise HTTPException(status_code=403, detail=f"Bundle {spec_resolved.id} is not visible to this user")
     widget_spec = apply_widget_overrides(widget_spec, workflow_props)
     widget_auth = provider_surface_auth(workflow_props, "widget", alias=widget_spec.alias)
     if not _endpoint_visible(widget_spec.user_types, widget_spec.roles, session, widget_auth):
         raise HTTPException(status_code=403, detail=f"Bundle widget {widget_alias} is not visible to this user")
-    if not is_bundle_enabled(workflow_props):
-        raise HTTPException(status_code=404, detail=f"Bundle {spec_resolved.id} is disabled")
     if not is_widget_enabled(workflow_props, widget_spec):
         raise HTTPException(status_code=404, detail=f"Bundle widget {widget_alias} is not available")
     widget_static_cfg = None
@@ -3981,14 +4062,63 @@ async def _serve_static_widget_app(
         base_href = f"/api/integrations/bundles/{tenant}/{project}/{bundle_id}/{base_route}/{widget_spec.alias}/"
         content = target.read_text(encoding="utf-8")
         content = _inject_kdcube_resize_reporter(content, base_href=base_href)
-        return _index_html_response(content, request)
+        return _index_html_response(
+            content,
+            request,
+            extra_headers={"Cache-Control": "no-cache" if public else "private, no-cache"},
+        )
 
     rel_parts = target.relative_to(ui_root).parts
-    headers = {"Cache-Control": "public, max-age=3600"}
+    cache_scope = "public" if public else "private"
+    headers = {"Cache-Control": f"{cache_scope}, max-age=3600"}
     if rel_parts and rel_parts[0] == "assets":
-        headers = {"Cache-Control": "public, max-age=31536000, immutable"}
+        headers = {"Cache-Control": f"{cache_scope}, max-age=31536000, immutable"}
 
     return FileResponse(str(target), headers=headers)
+
+
+async def _serve_static_widget_app(
+        *,
+        tenant: str,
+        project: str,
+        bundle_id: str,
+        widget_alias: str,
+        widget_path: str,
+        request: Request,
+        session: UserSession,
+        public: bool = False,
+):
+    mode = static_widget_delivery_mode()
+    if mode == "deployed":
+        deployed_response = await _try_serve_deployed_static_widget_app(
+            tenant=tenant,
+            project=project,
+            bundle_id=bundle_id,
+            widget_alias=widget_alias,
+            widget_path=widget_path,
+            request=request,
+            session=session,
+            public=public,
+        )
+        if deployed_response is not _DEPLOYED_STATIC_WIDGET_MISS:
+            return deployed_response
+
+    response = await _serve_legacy_static_widget_app(
+        tenant=tenant,
+        project=project,
+        bundle_id=bundle_id,
+        widget_alias=widget_alias,
+        widget_path=widget_path,
+        request=request,
+        session=session,
+        public=public,
+    )
+    if isinstance(response, Response):
+        delivery = "legacy-shadow" if mode == "shadow" else "legacy"
+        if mode == "deployed":
+            delivery = "legacy-fallback"
+        response.headers.setdefault("X-KDCube-Widget-Delivery", delivery)
+    return response
 
 
 def _widget_payload_content(payload: Dict[str, Any], widget_alias: str) -> str:
