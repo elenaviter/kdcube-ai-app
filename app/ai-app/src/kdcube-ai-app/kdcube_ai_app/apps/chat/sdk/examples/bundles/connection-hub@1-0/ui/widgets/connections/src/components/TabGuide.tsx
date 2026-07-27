@@ -118,7 +118,7 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
       },
       {
         label: 'Named services over MCP',
-        href: `${DOCS}/recipes/kdcube_for_agents/named-services-mcp-README.md`,
+        href: `${DOCS}/recipes/apps/named-services-mcp-README.md`,
       },
     ],
   },

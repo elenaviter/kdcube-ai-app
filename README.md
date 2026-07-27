@@ -127,7 +127,7 @@ followups, steering, and current runtime conditions. With the reference split
 isolation profile, model-written code runs in a separate, networkless executor
 and reaches privileged capabilities through trusted supervisor tools.
 
-[Settle an existing solution in KDCube](app/ai-app/docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md) ·
+[Settle an existing solution in KDCube](app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md) ·
 [ReAct runtime](app/ai-app/docs/sdk/agents/react/flow-README.md) ·
 [Why ReAct is not simply tool calling](app/ai-app/docs/sdk/agents/react/why/why-not-simply-tool-calling-README.md) ·
 [Isolated execution](app/ai-app/docs/exec/README-iso-runtime.md)

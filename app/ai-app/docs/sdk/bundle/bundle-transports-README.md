@@ -522,7 +522,7 @@ surfaces:
 ```
 
 Connection Hub then owns the matching resource/tool/grant catalog. See
-[Expose An MCP Service From A KDCube App](../../recipes/kdcube_for_agents/expose-mcp-service-README.md)
+[Expose An MCP Service From A KDCube App](../../recipes/apps/expose-mcp-service-README.md)
 and [Protect Bundle MCP With Managed Credentials](../../recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md).
 
 ### 4.7 What `@mcp(...)` does not support

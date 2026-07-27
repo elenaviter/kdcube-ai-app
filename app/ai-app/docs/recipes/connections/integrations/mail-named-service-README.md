@@ -7,7 +7,7 @@ tags: ["recipes", "connections", "connection-hub", "named-services", "mcp", "mai
 updated_at: 2026-07-06
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
@@ -127,7 +127,7 @@ If Claude has `mail:read` but the current KDCube user has not connected Gmail
 with `gmail:read`, the provider returns the structured consent error
 (`needs_connected_account_consent` with `reason`, `retry_hint`, labeled
 `candidates`, and `connection_hub_url` — see
-[the consent-error story](../../kdcube_for_agents/named-services-mcp-README.md#the-consent-error-story)).
+[the consent-error story](../../apps/named-services-mcp-README.md#the-consent-error-story)).
 The fix is not to reconnect Claude; the user must connect or upgrade the Gmail
 account in Connection Hub.
 

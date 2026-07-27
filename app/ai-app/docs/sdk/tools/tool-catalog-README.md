@@ -11,7 +11,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/react-tools-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-subsystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/agentic-config/agentic-config-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
 ---
 # The Tool Catalog
 

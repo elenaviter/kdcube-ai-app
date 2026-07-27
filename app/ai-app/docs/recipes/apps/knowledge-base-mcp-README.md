@@ -1,12 +1,12 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/knowledge-base-mcp-README.md
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/knowledge-base-mcp-README.md
 title: "Connect The KDCube Knowledge Base To Claude (MCP)"
 summary: "One-minute procedure to add a KDCube app's public knowledge MCP as a custom connector in Claude — using the kdcube.tech/mcp vanity alias, the anonymous streamable-http endpoint, a verify step, and how to point the same recipe at your own runtime and bundle."
 status: active
 tags: ["recipes", "kdcube-for-agents", "mcp", "knowledge", "claude", "connector", "public", "demo"]
 updated_at: 2026-07-12
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/resource_sharing/publish-discoverable-content-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
 ---

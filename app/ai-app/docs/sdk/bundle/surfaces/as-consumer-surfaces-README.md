@@ -7,7 +7,7 @@ tags: ["sdk", "bundle", "surfaces", "as-consumer", "agents", "tools", "mcp", "de
 updated_at: 2026-07-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-provider-surfaces-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/claim-driven-consent/claim-driven-consent-README.md
 ---
@@ -42,7 +42,7 @@ agent sees only its own inventory. The runtime resolves both into an
 agent-scoped tool catalog (`agent_tool_config_from_bundle_props`), and the
 user's capability picker narrows it further — the effective set is always
 *admin ceiling ∩ user selection*. Full descriptor shapes and the runtime
-journey: [Connect An MCP Service To A KDCube Agent](../../../recipes/kdcube_for_agents/consume-mcp-service-README.md).
+journey: [Connect An MCP Service To A KDCube Agent](../../../recipes/apps/consume-mcp-service-README.md).
 
 ## Identity: three ways a consumed call is authenticated
 

@@ -44,7 +44,7 @@ HOW. Use the index to find the problem; use the entry to confirm the fit.
 | 1 | "A cron calling an LLM covers it — why an agent?" | The trigger decides: clock+known path is a cron; open intent, events, and mid-work walls become agent turns — same app, same budget | [scheduled jobs](../sdk/bundle/bundle-scheduled-jobs-README.md) · [conversation events](../sdk/bundle/bundle-conversation-events-and-react-output-README.md) |
 | 2 | "I built agent credential handling — it breaks weekly" | Connection Hub: tools resolve claims, never keys; refresh/deny/reconnect is the broker's loop | [Connection Hub](../sdk/solutions/connections/connection-hub-solution-README.md) |
 | 3 | "One agent demo is easy; ten colleagues sharing it is not" | Identity (tenant/project/user) travels every layer; per-user data, budgets, settings inside an admin grant | [scene](components/scene-README.md) · [economics](../sdk/bundle/bundle-economics-integration-README.md) |
-| 4 | "Context fills with tool defs and copied payloads" | Handles in, bytes out: ~ten generic ops, lean hits + refs, signed URLs, cached instructions + uncached tail | [named services for agents](kdcube_for_agents/named-services-mcp-README.md) · [context caching](../sdk/agents/react/context-caching-README.md) |
+| 4 | "Context fills with tool defs and copied payloads" | Handles in, bytes out: ~ten generic ops, lean hits + refs, signed URLs, cached instructions + uncached tail | [named services for agents](apps/named-services-mcp-README.md) · [context caching](../sdk/agents/react/context-caching-README.md) |
 | 5 | "When an answer is wrong, the lineage is already lost" | Context enters as addressable refs; the per-turn timeline is the ledger | [canvas](../sdk/solutions/canvas/canvas-sdk-solution-README.md) · [conversation search](../sdk/solutions/conversation/search-README.md) |
 | 6 | "Every session starts from zero" | `conv:` episodic recall + `mem:` co-managed durable notes; reads aggregate across the linked identity family | [memory overview](../sdk/memory/user-memories-overview-README.md) · [reconciliation](../sdk/memory/user-memories-reconcilation-README.md) |
 | 7 | "The assistant should use my Gmail/Slack — without an all-powerful token" | Grants at the door, provider claims inside; unmet claims drop tools per turn, never block it | [mail](connections/integrations/mail-named-service-README.md) · [Slack](connections/integrations/slack-README.md) |
@@ -145,7 +145,7 @@ summarizer pipeline · cache-aware layout   URLs · cached front + uncached tail
 - **Cache:** durable instructions stay cached; the per-turn ANNOUNCE tail
   carries only what changed (entry 14 for the cost story).
 
-Docs: [named services for agents](kdcube_for_agents/named-services-mcp-README.md) ·
+Docs: [named services for agents](apps/named-services-mcp-README.md) ·
 [context caching](../sdk/agents/react/context-caching-README.md) ·
 [file hosting](resource_sharing/hosting-README.md)
 

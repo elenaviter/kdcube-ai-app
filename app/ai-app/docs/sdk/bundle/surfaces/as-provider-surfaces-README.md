@@ -9,7 +9,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-consumer-surfaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-transports-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-interfaces-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
 ---
 # Provider Surfaces (`surfaces.as_provider`)
 
@@ -33,7 +33,7 @@ an app with only widgets is as valid as one with only a chat workflow.
 | --- | --- | --- | --- |
 | Reactive events | `@on_reactive_event` (one per entrypoint) | The chat/agent turn path: every external event (user message, followup, channel ingress) enters here | [Bundle Transports § Chat Turn Path](../bundle-transports-README.md) |
 | REST operations | `@api(method, alias, route)` | Authenticated `operations` and unauthenticated `public` HTTP endpoints | [Bundle Transports § REST Operations](../bundle-transports-README.md) |
-| MCP endpoints | `@mcp(alias, route)` | An MCP server surface (streamable HTTP) other agents and external clients call | [Bundle Transports § MCP Endpoints](../bundle-transports-README.md), [Expose An MCP Service](../../../recipes/kdcube_for_agents/expose-mcp-service-README.md) |
+| MCP endpoints | `@mcp(alias, route)` | An MCP server surface (streamable HTTP) other agents and external clients call | [Bundle Transports § MCP Endpoints](../bundle-transports-README.md), [Expose An MCP Service](../../../recipes/apps/expose-mcp-service-README.md) |
 | Widgets | `@ui_widget`, `@ui_main` | Served UI (iframe widgets, the app's main panel) | [Bundle Interfaces § Exposing a widget](../bundle-interfaces-README.md) |
 | Background jobs | `@on_job`, `@cron` | Queue-driven and scheduled work | [Bundle Interfaces § Background job interface](../bundle-interfaces-README.md), [Scheduled Jobs](../bundle-scheduled-jobs-README.md) |
 | Data bus | `@data_bus_handler` | Durable widget↔app message exchange | [Bundle Interfaces § Durable Data Bus](../bundle-interfaces-README.md) |

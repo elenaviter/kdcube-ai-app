@@ -14,7 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/react/how/how-to-construct-react-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
@@ -181,7 +181,7 @@ places Python tools, MCP connections, and named-service namespaces under
 with different callable surfaces while exposing a separate set of provider
 surfaces to the outside.
 
-Read [Settle Your Solution In A KDCube App](recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md),
+Read [Settle Your Solution In A KDCube App](recipes/apps/settle-your-solution-in-kdcube-README.md),
 [How To Construct A ReAct Agent](sdk/agents/react/how/how-to-construct-react-agent-README.md),
 and [Work With Subagents](sdk/agents/react/work-with-subagents-README.md).
 

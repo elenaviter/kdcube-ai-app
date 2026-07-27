@@ -8,7 +8,7 @@ updated_at: 2026-07-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/reactive-turn-delivery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/conversation-event-lane-state-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-stream-events-README.md
 ---
 # Connect Your Agentic Loop To Ordered Message Delivery
@@ -127,5 +127,5 @@ failure mode this prevents".
 
 - [Reactive Turn Delivery](../../sdk/events/reactive-turn-delivery-README.md) —
   the mechanism this recipe builds on.
-- [Settle Your Solution In A KDCube App](../kdcube_for_agents/settle-your-solution-in-kdcube-README.md)
+- [Settle Your Solution In A KDCube App](../apps/settle-your-solution-in-kdcube-README.md)
   — the end-to-end host integration; this recipe is the delivery slice of it.

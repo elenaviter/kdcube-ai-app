@@ -30,7 +30,7 @@ keywords:
     "conv:fi: conversation files",
   ]
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-component-communication-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/reactive-turn-delivery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/dataflow/connect-agentic-loop-to-ordered-delivery-README.md
@@ -48,7 +48,7 @@ machinery: what the durable record consists of, who writes each piece, how the
 client reads it back, and what the agent's own memory must do to agree with it.
 
 The step-by-step settling walkthrough lives in the
-[settling recipe](../../../recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md);
+[settling recipe](../../../recipes/apps/settle-your-solution-in-kdcube-README.md);
 this page owns the model the recipe points to.
 
 ## Two memories, two owners

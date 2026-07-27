@@ -1,5 +1,5 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
 title: "Make A Named Service Agent-Friendly (MCP)"
 summary: "What a named-service namespace should implement so a generic external agent (Claude over MCP) can discover, search, read files, and act through object refs alone — using conv as the worked example and mail/slack as integration namespaces."
 status: active
@@ -7,7 +7,7 @@ tags: ["recipes", "kdcube-for-agents", "named-services", "mcp", "conv", "mail", 
 updated_at: 2026-07-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md

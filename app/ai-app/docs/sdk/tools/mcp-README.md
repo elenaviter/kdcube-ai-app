@@ -5,8 +5,8 @@ summary: "MCP tool integration: agent-scoped allow-lists, consumer-surface MCP s
 tags: ["sdk", "tools", "mcp", "runtime", "transport", "auth"]
 keywords: ["surfaces.as_consumer", "MCP_SERVICES", "MCPToolsSubsystem", "mcp.<alias>.<tool>", "stdio", "http", "streamable-http", "sse", "oauth_gui", "tool_call"]
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-subsystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/custom-tools-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/named-services-tools-README.md
@@ -26,8 +26,8 @@ This document covers MCP (Model Context Protocol) as a tool provider in the SDK.
 
 For task-oriented builder paths, start with:
 
-- [Connect An MCP Service To A KDCube Agent](../../recipes/kdcube_for_agents/consume-mcp-service-README.md)
-- [Expose An MCP Service From A KDCube App](../../recipes/kdcube_for_agents/expose-mcp-service-README.md)
+- [Connect An MCP Service To A KDCube Agent](../../recipes/apps/consume-mcp-service-README.md)
+- [Expose An MCP Service From A KDCube App](../../recipes/apps/expose-mcp-service-README.md)
 
 The first recipe covers `surfaces.as_consumer`; the second covers
 `surfaces.as_provider`, including app-native FastMCP, Connection Hub managed

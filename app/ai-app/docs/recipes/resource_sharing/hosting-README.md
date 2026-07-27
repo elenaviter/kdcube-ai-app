@@ -7,7 +7,7 @@ tags: ["recipes", "resource-sharing", "hosting", "upload", "download", "mcp", "m
 updated_at: 2026-07-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/hosting/hosting-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
 ---

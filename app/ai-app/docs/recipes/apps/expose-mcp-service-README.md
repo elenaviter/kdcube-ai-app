@@ -1,5 +1,5 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
 title: "Expose An MCP Service From A KDCube App"
 summary: "Builder recipe for exposing ordinary FastMCP tools from any KDCube app, choosing public, app-owned, or Connection Hub managed authorization, and adding accounting or named-service semantics only when the product needs them."
 status: active
@@ -7,7 +7,7 @@ tags: ["recipes", "kdcube-for-agents", "mcp", "as-provider", "fastmcp", "governa
 updated_at: 2026-07-16
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/economics/tracked-service-README.md

@@ -7,8 +7,8 @@ tags: ["quickstart", "recipe", "mcp", "connection-hub", "delegated-credentials",
 keywords: ["authenticated mcp walkthrough", "mode: managed", "delegated resource", "capabilities", "delegable_roles", "delegable_permissions", "dynamic_client_registration", "named_services.namespaces", "named_services:use", "connected_accounts", "@named_service_provider", "automation access", "claude code mcp"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
@@ -413,7 +413,7 @@ If any verification fails, the symptom-to-fix map is
 ## Read more
 
 - [Authenticated MCP: The Full Configuration Chain](../../sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md)
-- [Expose An MCP Service From A KDCube App](../kdcube_for_agents/expose-mcp-service-README.md)
-- [Connect An MCP Service To A KDCube Agent](../kdcube_for_agents/consume-mcp-service-README.md)
+- [Expose An MCP Service From A KDCube App](../apps/expose-mcp-service-README.md)
+- [Connect An MCP Service To A KDCube Agent](../apps/consume-mcp-service-README.md)
 - [Configuring Agent Access To Services And Accounts](../../sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md)
 - [How Agents Connect to KDCube](explore-how-agents-connect-to-kdcube-README.md)

@@ -27,8 +27,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/custom-tools-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-subsystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/client-transport-protocols-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-events-README.md
@@ -119,8 +119,8 @@ The directions are independent. Connecting a server does not require `@mcp`;
 exposing an app MCP endpoint does not grant it to every agent. Named services
 are optional shared object semantics, not an MCP prerequisite.
 
-Use [Connect An MCP Service To A KDCube Agent](../../../recipes/kdcube_for_agents/consume-mcp-service-README.md)
-and [Expose An MCP Service From A KDCube App](../../../recipes/kdcube_for_agents/expose-mcp-service-README.md)
+Use [Connect An MCP Service To A KDCube Agent](../../../recipes/apps/consume-mcp-service-README.md)
+and [Expose An MCP Service From A KDCube App](../../../recipes/apps/expose-mcp-service-README.md)
 for the concrete descriptor, code, authorization, and verification paths.
 
 ## Assembly Rule

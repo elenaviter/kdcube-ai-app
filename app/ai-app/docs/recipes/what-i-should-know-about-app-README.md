@@ -476,8 +476,8 @@ managed, and make write tools idempotent. Named services are optional when the
 same domain also needs provider-owned object refs, schemas, actions, search, and
 generic UI/agent treatment.
 
-Read [Connect an MCP Service](./kdcube_for_agents/consume-mcp-service-README.md)
-and [Expose an MCP Service](./kdcube_for_agents/expose-mcp-service-README.md).
+Read [Connect an MCP Service](./apps/consume-mcp-service-README.md)
+and [Expose an MCP Service](./apps/expose-mcp-service-README.md).
 
 ### Named services
 

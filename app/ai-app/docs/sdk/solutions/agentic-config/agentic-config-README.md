@@ -7,7 +7,7 @@ tags: ["sdk", "solutions", "agentic-config", "instructions", "agents", "admin", 
 updated_at: 2026-07-25
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/skills/instruction-blocks-and-signals-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
 ---
 # Agentic Config: Stored Instruction Sets, The Constructor, And The Agent Forge

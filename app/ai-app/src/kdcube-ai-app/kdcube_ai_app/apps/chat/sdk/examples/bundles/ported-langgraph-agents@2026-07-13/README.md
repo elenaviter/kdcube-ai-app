@@ -81,7 +81,7 @@ the long-lived entrypoint object. A genuinely immutable compile artifact could b
 per-worker optimization in another design, but it is never conversation continuity.
 The app reuses the **checkpointer connection** (opened once per agent, like a pool),
 because it is a connection rather than turn-bound state. See
-[Settle Your Solution In A KDCube App](../../../../../../../../../docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md) and the
+[Settle Your Solution In A KDCube App](../../../../../../../../../docs/recipes/apps/settle-your-solution-in-kdcube-README.md) and the
 `_build_graph` / `_open_checkpointer` docstrings in `entrypoint.py`.
 
 ## Storage — ONE shared schema, agents separated by a column
@@ -215,5 +215,5 @@ neither agent implements — the correct default for a ported LangGraph agent.
 
 This app follows the settling procedure a coding agent executes against an arbitrary
 Python project. The executable steps are in
-[Settle Your Solution In A KDCube App](../../../../../../../../../docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md);
+[Settle Your Solution In A KDCube App](../../../../../../../../../docs/recipes/apps/settle-your-solution-in-kdcube-README.md);
 this app is the "one app, many agents" worked instance those steps point to.

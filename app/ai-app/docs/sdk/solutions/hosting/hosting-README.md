@@ -7,7 +7,7 @@ tags: ["sdk", "solutions", "hosting", "staging", "upload", "download", "signed-u
 updated_at: 2026-07-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/resource_sharing/hosting-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/file_staging.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/file_delivery.py
@@ -152,4 +152,4 @@ out-of-band file transfer.
   [Hosting recipe](../../../recipes/resource_sharing/hosting-README.md).
 - The agent-facing schema language (`files`, `account_selection`,
   `consent_errors` blocks) lives in the namespace schemas; see
-  [Make A Named Service Agent-Friendly](../../../recipes/kdcube_for_agents/named-services-mcp-README.md).
+  [Make A Named Service Agent-Friendly](../../../recipes/apps/named-services-mcp-README.md).

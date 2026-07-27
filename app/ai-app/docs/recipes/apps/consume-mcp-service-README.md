@@ -1,5 +1,5 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/consume-mcp-service-README.md
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
 title: "Connect An MCP Service To A KDCube Agent"
 summary: "Builder recipe for registering an MCP server once, exposing an allow-listed tool view to each KDCube agent through surfaces.as_consumer, resolving secrets, and verifying the resulting mcp.<alias>.<tool> catalog and runtime calls."
 status: active
@@ -7,7 +7,7 @@ tags: ["recipes", "kdcube-for-agents", "mcp", "as-consumer", "agents", "tools", 
 updated_at: 2026-07-18
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/tool-subsystem-README.md

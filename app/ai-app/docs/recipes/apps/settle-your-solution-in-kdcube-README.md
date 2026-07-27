@@ -1,5 +1,5 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/settle-your-solution-in-kdcube-README.md
+id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/settle-your-solution-in-kdcube-README.md
 title: "Settle Your Solution In A KDCube App"
 summary: "Executable procedure a coding agent (or engineer) follows to host an existing Python agent — in its own framework — as a KDCube app: preserve the solution as an independently maintainable package, add a thin async wrap (turn, stream, state scope, accounted services, prompt composition, per-turn rebuild), then satisfy the canonical app-package contract. Worked instance: ported-langgraph-agents@2026-07-13."
 status: draft

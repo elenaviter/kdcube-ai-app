@@ -10,7 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/explore-how-agents-connect-to-kdcube-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/kdcube_for_agents/expose-mcp-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
@@ -92,7 +92,7 @@ obtained one — so the same door serves both families:
   [Delegate a KDCube Service to an External Client](../../../recipes/connections/delegate-kdcube-service-to-external-client-README.md).
 - **Resident agent** — declares a `delegated: true` MCP connection to the door;
   a missing grant surfaces as a one-click consent card in chat, per agent. See
-  [Connect an MCP Service to a KDCube Agent](../../../recipes/kdcube_for_agents/consume-mcp-service-README.md).
+  [Connect an MCP Service to a KDCube Agent](../../../recipes/apps/consume-mcp-service-README.md).
 
 Both authenticate to the identical URL and pass the identical guard. Whatever a
 door exposes is reachable by either family the moment the user grants it.
@@ -114,7 +114,7 @@ install can point Claude Code at the `named_services` door and — after the use
 grants it — reach the same namespaces a resident agent reaches. The app's own
 surfaces and construction are in its bundle README
 (`…/examples/bundles/kdcube-services@1-0/README.md`); how namespace operations
-become model-callable tools is [Named Services over MCP](../../../recipes/kdcube_for_agents/named-services-mcp-README.md).
+become model-callable tools is [Named Services over MCP](../../../recipes/apps/named-services-mcp-README.md).
 
 ## What each side owns
 
@@ -128,7 +128,7 @@ become model-callable tools is [Named Services over MCP](../../../recipes/kdcube
   claims the user granted.
 
 Exposing a door and consuming one are their own recipes:
-[Expose an MCP Service from a KDCube App](../../../recipes/kdcube_for_agents/expose-mcp-service-README.md)
-and [Connect an MCP Service to a KDCube Agent](../../../recipes/kdcube_for_agents/consume-mcp-service-README.md).
+[Expose an MCP Service from a KDCube App](../../../recipes/apps/expose-mcp-service-README.md)
+and [Connect an MCP Service to a KDCube Agent](../../../recipes/apps/consume-mcp-service-README.md).
 The whole Connection Hub picture is
 [Connection Hub Solution](../connections/connection-hub-solution-README.md).
