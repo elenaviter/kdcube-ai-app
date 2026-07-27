@@ -4,7 +4,7 @@ title: "Custom OAuth/OIDC Service Integration"
 summary: "Recipe for connecting a custom OAuth/OIDC service to KDCube so tools, named services, and agents can request the user's external-service token through Connection Hub."
 status: active
 tags: ["recipes", "connections", "connection-hub", "integrations", "delegated-to-kdcube", "oauth", "oidc", "custom-service", "connector-apps", "mcp", "named-services"]
-updated_at: 2026-07-17
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
@@ -196,7 +196,6 @@ surfaces:
                   delegated_to_kdcube:
                     connected_accounts:
                       - provider_id: s1
-                        connector_app_id: default
                         claims:
                           - s1:read
               write_s1_object:
@@ -204,7 +203,6 @@ surfaces:
                   delegated_to_kdcube:
                     connected_accounts:
                       - provider_id: s1
-                        connector_app_id: default
                         claims:
                           - s1:write
 ```
@@ -223,6 +221,9 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     resolve_connected_account_claim,
     run_with_connected_account_retry,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+    resolve_connector_app_id,
+)
 
 
 async def read_s1_object(source, object_id: str, account_id: str | None = None):
@@ -230,7 +231,7 @@ async def read_s1_object(source, object_id: str, account_id: str | None = None):
         credential = await resolve_connected_account_claim(
             source,
             provider_id="s1",
-            connector_app_id="default",
+            connector_app_id=resolve_connector_app_id("s1"),  # resolved, never hardcoded
             claim="s1:read",
             tool_name="s1.read_s1_object",
             account_id=account_id,

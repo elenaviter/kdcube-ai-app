@@ -4,10 +4,11 @@ title: "Google Gmail Integration"
 summary: "Recipe for configuring a Google OAuth client for Gmail connected accounts, registering KDCube delegated-to-KDCube redirect URIs, and wiring Gmail tools through Connection Hub claims."
 status: active
 tags: ["recipes", "connections", "connection-hub", "google", "gmail", "oauth", "connected-accounts", "delegated-to-kdcube"]
-updated_at: 2026-07-06
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-sheets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-authority-in-bundle-README.md
@@ -224,6 +225,11 @@ bundles:
                       - https://www.googleapis.com/auth/gmail.send
 ```
 
+The snippet shows the Gmail claims relevant to this recipe. Preserve any other
+claims already allowed on the same connector app, including `sheets:read` and
+`sheets:write` when the [Google Sheets productivity recipe](google-sheets-README.md)
+is configured.
+
 `bundles.secrets.yaml`:
 
 ```yaml
@@ -288,7 +294,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: google
-              connector_app_id: gmail
               claims:
                 - gmail:read
     read_gmail_message:
@@ -296,7 +301,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: google
-              connector_app_id: gmail
               claims:
                 - gmail:read
     download_gmail_attachments:
@@ -304,7 +308,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: google
-              connector_app_id: gmail
               claims:
                 - gmail:read
     send_gmail:
@@ -312,7 +315,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: google
-              connector_app_id: gmail
               claims:
                 - gmail:send
     forward_gmail_message:
@@ -320,16 +322,21 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: google
-              connector_app_id: gmail
               claims:
                 - gmail:read
                 - gmail:send
 ```
 
 `provider_id` must match the provider under
-`connections.delegated_to_kdcube.providers`. `connector_app_id` must match the
-entry under `connector_apps`. In the snippets above, that is `google` and
-`gmail`.
+`connections.delegated_to_kdcube.providers`. Tools declare only the provider and
+the claims they need - they do **not** name a connector app. At call time the
+broker resolves the user's connected Google account that holds the claim,
+whichever connector app it was connected through. If a tool needs several claims
+(for example read + send, as `forward_gmail_message` does), it resolves each on
+the same account, so the account - and the connector app it was connected
+through - must cover them all. See
+[Resolve a Connected Credential](resolve-connected-credential-README.md) for the
+full resolution mechanism.
 
 ## Mail Named-Service Exposure
 

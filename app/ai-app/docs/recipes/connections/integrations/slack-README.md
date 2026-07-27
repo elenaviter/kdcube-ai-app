@@ -4,7 +4,7 @@ title: "Slack Integration"
 summary: "Recipe for configuring a Slack OAuth connector app in Connection Hub, letting KDCube users connect their own Slack accounts, and wiring Slack search/post tools through delegated-to-KDCube connected accounts."
 status: active
 tags: ["recipes", "connections", "connection-hub", "slack", "oauth", "connected-accounts", "delegated-to-kdcube"]
-updated_at: 2026-07-06
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/slack.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/README.md
@@ -50,7 +50,7 @@ Operator creates Slack app
         v
 Operator configures Connection Hub
   provider: slack
-  connector app: demo
+  connector app: slack-demo
   claims: slack:search, slack:post, slack:channels, slack:history,
           slack:files:read, slack:files:write, slack:assistant:search
         |
@@ -285,11 +285,11 @@ bundles:
                 adapter: slack.oauth_user_token
                 enabled: true
                 connector_apps:
-                  demo:
+                  slack-demo:
                     label: KDCube Slack
                     enabled: true
                     client_id: "<SLACK_CLIENT_ID>"
-                    client_secret_ref: connections.delegated_to_kdcube.providers.slack.connector_apps.demo.client_secret
+                    client_secret_ref: connections.delegated_to_kdcube.providers.slack.connector_apps.slack-demo.client_secret
                     allowed_claims:
                       - slack:search
                       - slack:post
@@ -361,7 +361,7 @@ bundles:
             providers:
               slack:
                 connector_apps:
-                  demo:
+                  slack-demo:
                     client_secret: "<SLACK_CLIENT_SECRET>"
 ```
 
@@ -428,7 +428,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:search
     list_slack_channels:
@@ -436,7 +435,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:channels
     read_slack_channel_history:
@@ -444,7 +442,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:history
     download_slack_file:
@@ -452,7 +449,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:files:read
     upload_slack_file:
@@ -460,7 +456,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:files:write
     slack_assistant_search_info:
@@ -468,7 +463,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:assistant:search
     slack_assistant_search:
@@ -476,7 +470,6 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:assistant:search
     post_slack_message:
@@ -484,15 +477,19 @@ Example main-agent tool block:
         delegated_to_kdcube:
           connected_accounts:
             - provider_id: slack
-              connector_app_id: demo
               claims:
                 - slack:post
 ```
 
 `provider_id` must match the provider under
-`connections.delegated_to_kdcube.providers`. `connector_app_id` must match the
-entry under `connector_apps`. In the snippets above, that is `slack` and
-`demo`.
+`connections.delegated_to_kdcube.providers`. Tools declare only the provider and
+the claims they need - they do **not** name a connector app. At call time the
+broker resolves the user's connected Slack account that holds the claim,
+whichever connector app it was connected through. If a tool needs several claims
+(for example read + write), it resolves each on the same account, so the account
+- and the connector app it was connected through - must cover them all. See
+[Resolve a Connected Credential](resolve-connected-credential-README.md) for the
+full resolution mechanism.
 
 ## User Experience
 
@@ -655,7 +652,6 @@ Check that the tool claim block references the same provider and connector app:
 
 ```yaml
 provider_id: slack
-connector_app_id: demo
 ```
 
 Then check that the connected account was created for the same KDCube platform
