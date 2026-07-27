@@ -1,21 +1,37 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.27.1240"
+  ref: "2026.07.28.210"
   description: |
-    This release follows 2026.07.27.125.
+    This release follows 2026.07.27.1240.
 
-    Static widget deployment now has an explicit authorized predeployment path.
-    Proc startup can coordinate widget builds through the app-deployment
-    subsystem, persist deployment metadata, and serve predeployed widget
-    artifacts through the platform runtime instead of rebuilding them on every
-    request path. This gives hosted apps a clearer operational boundary between
-    source app loading, widget build coordination, and runtime delivery.
+    Google Sheets is now available as a governed productivity integration and
+    named-service namespace. Apps and agents can discover spreadsheets, create
+    and describe them, read ranges, append or update values, apply formatting,
+    and materialize complete snapshots through each user's Connection Hub
+    credential. Large results retain explicit completeness metadata and can be
+    delivered as authorized hosted artifacts instead of being silently capped.
 
-    The widget serving path now enforces authorization policy for deployed
-    static artifacts. Integration routes can resolve and return previously
-    deployed widget files while preserving role and visibility checks, and new
-    tests cover deployed static widget access, app deployment storage,
-    deployment modes, and the startup preload lock behavior.
+    Named-service retrieval contracts now distinguish inline previews from
+    complete provider retrieval across Sheets, mail, and Slack. Exact provider
+    actions, continuation metadata, and resident-agent materialization make
+    these domains progressively discoverable without treating a bounded tool
+    response as the whole resource.
+
+    Connection Hub now resolves nested service claims to the connected accounts
+    they require, represents any-of authorization requirements, and explains
+    those prerequisites in consent flows. Google Sheets write access includes
+    the Drive file scope needed for spreadsheet creation under the same
+    delegated account contract.
+
+    Provider failures from Google Sheets, Gmail, and Slack now use one safe
+    structured contract. Clients receive actionable provider status and retry
+    information, server logs retain redacted diagnostics, and partial or
+    ambiguous mutations preserve an explicit unknown-outcome signal.
+
+    Integration documentation is consolidated into provider mechanics,
+    bundle-local operator setup, and end-to-end recipes. This release also makes
+    deployed widget delivery the default and permits explicitly safe inline
+    HTML in public-content summaries.
 
 config:
-  version: "2026.07.27.1240"
+  version: "2026.07.28.210"
