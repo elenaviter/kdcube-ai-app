@@ -44,9 +44,25 @@ def _config() -> DelegatedToKdcubeConfig:
                     },
                     "claims": {"slack:search": {}},
                 },
+                "email": {
+                    "label": "iCloud Mail",
+                    "enabled": True,
+                    "connector_apps": {
+                        "app_password": {"enabled": True, "allowed_claims": ["email:read", "email:send"]}
+                    },
+                    "claims": {"email:read": {}, "email:send": {}},
+                },
             }
         }
     )
+
+
+# mail:read/mail:send are door claims that (soon) resolve to more than one
+# provider; any ONE satisfies. Single-provider mail keeps [("google", ...)].
+MAIL_DOORS = {
+    "mail:read": [("google", ["gmail:read"]), ("email", ["email:read"])],
+    "mail:send": [("google", ["gmail:send"]), ("email", ["email:send"])],
+}
 
 
 def _connect_url(provider_id, connector_app_id, claims):
@@ -123,23 +139,78 @@ def test_door_claims_without_a_provider_vocab_are_unresolved_not_invented():
     assert result.unresolved_claims == ("mail:read",)
 
 
-def test_door_claim_maps_to_provider_and_merges_into_its_row():
-    # mail:read is a door claim (no provider owns it in the vocabulary); the
-    # door mapping resolves it to google/gmail:read, which must MERGE into the
-    # same Google row as sheets:read rather than becoming unresolved.
+def test_door_claim_folds_into_a_hard_required_provider():
+    # sheets:read hard-requires Google; mail:read (any-of Google/iCloud) is then
+    # covered by that same Google connect, so it FOLDS into the Google row and
+    # produces NO separate choice — one connect covers both.
     result = accounts_needed_for_scopes(
         ["mail:read", "sheets:read"],
         config=_config(),
         connected_accounts=[],
         connect_url_builder=_connect_url,
-        door_claim_providers={"mail:read": [("google", ["gmail:read"])]},
+        door_claim_providers=MAIL_DOORS,
     )
     assert [row.provider_id for row in result.providers] == ["google"]
+    assert result.choices == ()  # folded, not offered as a choice
     google = result.providers[0]
-    assert google.needed_claims == ("gmail:read", "sheets:read")
+    # hard claim first, folded door claim appended
+    assert google.needed_claims == ("sheets:read", "gmail:read")
     assert result.unresolved_claims == ()
-    # least-privilege connect covers both door-backed and direct claims
-    assert google.connect_url == "hub://google/gmail?claims=gmail:read,sheets:read"
+    assert google.connect_url == "hub://google/gmail?claims=sheets:read,gmail:read"
+
+
+def test_multi_provider_door_claim_with_no_hard_need_is_a_single_choice():
+    # No hard requirement forces a provider, and no mail account is connected:
+    # the operator must connect ONE of Google/iCloud — a single choice with two
+    # options, NOT two mandatory provider rows.
+    result = accounts_needed_for_scopes(
+        ["mail:read"],
+        config=_config(),
+        connected_accounts=[],
+        connect_url_builder=_connect_url,
+        door_claim_providers=MAIL_DOORS,
+    )
+    assert result.providers == ()
+    assert len(result.choices) == 1
+    choice = result.choices[0]
+    assert choice.label == "Mail"
+    assert [o.provider_id for o in choice.options] == ["google", "email"]
+    assert choice.options[0].connect_url == "hub://google/gmail?claims=gmail:read"
+    assert choice.options[1].connect_url == "hub://email/app_password?claims=email:read"
+    assert result.has_gap is True
+
+
+def test_multi_provider_door_claim_satisfied_by_one_connected_option():
+    # iCloud already connected and holding email:read satisfies mail:read; no
+    # choice, no row, no gap — the operator is NOT nagged to also connect Google.
+    result = accounts_needed_for_scopes(
+        ["mail:read"],
+        config=_config(),
+        connected_accounts=[
+            {"provider_id": "email", "account_id": "IC1", "label": "me@icloud.com", "claims": ["email:read"]},
+        ],
+        connect_url_builder=_connect_url,
+        door_claim_providers=MAIL_DOORS,
+    )
+    assert result.providers == ()
+    assert result.choices == ()
+    assert result.has_gap is False
+
+
+def test_same_provider_door_claims_coalesce_into_one_choice():
+    # mail:read + mail:send offer the same providers; they must coalesce into a
+    # single "Mail" choice carrying both provider claims, not two choices.
+    result = accounts_needed_for_scopes(
+        ["mail:read", "mail:send"],
+        config=_config(),
+        connected_accounts=[],
+        connect_url_builder=_connect_url,
+        door_claim_providers=MAIL_DOORS,
+    )
+    assert len(result.choices) == 1
+    google = result.choices[0].options[0]
+    assert google.claims == ("gmail:read", "gmail:send")
+    assert google.connect_url == "hub://google/gmail?claims=gmail:read,gmail:send"
 
 
 def test_door_claim_provider_not_in_config_is_ignored():
@@ -151,6 +222,7 @@ def test_door_claim_provider_not_in_config_is_ignored():
         door_claim_providers={"mail:read": [("nonesuch", ["x:read"])]},
     )
     assert result.providers == ()
+    assert result.choices == ()
     # token was matched by the door map (consumed), so it is not "unresolved"
     assert result.unresolved_claims == ()
 

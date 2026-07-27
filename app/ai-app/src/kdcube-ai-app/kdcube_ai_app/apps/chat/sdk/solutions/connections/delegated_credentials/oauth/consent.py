@@ -16,6 +16,7 @@ from typing import Any, Iterable, List, Mapping, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.account_requirements import (
     AccountRequirements,
+    DoorClaimChoice,
     ProviderAccountRequirement,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
@@ -270,12 +271,39 @@ def _render_account_need_row(row: ProviderAccountRequirement, esc) -> str:
     )
 
 
+def _render_door_choice_row(choice: DoorClaimChoice, esc) -> str:
+    """A door claim satisfied by ANY ONE of its provider options — rendered as a
+    'connect one' block so the operator is not told to connect every option."""
+    links: list[str] = []
+    for option in choice.options:
+        action = f"Approve {esc(option.provider_label)}" if option.connected else f"Connect {esc(option.provider_label)}"
+        if option.connect_url:
+            links.append(
+                f'<a class="hub-link" target="_blank" rel="noopener" '
+                f'href="{esc(option.connect_url)}">{action} &#8599;</a>'
+            )
+        else:
+            links.append(f"<span>{esc(option.provider_label)}</span>")
+    connect = " · ".join(links)
+    tail = " — then reload this page." if any(o.connect_url for o in choice.options) else ""
+    return (
+        f'<div class="need-row">'
+        f'<div class="need-head"><b>{esc(choice.label)}</b> <span class="badge warn">connect one</span></div>'
+        f'<div class="need-claims">any one of these accounts satisfies it:</div>'
+        f'<div class="need-connect">{connect}{tail}</div>'
+        f"</div>"
+    )
+
+
 def _render_accounts_needed_panel(accounts_needed: AccountRequirements | None, esc) -> str:
     """The "Accounts this connection needs" panel: the requested scope grouped
-    by the provider account that backs it, each with connect/upgrade status."""
-    if accounts_needed is None or not accounts_needed.providers:
+    by the provider account that backs it, each with connect/upgrade status.
+    Hard provider requirements render one row each; a door claim with no backing
+    account renders a single 'connect one of' choice over its provider options."""
+    if accounts_needed is None or (not accounts_needed.providers and not accounts_needed.choices):
         return ""
-    rows = "\n".join(_render_account_need_row(row, esc) for row in accounts_needed.providers)
+    rows = [_render_account_need_row(row, esc) for row in accounts_needed.providers]
+    rows += [_render_door_choice_row(choice, esc) for choice in accounts_needed.choices]
     if accounts_needed.has_gap:
         lead = (
             "These capabilities run on your connected accounts. Connect or approve the ones marked "
@@ -287,7 +315,7 @@ def _render_accounts_needed_panel(accounts_needed: AccountRequirements | None, e
     <p class="pick">Accounts this connection needs</p>
     <p class="desc">{lead}</p>
     <section class="need-group">
-{rows}
+{chr(10).join(rows)}
     </section>
 """
 

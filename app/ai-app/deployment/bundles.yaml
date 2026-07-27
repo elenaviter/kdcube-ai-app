@@ -180,6 +180,12 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - mail:read
+              # Door claim: the consent page resolves it to the account(s) that
+              # back it (any one satisfies). Keep in step with
+              # MAIL_CONNECTED_ACCOUNT_REQUIREMENTS.
+              connected_accounts:
+              - provider_id: google
+                claims: ["gmail:read"]
             - grant: mail:send
               label: Send connected mail
               description: Send or forward messages through mail accounts connected to KDCube.
@@ -190,6 +196,9 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - mail:send
+              connected_accounts:
+              - provider_id: google
+                claims: ["gmail:send"]
             - grant: sheets:read
               label: Read Google Sheets
               description: Find spreadsheets and read their metadata and values through a connected Google account.
