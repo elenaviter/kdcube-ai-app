@@ -62,16 +62,22 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
     connected_account_auth_failure,
     run_with_connected_account_retry,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.connector_app_resolution import (
+    resolve_connector_app_id,
+)
 
-async def read_message(source, message_id: str, account_id: str | None = None):
+PROVIDER_ID = "google"      # a Delegated-to-KDCube provider row (see the config trace)
+READ_CLAIM  = "gmail:read"  # a claim declared under that provider
+
+async def read_message(source, message_id: str, account_id: str = ""):
     async def _run():
         credential = await resolve_connected_account_claim(
-            source,                       # the authorized request scope
-            provider_id="google",         # the Delegated-to-KDCube provider row
-            connector_app_id="gmail",     # the connector app under that provider
-            claim="gmail:read",           # the exact provider claim this op needs
+            source,
+            provider_id=PROVIDER_ID,
+            connector_app_id=resolve_connector_app_id(PROVIDER_ID),  # RESOLVED, never hardcoded
+            claim=READ_CLAIM,
             tool_name="mail.read_message",
-            account_id=account_id or "",  # empty -> broker picks / asks
+            account_id=account_id,          # empty -> broker picks / asks
         )
         if not credential.ok:
             # A structured gate-2 consent envelope - relay it, do not retry blindly.
@@ -90,6 +96,19 @@ async def read_message(source, message_id: str, account_id: str | None = None):
     )
 ```
 
+This is the exact shape the built-in `GmailTools._credential` uses
+(`sdk/integrations/google/gmail_tools.py`). **Every argument, and where its
+value comes from - nothing is hardcoded magic:**
+
+| argument | what it is | where its value comes from |
+| --- | --- | --- |
+| `source` | the request scope | The platform threads it to your tool; the SDK reads tenant/project/user from it (or the ambient request context). Not something you invent. |
+| `provider_id` | the Delegated-to-KDCube **provider row** | A key under `connections.delegated_to_kdcube.providers.<id>` in `bundles.yaml` (`google`, `slack`, or your own). It names a provider you (or a platform integration) registered - adding a new one is step 1 of *Adding a new service* below. |
+| `connector_app_id` | which OAuth **connector app** of that provider | **Resolved, never hardcoded.** `resolve_connector_app_id(provider_id)` reads the guarded service's declaration (`surfaces.as_provider.mcp.<door>.connector_apps: {google: gmail}`), which names one of `providers.<provider>.connector_apps.<app_id>`. A provider can have several (gmail, sheets); the service picks. Empty = provider-wide (any connector app's account qualifies). |
+| `claim` | the exact provider **claim** the op needs | A key under `providers.<provider>.claims.<claim>` (e.g. `gmail:read`), each mapping to the real OAuth `provider_scopes`; also fenced by the connector app's `allowed_claims`. |
+| `tool_name` | your label for logs + consent surfaces | Free-form; name it after the tool/operation (`mail.read_message`). |
+| `account_id` | which of the user's connected accounts | Runtime. Empty lets the broker pick or ask - `account_required` returns labeled `candidates`, and you resend with the chosen id. |
+
 `resolve_connected_account_claim` returns a `ConnectedAccountCredential`:
 
 - `credential.ok` / `credential.access_token` - the live token for this call.
@@ -103,6 +122,61 @@ calling agent's per-account binding (`agent_account_scope`): an agent bound to
 `account A` read-only cannot resolve a send claim, and cannot resolve on an
 account it is not bound to - default-closed. A non-agent caller has no such
 restriction.
+
+### The config trace: three declarations, one vocabulary
+
+Every value above traces to `bundles.yaml`, in three places that must agree.
+The built-in **productivity** MCP door is the live reference - it wires Slack
+and Google in one surface
+(`sdk/examples/bundles/kdcube-services@1-0/surfaces/mcp/productivity.py`).
+
+**1. The provider** - `connections.delegated_to_kdcube.providers.<provider>`:
+the provider row, its **connector apps** (each an OAuth client: `client_id`,
+`client_secret_ref`, `allowed_claims`), and its **claims** (each mapping to the
+real OAuth `provider_scopes`):
+
+```yaml
+connections:
+  delegated_to_kdcube:
+    providers:
+      google:
+        connector_apps:
+          gmail:                         # <- connector_app_id
+            client_id: <FILL_ME>
+            allowed_claims: [gmail:read, gmail:send]
+        claims:
+          gmail:read:                    # <- claim
+            provider_scopes: [ openid, email, profile,
+                               "https://www.googleapis.com/auth/gmail.readonly" ]
+```
+
+**2. The service's connector-app pick** -
+`surfaces.as_provider.mcp.<door>.connector_apps`: which connector app this door
+uses per provider. `resolve_connector_app_id("google")` returns exactly this:
+
+```yaml
+surfaces:
+  as_provider:
+    mcp:
+      productivity:
+        connector_apps: { slack: slack-demo, google: gmail }
+```
+
+**3. The tool's declared need** - the tool's `connected_accounts` policy names
+the provider and claims (never the connector app - that is resolved):
+
+```python
+"productivity_mail_search": {
+    "connections": {"delegated_to_kdcube": {"connected_accounts": [
+        {"provider_id": "google", "claims": ["gmail:read"]},
+    ]}},
+}
+```
+
+So the tool declares *provider + claim*, the surface picks *which connector
+app*, and the provider config defines *the OAuth client and the real scopes*.
+Each string is a key that must exist in the provider config - change the
+connector app for the whole door in one line (step 2), and no tool code moves.
 
 ## 3. The refresh-and-retry contract
 
@@ -151,7 +225,44 @@ human action at the `connection_hub_url` first.
   approved, on the account the binding names - never a broader token than the
   call earned.
 
-## 6. Expose it over MCP (optional)
+## 6. Adding a new service (Google Sheets, or your own)
+
+"I want to support a new service and get its token from code" is these four
+steps - each string you pass in section 2 becomes a config key here:
+
+1. **Register the provider, connector app, and claims** in Connection Hub
+   (`connections.delegated_to_kdcube.providers.<provider>`): the OAuth client
+   (`client_id`, `client_secret_ref`), the connector app's `allowed_claims`,
+   and each claim's real `provider_scopes`. For a Google service like Sheets you
+   reuse the `google` provider and add a claim (`sheets:read` ->
+   `.../auth/spreadsheets.readonly`) - either on the existing `gmail` connector
+   app or a dedicated `sheets` connector app if it needs its own OAuth client.
+   Worked references:
+   - [Google Gmail Integration](google-gmail-README.md) - the Google example end
+     to end (console setup, redirect URIs, scopes); the pattern Sheets follows.
+   - [Custom OAuth/OIDC Service Integration](custom-oauth-oidc-service-README.md) -
+     a brand-new provider (your own S1), including resolving its credential in
+     tool code.
+   - [Slack Integration](slack-README.md) - a single-provider realm with its own
+     claim set and connector app.
+2. **Point your door at the connector app** - add it to
+   `surfaces.as_provider.mcp.<door>.connector_apps` (or the named-service
+   `connector_apps`), e.g. `google: gmail` (or a dedicated `google: sheets`).
+   This is the one line `resolve_connector_app_id` reads.
+3. **Write the tool** - resolve the credential exactly as in section 2
+   (`resolve_connected_account_claim` + `resolve_connector_app_id`) with the new
+   claim, then call the provider API with `credential.access_token`.
+4. **Declare the tool's need** - the `connected_accounts` policy
+   `{provider_id, claims}` so the gates, consent surfaces, and demand ordering
+   know what to ask for. (In the productivity door, the Google Sheets and
+   LinkedIn slots are already stubbed as commented `TODO` policies of this exact
+   shape.)
+
+The user connects the account once ([Delegated to KDCube], per provider and
+connector app); from then on your tool gets a live token per call, at the
+trusted boundary, with no secret in your code.
+
+## 7. Expose it over MCP (optional)
 
 A tool that resolves this way is already governed. To let a generic external
 agent reach it, expose the namespace as a named service or a plain MCP door -
