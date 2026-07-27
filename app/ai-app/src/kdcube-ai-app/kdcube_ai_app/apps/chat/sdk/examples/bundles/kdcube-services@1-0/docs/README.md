@@ -116,7 +116,7 @@ public/mcp/named_services
 Connection Hub resource metadata exposes named-service namespaces as consentable
 boundaries. The outer MCP tools require `named_services:use`. The inner
 namespace policy can require namespace-specific grants such as `memories:read`,
-`memories:write`, `tasks:write`, or `canvas:write`; that policy is persisted
+`memories:write`, `tasks:write`, `canvas:write`, or `sheets:read`; that policy is persisted
 into the delegated credential grant record. This is intentionally two-layered:
 
 ```text
@@ -147,6 +147,18 @@ Google Sheets is the reference optional-dependency path. The app owns the async
 `@venv` boundary and `gspread` requirement; the SDK owns only serializable
 provider operations. Synchronous provider calls therefore run outside the
 shared proc event loop.
+
+The same service is also registered as the provider-neutral `sheets`
+named-service namespace. The ontology adapter owns spreadsheet/tab refs and
+maps generic object operations onto the existing app service; it does not
+duplicate Google credential resolution or provider execution:
+
+```text
+public/mcp/named_services -> namespace=sheets -> sheets adapter
+                                               -> GoogleSheetsService
+public/mcp/productivity   -> productivity_sheets_* tools
+                                               -> GoogleSheetsService
+```
 
 ### Conversation named service (`conv`)
 

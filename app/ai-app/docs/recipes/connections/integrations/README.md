@@ -35,7 +35,7 @@ call, with no token in your code or the model.
 | --- | --- |
 | [Custom OAuth/OIDC Service Integration](custom-oauth-oidc-service-README.md) | A service such as S1 exposes OAuth/OIDC, and KDCube tools need that user's S1 token. |
 | [Google Gmail Integration](google-gmail-README.md) | Users should connect Gmail, and KDCube tools should search, read, send, forward, or download attachments through Gmail. |
-| [Google Sheets Through the Productivity MCP Door](google-sheets-README.md) | Agents should find, inspect, read, create, and edit Google Sheets through governed tools without receiving the Google token. |
+| [Google Sheets Through KDCube MCP](google-sheets-README.md) | Agents can use explicit productivity tools or the provider-neutral `sheets` named-service namespace without receiving the Google token. |
 | [Slack Integration](slack-README.md) | Users should connect Slack workspaces, and KDCube tools should search, list channels, read history, read/write files, or post messages. |
 | [Mail Named Service Over MCP](mail-named-service-README.md) | Connected mail accounts should be exposed to external agents as a provider-neutral `mail` namespace. |
 | [Telegram Integration](telegram-README.md) | Telegram users should connect a channel identity to a KDCube platform user. |

@@ -847,6 +847,136 @@ bundles:
                             - named_services:use
                             - mail:read
                             - mail:send
+                  sheets:
+                    label: Spreadsheets
+                    description: Find, inspect, read, create, and edit spreadsheets through connected accounts.
+                    authority_id: delegated_client
+                    tools:
+                      about:
+                        operation: provider.about
+                        label: About spreadsheets
+                        description: Explain the sheets namespace, object refs, and connected-account model.
+                        grants:
+                        - named_services:use
+                        - sheets:read
+                      capabilities:
+                        operation: provider.capabilities
+                        label: Spreadsheet capabilities
+                        description: Read the bounded operations available for connected spreadsheets.
+                        grants:
+                        - named_services:use
+                        - sheets:read
+                      list:
+                        operation: object.list
+                        label: List recent spreadsheets
+                        description: List recently modified spreadsheets visible to the connected account.
+                        grants:
+                        - named_services:use
+                        - sheets:read
+                      schema:
+                        operation: object.schema
+                        label: Spreadsheet schema
+                        description: Read spreadsheet and tab refs, fields, ranges, and mutation payloads.
+                        grants:
+                        - named_services:use
+                        - sheets:read
+                      search:
+                        operation: object.search
+                        label: Search spreadsheets
+                        description: Find spreadsheets by title through a connected account.
+                        grants:
+                        - named_services:use
+                        - sheets:read
+                      get:
+                        operation: object.get
+                        label: Read spreadsheet
+                        description: Inspect spreadsheet metadata or read explicit bounded ranges by ref.
+                        grants:
+                        - named_services:use
+                        - sheets:read
+                      upsert:
+                        operation: object.upsert
+                        label: Create or update spreadsheet
+                        description: Create a spreadsheet, replace explicit values, or update tab properties.
+                        grants:
+                        - named_services:use
+                        - sheets:write
+                      action:
+                        operation: object.action
+                        label: Spreadsheet action
+                        description: Append or clear values, manage tabs, or format a bounded range.
+                        operations:
+                          object.action:
+                            label: Spreadsheet action
+                            description: Run one mutation declared by the sheets provider schema.
+                            grants:
+                            - named_services:use
+                            - sheets:write
+                      delete:
+                        operation: object.delete
+                        label: Delete spreadsheet tab
+                        description: Delete one tab by stable tab ref; spreadsheet-file deletion is not exposed.
+                        grants:
+                        - named_services:use
+                        - sheets:write
+                      call:
+                        label: Generic spreadsheet call
+                        description: Generic sheets namespace call with per-operation grants.
+                        operations:
+                          provider.about:
+                            label: About spreadsheets
+                            description: Explain the sheets namespace and connected-account model.
+                            grants:
+                            - named_services:use
+                            - sheets:read
+                          provider.capabilities:
+                            label: Spreadsheet capabilities
+                            description: Read the operations available for connected spreadsheets.
+                            grants:
+                            - named_services:use
+                            - sheets:read
+                          object.list:
+                            label: List recent spreadsheets
+                            description: List recently modified spreadsheets.
+                            grants:
+                            - named_services:use
+                            - sheets:read
+                          object.schema:
+                            label: Spreadsheet schema
+                            description: Read spreadsheet and tab refs, fields, ranges, and mutation payloads.
+                            grants:
+                            - named_services:use
+                            - sheets:read
+                          object.search:
+                            label: Search spreadsheets
+                            description: Find spreadsheets by title.
+                            grants:
+                            - named_services:use
+                            - sheets:read
+                          object.get:
+                            label: Read spreadsheet
+                            description: Inspect metadata or read explicit bounded ranges.
+                            grants:
+                            - named_services:use
+                            - sheets:read
+                          object.upsert:
+                            label: Create or update spreadsheet
+                            description: Create a spreadsheet, replace values, or update tab properties.
+                            grants:
+                            - named_services:use
+                            - sheets:write
+                          object.action:
+                            label: Spreadsheet action
+                            description: Append or clear values, manage tabs, or format a bounded range.
+                            grants:
+                            - named_services:use
+                            - sheets:write
+                          object.delete:
+                            label: Delete spreadsheet tab
+                            description: Delete one tab by stable tab ref.
+                            grants:
+                            - named_services:use
+                            - sheets:write
                   slack:
                     label: Slack
                     description: List Slack workspaces/channels, search messages/files, read channel history, download files,
@@ -2107,6 +2237,16 @@ bundles:
                       upsert_object:
                         strategy:
                         - exploitation
+                  sheets:
+                    allowed:
+                    - provider.about
+                    - object.list
+                    - object.search
+                    - object.get
+                    - object.schema
+                    - object.upsert
+                    - object.action
+                    - object.delete
                 tool_traits:
                   provider_about:
                     strategy:

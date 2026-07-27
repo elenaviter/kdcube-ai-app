@@ -117,3 +117,35 @@ async def test_google_sheets_provider_auth_failure_uses_connected_account_retry(
     marker = result["__connected_account_auth_failure__"]
     assert marker["credential"] == credential
     assert "expired-provider-token" not in marker["message"]
+
+
+async def test_google_sheets_multi_claim_resolution_stays_on_one_account(
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    calls = []
+
+    async def fake_resolve(_source, **kwargs):
+        calls.append(dict(kwargs))
+        return ConnectedAccountCredential(
+            ok=True,
+            access_token=f"token-for-{kwargs['claim']}",
+            account_id="google-account-1",
+            provider_id="google",
+            connector_app_id="gmail",
+            claim=kwargs["claim"],
+            tool_name=kwargs["tool_name"],
+        )
+
+    monkeypatch.setattr(module, "resolve_connected_account_claim", fake_resolve)
+    monkeypatch.setattr(module, "resolve_connector_app_id", lambda _provider: "gmail")
+
+    credential = await module.GoogleSheetsService()._credential(
+        claim=("sheets:read", "sheets:write"),
+        tool_name="named_services.sheets.object.upsert",
+        account_id="",
+    )
+
+    assert credential.claim == "sheets:write"
+    assert [call["claim"] for call in calls] == ["sheets:read", "sheets:write"]
+    assert [call["account_id"] for call in calls] == ["", "google-account-1"]

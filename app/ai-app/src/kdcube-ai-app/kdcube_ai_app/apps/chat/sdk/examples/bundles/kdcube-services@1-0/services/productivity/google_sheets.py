@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
@@ -76,24 +76,39 @@ class GoogleSheetsService:
     async def _credential(
         self,
         *,
-        claim: str,
+        claim: str | Sequence[str],
         tool_name: str,
         account_id: str,
     ) -> ConnectedAccountCredential:
-        return await resolve_connected_account_claim(
-            globals(),
-            provider_id=SHEETS_PROVIDER_ID,
-            connector_app_id=resolve_connector_app_id(SHEETS_PROVIDER_ID),
-            claim=claim,
-            account_id=account_id,
-            tool_name=tool_name,
+        claims = (
+            [str(item).strip() for item in claim if str(item or "").strip()]
+            if not isinstance(claim, str)
+            else [claim.strip()]
         )
+        if not claims:
+            raise ValueError("At least one Google Sheets claim is required.")
+        selected_account_id = str(account_id or "").strip()
+        credential: ConnectedAccountCredential | None = None
+        for required_claim in claims:
+            credential = await resolve_connected_account_claim(
+                globals(),
+                provider_id=SHEETS_PROVIDER_ID,
+                connector_app_id=resolve_connector_app_id(SHEETS_PROVIDER_ID),
+                claim=required_claim,
+                account_id=selected_account_id,
+                tool_name=tool_name,
+            )
+            if not credential.ok:
+                return credential
+            selected_account_id = credential.account_id or selected_account_id
+        assert credential is not None
+        return credential
 
     async def execute(
         self,
         *,
         operation: str,
-        claim: str,
+        claim: str | Sequence[str],
         tool_name: str,
         payload: Mapping[str, Any] | None = None,
         account_id: str = "",
@@ -116,7 +131,7 @@ class GoogleSheetsService:
         self,
         *,
         operation: str,
-        claim: str,
+        claim: str | Sequence[str],
         tool_name: str,
         payload: dict[str, Any],
         account_id: str,

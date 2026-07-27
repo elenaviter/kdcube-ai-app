@@ -979,11 +979,13 @@ async def get_object(
     object_ref: Annotated[str, "Canonical namespace object ref, for example 'sensor:temperature:reading-123'."] = "",
     object_id: Annotated[str, "Owner-local object id when object_ref is not known."] = "",
     include: Annotated[str, "Optional JSON list of extra fields or relations to include."] = "",
+    filters: Annotated[str, "Optional JSON object with provider-specific read filters, for example explicit spreadsheet ranges."] = "",
 ) -> Annotated[Dict[str, Any], "Named service response envelope with object."]:
     """Read one object from a configured named-service namespace."""
 
     try:
         parsed_include = _json_list(include, field_name="include")
+        parsed_filters = _json_object(filters, field_name="filters")
     except ValueError as exc:
         return _error("named_service_tool_params_invalid", str(exc))
     return await _call(
@@ -993,6 +995,7 @@ async def get_object(
         object_ref=object_ref,
         object_id=object_id,
         include=parsed_include,
+        filters=parsed_filters,
     )
 
 
@@ -1144,7 +1147,7 @@ def list_tools() -> Dict[str, Dict[str, Any]]:
         },
         "get_object": {
             "callable": get_object,
-            "description": "Read one object from a configured named-service namespace by object_ref or object_id.",
+            "description": "Read one object from a configured named-service namespace by object_ref or object_id, with optional provider-specific filters.",
         },
         "host_file": {
             "callable": host_file,

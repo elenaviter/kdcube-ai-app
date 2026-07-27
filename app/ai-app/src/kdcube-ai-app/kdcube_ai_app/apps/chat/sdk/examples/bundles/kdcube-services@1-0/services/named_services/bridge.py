@@ -521,6 +521,7 @@ class NamedServicesMcpBridge:
         *,
         namespace: str,
         object_ref: str,
+        filters_json: Any = None,
         provider: str = "",
     ) -> dict[str, Any]:
         return await self.call(
@@ -529,6 +530,7 @@ class NamedServicesMcpBridge:
             namespace=namespace,
             provider=provider,
             object_ref=object_ref,
+            filters=_parse_json_object(filters_json, field_name="filters_json"),
         )
 
     async def upsert(

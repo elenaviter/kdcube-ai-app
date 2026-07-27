@@ -130,3 +130,24 @@ async def test_agent_identity_falls_back_to_the_delegate_subject():
     assert consent["agent_client_id"] == "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react"
     assert consent["resource"] == "*/kdcube-services@1-0/public/mcp/named_services*"
     assert consent["grant"]["payload"]["claims"] == ["mail:read"]
+
+
+async def test_get_forwards_provider_filters() -> None:
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+    captured = {}
+
+    async def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    bridge.call = fake_call
+    result = await bridge.get(
+        namespace="sheets",
+        object_ref="sheets:google:account-1:spreadsheet:sheet-1",
+        filters_json='{"ranges":["Plan!A1:D20"]}',
+    )
+
+    assert result == {"ok": True}
+    assert captured["operation"] == "object.get"
+    assert captured["filters"] == {"ranges": ["Plan!A1:D20"]}

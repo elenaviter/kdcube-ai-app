@@ -22,6 +22,9 @@ bundle:
       tools to the managed productivity MCP surface. Google credentials remain
       behind the connected-account boundary and optional dependencies remain
       in the app-owned venv.
+    - Publishes the same spreadsheet capability through the provider-neutral
+      `sheets` named-service namespace, with stable spreadsheet/tab refs and
+      per-operation read/write grants.
     - Declares the complete interface in OpenAPI and documents storage
       ownership, retention, backup, cleanup, and temporary staging constraints.
 

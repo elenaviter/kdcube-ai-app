@@ -34,6 +34,9 @@ from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.mail import make_mail_named_service_provider
 from kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service import parse_mail_ref
+from kdcube_ai_app.apps.chat.sdk.integrations.sheets import (
+    make_sheets_named_service_provider,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.slack import make_slack_named_service_provider
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import parse_slack_ref
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.relay import (
@@ -54,7 +57,10 @@ from kdcube_ai_app.infra.service_hub.inventory import BundleState, Config
 from .services.conversations.named_service import build_conversation_named_service_provider
 from .services.named_services import NamedServicesMcpBridge
 from .services.named_services.request_scope import get_public_base_url
-from .services.productivity import bind_service as bind_productivity_service
+from .services.productivity import (
+    GoogleSheetsService,
+    bind_service as bind_productivity_service,
+)
 from .surfaces.mcp import conversations as conversations_mcp_module
 from .surfaces.mcp import named_services as named_services_mcp_module
 from .surfaces.mcp import productivity as productivity_mcp_module
@@ -368,6 +374,17 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                 bundle_id=self._named_services_bundle_id(),
                 file_url_factory=self._integration_file_url,
                 upload_slot_factory=self._integration_upload_slot,
+            )
+        )
+        # The sheets namespace is an ontology adapter over the same governed
+        # service used by public/mcp/productivity. Credential resolution and
+        # Google execution therefore have one implementation for both doors.
+        bind_productivity_service(self)
+        sheets_service = GoogleSheetsService()
+        providers.append(
+            make_sheets_named_service_provider(
+                execute_operation=sheets_service.execute,
+                bundle_id=self._named_services_bundle_id(),
             )
         )
         # Stored agent instruction sets (instr:custom:<id>[:<version>]):

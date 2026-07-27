@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
 title: "Make A Named Service Agent-Friendly (MCP)"
-summary: "What a named-service namespace should implement so a generic external agent (Claude over MCP) can discover, search, read files, and act through object refs alone — using conv as the worked example and mail/slack as integration namespaces."
+summary: "What a named-service namespace should implement so a generic external agent (Claude over MCP) can discover, search, read files, and act through object refs alone — using conv as the worked example and mail, Slack, and sheets as integration namespaces."
 status: active
-tags: ["recipes", "kdcube-for-agents", "named-services", "mcp", "conv", "mail", "slack", "search", "files", "schema", "agent"]
-updated_at: 2026-07-18
+tags: ["recipes", "kdcube-for-agents", "named-services", "mcp", "conv", "mail", "slack", "sheets", "search", "files", "schema", "agent"]
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
@@ -12,6 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-sheets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/providers-README.md
 ---
@@ -47,7 +48,7 @@ namespace and operation; the surface routes to the matching provider.
 
 The reference `kdcube-services@1-0` surface includes platform namespaces such as
 `conv`, application-context namespaces such as `mail`, and connected-account
-integration namespaces such as `slack`.
+integration namespaces such as `slack` and `sheets`.
 
 ```text
 MCP surface: kdcube-services@1-0 / public/mcp/named_services
@@ -385,6 +386,26 @@ Work with a connected Slack workspace:
      -> posted message metadata
 ```
 
+Find and update a connected spreadsheet:
+
+```text
+1. search  namespace=sheets, query="quarterly plan"
+     -> sheets:google:<account_id>:spreadsheet:<spreadsheet_id>
+2. get     that spreadsheet ref
+     -> title, tabs, named ranges, and stable tab refs
+3. get     the spreadsheet ref with
+           filters_json='{"ranges":["Plan!A1:D20"]}'
+     -> bounded cell values
+4. action  action=append_rows, object_ref=<spreadsheet ref>,
+           payload_json='{"range":"Plan!A:D","rows":[[...]]}'
+     -> affected range and row counts
+```
+
+The namespace is `sheets`, not `google_sheets`: object kinds and refs stay
+provider-neutral while the ref records which connected provider/account owns
+the object. The [Google Sheets recipe](../connections/integrations/google-sheets-README.md)
+contains the complete descriptor and consent setup.
+
 For integration namespaces, authorization has two gates that share one claim
 vocabulary:
 
@@ -464,13 +485,13 @@ agent_grant_required    the account is connected and holds the claim, but THIS
                         never a reconnect, never the provider-connect tab
 ```
 
-Account selection is symmetric across integration namespaces (`mail`, `slack`):
-`object.list` returns every connected account with its label, approved claims,
-and `credential_status`; search with no `account_id` fans out across eligible
-accounts and stamps every hit with `account_id` + `account_label`; actions use
-the ref-embedded or payload account and never pick one silently. An empty
-account list is not an error — it rides with an `extra.consent` block pointing
-at Connection Hub.
+Account selection is explicit across integration namespaces. `mail` and
+`slack` use `object.list` to return connected accounts with labels, approved
+claims, and credential status. `sheets.object.list` instead lists recently
+modified spreadsheets. If several Google accounts are eligible, a Sheets
+list/search returns `account_required` with labeled candidates; retry the same
+call with one `account_id`. Every returned Sheets ref then embeds that account.
+No action silently chooses between accounts.
 
 ## Agent-Friendly Checklist
 
@@ -505,5 +526,6 @@ at Connection Hub.
 - [Named-Service App](../components/named-service-README.md)
 - [Delegate A KDCube Service To An External Client](../connections/delegate-kdcube-service-to-external-client-README.md)
 - [Slack Integration](../connections/integrations/slack-README.md)
+- [Google Sheets Through KDCube MCP](../connections/integrations/google-sheets-README.md)
 - [Protect A Bundle MCP With Managed Credentials](../connections/protect-bundle-mcp-with-managed-credentials-README.md)
 - [Namespace Service Providers](../../sdk/namespace-services/providers-README.md)

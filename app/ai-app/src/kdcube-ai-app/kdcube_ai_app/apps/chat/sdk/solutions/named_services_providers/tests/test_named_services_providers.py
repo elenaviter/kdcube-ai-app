@@ -3128,6 +3128,27 @@ async def test_denial_fix_affordance_admin_when_config_ceiling_blocks():
 
 
 @pytest.mark.asyncio
+async def test_get_object_forwards_provider_specific_read_filters(monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _fake_call(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr(named_service_client_tools, "_call", _fake_call)
+
+    result = await named_service_client_tools.get_object(
+        namespace="sheets",
+        object_ref="sheets:google:account-1:spreadsheet:sheet-1",
+        filters='{"ranges":["Plan!A1:D20"]}',
+    )
+
+    assert result == {"ok": True}
+    assert captured["operation"] == "object.get"
+    assert captured["filters"] == {"ranges": ["Plan!A1:D20"]}
+
+
+@pytest.mark.asyncio
 async def test_denial_fix_affordance_user_when_own_toggle_blocks():
     """A config-allowed operation the USER turned off is user-fixable: the
     fix points at the capability picker with the service row spotlighted."""

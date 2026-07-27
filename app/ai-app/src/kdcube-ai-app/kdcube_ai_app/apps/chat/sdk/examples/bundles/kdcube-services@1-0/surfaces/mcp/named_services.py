@@ -253,12 +253,27 @@ def build_named_services_mcp_app(
             str,
             Field(description="Provider object ref, for example 'mem:<id>'."),
         ],
+        filters_json: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional provider filters as a JSON object. For sheets, "
+                    "pass explicit ranges such as "
+                    "{\"ranges\":[\"Plan!A1:D20\"]}."
+                )
+            ),
+        ] = "{}",
         provider: Annotated[
             str,
             Field(description="Optional provider id when a namespace has more than one provider."),
         ] = "",
     ) -> dict[str, Any]:
-        return await _bridge().get(namespace=namespace, object_ref=object_ref, provider=provider)
+        return await _bridge().get(
+            namespace=namespace,
+            object_ref=object_ref,
+            filters_json=filters_json,
+            provider=provider,
+        )
 
     if not _REGISTER_EXTENDED_NAMED_SERVICE_TOOLS:
         return mcp

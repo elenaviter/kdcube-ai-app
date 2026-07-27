@@ -10,7 +10,7 @@ primary_surfaces:
   - "Widget `bundle_storage` — privileged operational storage browser"
   - "Privileged platform administration widgets — economics, conversations, gateway, Redis, and apps"
   - "MCP endpoint `conversations` — delegated access to conversations_export"
-  - "MCP endpoint `named_services` — delegated access to configured named-service namespaces"
+  - "MCP endpoint `named_services` — delegated access to configured namespaces, including provider-neutral spreadsheets"
   - "MCP endpoint `productivity` — governed Slack, mail, and Google Sheets tools over connected accounts"
   - "Signed public file transfer — conversation, mail, Slack, and staged uploads"
 links:
@@ -190,6 +190,24 @@ reliably convert that tool result into a new OAuth consent flow, so production
 resources should advertise likely namespace grants during initial Connection
 Hub consent.
 
+The built-in `sheets` namespace is an ontology adapter over the same Google
+Sheets service used by `public/mcp/productivity`:
+
+```text
+named_services_search namespace=sheets
+  -> sheets:google:<account_id>:spreadsheet:<spreadsheet_id>
+named_services_get <spreadsheet ref>
+  -> metadata, tab refs, or explicitly requested A1 ranges
+named_services_upsert / named_services_action / named_services_delete
+  -> bounded spreadsheet, value, formatting, and tab mutations
+```
+
+The namespace remains provider-neutral. Google is its first backing provider.
+A read requires a caller grant and connected-account claim for `sheets:read`.
+A mutation requires the caller's `sheets:write` grant, while the connected
+Google account must hold both `sheets:read` and `sheets:write`. These two
+boundaries are checked independently.
+
 ### Productivity
 
 MCP endpoint:
@@ -264,6 +282,10 @@ kdcube-services@1-0/
   tests/
     test_interface_contract.py
 ```
+
+The reusable ontology adapter lives outside the app at
+`sdk/integrations/sheets/named_service.py`; the app injects its
+`GoogleSheetsService.execute` function when registering the provider.
 
 ## Auth Model
 

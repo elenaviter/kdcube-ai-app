@@ -254,7 +254,7 @@ Tools:
 | `named_services_capabilities(namespace)` | Read provider capabilities. |
 | `named_services_schema(namespace, object_kind?)` | Read provider object schema. |
 | `named_services_search(namespace, query?, limit?, filters_json?)` | Search namespace objects. |
-| `named_services_get(namespace, object_ref)` | Read one object by ref. |
+| `named_services_get(namespace, object_ref, filters_json?)` | Read one object by ref, with optional provider filters such as bounded sheet ranges. |
 | `named_services_upsert(namespace, object_json, ...)` | Create or update one object when `object.upsert` is allowed. |
 | `named_services_host_file(namespace, file_ref, ...)` | Host/register one file ref when `object.host_file` is allowed. |
 | `named_services_action(namespace, object_ref, action, ...)` | Run a bounded object action when `object.action` is allowed. |
@@ -294,13 +294,46 @@ resources:
           tools:
             schema:
               operation: object.schema
-                  grants: [memories:read]
+              grants: [memories:read]
 ```
 
 The protected-resource discovery document exposes this nested catalog as
 `kdcube_named_services`, next to the generic `kdcube_tools` list. The OAuth
 authorization code, refresh token, and access-grant record then preserve the
 same catalog for runtime enforcement.
+
+### Named-service namespace: `sheets`
+
+The `sheets` namespace exposes connected spreadsheets through the generic tools
+above. Google Sheets is the first backing provider, but the agent contract uses
+provider-neutral object kinds and refs:
+
+```text
+sheets.spreadsheet
+  sheets:<provider>:<account_id>:spreadsheet:<spreadsheet_id>
+
+sheets.tab
+  sheets:<provider>:<account_id>:spreadsheet:<spreadsheet_id>:tab:<sheet_id>
+```
+
+| Named-service operation | Behavior | Required namespace grants |
+| --- | --- | --- |
+| `object.list` | List recently modified spreadsheets. | `named_services:use`, `sheets:read` |
+| `object.search` | Find spreadsheets by title. | `named_services:use`, `sheets:read` |
+| `object.get` | Read metadata, or explicit bounded A1 ranges from a spreadsheet ref. | `named_services:use`, `sheets:read` |
+| `object.upsert` | Create a spreadsheet, replace values, or update tab properties. | `named_services:use`, `sheets:write` |
+| `object.action` | Append/clear values, manage tabs, or format one bounded range. | `named_services:use`, `sheets:write` |
+| `object.delete` | Delete one tab. Spreadsheet-file deletion is not exposed. | `named_services:use`, `sheets:write` |
+
+`object.schema` is authoritative for action payloads and bounds. Range reads
+use the parent spreadsheet ref and place the tab title in each A1 range. The
+adapter calls the same `GoogleSheetsService` as the typed productivity surface,
+so credential custody, account selection, claim-upgrade behavior, provider
+limits, and app-owned venv execution do not diverge.
+
+The table lists caller grants under **Delegated by KDCube**. On the separate
+connected-account boundary, reads require `sheets:read` and mutations require
+both `sheets:read` and `sheets:write` from the approving user's Google account.
 
 ## MCP Endpoint: Productivity
 

@@ -479,6 +479,8 @@ Provider-backed realms additionally declare their connected-account
 requirements (below); internal realms declare none — nothing is invented.
 Shipped exemplars: `integrations/mail/named_service.py` (differentiated
 claims), `integrations/slack/named_service.py` (flat claim set),
+`integrations/sheets/named_service.py` (differentiated claims over an injected
+app-owned provider service),
 `context/memory/named_service.py` (internal). The card-side rendering and
 the granularity users control are owned by
 [Per-User Agent Capabilities](../solutions/user-settings/capabilities-README.md).
