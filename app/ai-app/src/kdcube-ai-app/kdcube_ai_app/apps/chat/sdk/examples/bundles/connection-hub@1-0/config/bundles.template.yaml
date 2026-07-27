@@ -164,6 +164,13 @@ bundles:
               - "kdcube:role:super-admin"
               delegable_permissions:
               - "mail:read"
+              # mail:read is a provider-neutral door claim; the connected account
+              # that backs it holds a PROVIDER claim (gmail:read), so the consent
+              # page can only resolve which account to connect from this mapping.
+              # Keep in step with MAIL_CONNECTED_ACCOUNT_REQUIREMENTS.
+              connected_accounts:
+              - provider_id: "google"
+                claims: ["gmail:read"]
             - grant: "mail:send"
               label: "Send connected mail"
               description: "Send or forward messages through mail accounts connected to KDCube."
@@ -174,6 +181,9 @@ bundles:
               - "kdcube:role:super-admin"
               delegable_permissions:
               - "mail:send"
+              connected_accounts:
+              - provider_id: "google"
+                claims: ["gmail:send"]
             # Slack is a single provider, so it uses its OWN real claims (the
             # exact capabilities the Slack API needs) — not an invented
             # namespace claim. These match SLACK_CONNECTED_ACCOUNT_CLAIMS.
