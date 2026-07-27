@@ -47,7 +47,7 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
     links: [
       {
         label: 'Connect Gmail',
-        href: `${DOCS}/recipes/connections/integrations/google-gmail-README.md`,
+        href: `${DOCS}/recipes/connections/integrations/google-service-README.md`,
       },
       {
         label: 'Connect Slack',
@@ -71,7 +71,7 @@ const GUIDES: Record<ConnectionsTab, Guide> = {
     links: [
       {
         label: 'Connect Gmail',
-        href: `${DOCS}/recipes/connections/integrations/google-gmail-README.md`,
+        href: `${DOCS}/recipes/connections/integrations/google-service-README.md`,
       },
       {
         label: 'Connect Slack',
