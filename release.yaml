@@ -1,23 +1,21 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.27.125"
+  ref: "2026.07.27.1240"
   description: |
-    This release follows 2026.07.27.007.
+    This release follows 2026.07.27.125.
 
-    The SDK now includes a focused two-level MCP client example for governed
-    managed doors. The example shows how a caller reads the first-level consent
-    envelope, detects required grants, and then invokes the second-level managed
-    service call with the access context that the door returns. This makes the
-    delegated-MCP contract easier to test and easier for app builders to copy
-    without relying on hidden runtime assumptions.
+    Static widget deployment now has an explicit authorized predeployment path.
+    Proc startup can coordinate widget builds through the app-deployment
+    subsystem, persist deployment metadata, and serve predeployed widget
+    artifacts through the platform runtime instead of rebuilding them on every
+    request path. This gives hosted apps a clearer operational boundary between
+    source app loading, widget build coordination, and runtime delivery.
 
-    Public frontend configuration is decoupled from runtime service internals.
-    The control-plane frontend config path now returns only the browser-facing
-    contract needed by public shells and embedded widgets, while service/runtime
-    values stay server-side. Regression coverage was added for the public
-    frontend config response so route prefixes, tenant/project identity, and
-    public app configuration remain stable without leaking implementation-only
-    settings.
+    The widget serving path now enforces authorization policy for deployed
+    static artifacts. Integration routes can resolve and return previously
+    deployed widget files while preserving role and visibility checks, and new
+    tests cover deployed static widget access, app deployment storage,
+    deployment modes, and the startup preload lock behavior.
 
 config:
-  version: "2026.07.27.125"
+  version: "2026.07.27.1240"
