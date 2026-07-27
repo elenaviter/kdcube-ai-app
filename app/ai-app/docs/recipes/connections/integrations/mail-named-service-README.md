@@ -6,7 +6,7 @@ status: active
 tags: ["recipes", "connections", "connection-hub", "named-services", "mcp", "mail", "gmail", "connected-accounts", "delegated-to-kdcube"]
 updated_at: 2026-07-27
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
@@ -131,7 +131,7 @@ immediately. Identity model and the grant flow:
 The Gmail provider scopes behind `gmail:read` / `gmail:send` — and Google's
 read-only/read-write scope reconciliation, which mail is unaffected by because
 `gmail.send` is not a read-only sibling of `gmail.readonly` — are covered in the
-[Gmail recipe](google-gmail-README.md#google-oauth-scopes).
+[Google SDK Integration](../../../sdk/integrations/google/google-README.md#read-write-scopes-supersede-read-only-ones).
 
 If Claude has `mail:read` but the current KDCube user has not connected Gmail
 with `gmail:read`, the provider returns the structured consent error
@@ -284,8 +284,8 @@ connections:
 
 The provider account side is configured separately under
 `connections.delegated_to_kdcube`. See
-[Google Gmail Integration](google-gmail-README.md) for the full Google OAuth
-client, callback URL, scope, and secret configuration.
+[Google Services (Gmail, Sheets)](google-service-README.md) for the full Google
+OAuth client, callback URL, scope, and secret configuration.
 
 ## Agent Usage
 

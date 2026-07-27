@@ -10,7 +10,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/mcp/platform-mcp-over-connection-hub-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/quickstart/explore-how-agents-connect-to-kdcube-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/named-services-tools-README.md
 ---
@@ -83,7 +83,7 @@ providers:
 - **Gmail and Slack use built-in adapters** (`google.oauth`,
   `slack.oauth_user_token`). **LinkedIn and a third-party need a custom
   adapter** — see
-  [Custom OAuth/OIDC Provider Accounts](../delegated-accounts/custom-oauth-oidc-service-README.md).
+  [Custom OAuth/OIDC Provider Accounts](../../../integrations/custom-oauth-oidc-service-README.md).
 - Secrets are `*_ref` pointers into `bundles.secrets.yaml`, never inline.
 
 ## ② Delegable resources and external clients

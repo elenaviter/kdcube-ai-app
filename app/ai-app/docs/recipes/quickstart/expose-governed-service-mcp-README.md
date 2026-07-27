@@ -11,7 +11,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
 ---
@@ -92,7 +92,7 @@ Secrets are `*_ref` pointers into `bundles.secrets.yaml`, never inline.
 Provider and account mechanics are
 [Delegated Provider Accounts](../../sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md);
 the custom-adapter contract (endpoints, claim mapping) is
-[Custom OAuth/OIDC Provider Accounts](../../sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md).
+[Custom OAuth/OIDC Provider Accounts](../../sdk/integrations/custom-oauth-oidc-service-README.md).
 
 ## Step 1 - declare the managed MCP door
 

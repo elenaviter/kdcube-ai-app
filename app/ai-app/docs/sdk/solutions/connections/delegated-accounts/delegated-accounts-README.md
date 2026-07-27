@@ -9,7 +9,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-edges/connection-edges-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
 ---
 # Delegated Provider Accounts
@@ -132,7 +132,7 @@ supplies the external authorization URL, token URL, optional userinfo URL,
 default scopes, authorize parameters, and profile mapping. The connector app
 still supplies the OAuth client id and secret reference.
 
-See [Custom OAuth/OIDC Provider Accounts](custom-oauth-oidc-service-README.md)
+See [Custom OAuth/OIDC Provider Accounts](../../../integrations/custom-oauth-oidc-service-README.md)
 for the full configuration, runtime resolver pattern, named-service pattern, and
 custom-service verification checklist.
 

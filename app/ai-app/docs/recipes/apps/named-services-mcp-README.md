@@ -12,7 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-sheets-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/providers-README.md
 ---
@@ -433,8 +433,8 @@ Find and update a connected spreadsheet:
 
 The namespace is `sheets`, not `google_sheets`: object kinds and refs stay
 provider-neutral while the ref records which connected provider/account owns
-the object. The [Google Sheets recipe](../connections/integrations/google-sheets-README.md)
-contains the complete descriptor and consent setup.
+the object. The [Google Services recipe](../connections/integrations/google-service-README.md)
+contains the complete Sheets descriptor and consent setup.
 
 For integration namespaces, authorization has two gates that share one claim
 vocabulary:
@@ -560,6 +560,6 @@ No action silently chooses between accounts.
 - [Named-Service App](../components/named-service-README.md)
 - [Delegate A KDCube Service To An External Client](../connections/delegate-kdcube-service-to-external-client-README.md)
 - [Slack Integration](../connections/integrations/slack-README.md)
-- [Google Sheets Through KDCube MCP](../connections/integrations/google-sheets-README.md)
+- [Google Services (Gmail, Sheets)](../connections/integrations/google-service-README.md)
 - [Protect A Bundle MCP With Managed Credentials](../connections/protect-bundle-mcp-with-managed-credentials-README.md)
 - [Namespace Service Providers](../../sdk/namespace-services/providers-README.md)

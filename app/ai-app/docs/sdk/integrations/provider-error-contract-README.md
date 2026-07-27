@@ -8,7 +8,7 @@ updated_at: 2026-07-28
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-sheets-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/connected_accounts.py
 ---
 # Provider Error And Observability Contract

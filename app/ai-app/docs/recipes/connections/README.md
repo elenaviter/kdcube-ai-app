@@ -8,7 +8,7 @@ updated_at: 2026-07-17
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/telegram-README.md
@@ -33,7 +33,7 @@ are intentionally shorter and more task-oriented than the SDK architecture docs.
 | --- | --- |
 | [Integration Recipes](integrations/README.md) | You need the entry point for delegated-to-KDCube connected account recipes. |
 | [Custom OAuth/OIDC Service Integration](integrations/custom-oauth-oidc-service-README.md) | A custom service exposes OAuth/OIDC, and KDCube tools need that user's service token. |
-| [Google Gmail Integration](integrations/google-gmail-README.md) | Users should connect their own Gmail accounts to KDCube, and KDCube tools should search or send Gmail with connected-account claims. |
+| [Google Services (Gmail, Sheets)](integrations/google-service-README.md) | Users should connect their own Google account to KDCube, and KDCube tools/named services should act on Gmail or Sheets with connected-account claims. |
 | [Mail Named Service Over MCP](integrations/mail-named-service-README.md) | Connected Gmail/iCloud/Yahoo-style accounts should appear to external agents as one provider-neutral `mail` namespace through the generic named-services MCP surface. |
 | [Slack Integration](integrations/slack-README.md) | Users should connect their own Slack accounts or workspaces to KDCube, and KDCube tools should search or post through Slack with connected-account claims. |
 | [Telegram Integration](integrations/telegram-README.md) | A bundle exposes a Telegram webhook and Mini App, and Telegram users should connect to KDCube through Connection Hub before using platform-backed features. |

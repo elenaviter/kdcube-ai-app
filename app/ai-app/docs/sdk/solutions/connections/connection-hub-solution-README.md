@@ -16,7 +16,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/credential-envelope-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-projection/authority-projection-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/delegation-edges-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/widget-auth-context/widget-auth-context-README.md
@@ -519,7 +519,7 @@ grantor's full platform session.
 | Expose a KDCube app's services as one governed MCP door that both an external app and a resident agent use | [Platform MCP over Connection Hub](../mcp/platform-mcp-over-connection-hub-README.md) |
 | Configure an agent to use KDCube services and connected accounts, and scope it to specific accounts | [Configuring Agent Access To Services And Accounts](configuring-agent-service-access/configuring-agent-service-access-README.md) |
 | Connect Gmail/Slack/iCloud as delegated provider accounts | [Delegated Accounts](delegated-accounts/delegated-accounts-README.md) |
-| Connect a custom OAuth/OIDC service so KDCube tools can use the user's provider token | [Custom OAuth/OIDC Provider Accounts](delegated-accounts/custom-oauth-oidc-service-README.md) |
+| Connect a custom OAuth/OIDC service so KDCube tools can use the user's provider token | [Custom OAuth/OIDC Provider Accounts](../../integrations/custom-oauth-oidc-service-README.md) |
 | Turn credential failures into user actions (reconnect, approve claim, choose account) | [Delegated Accounts](delegated-accounts/delegated-accounts-README.md) |
 | Host Connection Hub or another widget in an iframe | [Widget Auth Context](widget-auth-context/widget-auth-context-README.md) |
 | Know where tokens live | [Token Storage](connection-hub-token-storage-README.md) |

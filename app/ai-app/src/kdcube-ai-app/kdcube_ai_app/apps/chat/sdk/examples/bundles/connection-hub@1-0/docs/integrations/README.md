@@ -9,7 +9,7 @@ see_also:
   - ./google.md
   - ./slack.md
   - ./icloud.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
   - ../../interface/README.md
   - ../../config/bundles.template.yaml
@@ -33,7 +33,7 @@ Per-provider steps:
 | Google (Gmail) | OAuth connector app | [google.md](./google.md) |
 | Slack | OAuth connector app | [slack.md](./slack.md) |
 | iCloud | App-specific password (no OAuth) | [icloud.md](./icloud.md) |
-| Standard OAuth/OIDC service | `oauth2.generic` or `oidc.generic` connector app | See `repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md` and `repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md`. |
+| Standard OAuth/OIDC service | `oauth2.generic` or `oidc.generic` connector app | See `repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md` and `repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md`. |
 
 Set these once for the commands in the per-provider articles:
 
@@ -90,7 +90,7 @@ application bundle/tool config, under that tool's
 If the provider follows ordinary OAuth 2.0 or OIDC mechanics, register it with
 the generic adapter instead of writing provider-specific SDK code. The
 canonical SDK guide is
-repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/custom-oauth-oidc-service-README.md,
+repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md,
 and the task recipe is
 repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md.
 This is the shape for an `S1` service whose authority may be Cognito, Auth0,

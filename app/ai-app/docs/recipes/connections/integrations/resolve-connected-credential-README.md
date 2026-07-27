@@ -8,7 +8,7 @@ updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
@@ -18,8 +18,8 @@ see_also:
 ---
 # Resolve a Connected Credential in Tool Code
 
-Every integration recipe - [Gmail](google-gmail-README.md),
-[Google Sheets](google-sheets-README.md), [Slack](slack-README.md), or a
+Every integration recipe - [Google (Gmail, Sheets)](google-service-README.md),
+[Slack](slack-README.md), or a
 [custom OAuth/OIDC service](custom-oauth-oidc-service-README.md) -
 wires a specific provider. This recipe covers the one step they all share: how
 your tool code, at call time, obtains the user's provider credential without any
@@ -260,10 +260,9 @@ steps - each string you pass in section 2 becomes a config key here:
    so an existing Google account can serve both Gmail and Sheets without
    changing stored account identity.
    Worked references:
-   - [Google Gmail Integration](google-gmail-README.md) - the Google example end
-     to end (console setup, redirect URIs, scopes); the pattern Sheets follows.
-   - [Google Sheets Through the Productivity MCP Door](google-sheets-README.md) -
-     the complete built-in Sheets configuration, tool, consent, and verification path.
+   - [Google Services (Gmail, Sheets)](google-service-README.md) - the Google
+     example end to end (operator setup, provider claims, per-service wiring,
+     consent, and verification); Sheets reuses the same `google` provider.
    - [Custom OAuth/OIDC Service Integration](custom-oauth-oidc-service-README.md) -
      a brand-new provider (your own S1), including resolving its credential in
      tool code.

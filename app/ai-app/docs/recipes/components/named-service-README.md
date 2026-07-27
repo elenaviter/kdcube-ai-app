@@ -511,9 +511,9 @@ enter the harness timeline with provider-owned rendering.
   and forward through connected accounts.
 - [Slack integration](../connections/integrations/slack-README.md): channels,
   messages, files, pagination, signed file delivery, and exact actions.
-- [Google Sheets](../connections/integrations/google-sheets-README.md): typed
-  productivity tools plus the `sheets` namespace, live complete snapshots, and
-  harness materialization.
+- [Google Services (Gmail, Sheets)](../connections/integrations/google-service-README.md):
+  the Sheets service adds typed productivity tools plus the `sheets` namespace,
+  live complete snapshots, and harness materialization.
 - [Named services over MCP](../apps/named-services-mcp-README.md): external and
   hosted client usage of the generic MCP surface.
 

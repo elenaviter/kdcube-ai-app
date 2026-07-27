@@ -8,7 +8,7 @@ keywords: ["google oauth client", "gmail oauth", "gmail api", "sheets api", "dri
 updated_at: 2026-07-28
 see_also:
   - ./README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-sheets-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/email/email-external-prereq-README.md
 ---
@@ -74,7 +74,7 @@ https://www.googleapis.com/auth/gmail.send
 ```
 
 For Sheets and Drive scopes, use the complete
-[Google Sheets recipe](../../../../../../../../../../../docs/recipes/connections/integrations/google-sheets-README.md).
+[Google Services recipe](../../../../../../../../../../../docs/recipes/connections/integrations/google-service-README.md).
 
 ## Current Redirect URIs
 

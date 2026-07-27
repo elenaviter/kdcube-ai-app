@@ -8,7 +8,7 @@ updated_at: 2026-07-28
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/provider-error-contract-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/custom-oauth-oidc-service-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/mail-named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/resolve-connected-credential-README.md
@@ -41,8 +41,7 @@ credentials.
 | Recipe | Use when |
 | --- | --- |
 | [Custom OAuth/OIDC Service Integration](custom-oauth-oidc-service-README.md) | A service such as S1 exposes OAuth/OIDC, and KDCube tools need that user's S1 token. |
-| [Google Gmail Integration](google-gmail-README.md) | Users should connect Gmail, and KDCube tools should search, read, send, forward, or download attachments through Gmail. |
-| [Google Sheets Through KDCube MCP](google-sheets-README.md) | Agents can use explicit productivity tools or the provider-neutral `sheets` named-service namespace without receiving the Google token. |
+| [Google Services (Gmail, Sheets)](google-service-README.md) | Users should connect their Google account, and KDCube tools/named services should act on Gmail (search, read, send, forward, attachments) or Sheets (typed productivity tools or the provider-neutral `sheets` named-service namespace) without receiving the Google token. |
 | [Slack Integration](slack-README.md) | Users should connect Slack workspaces, and KDCube tools should search, list channels, read history, read/write files, or post messages. |
 | [Mail Named Service Over MCP](mail-named-service-README.md) | Connected mail accounts should be exposed to external agents as a provider-neutral `mail` namespace. |
 | [Telegram Integration](telegram-README.md) | Telegram users should connect a channel identity to a KDCube platform user. |
