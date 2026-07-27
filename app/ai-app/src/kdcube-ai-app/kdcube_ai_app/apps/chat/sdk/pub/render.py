@@ -17,28 +17,17 @@ from __future__ import annotations
 
 import html
 import json
-import re
 from typing import Any, Dict, List, Optional
 
 from kdcube_ai_app.apps.chat.sdk.pub.model import (
     PublicContentAliasConfig,
     PublicContentItem,
 )
+from kdcube_ai_app.apps.chat.sdk.pub.textfmt import plain_text as _plain, sanitize_inline_html
 
 
 def _esc(value: str) -> str:
     return html.escape(str(value or ""), quote=True)
-
-
-_TAG_RE = re.compile(r"<[^>]+>")
-
-
-def _plain(value: str) -> str:
-    """Flatten a possibly-HTML string to plain text — for the summary, which is a
-    description (meta/OG/JSON-LD) and the intro line, never rendered markup."""
-    text = _TAG_RE.sub(" ", str(value or ""))
-    text = html.unescape(text)
-    return " ".join(text.split()).strip()
 
 
 def _meta(name_attr: str, name: str, content: str) -> str:
@@ -222,7 +211,10 @@ def render_item_page(
     if item.headline_in_body:
         header_html = ""
     else:
-        summary_html = f"<p>{_esc(summary_text)}</p>\n" if summary_text else ""
+        # The visible summary paragraph renders light inline HTML (emphasis);
+        # the meta/OG/JSON-LD description above stays plain (summary_text).
+        summary_inline = sanitize_inline_html(item.summary)
+        summary_html = f"<p>{summary_inline}</p>\n" if summary_inline else ""
         header_html = f"<h1>{_esc(item.title)}</h1>\n{summary_html}"
         head = f"{head}\n{_HEADER_BASE_STYLE}"
     body_open = f'<body class="{_esc(body_class)}">' if body_class else "<body>"

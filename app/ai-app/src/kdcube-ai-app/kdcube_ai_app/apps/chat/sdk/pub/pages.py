@@ -41,6 +41,7 @@ from kdcube_ai_app.apps.chat.sdk.pub.model import (
     PublicContentChromeConfig,
     PublicContentIndexEntry,
 )
+from kdcube_ai_app.apps.chat.sdk.pub.textfmt import sanitize_inline_html
 
 _RAIL_ITEM_CAP = 120
 _RAIL_PAGE_SIZE = 6
@@ -477,8 +478,9 @@ def _catalog_row(entry: PublicContentIndexEntry, *, item_url: str) -> str:
     """One article row in the catalog band: title, clamped summary, then a
     quiet meta line (kicker badge + tag chips, date right-aligned). The summary
     paragraph renders even when empty — it reserves its two lines so every row
-    is the same height."""
-    summary = f"<p>{_esc(entry.summary)}</p>"
+    is the same height. Light inline HTML in the summary (emphasis) renders;
+    block tags and links are neutralized — see ``sanitize_inline_html``."""
+    summary = f"<p>{sanitize_inline_html(entry.summary)}</p>"
     kicker = (
         f'<span class="kdcpub-rubric">{_esc(entry.kicker)}</span>' if entry.kicker else ""
     )
@@ -750,7 +752,7 @@ def build_item_shell(
     rail_cards = []
     for entry in entries[:_RAIL_ITEM_CAP]:
         now = " kdcpub-now" if entry.slug == active_slug else ""
-        summary = f'<span class="s">{_esc(entry.summary)}</span>' if entry.summary else ""
+        summary = f'<span class="s">{sanitize_inline_html(entry.summary)}</span>' if entry.summary else ""
         rail_cards.append(
             f'<a class="kdcpub-rail-item{now}" href="{_esc(item_url_for(entry.slug))}">'
             f"{_card_top(entry)}"

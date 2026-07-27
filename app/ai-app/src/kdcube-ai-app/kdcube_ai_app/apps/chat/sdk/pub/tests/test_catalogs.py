@@ -230,6 +230,52 @@ def test_catalog_page_lists_newest_first_with_pagination(tmp_path):
     assert "Alpha article" in page2 and "Gamma article" not in page2
 
 
+def test_catalog_summary_renders_safe_inline_html(tmp_path):
+    """A summary carrying light HTML (an article lede) renders inline emphasis
+    on catalog cards: <strong> survives, the block <p> wrapper is unwrapped,
+    text is escaped, and no literal tags leak. See sanitize_inline_html."""
+    item = PublicContentItem(
+        alias="news",
+        slug="kdcube/blogs/2026-07-09-html-summary",
+        title="HTML summary article",
+        summary="<p>Moonshot's <strong>Kimi K3</strong> publishes weights &amp; a license.</p>",
+        section="blogs",
+        body_html="<p>body</p>",
+        published_at="2026-07-09",
+        lastmod="2026-07-09",
+    )
+    asyncio.run(_registry(tmp_path).publish_many([item]))
+    page = _serve(tmp_path, "news/kdcube/blogs").content.decode("utf-8")
+    # emphasis renders inside the card; the block <p> wrapper was unwrapped
+    assert "<strong>Kimi K3</strong> publishes weights &amp; a license." in page
+    # no literal <p>/<strong> markup from the summary leaked as escaped text
+    assert "&lt;p&gt;" not in page
+    assert "&lt;strong&gt;" not in page
+
+
+def test_catalog_summary_neutralizes_unsafe_html(tmp_path):
+    """Public-facing render: disallowed tags/attributes are stripped. A script
+    and an onclick never survive to the page; their text is escaped."""
+    item = PublicContentItem(
+        alias="news",
+        slug="kdcube/blogs/2026-07-10-xss",
+        title="XSS attempt",
+        summary='Safe <strong onclick="steal()">bold</strong> then <script>alert(1)</script> end.',
+        section="blogs",
+        body_html="<p>body</p>",
+        published_at="2026-07-10",
+        lastmod="2026-07-10",
+    )
+    asyncio.run(_registry(tmp_path).publish_many([item]))
+    page = _serve(tmp_path, "news/kdcube/blogs").content.decode("utf-8")
+    assert "<strong>bold</strong>" in page       # tag kept, onclick dropped
+    assert "onclick" not in page
+    # the injected script was unwrapped: no live <script> from the summary,
+    # its text is inert (the page's own nav <script> is unrelated chrome)
+    assert "<script>alert(1)" not in page
+    assert "alert(1)" in page                     # inner text survives, escaped/inert
+
+
 def test_catalog_search_uses_declared_hook_order(tmp_path):
     _seed(tmp_path)
     page = _serve(
