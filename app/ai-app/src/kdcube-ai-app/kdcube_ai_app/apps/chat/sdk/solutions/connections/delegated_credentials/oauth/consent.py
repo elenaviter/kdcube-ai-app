@@ -14,6 +14,10 @@ from __future__ import annotations
 import html as _html
 from typing import Any, Iterable, List, Mapping, Tuple
 
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.account_requirements import (
+    AccountRequirements,
+    ProviderAccountRequirement,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
     OAuthDelegatedClientConfig,
     oauth_delegated_config,
@@ -228,6 +232,66 @@ def _render_grouped(items: Iterable[tuple[str, str]], *, css_class: str) -> str:
     return "\n".join(out)
 
 
+def _render_account_need_row(row: ProviderAccountRequirement, esc) -> str:
+    status = row.status()
+    label = esc(row.provider_label)
+    needed = " ".join(f"<code>{esc(c)}</code>" for c in row.needed_claims) or '<span class="desc">any</span>'
+    if status == "connected":
+        badge = '<span class="badge ok">connected</span>'
+        names = ", ".join(esc(a.label) for a in row.accounts if a.label)
+        detail = f'<span class="desc">on {names}</span>' if names else ""
+        connect = ""
+    else:
+        if status == "needs_access":
+            badge = '<span class="badge warn">needs more access</span>'
+            names = ", ".join(esc(a.label) for a in row.accounts if a.label)
+            missing = " ".join(f"<code>{esc(c)}</code>" for c in row.missing_claims)
+            detail = (
+                f'<span class="desc">connected{f" as {names}" if names else ""} — '
+                f'still needs {missing}</span>'
+            )
+            action = f"Approve access for {label}"
+        else:  # not_connected
+            badge = '<span class="badge warn">not connected</span>'
+            detail = ""
+            action = f"Connect {label}"
+        connect = (
+            f'<a class="hub-link" target="_blank" rel="noopener" href="{esc(row.connect_url)}">'
+            f'{action} &#8599;</a> — then reload this page.'
+            if row.connect_url
+            else ""
+        )
+    return (
+        f'<div class="need-row">'
+        f'<div class="need-head"><b>{label}</b> {badge}</div>'
+        f'<div class="need-claims">needs {needed}{f" · {detail}" if detail else ""}</div>'
+        f'{f"<div class=need-connect>{connect}</div>" if connect else ""}'
+        f"</div>"
+    )
+
+
+def _render_accounts_needed_panel(accounts_needed: AccountRequirements | None, esc) -> str:
+    """The "Accounts this connection needs" panel: the requested scope grouped
+    by the provider account that backs it, each with connect/upgrade status."""
+    if accounts_needed is None or not accounts_needed.providers:
+        return ""
+    rows = "\n".join(_render_account_need_row(row, esc) for row in accounts_needed.providers)
+    if accounts_needed.has_gap:
+        lead = (
+            "These capabilities run on your connected accounts. Connect or approve the ones marked "
+            "below — a request whose account is missing will fail on first use."
+        )
+    else:
+        lead = "These capabilities run on the connected accounts below — all required access is in place."
+    return f"""
+    <p class="pick">Accounts this connection needs</p>
+    <p class="desc">{lead}</p>
+    <section class="need-group">
+{rows}
+    </section>
+"""
+
+
 def render_consent_html(
     req: AuthorizeRequest,
     issuer: str,
@@ -243,6 +307,7 @@ def render_consent_html(
     connected_accounts: list | None = None,
     seeded_account_scope: Mapping[str, Any] | None = None,
     connection_hub_url: str = "",
+    accounts_needed: AccountRequirements | None = None,
 ) -> str:
     esc = _html.escape
     # Base URL of the Connection Hub widget (no query). The consent page must
@@ -377,6 +442,11 @@ def render_consent_html(
     permission — in Connection Hub &#8594; Delegated by KDCube, or through the approval that
     rises on the app's first use.</p>
 {connect_more}"""
+
+    # "Accounts this connection needs" — the requested scope grouped by the
+    # provider account that backs it, so a required-but-unconnected provider is
+    # visible and connectable HERE, not discovered at first tool call.
+    accounts_needed_html = _render_accounts_needed_panel(accounts_needed, esc)
 
     hidden_fields = [
         ("client_id", req.client_id),
@@ -533,6 +603,14 @@ def render_consent_html(
     .namespace-row b {{ font-size: .9rem; color: var(--ink); }}
     .tool .desc, .edge .desc, .namespace-row .desc, .desc {{ display: block; color: var(--muted); font-size: .8rem; }}
     .tool .grants, .edge .grants, .namespace-row .grants {{ display: block; color: var(--accent-ink); font-size: .74rem; margin-top: .14rem; font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    .need-group {{ border: 1px solid var(--line); border-radius: 8px; margin: .35rem 0 .2rem; overflow: hidden; background: #fff; }}
+    .need-row {{ padding: .55rem .7rem; border-bottom: 1px solid var(--line); }}
+    .need-row:last-child {{ border-bottom: 0; }}
+    .need-head {{ display: flex; align-items: center; gap: .5rem; }}
+    .need-head b {{ font-size: .9rem; color: var(--ink); }}
+    .need-claims {{ display: block; color: var(--muted); font-size: .78rem; margin-top: .2rem; }}
+    .need-claims code {{ font-size: .72rem; }}
+    .need-connect {{ display: block; font-size: .8rem; margin-top: .3rem; color: var(--muted); }}
     .actions {{ display: flex; gap: .75rem; margin-top: 1.2rem; }}
     button {{ flex: 1; padding: .55rem; border-radius: 8px; border: 0; font-size: .9rem; font-weight: 600; cursor: pointer; transition: filter .15s, opacity .15s; }}
     button:hover {{ filter: brightness(.96); }}
@@ -569,6 +647,7 @@ def render_consent_html(
     client and the redirect URL above. The connection can receive only the scopes and capabilities
     you approve here, and only if your KDCube account is allowed to delegate them.</p>
 {account_html}
+{accounts_needed_html}
     <form method="post" action="{esc(form_action)}">
 {hidden}
     <details class="fold">

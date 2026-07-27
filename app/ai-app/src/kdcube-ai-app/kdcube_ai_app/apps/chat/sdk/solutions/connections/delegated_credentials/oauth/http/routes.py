@@ -623,6 +623,7 @@ async def authorize(request: Request) -> Response:
     seeded_account_scope = await _seed_account_scope_for_consent(
         request, subject=subject, client_id=req.client_id, resource=req.resource, cfg=cfg,
     )
+    accounts_needed = _accounts_needed_for_consent(request, render_req.scopes, connected_accounts)
     return HTMLResponse(
         render_consent_html(
             render_req,
@@ -639,6 +640,7 @@ async def authorize(request: Request) -> Response:
             return_to=_return_to(request),
             connected_accounts=connected_accounts,
             seeded_account_scope=seeded_account_scope,
+            accounts_needed=accounts_needed,
         )
     )
 
@@ -703,6 +705,44 @@ async def _connected_accounts_for_consent(subject: str) -> list[dict]:
         except Exception:
             continue
     return [entry for entry in out if entry["provider_id"] and entry["account_id"]]
+
+
+def _accounts_needed_for_consent(request, scopes, connected_accounts):
+    """Which provider accounts the requested scope needs, for the consent
+    page's 'Accounts this connection needs' panel. Best-effort: returns None on
+    any failure or when the delegated-to config is unavailable (the panel then
+    simply does not render), never an error."""
+    try:
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.account_requirements import (
+            accounts_needed_for_scopes,
+        )
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.preflight import (
+            _connection_hub_widget_url,
+        )
+
+        config = getattr(getattr(request, "state", None), "connections_delegated_config", None)
+        if config is None:
+            return None
+        tenant, project = oauth_tenant_project(request)
+
+        def _connect_url(provider_id: str, connector_app_id: str, claims) -> str:
+            return _connection_hub_widget_url(
+                tenant=tenant,
+                project=project,
+                provider_id=provider_id,
+                connector_app_id=connector_app_id,
+                claims=claims,
+            )
+
+        return accounts_needed_for_scopes(
+            scopes,
+            config=config,
+            connected_accounts=connected_accounts,
+            connect_url_builder=_connect_url,
+        )
+    except Exception:
+        LOGGER.exception("[connection-hub.oauth] accounts-needed resolution failed")
+        return None
 
 
 async def _seed_account_scope_for_consent(

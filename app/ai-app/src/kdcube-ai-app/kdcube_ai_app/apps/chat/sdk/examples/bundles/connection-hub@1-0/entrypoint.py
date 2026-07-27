@@ -499,6 +499,15 @@ def _bind_delegated_client_request_config(entrypoint: Any, request: Any) -> Dict
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.connection_hub_authority_registry = _authority_registry_config(entrypoint)
+        # Parsed provider/claim registry, so the OAuth consent page can resolve
+        # which connected accounts the requested scope needs (the "Accounts this
+        # connection needs" panel). Best-effort; the panel hides if unavailable.
+        try:
+            request.state.connections_delegated_config = delegated_to_kdcube_config(
+                getattr(entrypoint, "bundle_props", {}) or {}
+            )
+        except Exception:
+            request.state.connections_delegated_config = None
     return cfg
 
 
