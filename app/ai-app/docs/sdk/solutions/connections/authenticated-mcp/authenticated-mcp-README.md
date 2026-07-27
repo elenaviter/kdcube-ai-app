@@ -26,7 +26,7 @@ The same chain enables three scenarios:
    `kdcube-agent:<app>:<agent>`, acting on the user's connected accounts with
    demand-driven consent raised in chat.
 2. **An external MCP connection** - Claude Code or another MCP-speaking app
-   connects to a KDCube MCP URL via OAuth with dynamic client registration and
+   connects to a KDCube MCP URL via OAuth with dynamic client registration (DCR) and
    works under a KDCube-issued delegated credential.
 3. **User-created automation access** - a bounded token minted in Connection
    Hub for scripts and integrations, narrowed to selected resources, grants,
