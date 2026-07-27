@@ -4,7 +4,7 @@ title: "Namespace Services: Providers"
 summary: "Transport-neutral SDK concept for apps (bundles) and platform subsystems that publish namespace service provider surfaces: namespace ownership, object operations, resolvers, capabilities, relations, and integrations over API, MCP, Data Bus, or local adapters."
 status: current
 tags: ["sdk", "namespace-services", "named-service-provider", "services", "namespaces", "objects", "resolvers", "mcp", "api", "data-bus", "apps", "bundles"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "named service provider",
@@ -27,6 +27,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/discovery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-policy-bridge-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/namespaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/scene/scene-surface-registry-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/event-hub/resolver-and-policy-registration-README.md
@@ -851,17 +852,19 @@ represented as failed `NamedServiceResponse` values in the stream result;
 callers such as `react.pull` surface that exact error to the agent.
 
 For JSON object refs, `response_mode: stream` still means "produce bytes". The
-bytes can be UTF-8 JSON and should be the compact representation the model will
-read after `react.pull`, for example `{ok, object_ref, object}` or a
-provider-owned read shape. Returning only a plain `NamedServiceResponse` to a
-stream request is tolerated by the generic materializer as a compatibility
-fallback, but it is not the preferred provider contract and may lose
-provider-specific read formatting. The preferred shape is:
+bytes can be UTF-8 JSON and should contain the complete authorized snapshot
+that the materializing client requested. The model does not receive those
+bytes merely because they were materialized: `block.produce`, exact reads, or
+code decide how the local snapshot enters model context. Returning only a
+plain `NamedServiceResponse` to a stream request is tolerated by the generic
+materializer as a compatibility fallback, but it is not the preferred
+provider contract and may make the complete object unreachable. The preferred
+shape is:
 
 ```text
 object.get(response_mode=stream)
   response: compact sidecar descriptor
-  chunks:   compact JSON/file bytes to write into conv:fi:
+  chunks:   complete requested JSON/file bytes to write into conv:fi:
 
 block.produce
   input target.meta.object_ref or target.object_ref
@@ -1059,6 +1062,13 @@ the exact provider error.
 `object.action` is the operation family that powers canvas cards, chat context
 chips, scene summons, and widget-focused opens.
 
+The provider receives `operation=object.action` plus `request.action=<name>`.
+Managed boundaries should authorize and present the exact variant
+`object.action.<name>`. Exact variants let a user grant `download_file`
+without granting `post_message`; once a descriptor declares exact variants,
+an undeclared action fails closed. A parent `object.action` policy remains a
+compatibility path for older descriptors.
+
 `object.resolve` should also declare the click/open effect for the concrete
 object handle when one exists:
 
@@ -1085,8 +1095,13 @@ namespace-wide value. For example, the same `task` namespace can return `open`
 for `task:issue:<id>` and `download` for
 `task:issue:attachment:<id>/attachments/...`.
 
-For `download`, the provider should return a cookie-authenticated
-`download_url` plus file metadata. Downloaded bytes stream from the URL target.
+For `download`, the provider should return a `download_url` plus file metadata.
+An interactive browser URL may re-check the user's cookie/session. A turnless
+agent URL may carry a short-lived signature bound to the exact ref and caller
+identity. For a connected provider, the route resolves the current provider
+credential and claim again at fetch time. The caller's delegated grant was
+checked when the URL was minted; the signed URL itself authorizes GET until it
+expires. Downloaded bytes stream from the URL target.
 `content_base64` is a legacy compatibility field only; new providers should use
 a URL response and stream the bytes from that URL.
 Build KDCube bundle-operation URLs with the SDK helper
@@ -1750,7 +1765,12 @@ When introducing a named service provider:
   `bundle_operation_url(...)`. JSON responses carry the URL and metadata; the
   bytes stream from the URL target.
 - define streamed `object.get` with `response_mode: stream` for large
-  attachment refs that must become `conv:fi:` artifacts;
+  objects and attachment refs that must become complete `conv:fi:` snapshots;
+- keep ordinary tool results bounded while preserving a complete-data path:
+  pagination for collections, signed out-of-band delivery for external
+  clients, or streamed materialization for harness clients. Provider/API
+  guardrails must be reported and paired with continuation when the backing
+  provider supports it;
 - define `block.produce` when ReAct should project provider-owned objects as
   model-visible blocks;
 - define `block.render` timeline mode when provider-owned blocks need

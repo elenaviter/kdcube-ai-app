@@ -4,7 +4,7 @@ title: "Namespace Services: Clients"
 summary: "How apps (bundles), agents, widgets, jobs, and external clients consume configured namespace service providers."
 status: design
 tags: ["sdk", "namespace-services", "clients", "tools", "resolvers", "apps", "bundles"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "namespace service client",
@@ -24,6 +24,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-policy-bridge-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
 ---
 # Namespace Services: Clients
 
@@ -672,12 +673,13 @@ metadata plus async byte chunks; the runtime writes the chunks into the ReAct
 context, and provider errors are returned in the `react.pull` tool result under
 `errors`.
 
-For JSON object namespaces, the streamed bytes should be a compact JSON
-projection intended for `react.read`, not necessarily the full provider
-response envelope. Keep the `NamedServiceStreamResult.response` sidecar small:
-identity, revision, MIME, and enough descriptor fields for diagnostics. The
-full object body belongs in the streamed artifact bytes. This keeps the pull
-tool result small and lets the agent read only when it needs the object.
+For JSON object namespaces, the streamed bytes should be the complete
+authorized snapshot requested for materialization, while the
+`NamedServiceStreamResult.response` sidecar stays small: identity, revision,
+MIME, completeness, and enough descriptor fields for diagnostics. The pull
+tool result remains compact because the bytes go to the workspace rather than
+the model. `block.produce`, `react.read`, or code decides which parts of that
+stable local snapshot become model-visible.
 
 Configured namespaces can also publish ReAct block-production policies:
 

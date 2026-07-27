@@ -4,10 +4,11 @@ title: "Mail Named Service Over MCP"
 summary: "Expose user-connected mail accounts as one provider-neutral `mail` named-service namespace, so external agents can list accounts, search/read messages, download attachments, send, and forward through delegated consent."
 status: active
 tags: ["recipes", "connections", "connection-hub", "named-services", "mcp", "mail", "gmail", "connected-accounts", "delegated-to-kdcube"]
-updated_at: 2026-07-06
+updated_at: 2026-07-27
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-gmail-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
@@ -28,7 +29,7 @@ Claude or another MCP client
   -> connects to kdcube-services@1-0/public/mcp/named_services
   -> user approves KDCube delegated grants: mail:read and/or mail:send
   -> agent calls namespace=mail
-  -> KDCube resolves the current user's connected Gmail/iCloud/Yahoo accounts
+  -> KDCube resolves the current user's connected Gmail account
   -> provider tool enforces provider-side claims such as gmail:read/gmail:send
 ```
 
@@ -76,7 +77,9 @@ mail:icloud:icloud-main
 ```
 
 Today, Gmail search fans out across every connected Gmail account that already
-has `gmail:read`, unless the caller passes `account_id`.
+has `gmail:read`, unless the caller passes `account_id`. A response with more
+provider results carries `next_cursor`; pass it back with the selected
+`account_id` to continue that account's search.
 
 ## Operations
 
@@ -84,20 +87,22 @@ The named-service operations are provider-neutral.
 
 | Operation | Tool | Requires KDCube delegated grant | Provider claim used today |
 | --- | --- | --- | --- |
-| `provider.about` | `named_services_about` | `mail:read` | none |
-| `provider.capabilities` | `named_services_capabilities` | `mail:read` | none |
-| `object.list` | `named_services_call` or list-capable wrapper | `mail:read` | none |
-| `object.schema` | `named_services_schema` | `mail:read` | none |
-| `object.search` | `named_services_search` | `mail:read` | `gmail:read` |
-| `object.get` | `named_services_get` | `mail:read` | `gmail:read` |
-| `object.action: download_attachments` | `named_services_action` | `mail:read` + `mail:send` at the current MCP action boundary | `gmail:read` |
-| `object.action: send` | `named_services_action` | `mail:read` + `mail:send` at the current MCP action boundary | `gmail:send` |
-| `object.action: forward` | `named_services_action` | `mail:read` + `mail:send` at the current MCP action boundary | `gmail:read` + `gmail:send` |
+| `provider.about` | `named_services_about` | `named_services:use` | none |
+| `provider.capabilities` | `named_services_capabilities` | `named_services:use` | none |
+| `object.list` | `named_services_call` or list-capable wrapper | `named_services:use` + `mail:read` | none |
+| `object.schema` | `named_services_schema` | `named_services:use` | none |
+| `object.search` | `named_services_search` | `named_services:use` + `mail:read` | `gmail:read` |
+| `object.get` | `named_services_get` | `named_services:use` + `mail:read` | `gmail:read` |
+| `object.action.download_attachments` | `named_services_action` | `named_services:use` + `mail:read` | `gmail:read` |
+| `object.action.send` | `named_services_action` | `named_services:use` + `mail:send` | `gmail:send` |
+| `object.action.forward` | `named_services_action` | `named_services:use` + `mail:read` + `mail:send` | `gmail:read` + `gmail:send` |
+| `object.action.request_upload` / `.discard_upload` | `named_services_action` | `named_services:use` + `mail:send` | `gmail:send` |
 
-The current generic MCP action tool is operation-level. That is why the
-delegated MCP boundary protects `object.action` with both `mail:read` and
-`mail:send`. The provider-side Gmail resolver still checks the exact provider
-claim needed for the action before calling Gmail.
+The MCP bridge dispatches these calls to the provider's `object.action`
+method, but authorizes the exact `object.action.<name>` variant. A read-only
+agent can therefore download attachments without receiving send permission.
+The Gmail resolver then checks the corresponding connected-account claim
+before calling Google.
 
 ## Consent Layers
 
@@ -217,43 +222,59 @@ connections:
                 tools:
                   about:
                     operation: provider.about
-                    grants: [mail:read]
+                    grants: [named_services:use]
                   capabilities:
                     operation: provider.capabilities
-                    grants: [mail:read]
+                    grants: [named_services:use]
                   list:
                     operation: object.list
-                    grants: [mail:read]
+                    grants: [named_services:use, mail:read]
                   schema:
                     operation: object.schema
-                    grants: [mail:read]
+                    grants: [named_services:use]
                   search:
                     operation: object.search
-                    grants: [mail:read]
+                    grants: [named_services:use, mail:read]
                   get:
                     operation: object.get
-                    grants: [mail:read]
+                    grants: [named_services:use, mail:read]
                   action:
                     operation: object.action
                     operations:
-                      object.action:
-                        grants: [mail:read, mail:send]
+                      object.action.download_attachments:
+                        grants: [named_services:use, mail:read]
+                      object.action.send:
+                        grants: [named_services:use, mail:send]
+                      object.action.forward:
+                        grants: [named_services:use, mail:read, mail:send]
+                      object.action.request_upload:
+                        grants: [named_services:use, mail:send]
+                      object.action.discard_upload:
+                        grants: [named_services:use, mail:send]
                   call:
                     operations:
                       provider.about:
-                        grants: [mail:read]
+                        grants: [named_services:use]
                       provider.capabilities:
-                        grants: [mail:read]
+                        grants: [named_services:use]
                       object.list:
-                        grants: [mail:read]
+                        grants: [named_services:use, mail:read]
                       object.schema:
-                        grants: [mail:read]
+                        grants: [named_services:use]
                       object.search:
-                        grants: [mail:read]
+                        grants: [named_services:use, mail:read]
                       object.get:
-                        grants: [mail:read]
-                      object.action:
-                        grants: [mail:read, mail:send]
+                        grants: [named_services:use, mail:read]
+                      object.action.download_attachments:
+                        grants: [named_services:use, mail:read]
+                      object.action.send:
+                        grants: [named_services:use, mail:send]
+                      object.action.forward:
+                        grants: [named_services:use, mail:read, mail:send]
+                      object.action.request_upload:
+                        grants: [named_services:use, mail:send]
+                      object.action.discard_upload:
+                        grants: [named_services:use, mail:send]
 ```
 
 The provider account side is configured separately under
@@ -276,6 +297,24 @@ Use the KDCube named services connector. First list namespaces. Then use the
 mail namespace to list connected mail accounts, search for "Anthropic receipt",
 read the most relevant message, and tell me whether it has attachments.
 ```
+
+Normal `object.get` keeps the message body bounded for an MCP result. It also
+returns `ret.object.snapshot.download.url` for a message when signed delivery
+is configured. Fetching that short-lived URL makes KDCube verify the exact
+mail ref and bound identity, resolve the user's current Gmail credential,
+enforce current `gmail:read` consent, and stream a complete
+`kdcube.mail.message.snapshot.v1` JSON document. It includes the complete
+normalized text/HTML body and attachment metadata; each attachment keeps its
+own authorized ref and download path. This is a live provider read, not a
+previously hosted message copy. The caller's delegated mail grant is checked
+when the URL is minted. The URL then remains a short-lived bearer capability;
+connected-Google revocation blocks its next use, while caller-grant revocation
+blocks minting a replacement URL.
+
+A harness client can instead `react.pull` the same message or attachment ref.
+The provider streams the complete requested representation into a stable
+`conv:fi:` artifact for that turn. External MCP responses never instruct the
+client to use ReAct-only tools.
 
 For attachments:
 
@@ -326,11 +365,18 @@ Gmail transport live in SDK integration modules:
 2. Connect Claude to `kdcube-services@1-0/public/mcp/named_services`.
 3. During consent, approve named services plus `mail:read`.
 4. Ask Claude to list namespaces and inspect `mail`.
-5. Search mail.
-6. Read a message by `mail:gmail:<account_id>:message:<message_id>`.
+5. Search mail. If `next_cursor` is returned, request the next page with that
+   cursor and the same `account_id`.
+6. Read a message by `mail:gmail:<account_id>:message:<message_id>` and fetch
+   its signed snapshot URL. Verify the complete body is present and no Google
+   token appears.
 7. Connect or upgrade Gmail with `gmail:send`.
 8. Reconnect Claude and approve `mail:send` if it was not approved initially.
-9. Test send or forward.
+9. Verify a read-only grant can download attachments but cannot send.
+10. Grant only `object.action.send`, then test send without granting every
+    mail action. Grant read+send and test forward.
+11. In a harness client, pull one message ref and verify the materialized
+    `conv:fi:` snapshot is complete and preserves the canonical `mail:` ref.
 
 If the MCP call is accepted but the provider returns
 `needs_connected_account_consent`, Connection Hub delegated MCP consent is

@@ -240,8 +240,9 @@ own managed MCP surfaces.
 ## Storage Boundary
 
 This app is a facade over several owners rather than one data store. It reads
-conversation records from the conversation subsystem, fetches mail/Slack bytes
-and Sheets snapshots from provider APIs, writes only temporary integration
-staging, uses app secrets for signed transfer URLs, and uses Redis for
+conversation records from the conversation subsystem, fetches complete Mail
+message/attachment and Slack file data plus Sheets snapshots from provider
+APIs, writes only temporary integration staging, uses app secrets for signed
+transfer URLs, and uses Redis for
 discovery/relay coordination. The canonical ownership, retention, backup, and cleanup map is
 [storage/README.md](storage/README.md).

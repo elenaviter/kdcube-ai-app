@@ -1,9 +1,9 @@
 ---
 id: connection-hub@1-0
 title: "Connection Hub"
-summary: "User-scoped identity and connections hub: links external identities to platform users, serves the public `connections` named-service contract for delegated account tokens, owns the shared OAuth callback route, and offers a Connections settings widget."
+summary: "User-scoped identity and connections hub: links external identities to platform users, serves the public `connections` named-service contract for delegated account tokens, owns the shared OAuth callback route, and governs delegated access to named services."
 status: active
-tags: ["app", "connection-hub", "identity", "connections", "named-services", "oauth", "email", "gmail", "icloud", "slack"]
+tags: ["app", "connection-hub", "identity", "connections", "named-services", "oauth", "email", "gmail", "icloud", "slack", "google-sheets"]
 module: entrypoint
 singleton: false
 primary_surfaces:
@@ -177,7 +177,7 @@ The OAuth callback is a single hub-level route shared by all providers/apps:
 
 ## Email integration
 
-**Gmail and Slack ride delegated to KDCube** (OAuth) through
+**Gmail, Slack, and Google Sheets ride delegated to KDCube** (OAuth) through
 `delegated_to_kdcube_start_oauth` + the shared
 `delegated_to_kdcube_oauth_callback`. **iCloud** uses the same delegated-to-KDCube
 broker through `delegated_to_kdcube_connect_credential`, because

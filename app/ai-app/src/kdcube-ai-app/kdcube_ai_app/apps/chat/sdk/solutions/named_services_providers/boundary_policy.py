@@ -25,6 +25,35 @@ def clean_namespace(value: Any) -> str:
     return str(value or "").strip().lower().rstrip(":")
 
 
+def _operation_policy(
+    operation_policies: Mapping[str, Any],
+    operation: str,
+) -> tuple[bool, dict[str, Any]]:
+    """Resolve an exact operation policy with an action-parent fallback.
+
+    Named-service providers dispatch every bounded action through
+    ``object.action``. A boundary may nevertheless publish narrower policy
+    keys such as ``object.action.send``. Exact entries win. An older catalog
+    containing only the parent ``object.action`` entry remains compatible, but
+    that parent cannot open undeclared actions beside an exact catalog.
+    """
+
+    key = str(operation or "").strip()
+    policies = dict(operation_policies or {})
+    if key in policies:
+        return True, as_mapping(policies.get(key))
+    exact_action_catalog = any(
+        str(candidate).startswith("object.action.") for candidate in policies
+    )
+    if (
+        key.startswith("object.action.")
+        and not exact_action_catalog
+        and "object.action" in policies
+    ):
+        return True, as_mapping(policies.get("object.action"))
+    return False, {}
+
+
 @dataclass(frozen=True)
 class NamespaceBoundaryPolicy:
     """Authority/grant boundary for one named-service namespace.
@@ -65,15 +94,20 @@ class NamespaceBoundaryPolicy:
     def operation_configured(self, *, tool_name: str, operation: str) -> bool:
         policy = as_mapping(dict(self.tools or {}).get(str(tool_name or "").strip()))
         operation_policies = as_mapping(policy.get("operations"))
-        return not operation_policies or str(operation or "").strip() in operation_policies
+        if not operation_policies:
+            return True
+        configured, _ = _operation_policy(operation_policies, operation)
+        return configured
 
     def grants_for(self, *, tool_name: str, operation: str) -> tuple[str, ...]:
         policies = dict(self.tools or {})
         policy = as_mapping(policies.get(str(tool_name or "").strip()))
         operation_policies = as_mapping(policy.get("operations"))
         if operation_policies:
-            operation_policy = as_mapping(operation_policies.get(operation))
-            if operation_policy:
+            configured, operation_policy = _operation_policy(
+                operation_policies, operation
+            )
+            if configured:
                 return tuple(as_list(operation_policy.get("grants") or operation_policy.get("scopes")))
         return tuple(as_list(policy.get("grants") or policy.get("scopes")))
 
@@ -83,10 +117,13 @@ class NamespaceBoundaryPolicy:
         policy = as_mapping(policies.get(tool_key))
         operation_policies = as_mapping(policy.get("operations"))
         if operation_policies:
-            operation_policy = as_mapping(operation_policies.get(operation))
-            text = str(operation_policy.get("label") or "").strip()
-            if text:
-                return text
+            configured, operation_policy = _operation_policy(
+                operation_policies, operation
+            )
+            if configured:
+                text = str(operation_policy.get("label") or "").strip()
+                if text:
+                    return text
         return str(policy.get("label") or tool_key).strip()
 
     def description_for(self, *, tool_name: str, operation: str) -> str:
@@ -94,10 +131,13 @@ class NamespaceBoundaryPolicy:
         policy = as_mapping(policies.get(str(tool_name or "").strip()))
         operation_policies = as_mapping(policy.get("operations"))
         if operation_policies:
-            operation_policy = as_mapping(operation_policies.get(operation))
-            text = str(operation_policy.get("description") or "").strip()
-            if text:
-                return text
+            configured, operation_policy = _operation_policy(
+                operation_policies, operation
+            )
+            if configured:
+                text = str(operation_policy.get("description") or "").strip()
+                if text:
+                    return text
         return str(policy.get("description") or "").strip()
 
     def authority_for(self, *, tool_name: str, operation: str) -> str:
@@ -105,8 +145,10 @@ class NamespaceBoundaryPolicy:
         policy = as_mapping(policies.get(str(tool_name or "").strip()))
         operation_policies = as_mapping(policy.get("operations"))
         if operation_policies:
-            operation_policy = as_mapping(operation_policies.get(operation))
-            if operation_policy:
+            configured, operation_policy = _operation_policy(
+                operation_policies, operation
+            )
+            if configured:
                 text = str(operation_policy.get("authority_id") or operation_policy.get("authority") or "").strip()
                 if text:
                     return text

@@ -110,11 +110,11 @@ Tools:
 | `named_services_about` | `named_services:use` | Read provider about metadata. |
 | `named_services_capabilities` | `named_services:use` | Read provider capabilities for a configured namespace. |
 | `named_services_schema` | `named_services:use` | Read object schema metadata. |
-| `named_services_search` | `named_services:use` | Search objects in a configured namespace. |
+| `named_services_search` | `named_services:use` | Search objects and continue with a provider cursor. |
 | `named_services_get` | `named_services:use` | Read one object by ref. |
 | `named_services_upsert` | `named_services:use` | Create or update one object if the namespace permits `object.upsert`. |
 | `named_services_host_file` | `named_services:use` | Host/register a file ref if the namespace permits `object.host_file`. |
-| `named_services_action` | `named_services:use` | Run a bounded object action if the namespace permits `object.action`. |
+| `named_services_action` | `named_services:use` | Run a bounded action authorized as exact `object.action.<action>`. |
 | `named_services_delete` | `named_services:use` | Delete/archive one object if the namespace permits `object.delete`. |
 | `named_services_call` | `named_services:use` | Generic named-service operation wrapper. |
 
@@ -261,7 +261,7 @@ three session-less, signed routes:
 | Alias | Method | Purpose |
 | --- | --- | --- |
 | `integration_file_upload` | POST | Upload one short-lived `staged:` file for a later mail/Slack action. |
-| `integration_file_download` | GET | Stream a mail file, Slack file, or Sheets snapshot under the signed delegated-user scope. |
+| `integration_file_download` | GET | Stream a complete Mail message/attachment, Slack file, or Sheets snapshot under the signed delegated-user scope. |
 | `conv_file_download` | GET | Stream a `conv:fi:` conversation artifact under the signed user/conversation scope. |
 
 These routes are public only in transport terms. A managed MCP call mints the

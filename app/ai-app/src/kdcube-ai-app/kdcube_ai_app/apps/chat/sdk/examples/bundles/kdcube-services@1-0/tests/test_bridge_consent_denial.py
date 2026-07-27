@@ -43,15 +43,16 @@ class _Policy:
         return ""
 
 
-def _request(client_id: str):
+def _request(client_id: str, grants=None):
+    grants = list(grants or ["named_services:use", "slack:read"])
     return SimpleNamespace(state=SimpleNamespace(delegated_credential={
-        "credential": {"attrs": {"grants": ["named_services:use", "slack:read"]}},
+        "credential": {"attrs": {"grants": grants}},
         "grant_record": {
             "client_id": client_id,
             "grants": [],
             "resource_grants": {
                 "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*": [
-                    "named_services:use", "slack:read",
+                    *grants,
                 ],
             },
         },
@@ -151,3 +152,81 @@ async def test_get_forwards_provider_filters() -> None:
     assert result == {"ok": True}
     assert captured["operation"] == "object.get"
     assert captured["filters"] == {"ranges": ["Plan!A1:D20"]}
+
+
+async def test_search_forwards_provider_cursor() -> None:
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+    captured = {}
+
+    async def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    bridge.call = fake_call
+    result = await bridge.search(
+        namespace="mail",
+        query="invoice",
+        cursor="gmail-page-2",
+    )
+
+    assert result == {"ok": True}
+    assert captured["cursor"] == "gmail-page-2"
+
+
+async def test_bounded_action_authorizes_the_exact_action_key(monkeypatch) -> None:
+    m = _bridge_module()
+    config = {
+        "namespaces": {
+            "slack": {
+                "tools": {
+                    "action": {
+                        "operation": "object.action",
+                        "operations": {
+                            "object.action.post_message": {
+                                "grants": ["named_services:use", "slack:post"]
+                            },
+                            "object.action.upload_file": {
+                                "grants": [
+                                    "named_services:use",
+                                    "slack:files:write",
+                                ]
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    bridge = m.NamedServicesMcpBridge(
+        config=config,
+        tenant="t",
+        project="p",
+        request=_request("claude", ["named_services:use", "slack:post"]),
+    )
+    captured = {}
+
+    async def fake_endpoint(_endpoint, request):
+        captured["request"] = request
+        return m.NamedServiceResponse.ok_response(namespace="slack")
+
+    monkeypatch.setattr(m, "call_named_service_endpoint", fake_endpoint)
+
+    allowed = await bridge.object_action(
+        namespace="slack",
+        object_ref="slack:account:channel:C123",
+        action="post_message",
+        payload_json='{"text":"hello"}',
+    )
+    denied = await bridge.object_action(
+        namespace="slack",
+        object_ref="slack:account:channel:C123",
+        action="upload_file",
+        payload_json='{"staged_ref":"upload:1"}',
+    )
+
+    assert allowed["ok"] is True
+    assert captured["request"].operation == "object.action"
+    assert captured["request"].action == "post_message"
+    assert denied["error"] == "delegated_consent_required"
+    assert denied["missing_grants"] == ["slack:files:write"]

@@ -184,6 +184,16 @@ bundles:
               connected_accounts:
               - provider_id: "google"
                 claims: ["gmail:send"]
+            - grant: "sheets:read"
+              label: "Read Google Sheets"
+              description: "Find spreadsheets and read their metadata and values through a connected Google account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["sheets:read"]
+            - grant: "sheets:write"
+              label: "Edit Google Sheets"
+              description: "Create and edit spreadsheets, tabs, values, and formatting through a connected Google account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["sheets:write"]
             # Slack is a single provider, so it uses its OWN real claims (the
             # exact capabilities the Slack API needs) — not an invented
             # namespace claim. These match SLACK_CONNECTED_ACCOUNT_CLAIMS.
@@ -320,47 +330,75 @@ bundles:
                         label: "About mail"
                         description: "Explain the mail namespace and connected-account model."
                         grants:
-                        - "mail:read"
+                        - "named_services:use"
                       capabilities:
                         operation: "provider.capabilities"
                         label: "Mail capabilities"
                         description: "Read provider capabilities for connected mail accounts."
                         grants:
-                        - "mail:read"
+                        - "named_services:use"
                       list:
                         operation: "object.list"
                         label: "List mail accounts"
                         description: "List connected mail accounts available to the delegated connection."
                         grants:
+                        - "named_services:use"
                         - "mail:read"
                       schema:
                         operation: "object.schema"
                         label: "Mail schema"
                         description: "Read the mail object schema and ref format."
                         grants:
-                        - "mail:read"
+                        - "named_services:use"
                       search:
                         operation: "object.search"
                         label: "Search mail"
                         description: "Search messages in connected mail accounts."
                         grants:
+                        - "named_services:use"
                         - "mail:read"
                       get:
                         operation: "object.get"
                         label: "Read mail message"
                         description: "Read one mail message and its attachment metadata by ref."
                         grants:
+                        - "named_services:use"
                         - "mail:read"
                       action:
                         operation: "object.action"
                         label: "Mail action"
                         description: "Download attachments, send mail, or forward a message through a connected mail account."
                         operations:
-                          object.action:
-                            label: "Mail action"
-                            description: "Run a bounded mail action. download_attachments requires mail:read; send requires mail:send; forward requires mail:read and mail:send."
+                          object.action.download_attachments:
+                            label: "Download mail attachments"
+                            description: "Download attachments from one mail message."
                             grants:
+                            - "named_services:use"
                             - "mail:read"
+                          object.action.send:
+                            label: "Send mail"
+                            description: "Send a new message from a connected mail account."
+                            grants:
+                            - "named_services:use"
+                            - "mail:send"
+                          object.action.forward:
+                            label: "Forward mail"
+                            description: "Forward an existing message, optionally with its attachments."
+                            grants:
+                            - "named_services:use"
+                            - "mail:read"
+                            - "mail:send"
+                          object.action.request_upload:
+                            label: "Stage mail attachment"
+                            description: "Reserve an upload slot for an outbound mail attachment."
+                            grants:
+                            - "named_services:use"
+                            - "mail:send"
+                          object.action.discard_upload:
+                            label: "Discard staged mail attachment"
+                            description: "Discard one staged outbound attachment."
+                            grants:
+                            - "named_services:use"
                             - "mail:send"
                       call:
                         label: "Generic mail call"
@@ -370,38 +408,219 @@ bundles:
                             label: "About mail"
                             description: "Explain the mail namespace and connected-account model."
                             grants:
-                            - "mail:read"
+                            - "named_services:use"
                           provider.capabilities:
                             label: "Mail capabilities"
                             description: "Read provider capabilities for connected mail accounts."
                             grants:
-                            - "mail:read"
+                            - "named_services:use"
                           object.list:
                             label: "List mail accounts"
                             description: "List connected mail accounts available to the delegated connection."
                             grants:
+                            - "named_services:use"
                             - "mail:read"
                           object.schema:
                             label: "Mail schema"
                             description: "Read the mail object schema and ref format."
                             grants:
-                            - "mail:read"
+                            - "named_services:use"
                           object.search:
                             label: "Search mail"
                             description: "Search messages in connected mail accounts."
                             grants:
+                            - "named_services:use"
                             - "mail:read"
                           object.get:
                             label: "Read mail message"
                             description: "Read one mail message and its attachment metadata by ref."
                             grants:
+                            - "named_services:use"
                             - "mail:read"
-                          object.action:
-                            label: "Mail action"
-                            description: "Download attachments, send mail, or forward a message through a connected mail account."
+                          object.action.download_attachments:
+                            label: "Download mail attachments"
+                            description: "Download attachments from one mail message."
                             grants:
+                            - "named_services:use"
+                            - "mail:read"
+                          object.action.send:
+                            label: "Send mail"
+                            description: "Send a new message from a connected mail account."
+                            grants:
+                            - "named_services:use"
+                            - "mail:send"
+                          object.action.forward:
+                            label: "Forward mail"
+                            description: "Forward an existing message, optionally with its attachments."
+                            grants:
+                            - "named_services:use"
                             - "mail:read"
                             - "mail:send"
+                          object.action.request_upload:
+                            label: "Stage mail attachment"
+                            description: "Reserve an upload slot for an outbound mail attachment."
+                            grants:
+                            - "named_services:use"
+                            - "mail:send"
+                          object.action.discard_upload:
+                            label: "Discard staged mail attachment"
+                            description: "Discard one staged outbound attachment."
+                            grants:
+                            - "named_services:use"
+                            - "mail:send"
+                  sheets:
+                    label: "Spreadsheets"
+                    description: "Find, inspect, read, create, and edit spreadsheets through connected accounts."
+                    authority_id: "delegated_client"
+                    tools:
+                      about:
+                        operation: "provider.about"
+                        label: "About spreadsheets"
+                        description: "Explain the sheets namespace, object refs, and connected-account model."
+                        grants:
+                        - "named_services:use"
+                      capabilities:
+                        operation: "provider.capabilities"
+                        label: "Spreadsheet capabilities"
+                        description: "Read the bounded operations available for connected spreadsheets."
+                        grants:
+                        - "named_services:use"
+                      list:
+                        operation: "object.list"
+                        label: "List recent spreadsheets"
+                        description: "List recently modified spreadsheets visible to the connected account."
+                        grants:
+                        - "named_services:use"
+                        - "sheets:read"
+                      schema:
+                        operation: "object.schema"
+                        label: "Spreadsheet schema"
+                        description: "Read spreadsheet and tab refs, fields, ranges, and mutation payloads."
+                        grants:
+                        - "named_services:use"
+                      search:
+                        operation: "object.search"
+                        label: "Search spreadsheets"
+                        description: "Find spreadsheets by title through a connected account."
+                        grants:
+                        - "named_services:use"
+                        - "sheets:read"
+                      get:
+                        operation: "object.get"
+                        label: "Read spreadsheet"
+                        description: "Inspect spreadsheet metadata or read explicit bounded ranges by ref."
+                        grants:
+                        - "named_services:use"
+                        - "sheets:read"
+                      upsert:
+                        operation: "object.upsert"
+                        label: "Create or update spreadsheet"
+                        description: "Create a spreadsheet, replace explicit values, or update tab properties."
+                        grants:
+                        - "named_services:use"
+                        - "sheets:write"
+                      action:
+                        operation: "object.action"
+                        label: "Spreadsheet action"
+                        description: "Append or clear values, manage tabs, or format a bounded range."
+                        operations:
+                          object.action.update_values:
+                            label: "Update spreadsheet values"
+                            description: "Replace values in one explicit A1 range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.append_rows:
+                            label: "Append spreadsheet rows"
+                            description: "Append rows to one explicit range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.clear_values:
+                            label: "Clear spreadsheet values"
+                            description: "Clear values from one explicit range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.add_tab:
+                            label: "Add spreadsheet tab"
+                            description: "Add one tab to a spreadsheet."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.update_tab:
+                            label: "Update spreadsheet tab"
+                            description: "Rename or update one spreadsheet tab."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.delete_tab:
+                            label: "Delete spreadsheet tab"
+                            description: "Delete one spreadsheet tab."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.format_range:
+                            label: "Format spreadsheet range"
+                            description: "Apply bounded formatting to one explicit range."
+                            grants: ["named_services:use", "sheets:write"]
+                      delete:
+                        operation: "object.delete"
+                        label: "Delete spreadsheet tab"
+                        description: "Delete one tab by stable tab ref; spreadsheet-file deletion is not exposed."
+                        grants: ["named_services:use", "sheets:write"]
+                      call:
+                        label: "Generic spreadsheet call"
+                        description: "Generic sheets namespace call with per-operation grants."
+                        operations:
+                          provider.about:
+                            label: "About spreadsheets"
+                            description: "Explain the sheets namespace and connected-account model."
+                            grants: ["named_services:use"]
+                          provider.capabilities:
+                            label: "Spreadsheet capabilities"
+                            description: "Read the operations available for connected spreadsheets."
+                            grants: ["named_services:use"]
+                          object.list:
+                            label: "List recent spreadsheets"
+                            description: "List recently modified spreadsheets."
+                            grants: ["named_services:use", "sheets:read"]
+                          object.schema:
+                            label: "Spreadsheet schema"
+                            description: "Read spreadsheet and tab refs, fields, ranges, and mutation payloads."
+                            grants: ["named_services:use"]
+                          object.search:
+                            label: "Search spreadsheets"
+                            description: "Find spreadsheets by title."
+                            grants: ["named_services:use", "sheets:read"]
+                          object.get:
+                            label: "Read spreadsheet"
+                            description: "Inspect metadata or read explicit bounded ranges."
+                            grants: ["named_services:use", "sheets:read"]
+                          object.upsert:
+                            label: "Create or update spreadsheet"
+                            description: "Create a spreadsheet, replace values, or update tab properties."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.update_values:
+                            label: "Update spreadsheet values"
+                            description: "Replace values in one explicit A1 range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.append_rows:
+                            label: "Append spreadsheet rows"
+                            description: "Append rows to one explicit range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.clear_values:
+                            label: "Clear spreadsheet values"
+                            description: "Clear values from one explicit range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.add_tab:
+                            label: "Add spreadsheet tab"
+                            description: "Add one tab to a spreadsheet."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.update_tab:
+                            label: "Update spreadsheet tab"
+                            description: "Rename or update one spreadsheet tab."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.delete_tab:
+                            label: "Delete spreadsheet tab"
+                            description: "Delete one spreadsheet tab."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.action.format_range:
+                            label: "Format spreadsheet range"
+                            description: "Apply bounded formatting to one explicit range."
+                            grants: ["named_services:use", "sheets:write"]
+                          object.delete:
+                            label: "Delete spreadsheet tab"
+                            description: "Delete one tab by stable tab ref."
+                            grants: ["named_services:use", "sheets:write"]
                   slack:
                     label: "Slack"
                     description: "List Slack workspaces/channels, search messages/files, read channel history, download files, post messages, and upload files through connected Slack accounts."
@@ -439,6 +658,7 @@ bundles:
                         grants:
                         - "named_services:use"
                         - "slack:search"
+                        - "slack:assistant:search"
                       get:
                         operation: "object.get"
                         label: "Read Slack object"
@@ -446,20 +666,48 @@ bundles:
                         grants:
                         - "named_services:use"
                         - "slack:history"
+                        - "slack:files:read"
                       action:
                         operation: "object.action"
                         label: "Slack action"
                         description: "Post messages, upload files, download files, or inspect Slack assistant search availability."
                         operations:
-                          object.action:
-                            label: "Slack action"
-                            description: "Run a bounded Slack action. post_message needs slack:post; upload_file needs slack:files:write; download_file needs slack:files:read; assistant_search_info needs slack:assistant:search."
+                          object.action.post_message:
+                            label: "Post Slack message"
+                            description: "Post a message to a Slack conversation."
                             grants:
                             - "named_services:use"
                             - "slack:post"
+                          object.action.upload_file:
+                            label: "Upload Slack file"
+                            description: "Upload a file to a Slack conversation."
+                            grants:
+                            - "named_services:use"
                             - "slack:files:write"
+                          object.action.download_file:
+                            label: "Download Slack file"
+                            description: "Download one Slack file."
+                            grants:
+                            - "named_services:use"
                             - "slack:files:read"
+                          object.action.assistant_search_info:
+                            label: "Read Slack assistant search status"
+                            description: "Check whether Slack assistant search is available."
+                            grants:
+                            - "named_services:use"
                             - "slack:assistant:search"
+                          object.action.request_upload:
+                            label: "Stage Slack upload"
+                            description: "Reserve an upload slot for a future Slack file upload."
+                            grants:
+                            - "named_services:use"
+                            - "slack:files:write"
+                          object.action.discard_upload:
+                            label: "Discard staged Slack upload"
+                            description: "Discard one staged Slack upload."
+                            grants:
+                            - "named_services:use"
+                            - "slack:files:write"
                       call:
                         label: "Generic Slack call"
                         description: "Generic Slack namespace call with per-operation grants."
@@ -491,21 +739,50 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "slack:search"
+                            - "slack:assistant:search"
                           object.get:
                             label: "Read Slack object"
                             description: "Read Slack account/channel/file objects by ref."
                             grants:
                             - "named_services:use"
                             - "slack:history"
-                          object.action:
-                            label: "Slack action"
-                            description: "Post messages, upload files, download files, or inspect Slack assistant search availability."
+                            - "slack:files:read"
+                          object.action.post_message:
+                            label: "Post Slack message"
+                            description: "Post a message to a Slack conversation."
                             grants:
                             - "named_services:use"
                             - "slack:post"
+                          object.action.upload_file:
+                            label: "Upload Slack file"
+                            description: "Upload a file to a Slack conversation."
+                            grants:
+                            - "named_services:use"
                             - "slack:files:write"
+                          object.action.download_file:
+                            label: "Download Slack file"
+                            description: "Download one Slack file."
+                            grants:
+                            - "named_services:use"
                             - "slack:files:read"
+                          object.action.assistant_search_info:
+                            label: "Read Slack assistant search status"
+                            description: "Check whether Slack assistant search is available."
+                            grants:
+                            - "named_services:use"
                             - "slack:assistant:search"
+                          object.action.request_upload:
+                            label: "Stage Slack upload"
+                            description: "Reserve an upload slot for a future Slack file upload."
+                            grants:
+                            - "named_services:use"
+                            - "slack:files:write"
+                          object.action.discard_upload:
+                            label: "Discard staged Slack upload"
+                            description: "Discard one staged Slack upload."
+                            grants:
+                            - "named_services:use"
+                            - "slack:files:write"
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.
         providers: {}
@@ -530,6 +807,8 @@ bundles:
                 allowed_claims:
                 - "gmail:read"
                 - "gmail:send"
+                - "sheets:read"
+                - "sheets:write"
             claims:
               gmail:read:
                 label: "Read Gmail"
@@ -547,6 +826,24 @@ bundles:
                 - "email"
                 - "profile"
                 - "https://www.googleapis.com/auth/gmail.send"
+              sheets:read:
+                label: "Read Google Sheets"
+                description: "Find spreadsheets and read their metadata and values."
+                provider_scopes:
+                - "openid"
+                - "email"
+                - "profile"
+                - "https://www.googleapis.com/auth/spreadsheets.readonly"
+                - "https://www.googleapis.com/auth/drive.metadata.readonly"
+              sheets:write:
+                label: "Edit Google Sheets"
+                description: "Create and edit spreadsheets, tabs, values, and formatting."
+                provider_scopes:
+                - "openid"
+                - "email"
+                - "profile"
+                - "https://www.googleapis.com/auth/spreadsheets"
+                - "https://www.googleapis.com/auth/drive.metadata.readonly"
           slack:
             label: "Slack"
             adapter: "slack.oauth_user_token"

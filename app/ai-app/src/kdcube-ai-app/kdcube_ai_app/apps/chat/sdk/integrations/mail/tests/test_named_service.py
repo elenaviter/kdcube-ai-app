@@ -310,6 +310,37 @@ async def test_search_with_explicit_account_id_targets_only_that_account():
 
 
 @pytest.mark.asyncio
+async def test_search_cursor_is_forwarded_and_returned_for_one_account():
+    provider = _Provider([_account("acc-1", "gmail:read")])
+
+    async def _search(**kwargs: Any) -> dict[str, Any]:
+        provider._gmail.calls.append(("search_gmail", kwargs))
+        return {
+            "ok": True,
+            "ret": {
+                "account_id": kwargs["account_id"],
+                "messages": [],
+                "next_cursor": "gmail-page-3",
+            },
+        }
+
+    provider._gmail.search_gmail = _search
+    response = await provider.object_search(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_SEARCH,
+            namespace=MAIL_NAMESPACE,
+            query="receipt",
+            cursor="gmail-page-2",
+            filters={"account_id": "acc-1"},
+        ),
+    )
+
+    assert provider._gmail.calls[0][1]["cursor"] == "gmail-page-2"
+    assert response.ret["attrs"]["next_cursor"] == "gmail-page-3"
+
+
+@pytest.mark.asyncio
 async def test_search_without_readable_account_returns_connect_required():
     provider = _Provider([])
 
@@ -470,6 +501,66 @@ async def test_get_reads_gmail_message_and_decorates_attachment_refs():
     assert obj["account_label"] == "Account acc-1"
     # decorated refs use the STABLE part id, never the rotating attachment id
     assert obj["attachments"][0]["ref"] == "mail:gmail:acc-1:attachment:msg-1:1"
+
+
+@pytest.mark.asyncio
+async def test_turnless_message_get_exposes_complete_live_snapshot_url():
+    provider = _Provider(
+        [_account("acc-1", "gmail:read")], file_url_factory=_url_factory
+    )
+    ref = "mail:gmail:acc-1:message:msg-1"
+
+    response = await provider.object_get(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace=MAIL_NAMESPACE,
+            object_ref=ref,
+        ),
+    )
+
+    snapshot = response.ret["object"]["snapshot"]
+    assert snapshot["complete_body"] is True
+    assert snapshot["schema"] == "kdcube.mail.message.snapshot.v1"
+    assert snapshot["download"]["url"] == f"https://runtime.test/download?ref={ref}"
+    assert response.ret["object"]["body_text"] == "body"
+
+
+@pytest.mark.asyncio
+async def test_message_pull_streams_complete_snapshot_for_materialization(monkeypatch):
+    import kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service as mail_service
+
+    provider = _Provider([_account("acc-1", "gmail:read")])
+    provider._entrypoint = object()
+
+    async def _chunks():
+        yield b'{"schema":"kdcube.mail.message.snapshot.v1",'
+        yield b'"message":{"body_text":"complete"}}'
+
+    async def _fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "chunks": _chunks(),
+            "filename": "gmail-msg-1.message.json",
+            "mime_type": "application/vnd.kdcube.mail.message.snapshot+json;version=1",
+            "status": 200,
+        }
+
+    monkeypatch.setattr(mail_service, "fetch_mail_message_snapshot", _fetch)
+    response = await provider.object_get(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace=MAIL_NAMESPACE,
+            object_ref="mail:gmail:acc-1:message:msg-1",
+            response_mode="stream",
+            context={"source": "react.pull", "materialize": True},
+        ),
+    )
+
+    assert response.response.ok is True
+    assert response.response.ret["attrs"]["materialization"]["complete"] is True
+    assert b"complete" in b"".join([chunk async for chunk in response.chunks])
 
 
 @pytest.mark.asyncio
@@ -897,3 +988,9 @@ def test_registered_spec_carries_connected_accounts_requirement():
     assert ca, "mail registered spec must declare connected_accounts"
     assert ca[0]["provider_id"] == "google"
     assert "claims_by_operation" in ca[0]
+    assert ca[0]["claims_by_operation"]["object.action.request_upload"] == [
+        "gmail:send"
+    ]
+    metadata = mail_named_service_spec().metadata
+    assert metadata["canonical_refs"]["message"].startswith("mail:<provider>")
+    assert metadata["presentation"]["actions"][ACTION_SEND]["label"] == "Send email"

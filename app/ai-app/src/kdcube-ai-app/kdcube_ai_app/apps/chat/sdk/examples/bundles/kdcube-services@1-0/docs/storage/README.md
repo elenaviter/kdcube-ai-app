@@ -125,16 +125,18 @@ scope.
 
 ## Provider-Owned Integration Data
 
-Google Sheets, mail, and Slack objects remain provider-owned. Sheets operations
+Google Sheets, Mail, and Slack objects remain provider-owned. Sheets operations
 return values and metadata but do not copy spreadsheets into app state. When
 an agent calls `react.pull` for a `sheets:` ref, this app streams a JSON
 snapshot to the consumer's current turn workspace. That transient
 materialization is owned by the harness/conversation lifecycle; it is not
 retained as KDCube Services domain storage. A turnless MCP client can receive a
-signed URL for the same complete snapshot. `integration_file_download`
-verifies the signed token, resolves the delegated provider credential through
-Connection Hub, fetches the exact attachment, file, or Sheets snapshot, and
-streams it with `Cache-Control: private, no-store`.
+signed URL for the same complete snapshot. Mail message refs use the same
+pattern for a complete normalized message snapshot; Mail attachment and Slack
+file refs stream provider bytes. `integration_file_download` verifies the
+signed token, resolves the current connected provider credential through
+Connection Hub, fetches the exact message, attachment, file, or Sheets
+snapshot, and streams it with `Cache-Control: private, no-store`.
 
 The app does not persist downloaded provider bytes in its domain state.
 Connection Hub owns delegated account credentials; this app must never copy

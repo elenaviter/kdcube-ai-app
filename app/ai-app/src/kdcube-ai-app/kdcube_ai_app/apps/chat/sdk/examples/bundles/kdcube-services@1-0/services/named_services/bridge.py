@@ -348,6 +348,7 @@ class NamedServicesMcpBridge:
         object_payload: Mapping[str, Any] | None = None,
         payload: Mapping[str, Any] | None = None,
         action: str = "",
+        cursor: str = "",
         base_revision: str = "",
         idempotency_key: str = "",
     ) -> dict[str, Any]:
@@ -412,7 +413,15 @@ class NamedServicesMcpBridge:
                 ),
             }
 
-        denial = await self._authorize(policy, op, tool_name=tool_name)
+        action_name = str(action or "").strip()
+        authorization_operation = (
+            f"{OBJECT_ACTION}.{action_name}"
+            if op == OBJECT_ACTION and action_name
+            else op
+        )
+        denial = await self._authorize(
+            policy, authorization_operation, tool_name=tool_name
+        )
         if denial is not None:
             LOGGER.warning(
                 "[kdcube-services.named_services_mcp] denied tool=%s operation=%s namespace=%s error=%s missing_grants=%s available_grants=%s delegate=%s grantor=%s",
@@ -434,6 +443,7 @@ class NamedServicesMcpBridge:
             object_ref=str(object_ref or "").strip() or None,
             object_id=str(object_id or "").strip() or None,
             query=str(query or "").strip() or None,
+            cursor=str(cursor or "").strip() or None,
             limit=int(limit) if limit not in (None, "") else None,
             filters=dict(filters or {}),
             include=list(include or []),
@@ -503,6 +513,7 @@ class NamedServicesMcpBridge:
         namespace: str,
         query: str = "",
         limit: int = 10,
+        cursor: str = "",
         filters_json: Any = None,
         provider: str = "",
     ) -> dict[str, Any]:
@@ -513,6 +524,7 @@ class NamedServicesMcpBridge:
             provider=provider,
             query=query,
             limit=limit,
+            cursor=cursor,
             filters=_parse_json_object(filters_json, field_name="filters_json"),
         )
 
@@ -635,6 +647,7 @@ class NamedServicesMcpBridge:
         query: str = "",
         action: str = "",
         limit: int = 0,
+        cursor: str = "",
         filters_json: Any = None,
         include_json: Any = None,
         object_json: Any = None,
@@ -652,6 +665,7 @@ class NamedServicesMcpBridge:
             query=query,
             action=action,
             limit=limit or None,
+            cursor=cursor,
             filters=_parse_json_object(filters_json, field_name="filters_json"),
             include=_parse_json_list(include_json, field_name="include_json"),
             object_payload=_parse_json_object(object_json, field_name="object_json"),

@@ -286,10 +286,12 @@ The descriptor and provider projection is read-only source data, but its
 existing namespace operations are selectable when creating automation access.
 The request sends `named_service_operations[resource][namespace][]`; the
 backend validates that selection and stores a narrowed copy of the same
-`named_services` policy in the token's `GrantStore` record. It does not create
-action variants or copy provider credentials into the automation bearer. The
-widget uses the existing provider/connector/claims deep link to continue in
-**Delegated to KDCube**.
+`named_services` policy in the token's `GrantStore` record. Action variants such
+as `object.action.post_message` are selectable only when the descriptor declares
+those exact identifiers; Connection Hub does not infer variants from provider
+code or action payloads. Provider credentials are never copied into the
+automation bearer. The widget uses the existing provider/connector/claims deep
+link to continue in **Delegated to KDCube**.
 
 `delegated_to_kdcube_resolve` resolves one explicit provider claim:
 

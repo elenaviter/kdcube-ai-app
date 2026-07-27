@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Mapping
+from typing import Any, AsyncIterator, Mapping
 
 from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
     GMAIL_PROVIDER_ID,
@@ -27,6 +27,12 @@ from kdcube_ai_app.apps.chat.sdk.integrations.google.gmail_tools import (
 from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
     delete_staged,
     staging_root,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.file_delivery import (
+    MAIL_MESSAGE_SNAPSHOT_MEDIA_TYPE,
+    MAIL_MESSAGE_SNAPSHOT_SCHEMA,
+    fetch_mail_attachment,
+    fetch_mail_message_snapshot,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.inline_files import (
     InlineFileError,
@@ -60,6 +66,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceRequest,
     NamedServiceResponse,
     NamedServiceSearchScope,
+    NamedServiceStreamResult,
     TRANSPORT_API,
     TRANSPORT_LOCAL,
     named_service_provider,
@@ -104,6 +111,8 @@ MAIL_GRANT_HINTS = {
     "object.action.download_attachments": ["mail:read"],
     "object.action.send": ["mail:send"],
     "object.action.forward": ["mail:read", "mail:send"],
+    "object.action.request_upload": ["mail:send"],
+    "object.action.discard_upload": ["mail:send"],
 }
 
 # Machine-readable connected-account requirements for catalog consumers (the
@@ -127,6 +136,8 @@ MAIL_CONNECTED_ACCOUNT_REQUIREMENTS = [
             "object.action.download_attachments": [GMAIL_READ_CLAIM],
             "object.action.send": [GMAIL_SEND_CLAIM],
             "object.action.forward": [GMAIL_READ_CLAIM, GMAIL_SEND_CLAIM],
+            "object.action.request_upload": [GMAIL_SEND_CLAIM],
+            "object.action.discard_upload": [GMAIL_SEND_CLAIM],
         },
     }
 ]
@@ -246,7 +257,9 @@ MAIL_SCHEMA = {
             "object.get on an attachment ref returns its metadata plus download "
             "{encoding, url, expires_at}. encoding=url means fetch the short-lived "
             "url over plain HTTP out-of-band — bytes never ride in the tool result. "
-            "encoding=none means no delivery path is configured; ask in chat instead."
+            "encoding=none means this deployment has not configured complete "
+            "out-of-band delivery; inspect capabilities or ask the operator to "
+            "configure signed delivery."
         ),
     },
     "search": {"filters": MAIL_SEARCH_FILTERS},
@@ -397,13 +410,37 @@ def mail_named_service_spec(*, bundle_id: str | None = None) -> NamedServiceProv
             # metadata) - discovery reads it for proactive consent, the
             # capability picker, and connect-first demand ordering.
             "connected_accounts": MAIL_CONNECTED_ACCOUNT_REQUIREMENTS,
-            "canonical_ref": "mail:<provider>:<account_id>:message:<message_id>",
+            "actions": {
+                name: str((meta or {}).get("description") or "").strip()
+                for name, meta in (MAIL_SCHEMA.get("actions") or {}).items()
+            },
+            "presentation": MAIL_PRESENTATION,
+            "object_kinds": {
+                kind: str((meta or {}).get("description") or "").strip()
+                for kind, meta in (MAIL_SCHEMA.get("object_kinds") or {}).items()
+            },
+            "canonical_refs": MAIL_SCHEMA["refs"],
         },
     )
 
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _is_materialization_request(request: NamedServiceRequest) -> bool:
+    context = request.context if isinstance(request.context, Mapping) else {}
+    payload = request.payload if isinstance(request.payload, Mapping) else {}
+    if _text(request.response_mode).lower() == "stream":
+        return True
+    if context.get("materialize") or payload.get("materialize"):
+        return True
+    return _text(context.get("source") or payload.get("source")) == "react.pull"
+
+
+async def _single_chunk(data: bytes) -> AsyncIterator[bytes]:
+    if data:
+        yield data
 
 
 def _int(value: Any, *, default: int, minimum: int = 1, maximum: int = 50) -> int:
@@ -1025,15 +1062,29 @@ class MailNamedServiceProvider(NamedServiceProvider):
         )
         if consent is not None:
             return consent
+        cursor = _text(request.cursor or filters.get("cursor"))
+        if cursor and len(accounts) > 1 and not account_id:
+            return NamedServiceResponse.error_response(
+                code="mail_account_required_for_cursor",
+                message=(
+                    "Continue a paginated mail search with filters.account_id "
+                    "set to the account whose next cursor you are using."
+                ),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+            )
 
         items: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
+        next_cursors: dict[str, str] = {}
         per_account_limit = max(1, min(limit, 10))
         for account in accounts:
             account_label = account.display_name or account.email or account.account_id
             result = await self._gmail.search_gmail(
                 query=query,
                 max_results=per_account_limit,
+                cursor=cursor,
                 account_id=account.account_id,
             )
             if not isinstance(result, Mapping) or not result.get("ok"):
@@ -1046,6 +1097,7 @@ class MailNamedServiceProvider(NamedServiceProvider):
                 continue
             ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
             resolved_account_id = _text(ret.get("account_id") or account.account_id)
+            next_cursors[resolved_account_id] = _text(ret.get("next_cursor"))
             for row in ret.get("messages") or []:
                 if isinstance(row, Mapping):
                     items.append(
@@ -1072,12 +1124,29 @@ class MailNamedServiceProvider(NamedServiceProvider):
             provider=self._provider_identity(),
             namespace=request.namespace or MAIL_NAMESPACE,
             items=items[:limit],
+            next_cursor=(
+                next(iter(next_cursors.values()))
+                if len(next_cursors) == 1
+                else None
+            ),
             warnings=[{"code": "mail_account_error", "message": str(err)} for err in errors] or None,
-            extra={"query": query, "provider": "gmail", "count": len(items[:limit]), "searched_accounts": len(accounts)},
+            extra={
+                "query": query,
+                "provider": "gmail",
+                "count": len(items[:limit]),
+                "searched_accounts": len(accounts),
+                "next_cursors": next_cursors,
+            },
         )
 
-    async def object_get(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+    async def object_get(
+        self,
+        ctx: NamedServiceContext,
+        request: NamedServiceRequest,
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
         parsed = parse_mail_ref(request.object_ref or "")
+        if _is_materialization_request(request) and parsed.get("provider") == "gmail":
+            return await self._materialize_object(ctx, request, parsed=parsed)
         if parsed.get("kind") == "account":
             accounts = await self._gmail_accounts(ctx)
             account = next((item for item in accounts if item.account_id == parsed.get("account_id")), None)
@@ -1191,11 +1260,107 @@ class MailNamedServiceProvider(NamedServiceProvider):
             if isinstance(row, dict):
                 selector = _text(row.get("part_id")) or _text(row.get("attachment_id"))
                 row.setdefault("ref", attachment_ref("gmail", obj["account_id"], obj["message_id"], selector))
+        if not ctx.turn_id:
+            url_info = await self._download_url(ctx, ref=obj["ref"])
+            if url_info is not None:
+                obj = {
+                    "snapshot": {
+                        "schema": MAIL_MESSAGE_SNAPSHOT_SCHEMA,
+                        "media_type": MAIL_MESSAGE_SNAPSHOT_MEDIA_TYPE,
+                        "filename": f"gmail-{parsed['message_id']}.message.json",
+                        "download": {"encoding": "url", **url_info},
+                        "complete_body": True,
+                    },
+                    **obj,
+                }
         return NamedServiceResponse.ok_response(
             provider=self._provider_identity(),
             namespace=request.namespace or MAIL_NAMESPACE,
             object_ref=obj.get("ref") or request.object_ref,
             object=obj,
+        )
+
+    async def _materialize_object(
+        self,
+        ctx: NamedServiceContext,
+        request: NamedServiceRequest,
+        *,
+        parsed: Mapping[str, str],
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
+        if self._entrypoint is None:
+            return NamedServiceResponse.error_response(
+                code="mail_materialization_unavailable",
+                message="The mail provider is not bound to a delivery-capable app.",
+                status=503,
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        kind = parsed.get("kind")
+        if kind == "message":
+            result = await fetch_mail_message_snapshot(
+                self._entrypoint,
+                user_id=_text(ctx.user_id),
+                tenant=_text(ctx.tenant),
+                project=_text(ctx.project),
+                account_id=_text(parsed.get("account_id")),
+                message_id=_text(parsed.get("message_id")),
+                object_ref=_text(request.object_ref),
+            )
+        elif kind == "attachment":
+            result = await fetch_mail_attachment(
+                self._entrypoint,
+                user_id=_text(ctx.user_id),
+                tenant=_text(ctx.tenant),
+                project=_text(ctx.project),
+                account_id=_text(parsed.get("account_id")),
+                message_id=_text(parsed.get("message_id")),
+                attachment_id=_text(parsed.get("attachment_id")),
+            )
+        else:
+            return NamedServiceResponse.error_response(
+                code="mail_materialization_ref_unsupported",
+                message="Only mail message and attachment refs can be materialized.",
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        if not result.get("ok"):
+            error = result.get("error") if isinstance(result.get("error"), Mapping) else {}
+            return NamedServiceResponse.error_response(
+                code=_text(error.get("code")) or "mail_materialization_failed",
+                message=_text(error.get("message")) or "Mail content could not be materialized.",
+                status=int(result.get("status") or 500),
+                provider=self._provider_identity(),
+                namespace=request.namespace or MAIL_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        chunks = result.get("chunks")
+        if chunks is None:
+            chunks = _single_chunk(bytes(result.get("data") or b""))
+        media_type = _text(result.get("mime_type")) or "application/octet-stream"
+        response = NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or MAIL_NAMESPACE,
+            object_ref=request.object_ref,
+            attrs={
+                "materialization": {
+                    "complete": True,
+                    "object_kind": (
+                        MAIL_MESSAGE_KIND if kind == "message" else MAIL_ATTACHMENT_KIND
+                    ),
+                    "media_type": media_type,
+                }
+            },
+        )
+        return NamedServiceStreamResult(
+            response=response,
+            chunks=chunks,
+            filename=_text(result.get("filename")) or "mail-object.bin",
+            media_type=media_type,
+            headers=dict(result.get("headers") or {}),
+            status_code=int(result.get("status") or 200),
         )
 
     async def object_action(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:

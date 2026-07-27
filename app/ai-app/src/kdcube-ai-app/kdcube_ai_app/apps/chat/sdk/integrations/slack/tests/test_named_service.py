@@ -409,6 +409,37 @@ async def test_search_with_explicit_account_id_targets_only_that_account():
 
 
 @pytest.mark.asyncio
+async def test_message_search_cursor_is_forwarded_and_returned():
+    provider = _Provider([_account("acc-1", "slack:search")])
+
+    async def _search(**kwargs: Any) -> dict[str, Any]:
+        provider._slack.calls.append(("search_slack", kwargs))
+        return {
+            "ok": True,
+            "ret": {
+                "account_id": kwargs["account_id"],
+                "messages": [],
+                "next_cursor": "slack-page-3",
+            },
+        }
+
+    provider._slack.search_slack = _search
+    response = await provider.object_search(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_SEARCH,
+            namespace=SLACK_NAMESPACE,
+            query="revenue",
+            cursor="slack-page-2",
+            filters={"account_id": "acc-1"},
+        ),
+    )
+
+    assert provider._slack.calls[0][1]["cursor"] == "slack-page-2"
+    assert response.ret["attrs"]["next_cursor"] == "slack-page-3"
+
+
+@pytest.mark.asyncio
 async def test_upload_with_inline_content_stages_bytes_in_ephemeral_workspace():
     provider = _Provider([_account("acc-1", "slack:files:write")])
     captured: dict[str, Any] = {}
@@ -568,6 +599,69 @@ async def test_get_file_downloads_slack_file():
 
 
 @pytest.mark.asyncio
+async def test_get_reads_exact_message_ref():
+    provider = _Provider([_account("acc-1", "slack:history")])
+    ref = "slack:acc-1:message:C123:1783000000.000100"
+
+    response = await provider.object_get(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace=SLACK_NAMESPACE,
+            object_ref=ref,
+        ),
+    )
+
+    assert response.ok is True
+    assert response.ret["object"]["ref"] == ref
+    name, kwargs = provider._slack.calls[0]
+    assert name == "read_slack_channel_history"
+    assert kwargs["latest"] == "1783000000.000100"
+    assert kwargs["inclusive"] is True
+
+
+@pytest.mark.asyncio
+async def test_file_pull_streams_provider_bytes_for_materialization(monkeypatch):
+    import kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service as slack_service
+
+    provider = _Provider([_account("acc-1", "slack:files:read")])
+    provider._entrypoint = object()
+
+    async def _chunks():
+        yield b"first-"
+        yield b"second"
+
+    async def _fetch(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "chunks": _chunks(),
+            "filename": "report.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 12,
+        }
+
+    monkeypatch.setattr(slack_service, "fetch_slack_file", _fetch)
+    response = await provider.object_get(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace=SLACK_NAMESPACE,
+            object_ref="slack:acc-1:file:F123",
+            response_mode="stream",
+            context={"source": "react.pull", "materialize": True},
+        ),
+    )
+
+    assert response.response.ret["attrs"]["materialization"] == {
+        "complete": True,
+        "object_kind": "slack.file",
+        "media_type": "application/pdf",
+        "size_bytes": 12,
+    }
+    assert b"".join([chunk async for chunk in response.chunks]) == b"first-second"
+
+
+@pytest.mark.asyncio
 async def test_get_file_falls_back_to_download_url_without_workspace():
     provider = _Provider([_account("acc-1", "slack:files:read")], file_url_factory=_url_factory)
 
@@ -652,6 +746,20 @@ async def test_actions_dispatch_to_slack_transport():
     assert posted.ok is True
     assert uploaded.ok is True
     assert [call[0] for call in provider._slack.calls] == ["post_slack_message", "upload_slack_file"]
+
+
+def test_registered_spec_carries_exact_connected_account_actions():
+    from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import (
+        slack_named_service_spec,
+    )
+
+    metadata = slack_named_service_spec().metadata
+    requirements = metadata["connected_accounts"][0]["claims_by_operation"]
+
+    assert requirements["object.action.post_message"] == ["slack:post"]
+    assert requirements["object.action.request_upload"] == ["slack:files:write"]
+    assert metadata["canonical_refs"]["message"].startswith("slack:<account_id>")
+    assert metadata["presentation"]["actions"][ACTION_POST_MESSAGE]["label"] == "Post a message"
 
 
 # ── External-agent (MCP) no-consent path ─────────────────────────────────────

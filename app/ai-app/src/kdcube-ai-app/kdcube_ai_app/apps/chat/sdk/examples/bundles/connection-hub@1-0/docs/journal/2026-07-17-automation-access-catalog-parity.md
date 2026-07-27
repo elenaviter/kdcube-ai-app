@@ -81,3 +81,11 @@ consent deep link.
   and that an operation cannot be selected without its declared grants.
 - The Connections widget passes TypeScript checking and a production Vite
   build.
+
+## Later clarification
+
+The 2026-07-27 descriptor update declares exact action variants such as
+`object.action.send` and `object.action.update_values`. Connection Hub projects
+those declared identifiers unchanged; it still does not synthesize variants.
+See
+[2026-07-27 - Exact named-service actions and Sheets](2026-07-27-exact-named-service-actions-and-sheets.md).

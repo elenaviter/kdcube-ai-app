@@ -17,6 +17,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.sheets.named_service import (
     SHEETS_WRITE_CLAIM,
     SheetsNamedServiceProvider,
     parse_sheets_ref,
+    sheets_named_service_spec,
     spreadsheet_ref,
     tab_ref,
 )
@@ -38,6 +39,17 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
 
 def _ctx() -> NamedServiceContext:
     return NamedServiceContext(tenant="demo", project="project", user_id="user-1")
+
+
+def test_spec_publishes_discoverable_ref_and_object_metadata() -> None:
+    metadata = sheets_named_service_spec().metadata
+
+    assert metadata["canonical_refs"]["spreadsheet"].startswith(
+        "sheets:<provider>"
+    )
+    assert metadata["canonical_refs"]["tab"].endswith(":tab:<sheet_id>")
+    assert metadata["object_kinds"][SHEETS_SPREADSHEET_KIND]
+    assert metadata["actions"][ACTION_APPEND_ROWS]
 
 
 class _FakeSheets:

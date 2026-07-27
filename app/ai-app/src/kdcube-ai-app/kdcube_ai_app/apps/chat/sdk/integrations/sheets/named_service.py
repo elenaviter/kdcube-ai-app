@@ -421,9 +421,7 @@ def sheets_named_service_spec(*, bundle_id: str | None = None) -> NamedServicePr
             "provider_catalog": SHEETS_PROVIDER_CATALOG,
             "grant_hints": SHEETS_GRANT_HINTS,
             "connected_accounts": SHEETS_CONNECTED_ACCOUNT_REQUIREMENTS,
-            "canonical_ref": (
-                "sheets:<provider>:<account_id>:spreadsheet:<spreadsheet_id>"
-            ),
+            "canonical_refs": SHEETS_SCHEMA["refs"],
             "presentation": SHEETS_PRESENTATION,
             "actions": {
                 name: str((meta or {}).get("description") or "")
@@ -668,12 +666,21 @@ async def _json_chunks(
     encoder = json.JSONEncoder(ensure_ascii=False, indent=2)
     pending = bytearray()
     for piece in encoder.iterencode(value):
-        pending.extend(piece.encode("utf-8"))
-        if len(pending) < chunk_bytes:
-            continue
-        yield bytes(pending)
-        pending.clear()
-        await asyncio.sleep(0)
+        encoded = piece.encode("utf-8")
+        offset = 0
+        if pending:
+            take = min(chunk_bytes - len(pending), len(encoded))
+            pending.extend(encoded[:take])
+            offset = take
+            if len(pending) == chunk_bytes:
+                yield bytes(pending)
+                pending.clear()
+                await asyncio.sleep(0)
+        while len(encoded) - offset >= chunk_bytes:
+            yield encoded[offset : offset + chunk_bytes]
+            offset += chunk_bytes
+            await asyncio.sleep(0)
+        pending.extend(encoded[offset:])
     if pending:
         yield bytes(pending)
 
@@ -837,7 +844,16 @@ def _tab_object(
         "provider_catalog": SHEETS_PROVIDER_CATALOG,
         "grant_hints": SHEETS_GRANT_HINTS,
         "connected_accounts": SHEETS_CONNECTED_ACCOUNT_REQUIREMENTS,
+        "canonical_refs": SHEETS_SCHEMA["refs"],
         "presentation": SHEETS_PRESENTATION,
+        "actions": {
+            name: str((meta or {}).get("description") or "")
+            for name, meta in SHEETS_SCHEMA["actions"].items()
+        },
+        "object_kinds": {
+            kind: str((meta or {}).get("description") or "")
+            for kind, meta in SHEETS_SCHEMA["object_kinds"].items()
+        },
     },
 )
 class SheetsNamedServiceProvider(NamedServiceProvider):

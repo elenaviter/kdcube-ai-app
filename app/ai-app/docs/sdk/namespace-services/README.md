@@ -4,7 +4,7 @@ title: "Namespace Services"
 summary: "Index and mental model for namespace-owning service providers, clients, object resolution, and app-to-app integration."
 status: current
 tags: ["sdk", "namespace-services", "providers", "clients", "resolvers", "apps"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "namespace services",
@@ -21,6 +21,7 @@ keywords:
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/ontologic-tools-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/providers-README.md
@@ -138,6 +139,7 @@ and provider-backed refs gain a live cross-app/object-owner bridge.
 
 | Document | Purpose |
 | --- | --- |
+| [Build A Complete Named Service](../../recipes/components/named-service-README.md) | End-to-end builder recipe: provider shape, progressive discovery, complete retrieval, exact action grants, connected credentials, external MCP clients, and harness materialization. |
 | [Components Ecosystem Architecture](../solutions/ecosystem-component/components-ecosystem-README.md) | End-to-end architecture map for provider apps, consumer apps, scene, ReAct, Pinboard, chat, events, data bus, and config. |
 | [Ontologic Tools](ontologic-tools-README.md) | The model-facing tool surface for operating any realm by satisfying schemas: how the nine tools compose, the schema `tools` block as affordance, and the per-field `update` strategy. |
 | [Providers](providers-README.md) | Provider contract, operation vocabulary, auth context, transport adapters, the presentation layer (the realm's human reader), and connected-account requirement declarations. |

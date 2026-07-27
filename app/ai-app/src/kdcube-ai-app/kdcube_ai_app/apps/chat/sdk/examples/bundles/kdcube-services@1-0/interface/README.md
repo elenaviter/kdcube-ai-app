@@ -253,11 +253,11 @@ Tools:
 | `named_services_about(namespace)` | Read provider about metadata. |
 | `named_services_capabilities(namespace)` | Read provider capabilities. |
 | `named_services_schema(namespace, object_kind?)` | Read provider object schema. |
-| `named_services_search(namespace, query?, limit?, filters_json?)` | Search namespace objects. |
+| `named_services_search(namespace, query?, limit?, cursor?, filters_json?)` | Search namespace objects and continue with a provider `next_cursor`. |
 | `named_services_get(namespace, object_ref, filters_json?)` | Read one object by ref, with optional provider filters such as selected sheet ranges. |
 | `named_services_upsert(namespace, object_json, ...)` | Create or update one object when `object.upsert` is allowed. |
 | `named_services_host_file(namespace, file_ref, ...)` | Host/register one file ref when `object.host_file` is allowed. |
-| `named_services_action(namespace, object_ref, action, ...)` | Run a bounded object action when `object.action` is allowed. |
+| `named_services_action(namespace, object_ref, action, ...)` | Run a bounded action authorized as exact `object.action.<action>`. |
 | `named_services_delete(namespace, object_ref, ...)` | Delete/archive one object when `object.delete` is allowed. |
 | `named_services_call(operation, namespace, ...)` | Generic operation wrapper. |
 
@@ -397,13 +397,23 @@ model context:
 | Alias | Method | Required query | Result |
 | --- | --- | --- | --- |
 | `integration_file_upload` | POST | `object_ref`, `upload_token` | Raw request bytes become a short-lived, single-use `staged:` ref. |
-| `integration_file_download` | GET | `object_ref`, `download_token` | Raw mail/Slack bytes or a Sheets JSON snapshot with `Content-Disposition` and `private, no-store`. |
+| `integration_file_download` | GET | `object_ref`, `download_token` | Complete Mail message JSON, raw Mail attachment/Slack file bytes, or a Sheets JSON snapshot with `Content-Disposition` and `private, no-store`. |
 | `conv_file_download` | GET | `object_ref`, `download_token` | Raw conversation artifact bytes under token-bound user/conversation scope. |
 
 The routes require no browser session because the HMAC token binds the exact
 ref, user, tenant/project, optional conversation, and expiry. The signing key
 is `conversations.file_download_secret` in app secrets. Missing secret fails
 closed and no usable URL is emitted.
+
+Mail, Slack, and Sheets delivery URLs are live provider proxies. On every GET,
+the route verifies the signed identity, resolves the user's current connected
+credential through Connection Hub, checks the current provider claim, fetches
+the current provider object, and streams it. Provider credentials never enter
+the URL or response. The delegated caller grant is checked when the URL is
+minted; the URL itself is the short-lived GET capability. Connected-account
+revocation blocks an existing URL, while revoking only the caller grant blocks
+minting a replacement URL. ReAct/harness `pull` uses the same provider stream
+but writes a stable copy into the current turn workspace.
 
 Uploads are limited to 25 MiB and staged for at most one hour as a cleanup
 backstop. See the storage map for the current filesystem-sharing constraint.

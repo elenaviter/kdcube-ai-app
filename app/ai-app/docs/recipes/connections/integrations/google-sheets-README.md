@@ -194,20 +194,30 @@ For the generic named-services door, add the `sheets` namespace to its resource:
         label: Spreadsheets
         authority_id: delegated_client
         tools:
-          about:        {operation: provider.about,        grants: [named_services:use, sheets:read]}
-          capabilities: {operation: provider.capabilities, grants: [named_services:use, sheets:read]}
+          about:        {operation: provider.about,        grants: [named_services:use]}
+          capabilities: {operation: provider.capabilities, grants: [named_services:use]}
           list:         {operation: object.list,           grants: [named_services:use, sheets:read]}
-          schema:       {operation: object.schema,         grants: [named_services:use, sheets:read]}
+          schema:       {operation: object.schema,         grants: [named_services:use]}
           search:       {operation: object.search,         grants: [named_services:use, sheets:read]}
           get:          {operation: object.get,            grants: [named_services:use, sheets:read]}
           upsert:       {operation: object.upsert,         grants: [named_services:use, sheets:write]}
-          action:       {operation: object.action,         grants: [named_services:use, sheets:write]}
+          action:
+            operation: object.action
+            operations:
+              object.action.update_values: {grants: [named_services:use, sheets:write]}
+              object.action.append_rows:   {grants: [named_services:use, sheets:write]}
+              object.action.clear_values:  {grants: [named_services:use, sheets:write]}
+              object.action.add_tab:       {grants: [named_services:use, sheets:write]}
+              object.action.update_tab:    {grants: [named_services:use, sheets:write]}
+              object.action.delete_tab:    {grants: [named_services:use, sheets:write]}
+              object.action.format_range:  {grants: [named_services:use, sheets:write]}
           delete:       {operation: object.delete,         grants: [named_services:use, sheets:write]}
 ```
 
-The reference descriptor also configures the generic `call` wrapper per
-operation. That lets a client use `named_services_call` without weakening the
-same namespace grants.
+The reference descriptor also configures the generic `call` wrapper with the
+same exact operation variants. The bridge dispatches an action to provider
+`object.action`, but authorizes `object.action.<action>` so granting one Sheets
+mutation does not grant every mutation.
 
 These are caller grants under **Delegated by KDCube**. The separate connected
 Google account uses `sheets:read` for reads and both `sheets:read` and
@@ -290,7 +300,13 @@ including when selected A1 values are returned inline. Fetch that short-lived
 URL to receive the complete authorized
 `kdcube.sheets.snapshot.v1` JSON artifact outside the model response. The URL
 is bound to the exact ref, user, tenant, and project. Google credentials stay
-server-side and are re-resolved when the URL is used. Explicit A1 ranges are an
+server-side and are resolved from the user's current connected account when
+the URL is used. KDCube verifies current consent, fetches the current
+spreadsheet, and streams it; the URL is a live delivery proxy rather than a
+pre-hosted immutable artifact. The caller's delegated Sheets grant is checked
+when the URL is minted; the URL itself is a short-lived bearer capability.
+Revoking the connected Google claim blocks an existing URL, while revoking
+only the caller grant blocks minting a fresh URL. Explicit A1 ranges are an
 alternative for clients that want selected values inline.
 
 ### Make `sheets:` refs usable in the ReAct workspace

@@ -346,7 +346,7 @@ async def _fetch_gmail_attachment(
     *,
     message_id: str,
     attachment_id: str,
-    max_bytes: int = MAX_ATTACHMENT_BYTES,
+    max_bytes: int | None = MAX_ATTACHMENT_BYTES,
 ) -> tuple[bytes | None, str, bool]:
     response = await client.get(
         f"{GMAIL_API}/messages/{message_id}/attachments/{attachment_id}",
@@ -359,7 +359,7 @@ async def _fetch_gmail_attachment(
         data = _decode_b64url(str((payload or {}).get("data") or ""))
     except Exception:
         return None, "Gmail attachment payload could not be decoded.", False
-    if len(data) > max_bytes:
+    if max_bytes is not None and len(data) > max_bytes:
         return None, f"Attachment is larger than the configured limit of {max_bytes} bytes.", False
     return data, "", False
 
@@ -528,15 +528,28 @@ class GmailTools:
         self,
         query: Annotated[str, "Gmail search query, for example 'from:alice@example.com newer_than:7d'."] = "",
         max_results: Annotated[int, "Maximum messages to return, 1-10.", {"min": 1, "max": 10}] = 5,
+        cursor: Annotated[str, "Optional Gmail pagination cursor returned by the previous search."] = "",
         account_id: Annotated[str, "Optional connected account id when the user has several Gmail accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
         return await run_with_connected_account_retry(
             globals(),
             where="gmail.search_gmail",
-            run=lambda: self._search_gmail(query=query, max_results=max_results, account_id=account_id),
+            run=lambda: self._search_gmail(
+                query=query,
+                max_results=max_results,
+                cursor=cursor,
+                account_id=account_id,
+            ),
         )
 
-    async def _search_gmail(self, *, query: str, max_results: int, account_id: str) -> dict[str, Any]:
+    async def _search_gmail(
+        self,
+        *,
+        query: str,
+        max_results: int,
+        cursor: str,
+        account_id: str,
+    ) -> dict[str, Any]:
         credential = await self._credential(claim=GMAIL_READ_CLAIM, account_id=account_id, tool_name="gmail.search_gmail")
         if not credential.ok:
             return credential.error_envelope(where="gmail.search_gmail")
@@ -549,10 +562,13 @@ class GmailTools:
 
         limit = max(1, min(int(max_results or 5), 10))
         async with httpx.AsyncClient(timeout=30.0) as client:
+            params = {"q": query or "", "maxResults": limit}
+            if str(cursor or "").strip():
+                params["pageToken"] = str(cursor).strip()
             list_response = await client.get(
                 f"{GMAIL_API}/messages",
                 headers={"Authorization": f"Bearer {credential.access_token}"},
-                params={"q": query or "", "maxResults": limit},
+                params=params,
             )
             if list_response.status_code >= 400:
                 if _is_provider_auth_failure(list_response):
@@ -604,7 +620,16 @@ class GmailTools:
                         "snippet": str(detail_data.get("snippet") or ""),
                     }
                 )
-        return _ok_ret_result({"messages": rows, "count": len(rows), "account_id": credential.account_id})
+        return _ok_ret_result({
+            "messages": rows,
+            "count": len(rows),
+            "next_cursor": str(
+                (list_data.get("nextPageToken") or "")
+                if isinstance(list_data, dict)
+                else ""
+            ),
+            "account_id": credential.account_id,
+        })
 
     @kernel_function(
         name="read_gmail_message",

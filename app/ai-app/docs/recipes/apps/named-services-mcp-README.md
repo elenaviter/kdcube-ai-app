@@ -238,7 +238,8 @@ encoding = text    content is the decoded text (inline). Small, context-safe.
 encoding = url     fetch bytes from `url` over HTTP — a short-lived signed link.
                    The default for binaries: bytes never enter the model's context.
 encoding = base64  content is base64. Only for small binaries (<= 32 KB).
-encoding = none    metadata only (too large, or no link configured).
+encoding = none    delivery is unavailable in this deployment; capabilities and
+                   schema must report that limitation.
 ```
 
 The download link is the key move for binaries:
@@ -283,6 +284,35 @@ result carries a delivery note in place of the URL. The `url` encoding remains
 the contract for turn-less clients — machinery that fetches, where a model
 would have to re-type a signed token by hand. Caller-side behavior:
 [Connect An MCP Service To A KDCube Agent](consume-mcp-service-README.md).
+
+Connected-provider namespaces use the same response shape with a different
+byte source. A signed Mail, Slack, or Sheets URL is normally a live KDCube
+delivery proxy:
+
+```text
+GET signed KDCube URL
+  -> verify exact ref + bound user/tenant/project + expiry
+  -> resolve current connected-account credential server-side
+  -> enforce current provider consent
+  -> fetch current provider data and stream it
+```
+
+It is not a previously hosted immutable artifact. The provider credential
+never appears in the URL or response. KDCube checks the external client's
+delegated grant before minting the URL; the URL is then a short-lived bearer
+capability for that exact ref and bound identity. Each GET re-checks the
+connected provider account and claim, so provider-consent revocation applies
+immediately. Revoking only the outer delegated grant blocks a fresh URL but
+does not revoke one already issued before its expiry. A second fetch may
+observe newer provider state. A harness client that needs a stable copy uses
+`react.pull`; KDCube streams the complete representation into the turn
+workspace and returns a `conv:fi:` ref.
+
+The complete-data invariant applies to structured objects too. Normal MCP
+results may be compact, but the authorized remainder must be reachable through
+`next_cursor`, explicit provider ranges/parts, or signed complete delivery.
+The external client decides what to save and how much to place in model
+context. External responses must not prescribe ReAct-only tools.
 
 ## The Read Story
 
@@ -502,8 +532,9 @@ No action silently chooses between accounts.
 [ ] search hits are lean (ref/title/body/score), titled from real text, with
     text-bearing snippets.
 [ ] every emitted ref is self-contained (resolvable with no ambient session).
-[ ] text inlines; binaries return a short-lived download url; only small binaries
-    base64; large-with-no-link return metadata.
+[ ] text inlines; binaries return a short-lived download URL; only small
+    binaries use base64; large structured data has cursor/range or signed
+    complete delivery.
 [ ] the provider takes identity and defers authorization to the realm.
 [ ] refs round-trip: a ref from search/get is valid input to the next get.
 ```
@@ -519,6 +550,9 @@ No action silently chooses between accounts.
 - Putting the full object envelope on every search hit. Keep hits lean; save the
   envelope for object.get.
 - Sourcing the download-link secret from anywhere but the descriptor.
+- Returning a compact result with no continuation, complete delivery, or
+  materialization path. Context safety must not make authorized data
+  unreachable.
 ```
 
 ## Related Docs

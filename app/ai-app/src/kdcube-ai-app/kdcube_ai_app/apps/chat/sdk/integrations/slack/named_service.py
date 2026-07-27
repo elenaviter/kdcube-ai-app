@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping
 
+from kdcube_ai_app.apps.chat.sdk.integrations.file_delivery import fetch_slack_file
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.tools import (
     SLACK_ASSISTANT_SEARCH_CLAIM,
     SLACK_CHANNELS_CLAIM,
@@ -64,6 +65,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceRequest,
     NamedServiceResponse,
     NamedServiceSearchScope,
+    NamedServiceStreamResult,
     TRANSPORT_API,
     TRANSPORT_LOCAL,
     named_service_provider,
@@ -105,12 +107,14 @@ ACTION_DISCARD_UPLOAD = "discard_upload"
 # all speak one vocabulary.
 SLACK_GRANT_HINTS = {
     "object.list": [SLACK_CHANNELS_CLAIM],
-    "object.search": [SLACK_SEARCH_CLAIM],
-    "object.get": [SLACK_HISTORY_CLAIM],
+    "object.search": [SLACK_SEARCH_CLAIM, SLACK_ASSISTANT_SEARCH_CLAIM],
+    "object.get": [SLACK_HISTORY_CLAIM, SLACK_FILES_READ_CLAIM],
     "object.action.download_file": [SLACK_FILES_READ_CLAIM],
     "object.action.assistant_search_info": [SLACK_ASSISTANT_SEARCH_CLAIM],
     "object.action.post_message": [SLACK_POST_CLAIM],
     "object.action.upload_file": [SLACK_FILES_WRITE_CLAIM],
+    "object.action.request_upload": [SLACK_FILES_WRITE_CLAIM],
+    "object.action.discard_upload": [SLACK_FILES_WRITE_CLAIM],
 }
 
 SLACK_CONNECTED_ACCOUNT_CLAIMS = {
@@ -124,9 +128,10 @@ SLACK_CONNECTED_ACCOUNT_CLAIMS = {
 }
 
 # Machine-readable connected-account requirements for catalog consumers (the
-# composer menu's proactive consent). One flat claim set: the Slack realm
-# does not differentiate claims per operation, so consumers show the whole
-# set. Same constants `_resolve_claim` uses.
+# composer menu's proactive consent). The mapping is deliberately as granular
+# as the public grammar permits. Polymorphic reads/searches carry the union of
+# their possible provider claims; bounded actions retain exact action keys.
+# Runtime resolution still checks the exact claim selected by the ref/filter.
 SLACK_CONNECTED_ACCOUNT_REQUIREMENTS = [
     {
         "provider_id": SLACK_PROVIDER_ID,
@@ -140,6 +145,22 @@ SLACK_CONNECTED_ACCOUNT_REQUIREMENTS = [
             SLACK_FILES_WRITE_CLAIM: "upload files",
             SLACK_POST_CLAIM: "post messages",
             SLACK_ASSISTANT_SEARCH_CLAIM: "assistant search",
+        },
+        "claims_by_operation": {
+            "object.list": [SLACK_CHANNELS_CLAIM],
+            "object.search": [
+                SLACK_SEARCH_CLAIM,
+                SLACK_ASSISTANT_SEARCH_CLAIM,
+            ],
+            "object.get": [SLACK_HISTORY_CLAIM, SLACK_FILES_READ_CLAIM],
+            "object.action.download_file": [SLACK_FILES_READ_CLAIM],
+            "object.action.assistant_search_info": [
+                SLACK_ASSISTANT_SEARCH_CLAIM
+            ],
+            "object.action.post_message": [SLACK_POST_CLAIM],
+            "object.action.upload_file": [SLACK_FILES_WRITE_CLAIM],
+            "object.action.request_upload": [SLACK_FILES_WRITE_CLAIM],
+            "object.action.discard_upload": [SLACK_FILES_WRITE_CLAIM],
         },
     }
 ]
@@ -236,7 +257,7 @@ SLACK_SCHEMA = {
             "fields": ["ref", "account_id", "channel_id", "timestamp", "user", "text", "files"],
         },
         SLACK_FILE_KIND: {
-            "description": "One Slack file metadata object, materialized to a KDCube artifact in chat or delivered as a short-lived download url on turn-less transports.",
+            "description": "One Slack file metadata object, materialized into a harness turn workspace or delivered through a short-lived URL to a turnless client.",
             "fields": ["ref", "account_id", "file_id", "name", "mime_type", "size_bytes", "artifact_path", "download"],
         },
         SLACK_SEARCH_RESULT_KIND: {
@@ -248,8 +269,8 @@ SLACK_SCHEMA = {
     "consent_errors": CONSENT_ERROR_CONTRACT,
     "files": {
         "get": (
-            "object.get on a file ref materializes the file as a KDCube artifact in chat; "
-            "on transports without a chat turn it returns download {encoding, url, expires_at} — "
+            "object.get on a file ref materializes the file as a KDCube artifact in a harness turn; "
+            "on transports without a harness turn it returns download {encoding, url, expires_at} — "
             "fetch the short-lived url over plain HTTP out-of-band."
         ),
     },
@@ -408,6 +429,16 @@ def slack_named_service_spec(*, bundle_id: str | None = None) -> NamedServicePro
 
 def _text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _is_materialization_request(request: NamedServiceRequest) -> bool:
+    context = request.context if isinstance(request.context, Mapping) else {}
+    payload = request.payload if isinstance(request.payload, Mapping) else {}
+    if _text(request.response_mode).lower() == "stream":
+        return True
+    if context.get("materialize") or payload.get("materialize"):
+        return True
+    return _text(context.get("source") or payload.get("source")) == "react.pull"
 
 
 def _int(value: Any, *, default: int, minimum: int = 1, maximum: int = 50) -> int:
@@ -618,7 +649,21 @@ def _error_from_tool(
     label="Slack",
     description="Slack namespace over user-connected Slack workspaces.",
     intro=SLACK_INTRO,
-    metadata={"grant_hints": SLACK_GRANT_HINTS, "connected_account_claims": SLACK_CONNECTED_ACCOUNT_CLAIMS},
+    metadata={
+        "grant_hints": SLACK_GRANT_HINTS,
+        "connected_account_claims": SLACK_CONNECTED_ACCOUNT_CLAIMS,
+        "connected_accounts": SLACK_CONNECTED_ACCOUNT_REQUIREMENTS,
+        "actions": {
+            name: str((meta or {}).get("description") or "").strip()
+            for name, meta in (SLACK_SCHEMA.get("actions") or {}).items()
+        },
+        "presentation": SLACK_PRESENTATION,
+        "object_kinds": {
+            kind: str((meta or {}).get("description") or "").strip()
+            for kind, meta in (SLACK_SCHEMA.get("object_kinds") or {}).items()
+        },
+        "canonical_refs": SLACK_SCHEMA["refs"],
+    },
 )
 class SlackNamedServiceProvider(NamedServiceProvider):
     def __init__(
@@ -974,6 +1019,19 @@ class SlackNamedServiceProvider(NamedServiceProvider):
             )
             if consent is not None:
                 return consent
+            cursor = _text(request.cursor or filters.get("cursor"))
+            if cursor and len(accounts) > 1 and not account_id:
+                return NamedServiceResponse.error_response(
+                    code="slack_account_required_for_cursor",
+                    message=(
+                        "Continue a paginated Slack channel listing with "
+                        "filters.account_id set to the workspace whose next cursor "
+                        "you are using."
+                    ),
+                    status=400,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or SLACK_NAMESPACE,
+                )
             items: list[dict[str, Any]] = []
             next_cursors: dict[str, str] = {}
             for account in accounts:
@@ -981,7 +1039,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 result = await self._slack.list_slack_channels(
                     types=_text(filters.get("channel_types") or filters.get("types") or "public_channel,private_channel"),
                     limit=_int(request.limit or filters.get("limit"), default=50, maximum=200),
-                    cursor=_text(request.cursor or filters.get("cursor")),
+                    cursor=cursor,
                     exclude_archived=_bool(filters.get("exclude_archived"), default=True),
                     account_id=account.account_id,
                 )
@@ -998,6 +1056,11 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 provider=self._provider_identity(),
                 namespace=request.namespace or SLACK_NAMESPACE,
                 items=items,
+                next_cursor=(
+                    next(iter(next_cursors.values()))
+                    if len(next_cursors) == 1
+                    else None
+                ),
                 extra={"kind": "channels", "count": len(items), "next_cursors": next_cursors},
             )
 
@@ -1025,13 +1088,26 @@ class SlackNamedServiceProvider(NamedServiceProvider):
             )
         account_id = _text(filters.get("account_id") or request.payload.get("account_id"))
         search_api = _text(filters.get("search_api") or filters.get("mode") or "messages").lower()
+        cursor = _text(request.cursor or filters.get("cursor"))
         if search_api in {"assistant", "ai", "semantic"}:
             accounts, consent = await self._accounts_for_claim(
                 ctx, request, claim=SLACK_ASSISTANT_SEARCH_CLAIM, account_id=account_id
             )
             if consent is not None:
                 return consent
+            if cursor and len(accounts) > 1 and not account_id:
+                return NamedServiceResponse.error_response(
+                    code="slack_account_required_for_cursor",
+                    message=(
+                        "Continue a paginated Slack search with filters.account_id "
+                        "set to the workspace whose next cursor you are using."
+                    ),
+                    status=400,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or SLACK_NAMESPACE,
+                )
             items: list[dict[str, Any]] = []
+            next_cursors: dict[str, str] = {}
             for account in accounts:
                 account_label = account.display_name or account.workspace or account.account_id
                 result = await self._slack.slack_assistant_search(
@@ -1039,7 +1115,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                     content_types=_text(filters.get("content_types") or "messages,files"),
                     channel_types=_text(filters.get("channel_types") or "public_channel,private_channel"),
                     limit=_int(request.limit, default=10, maximum=20),
-                    cursor=_text(request.cursor or filters.get("cursor")),
+                    cursor=cursor,
                     context_channel_id=_text(filters.get("context_channel_id")),
                     include_context_messages=_bool(filters.get("include_context_messages")),
                     sort=_text(filters.get("sort") or "score"),
@@ -1049,6 +1125,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 if not isinstance(result, Mapping) or not result.get("ok"):
                     return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="slack_assistant_search_failed")
                 ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
+                next_cursors[account.account_id] = _text(ret.get("next_cursor"))
                 rows = ret.get("results") or []
                 items.extend(
                     _search_result_object(row, account_id=account.account_id, index=index, account_label=account_label)
@@ -1059,7 +1136,17 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 provider=self._provider_identity(),
                 namespace=request.namespace or SLACK_NAMESPACE,
                 items=items[: _int(request.limit, default=10, maximum=50)],
-                extra={"query": query, "search_api": "assistant", "count": len(items)},
+                next_cursor=(
+                    next(iter(next_cursors.values()))
+                    if len(next_cursors) == 1
+                    else None
+                ),
+                extra={
+                    "query": query,
+                    "search_api": "assistant",
+                    "count": len(items),
+                    "next_cursors": next_cursors,
+                },
             )
 
         accounts, consent = await self._accounts_for_claim(
@@ -1067,17 +1154,31 @@ class SlackNamedServiceProvider(NamedServiceProvider):
         )
         if consent is not None:
             return consent
+        if cursor and len(accounts) > 1 and not account_id:
+            return NamedServiceResponse.error_response(
+                code="slack_account_required_for_cursor",
+                message=(
+                    "Continue a paginated Slack search with filters.account_id "
+                    "set to the workspace whose next cursor you are using."
+                ),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or SLACK_NAMESPACE,
+            )
         items = []
+        next_cursors: dict[str, str] = {}
         for account in accounts:
             account_label = account.display_name or account.workspace or account.account_id
             result = await self._slack.search_slack(
                 query=query,
                 count=_int(request.limit, default=10, maximum=20),
+                cursor=cursor,
                 account_id=account.account_id,
             )
             if not isinstance(result, Mapping) or not result.get("ok"):
                 return _error_from_tool(result if isinstance(result, Mapping) else {}, request=request, default_code="slack_search_failed")
             ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
+            next_cursors[account.account_id] = _text(ret.get("next_cursor"))
             items.extend(
                 _search_result_object(row, account_id=account.account_id, index=index, account_label=account_label)
                 for index, row in enumerate(ret.get("messages") or [])
@@ -1087,11 +1188,25 @@ class SlackNamedServiceProvider(NamedServiceProvider):
             provider=self._provider_identity(),
             namespace=request.namespace or SLACK_NAMESPACE,
             items=items[: _int(request.limit, default=10, maximum=50)],
-            extra={"query": query, "search_api": "messages", "count": len(items)},
+            next_cursor=(
+                next(iter(next_cursors.values()))
+                if len(next_cursors) == 1
+                else None
+            ),
+            extra={
+                "query": query,
+                "search_api": "messages",
+                "count": len(items),
+                "next_cursors": next_cursors,
+            },
         )
 
-    async def object_get(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+    async def object_get(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
         parsed = parse_slack_ref(request.object_ref or "")
+        if _is_materialization_request(request) and parsed.get("kind") == "file":
+            return await self._materialize_file(ctx, request, parsed=parsed)
         if parsed.get("kind") == "account":
             accounts = await self._slack_accounts(ctx)
             account = next((item for item in accounts if item.account_id == parsed.get("account_id")), None)
@@ -1133,6 +1248,7 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                 provider=self._provider_identity(),
                 namespace=request.namespace or SLACK_NAMESPACE,
                 object_ref=request.object_ref,
+                next_cursor=_text(ret.get("next_cursor")) or None,
                 object={
                     "ref": request.object_ref,
                     "object_ref": request.object_ref,
@@ -1144,6 +1260,53 @@ class SlackNamedServiceProvider(NamedServiceProvider):
                     "has_more": bool(ret.get("has_more")),
                     "next_cursor": _text(ret.get("next_cursor")),
                 },
+            )
+
+        if parsed.get("kind") == "message":
+            result = await self._slack.read_slack_channel_history(
+                channel=parsed["channel_id"],
+                limit=1,
+                cursor="",
+                oldest="",
+                latest=parsed["timestamp"],
+                inclusive=True,
+                account_id=parsed["account_id"],
+            )
+            if not isinstance(result, Mapping) or not result.get("ok"):
+                return _error_from_tool(
+                    result if isinstance(result, Mapping) else {},
+                    request=request,
+                    default_code="slack_message_read_failed",
+                )
+            ret = result.get("ret") if isinstance(result.get("ret"), Mapping) else {}
+            row = next(
+                (
+                    item
+                    for item in ret.get("messages") or []
+                    if isinstance(item, Mapping)
+                    and _text(item.get("timestamp") or item.get("ts"))
+                    == parsed["timestamp"]
+                ),
+                None,
+            )
+            if row is None:
+                return NamedServiceResponse.error_response(
+                    code="slack_message_not_found",
+                    message="The Slack message ref was not found in the connected workspace.",
+                    status=404,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or SLACK_NAMESPACE,
+                    object_ref=request.object_ref,
+                )
+            return NamedServiceResponse.ok_response(
+                provider=self._provider_identity(),
+                namespace=request.namespace or SLACK_NAMESPACE,
+                object_ref=request.object_ref,
+                object=_message_object(
+                    row,
+                    account_id=parsed["account_id"],
+                    channel_id=parsed["channel_id"],
+                ),
             )
 
         if parsed.get("kind") == "file":
@@ -1178,11 +1341,71 @@ class SlackNamedServiceProvider(NamedServiceProvider):
 
         return NamedServiceResponse.error_response(
             code="slack_ref_not_supported",
-            message="object_ref must be slack:<account_id>, slack:<account_id>:channel:<channel_id>, or slack:<account_id>:file:<file_id>.",
+            message=(
+                "object_ref must be slack:<account_id>, "
+                "slack:<account_id>:channel:<channel_id>, "
+                "slack:<account_id>:message:<channel_id>:<timestamp>, or "
+                "slack:<account_id>:file:<file_id>."
+            ),
             status=400,
             provider=self._provider_identity(),
             namespace=request.namespace or SLACK_NAMESPACE,
             object_ref=request.object_ref,
+        )
+
+    async def _materialize_file(
+        self,
+        ctx: NamedServiceContext,
+        request: NamedServiceRequest,
+        *,
+        parsed: Mapping[str, str],
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
+        if self._entrypoint is None:
+            return NamedServiceResponse.error_response(
+                code="slack_materialization_unavailable",
+                message="The Slack provider is not bound to a delivery-capable app.",
+                status=503,
+                provider=self._provider_identity(),
+                namespace=request.namespace or SLACK_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        result = await fetch_slack_file(
+            self._entrypoint,
+            user_id=_text(ctx.user_id),
+            tenant=_text(ctx.tenant),
+            project=_text(ctx.project),
+            account_id=_text(parsed.get("account_id")),
+            file_id=_text(parsed.get("file_id")),
+        )
+        if not result.get("ok"):
+            error = result.get("error") if isinstance(result.get("error"), Mapping) else {}
+            return NamedServiceResponse.error_response(
+                code=_text(error.get("code")) or "slack_file_download_failed",
+                message=_text(error.get("message")) or "Slack file could not be materialized.",
+                status=int(result.get("status") or 500),
+                provider=self._provider_identity(),
+                namespace=request.namespace or SLACK_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        response = NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or SLACK_NAMESPACE,
+            object_ref=request.object_ref,
+            attrs={
+                "materialization": {
+                    "complete": True,
+                    "object_kind": SLACK_FILE_KIND,
+                    "media_type": _text(result.get("mime_type")),
+                    "size_bytes": int(result.get("size_bytes") or 0),
+                }
+            },
+        )
+        return NamedServiceStreamResult(
+            response=response,
+            chunks=result["chunks"],
+            filename=_text(result.get("filename")) or "slack-file.bin",
+            media_type=_text(result.get("mime_type")) or "application/octet-stream",
+            status_code=int(result.get("status") or 200),
         )
 
     async def object_action(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:

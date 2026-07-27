@@ -9,6 +9,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/slack.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/create-delegated-automation-access-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/slack/tools.py
@@ -692,9 +693,30 @@ The namespace supports:
 | `provider.capabilities` | List the currently supported operations. |
 | `object.schema` | Show refs, object kinds, filters, actions, and grant hints. |
 | `object.list` | List connected Slack accounts; with `filters.kind=channels`, list channels for a connected account. |
-| `object.search` | Search Slack messages/files through classic search or Slack assistant search. |
-| `object.get` | Read a channel history ref or download a file ref. |
-| `object.action` | `post_message`, `upload_file`, `download_file`, or `assistant_search_info`. |
+| `object.search` | Search Slack messages/files through classic search or Slack assistant search; continue with `next_cursor` and the same `account_id`. |
+| `object.get` | Read a channel history ref, an exact message ref, or a file ref. |
+| `object.action` | `post_message`, `upload_file`, `download_file`, `assistant_search_info`, `request_upload`, or `discard_upload`. |
+
+The managed boundary authorizes each action as an exact operation such as
+`object.action.post_message` or `object.action.download_file`, even though the
+provider method remains `object.action(action=...)`. This keeps file read,
+file write, message post, and assistant-search grants independently selectable.
+
+For a turnless external MCP client, a Slack file get/action returns a
+short-lived signed KDCube URL. Fetching it verifies the exact `slack:` ref and
+bound KDCube identity, resolves the current Slack connected-account credential,
+checks current `slack:files:read` consent, and streams the provider bytes. The
+Slack token never leaves KDCube, KDCube does not impose a model-context byte
+cap on this out-of-band stream, and the URL represents a live provider read
+rather than a hosted immutable copy. The caller's delegated file-read grant is
+checked when the URL is minted. The URL then remains a short-lived bearer
+capability; Slack-consent revocation blocks its next use, while caller-grant
+revocation blocks minting a replacement URL.
+
+For a resident harness agent, `react.pull` requests the same file with
+`object.get(response_mode=stream)` and writes the bytes into the current
+turn's `conv:fi:` workspace. External MCP results remain provider-neutral and
+do not mention ReAct-only tools.
 
 Useful prompts after connecting the named-services MCP connector:
 

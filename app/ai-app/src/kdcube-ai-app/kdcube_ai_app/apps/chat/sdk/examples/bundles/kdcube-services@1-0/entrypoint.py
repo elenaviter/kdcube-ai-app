@@ -24,6 +24,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.conversation.search_backend import (
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.file_delivery import (
     fetch_mail_attachment,
+    fetch_mail_message_snapshot,
     fetch_slack_file,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
@@ -627,10 +628,12 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
     async def integration_file_download(self, request: Any = None, object_ref: str = "", download_token: str = "", **kwargs):
         """Session-less signed download for one integration binary.
 
-        The token (minted during object.get / download actions) binds
-        tenant/project/user + the exact object ref; this route re-resolves the
-        provider credential under the token's identity through the Connection
-        Hub facade and streams the bytes — no platform session, no chat turn."""
+        The token (minted after the delegated caller is authorized during
+        object.get / a download action) binds tenant/project/user + the exact
+        object ref. This route treats that token as the short-lived download
+        capability, re-resolves the connected provider credential and claim
+        under its bound identity, and streams the bytes — no platform session,
+        no chat turn."""
         del kwargs
         try:
             from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -670,6 +673,16 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                 account_id=mail_parsed["account_id"],
                 message_id=mail_parsed["message_id"],
                 attachment_id=mail_parsed["attachment_id"],
+            )
+        elif mail_parsed.get("kind") == "message":
+            result = await fetch_mail_message_snapshot(
+                self,
+                user_id=user_id,
+                tenant=tenant,
+                project=project,
+                account_id=mail_parsed["account_id"],
+                message_id=mail_parsed["message_id"],
+                object_ref=ref,
             )
         elif slack_parsed.get("kind") == "file":
             result = await fetch_slack_file(

@@ -213,6 +213,10 @@ def build_named_services_mcp_app(
             int,
             Field(ge=1, le=50, description="Maximum items to return; the bridge passes this to the provider."),
         ] = 10,
+        cursor: Annotated[
+            str,
+            Field(description="Optional pagination cursor returned by the preceding namespace call."),
+        ] = "",
         filters_json: Annotated[
             str,
             Field(description=(
@@ -230,6 +234,7 @@ def build_named_services_mcp_app(
             namespace=namespace,
             query=query,
             limit=limit,
+            cursor=cursor,
             filters_json=filters_json,
             provider=provider,
         )
@@ -490,6 +495,7 @@ def build_named_services_mcp_app(
         query: Annotated[str, Field(description="Optional search query for object.search.")] = "",
         action: Annotated[str, Field(description="Optional provider action for object.action.")] = "",
         limit: Annotated[int, Field(ge=0, le=50, description="Optional result limit.")] = 0,
+        cursor: Annotated[str, Field(description="Optional pagination cursor for object.list or object.search.")] = "",
         filters_json: Annotated[str, Field(description="JSON object string for filters. For object.get, {\"refs\": [ref, ...]} batch-fetches many objects in one call.")] = "{}",
         include_json: Annotated[str, Field(description="JSON list string for include fields.")] = "[]",
         object_json: Annotated[str, Field(description="JSON object string for object payload.")] = "{}",
@@ -506,6 +512,7 @@ def build_named_services_mcp_app(
             query=query,
             action=action,
             limit=limit,
+            cursor=cursor,
             filters_json=filters_json,
             include_json=include_json,
             object_json=object_json,

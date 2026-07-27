@@ -63,7 +63,7 @@ x-kdcube-surfaces:
       idempotency: required
   named_service_providers:
     note: Provider availability is deployment and request-context dependent.
-    wired_by_this_app: [conv, mail, slack]
+    wired_by_this_app: [conv, mail, slack, sheets]
 servers:
   - url: /api/integrations
 tags:
@@ -403,7 +403,7 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/public/integration_file_download:
     get:
       tags: [Signed Files]
-      summary: Download one mail file, Slack file, or Sheets snapshot by signed object ref.
+      summary: Stream one mail message/attachment, Slack file, or Sheets snapshot by signed object ref.
       operationId: integration_file_download
       security:
         - SignedDownloadToken: []
@@ -477,7 +477,7 @@ components:
       name: object_ref
       in: query
       required: true
-      description: Exact `staged:`, `mail:`, `slack:`, or `conv:fi:` object ref bound into the signed token.
+      description: Exact `staged:`, `mail:`, `slack:`, `sheets:`, or `conv:fi:` object ref bound into the signed token.
       schema: { type: string }
   requestBodies:
     OperationEnvelope:
@@ -516,6 +516,8 @@ components:
         application/octet-stream:
           schema: { type: string, format: binary }
         "application/vnd.kdcube.sheets.snapshot+json;version=1":
+          schema: { type: string, format: binary }
+        "application/vnd.kdcube.mail.message.snapshot+json;version=1":
           schema: { type: string, format: binary }
     JsonError:
       description: Direct JSON error response.

@@ -403,15 +403,28 @@ class SlackTools:
         self,
         query: Annotated[str, "Slack search query."] = "",
         count: Annotated[int, "Maximum results to return, 1-20.", {"min": 1, "max": 20}] = 10,
+        cursor: Annotated[str, "Optional Slack pagination cursor returned by the previous search."] = "",
         account_id: Annotated[str, "Optional connected account id when the user has several Slack workspaces/accounts."] = "",
     ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
         return await run_with_connected_account_retry(
             globals(),
             where="slack.search_slack",
-            run=lambda: self._search_slack(query=query, count=count, account_id=account_id),
+            run=lambda: self._search_slack(
+                query=query,
+                count=count,
+                cursor=cursor,
+                account_id=account_id,
+            ),
         )
 
-    async def _search_slack(self, *, query: str, count: int, account_id: str) -> dict[str, Any]:
+    async def _search_slack(
+        self,
+        *,
+        query: str,
+        count: int,
+        cursor: str,
+        account_id: str,
+    ) -> dict[str, Any]:
         if not str(query or "").strip():
             return _error_result(
                 code="query_required",
@@ -428,11 +441,14 @@ class SlackTools:
                 where="slack.search_slack",
             )
         limit = max(1, min(int(count or 10), 20))
+        params: dict[str, Any] = {"query": query, "count": limit}
+        if str(cursor or "").strip():
+            params["cursor"] = str(cursor).strip()
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(
                 f"{SLACK_API}/search.messages",
                 headers={"Authorization": f"Bearer {credential.access_token}"},
-                params={"query": query, "count": limit},
+                params=params,
             )
         try:
             data = response.json()
@@ -463,7 +479,18 @@ class SlackTools:
                     "timestamp": str(item.get("ts") or ""),
                 }
             )
-        return _ok_ret_result({"messages": rows, "count": len(rows), "account_id": credential.account_id})
+        pagination = messages.get("pagination") if isinstance(messages, dict) else {}
+        response_metadata = data.get("response_metadata") if isinstance(data, dict) else {}
+        return _ok_ret_result({
+            "messages": rows,
+            "count": len(rows),
+            "next_cursor": str(
+                ((response_metadata or {}).get("next_cursor") if isinstance(response_metadata, dict) else "")
+                or ((pagination or {}).get("next_cursor") if isinstance(pagination, dict) else "")
+                or ""
+            ),
+            "account_id": credential.account_id,
+        })
 
     @kernel_function(
         name="list_slack_channels",
