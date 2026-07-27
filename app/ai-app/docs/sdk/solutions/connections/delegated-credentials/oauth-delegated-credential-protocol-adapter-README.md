@@ -471,6 +471,54 @@ If route guarding or bypass policy must be configurable, use the existing
 gateway/ingress descriptor model instead of feature-specific hardcoded route
 lists.
 
+## Consent Screen: Accounts This Connection Needs
+
+Before the per-account picker, the authorize page resolves the **requested scope
+to the provider accounts that back it**, so a required-but-unconnected provider
+is visible and connectable HERE — not discovered when the first tool call fails
+at the Delegated-to gate (the external-client consent page must never dead-end).
+A requested claim reaches a provider two ways:
+
+- **Hard (AND)** — a provider-claim token in a provider's claim vocabulary
+  (`sheets:read` → Google). Every provider a scope names this way is required;
+  each renders one row with `not connected` / `needs more access` / `connected`
+  status and a connect / approve-access deep-link.
+- **Any-of (OR)** — a provider-neutral **door claim** (`mail:read`) whose backing
+  provider claim differs from the door token (`gmail:read` on Google,
+  `email:read` on iCloud) and which several providers can satisfy. Connecting ANY
+  ONE satisfies it, so the page renders a single "connect one of" choice, never a
+  "connect them all" list. A door claim declares its options on its capability:
+
+  ```yaml
+  capabilities:
+    - grant: "mail:read"
+      label: "Read connected mail"
+      delegable_roles: ["kdcube:role:registered", "kdcube:role:super-admin"]
+      delegable_permissions: ["mail:read"]
+      connected_accounts:
+        - provider_id: "google"        # gmail:read backs the mail:read door
+          claims: ["gmail:read"]
+        # add iCloud/Yahoo options as they ship — any one satisfies mail:read
+  ```
+
+Each door group resolves to: **satisfied** (an option already connected and
+holding its claims → no action, and no nag to connect the others); **folded**
+into a provider required anyway for a hard reason (Google for `sheets:read`
+already → one connect covers `mail:read` too, no separate choice); or a
+**choice** with a connect deep-link per option. Door claims that offer the same
+providers (`mail:read` + `mail:send`) coalesce into one group. Every connect link
+opens the *Delegated to KDCube* connect panel in a NEW tab (this page is
+mid-OAuth), pre-selected with the provider, the connector app chosen broker-style
+(the enabled app whose `allowed_claims` cover the need), and least-privilege
+claims — the same claim→provider and app selection the credential broker uses at
+call time, so what the page offers is exactly what a later call resolves.
+
+The door claim → provider mapping declared here mirrors the tool's own runtime
+`connected_accounts` contract; the browser consent page cannot see into the
+provider bundle's tool metadata, so the capability declaration is how it reaches
+the page. Keep the two in step. Resolution is best-effort and fail-open: if the
+provider config is unavailable the panel simply does not render, never an error.
+
 ## Consent Screen: Per-Account Binding Picker
 
 The authorize page shows the consenting user's connected provider accounts,
@@ -855,3 +903,8 @@ Use focused tests and one live connector test.
     provider credential to the delegated client.
 15. The feature is disabled when
     `connection-hub@1-0.config.connections.delegated_credentials.oauth.enabled: false`.
+16. The "Accounts this connection needs" panel resolves a hard provider claim
+    (`sheets:read` → a Google row) and an any-of door claim (`mail:read` → one
+    "connect one of" choice over its `connected_accounts` options), folds a door
+    claim into a hard-required provider, and treats a door claim already backed
+    by one connected account as satisfied (no "connect the others").

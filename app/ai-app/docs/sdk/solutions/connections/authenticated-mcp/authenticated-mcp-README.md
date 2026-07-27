@@ -227,6 +227,12 @@ row state its complete requirement.
   memories, tasks). Read/write on an account-backed realm is decided per
   account at gate 2, so the user consents per account, not per connection.
 
+The external-client (DCR) authorize page surfaces these same requirements up
+front as an *Accounts this connection needs* panel — a single-provider claim as
+a required row, a multi-provider door claim as a "connect one of" choice — and
+lets the operator connect in place instead of discovering the gap at first call.
+See [OAuth Delegated Credential Protocol Adapter](../delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md).
+
 ## The provider self-description contract: `connected_accounts`
 
 A named-service provider that runs on the user's connected accounts declares
