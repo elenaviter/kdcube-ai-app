@@ -60,8 +60,10 @@ In the Google Cloud project used by the existing Google connector:
 3. Keep the existing Web OAuth client and its exact KDCube callback URI. The
    [Gmail recipe](google-gmail-README.md#google-cloud-configuration) lists the
    callback shapes for local, staging, and demo runtimes.
-4. Add the Sheets scopes to the OAuth consent configuration. If the app is in
-   testing mode, include every test user.
+4. Add the scopes to the OAuth consent screen: `spreadsheets`,
+   `spreadsheets.readonly`, `drive.metadata.readonly`, and — required so the app
+   can CREATE spreadsheets (a Drive file operation) — `drive.file`. If the app
+   is in testing mode, include every test user.
 
 No new OAuth client or secret is required. The built-in surface reuses the
 existing `google` provider and stable `gmail` connector-app id.
@@ -104,10 +106,36 @@ claims:
       - profile
       - https://www.googleapis.com/auth/spreadsheets
       - https://www.googleapis.com/auth/drive.metadata.readonly
+      # Creating a spreadsheet creates a Drive FILE (gspread's create() posts to
+      # the Drive API), so a Drive WRITE scope is required. drive.file is the
+      # least-privilege one: the app may create and manage only the files it
+      # makes. Without it, create fails with "Request had insufficient
+      # authentication scopes" even though spreadsheets (read/write) is granted.
+      - https://www.googleapis.com/auth/drive.file
 ```
 
 The existing client secret stays in `bundles.secrets.yaml`. This feature adds
 no environment variable and no new secret key.
+
+### Read-write scopes supersede read-only ones (why writes can fail)
+
+Google treats a scope and its read-only sibling as DISTINCT scopes:
+`.../spreadsheets` grants read AND write; `.../spreadsheets.readonly` grants read
+only. The read-write scope already covers reads. If a single consent requests
+BOTH — exactly what connecting `sheets:read` and `sheets:write` together does —
+Google grants the read-only scope and drops the read-write one. The stored token
+can read but not write, so later writes fail with Google's
+`Request had insufficient authentication scopes`, and the account flips to
+`reconnect_required` even though it shows `sheets:write` as granted.
+
+You still declare each claim's minimal scope as above. The Google adapter
+(`delegated_to_kdcube/providers/google.py`) reconciles the requested union at
+connect time: it drops any `<X>.readonly` whose read-write base `<X>` is also in
+the request. So connecting `sheets:read` + `sheets:write` sends Google
+`spreadsheets` alone — which grants read and write — and both claims work. A
+`sheets:read`-only connect still requests `spreadsheets.readonly`, so least
+privilege is preserved. An account connected before this reconciliation reports
+`reconnect_required` on the first write; reconnect it and approve the edit scope.
 
 ## 3. Configure the MCP surfaces
 
@@ -421,3 +449,28 @@ Use a disposable spreadsheet and verify:
 Provider sharing/permission administration, deleting the spreadsheet file,
 Apps Script, comments, and raw `batchUpdate` payloads are intentionally outside
 this surface. They require separate claims and review.
+
+## Other Google services, the same way
+
+Sheets reuses the existing `google` provider and `gmail` connector app — it adds
+only new claims and scopes, no new OAuth client, adapter, or code. Any other
+Google API connects the same way: enable the API in Google Cloud, add its scopes
+to the OAuth consent screen, and add a claim under `providers.google.claims`
+mapping to the real Google scopes (section 2), then add its tools/named-service
+as sections 3-4 do for Sheets. The connect, grant, and two-gate machinery are
+unchanged.
+
+| Service | Read claim → scope | Read-write claim → scope |
+| --- | --- | --- |
+| Sheets | `sheets:read` → `spreadsheets.readonly` | `sheets:write` → `spreadsheets` |
+| Drive | `drive:read` → `drive.readonly` | `drive:write` → `drive` (or `drive.file`, per file) |
+| Calendar | `calendar:read` → `calendar.readonly` | `calendar:write` → `calendar` |
+| Docs | `docs:read` → `documents.readonly` | `docs:write` → `documents` |
+
+The read-write-supersedes-read-only reconciliation above is generic: connecting a
+read + write pair for ANY of these sends only the read-write scope (Google grants
+read and write), because the adapter drops `<X>.readonly` when `<X>` is present.
+It keys on the exact `<X>` / `<X>.readonly` pair, so scopes that are not a clean
+read-only/read-write pair are left alone — `gmail.readonly` + `gmail.send` keeps
+both (send does not cover read; see the [Gmail recipe](google-gmail-README.md)),
+and a per-file `drive.file` alongside `drive` is untouched.

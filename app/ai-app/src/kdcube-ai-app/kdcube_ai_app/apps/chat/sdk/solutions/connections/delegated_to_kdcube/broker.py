@@ -338,8 +338,12 @@ class DelegatedToKdcubeBroker:
             credential=credential,
         )
         LOGGER.info(
-            "[delegated.broker] verdict=ok claim=%s provider=%s account=%s claims=%s",
+            "[delegated.broker] verdict=ok claim=%s provider=%s account=%s claims=%s credential_id=%s cred_granted_scope=[%s] has_access_token=%s has_refresh_token=%s",
             claim_key, provider_key, account.account_id, ",".join(account.claims),
+            account.credential_id,
+            as_str(credential.get("scope")) if isinstance(credential, dict) else "",
+            bool(credential.get("access_token")) if isinstance(credential, dict) else False,
+            bool(credential.get("refresh_token")) if isinstance(credential, dict) else False,
         )
         return ClaimResolution(
             ok=True,

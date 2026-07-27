@@ -1425,6 +1425,9 @@ bundles:
                   - profile
                   - https://www.googleapis.com/auth/spreadsheets
                   - https://www.googleapis.com/auth/drive.metadata.readonly
+                  # create_spreadsheet makes a Drive file; drive.file is the
+                  # least-privilege Drive write scope it needs.
+                  - https://www.googleapis.com/auth/drive.file
             slack:
               label: Slack
               adapter: slack.oauth_user_token

@@ -140,6 +140,17 @@ https://www.googleapis.com/auth/gmail.send
 `gmail:send` maps to `openid`, `email`, `profile`, and
 `https://www.googleapis.com/auth/gmail.send`.
 
+**Read-only vs read-write scope reconciliation.** When one connect requests both
+a Google scope and its read-only sibling (e.g. `.../spreadsheets` and
+`.../spreadsheets.readonly`), Google grants the read-only one and drops the
+read-write one. KDCube's Google adapter therefore drops any `<X>.readonly` whose
+read-write base `<X>` is also in the request. **Gmail is unaffected:**
+`gmail:read` → `gmail.readonly` and `gmail:send` → `gmail.send` are not a
+read-only/read-write pair (`gmail.send` does not cover reads), so connecting both
+keeps both scopes. The reconciliation only matters where a write scope supersedes
+its read-only one — see the [Sheets recipe](google-sheets-README.md#read-write-scopes-supersede-read-only-ones-why-writes-can-fail)
+and its list of other Google services.
+
 If the OAuth consent screen is in testing mode, add each test user's Google
 account under **Test users** or Google will block consent for them.
 

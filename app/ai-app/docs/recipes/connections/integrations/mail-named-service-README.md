@@ -128,6 +128,11 @@ authorize any particular agent. Revoking either layer stops the tool
 immediately. Identity model and the grant flow:
 [Agents Acting On Behalf Of The User](../../../sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md).
 
+The Gmail provider scopes behind `gmail:read` / `gmail:send` — and Google's
+read-only/read-write scope reconciliation, which mail is unaffected by because
+`gmail.send` is not a read-only sibling of `gmail.readonly` — are covered in the
+[Gmail recipe](google-gmail-README.md#google-oauth-scopes).
+
 If Claude has `mail:read` but the current KDCube user has not connected Gmail
 with `gmail:read`, the provider returns the structured consent error
 (`needs_connected_account_consent` with `reason`, `retry_hint`, labeled

@@ -813,6 +813,52 @@ async def test_builtin_adapters_register_and_normalize_profiles():
 
 
 @pytest.mark.asyncio
+async def test_google_drops_readonly_scope_when_readwrite_sibling_requested():
+    # Connecting sheets:read + sheets:write together would request BOTH
+    # spreadsheets.readonly and spreadsheets; Google then grants the readonly
+    # and drops the write, so later writes fail with "insufficient scopes". The
+    # adapter must drop the readonly sibling when its read-write base is present.
+    import kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers  # noqa: F401
+
+    google = resolve_adapter("google.oauth")
+    claim_map = {
+        "gmail:read": {"provider_scopes": ["https://www.googleapis.com/auth/gmail.readonly"]},
+        "gmail:send": {"provider_scopes": ["https://www.googleapis.com/auth/gmail.send"]},
+        "sheets:read": {"provider_scopes": [
+            "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+        ]},
+        "sheets:write": {"provider_scopes": [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+        ]},
+    }
+    scopes = google.provider_scopes_for_claims(
+        ["gmail:read", "gmail:send", "sheets:read", "sheets:write"], claim_map,
+    )
+    # the read-write spreadsheets scope stays; its readonly sibling is dropped
+    assert "https://www.googleapis.com/auth/spreadsheets" in scopes
+    assert "https://www.googleapis.com/auth/spreadsheets.readonly" not in scopes
+    # gmail.readonly has no read-write base (`gmail`) in the request -> kept
+    assert "https://www.googleapis.com/auth/gmail.readonly" in scopes
+    assert "https://www.googleapis.com/auth/gmail.send" in scopes
+    # drive.metadata.readonly has no `drive.metadata` base requested -> kept
+    assert "https://www.googleapis.com/auth/drive.metadata.readonly" in scopes
+
+
+@pytest.mark.asyncio
+async def test_google_keeps_readonly_scope_when_no_readwrite_sibling():
+    import kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers  # noqa: F401
+
+    google = resolve_adapter("google.oauth")
+    claim_map = {
+        "sheets:read": {"provider_scopes": ["https://www.googleapis.com/auth/spreadsheets.readonly"]},
+    }
+    scopes = google.provider_scopes_for_claims(["sheets:read"], claim_map)
+    assert scopes == ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+
+
+@pytest.mark.asyncio
 async def test_operations_connect_credential_catalog_and_disconnect(monkeypatch):
     _install_fake_storage(monkeypatch)
     ops = operations_for_user(user_id="user-1", config=_sample_config())

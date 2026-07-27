@@ -460,12 +460,13 @@ class DelegatedToKdcubeOperations:
         for key, value in adapter.authorize_extra_params().items():
             params.setdefault(key, value)
         LOGGER.info(
-            "[delegated.oauth] start ok user=%s provider=%s connector=%s state_id=%s scopes=%s redirect_uri=%s",
+            "[delegated.oauth] start ok user=%s provider=%s connector=%s state_id=%s scope_count=%s requested_scopes=[%s] redirect_uri=%s",
             user_id,
             provider_id,
             connector_app_id,
             state["state_id"],
             len(scopes),
+            " ".join(scopes),
             redirect_uri,
         )
         return {
@@ -532,14 +533,21 @@ class DelegatedToKdcubeOperations:
         access_token = as_str(token.get("access_token"))
         if not access_token:
             raise ValueError("OAuth token response did not include access_token")
+        # Google returns the ACTUALLY-granted scopes in the token response's
+        # `scope`. It can be narrower than requested (granular consent, or a
+        # scope not registered on the OAuth consent screen), which is exactly
+        # how "insufficient authentication scopes" happens at call time while
+        # the account still shows the claim. Log requested-vs-granted verbatim.
         LOGGER.info(
-            "[delegated.oauth] token exchanged user=%s provider=%s connector=%s has_access_token=%s has_refresh_token=%s expires_in=%s state=%s",
+            "[delegated.oauth] token exchanged user=%s provider=%s connector=%s has_access_token=%s has_refresh_token=%s expires_in=%s granted_scope=[%s] requested_claims=[%s] state=%s",
             user_id,
             provider_id,
             connector_app_id,
             bool(access_token),
             bool(token.get("refresh_token")),
             token.get("expires_in") or token.get("expires_at") or "",
+            as_str(token.get("scope")),
+            ",".join(as_str_list(payload.get("claims"))),
             state_digest(state),
         )
         profile = await adapter.fetch_profile(access_token=access_token, token=token)

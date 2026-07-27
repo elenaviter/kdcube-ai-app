@@ -34,6 +34,24 @@ class GoogleOAuthAdapter(DelegatedToKdcubeAdapter):
             "prompt": "consent",
         }
 
+    def provider_scopes_for_claims(self, claims: list, claim_map: dict) -> list:
+        scopes = super().provider_scopes_for_claims(claims, claim_map)
+        # Google treats a scope and its read-only sibling (`.../spreadsheets`
+        # and `.../spreadsheets.readonly`) as DISTINCT scopes. Requesting BOTH
+        # in one consent - which happens when a user connects `sheets:read` +
+        # `sheets:write` together - makes Google grant the read-only one and
+        # drop the read-write scope, so later writes fail with "Request had
+        # insufficient authentication scopes" even though the account looks
+        # fully granted. The read-write scope already covers reads, so drop any
+        # `<X>.readonly` whose read-write base `<X>` is also in the request.
+        present = set(scopes)
+        suffix = ".readonly"
+        return [
+            scope
+            for scope in scopes
+            if not (scope.endswith(suffix) and scope[: -len(suffix)] in present)
+        ]
+
     async def fetch_profile(self, *, access_token: str, token: dict | None = None) -> dict:
         del token
         try:
