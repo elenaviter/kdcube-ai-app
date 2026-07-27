@@ -10,7 +10,11 @@ tokens or require consumers to use Google-specific MCP tools.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+import asyncio
+import json
+import logging
+import re
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
@@ -24,11 +28,14 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceRequest,
     NamedServiceResponse,
     NamedServiceSearchScope,
+    NamedServiceStreamResult,
     TRANSPORT_API,
     TRANSPORT_LOCAL,
     named_service_provider,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
+    BLOCK_PRODUCE,
+    EVENT_RESOLVE,
     OBJECT_ACTION,
     OBJECT_DELETE,
     OBJECT_GET,
@@ -41,6 +48,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
 )
 
 
+LOGGER = logging.getLogger("kdcube.sdk.integrations.sheets.named_service")
+
+
 SHEETS_NAMESPACE = "sheets"
 PROVIDER_ID = "sdk.integrations.sheets"
 GOOGLE_PROVIDER_KEY = "google"
@@ -50,6 +60,10 @@ SHEETS_WRITE_CLAIM = "sheets:write"
 SHEETS_SPREADSHEET_KIND = "sheets.spreadsheet"
 SHEETS_TAB_KIND = "sheets.tab"
 SHEETS_TRANSPORTS = (TRANSPORT_LOCAL, TRANSPORT_API)
+SHEETS_SNAPSHOT_SCHEMA = "kdcube.sheets.snapshot.v1"
+SHEETS_SNAPSHOT_MEDIA_TYPE = (
+    "application/vnd.kdcube.sheets.snapshot+json;version=1"
+)
 
 ACTION_UPDATE_VALUES = "update_values"
 ACTION_APPEND_ROWS = "append_rows"
@@ -197,8 +211,10 @@ SHEETS_SCHEMA = {
     "get": {
         "description": (
             "Read a spreadsheet or tab by ref. A spreadsheet get returns "
-            "metadata by default. Pass filters.ranges with explicit A1 ranges "
-            "to read bounded cell values instead."
+            "metadata by default and, on a configured turnless transport, a "
+            "short-lived URL for the complete JSON snapshot. Pass "
+            "filters.ranges with explicit A1 ranges to read selected cell "
+            "values inline."
         ),
         "filters": [
             "ranges",
@@ -206,6 +222,17 @@ SHEETS_SCHEMA = {
             "value_render_option",
             "date_time_render_option",
         ],
+    },
+    "materialization": {
+        "description": (
+            "A materializing client can resolve a spreadsheet or tab ref through "
+            "object.get with response_mode=stream. The JSON snapshot begins with "
+            "workbook and tab metadata and includes used values for the selected "
+            "grid tabs."
+        ),
+        "schema": SHEETS_SNAPSHOT_SCHEMA,
+        "media_type": SHEETS_SNAPSHOT_MEDIA_TYPE,
+        "refs": ["spreadsheet", "tab"],
     },
     "upsert": {
         "create": {
@@ -312,7 +339,7 @@ SHEETS_SCHEMA = {
 
 SHEETS_INTRO = (
     "Use namespace `sheets` for user-connected spreadsheets. Search by title, "
-    "get a spreadsheet ref to inspect metadata or bounded ranges, then use "
+    "get a spreadsheet ref to inspect metadata or selected ranges, then use "
     "object.upsert or a declared object.action for explicit changes."
 )
 
@@ -371,6 +398,8 @@ def _operations() -> dict[str, Any]:
         OBJECT_UPSERT: {"transports": SHEETS_TRANSPORTS},
         OBJECT_DELETE: {"transports": SHEETS_TRANSPORTS},
         OBJECT_ACTION: {"transports": SHEETS_TRANSPORTS},
+        EVENT_RESOLVE: {"transports": SHEETS_TRANSPORTS},
+        BLOCK_PRODUCE: {"transports": SHEETS_TRANSPORTS},
     }
 
 
@@ -412,7 +441,250 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _int(value: Any, *, default: int = 0, minimum: int = 0, maximum: int = 10_000) -> int:
+def _is_materialization_request(request: NamedServiceRequest) -> bool:
+    context = request.context if isinstance(request.context, Mapping) else {}
+    payload = request.payload if isinstance(request.payload, Mapping) else {}
+    if _text(request.response_mode).lower() == "stream":
+        return True
+    if context.get("materialize") or payload.get("materialize"):
+        return True
+    return _text(context.get("source") or payload.get("source")) == "react.pull"
+
+
+def _whole_tab_range(title: Any) -> str:
+    escaped = _text(title).replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _snapshot_filename(parsed: Mapping[str, Any]) -> str:
+    identity = (
+        f"{_text(parsed.get('spreadsheet_id'))}-tab-{_int(parsed.get('sheet_id'))}"
+        if parsed.get("kind") == "tab"
+        else _text(parsed.get("spreadsheet_id"))
+    )
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", identity).strip("._-")
+    return f"{safe or 'spreadsheet'}.sheets.json"
+
+
+def _snapshot_from_block_target(target: Mapping[str, Any]) -> dict[str, Any]:
+    raw = target.get("raw") if isinstance(target.get("raw"), Mapping) else {}
+    text = raw.get("text") or target.get("text") or ""
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(value, Mapping):
+        return {}
+    snapshot = dict(value)
+    if _text(snapshot.get("schema")) != SHEETS_SNAPSHOT_SCHEMA:
+        return {}
+    return snapshot
+
+
+def _range_inventory(values: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for value in values.get("ranges") or []:
+        if not isinstance(value, Mapping):
+            continue
+        matrix = value.get("values") if isinstance(value.get("values"), list) else []
+        row_count = len(matrix)
+        cell_count = sum(len(row) for row in matrix if isinstance(row, list))
+        rows.append(
+            {
+                "range": _text(value.get("range")) or "<unnamed>",
+                "row_count": row_count,
+                "cell_count": cell_count,
+            }
+        )
+    return rows
+
+
+def _snapshot_tabs(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    obj = snapshot.get("object") if isinstance(snapshot.get("object"), Mapping) else {}
+    if _text(snapshot.get("object_kind")) == SHEETS_TAB_KIND:
+        return [dict(obj)] if obj else []
+    spreadsheet = (
+        snapshot.get("spreadsheet")
+        if isinstance(snapshot.get("spreadsheet"), Mapping)
+        else {}
+    )
+    tabs = spreadsheet.get("tabs") or obj.get("tabs") or []
+    return [dict(tab) for tab in tabs if isinstance(tab, Mapping)]
+
+
+def _snapshot_inventory_text(
+    snapshot: Mapping[str, Any],
+    *,
+    object_ref: str,
+    target: Mapping[str, Any],
+) -> str:
+    obj = snapshot.get("object") if isinstance(snapshot.get("object"), Mapping) else {}
+    spreadsheet = (
+        snapshot.get("spreadsheet")
+        if isinstance(snapshot.get("spreadsheet"), Mapping)
+        else {}
+    )
+    values = snapshot.get("values") if isinstance(snapshot.get("values"), Mapping) else {}
+    materialization = (
+        snapshot.get("materialization")
+        if isinstance(snapshot.get("materialization"), Mapping)
+        else {}
+    )
+    meta = target.get("meta") if isinstance(target.get("meta"), Mapping) else {}
+    raw = target.get("raw") if isinstance(target.get("raw"), Mapping) else {}
+    logical_path = _text(target.get("logical_path") or target.get("path"))
+    physical_path = _text(
+        target.get("physical_path")
+        or meta.get("physical_path")
+        or raw.get("physical_path")
+    )
+    ranges = _range_inventory(values)
+    range_count = (
+        _int(values.get("range_count"))
+        if values.get("range_count") is not None
+        else (len(ranges) if ranges else None)
+    )
+    row_count = (
+        _int(values.get("row_count"))
+        if values.get("row_count") is not None
+        else (
+            sum(_int(row.get("row_count")) for row in ranges)
+            if ranges
+            else None
+        )
+    )
+    cell_count = (
+        _int(values.get("cell_count"))
+        if values.get("cell_count") is not None
+        else (
+            sum(_int(row.get("cell_count")) for row in ranges)
+            if ranges
+            else None
+        )
+    )
+    values_materialized = materialization.get("values_materialized")
+    if values_materialized is None and values:
+        values_materialized = True
+    complete_values = materialization.get("complete_values")
+
+    def _status(value: Any) -> str:
+        if value is True:
+            return "yes"
+        if value is False:
+            return "no"
+        return "unknown"
+
+    def _count(value: Any) -> str:
+        return str(value) if value is not None else "unknown"
+
+    lines = [
+        "[SHEETS SNAPSHOT]",
+        f"object_ref: {object_ref}",
+        f"object_kind: {_text(snapshot.get('object_kind')) or _text(obj.get('object_kind'))}",
+        f"title: {_text(obj.get('title')) or _text(spreadsheet.get('title')) or '<untitled>'}",
+        "spreadsheet_id: "
+        + (
+            _text(spreadsheet.get("spreadsheet_id"))
+            or _text(obj.get("spreadsheet_id"))
+        ),
+    ]
+    web_url = _text(spreadsheet.get("web_url") or obj.get("web_url"))
+    if web_url:
+        lines.append(f"web_url: {web_url}")
+    for label, key in (
+        ("source_bytes", "source_bytes"),
+        ("source_text_symbols", "source_text_symbols"),
+        ("source_line_count", "source_line_count"),
+    ):
+        if meta.get(key) is not None:
+            lines.append(f"{label}: {meta.get(key)}")
+    lines.extend(
+        [
+            f"materialized_path: {logical_path}",
+            f"physical_path: {physical_path or '<not exposed>'}",
+            f"snapshot_schema: {_text(snapshot.get('schema'))}",
+            f"values_materialized: {_status(values_materialized)}",
+            f"complete_values: {_status(complete_values)}",
+            f"materialized_ranges: {_count(range_count)}",
+            f"materialized_rows: {_count(row_count)}",
+            f"materialized_cells: {_count(cell_count)}",
+            "tabs:",
+        ]
+    )
+    tabs = _snapshot_tabs(snapshot)
+    if not tabs:
+        lines.append("- none reported")
+    for tab in tabs:
+        dimensions = (
+            f"{_int(tab.get('row_count'))} rows x "
+            f"{_int(tab.get('column_count'))} columns"
+        )
+        sheet_type = _text(tab.get("sheet_type")) or "GRID"
+        tab_line = (
+            f"- {_text(tab.get('title')) or '<untitled>'} "
+            f"(sheet_id={_int(tab.get('sheet_id'))}, type={sheet_type}, "
+            f"dimensions={dimensions}"
+        )
+        tab_object_ref = _text(tab.get("ref"))
+        if tab_object_ref:
+            tab_line += f", object_ref={tab_object_ref}"
+        lines.append(tab_line + ")")
+
+    lines.append("ranges:")
+    if not ranges:
+        lines.append("- none materialized")
+    for row in ranges:
+        lines.append(
+            f"- {row['range']} ({row['row_count']} rows, {row['cell_count']} cells)"
+        )
+    skipped_tabs = materialization.get("skipped_tabs") or []
+    if skipped_tabs:
+        lines.append("skipped_tabs:")
+        for tab in skipped_tabs:
+            if not isinstance(tab, Mapping):
+                continue
+            lines.append(
+                f"- {_text(tab.get('title')) or '<untitled>'}: "
+                f"{_text(tab.get('reason')) or 'not materialized'}"
+            )
+    lines.extend(
+        [
+            "snapshot_layout:",
+            "- workbook and tab metadata: object, spreadsheet",
+            "- cell matrices: values.ranges[].values",
+        ]
+    )
+    return "\n".join(lines)
+
+
+async def _json_chunks(
+    value: Any,
+    *,
+    chunk_bytes: int = 64 * 1024,
+) -> AsyncIterator[bytes]:
+    """Encode a JSON artifact incrementally without monopolizing the proc loop."""
+    encoder = json.JSONEncoder(ensure_ascii=False, indent=2)
+    pending = bytearray()
+    for piece in encoder.iterencode(value):
+        pending.extend(piece.encode("utf-8"))
+        if len(pending) < chunk_bytes:
+            continue
+        yield bytes(pending)
+        pending.clear()
+        await asyncio.sleep(0)
+    if pending:
+        yield bytes(pending)
+
+
+def _int(
+    value: Any,
+    *,
+    default: int = 0,
+    minimum: int = 0,
+    maximum: int = 2_147_483_647,
+) -> int:
     try:
         parsed = int(value if value is not None else default)
     except (TypeError, ValueError):
@@ -574,12 +846,31 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
         *,
         execute_operation: ExecuteSheetsOperation,
         bundle_id: str | None = None,
+        file_url_factory: Any = None,
     ) -> None:
         super().__init__(sheets_named_service_spec(bundle_id=bundle_id))
         self._execute_operation = execute_operation
+        self._file_url_factory = file_url_factory
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
+
+    async def _download_url(
+        self,
+        ctx: NamedServiceContext,
+        *,
+        ref: str,
+    ) -> dict[str, Any] | None:
+        if self._file_url_factory is None:
+            return None
+        try:
+            out = self._file_url_factory(ctx, {"ref": ref})
+            if hasattr(out, "__await__"):
+                out = await out
+        except Exception:
+            LOGGER.exception("sheets snapshot url factory failed for %s", ref)
+            return None
+        return dict(out) if isinstance(out, Mapping) and out.get("url") else None
 
     def _invalid_ref(
         self, request: NamedServiceRequest, exc: Exception
@@ -698,6 +989,227 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
             extra={"schema": SHEETS_SCHEMA},
         )
 
+    async def event_resolve(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        del ctx
+        try:
+            parsed = parse_sheets_ref(request.object_ref)
+        except ValueError as exc:
+            return self._invalid_ref(request, exc)
+        unsupported = self._provider_not_supported(request, parsed)
+        if unsupported is not None:
+            return unsupported
+        canonical_ref = (
+            tab_ref(
+                provider=parsed["provider"],
+                account_id=parsed["account_id"],
+                spreadsheet_id=parsed["spreadsheet_id"],
+                sheet_id=parsed["sheet_id"],
+            )
+            if parsed["kind"] == "tab"
+            else spreadsheet_ref(
+                provider=parsed["provider"],
+                account_id=parsed["account_id"],
+                spreadsheet_id=parsed["spreadsheet_id"],
+            )
+        )
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or SHEETS_NAMESPACE,
+            object_ref=canonical_ref,
+            extra={
+                "event_source_id": f"named_services.{SHEETS_NAMESPACE}",
+                "object_ref": canonical_ref,
+                "target_surface": "sdk.sheets.snapshot",
+            },
+        )
+
+    async def block_produce(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        target_value = request.payload.get("target")
+        target = dict(target_value) if isinstance(target_value, Mapping) else {}
+        object_ref = _text(
+            request.object_ref
+            or target.get("object_ref")
+            or target.get("ref")
+        )
+        try:
+            parsed = parse_sheets_ref(object_ref)
+        except ValueError as exc:
+            return self._invalid_ref(request, exc)
+        unsupported = self._provider_not_supported(request, parsed)
+        if unsupported is not None:
+            return unsupported
+
+        snapshot = _snapshot_from_block_target(target)
+        if not snapshot:
+            metadata, error = await self._execute(
+                request=request,
+                operation="describe",
+                claim=SHEETS_READ_CLAIM,
+                payload={"spreadsheet_ref": parsed["spreadsheet_id"]},
+                account_id=parsed["account_id"],
+            )
+            if error is not None:
+                return NamedServiceResponse.ok_response(
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or SHEETS_NAMESPACE,
+                    object_ref=object_ref,
+                    extra={"blocks": []},
+                    warnings=[
+                        {
+                            "code": "sheets_block_produce_describe_failed",
+                            "message": (
+                                error.error.message
+                                if error.error is not None
+                                else "Spreadsheet metadata could not be loaded."
+                            ),
+                        }
+                    ],
+                )
+            metadata = metadata or {}
+            spreadsheet = _spreadsheet_object(
+                metadata,
+                account_id=_text(metadata.get("account_id"))
+                or parsed["account_id"],
+                provider=parsed["provider"],
+            )
+            if parsed["kind"] == "tab":
+                obj = next(
+                    (
+                        tab
+                        for tab in spreadsheet.get("tabs") or []
+                        if isinstance(tab, Mapping)
+                        and _int(tab.get("sheet_id")) == parsed["sheet_id"]
+                    ),
+                    {},
+                )
+                object_kind = SHEETS_TAB_KIND
+            else:
+                obj = spreadsheet
+                object_kind = SHEETS_SPREADSHEET_KIND
+            snapshot = {
+                "schema": SHEETS_SNAPSHOT_SCHEMA,
+                "object_ref": object_ref,
+                "object_kind": object_kind,
+                "object": obj,
+                "spreadsheet": spreadsheet,
+                "values": {},
+                "materialization": {
+                    "values_materialized": True,
+                    "complete_values": None,
+                    "inventory_source": "provider_metadata_fallback",
+                },
+            }
+
+        text = _snapshot_inventory_text(
+            snapshot,
+            object_ref=object_ref,
+            target=target,
+        )
+        meta = target.get("meta") if isinstance(target.get("meta"), Mapping) else {}
+        source_stats = {
+            key: meta.get(key)
+            for key in (
+                "source_tokens",
+                "source_text_symbols",
+                "source_bytes",
+                "source_line_count",
+            )
+            if meta.get(key) is not None
+        }
+        snapshot_object = (
+            snapshot.get("object")
+            if isinstance(snapshot.get("object"), Mapping)
+            else {}
+        )
+        snapshot_spreadsheet = (
+            snapshot.get("spreadsheet")
+            if isinstance(snapshot.get("spreadsheet"), Mapping)
+            else {}
+        )
+        snapshot_values = (
+            snapshot.get("values")
+            if isinstance(snapshot.get("values"), Mapping)
+            else {}
+        )
+        source_stats.update(
+            {
+                "object_ref": object_ref,
+                "object_kind": _text(snapshot.get("object_kind")),
+                "snapshot_schema": _text(snapshot.get("schema")),
+                "title": _text(
+                    snapshot_object.get("title")
+                    or snapshot_spreadsheet.get("title")
+                ),
+                "spreadsheet_id": _text(
+                    snapshot_spreadsheet.get("spreadsheet_id")
+                    or snapshot_object.get("spreadsheet_id")
+                ),
+                "tab_count": len(_snapshot_tabs(snapshot)),
+                "range_count": (
+                    _int(snapshot_values.get("range_count"))
+                    if snapshot_values.get("range_count") is not None
+                    else None
+                ),
+                "row_count": (
+                    _int(snapshot_values.get("row_count"))
+                    if snapshot_values.get("row_count") is not None
+                    else None
+                ),
+                "cell_count": (
+                    _int(snapshot_values.get("cell_count"))
+                    if snapshot_values.get("cell_count") is not None
+                    else None
+                ),
+            }
+        )
+        source_stats = {
+            key: value for key, value in source_stats.items() if value is not None
+        }
+        block = {
+            "turn": target.get("turn_id") or ctx.turn_id or "",
+            "type": "react.tool.result",
+            "call_id": target.get("tool_call_id") or "",
+            "tool_id": "named_services.sheets",
+            "event_source_id": f"named_services.{SHEETS_NAMESPACE}",
+            "mime": "text/markdown",
+            "path": object_ref,
+            "text": text,
+            "original_object_stats": source_stats,
+            "meta": {
+                "tool_call_id": target.get("tool_call_id") or "",
+                "tool_id": target.get("tool_id") or "react.read",
+                "turn_id": target.get("turn_id") or ctx.turn_id or "",
+                "object_ref": object_ref,
+                "source_namespace": SHEETS_NAMESPACE,
+                "materialized_path": target.get("logical_path")
+                or target.get("path")
+                or "",
+                "physical_path": target.get("physical_path")
+                or meta.get("physical_path")
+                or "",
+                "object_kind": _text(snapshot.get("object_kind")),
+                "mime": SHEETS_SNAPSHOT_MEDIA_TYPE,
+                "render_policy": "sheets.named_service.block_produce",
+            },
+        }
+        LOGGER.info(
+            "[sheets.named_service.block_produce] produced object_ref=%s "
+            "materialized_path=%s text_symbols=%s",
+            object_ref,
+            target.get("logical_path") or target.get("path") or "",
+            len(text),
+        )
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or SHEETS_NAMESPACE,
+            object_ref=object_ref,
+            extra={"blocks": [block]},
+        )
+
     async def object_list(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
     ) -> NamedServiceResponse:
@@ -762,8 +1274,7 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
 
     async def object_get(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
-    ) -> NamedServiceResponse:
-        del ctx
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
         try:
             parsed = parse_sheets_ref(request.object_ref)
         except ValueError as exc:
@@ -771,6 +1282,8 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
         unsupported = self._provider_not_supported(request, parsed)
         if unsupported is not None:
             return unsupported
+        if _is_materialization_request(request):
+            return await self._materialize_snapshot(request=request, parsed=parsed)
         filters = dict(request.filters or {})
         ranges = filters.get("ranges") or request.payload.get("ranges")
         if parsed["kind"] == "tab" and ranges:
@@ -840,11 +1353,165 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
                 account_id=parsed["account_id"],
                 provider=parsed["provider"],
             )
+        if not ctx.turn_id:
+            url_info = await self._download_url(ctx, ref=obj["ref"])
+            if url_info is not None:
+                snapshot_download = {
+                    "schema": SHEETS_SNAPSHOT_SCHEMA,
+                    "media_type": SHEETS_SNAPSHOT_MEDIA_TYPE,
+                    "filename": _snapshot_filename(parsed),
+                    "download": {"encoding": "url", **url_info},
+                }
+                # Put the complete-artifact escape hatch before potentially
+                # large inline range values in serialized MCP responses.
+                obj = {"snapshot": snapshot_download, **obj}
         return NamedServiceResponse.ok_response(
             provider=self._provider_identity(),
             namespace=request.namespace or SHEETS_NAMESPACE,
             object_ref=obj["ref"],
             object=obj,
+        )
+
+    async def _materialize_snapshot(
+        self,
+        *,
+        request: NamedServiceRequest,
+        parsed: Mapping[str, Any],
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
+        metadata, error = await self._execute(
+            request=request,
+            operation="describe",
+            claim=SHEETS_READ_CLAIM,
+            payload={"spreadsheet_ref": parsed["spreadsheet_id"]},
+            account_id=_text(parsed.get("account_id")),
+        )
+        if error is not None:
+            return error
+        metadata = metadata or {}
+        account_id = _text(metadata.get("account_id") or parsed.get("account_id"))
+        spreadsheet = _spreadsheet_object(
+            metadata,
+            account_id=account_id,
+            provider=_text(parsed.get("provider")) or GOOGLE_PROVIDER_KEY,
+        )
+        raw_tabs = [
+            dict(tab)
+            for tab in metadata.get("tabs") or []
+            if isinstance(tab, Mapping)
+        ]
+
+        if parsed["kind"] == "tab":
+            selected_tabs = [
+                tab
+                for tab in raw_tabs
+                if _int(tab.get("sheet_id")) == _int(parsed.get("sheet_id"))
+            ]
+            if not selected_tabs:
+                return NamedServiceResponse.error_response(
+                    code="sheets_tab_not_found",
+                    message="The spreadsheet tab was not found.",
+                    status=404,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or SHEETS_NAMESPACE,
+                    object_ref=request.object_ref,
+                )
+            materialized_object = _tab_object(
+                selected_tabs[0],
+                account_id=account_id,
+                spreadsheet_id=_text(parsed.get("spreadsheet_id")),
+                provider=_text(parsed.get("provider")) or GOOGLE_PROVIDER_KEY,
+            )
+        else:
+            selected_tabs = raw_tabs
+            materialized_object = spreadsheet
+
+        grid_tabs = [
+            tab
+            for tab in selected_tabs
+            if _text(tab.get("sheet_type") or "GRID").upper() == "GRID"
+            and _text(tab.get("title"))
+        ]
+        skipped_tabs = [
+            {
+                "sheet_id": _int(tab.get("sheet_id")),
+                "title": _text(tab.get("title")),
+                "sheet_type": _text(tab.get("sheet_type")),
+                "reason": "non_grid_tab",
+            }
+            for tab in selected_tabs
+            if tab not in grid_tabs
+        ]
+        values: dict[str, Any] = {
+            "spreadsheet_id": _text(parsed.get("spreadsheet_id")),
+            "ranges": [],
+            "range_count": 0,
+            "row_count": 0,
+            "cell_count": 0,
+        }
+        if grid_tabs:
+            values_result, values_error = await self._execute(
+                request=request,
+                operation="read",
+                claim=SHEETS_READ_CLAIM,
+                payload={
+                    "spreadsheet_ref": parsed["spreadsheet_id"],
+                    "ranges": [
+                        _whole_tab_range(tab.get("title")) for tab in grid_tabs
+                    ],
+                    "major_dimension": "ROWS",
+                    "value_render_option": "FORMATTED_VALUE",
+                    "date_time_render_option": "FORMATTED_STRING",
+                },
+                account_id=account_id,
+            )
+            if values_error is not None:
+                return values_error
+            values = dict(values_result or {})
+
+        object_ref = _text(materialized_object.get("ref") or request.object_ref)
+        snapshot = {
+            "schema": SHEETS_SNAPSHOT_SCHEMA,
+            "object_ref": object_ref,
+            "object_kind": _text(materialized_object.get("object_kind")),
+            "object": materialized_object,
+            "spreadsheet": spreadsheet,
+            "materialization": {
+                "values_materialized": True,
+                "complete_values": not skipped_tabs,
+                "selected_tab_count": len(selected_tabs),
+                "grid_tab_count": len(grid_tabs),
+                "range_count": _int(values.get("range_count")),
+                "cell_count": _int(values.get("cell_count")),
+                "skipped_tabs": skipped_tabs,
+                "delivery": (
+                    "The complete selected grid values are included. Explicit A1 "
+                    "range reads remain available when a client wants a partial "
+                    "response or the upstream provider requires smaller requests."
+                ),
+            },
+            # Keep inventory before the potentially large cell matrices in the
+            # serialized artifact so streaming clients see its shape first.
+            "values": values,
+        }
+        response = NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or SHEETS_NAMESPACE,
+            object_ref=object_ref,
+            attrs={
+                "materialization": {
+                    "schema": SHEETS_SNAPSHOT_SCHEMA,
+                    "media_type": SHEETS_SNAPSHOT_MEDIA_TYPE,
+                    "range_count": _int(values.get("range_count")),
+                    "cell_count": _int(values.get("cell_count")),
+                    "complete_values": not skipped_tabs,
+                }
+            },
+        )
+        return NamedServiceStreamResult(
+            response=response,
+            chunks=_json_chunks(snapshot),
+            filename=_snapshot_filename(parsed),
+            media_type=SHEETS_SNAPSHOT_MEDIA_TYPE,
         )
 
     async def object_upsert(
@@ -1059,10 +1726,12 @@ def make_sheets_named_service_provider(
     *,
     execute_operation: ExecuteSheetsOperation,
     bundle_id: str | None = None,
+    file_url_factory: Any = None,
 ) -> SheetsNamedServiceProvider:
     return SheetsNamedServiceProvider(
         execute_operation=execute_operation,
         bundle_id=bundle_id,
+        file_url_factory=file_url_factory,
     )
 
 
@@ -1079,6 +1748,8 @@ __all__ = [
     "SHEETS_GRANT_HINTS",
     "SHEETS_NAMESPACE",
     "SHEETS_SCHEMA",
+    "SHEETS_SNAPSHOT_MEDIA_TYPE",
+    "SHEETS_SNAPSHOT_SCHEMA",
     "SHEETS_SPREADSHEET_KIND",
     "SHEETS_TAB_KIND",
     "SheetsNamedServiceProvider",

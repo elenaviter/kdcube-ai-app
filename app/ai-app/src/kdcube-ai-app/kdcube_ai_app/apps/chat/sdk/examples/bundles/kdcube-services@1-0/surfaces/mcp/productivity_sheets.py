@@ -51,7 +51,7 @@ SHEETS_PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     },
     "productivity_sheets_read": {
         "label": "Read Google Sheet",
-        "description": "Read bounded A1 ranges from a spreadsheet.",
+        "description": "Read selected A1 ranges from a spreadsheet.",
         "connections": {
             "delegated_to_kdcube": {
                 "connected_accounts": [
@@ -181,7 +181,7 @@ def register_google_sheets_tools(
     tool_annotations_type: Any,
     enforce: EnforceTool,
 ) -> None:
-    """Register bounded Google Sheets tools on an existing productivity door."""
+    """Register Google Sheets read tools and bounded mutations."""
 
     ToolAnnotations = tool_annotations_type
     _enforce = enforce
@@ -270,7 +270,7 @@ def register_google_sheets_tools(
         name="productivity_sheets_read",
         title="Read Google Sheet",
         description=(
-            "Read one or more bounded A1 ranges from a spreadsheet id or URL. "
+            "Read one or more A1 ranges from a spreadsheet id or URL. "
             "Use describe first when tab titles are unknown. Returns each normalized "
             "range and its values without silently truncating cells."
         ),
@@ -286,8 +286,7 @@ def register_google_sheets_tools(
             list[str],
             Field(
                 min_length=1,
-                max_length=20,
-                description='One to twenty A1 ranges, for example ["Summary!A1:F40"].',
+                description='A1 ranges, for example ["Summary!A1:F40"].',
             ),
         ],
         major_dimension: Annotated[

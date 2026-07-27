@@ -52,6 +52,7 @@ class FakeSpreadsheet:
         self.sheet1 = FakeWorksheet(title="Sheet1")
         self.worksheets = {self.sheet1.id: self.sheet1}
         self.last_batch_update: dict[str, Any] | None = None
+        self.last_read_ranges: list[str] = []
         self.last_append: tuple[Any, Any, Any] | None = None
         self.last_clear: dict[str, Any] | None = None
         self.deleted_sheet_id: int | None = None
@@ -84,6 +85,7 @@ class FakeSpreadsheet:
         }
 
     def values_batch_get(self, ranges, params=None):
+        self.last_read_ranges = list(ranges)
         return {
             "valueRanges": [
                 {
@@ -333,14 +335,18 @@ def test_create_tab_update_delete_and_format(monkeypatch):
     assert client.spreadsheet.deleted_sheet_id == 22
 
 
-def test_validation_and_provider_auth_errors_are_structured(monkeypatch):
-    _, invalid = _execute(
+def test_large_read_is_passed_to_google_and_provider_auth_errors_are_structured(monkeypatch):
+    client, large_read = _execute(
         monkeypatch,
         "read",
-        {"spreadsheet_ref": "sheet-123", "ranges": ["Data!A1:Z1000"]},
+        {
+            "spreadsheet_ref": "sheet-123",
+            "ranges": ["Data!A1:Z1000", *[f"Data!A{i}:A{i}" for i in range(1, 25)]],
+        },
     )
-    assert invalid["ok"] is False
-    assert invalid["error"]["code"] == "request_too_large"
+    assert large_read["ok"] is True
+    assert large_read["ret"]["ranges"][0]["range"] == "Data!A1:Z1000"
+    assert len(client.spreadsheet.last_read_ranges) == 25
 
     class Unauthorized(RuntimeError):
         status = 401

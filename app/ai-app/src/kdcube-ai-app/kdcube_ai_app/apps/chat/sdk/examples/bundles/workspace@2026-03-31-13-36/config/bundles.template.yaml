@@ -375,6 +375,21 @@ bundles:
                         tool_traits:
                           upsert_object:
                             strategy: [exploitation]
+                      # Sheets supports both selected structured reads and
+                      # artifact materialization. Keep object.get available
+                      # for explicit A1 ranges; the paired event-source policy
+                      # below lets react.pull resolve the same sheets: refs
+                      # into a local JSON snapshot.
+                      # sheets:
+                      #   allowed:
+                      #     - provider.about
+                      #     - object.list
+                      #     - object.search
+                      #     - object.get
+                      #     - object.schema
+                      #     - object.upsert
+                      #     - object.action
+                      #     - object.delete
                     tool_traits:
                       provider_about:
                         strategy: [exploration]
@@ -393,9 +408,10 @@ bundles:
                       delete_object:
                         strategy: [exploitation]
                   # Add namespace-owned provider tools here when this agent
-                  # should read or mutate external objects. Keep object.get
-                  # out of the agent-facing tool set when pull is configured;
-                  # ReAct should materialize external refs through react.pull.
+                  # should read or mutate external objects. For file-like refs,
+                  # keep object.get out when every read should materialize via
+                  # react.pull. Providers with bounded query semantics may
+                  # expose object.get and a pull policy together.
                   # - name: task_service
                   #   kind: named_service
                   #   alias: named_services
@@ -549,6 +565,22 @@ bundles:
                   #   discovery:
                   #     mode: service_discovery
                   #   policies:
+                  #     pull:
+                  #       mode: provider
+                  #       operation: object.get
+                  # Sheets pull stores a complete JSON snapshot with workbook
+                  # metadata and used grid values. A whole react.read projects
+                  # a compact workbook inventory; ranged reads remain exact
+                  # JSON chunks. Enable this with the sheets tool entry above.
+                  # - kind: named_service
+                  #   namespace: sheets
+                  #   enabled: true
+                  #   discovery:
+                  #     mode: service_discovery
+                  #   policies:
+                  #     block_production:
+                  #       mode: provider
+                  #       operation: block.produce
                   #     pull:
                   #       mode: provider
                   #       operation: object.get

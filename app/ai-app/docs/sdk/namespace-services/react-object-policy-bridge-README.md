@@ -4,7 +4,7 @@ title: "Namespace Services: ReAct Object Policy Bridge"
 summary: "How the shared harness, named-service owner policies, and the ReAct pull/read adapter fit together without namespace-specific generic code."
 status: current
 tags: ["sdk", "namespace-services", "react", "block-production", "object-ref", "event-source", "policies"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "react.pull",
@@ -84,7 +84,7 @@ Namespace owner / provider layer
     - object kind and capabilities
     - object.get byte materialization
     - event_source_id resolution for refs
-    - block-production policy for model-visible blocks
+    - optional block-production policy for owner-shaped model-visible blocks
     - optional original_object_stats for stats-only reads
     - timeline render patches
     - announce/rendering policy for volatile summaries
@@ -153,6 +153,42 @@ Timeline.render()
 | `timeline_projection_policy(...)` | namespace owner or local runtime | timeline render | Project stored blocks before prompt rendering. |
 | `announce_event_policy(...)` | namespace owner or local runtime | prompt rendering | Add transient ANNOUNCE summaries for volatile/current state. |
 | `block.render` named-service operation | provider | prompt renderer or explicit render client | Patch provider-owned blocks or return a direct rendered representation. |
+
+## Snapshot Provider Example
+
+The `sheets` namespace combines exact local materialization with a bounded
+owner-shaped model view:
+
+```yaml
+surfaces:
+  as_consumer:
+    agents:
+      main:
+        event_sources:
+          - kind: named_service
+            namespace: sheets
+            enabled: true
+            discovery:
+              mode: service_discovery
+            policies:
+              block_production:
+                mode: provider
+                operation: block.produce
+              pull:
+                mode: provider
+                operation: object.get
+```
+
+This declaration registers the generic named-service artifact rehoster for the
+`sheets:` URI prefix. `react.pull` requests an `object.get` stream and writes
+the returned JSON snapshot into the turn workspace. `event.resolve` assigns the
+owner event source, and a whole-file `react.read` asks `block.produce` for a
+compact workbook inventory rather than placing all cells in model context.
+
+The exact JSON is still searchable and chunk-readable. `block.produce` returns
+no block when the read contains `read_range`; the generic reader then emits the
+requested line/symbol range. The tools that discover and mutate Sheets remain
+a separate `surfaces.as_consumer.agents.main.tools` policy.
 
 ## `original_object_stats`
 
@@ -285,8 +321,9 @@ For a namespace-owning app/provider:
 - Preserve the canonical `object_ref` in the rehoster result.
 - Register an `event_source_resolver` when the namespace needs custom
   URI-to-event-source routing.
-- Declare the owner event source with a `block_production` policy.
-- In the block-production policy:
+- Declare `block_production` only when generic artifact reading is not the
+  right model-facing representation.
+- When a block-production policy is declared:
   - normal read: emit bounded model-visible blocks;
   - stats-only read: optionally emit a block with top-level
     `original_object_stats`.

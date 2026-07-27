@@ -17,7 +17,6 @@ from typing import Any
 
 MAX_SEARCH_RESULTS = 50
 MAX_RANGES = 20
-MAX_READ_CELLS = 20_000
 MAX_WRITE_CELLS = 10_000
 MAX_APPEND_ROWS = 1_000
 MAX_TAB_CELLS = 1_000_000
@@ -120,7 +119,12 @@ def _estimated_range_cells(range_name: str) -> int | None:
     return (col_b - col_a + 1) * (row_b - row_a + 1)
 
 
-def _bounded_ranges(value: Any, *, max_cells: int) -> list[str]:
+def _bounded_ranges(
+    value: Any,
+    *,
+    max_cells: int | None,
+    max_ranges: int | None = MAX_RANGES,
+) -> list[str]:
     raw = (
         value
         if isinstance(value, Sequence) and not isinstance(value, (str, bytes))
@@ -131,10 +135,10 @@ def _bounded_ranges(value: Any, *, max_cells: int) -> list[str]:
         raise SheetsValidationError(
             "range_required", "At least one A1 range is required."
         )
-    if len(ranges) > MAX_RANGES:
+    if max_ranges is not None and len(ranges) > max_ranges:
         raise SheetsValidationError(
             "request_too_large",
-            f"At most {MAX_RANGES} ranges are allowed per call.",
+            f"At most {max_ranges} ranges are allowed per call.",
         )
     estimated = 0
     for range_name in ranges:
@@ -143,7 +147,7 @@ def _bounded_ranges(value: Any, *, max_cells: int) -> list[str]:
         cells = _estimated_range_cells(range_name)
         if cells is not None:
             estimated += cells
-    if estimated > max_cells:
+    if max_cells is not None and estimated > max_cells:
         raise SheetsValidationError(
             "request_too_large",
             f"The explicit ranges cover {estimated} cells; the limit is {max_cells}.",
@@ -388,7 +392,11 @@ def _read(*, client: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
     spreadsheet_id, spreadsheet = _open_spreadsheet(
         client, payload.get("spreadsheet_ref")
     )
-    ranges = _bounded_ranges(payload.get("ranges"), max_cells=MAX_READ_CELLS)
+    ranges = _bounded_ranges(
+        payload.get("ranges"),
+        max_cells=None,
+        max_ranges=None,
+    )
     params = {
         "majorDimension": _enum(
             payload.get("major_dimension"),
@@ -430,11 +438,6 @@ def _read(*, client: Any, payload: Mapping[str, Any]) -> dict[str, Any]:
                 or params["majorDimension"],
                 "values": rows,
             }
-        )
-    if cell_count > MAX_READ_CELLS:
-        raise SheetsValidationError(
-            "result_too_large",
-            f"Google returned {cell_count} cells; request narrower ranges under {MAX_READ_CELLS} cells.",
         )
     return {
         "spreadsheet_id": spreadsheet_id,
@@ -944,7 +947,6 @@ def execute_google_sheets_operation(
 __all__ = [
     "MAX_APPEND_ROWS",
     "MAX_RANGES",
-    "MAX_READ_CELLS",
     "MAX_SEARCH_RESULTS",
     "MAX_TAB_CELLS",
     "MAX_WRITE_CELLS",

@@ -36,6 +36,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.mail import make_mail_named_servic
 from kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service import parse_mail_ref
 from kdcube_ai_app.apps.chat.sdk.integrations.sheets import (
     make_sheets_named_service_provider,
+    parse_sheets_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.slack import make_slack_named_service_provider
 from kdcube_ai_app.apps.chat.sdk.integrations.slack.named_service import parse_slack_ref
@@ -60,6 +61,7 @@ from .services.named_services.request_scope import get_public_base_url
 from .services.productivity import (
     GoogleSheetsService,
     bind_service as bind_productivity_service,
+    fetch_google_sheets_snapshot,
 )
 from .surfaces.mcp import conversations as conversations_mcp_module
 from .surfaces.mcp import named_services as named_services_mcp_module
@@ -73,8 +75,8 @@ WORKFLOW_NAME = "kdcube_services"
 # Single descriptor key for the bundle's download-link signing secret. Configure it
 # in bundles.secrets.yaml under this bundle: conversations.file_download_secret.
 # One secret signs every out-of-band download this bundle serves (conv:fi:
-# artifacts, mail attachments, Slack files) — the token payload, not the key,
-# scopes each link to its exact object and requester.
+# artifacts, mail attachments, Slack files, Sheets snapshots) — the token
+# payload, not the key, scopes each link to its exact object and requester.
 CONV_FILE_DOWNLOAD_SECRET_KEY = "conversations.file_download_secret"
 STORAGE_WIDGET_SRC = "sdk://solutions/storage/ui.widget.storage"
 APP_CONFIG_WIDGET_SRC = "sdk://solutions/app_config/ui/widget"
@@ -385,6 +387,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             make_sheets_named_service_provider(
                 execute_operation=sheets_service.execute,
                 bundle_id=self._named_services_bundle_id(),
+                file_url_factory=self._integration_file_url,
             )
         )
         # Stored agent instruction sets (instr:custom:<id>[:<version>]):
@@ -481,10 +484,9 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         return {"url": url, "expires_at": expires_at}
 
     async def _integration_file_url(self, ns_ctx: Any, info: Any) -> Dict[str, Any] | None:
-        """Mint a short-lived absolute download URL for one integration binary
-        (mail attachment ref, Slack file ref).
+        """Mint a short-lived absolute download URL for integration content.
 
-        Called by the mail/slack named-service providers on turn-less
+        Called by mail, Slack, and Sheets named-service providers on turnless
         transports. Same signing secret and token shape as conv:fi: downloads;
         the token binds the exact object ref + requester, so the public route
         trusts the signature, not the request. Returns None when the public
@@ -631,9 +633,9 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         Hub facade and streams the bytes — no platform session, no chat turn."""
         del kwargs
         try:
-            from starlette.responses import JSONResponse, Response
+            from starlette.responses import JSONResponse, Response, StreamingResponse
         except Exception:  # pragma: no cover
-            from fastapi.responses import JSONResponse, Response  # type: ignore
+            from fastapi.responses import JSONResponse, Response, StreamingResponse  # type: ignore
 
         ref = str(object_ref or "").strip()
         token = str(download_token or "").strip()
@@ -655,6 +657,10 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         project = str(payload.get("project") or "")
         mail_parsed = parse_mail_ref(ref)
         slack_parsed = parse_slack_ref(ref)
+        try:
+            sheets_parsed = parse_sheets_ref(ref)
+        except ValueError:
+            sheets_parsed = {}
         if mail_parsed.get("kind") == "attachment":
             result = await fetch_mail_attachment(
                 self,
@@ -674,6 +680,15 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                 account_id=slack_parsed["account_id"],
                 file_id=slack_parsed["file_id"],
             )
+        elif sheets_parsed.get("kind") in {"spreadsheet", "tab"}:
+            result = await fetch_google_sheets_snapshot(
+                self,
+                user_id=user_id,
+                tenant=tenant,
+                project=project,
+                object_ref=ref,
+                bundle_id=self._named_services_bundle_id(),
+            )
         else:
             return JSONResponse(status_code=400, content={"error": "download_ref_unsupported"})
         if not result.get("ok"):
@@ -682,6 +697,22 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             if isinstance(result.get("resolution"), dict):
                 content["resolution"] = result["resolution"]
             return JSONResponse(status_code=int(result.get("status") or 500), content=content)
+
+        chunks = result.get("chunks")
+        if chunks is not None:
+            filename = str(result.get("filename") or "spreadsheet.sheets.json")
+            mime = str(result.get("mime_type") or "application/json")
+            headers = {
+                **dict(result.get("headers") or {}),
+                "Content-Disposition": _content_disposition(filename),
+                "Cache-Control": "private, no-store",
+            }
+            return StreamingResponse(
+                chunks,
+                status_code=int(result.get("status") or 200),
+                media_type=mime,
+                headers=headers,
+            )
 
         data = result.get("data") or b""
         filename = str(result.get("filename") or "file.bin")

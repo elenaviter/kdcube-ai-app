@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -10,6 +11,9 @@ from kdcube_ai_app.apps.chat.sdk.integrations.sheets.named_service import (
     SHEETS_CONNECTED_ACCOUNT_REQUIREMENTS,
     SHEETS_GRANT_HINTS,
     SHEETS_READ_CLAIM,
+    SHEETS_SNAPSHOT_MEDIA_TYPE,
+    SHEETS_SNAPSHOT_SCHEMA,
+    SHEETS_SPREADSHEET_KIND,
     SHEETS_WRITE_CLAIM,
     SheetsNamedServiceProvider,
     parse_sheets_ref,
@@ -19,8 +23,11 @@ from kdcube_ai_app.apps.chat.sdk.integrations.sheets.named_service import (
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
     NamedServiceContext,
     NamedServiceRequest,
+    NamedServiceStreamResult,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
+    BLOCK_PRODUCE,
+    EVENT_RESOLVE,
     OBJECT_ACTION,
     OBJECT_DELETE,
     OBJECT_GET,
@@ -118,10 +125,15 @@ class _FakeSheets:
         }
 
 
-def _provider(fake: _FakeSheets) -> SheetsNamedServiceProvider:
+def _provider(
+    fake: _FakeSheets,
+    *,
+    file_url_factory: Any = None,
+) -> SheetsNamedServiceProvider:
     return SheetsNamedServiceProvider(
         execute_operation=fake.execute,
         bundle_id="kdcube-services@1-0",
+        file_url_factory=file_url_factory,
     )
 
 
@@ -148,6 +160,14 @@ def test_sheets_refs_are_provider_neutral_and_stable() -> None:
         "sheet_id": 7,
         "kind": "tab",
     }
+
+    large_sheet_id = 1_932_156_744
+    assert tab_ref(
+        provider="google",
+        account_id="account-1",
+        spreadsheet_id="sheet-1",
+        sheet_id=large_sheet_id,
+    ).endswith(f":tab:{large_sheet_id}")
 
 
 def test_write_grant_and_connected_account_claims_are_separate_boundaries() -> None:
@@ -216,6 +236,376 @@ async def test_get_reads_metadata_or_explicit_ranges() -> None:
     assert values.ok is True
     assert values.object["ranges"][0]["values"] == [["A", "B"], [1, 2]]
     assert [call["operation"] for call in fake.calls] == ["describe", "read"]
+
+
+@pytest.mark.anyio
+async def test_turnless_metadata_get_offers_complete_snapshot_download() -> None:
+    fake = _FakeSheets()
+    minted: list[dict[str, Any]] = []
+
+    async def _file_url(ctx: NamedServiceContext, info: Any) -> dict[str, str]:
+        minted.append({"ctx": ctx, "info": dict(info or {})})
+        return {
+            "url": "https://runtime.test/signed-sheet",
+            "expires_at": "2026-07-27T12:00:00Z",
+        }
+
+    ref = "sheets:google:account-1:spreadsheet:sheet-1"
+    response = await _provider(fake, file_url_factory=_file_url).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="sheets",
+            object_ref=ref,
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object["snapshot"] == {
+        "schema": SHEETS_SNAPSHOT_SCHEMA,
+        "media_type": SHEETS_SNAPSHOT_MEDIA_TYPE,
+        "filename": "sheet-1.sheets.json",
+        "download": {
+            "encoding": "url",
+            "url": "https://runtime.test/signed-sheet",
+            "expires_at": "2026-07-27T12:00:00Z",
+        },
+    }
+    assert minted[0]["info"] == {"ref": ref}
+
+
+@pytest.mark.anyio
+async def test_turn_scoped_get_does_not_mint_out_of_band_snapshot_url() -> None:
+    fake = _FakeSheets()
+    calls = 0
+
+    async def _file_url(ctx: NamedServiceContext, info: Any) -> dict[str, str]:
+        nonlocal calls
+        calls += 1
+        return {"url": "https://runtime.test/unused"}
+
+    response = await _provider(fake, file_url_factory=_file_url).dispatch(
+        NamedServiceContext(
+            tenant="demo",
+            project="project",
+            user_id="user-1",
+            turn_id="turn-1",
+        ),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="sheets",
+            object_ref="sheets:google:account-1:spreadsheet:sheet-1",
+        ),
+    )
+
+    assert response.ok is True
+    assert "snapshot" not in response.object
+    assert calls == 0
+
+
+@pytest.mark.anyio
+async def test_turnless_ranged_get_keeps_complete_snapshot_download_fallback() -> None:
+    async def _file_url(ctx: NamedServiceContext, info: Any) -> dict[str, str]:
+        return {"url": "https://runtime.test/signed-sheet"}
+
+    response = await _provider(
+        _FakeSheets(),
+        file_url_factory=_file_url,
+    ).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="sheets",
+            object_ref="sheets:google:account-1:spreadsheet:sheet-1",
+            filters={"ranges": ["Plan!A1:B2"]},
+        ),
+    )
+
+    assert response.ok is True
+    assert next(iter(response.object)) == "snapshot"
+    assert response.object["snapshot"]["download"]["url"] == (
+        "https://runtime.test/signed-sheet"
+    )
+    assert response.object["ranges"][0]["values"] == [["A", "B"], [1, 2]]
+
+
+@pytest.mark.anyio
+async def test_get_stream_materializes_complete_sheet_snapshot_for_react_pull() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1"
+
+    result = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="sheets",
+            object_ref=ref,
+            response_mode="stream",
+            context={"source": "react.pull", "materialize": True},
+        ),
+    )
+
+    assert isinstance(result, NamedServiceStreamResult)
+    assert result.response.ok is True
+    assert result.response.object_ref == ref
+    assert result.media_type == SHEETS_SNAPSHOT_MEDIA_TYPE
+    assert result.filename == "sheet-1.sheets.json"
+    body = b"".join([chunk async for chunk in result.chunks])
+    snapshot = json.loads(body)
+    assert snapshot["schema"] == SHEETS_SNAPSHOT_SCHEMA
+    assert snapshot["object_ref"] == ref
+    assert snapshot["object"]["tabs"][0]["ref"].endswith(":tab:7")
+    assert snapshot["values"]["ranges"][0]["values"] == [["A", "B"], [1, 2]]
+    assert snapshot["materialization"]["complete_values"] is True
+    assert [call["operation"] for call in fake.calls] == ["describe", "read"]
+    assert fake.calls[1]["payload"]["ranges"] == ["'Plan'"]
+    assert fake.calls[0]["claim"] == SHEETS_READ_CLAIM
+    assert fake.calls[1]["claim"] == SHEETS_READ_CLAIM
+
+
+@pytest.mark.anyio
+async def test_large_snapshot_streams_in_multiple_lossless_chunks() -> None:
+    class _LargeSheets(_FakeSheets):
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            if kwargs["operation"] != "read":
+                return await super().execute(**kwargs)
+            self.calls.append(dict(kwargs))
+            large_cell = "sheet-value-" * 10_000
+            return {
+                "ok": True,
+                "ret": {
+                    "account_id": "account-1",
+                    "spreadsheet_id": "sheet-1",
+                    "ranges": [
+                        {"range": "Plan!A1", "values": [[large_cell]]}
+                    ],
+                    "range_count": 1,
+                    "row_count": 1,
+                    "cell_count": 1,
+                },
+            }
+
+    result = await _provider(_LargeSheets()).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="sheets",
+            object_ref="sheets:google:account-1:spreadsheet:sheet-1",
+            response_mode="stream",
+        ),
+    )
+
+    assert isinstance(result, NamedServiceStreamResult)
+    chunks = [chunk async for chunk in result.chunks]
+    assert len(chunks) > 1
+    snapshot = json.loads(b"".join(chunks))
+    assert snapshot["values"]["ranges"][0]["values"][0][0] == (
+        "sheet-value-" * 10_000
+    )
+
+
+@pytest.mark.anyio
+async def test_get_stream_materializes_only_the_requested_tab() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1:tab:7"
+
+    result = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="sheets",
+            object_ref=ref,
+            response_mode="stream",
+            context={"source": "react.pull", "materialize": True},
+        ),
+    )
+
+    assert isinstance(result, NamedServiceStreamResult)
+    assert result.response.object_ref == ref
+    assert result.filename == "sheet-1-tab-7.sheets.json"
+    snapshot = json.loads(b"".join([chunk async for chunk in result.chunks]))
+    assert snapshot["object_ref"] == ref
+    assert snapshot["object_kind"] == "sheets.tab"
+    assert snapshot["object"]["ref"] == ref
+    assert snapshot["materialization"]["selected_tab_count"] == 1
+    assert fake.calls[1]["payload"]["ranges"] == ["'Plan'"]
+
+
+@pytest.mark.anyio
+async def test_event_resolve_maps_sheet_refs_without_calling_google() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1:tab:7"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=EVENT_RESOLVE,
+            namespace="sheets",
+            object_ref=ref,
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object_ref == ref
+    assert response.extra["event_source_id"] == "named_services.sheets"
+    assert response.extra["target_surface"] == "sdk.sheets.snapshot"
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_block_produce_projects_inventory_without_cell_values() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1"
+    snapshot = {
+        "schema": SHEETS_SNAPSHOT_SCHEMA,
+        "object_ref": ref,
+        "object_kind": "sheets.spreadsheet",
+        "object": {
+            "ref": ref,
+            "object_kind": "sheets.spreadsheet",
+            "spreadsheet_id": "sheet-1",
+            "title": "Quarterly plan",
+            "tabs": [
+                {
+                    "ref": f"{ref}:tab:7",
+                    "sheet_id": 7,
+                    "title": "Plan",
+                    "row_count": 100,
+                    "column_count": 12,
+                }
+            ],
+        },
+        "spreadsheet": {
+            "spreadsheet_id": "sheet-1",
+            "title": "Quarterly plan",
+            "web_url": "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+            "tabs": [
+                {
+                    "ref": f"{ref}:tab:7",
+                    "sheet_id": 7,
+                    "title": "Plan",
+                    "row_count": 100,
+                    "column_count": 12,
+                }
+            ],
+        },
+        "values": {
+            "ranges": [
+                {
+                    "range": "Plan!A1:B2",
+                    "values": [["Header", "PRIVATE-CELL-VALUE"], [1, 2]],
+                }
+            ],
+            "range_count": 1,
+            "row_count": 2,
+            "cell_count": 4,
+        },
+        "materialization": {
+            "values_materialized": True,
+            "complete_values": True,
+        },
+    }
+    logical_path = "conv:fi:conv_1.turn_1.named_services/sheets/sheet-1.sheets.json"
+    physical_path = "turn_1/attachments/named_services/sheets/sheet-1.sheets.json"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=BLOCK_PRODUCE,
+            namespace="sheets",
+            object_ref=ref,
+            payload={
+                "target": {
+                    "turn_id": "turn_1",
+                    "tool_call_id": "tc_1",
+                    "tool_id": "react.read",
+                    "logical_path": logical_path,
+                    "raw": {
+                        "text": json.dumps(snapshot),
+                        "mime": SHEETS_SNAPSHOT_MEDIA_TYPE,
+                    },
+                    "meta": {"physical_path": physical_path},
+                }
+            },
+        ),
+    )
+
+    assert response.ok is True
+    assert len(response.extra["blocks"]) == 1
+    block = response.extra["blocks"][0]
+    assert block["path"] == ref
+    assert "[SHEETS SNAPSHOT]" in block["text"]
+    assert "Quarterly plan" in block["text"]
+    assert "Plan!A1:B2 (2 rows, 4 cells)" in block["text"]
+    assert "values.ranges[].values" in block["text"]
+    assert logical_path in block["text"]
+    assert physical_path in block["text"]
+    assert "PRIVATE-CELL-VALUE" not in block["text"]
+    assert "react.rg" not in block["text"]
+    assert "react.read" not in block["text"]
+    assert "next:" not in block["text"]
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_block_produce_is_client_agnostic_for_ranged_targets() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1"
+    snapshot = {
+        "schema": SHEETS_SNAPSHOT_SCHEMA,
+        "object_ref": ref,
+        "object_kind": SHEETS_SPREADSHEET_KIND,
+        "object": {
+            "ref": ref,
+            "object_kind": SHEETS_SPREADSHEET_KIND,
+            "spreadsheet_id": "sheet-1",
+            "title": "Quarterly plan",
+        },
+        "spreadsheet": {
+            "spreadsheet_id": "sheet-1",
+            "title": "Quarterly plan",
+            "tabs": [],
+        },
+        "values": {
+            "ranges": [],
+            "range_count": 0,
+            "row_count": 0,
+            "cell_count": 0,
+        },
+        "materialization": {
+            "values_materialized": True,
+            "complete_values": True,
+        },
+    }
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=BLOCK_PRODUCE,
+            namespace="sheets",
+            object_ref=ref,
+            payload={
+                "target": {
+                    "raw": {"text": json.dumps(snapshot)},
+                    "meta": {
+                        "read_range": {
+                            "range_kind": "lines",
+                            "line_start": 42,
+                            "line_end": 42,
+                        }
+                    },
+                }
+            },
+        ),
+    )
+
+    assert response.ok is True
+    assert len(response.extra["blocks"]) == 1
+    block = response.extra["blocks"][0]
+    assert "[SHEETS SNAPSHOT]" in block["text"]
+    assert "react.rg" not in block["text"]
+    assert "react.read" not in block["text"]
+    assert fake.calls == []
 
 
 @pytest.mark.anyio

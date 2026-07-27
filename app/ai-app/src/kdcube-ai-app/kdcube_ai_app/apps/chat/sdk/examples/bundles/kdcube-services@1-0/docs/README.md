@@ -160,6 +160,16 @@ public/mcp/productivity   -> productivity_sheets_* tools
                                                -> GoogleSheetsService
 ```
 
+The Sheets adapter also implements the named-service stream contract used by
+the agentic harness. A consumer that declares Sheets pull and block-production
+policies can turn a spreadsheet or tab ref into a
+`kdcube.sheets.snapshot.v1` JSON artifact with `react.pull`. A whole-file
+`react.read` renders compact workbook inventory; `react.rg` and ranged
+`react.read` expose exact JSON chunks when needed. Sheets publishes no ANNOUNCE
+or `block.render` policy for this snapshot. On turnless MCP, `object.get` can
+return a signed URL for the complete snapshot beside metadata or selected
+inline ranges.
+
 ### Conversation named service (`conv`)
 
 This bundle registers the SDK-owned conversation provider
@@ -231,7 +241,7 @@ own managed MCP surfaces.
 
 This app is a facade over several owners rather than one data store. It reads
 conversation records from the conversation subsystem, fetches mail/Slack bytes
-from provider APIs, writes only temporary integration staging, uses app secrets
-for signed transfer URLs, and uses Redis for discovery/relay coordination. The
-canonical ownership, retention, backup, and cleanup map is
+and Sheets snapshots from provider APIs, writes only temporary integration
+staging, uses app secrets for signed transfer URLs, and uses Redis for
+discovery/relay coordination. The canonical ownership, retention, backup, and cleanup map is
 [storage/README.md](storage/README.md).

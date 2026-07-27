@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from pathlib import Path
 
 from kdcube_ai_app.apps.chat.sdk.integrations.connected_accounts import (
@@ -149,3 +150,80 @@ async def test_google_sheets_multi_claim_resolution_stays_on_one_account(
     assert credential.claim == "sheets:write"
     assert [call["claim"] for call in calls] == ["sheets:read", "sheets:write"]
     assert [call["account_id"] for call in calls] == ["", "google-account-1"]
+
+
+async def test_signed_snapshot_re_resolves_user_credential_and_streams_all_values(
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    resolutions = []
+
+    async def fake_access_token(_entrypoint, **kwargs):
+        resolutions.append(dict(kwargs))
+        return "provider-secret-token", None
+
+    async def fake_venv(**kwargs):
+        operation = kwargs["operation"]
+        if operation == "describe":
+            return {
+                "ok": True,
+                "ret": {
+                    "spreadsheet_id": "sheet-123",
+                    "title": "KDCube Sheets MCP Test",
+                    "tabs": [
+                        {
+                            "sheet_id": 7,
+                            "title": "Data",
+                            "sheet_type": "GRID",
+                            "row_count": 2,
+                            "column_count": 2,
+                        }
+                    ],
+                },
+            }
+        assert operation == "read"
+        return {
+            "ok": True,
+            "ret": {
+                "spreadsheet_id": "sheet-123",
+                "ranges": [
+                    {
+                        "range": "Data!A1:B2",
+                        "values": [["Name", "Value"], ["full", 42]],
+                    }
+                ],
+                "range_count": 1,
+                "row_count": 2,
+                "cell_count": 4,
+            },
+        }
+
+    monkeypatch.setattr(
+        module,
+        "resolve_connected_account_access_token",
+        fake_access_token,
+    )
+    monkeypatch.setattr(module, "_execute_google_sheets_in_venv", fake_venv)
+
+    result = await module.fetch_google_sheets_snapshot(
+        object(),
+        user_id="user-1",
+        tenant="demo",
+        project="project",
+        object_ref="sheets:google:account-1:spreadsheet:sheet-123",
+        bundle_id="kdcube-services@1-0",
+    )
+
+    assert result["ok"] is True
+    chunks = [chunk async for chunk in result["chunks"]]
+    body = b"".join(chunks)
+    assert chunks
+    assert body.index(b'"materialization"') < body.index(b'"values"')
+    snapshot = json.loads(body)
+    assert snapshot["values"]["ranges"][0]["values"] == [
+        ["Name", "Value"],
+        ["full", 42],
+    ]
+    assert [row["claim"] for row in resolutions] == ["sheets:read"]
+    assert all(row["user_id"] == "user-1" for row in resolutions)
+    assert "provider-secret-token" not in body.decode("utf-8")

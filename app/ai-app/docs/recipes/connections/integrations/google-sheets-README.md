@@ -11,6 +11,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-venv-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/kdcube-services@1-0/interface/README.md
 ---
 # Google Sheets Through KDCube MCP
@@ -258,10 +259,10 @@ The equivalent named-services chain is:
 named_services_search namespace=sheets
   -> sheets:google:<account_id>:spreadsheet:<spreadsheet_id>
 named_services_get namespace=sheets object_ref=<spreadsheet ref>
-  -> metadata and stable tab refs
+  -> metadata, stable tab refs, and a signed full-snapshot URL on external MCP
 named_services_get namespace=sheets object_ref=<spreadsheet ref>
   filters_json='{"ranges":["Plan!A1:D20"]}'
-  -> bounded values
+  -> selected values inline
 named_services_upsert / named_services_action
   -> one explicit bounded change
 ```
@@ -283,15 +284,90 @@ sheets:<provider>:<account_id>:spreadsheet:<spreadsheet_id>:tab:<sheet_id>
 Google is the first backing provider. A provider name in a ref is routing data,
 not a provider token.
 
+On the turnless named-services MCP surface, `object.get` also carries
+`ret.object.snapshot.download.url` when signed file delivery is configured,
+including when selected A1 values are returned inline. Fetch that short-lived
+URL to receive the complete authorized
+`kdcube.sheets.snapshot.v1` JSON artifact outside the model response. The URL
+is bound to the exact ref, user, tenant, and project. Google credentials stay
+server-side and are re-resolved when the URL is used. Explicit A1 ranges are an
+alternative for clients that want selected values inline.
+
+### Make `sheets:` refs usable in the ReAct workspace
+
+Exposing named-service tools lets the agent find and operate on Sheets. Add a
+separate event-source declaration when the same refs should also work with
+`react.pull` and owner-shaped `react.read` rendering:
+
+This section applies only to an app using the KDCube ReAct harness. An external
+MCP client such as Claude Code uses the named-service search/get/schema and
+mutation tools, then uses its own local processing tools. MCP does not expose
+`react.pull`, `react.read`, or `react.rg`.
+
+```yaml
+surfaces:
+  as_consumer:
+    agents:
+      main:
+        event_sources:
+          - kind: named_service
+            namespace: sheets
+            enabled: true
+            discovery:
+              mode: service_discovery
+            policies:
+              block_production:
+                mode: provider
+                operation: block.produce
+              pull:
+                mode: provider
+                operation: object.get
+```
+
+The flow is then:
+
+```text
+named_services.search_objects(namespace="sheets", ...)
+  -> sheets:google:<account_id>:spreadsheet:<spreadsheet_id>
+
+react.pull(paths=[<returned sheets ref>])
+  -> conv:fi:.../<spreadsheet_id>.sheets.json
+
+react.read(paths=[<returned conv:fi ref>])
+  -> compact [SHEETS SNAPSHOT] inventory
+
+react.rg(root=<returned conv:fi ref>, pattern=...)
+  -> exact read_items for matching JSON regions
+
+react.read(items=[<returned read_item>])
+  -> exact line-numbered JSON chunk
+```
+
+The snapshot schema is `kdcube.sheets.snapshot.v1`. It includes canonical
+identity, metadata, and used values for the selected grid tabs. KDCube does not
+apply a range-count or returned-cell ceiling to reads. If Google cannot serve a
+large selection in one provider request, the caller can retrieve explicit A1
+ranges in separate calls; KDCube reports that provider failure rather than
+silently truncating values.
+
+A whole-file `react.read` does not inject all cell values into the model
+context. The Sheets provider's `block.produce` operation renders workbook
+identity, tabs, dimensions, materialized ranges and counts, completeness, and
+the logical/physical snapshot paths. Code can process the complete local JSON
+through `physical_path`. When exact JSON text is needed, use `react.rg` and pass
+its `read_items` to `react.read`, or request manual line/symbol ranges. Ranged
+reads intentionally bypass the compact projection and remain exact chunks.
+
 On the productivity door, search accepts a title fragment; a blank query lists
 recently modified spreadsheets. Every later typed tool accepts either the
 returned `spreadsheet_id` or a full Google Sheets URL. `describe` returns stable
 `sheet_id` values for tab and formatting operations. On the named-services
 door, use the complete spreadsheet/tab ref returned by the preceding call.
 
-Calls are deliberately bounded: at most 50 search results, 20 ranges, 20,000
-read cells, 10,000 written cells, 1,000 appended rows, and 1,000,000 cells in a
-new/resized tab. Oversized requests fail explicitly instead of truncating.
+Search returns at most 50 results. Mutations are deliberately bounded: at most
+20 ranges and 10,000 cells per write, 1,000 appended rows, and 1,000,000 cells
+in a new or resized tab. Read responses preserve every value returned by the
+provider; they are not silently truncated.
 
 `append_rows` and `create_spreadsheet` are not exactly-once operations. If a
 transport failure reports `outcome_unknown`, inspect/search before retrying.
@@ -316,7 +392,15 @@ Use a disposable spreadsheet and verify:
    refresh token may appear.
 8. Repeat search/read and one disposable update through `namespace=sheets` on
    the named-services endpoint.
-9. Re-test Gmail and Slack through the same productivity MCP endpoint.
+9. From an external MCP client, fetch `ret.object.snapshot.download.url` and verify
+   the complete JSON snapshot contains the expected tabs and values.
+10. In Workspace, pull the returned `sheets:` ref and read its `conv:fi:` path.
+   Verify the model sees a compact `[SHEETS SNAPSHOT]` inventory without cell
+   values.
+11. Run `react.rg` against the same path and read one returned range. Verify the
+    exact JSON chunk, including values in that range, becomes visible.
+12. Use code with the returned `physical_path` to inspect workbook values.
+13. Re-test Gmail and Slack through the same productivity MCP endpoint.
 
 Provider sharing/permission administration, deleting the spreadsheet file,
 Apps Script, comments, and raw `batchUpdate` payloads are intentionally outside

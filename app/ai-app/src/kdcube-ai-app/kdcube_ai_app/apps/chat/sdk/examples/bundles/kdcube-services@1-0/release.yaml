@@ -14,17 +14,24 @@ bundle:
     - Publishes configured named-service namespaces through the managed
       public/mcp/named_services resource and the idempotent named-service relay.
     - Serves privileged platform administration widgets from one stable app.
-    - Supports signed out-of-band conversation, mail, Slack, and staged-upload
-      file transfer without placing binary bytes in MCP/model context.
+    - Supports signed out-of-band conversation, mail, Slack, Sheets snapshot,
+      and staged-upload transfer without placing file bytes in model context.
     - Uses Connection Hub delegated credentials and descriptor-managed
       tool-centric grants.
-    - Adds bounded Google Sheets discovery, read, values, tab, and formatting
+    - Adds Google Sheets discovery, read, values, tab, and bounded mutation
       tools to the managed productivity MCP surface. Google credentials remain
       behind the connected-account boundary and optional dependencies remain
       in the app-owned venv.
     - Publishes the same spreadsheet capability through the provider-neutral
       `sheets` named-service namespace, with stable spreadsheet/tab refs and
       per-operation read/write grants.
+    - Streams complete `kdcube.sheets.snapshot.v1` artifacts so consumer apps
+      can resolve spreadsheet and tab refs through the generic harness pull
+      path.
+    - Gives turnless named-service clients a signed URL for the same complete
+      snapshot, bound to the exact user, scope, and Sheets ref.
+    - Projects whole snapshot reads into compact workbook inventory while
+      preserving exact `react.rg` and ranged-read access to the local JSON.
     - Declares the complete interface in OpenAPI and documents storage
       ownership, retention, backup, cleanup, and temporary staging constraints.
 

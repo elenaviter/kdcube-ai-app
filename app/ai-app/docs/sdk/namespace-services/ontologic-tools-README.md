@@ -4,7 +4,7 @@ title: "Namespace Services: Ontologic Tools"
 summary: "The named-service ontologic tools as one coherent model-facing surface for operating any realm by satisfying schemas."
 status: design
 tags: ["sdk", "namespace-services", "ontologic-tools", "agents", "schema", "affordance"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "ontologic tools",
@@ -22,6 +22,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/providers-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/clients-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/named-services-tools-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/ecosystem-component-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/object-ref-presentation-and-actions-README.md
 ---
@@ -104,6 +105,12 @@ parameters and the config that exposes each one, see
 `object_ref` opacity rule and provider-owned actions are in
 [Object Refs, Presentation, And Actions](object-ref-presentation-and-actions-README.md).
 
+Provider results stay client-neutral. They describe the object, its size and
+shape, available inline data, cursors/ranges, and any signed artifact URL. They
+do not prescribe client-local tools. A ReAct consumer may inspect a local
+artifact with ReAct tools; an external MCP client may download the signed URL
+and use its own file facilities. Mail, Slack, and Sheets follow this boundary.
+
 ### How They Compose
 
 The tools form one navigation path from "I know nothing about this realm" to "I
@@ -128,6 +135,16 @@ object_action
 
 The path is **catalog → schema (by part) → find → satisfy**. The agent reads
 the realm down to the kind it must satisfy, never the whole realm at once.
+
+The same returned `object_ref` can also become a local agent artifact when the
+ReAct consumer declares a provider-backed pull policy for that namespace. The
+tools still discover the object; `react.pull` then asks the owner for exact
+bytes and returns a local `conv:fi:` ref for `react.read`. The `sheets`
+namespace is a worked example: search returns a `sheets:` ref, and pull
+materializes a JSON spreadsheet snapshot. External MCP clients do not receive
+these `react.*` tools. A turnless get can return a signed URL for the complete
+snapshot, including beside selected A1 values returned inline. See
+[ReAct Object Materialization](react-object-materialization-README.md).
 
 ### The Schema's `tools` Block Is the Affordance Surface
 

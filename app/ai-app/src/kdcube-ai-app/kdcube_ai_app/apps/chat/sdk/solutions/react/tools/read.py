@@ -909,6 +909,11 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
         source_line_count: Optional[int],
     ) -> bool:
         meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
+        if isinstance(meta.get("read_range"), dict):
+            # The ReAct client explicitly selected this local text range. Keep
+            # it exact instead of asking the object owner to replace it with a
+            # semantic whole-object projection.
+            return False
         object_ref = _object_ref_from_block(block)
         if not object_ref:
             return False
@@ -1364,14 +1369,20 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
             item_requests_by_path.setdefault(path_key, []).append(req)
 
     def _stats_entry_for_text(*, path: str, text: str, mime: str = "", bytes_override: Optional[int] = None) -> Dict[str, Any]:
+        line_count = len(text.splitlines())
         entry: Dict[str, Any] = {
             "path": path,
             "status": "stats_only",
             "kind": "text",
             "tokens": _count_tokens(text),
             "text_symbols": len(text),
-            "line_count": len(text.splitlines()),
+            "line_count": line_count,
             "bytes": int(bytes_override if bytes_override is not None else len(text.encode("utf-8", errors="ignore"))),
+            "read_items": [{
+                "path": path,
+                "line_start": 1,
+                "line_count": min(120, max(1, line_count)),
+            }],
         }
         if mime:
             entry["mime"] = mime
@@ -1676,6 +1687,18 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                 "mime": art_mime,
                 "content_materialized": False,
             }
+            source_line_count = (
+                int(res.get("line_count"))
+                if isinstance(res.get("line_count"), int)
+                else None
+            )
+            if is_text and source_line_count is not None:
+                entry["line_count"] = source_line_count
+                entry["read_items"] = [{
+                    "path": ctx_path,
+                    "line_start": 1,
+                    "line_count": min(120, max(1, source_line_count)),
+                }]
             if source_object_ref:
                 entry["object_ref"] = source_object_ref
                 original_object_stats = await _original_object_stats_for_block(
@@ -1698,7 +1721,7 @@ async def handle_react_read(*, ctx_browser: Any, state: Dict[str, Any], tool_cal
                         },
                     },
                     source_bytes=size_bytes or 0,
-                    source_line_count=res.get("line_count") if isinstance(res.get("line_count"), int) else None,
+                    source_line_count=source_line_count,
                 )
                 if original_object_stats:
                     entry["original_object_stats"] = original_object_stats

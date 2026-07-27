@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/events/artifact-resolutio
 title: "Artifact Resolution And Materialization"
 summary: "How canonical conversation files and owner-domain refs become authorized bytes in an agent turn workspace."
 tags: ["runtime", "harness", "events", "workspace", "artifacts", "namespaces"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "artifact resolver",
@@ -27,7 +27,7 @@ Materialization places those bytes into a concrete turn workspace.
 
 ```text
 source ref
-  conv:fi:... | mem:... | task:... | cnv:... | custom:
+  conv:fi:... | mem:... | task:... | cnv:... | sheets:... | custom:
        |
        v
 namespace owner resolves under carried request identity
@@ -61,7 +61,8 @@ adapters.
 
 ### Owner-domain objects
 
-Refs such as `mem:`, `task:`, and `cnv:` remain opaque outside their provider.
+Refs such as `mem:`, `task:`, `cnv:`, and `sheets:` remain opaque outside
+their provider.
 The owner may expose:
 
 - a named-service `object.get` stream;
@@ -121,6 +122,43 @@ not make them model-callable.
 
 For common named-service objects, prefer the generic named-service artifact
 bridge over custom per-namespace storage code.
+
+The consumer enables that bridge per agent and namespace:
+
+```yaml
+surfaces:
+  as_consumer:
+    agents:
+      main:
+        event_sources:
+          - kind: named_service
+            namespace: sheets
+            enabled: true
+            discovery: {mode: service_discovery}
+            policies:
+              block_production: {mode: provider, operation: block.produce}
+              pull: {mode: provider, operation: object.get}
+```
+
+At runtime, this registers a rehoster for the `sheets:` prefix. The bridge calls
+the discovered owner with `object.get(response_mode=stream)`, writes the bytes
+inside the current turn, and carries the provider-returned canonical
+`object_ref` on the materialized result. For Sheets, those bytes are a
+JSON snapshot of spreadsheet/tab metadata and all values returned for the
+selected grid tabs. Other agent frameworks
+can use the same harness resolver; `react.pull` is one adapter over it.
+
+The local JSON remains the exact machine-readable source. For a whole-file
+`react.read`, the Sheets owner projects a compact inventory with workbook and
+tab metadata, dimensions, range/count summaries, completeness, and workspace
+paths. It omits cell values from that overview. Explicit line/symbol ranges,
+including `read_items` returned by `react.rg`, bypass the overview and expose
+the requested JSON chunk. Code reads the full snapshot by its physical path.
+
+The `react.*` commands in this example are ReAct adapter tools. A different
+in-process agent may call the shared harness resolver through its own adapter.
+An external MCP client receives only the configured MCP/named-service tools and
+must use its own local file or code facilities.
 
 ## ReAct Adapter
 

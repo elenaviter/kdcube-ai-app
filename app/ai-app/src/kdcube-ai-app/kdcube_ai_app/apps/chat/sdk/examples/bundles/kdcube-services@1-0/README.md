@@ -12,7 +12,7 @@ primary_surfaces:
   - "MCP endpoint `conversations` — delegated access to conversations_export"
   - "MCP endpoint `named_services` — delegated access to configured namespaces, including provider-neutral spreadsheets"
   - "MCP endpoint `productivity` — governed Slack, mail, and Google Sheets tools over connected accounts"
-  - "Signed public file transfer — conversation, mail, Slack, and staged uploads"
+  - "Signed public transfer — conversation, mail, Slack, Sheets snapshots, and staged uploads"
 links:
   config: config/bundles.template.yaml
   interface: interface/README.md
@@ -197,7 +197,11 @@ Sheets service used by `public/mcp/productivity`:
 named_services_search namespace=sheets
   -> sheets:google:<account_id>:spreadsheet:<spreadsheet_id>
 named_services_get <spreadsheet ref>
-  -> metadata, tab refs, or explicitly requested A1 ranges
+  -> metadata, tab refs, signed full-snapshot URL, or selected A1 values
+react.pull <spreadsheet or tab ref>
+  -> JSON snapshot rehosted into the agent turn workspace
+react.read <rehosted snapshot ref>
+  -> compact workbook/tab inventory; cell values stay in the local JSON
 named_services_upsert / named_services_action / named_services_delete
   -> bounded spreadsheet, value, formatting, and tab mutations
 ```
@@ -207,6 +211,21 @@ A read requires a caller grant and connected-account claim for `sheets:read`.
 A mutation requires the caller's `sheets:write` grant, while the connected
 Google account must hold both `sheets:read` and `sheets:write`. These two
 boundaries are checked independently.
+
+Harness compatibility is consumer-controlled. An agent app declares
+provider-backed `pull: object.get` and `block_production: block.produce`
+event-source policies for `namespace: sheets`. The generic named-service
+rehoster requests a `kdcube.sheets.snapshot.v1` stream with canonical identity,
+metadata, and used values. A whole-file `react.read` projects a compact
+inventory without cell values. Ranged reads remain exact JSON chunks, and code
+can process the full snapshot by physical path. The snapshot is transient turn
+input, not a copy retained by this app.
+
+That pull/read path belongs to KDCube's ReAct adapter. External MCP clients use
+the named-service operations shown above. Turnless get responses carry a
+short-lived signed snapshot URL when file delivery is configured, including
+beside selected inline ranges. The MCP surface does not provide `react.*`
+tools.
 
 ### Productivity
 
@@ -242,7 +261,7 @@ three session-less, signed routes:
 | Alias | Method | Purpose |
 | --- | --- | --- |
 | `integration_file_upload` | POST | Upload one short-lived `staged:` file for a later mail/Slack action. |
-| `integration_file_download` | GET | Stream a mail or Slack file under the signed delegated-user scope. |
+| `integration_file_download` | GET | Stream a mail file, Slack file, or Sheets snapshot under the signed delegated-user scope. |
 | `conv_file_download` | GET | Stream a `conv:fi:` conversation artifact under the signed user/conversation scope. |
 
 These routes are public only in transport terms. A managed MCP call mints the

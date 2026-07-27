@@ -347,7 +347,7 @@ paths:
       description: |
         Stateless streamable-HTTP MCP endpoint serving plain tools over the
         approving user's connected accounts (Slack search, mail search/read,
-        and bounded Google Sheets discovery/read/write operations).
+        and Google Sheets discovery/read plus bounded write operations).
         Each tool declares its connected-account requirements and enforces
         them at execution time; consent envelopes carry the Connection Hub
         next step.
@@ -403,7 +403,7 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/public/integration_file_download:
     get:
       tags: [Signed Files]
-      summary: Download one mail or Slack binary by signed object ref.
+      summary: Download one mail file, Slack file, or Sheets snapshot by signed object ref.
       operationId: integration_file_download
       security:
         - SignedDownloadToken: []
@@ -514,6 +514,8 @@ components:
       description: Raw file bytes with Content-Disposition and private, no-store cache policy.
       content:
         application/octet-stream:
+          schema: { type: string, format: binary }
+        "application/vnd.kdcube.sheets.snapshot+json;version=1":
           schema: { type: string, format: binary }
     JsonError:
       description: Direct JSON error response.

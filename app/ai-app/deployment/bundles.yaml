@@ -2308,6 +2308,18 @@ bundles:
                   pull:
                     mode: provider
                     operation: object.get
+              - kind: named_service
+                namespace: sheets
+                enabled: true
+                discovery:
+                  mode: service_discovery
+                policies:
+                  block_production:
+                    mode: provider
+                    operation: block.produce
+                  pull:
+                    mode: provider
+                    operation: object.get
           ui:
             scene:
               external_panels:

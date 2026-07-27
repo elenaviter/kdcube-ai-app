@@ -227,6 +227,10 @@ async def test_read_stats_only_includes_original_object_stats_from_owner_policy(
     assert stats["object_ref"] == "mem:record:mem_123"
     assert stats["logical_path"] == path
     assert stats["physical_path"] == "turn_read/files/memory.json"
+    assert status["paths"][0]["line_count"] == 1
+    assert status["paths"][0]["read_items"] == [
+        {"path": path, "line_start": 1, "line_count": 1}
+    ]
 
 
 @pytest.mark.asyncio
@@ -297,6 +301,85 @@ async def test_read_projects_pulled_namespace_ref_through_owner_event_source(tmp
         for b in ctx.timeline.blocks
         if b.get("type") == "react.tool.result"
     )
+
+
+@pytest.mark.asyncio
+async def test_ranged_read_keeps_client_selected_chunk_instead_of_owner_projection(tmp_path):
+    owner_calls = []
+
+    @block_production_policy(event_policy_id="demo.block_production.owner_range")
+    async def owner_range_policy(target, **_):
+        owner_calls.append(target)
+        target.setdefault("blocks", []).append({
+            "type": "react.tool.result",
+            "path": target.get("object_ref") or "",
+            "text": "OWNER BLOCK",
+        })
+        return target
+
+    def list_event_sources():
+        return [
+            event_source_declaration(
+                event_source_id="named_services.mem",
+                policies=[{
+                    "react_phase": "block_production",
+                    "event_policy_id": "demo.block_production.owner_range",
+                }],
+                kind="named_service",
+            )
+        ]
+
+    event_sources = EventSourceSubsystem(modules=[{
+        "mod": _module(
+            "demo_owner_range_events",
+            list_event_sources=list_event_sources,
+            owner_range_policy=owner_range_policy,
+        ),
+        "alias": "demo",
+    }])
+    runtime = RuntimeCtx(
+        turn_id="turn_read",
+        outdir=str(tmp_path),
+        workdir=str(tmp_path),
+        event_sources=event_sources,
+    )
+    ctx = FakeBrowser(runtime)
+    physical = artifact_outdir_for(tmp_path) / "turn_read" / "files" / "memory.json"
+    physical.parent.mkdir(parents=True, exist_ok=True)
+    physical.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+    path = "conv:fi:turn_read.files/memory.json"
+    state = {
+        "last_decision": {
+            "tool_call": {
+                "params": {
+                    "items": [{"path": path, "line_start": 2, "line_count": 1}]
+                }
+            }
+        },
+        "pulled_logical_refs": {
+            path: {
+                "object_ref": "mem:record:mem_123",
+                "mime": "application/json",
+            }
+        },
+    }
+
+    await handle_react_read(
+        ctx_browser=ctx,
+        state=state,
+        tool_call_id="r_owner_range",
+    )
+
+    assert owner_calls == []
+    assert any(
+        b.get("path") == path
+        and "[READ RANGE]" in (b.get("text") or "")
+        and "line 2" in (b.get("text") or "")
+        and "line 1" not in (b.get("text") or "")
+        for b in ctx.timeline.blocks
+        if b.get("type") == "react.tool.result"
+    )
+    assert not any("OWNER BLOCK" in (b.get("text") or "") for b in ctx.timeline.blocks)
 
 
 @pytest.mark.asyncio

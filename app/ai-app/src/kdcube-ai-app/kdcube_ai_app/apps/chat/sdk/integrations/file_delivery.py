@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Turn-free byte fetch for integration binaries (mail attachments, Slack files).
+"""Turn-free byte fetch and credential resolution for integration delivery.
 
 Chat tools materialize provider binaries into the ReAct turn's artifact
 workspace. Transports without a turn — the named-services MCP surface and the
@@ -59,7 +59,7 @@ def _failure(*, code: str, message: str, status: int = 400, resolution: ClaimRes
     return out
 
 
-async def _access_token(
+async def resolve_connected_account_access_token(
     entrypoint: Any,
     *,
     user_id: str,
@@ -124,7 +124,7 @@ async def fetch_mail_attachment(
     max_bytes: int = MAX_DELIVERY_BYTES,
 ) -> dict[str, Any]:
     """Fetch one Gmail attachment's bytes plus filename/mime, without a turn."""
-    token, failure = await _access_token(
+    token, failure = await resolve_connected_account_access_token(
         entrypoint,
         user_id=user_id,
         tenant=tenant,
@@ -199,7 +199,7 @@ async def fetch_slack_file(
     max_bytes: int = MAX_DELIVERY_BYTES,
 ) -> dict[str, Any]:
     """Fetch one Slack file's bytes plus filename/mime, without a turn."""
-    token, failure = await _access_token(
+    token, failure = await resolve_connected_account_access_token(
         entrypoint,
         user_id=user_id,
         tenant=tenant,
@@ -268,4 +268,5 @@ __all__ = [
     "MAX_DELIVERY_BYTES",
     "fetch_mail_attachment",
     "fetch_slack_file",
+    "resolve_connected_account_access_token",
 ]

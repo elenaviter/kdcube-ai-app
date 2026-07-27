@@ -4,7 +4,7 @@ title: "Namespace Services: ReAct Object Materialization"
 summary: "ReAct adapter diagram over the shared runtime harness for pulling, reading, owner-projecting, and rendering named-service objects."
 status: current
 tags: ["sdk", "namespace-services", "react", "pull", "read", "block-production", "events"]
-updated_at: 2026-07-18
+updated_at: 2026-07-27
 keywords:
   [
     "react.pull",
@@ -42,8 +42,9 @@ This page covers what ReAct adds on top:
 Current implementation state:
 
 - `react.pull` calls the provider through `object.get(response_mode=stream)`.
-- `react.read` calls owner block production through `block.produce` when the
-  pulled `conv:fi:` artifact preserves the canonical owner identity as `object_ref`.
+- `react.read` calls owner block production through `block.produce` when that
+  policy is declared. Pull-only providers remain valid: their exact
+  materialized bytes are read through the generic artifact path.
 - `Timeline.render()` renders stored timeline blocks, applies local ReAct
   projection policies, then runs the optional named-service `block.render`
   projection for providers whose objects are present in the visible timeline.
@@ -307,10 +308,56 @@ For an object namespace that supports ReAct materialization:
 - `event.resolve` provides lightweight URI-to-event-source routing when the
   namespace needs more than the default `named_services.<namespace>` event
   source.
-- `block.produce` provides the model-visible blocks used by `react.read`.
+- `block.produce` optionally replaces the generic artifact read with
+  owner-shaped model-visible blocks.
 - `block.render` optionally patches provider-owned blocks during model prompt
   rendering. It receives a bounded block snapshot and a render context with
   `phase`, `audience`, event-source id, trigger refs, and limits.
+
+## Owner-Projected Snapshot Pattern
+
+Google Sheets is a concrete snapshot provider. Discovery and ontologic tools
+return canonical spreadsheet or tab refs, for example:
+
+```text
+sheets:google:<account_id>:spreadsheet:<spreadsheet_id>
+sheets:google:<account_id>:spreadsheet:<spreadsheet_id>:tab:<sheet_id>
+```
+
+When the consumer declares a provider-backed pull policy for `sheets`, this
+sequence is available without any Sheets branch in ReAct:
+
+```text
+react.pull(paths=[<sheets ref>])
+  -> sheets object.get(response_mode=stream)
+  -> kdcube.sheets.snapshot.v1 JSON artifact
+  -> conv:fi:.../named_services/sheets/.../*.sheets.json
+
+react.read(paths=[<returned conv:fi ref>])
+  -> sheets block.produce
+  -> compact [SHEETS SNAPSHOT] inventory without cell values
+
+react.rg(root=<returned conv:fi ref>, pattern=...)
+  -> read_items for matching local JSON lines
+
+react.read(items=[<returned read_item>])
+  -> exact JSON range, with ordinary read caps
+```
+
+The snapshot contains the canonical owner ref, spreadsheet/tab metadata, and
+used values for selected grid tabs. KDCube does not cap read ranges or returned
+cells. A provider-side failure remains explicit; the consumer can request
+smaller A1 ranges when Google requires the work to be split.
+
+Sheets declares `event.resolve` and `block.produce` so a whole-file read stays
+small and useful: the model sees workbook identity, tabs, dimensions,
+materialized range/count summaries, completeness, and the logical/physical
+snapshot paths. The cell matrices remain in `values.ranges[].values` for code.
+An explicit ranged `react.read` is different: the provider returns no owner
+block, so the generic reader exposes that exact line/symbol chunk. This keeps
+`react.rg -> read_items -> react.read` available for textual exploration.
+
+Sheets does not need `block.render` or ANNOUNCE behavior for this snapshot.
 
 ## Volatile Object Pattern
 

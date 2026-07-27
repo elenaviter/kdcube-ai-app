@@ -254,7 +254,7 @@ Tools:
 | `named_services_capabilities(namespace)` | Read provider capabilities. |
 | `named_services_schema(namespace, object_kind?)` | Read provider object schema. |
 | `named_services_search(namespace, query?, limit?, filters_json?)` | Search namespace objects. |
-| `named_services_get(namespace, object_ref, filters_json?)` | Read one object by ref, with optional provider filters such as bounded sheet ranges. |
+| `named_services_get(namespace, object_ref, filters_json?)` | Read one object by ref, with optional provider filters such as selected sheet ranges. |
 | `named_services_upsert(namespace, object_json, ...)` | Create or update one object when `object.upsert` is allowed. |
 | `named_services_host_file(namespace, file_ref, ...)` | Host/register one file ref when `object.host_file` is allowed. |
 | `named_services_action(namespace, object_ref, action, ...)` | Run a bounded object action when `object.action` is allowed. |
@@ -320,7 +320,7 @@ sheets.tab
 | --- | --- | --- |
 | `object.list` | List recently modified spreadsheets. | `named_services:use`, `sheets:read` |
 | `object.search` | Find spreadsheets by title. | `named_services:use`, `sheets:read` |
-| `object.get` | Read metadata, or explicit bounded A1 ranges from a spreadsheet ref. | `named_services:use`, `sheets:read` |
+| `object.get` | Read metadata or selected A1 ranges; a turnless result can carry a signed full-snapshot URL, and stream mode returns a materializable spreadsheet/tab snapshot. | `named_services:use`, `sheets:read` |
 | `object.upsert` | Create a spreadsheet, replace values, or update tab properties. | `named_services:use`, `sheets:write` |
 | `object.action` | Append/clear values, manage tabs, or format one bounded range. | `named_services:use`, `sheets:write` |
 | `object.delete` | Delete one tab. Spreadsheet-file deletion is not exposed. | `named_services:use`, `sheets:write` |
@@ -330,6 +330,28 @@ use the parent spreadsheet ref and place the tab title in each A1 range. The
 adapter calls the same `GoogleSheetsService` as the typed productivity surface,
 so credential custody, account selection, claim-upgrade behavior, provider
 limits, and app-owned venv execution do not diverge.
+
+For `response_mode=stream`, `object.get` returns media type
+`application/vnd.kdcube.sheets.snapshot+json;version=1`. The streamed
+`kdcube.sheets.snapshot.v1` document contains the canonical `object_ref`, owner
+metadata, and used values for selected grid tabs. KDCube does not impose a
+read-range or returned-cell ceiling. Provider failures remain explicit rather
+than returning a silently incomplete artifact.
+
+The provider also implements internal `event.resolve` and `block.produce`
+operations for configured harness consumers. A whole-file read renders only
+workbook/tab inventory, counts, completeness, and workspace paths. It does not
+render cell values. Explicit ranged reads bypass that projection and expose the
+requested JSON chunk, allowing `react.rg` results to feed `react.read`. These
+internal owner operations are not additional public MCP tools.
+
+External MCP clients therefore stay on `named_services.*`: they search, inspect
+metadata, fetch the signed complete snapshot URL, request selected A1 ranges
+inline, and mutate through those tools. `react.pull`, `react.read`, and
+`react.rg` exist only when a KDCube ReAct consumer enables this event-source
+adapter. The snapshot response is an async chunked JSON stream and therefore
+does not need a precomputed `Content-Length`; this does not truncate the
+artifact.
 
 The table lists caller grants under **Delegated by KDCube**. On the separate
 connected-account boundary, reads require `sheets:read` and mutations require
@@ -375,7 +397,7 @@ model context:
 | Alias | Method | Required query | Result |
 | --- | --- | --- | --- |
 | `integration_file_upload` | POST | `object_ref`, `upload_token` | Raw request bytes become a short-lived, single-use `staged:` ref. |
-| `integration_file_download` | GET | `object_ref`, `download_token` | Raw mail/Slack bytes with `Content-Disposition` and `private, no-store`. |
+| `integration_file_download` | GET | `object_ref`, `download_token` | Raw mail/Slack bytes or a Sheets JSON snapshot with `Content-Disposition` and `private, no-store`. |
 | `conv_file_download` | GET | `object_ref`, `download_token` | Raw conversation artifact bytes under token-bound user/conversation scope. |
 
 The routes require no browser session because the HMAC token binds the exact

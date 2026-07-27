@@ -986,6 +986,13 @@ def test_as_consumer_surface_selects_agent_event_pull_and_canvas_namespaces():
                                             "object.delete",
                                         ],
                                     },
+                                    "sheets": {
+                                        "allowed": [
+                                            "provider.about",
+                                            "object.search",
+                                            "object.get",
+                                        ],
+                                    },
                                 },
                             },
                         ],
@@ -996,7 +1003,10 @@ def test_as_consumer_surface_selects_agent_event_pull_and_canvas_namespaces():
                                 "enabled": True,
                                 "policies": {
                                     "block_production": {"mode": "provider", "operation": "block.produce"},
-                                    "pull": {"mode": "provider", "operation": "object.get"},
+                                    "pull": {
+                                        "mode": "provider",
+                                        "operation": "object.get",
+                                    },
                                 },
                             },
                             {
@@ -1006,6 +1016,18 @@ def test_as_consumer_surface_selects_agent_event_pull_and_canvas_namespaces():
                                 "policies": {
                                     "block_production": {"mode": "default"},
                                     "pull": {"mode": "default"},
+                                },
+                            },
+                            {
+                                "kind": "named_service",
+                                "namespace": "sheets",
+                                "enabled": True,
+                                "policies": {
+                                    "block_production": {
+                                        "mode": "provider",
+                                        "operation": "block.produce",
+                                    },
+                                    "pull": {"mode": "provider", "operation": "object.get"},
                                 },
                             },
                         ],
@@ -1027,8 +1049,18 @@ def test_as_consumer_surface_selects_agent_event_pull_and_canvas_namespaces():
         },
     }
 
-    assert list(named_service_agent_event_source_namespaces(props, client_id="default.react.agent")) == ["task"]
-    assert list(named_service_agent_pull_namespaces(props, client_id="default.react.agent")) == ["task"]
+    assert list(
+        named_service_agent_event_source_namespaces(
+            props,
+            client_id="default.react.agent",
+        )
+    ) == ["task", "sheets"]
+    assert list(
+        named_service_agent_pull_namespaces(
+            props,
+            client_id="default.react.agent",
+        )
+    ) == ["task", "sheets"]
     canvas_namespaces = named_service_canvas_resolver_namespaces(props)
     assert list(canvas_namespaces) == ["task"]
     assert canvas_namespaces["task"]["clients"]["canvas"]["resolver"]["enabled"] is True

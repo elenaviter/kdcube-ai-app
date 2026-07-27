@@ -239,7 +239,8 @@ def build_named_services_mcp_app(
         title="Read named-service object",
         description=(
             "Read one object from a configured named-service namespace by object ref, "
-            "for example mem:<id>."
+            "for example mem:<id>. For sheets, a metadata read can include a signed "
+            "URL for the complete snapshot; filters.ranges returns selected values inline."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Read named-service object"),
         structured_output=False,
