@@ -68,7 +68,10 @@ from kdcube_ai_app.apps.chat.sdk.protocol import (
     external_event_request_start_persona,
 )
 from kdcube_ai_app.apps.chat.sdk.event_identity import DEFAULT_REACT_AGENT_ID, normalize_agent_id, safe_event_lane_part
-from kdcube_ai_app.apps.chat.sdk.events.event_bus import ExternalEventLaneWakeIgnored
+from kdcube_ai_app.apps.chat.sdk.events.event_bus import (
+    EventLaneStateLockTimeout,
+    ExternalEventLaneWakeIgnored,
+)
 from kdcube_ai_app.apps.chat.sdk.events.event_bus.orchestrator import ConversationEventBusOrchestrator
 from kdcube_ai_app.apps.chat.sdk.events.event_bus.state import event_timestamp, wake_ignore_reason
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.discovery import (
@@ -2730,6 +2733,44 @@ class EnhancedChatRequestProcessor:
                     except Exception:
                         logger.debug("Failed to release conversation lock after ignored external event lane wakeup", exc_info=True)
                 return
+        except EventLaneStateLockTimeout as e:
+            logger.warning(
+                "Transient event lane state contention before task execution; requeueing "
+                "task_id=%s operation=%s state_key=%s lock_key=%s "
+                "holder_operation=%s holder_pid=%s holder_task=%s "
+                "holder_acquired_at=%s pttl_ms=%s",
+                self._task_logical_id(task_data),
+                e.operation,
+                e.state_key,
+                e.lock_key,
+                e.holder_operation or "unknown",
+                e.holder_pid or "unknown",
+                e.holder_task or "unknown",
+                e.holder_acquired_at or "unknown",
+                e.pttl_ms,
+            )
+            try:
+                if conversation_lock_key:
+                    await self._release_redis_lock(conversation_lock_key, conversation_lock_token)
+                requeued = await self._requeue_claimed_payload(
+                    ready_queue_key=task_data.get("_ready_queue_key") or task_data.get("_queue_key"),
+                    inflight_queue_key=task_data.get("_inflight_queue_key"),
+                    raw_payload=task_data.get("_raw_payload"),
+                    lock_key=lock_key,
+                    lock_token=lock_token,
+                    reason=f"event-lane-state-lock-timeout:{e.operation}",
+                )
+                if not requeued:
+                    logger.error(
+                        "Could not requeue task after transient event lane state contention "
+                        "task_id=%s ready_queue=%s inflight_queue=%s",
+                        self._task_logical_id(task_data),
+                        task_data.get("_ready_queue_key") or task_data.get("_queue_key"),
+                        task_data.get("_inflight_queue_key"),
+                    )
+            finally:
+                self._current_load = max(0, self._current_load - 1)
+            return
         except Exception as e:
             logger.error(f"Cannot normalize processor queue item: {e}")
             logger.error(traceback.format_exc())

@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/events/reactive-turn-delivery-README.md
 title: "Reactive Turn Delivery"
-summary: "Framework-neutral contract for how one external event becomes one turn of any agent: the @on_reactive_event door, per-conversation serialization, the lane consumer reservation, the two consumption models (ReAct folds mid-turn vs run-to-completion one-event-per-turn), and the reactive-lane finalize invariant that keeps followups from being lost."
+summary: "Framework-neutral contract for ordered reactive delivery: an open ReAct handler may fold new work into its live turn, while a run-to-completion agent receives one accepted start batch per serialized turn; both release the lane before any liveness handoff."
 status: active
 tags: ["sdk", "events", "external-events", "turns", "react", "run-to-completion", "followup", "steer", "ordering"]
-updated_at: 2026-07-13
+updated_at: 2026-07-28
 keywords:
   [
     "reactive turn delivery",
@@ -30,14 +30,14 @@ This page answers one question, for **any** agent — ReAct, a ported graph, a
 bespoke loop:
 
 ```text
-How does an external event become exactly one turn of my agent,
-in arrival order, with no turn lost and no two turns of the same
-conversation running at once?
+How does accepted reactive work reach my agent in arrival order,
+either by joining an open live turn or by starting the next
+serialized turn for this conversation?
 ```
 
-The delivery contract is the same for every agent. What differs is only *when*
-an agent releases the lane it was handed — and that single difference is what
-this page makes explicit, because getting it wrong silently drops the next turn.
+The delivery contract is the same for every agent. What differs is whether the
+agent owns a live handler that can fold new work or consumes one fixed start
+batch. That choice determines which runtime finalizer releases the lane.
 
 For the Redis state fields this page refers to (`T.consumer.status`,
 `T.handler.status`, the reactive cursor), see the
@@ -49,13 +49,16 @@ field-level transport journey, see
 ## One-page model
 
 ```text
-external event (prompt / followup / steer)
+turn-starting event (prompt / queued followup)
         │  written to the conversation event lane (ordered log)
-        │  + one wakeup enqueued for the first reactive event   [atomic]
+        │  + primary wakeup enqueued                             [atomic]
         ▼
    processor claims the wakeup
         │  acquires the per-conversation lock  ── serialization point
-        │  reserves the lane consumer:  T.consumer.status = scheduled
+        │
+        ├─ open live handler owns it  → fold into the running turn
+        │
+        └─ otherwise reserve: T.consumer.status = scheduled
         ▼
    run()   ── the @on_reactive_event door (shared by every agent)
         │
@@ -63,14 +66,15 @@ external event (prompt / followup / steer)
    execute_core(state, thread_id, params)   ── your agent runs the turn
         │
         ▼
-   turn ends  →  the lane consumer reservation is released
-                 →  any event queued during the turn is re-woken (next turn)
+   turn ends  →  account accepted work
+                 →  release the lane consumer reservation
+                 →  optionally publish a duplicate liveness wake
 ```
 
-The wakeup is the *only* thing that runs an agent. `run()` is the shared
+The wakeup is the only thing that starts a new agent turn. `run()` is the shared
 `@on_reactive_event` door on the app base (`BaseEntrypoint.run` /
 `BaseEntrypointWithEconomics.run`); it calls your `execute_core`, which reads the
-triggering event out of `state`/`params` and produces the turn.
+accepted start batch out of `state`/`params` and produces the turn.
 
 ## Ordered, serialized delivery
 
@@ -91,18 +95,19 @@ turn 1 ends → reservation released → lock released
   conversation at once.
 - **Different conversations:** run in parallel (independent locks).
 
-This is a platform guarantee — an agent does not implement it. What an agent
-*is* responsible for is releasing the lane consumer it was handed, so the waiting
-event can promote. That is the next section.
+This is a platform guarantee — agent code does not implement it. The active
+consumption model must leave the lane in a releasable state; ReAct owns that
+lifecycle inside its workflow, while the shared door finalizes it for a
+run-to-completion loop.
 
 ## The lane consumer reservation
 
 When the processor dispatches a wakeup it **reserves** the lane consumer
 (`T.consumer.status = scheduled`) before the turn runs. The reservation exists so
-the platform knows a turn is responsible for this lane. Whoever holds it must
-release it (`→ none`) when the turn is done. If it is left reserved, the next
-turn's wakeup — claimed inside the reservation's freshness TTL — is refused as
-`scheduled_consumer_fresh` and **silently dropped**: the next turn never runs.
+the platform knows a turn is responsible for this lane. Finalization releases it
+(`→ none`) when the turn is done. A fresh duplicate wake is deferred while the
+reserved starter is loading; after turn work is persisted, release happens
+before any additional liveness wake is published.
 
 Releasing the reservation is where the two agent models diverge.
 
@@ -113,24 +118,25 @@ Releasing the reservation is where the two agent models diverge.
 A ReAct `execute_core` drives a `BaseWorkflow`, which **opens the lane handler**
 (`T.handler.status = open`), marks the consumer `active`, and reads the lane
 *during* the turn. A followup that lands mid-turn is folded into the running turn
-at a decision boundary. At the close gate the workflow **releases** the consumer
-(`→ none`), advances the reactive cursor past what it consumed, and re-wakes
-anything still unconsumed. ReAct owns its lane lifecycle end-to-end, inside its
-own workflow. See
+at a decision boundary. The close gate first stops the live reader once the
+handler is closed. After turn artifacts persist, finalization advances the
+reactive cursor, releases the consumer (`→ none`), and only then publishes a
+duplicate liveness wake for anything still unconsumed. ReAct owns its lane
+lifecycle end-to-end, inside its own workflow. See
 [Event Ingress To React Turn](./event-ingress-to-react-turn-README.md).
 
-### 2. Run-to-completion — one event, one turn
+### 2. Run-to-completion — one start batch, one turn
 
 A run-to-completion `execute_core` (a ported graph, a bespoke loop) runs
-start→finish and does **not** watch the lane. It consumes exactly the triggering
-event; a followup that lands mid-turn is *not* folded. Because it never opens the
-handler, it never releases the reservation on its own — so the platform releases
-it *for* the agent, from the door, after the turn. That is the finalize
-invariant below.
+start→finish and does **not** watch the lane. It consumes exactly the accepted
+start batch; a followup that lands mid-turn is *not* folded. Because it never
+opens the handler, it never releases the reservation on its own — so the
+platform accounts for the batch and releases the consumer *for* the agent, from
+the door, after the turn. That is the finalize invariant below.
 
-The net behavior for a run-to-completion agent: **one event → one turn**,
-strictly serialized, in order, with the next event or queued followup promoted to
-its own fresh turn the instant the current turn ends.
+The net behavior for a run-to-completion agent: **one accepted start batch → one
+turn**, strictly serialized and in order. Work that arrives mid-turn stays in the
+lane and becomes eligible to schedule after the current turn releases it.
 
 ## The finalize invariant (`reactive_lane`)
 
@@ -143,15 +149,15 @@ branch**:
 
 ```text
 already_released = T.consumer.status == "none"
-own_accounted    = the turn's own event is consumed / past the reactive cursor
+own_accounted    = the turn's start batch is consumed / past the reactive cursor
 
 if already_released and own_accounted:
     return                       # no-op
 
-# otherwise a run-to-completion turn left the reservation dangling:
+# otherwise a run-to-completion turn still owns the reservation:
+mark the turn's start batch consumed      # exactly-once lane accounting
 release the consumer (→ none)
-mark the turn's own event consumed        # exactly-once
-re-wake promotable reactive work          # queued followup → next turn
+optionally re-wake pending reactive work  # duplicate liveness signal
 expire an unconsumed event.user.steer     # active-turn control, never future work
 ```
 
@@ -170,12 +176,12 @@ change what the composer *offers*, not what is delivered:
 
 - **ReAct (accepts both):** a mid-turn followup is folded into the running turn; a
   steer cancels and finalizes it.
-- **Run-to-completion (declares both false):** a mid-turn message is queued and
-  **promoted to the next turn** by the finalize re-wake — it is not folded into
-  the running turn. This is the "Queue for next turn" composer state. No agent
-  code is required for the promotion; the door does it.
+- **Run-to-completion (declares both false):** a mid-turn message is queued for
+  the next turn — it is not folded into the running turn. The finalizer releases
+  the consumer before any optional liveness wake. This is the "Queue for next
+  turn" composer state; agent code does not manage the lane.
 
-`event.user.steer` is never included in that promotion. It controls only the
+`event.user.steer` is never included in that next-turn handoff. It controls only the
 turn that was active when ingress accepted it; if that turn does not consume
 the control before closing, the control expires.
 
@@ -189,15 +195,15 @@ Before the finalize existed, a run-to-completion turn left the reservation
 dropped as `scheduled_consumer_fresh` — the turn "completed" in the UI but the
 *next* message never reached `execute_core` (nothing in the processor log). It
 self-recovered only after the TTL went stale, which read as intermittent
-"second/third turn hangs." The finalize releases the reservation at turn end, so
-the next turn promotes immediately.
+"second/third turn hangs." The finalizer now accounts for the start batch,
+releases the reservation, and only then may publish a liveness wake.
 
 ## Boundary
 
 This page is the framework-neutral delivery contract. It does not cover the
 transport-level field origins (see the ReAct ingress page), the lane state fields
 (see the lane-state reference), or how to build a specific agent (see the
-recipe). The one rule every non-ReAct agent must respect is implicit and handled
-for you: **a turn releases the lane it was handed.** The `run()` door guarantees
-it; you implement `execute_core` and get ordered, serialized, exactly-once
-delivery for free.
+recipe). The one rule every run-to-completion integration must respect is
+implicit and handled for you: **a turn releases the lane it was handed.** The
+`run()` door guarantees it; you implement `execute_core` and get ordered,
+serialized delivery with exactly-once lane accounting.

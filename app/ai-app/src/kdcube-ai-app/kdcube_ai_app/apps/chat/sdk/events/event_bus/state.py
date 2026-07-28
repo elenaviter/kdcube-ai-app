@@ -7,16 +7,21 @@ import asyncio
 import contextlib
 import datetime as _dt
 import json
+import logging
+import os
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Any, Callable, Optional
 
+from kdcube_ai_app.apps.chat.sdk.events.event_bus.exceptions import EventLaneStateLockTimeout
 from kdcube_ai_app.apps.chat.sdk.events.semantics import event_is_active_turn_control
 
 
 _STATE_TTL_SECONDS = 7 * 24 * 3600
 _LOCK_TTL_SECONDS = 10
+
+logger = logging.getLogger(__name__)
 
 
 def utc_timestamp() -> str:
@@ -42,6 +47,23 @@ def _parse_json(raw: Any) -> dict[str, Any]:
         except Exception:
             return {}
     return {}
+
+
+async def _complete_task_despite_cancellation(
+    task: asyncio.Task,
+) -> tuple[Any, BaseException | None, BaseException | None]:
+    """Wait for a Redis command to reach a known outcome before propagating cancellation."""
+
+    cancelled: BaseException | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    try:
+        return task.result(), cancelled, None
+    except BaseException as exc:
+        return None, cancelled, exc
 
 
 def normalize_timestamp(value: Any) -> str:
@@ -268,56 +290,198 @@ class RedisEventLaneStateTable:
 
     async def put(self, state: EventLaneState) -> EventLaneState:
         payload = json.dumps(state.to_dict(), ensure_ascii=False, sort_keys=True)
+        task = asyncio.create_task(
+            self._put_payload(payload),
+            name=f"event-lane-state-put:{self.state_key}",
+        )
+        _result, cancelled, error = await _complete_task_despite_cancellation(task)
+        if error is not None:
+            if cancelled is not None:
+                raise cancelled from error
+            raise error
+        if cancelled is not None:
+            raise cancelled
+        return state
+
+    async def _put_payload(self, payload: str) -> None:
         setter = getattr(self.redis, "set", None)
         if callable(setter):
             try:
                 await setter(self.state_key, payload, ex=self.ttl_seconds)
-                return state
+                return
             except TypeError:
                 await setter(self.state_key, payload)
-                return state
+                return
         await self.redis.setex(self.state_key, self.ttl_seconds, payload)
-        return state
 
     @contextlib.asynccontextmanager
-    async def lock(self, *, timeout_seconds: float = 2.0):
-        token = f"lock_{uuid.uuid4().hex}"
+    async def lock(self, *, timeout_seconds: float = 2.0, operation: str = "unspecified"):
+        operation = str(operation or "unspecified")
+        current_task = asyncio.current_task()
+        ownership_token = f"lock_{uuid.uuid4().hex}"
+        token = ""
         deadline = time.monotonic() + max(0.05, float(timeout_seconds or 2.0))
         acquired = False
         while time.monotonic() < deadline:
-            setter = getattr(self.redis, "set", None)
-            if callable(setter):
-                try:
-                    acquired = bool(await setter(self.lock_key, token, nx=True, ex=self.lock_ttl_seconds))
-                except TypeError:
-                    if await self.redis.get(self.lock_key) is None:
-                        await setter(self.lock_key, token)
-                        acquired = True
-                if acquired:
-                    break
+            token = json.dumps(
+                {
+                    "token": ownership_token,
+                    "operation": operation,
+                    "pid": os.getpid(),
+                    "task": current_task.get_name() if current_task is not None else "",
+                    "acquired_at": utc_timestamp(),
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            acquire_task = asyncio.create_task(
+                self._acquire_lock_once(token),
+                name=f"event-lane-lock-acquire:{operation}:{self.lock_key}",
+            )
+            result, cancelled, error = await _complete_task_despite_cancellation(acquire_task)
+            if error is not None or cancelled is not None:
+                await self._cleanup_uncertain_acquire(token=token, operation=operation)
+                if cancelled is not None:
+                    logger.warning(
+                        "[event-bus.lock] acquisition cancelled after Redis command "
+                        "operation=%s state_key=%s lock_key=%s command_result=%s command_error=%s",
+                        operation,
+                        self.state_key,
+                        self.lock_key,
+                        bool(result),
+                        type(error).__name__ if error is not None else "none",
+                    )
+                    if error is not None:
+                        raise cancelled from error
+                    raise cancelled
+                raise error
+            acquired = bool(result)
+            if acquired:
+                break
             await asyncio.sleep(0.01)
         if not acquired:
-            raise TimeoutError(f"event lane state lock timed out: {self.lock_key}")
+            diagnostics = await self._lock_diagnostics()
+            error = EventLaneStateLockTimeout(
+                state_key=self.state_key,
+                lock_key=self.lock_key,
+                operation=operation,
+                timeout_seconds=timeout_seconds,
+                holder_operation=str(diagnostics.get("operation") or ""),
+                holder_pid=str(diagnostics.get("pid") or ""),
+                holder_task=str(diagnostics.get("task") or ""),
+                holder_acquired_at=str(diagnostics.get("acquired_at") or ""),
+                pttl_ms=diagnostics.get("pttl_ms"),
+            )
+            logger.warning("[event-bus.lock] %s", error)
+            raise error
         renew_task = asyncio.create_task(self._renew_lock(token), name=f"event-lane-lock-renew:{self.lock_key}")
         try:
             yield token
         finally:
+            owner_task = asyncio.current_task()
+            cancellation_count = owner_task.cancelling() if owner_task is not None else 0
+            shutdown_cancelled: BaseException | None = None
             renew_task.cancel()
             try:
                 await renew_task
-            except asyncio.CancelledError:
-                pass
-            try:
-                await self._release_lock(token)
-            except Exception:
-                pass
+            except asyncio.CancelledError as exc:
+                if owner_task is not None and owner_task.cancelling() > cancellation_count:
+                    shutdown_cancelled = exc
+            release_task = asyncio.create_task(
+                self._release_lock(token),
+                name=f"event-lane-lock-release:{operation}:{self.lock_key}",
+            )
+            released, cancelled, error = await _complete_task_despite_cancellation(release_task)
+            if error is not None:
+                logger.error(
+                    "[event-bus.lock] release failed operation=%s state_key=%s lock_key=%s",
+                    operation,
+                    self.state_key,
+                    self.lock_key,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+            elif not released:
+                logger.warning(
+                    "[event-bus.lock] release lost ownership operation=%s state_key=%s lock_key=%s",
+                    operation,
+                    self.state_key,
+                    self.lock_key,
+                )
+            if cancelled is not None:
+                if error is not None:
+                    raise cancelled from error
+                raise cancelled
+            if shutdown_cancelled is not None:
+                if error is not None:
+                    raise shutdown_cancelled from error
+                raise shutdown_cancelled
+            if error is not None:
+                raise error
 
-    async def update(self, mutator: Callable[[EventLaneState], EventLaneState | None]) -> EventLaneState:
-        async with self.lock():
+    async def update(
+        self,
+        mutator: Callable[[EventLaneState], EventLaneState | None],
+        *,
+        operation: str = "update",
+    ) -> EventLaneState:
+        async with self.lock(operation=operation):
             state = await self.get()
             new_state = mutator(state) or state
             await self.put(new_state)
             return new_state
+
+    async def _acquire_lock_once(self, token: str) -> bool:
+        setter = getattr(self.redis, "set", None)
+        if not callable(setter):
+            return False
+        try:
+            return bool(await setter(self.lock_key, token, nx=True, ex=self.lock_ttl_seconds))
+        except TypeError:
+            if await self.redis.get(self.lock_key) is not None:
+                return False
+            await setter(self.lock_key, token)
+            return True
+
+    async def _cleanup_uncertain_acquire(self, *, token: str, operation: str) -> None:
+        release_task = asyncio.create_task(
+            self._release_lock(token),
+            name=f"event-lane-lock-uncertain-release:{operation}:{self.lock_key}",
+        )
+        released, _cancelled, error = await _complete_task_despite_cancellation(release_task)
+        if error is not None:
+            logger.error(
+                "[event-bus.lock] uncertain acquisition cleanup failed operation=%s state_key=%s lock_key=%s",
+                operation,
+                self.state_key,
+                self.lock_key,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+        elif released:
+            logger.info(
+                "[event-bus.lock] cleaned lock after uncertain acquisition operation=%s state_key=%s lock_key=%s",
+                operation,
+                self.state_key,
+                self.lock_key,
+            )
+
+    async def _lock_diagnostics(self) -> dict[str, Any]:
+        diagnostics: dict[str, Any] = {}
+        try:
+            diagnostics.update(_parse_json(await self.redis.get(self.lock_key)))
+        except Exception:
+            pass
+        try:
+            pttl = getattr(self.redis, "pttl", None)
+            if callable(pttl):
+                diagnostics["pttl_ms"] = int(await pttl(self.lock_key))
+            else:
+                ttl = getattr(self.redis, "ttl", None)
+                if callable(ttl):
+                    diagnostics["pttl_ms"] = int(await ttl(self.lock_key)) * 1000
+        except Exception:
+            diagnostics["pttl_ms"] = None
+        return diagnostics
 
     async def _renew_lock(self, token: str) -> None:
         interval = max(0.1, min(1.0, float(self.lock_ttl_seconds) / 3.0))

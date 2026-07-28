@@ -18,16 +18,17 @@ def test_recover_steer_from_external_envelope():
     # runtime fires _interrupt_active_phase_for_steer (and denies iteration credit).
     assert recover_semantic_event_type("external_event", _evt("event.user.steer")) == "steer"
     assert recover_semantic_event_type("external", _evt("event.user.steer")) == "steer"
-    assert recover_semantic_event_type("", _evt("user.steer")) == "steer"
+    # The event protocol has one canonical authored type. Similar suffixes are
+    # ordinary event names, not aliases for active-turn control.
+    assert recover_semantic_event_type("", _evt("user.steer")) == "user.steer"
 
 
 def test_recover_followup_from_external_envelope():
     assert recover_semantic_event_type("external_event", _evt("event.user.followup")) == "followup"
 
 
-def test_recover_leaves_prompt_and_specific_types_unchanged():
-    # A prompt stays "external_event" — unchanged credit/behaviour.
-    assert recover_semantic_event_type("external_event", _evt("event.user.prompt")) == "external_event"
+def test_recover_preserves_authored_prompt_and_specific_types():
+    assert recover_semantic_event_type("external_event", _evt("event.user.prompt")) == "event.user.prompt"
     # Already-specific types are returned unchanged (never re-derived from payload).
     assert recover_semantic_event_type("steer", _evt("event.user.prompt")) == "steer"
     assert recover_semantic_event_type("followup", _evt(None)) == "followup"

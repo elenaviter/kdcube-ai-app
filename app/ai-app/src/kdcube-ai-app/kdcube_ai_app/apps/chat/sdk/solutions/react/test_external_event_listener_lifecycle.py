@@ -149,6 +149,90 @@ async def test_scheduled_start_cannot_run_after_terminal_stop(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
+async def test_successful_close_gate_stops_live_listener_immediately(monkeypatch) -> None:
+    source = SimpleNamespace()
+    runtime = RuntimeCtx(
+        conversation_id="conversation",
+        turn_id="turn_current",
+        external_event_source=source,
+    )
+    browser = ContextBrowser(runtime_ctx=runtime)
+    browser._timeline = SimpleNamespace(
+        last_rendered_event_cursor=None,
+        last_render_processed_event_timestamp="",
+    )
+    browser._external_event_listener_requested = True
+    browser._external_listener_id = "listener-current"
+    browser._external_lease_token = "lease-current"
+    stop_event = asyncio.Event()
+    browser._external_event_stop = stop_event
+    browser._external_event_task = asyncio.create_task(stop_event.wait())
+
+    class _Orchestrator:
+        async def try_close_handler(self, **_kwargs):
+            return SimpleNamespace(
+                closed=True,
+                reason="closed",
+                state=EventLaneState(
+                    handler_turn_id="turn_current",
+                    handler_status="closed",
+                    consumer_status="active",
+                ),
+            )
+
+    released: list[str] = []
+
+    async def _release(*, lease_token, **_kwargs):
+        released.append(lease_token)
+
+    monkeypatch.setattr(browser_module, "release_live_external_event_owner", _release)
+    browser._external_event_orchestrator = _Orchestrator()
+
+    closed = await browser.try_close_external_event_handler()
+
+    assert closed is True
+    assert stop_event.is_set()
+    assert browser._external_event_task is None
+    assert browser._external_event_listener_requested is False
+    assert released == ["lease-current"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_cleanup_releases_consumer_before_handoff_wake(monkeypatch) -> None:
+    runtime = RuntimeCtx(
+        conversation_id="conversation",
+        turn_id="turn_current",
+        external_event_source=SimpleNamespace(),
+    )
+    browser = ContextBrowser(runtime_ctx=runtime)
+    actions: list[str] = []
+
+    class _Orchestrator:
+        async def mark_consumer_none(self, **_kwargs):
+            actions.append("release")
+            return EventLaneState(
+                handler_turn_id="turn_current",
+                handler_status="closed",
+                consumer_status="none",
+            )
+
+    async def _stop() -> None:
+        actions.append("stop")
+
+    async def _handoff() -> bool:
+        actions.append("handoff")
+        return True
+
+    browser._external_event_orchestrator = _Orchestrator()
+    monkeypatch.setattr(browser, "stop_external_event_listener", _stop)
+    monkeypatch.setattr(browser, "post_save_external_event_handoff", _handoff)
+
+    await browser.close_external_event_handler()
+
+    assert actions == ["stop", "release", "handoff"]
+
+
+@pytest.mark.asyncio
 async def test_superseded_turn_cannot_reacquire_owner_lease(monkeypatch) -> None:
     source = SimpleNamespace()
     runtime = RuntimeCtx(

@@ -118,7 +118,7 @@ class ConversationEventBusOrchestrator:
         now = utc_timestamp()
         self.last_open_reclaimed = False
         self.last_open_reclaimed_prev_owner = ""
-        async with self.table.lock():
+        async with self.table.lock(operation="open_handler"):
             state = await self.table.get()
             if state.handler_status == "open" and state.handler_turn_id and state.handler_turn_id != turn_id:
                 if _consumer_state_is_fresh(state, now):
@@ -151,7 +151,7 @@ class ConversationEventBusOrchestrator:
         processed_event_id = str(handler_processed_event_id or "").strip()
         now = utc_timestamp()
 
-        async with self.table.lock():
+        async with self.table.lock(operation="try_close_handler"):
             state = await self.table.get()
             if state.handler_turn_id != turn_id or state.handler_status != "open":
                 return EventBusCloseDecision(
@@ -197,7 +197,7 @@ class ConversationEventBusOrchestrator:
         wake_ts = str(wake_event_timestamp or "").strip()
         now = utc_timestamp()
 
-        async with self.table.lock():
+        async with self.table.lock(operation="schedule_consumer_from_wake"):
             state = await self.table.get()
             if timestamp_lte(wake_ts, state.last_processed_reactive_event_timestamp):
                 return EventBusScheduleDecision(
@@ -205,15 +205,25 @@ class ConversationEventBusOrchestrator:
                     state=state,
                     reason="wake_already_processed",
                 )
-            if state.consumer_status == "active" and timestamp_is_fresh(
+            active_consumer_fresh = state.consumer_status == "active" and timestamp_is_fresh(
                 now=now,
                 since=state.consumer_status_at,
                 ttl_ms=active_ttl_ms,
-            ):
+            )
+            if active_consumer_fresh and state.handler_status == "open":
                 return EventBusScheduleDecision(
                     scheduled=False,
                     state=state,
                     reason="active_consumer_fresh",
+                )
+            if active_consumer_fresh:
+                logger.warning(
+                    "[event-bus] recovering wake from terminal active consumer "
+                    "handler_status=%s handler_turn_id=%s wake_ts=%s consumer_status_at=%s",
+                    state.handler_status or "<empty>",
+                    state.handler_turn_id or "<empty>",
+                    wake_ts or "<empty>",
+                    state.consumer_status_at or "<empty>",
                 )
             if state.consumer_status == "scheduled" and timestamp_is_fresh(
                 now=now,
@@ -247,7 +257,7 @@ class ConversationEventBusOrchestrator:
             state.consumer_status_at = now
             return state
 
-        return await self.table.update(_mutate)
+        return await self.table.update(_mutate, operation="mark_consumer_active")
 
     async def mark_consumer_none(self, *, turn_id: str = "") -> EventLaneState:
         turn_id = str(turn_id or "").strip()
@@ -260,7 +270,7 @@ class ConversationEventBusOrchestrator:
             state.consumer_status_at = now
             return state
 
-        return await self.table.update(_mutate)
+        return await self.table.update(_mutate, operation="mark_consumer_none")
 
     async def record_processed_events(self, events: Sequence[Any], *, turn_id: str = "") -> EventLaneState:
         max_ts = ""
@@ -294,7 +304,7 @@ class ConversationEventBusOrchestrator:
             state.consumer_status_at = utc_timestamp()
             return state
 
-        return await self.table.update(_mutate)
+        return await self.table.update(_mutate, operation="record_processed_events")
 
     async def accept_events_for_open_handler(
         self,
@@ -317,7 +327,7 @@ class ConversationEventBusOrchestrator:
                 max_reactive_ts = later_timestamp(max_reactive_ts, ts)
 
         now = utc_timestamp()
-        async with self.table.lock():
+        async with self.table.lock(operation="accept_events_for_open_handler"):
             state = await self.table.get()
             if state.handler_status != "open":
                 return EventBusAcceptDecision(

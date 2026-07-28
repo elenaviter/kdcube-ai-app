@@ -14,7 +14,10 @@ from kdcube_ai_app.apps.chat.processor_scheduler_backend import (
     SCHEDULER_BACKEND_CONVERSATION_STREAMS,
     SCHEDULER_BACKEND_LEGACY_LISTS,
 )
-from kdcube_ai_app.apps.chat.sdk.events.event_bus import build_event_lane_wakeup
+from kdcube_ai_app.apps.chat.sdk.events.event_bus import (
+    EventLaneStateLockTimeout,
+    build_event_lane_wakeup,
+)
 from kdcube_ai_app.apps.chat.sdk.events.event_bus.orchestrator import ConversationEventBusOrchestrator
 from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
@@ -1377,6 +1380,81 @@ async def test_process_task_does_not_schedule_invalid_external_event_lane_wakeup
     assert lock_key in redis.delete_calls
     assert processor.get_current_load() == 0
     assert redis.lists.get("queue:registered", []) == []
+
+
+@pytest.mark.asyncio
+async def test_process_task_requeues_transient_event_lane_lock_timeout_before_execution(
+    _patch_processor_dependencies,
+):
+    redis = _MinimalRedis()
+    handler_calls = []
+
+    async def _handler(payload):
+        handler_calls.append(payload)
+        return {}
+
+    processor = _build_processor(redis, handler=_handler)
+    task_payload = _build_task_payload("task-lane-lock-timeout", user_type="registered")
+    raw_payload = json.dumps(task_payload).encode("utf-8")
+    ready_key = "queue:registered"
+    inflight_key = "queue:inflight:registered"
+    task_lock_key = "lock:task-lane-lock-timeout"
+    task_lock_token = "processor:task-token"
+    conversation_lock_key = "lock:conversation:task-lane-lock-timeout"
+    conversation_lock_token = "processor:conversation-token"
+    redis.seed_list(inflight_key, [raw_payload])
+    redis.values[task_lock_key] = task_lock_token
+    redis.values[conversation_lock_key] = conversation_lock_token
+    processor._current_load = 1
+
+    resolve_calls = 0
+
+    async def _resolve_after_transient(_task_data):
+        nonlocal resolve_calls
+        resolve_calls += 1
+        if resolve_calls == 1:
+            raise EventLaneStateLockTimeout(
+                state_key="lane:state",
+                lock_key="lane:state:lock",
+                operation="schedule_consumer_from_wake",
+                timeout_seconds=2.0,
+                holder_operation="mark_consumer_active",
+                pttl_ms=8_000,
+            )
+        return ExternalEventPayload.model_validate(task_payload)
+
+    processor._resolve_queue_item_payload = _resolve_after_transient
+    task_data = dict(task_payload)
+    task_data.update(
+        {
+            "_lock_key": task_lock_key,
+            "_lock_token": task_lock_token,
+            "_conversation_lock_key": conversation_lock_key,
+            "_conversation_lock_token": conversation_lock_token,
+            "_raw_payload": raw_payload,
+            "_ready_queue_key": ready_key,
+            "_inflight_queue_key": inflight_key,
+        }
+    )
+
+    await processor._process_task(task_data)
+
+    assert handler_calls == []
+    assert redis.lists[inflight_key] == []
+    assert redis.lists[ready_key] == [raw_payload]
+    assert task_lock_key in redis.delete_calls
+    assert conversation_lock_key in redis.delete_calls
+    assert processor.get_current_load() == 0
+
+    retried = await processor._legacy_pop_any_queue_fair()
+    assert retried is not None
+    await processor._process_task(retried)
+
+    assert resolve_calls == 2
+    assert len(handler_calls) == 1
+    assert redis.lists[ready_key] == []
+    assert redis.lists[inflight_key] == []
+    assert processor.get_current_load() == 0
 
 
 @pytest.mark.asyncio

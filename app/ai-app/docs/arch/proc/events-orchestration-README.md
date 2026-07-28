@@ -169,11 +169,14 @@ callback runs.
 When ReAct has a candidate final answer, its close gate compares the last event
 timestamp it rendered with `T.last_processed_event_timestamp`. If the reader
 accepted newer timeline material, the handler stays open and ReAct continues
-from the updated timeline. After the handler closes and turn artifacts persist,
-ContextBrowser performs the post-save handoff: unconsumed reactive lane work is
-woken through `EventLaneWakePublisher`.
+from the updated timeline. Once the gate closes the handler, ContextBrowser
+stops the live reader immediately. After turn artifacts persist, it releases
+the lane consumer and then performs the post-save handoff: unconsumed reactive
+lane work is woken through `EventLaneWakePublisher`.
 
-That handoff queues an `ExternalEventLaneWakeup`, not a request copy. The next
+That handoff is a liveness duplicate of the wake accepted atomically at ingress;
+releasing first prevents the duplicate from observing the completed turn as a
+fresh consumer. It queues an `ExternalEventLaneWakeup`, not a request copy. The next
 processor task therefore goes through the same resolution path as an initial
 lane-backed reactive start. Proc does not scan the lane after task completion.
 

@@ -191,8 +191,10 @@ For busy conversations:
    into its in-memory timeline only while `T.handler.status == open`.
 7. The ReAct close gate closes the handler only after it has rendered all lane
    events accepted by the reader.
-8. After artifacts persist, ContextBrowser performs post-save handoff for any
-   unconsumed reactive lane work and then releases `T.consumer`.
+8. After artifacts persist, ContextBrowser releases `T.consumer` and then
+   performs post-save handoff for any unconsumed reactive lane work. The event's
+   atomic ingress wake remains the primary signal; handoff is a liveness
+   duplicate.
 
 This prevents two writers from mutating one in-memory timeline. Redis ordering
 prevents accepted external events from being unordered relative to each other;

@@ -10,6 +10,7 @@ from kdcube_ai_app.apps.chat.sdk.events.event_bus.orchestrator import (
     EventBusScheduleDecision,
 )
 from kdcube_ai_app.apps.chat.sdk.events.event_bus.exceptions import (
+    EventLaneStateLockTimeout,
     ExternalEventLaneTurnSuperseded,
     ExternalEventLaneWakeIgnored,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "EventBusScheduleDecision",
     "EventLaneWakePublishResult",
     "EventLaneWakePublisher",
+    "EventLaneStateLockTimeout",
     "ExternalEventLaneTurnSuperseded",
     "ExternalEventLaneWakeIgnored",
     "EventLaneState",

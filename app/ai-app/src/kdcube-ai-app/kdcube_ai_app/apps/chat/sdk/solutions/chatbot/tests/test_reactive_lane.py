@@ -30,8 +30,9 @@ _FOLLOWUP_TS = "2026-07-13T11:00:05Z"  # landed DURING the turn
 # ── fakes ────────────────────────────────────────────────────────────────────
 
 class _MemoryLaneStateTable:
-    def __init__(self, state: EventLaneState) -> None:
+    def __init__(self, state: EventLaneState, actions: list[str] | None = None) -> None:
         self.state = state
+        self.actions = actions
 
     async def get(self) -> EventLaneState:
         return self.state
@@ -40,12 +41,14 @@ class _MemoryLaneStateTable:
         self.state = state
         return state
 
-    async def update(self, mutator):
+    async def update(self, mutator, **kwargs):
+        if self.actions is not None:
+            self.actions.append(str(kwargs.get("operation") or "update"))
         self.state = mutator(self.state) or self.state
         return self.state
 
     @contextlib.asynccontextmanager
-    async def lock(self):
+    async def lock(self, **_kwargs):
         yield "memory-lock"
 
 
@@ -94,10 +97,17 @@ class _FakeSource:
         return updated
 
 
-def _install(monkeypatch, *, state: EventLaneState, source: _FakeSource, published: list):
+def _install(
+    monkeypatch,
+    *,
+    state: EventLaneState,
+    source: _FakeSource,
+    published: list,
+    actions: list[str] | None = None,
+):
     """Wire the module's builders to fakes; return the real orchestrator so a
     test can inspect the post-finalize consumer state."""
-    orchestrator = ConversationEventBusOrchestrator(table=_MemoryLaneStateTable(state))
+    orchestrator = ConversationEventBusOrchestrator(table=_MemoryLaneStateTable(state, actions))
 
     class _FakePublisher:
         def __init__(self, _enqueuer=None):
@@ -106,6 +116,8 @@ def _install(monkeypatch, *, state: EventLaneState, source: _FakeSource, publish
         async def publish_for_event(self, *, payload, event, **kwargs):
             del payload, kwargs
             published.append(event.message_id)
+            if actions is not None:
+                actions.append(f"publish:{event.message_id}")
             return SimpleNamespace(success=True, reason="queued")
 
     wakeup = SimpleNamespace(
@@ -167,6 +179,26 @@ async def test_release_rewakes_mid_turn_followup_not_own_event(monkeypatch):
     # The mid-turn followup is re-woken (promoted to the next turn); the turn's
     # own event is never re-woken (no double run).
     assert published == ["evt-followup"]
+
+
+@pytest.mark.asyncio
+async def test_release_precedes_liveness_rewake(monkeypatch):
+    own = _event(ts=_OWN_TS, message_id="evt-own", sequence=1)
+    followup = _event(ts=_FOLLOWUP_TS, message_id="evt-followup", sequence=2)
+    source = _FakeSource([own, followup])
+    published: list[str] = []
+    actions: list[str] = []
+    _install(
+        monkeypatch,
+        state=EventLaneState(consumer_status="scheduled", consumer_status_at=_OWN_TS),
+        source=source,
+        published=published,
+        actions=actions,
+    )
+
+    await rl.finalize_reactive_event_lane(redis=object(), comm_context=_comm_context())
+
+    assert actions == ["mark_consumer_none", "publish:evt-followup"]
 
 
 @pytest.mark.asyncio

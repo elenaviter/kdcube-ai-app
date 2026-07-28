@@ -215,8 +215,8 @@ class _ConversationEventBusSystemSimulator:
         return False
 
     async def context_browser_close_external_event_handler(self) -> bool:
-        handed_off = await self.context_browser_post_save_external_event_handoff()
         await self.orchestrator.mark_consumer_none()
+        handed_off = await self.context_browser_post_save_external_event_handoff()
         return handed_off
 
     async def base_workflow_finish_turn_close_external_event_handler(self) -> bool:
@@ -578,6 +578,26 @@ async def test_wake_is_ignored_while_active_consumer_acknowledgement_is_fresh():
     assert not decision.scheduled
     assert decision.reason == "active_consumer_fresh"
     assert decision.state.consumer_status == "active"
+
+
+@pytest.mark.asyncio
+async def test_wake_recovers_when_handler_is_closed_but_consumer_still_looks_active():
+    orchestrator = _orchestrator()
+
+    await orchestrator.open_handler(turn_id="turn-finished")
+    await orchestrator.mark_consumer_active(turn_id="turn-finished")
+    closed = await orchestrator.try_close_handler(turn_id="turn-finished")
+    assert closed.closed
+    assert closed.state.consumer_status == "active"
+
+    decision = await orchestrator.schedule_consumer_from_wake(
+        wake_event_timestamp="2026-06-10T10:00:01Z",
+        active_ttl_ms=60_000,
+    )
+
+    assert decision.scheduled
+    assert decision.reason == "scheduled"
+    assert decision.state.consumer_status == "scheduled"
 
 
 @pytest.mark.asyncio

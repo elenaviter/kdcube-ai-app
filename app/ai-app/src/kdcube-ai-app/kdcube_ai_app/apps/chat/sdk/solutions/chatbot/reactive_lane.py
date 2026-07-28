@@ -219,6 +219,12 @@ async def finalize_reactive_event_lane(
             except Exception:
                 log.debug("reactive lane finalize: mark_consumed_up_to failed", exc_info=True)
 
+        # Release the consumer reservation so the next turn's wakeup is not dropped
+        # as scheduled_consumer_fresh. Every event already has its atomic ingress
+        # wake; the re-wake below is a liveness duplicate and must observe the
+        # released reservation, not race ahead of it.
+        await orchestrator.mark_consumer_none(turn_id=turn_id)
+
         wake_publisher = EventLaneWakePublisher(
             RedisEventLaneWakeEnqueuer(
                 redis=redis,
@@ -233,10 +239,6 @@ async def finalize_reactive_event_lane(
             own_ts=event_timestamp(event),
             turn_id=turn_id,
         )
-
-        # Release the consumer reservation so the next turn's wakeup is not dropped
-        # as scheduled_consumer_fresh.
-        await orchestrator.mark_consumer_none(turn_id=turn_id)
         return True
     except Exception:
         log.debug("reactive lane finalize failed (best-effort)", exc_info=True)

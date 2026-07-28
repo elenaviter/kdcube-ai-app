@@ -19,12 +19,12 @@ class _MemoryLaneStateTable:
         self.state = state
         return state
 
-    async def update(self, mutator):
+    async def update(self, mutator, **_kwargs):
         self.state = mutator(self.state) or self.state
         return self.state
 
     @contextlib.asynccontextmanager
-    async def lock(self):
+    async def lock(self, **_kwargs):
         yield "memory-lock"
 
 

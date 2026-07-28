@@ -156,16 +156,21 @@ representation rather than raw event text; that still counts because the event
 was processed into the rendered context. The cursor is stored on the timeline so
 in-turn compaction does not lose the progress marker.
 
-Turn finalization runs after the handler is closed. After artifacts persist,
-ContextBrowser publishes one wake when unprocessed, promotable reactive lane
-work remains. An unconsumed `event.user.steer` is terminalized instead: it is
-bound to the turn that was active at ingress and cannot become a later turn.
-Then the Reader/Consumer is released:
+Turn finalization runs after the handler is closed. A successful close gate
+stops the live reader immediately: a closed handler cannot accept another lane
+event. After artifacts persist, the Reader/Consumer is released:
 
 ```text
 T.consumer.status = none
 T.consumer.status_at = now
 ```
+
+ContextBrowser then publishes one liveness wake when unprocessed, promotable
+reactive lane work remains. Every reactive event already received an atomic
+ingress wake; this post-save wake is a duplicate safety signal and must observe
+the released reservation. An unconsumed `event.user.steer` is terminalized
+instead: it is bound to the turn that was active at ingress and cannot become a
+later turn.
 
 A subagent completion (`subagent.converged` / `subagent.failed`) rides this same
 lane as a promotable event: a live parent turn folds it and the promoter acks,
@@ -190,6 +195,11 @@ scheduled_is_fresh =
 `T.consumer.status_at` is written by the lane Consumer or proc. Processor
 heartbeat can help diagnose long-running work, but it does not replace this
 lane-local acknowledgement.
+
+A fresh `active` acknowledgement suppresses a wake only while
+`T.handler.status == open`. `handler=closed, consumer=active` is a recoverable
+finalization residue: no reader can consume through a closed gate, so proc may
+replace it with a new `scheduled` reservation.
 
 ## SDK Primitive
 
@@ -221,6 +231,13 @@ Core operations:
 | `accept_events_for_open_handler(events, turn_id=..., accept=...)` | Reader/Consumer lane drain. |
 | `try_close_handler(turn_id=..., handler_processed_event_timestamp=...)` | ReAct handler close gate. |
 | `mark_consumer_none()` | Reader/Consumer release after turn finalization. |
+
+Each lock holder records its operation, process, task, and acquisition time in
+the lock value. A timeout reports those fields plus the remaining lock TTL,
+without exposing the random ownership token. Cancellation waits for an in-flight
+Redis lock command to reach a known result and removes the exact token if Redis
+accepted it. A processor timeout before task execution is transient and is
+requeued; it is not acknowledged as malformed input.
 
 Wake publication lives next to the state primitive. For initial reactive
 ingress the publisher is used inside the atomic lane-publish/queue-enqueue

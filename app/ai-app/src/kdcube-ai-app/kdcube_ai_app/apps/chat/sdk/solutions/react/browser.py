@@ -423,10 +423,17 @@ class ContextBrowser:
         if orchestrator is None:
             return
         try:
-            await self.post_save_external_event_handoff()
-            await orchestrator.mark_consumer_none(turn_id=str(self._runtime_ctx.turn_id or ""))
+            state = await orchestrator.mark_consumer_none(turn_id=str(self._runtime_ctx.turn_id or ""))
         except Exception:
             self.log.log("[timeline.external]: failed to release event-bus consumer state\n" + traceback.format_exc(), "ERROR")
+            return
+        self.log.log(
+            f"[timeline.external]: event-bus consumer released "
+            f"conversation={self._runtime_ctx.conversation_id} turn_id={self._runtime_ctx.turn_id} "
+            f"handler_status={state.handler_status} consumer_status={state.consumer_status}",
+            "INFO",
+        )
+        await self.post_save_external_event_handoff()
 
     async def try_close_external_event_handler(self) -> Optional[bool]:
         orchestrator = self._event_bus_orchestrator()
@@ -448,6 +455,17 @@ class ContextBrowser:
                 handler_processed_event_timestamp=handler_processed_event_timestamp,
                 handler_processed_event_id=handler_processed_event_id,
             )
+            if decision.closed:
+                # A closed handler can no longer accept lane events. Stop the
+                # live reader immediately so it cannot spin on the first event
+                # that belongs to the next turn while final artifacts persist.
+                await self.stop_external_event_listener()
+                self.log.log(
+                    f"[timeline.external]: handler closed and live listener stopped "
+                    f"conversation={self._runtime_ctx.conversation_id} turn_id={self._runtime_ctx.turn_id} "
+                    f"consumer_status={decision.state.consumer_status}",
+                    "INFO",
+                )
             if not decision.closed:
                 self.log.log(
                     f"[timeline.external]: handler close deferred "

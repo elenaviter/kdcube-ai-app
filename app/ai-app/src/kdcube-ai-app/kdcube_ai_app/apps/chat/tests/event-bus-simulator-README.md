@@ -24,7 +24,7 @@ Canonical design docs:
 | `react_runtime_close_gate()` | `sdk/solutions/react/v2/runtime.py` and `v3/runtime.py` close gate | Close the handler only if ReAct processed all lane events accepted by the reader. |
 | `base_workflow_finish_turn_persist_artifacts()` | `sdk/solutions/chatbot/base_workflow.py::finish_turn` artifact persistence section | Persist turn artifacts after the handler is closed. |
 | `context_browser_post_save_external_event_handoff()` | `sdk/solutions/react/browser.py::ContextBrowser.post_save_external_event_handoff` | Inspect unconsumed reactive work after persistence and publish a wake through `EventLaneWakePublisher`. |
-| `context_browser_close_external_event_handler()` | `sdk/solutions/react/browser.py::ContextBrowser.close_external_event_handler` called by `finish_turn` after artifacts persist | Run post-save handoff, then release `T.consumer`. |
+| `context_browser_close_external_event_handler()` | `sdk/solutions/react/browser.py::ContextBrowser.close_external_event_handler` called by `finish_turn` after artifacts persist | Release `T.consumer`, then run the liveness handoff wake. |
 | `base_workflow_finish_turn_close_external_event_handler()` | `sdk/solutions/chatbot/base_workflow.py::finish_turn` call into `ContextBrowser.close_external_event_handler()` | Preserve the real finalization order: BaseWorkflow owns the sequence; ContextBrowser writes the lane consumer release. |
 
 The post-save handoff is a ContextBrowser/runtime site. It is not implemented
@@ -137,17 +137,17 @@ base_workflow_finish_turn_close_external_event_handler()
   call ContextBrowser.close_external_event_handler()
         |
         v
-context_browser_post_save_external_event_handoff()
-  if any unconsumed reactive event has timestamp >
-     T.last_processed_reactive_event_timestamp:
-    EventLaneWakePublisher.publish_for_event(event)
-        |
-        v
 context_browser_close_external_event_handler()
   lock(T)
     set T.consumer.status = none
     set T.consumer.status_at = now
   unlock(T)
+        |
+        v
+context_browser_post_save_external_event_handoff()
+  if any unconsumed reactive event has timestamp >
+     T.last_processed_reactive_event_timestamp:
+    EventLaneWakePublisher.publish_for_event(event)
 ```
 
 ## Required Scenarios
@@ -162,5 +162,24 @@ context_browser_close_external_event_handler()
 - multiple wakeups before handler construction collapse to one scheduled consumer
 - stale active consumer acknowledgement can be rescheduled
 - reader cannot consume after handler close
-- ContextBrowser post-save external-event handoff wakes remaining unconsumed reactive work
 - reader holding `lock(T)` prevents the close gate from missing an event in hand
+- ContextBrowser post-save external-event handoff wakes remaining unconsumed reactive work
+- a successful close gate stops the live listener before post-save work
+- `handler=closed, consumer=active` is recovered by the next wake
+- pre-execution lane-lock contention requeues and then executes the same task
+- cancellation after Redis accepts the state lock removes the exact owner token
+
+The cancellation regression also has an opt-in real Redis case in
+`test_event_bus_state_lock.py`. A disposable local run is:
+
+```bash
+docker run --rm -d --name kdcube-event-lane-test-redis \
+  -p 127.0.0.1:6399:6379 redis:7-alpine
+
+KDCUBE_TEST_REDIS_URL=redis://127.0.0.1:6399/15 \
+PYTHONPATH=app/ai-app/src/kdcube-ai-app \
+app/venvs/ai-app/chat-processor/bin/pytest -q \
+  app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/tests/test_event_bus_state_lock.py
+
+docker stop kdcube-event-lane-test-redis
+```
