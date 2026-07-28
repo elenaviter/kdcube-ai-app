@@ -43,6 +43,8 @@ For the portable context contract, read
 
 | Need | Read |
 | --- | --- |
+| The narrative map of all runtimes and the fence model that organizes them | [The KDCube Runtimes: Map And Model](runtimes-map-README.md) |
+| The agent's-eye view: one agent fed from any surface, two layers of state, native vs integrated | [The Agent In The Runtimes Fusion](agent-in-the-runtimes-README.md) |
 | Separate tenant/project scope, concurrent users, Connection Hub authority, apps, and reusable agent-code isolation | [Tenant, User, Authority, And Execution Boundaries](tenant-project-user-and-execution-boundaries-README.md) |
 | Know which identity and descriptors cross runtime transitions | [Cross-Runtime Context](cross-runtime-context-README.md) |
 | Bootstrap and reduce a scoped execution fence | [Fenced Runtime Bootstrap And Reduce](fenced-runtime-bootstrap-and-reduce-README.md) |
