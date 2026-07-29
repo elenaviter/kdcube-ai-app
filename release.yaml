@@ -1,37 +1,32 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.28.210"
+  ref: "2026.07.29.450"
   description: |
-    This release follows 2026.07.27.1240.
+    This release follows 2026.07.28.210.
 
-    Google Sheets is now available as a governed productivity integration and
-    named-service namespace. Apps and agents can discover spreadsheets, create
-    and describe them, read ranges, append or update values, apply formatting,
-    and materialize complete snapshots through each user's Connection Hub
-    credential. Large results retain explicit completeness metadata and can be
-    delivered as authorized hosted artifacts instead of being silently capped.
+    Reactive event lane delivery is hardened around ownership, follow-up
+    cancellation, delivery-state locking, and same-conversation turn safety.
+    The runtime now preserves and documents the distinction between a turn's
+    accepted ingress batch, eligible continuation work, live follow-up, and
+    steer events that only affect the active live turn.
 
-    Named-service retrieval contracts now distinguish inline previews from
-    complete provider retrieval across Sheets, mail, and Slack. Exact provider
-    actions, continuation metadata, and resident-agent materialization make
-    these domains progressively discoverable without treating a bounded tool
-    response as the whole resource.
+    Public content routes now support crawler-style HEAD probes in addition to
+    GET. The platform dispatches HEAD through the same public-content handler,
+    preserves the GET response status and headers, and returns an empty body so
+    sitemap validators and search tooling can verify runtime-generated content
+    without receiving the full page or XML payload.
 
-    Connection Hub now resolves nested service claims to the connected accounts
-    they require, represents any-of authorization requirements, and explains
-    those prerequisites in consent flows. Google Sheets write access includes
-    the Drive file scope needed for spreadsheet creation under the same
-    delegated account contract.
+    Connection Hub cleanup is more robust after account disconnects and
+    reauthorization. Stale bindings are pruned, grant cards are easier to read,
+    dynamic client registration records have a bounded TTL, and agent grant
+    cards now name the claim row involved in a requested capability so users can
+    understand which access path is being approved.
 
-    Provider failures from Google Sheets, Gmail, and Slack now use one safe
-    structured contract. Clients receive actionable provider status and retry
-    information, server logs retain redacted diagnostics, and partial or
-    ambiguous mutations preserve an explicit unknown-outcome signal.
-
-    Integration documentation is consolidated into provider mechanics,
-    bundle-local operator setup, and end-to-end recipes. This release also makes
-    deployed widget delivery the default and permits explicitly safe inline
-    HTML in public-content summaries.
+    The agentic runtime documentation now includes the runtimes map and the
+    agent-in-the-runtimes model, with corrected boundary, identity projection,
+    scheduled-job, and event-handling semantics. These docs clarify how hosted
+    agents, communication runtime, execution isolation, app surfaces, and
+    trusted runtime crossings fit together.
 
 config:
-  version: "2026.07.28.210"
+  version: "2026.07.29.450"
