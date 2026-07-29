@@ -270,7 +270,10 @@ def _render_account_need_row(row: ProviderAccountRequirement, esc) -> str:
     return (
         f'<div class="need-row">'
         f'<div class="need-head"><b>{label}</b> {badge}</div>'
-        f'<div class="need-claims">needs {needed}{f" · {detail}" if detail else ""}</div>'
+        f'<div class="need-claims">needs {needed}</div>'
+        # Its own line, not a "·"-joined clause: at panel width the join wraps
+        # and strands the separator at the end of the claim list.
+        f'{f"<div class=need-detail>{detail}</div>" if detail else ""}'
         f'{f"<div class=need-connect>{connect}</div>" if connect else ""}'
         f"</div>"
     )
@@ -648,6 +651,7 @@ def render_consent_html(
     .need-head b {{ font-size: .9rem; color: var(--ink); }}
     .need-claims {{ display: block; color: var(--muted); font-size: .78rem; margin-top: .2rem; }}
     .need-claims code {{ font-size: .72rem; }}
+    .need-detail {{ display: block; font-size: .78rem; margin-top: .15rem; }}
     .need-connect {{ display: block; font-size: .8rem; margin-top: .3rem; color: var(--muted); }}
     .actions {{ display: flex; gap: .75rem; margin-top: 1.2rem; }}
     button {{ flex: 1; padding: .55rem; border-radius: 8px; border: 0; font-size: .9rem; font-weight: 600; cursor: pointer; transition: filter .15s, opacity .15s; }}
