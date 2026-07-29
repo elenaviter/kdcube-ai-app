@@ -255,3 +255,49 @@ def test_panel_is_empty_when_no_provider_requirements():
 
     html = _render_accounts_needed_panel(AccountRequirements(providers=(), unresolved_claims=("mail:read",)), __import__("html").escape)
     assert html == ""
+
+
+def _need_row(*, needed, satisfied, missing, label="KDCube Demo Reader"):
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.account_requirements import (
+        ConnectedAccountView, ProviderAccountRequirement,
+    )
+    return ProviderAccountRequirement(
+        provider_id="google", provider_label="Google", connector_app_id="gmail",
+        needed_claims=tuple(needed),
+        accounts=(ConnectedAccountView(account_id="acc-1", label=label, held_claims=tuple(satisfied)),),
+        satisfied_claims=tuple(satisfied), missing_claims=tuple(missing),
+        connect_url="https://example.test/hub",
+    )
+
+
+def test_needs_row_does_not_reprint_the_claim_list_it_just_showed():
+    """A connected account covering NONE of the requirement made the row state
+    the same gap twice - "needs X - connected as Y, still needs X". The row
+    already names X; the detail only adds that an account exists."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.consent import (
+        _render_account_need_row,
+    )
+    html = _render_account_need_row(
+        _need_row(needed=["sheets:read", "sheets:write"], satisfied=[],
+                  missing=["sheets:read", "sheets:write"]),
+        lambda s: s,
+    )
+    assert "still needs" not in html
+    assert "connected as KDCube Demo Reader" in html
+    assert html.count("sheets:write") == 1        # named once, not twice
+    assert "Approve access for Google" in html    # the fix is still actionable
+
+
+def test_needs_row_keeps_still_needs_when_the_account_covers_part_of_it():
+    """A PARTIAL gap is what "still needs" is for - there the shorter list is
+    new information, so it must survive."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.consent import (
+        _render_account_need_row,
+    )
+    html = _render_account_need_row(
+        _need_row(needed=["sheets:read", "sheets:write"], satisfied=["sheets:read"],
+                  missing=["sheets:write"]),
+        lambda s: s,
+    )
+    assert "still needs" in html
+    assert html.count("sheets:read") == 1         # only in the needs list

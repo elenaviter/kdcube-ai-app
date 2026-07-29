@@ -246,11 +246,16 @@ def _render_account_need_row(row: ProviderAccountRequirement, esc) -> str:
         if status == "needs_access":
             badge = '<span class="badge warn">needs more access</span>'
             names = ", ".join(esc(a.label) for a in row.accounts if a.label)
-            missing = " ".join(f"<code>{esc(c)}</code>" for c in row.missing_claims)
-            detail = (
-                f'<span class="desc">connected{f" as {names}" if names else ""} — '
-                f'still needs {missing}</span>'
-            )
+            connected_as = f'connected{f" as {names}" if names else ""}'
+            # "still needs X" earns its place only when the account already
+            # covers part of the requirement. When it covers none, X is the
+            # very list this row prints two words earlier, and repeating it
+            # reads as two different statements about the same gap.
+            if set(row.missing_claims) == set(row.needed_claims):
+                detail = f'<span class="desc">{connected_as}</span>'
+            else:
+                missing = " ".join(f"<code>{esc(c)}</code>" for c in row.missing_claims)
+                detail = f'<span class="desc">{connected_as} — still needs {missing}</span>'
             action = f"Approve access for {label}"
         else:  # not_connected
             badge = '<span class="badge warn">not connected</span>'
