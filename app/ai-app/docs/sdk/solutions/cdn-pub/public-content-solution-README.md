@@ -138,21 +138,24 @@ Everything serves under the app's existing public namespace on the reserved
 `__content__` segment (platform-owned; never dispatched to app operations):
 
 ```text
-GET …/bundles/{tenant}/{project}/{bundle_id}/public/__content__
+GET/HEAD …/bundles/{tenant}/{project}/{bundle_id}/public/__content__
       → JSON descriptor list of enabled alias sitemaps (host federation)
-GET …/public/__content__/{alias}/sitemap.xml
+GET/HEAD …/public/__content__/{alias}/sitemap.xml
       → the per-alias sitemap (catalog pages + published items, accurate lastmod)
-GET …/public/__content__/{alias}/{catalog-prefix}/sitemap.xml
+GET/HEAD …/public/__content__/{alias}/{catalog-prefix}/sitemap.xml
       → a filtered sitemap for one configured catalog (catalog page + its items)
-GET …/public/__content__/{alias}/{catalog-prefix}[?q=…&offset=…]
+GET/HEAD …/public/__content__/{alias}/{catalog-prefix}[?q=…&offset=…]
       → a configured catalog: the server-rendered listing page
-GET …/public/__content__/{alias}/{slug…}
+GET/HEAD …/public/__content__/{alias}/{slug…}
       → the crawlable item page (200), 410 when retracted, 404 unknown;
         chrome + side rail added when a configured catalog covers the slug
-GET …/public/__content__/{alias}/{slug…}/{asset}.png|jpg|webp|svg
+GET/HEAD …/public/__content__/{alias}/{slug…}/{asset}.png|jpg|webp|svg
       → an item asset (image bytes, Cache-Control public max-age=3600);
         a miss falls through to the item lookup
 ```
+
+`HEAD` returns the same status and headers as `GET` with an empty body, so
+search-console and crawler probes do not fail before issuing a full `GET`.
 
 ### Item assets (the social-preview raster)
 

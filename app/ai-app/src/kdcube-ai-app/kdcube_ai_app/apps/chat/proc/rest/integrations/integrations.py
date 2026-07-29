@@ -906,6 +906,17 @@ def _coerce_bundle_http_response(result: Any):
     return None
 
 
+def _head_response_from(response: Response) -> Response:
+    """Return HEAD-compatible headers/status without the GET body."""
+    return Response(
+        content=b"",
+        status_code=response.status_code,
+        headers=dict(response.headers),
+        media_type=None,
+        background=response.background,
+    )
+
+
 def _coerce_bundle_mcp_asgi_app(result: Any, *, transport: str):
     if transport == "streamable-http" and hasattr(result, "streamable_http_app"):
         return result.streamable_http_app()
@@ -3218,7 +3229,7 @@ async def call_bundle_op_public(
     )
 
 
-@router.get("/bundles/{tenant}/{project}/{bundle_id}/public/{operation}")
+@router.api_route("/bundles/{tenant}/{project}/{bundle_id}/public/{operation}", methods=["GET", "HEAD"])
 async def call_bundle_op_public_get(
         tenant: str,
         project: str,
@@ -4700,7 +4711,7 @@ async def call_bundle_op_public_with_path(
     )
 
 
-@router.get("/bundles/{tenant}/{project}/{bundle_id}/public/{operation}/{path_tail:path}")
+@router.api_route("/bundles/{tenant}/{project}/{bundle_id}/public/{operation}/{path_tail:path}", methods=["GET", "HEAD"])
 async def call_bundle_op_public_get_with_path(
         tenant: str,
         project: str,
@@ -4975,7 +4986,10 @@ async def _serve_public_content_route(
         query_params=dict(request.query_params),
         logger=getattr(workflow, "logger", None),
     )
-    return _coerce_bundle_http_response(result)
+    response = _coerce_bundle_http_response(result)
+    if str(getattr(request, "method", "") or "").upper() == "HEAD" and isinstance(response, Response):
+        return _head_response_from(response)
+    return response
 
 
 async def _call_bundle_op_inner(

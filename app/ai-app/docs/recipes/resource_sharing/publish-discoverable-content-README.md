@@ -397,6 +397,9 @@ stylesheets — continue with
 curl -is "$B/articles/sitemap.xml" | head -3
 # → HTTP/1.1 200 OK
 #   content-type: application/xml; charset=utf-8
+curl -Is "$B/articles/sitemap.xml" | head -3
+# → HTTP/1.1 200 OK
+#   content-type: application/xml; charset=utf-8
 curl -s  "$B/articles/<some-slug>" | grep -c 'application/ld+json'
 # → 2      (item document + BreadcrumbList)
 ```

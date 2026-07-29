@@ -135,13 +135,16 @@ changed.
 Once declared + enabled, with no further app code:
 
 ```text
-GET …/public/__content__                         descriptor list (host federation)
-GET …/public/__content__/{alias}/sitemap.xml     per-alias sitemap
-GET …/public/__content__/{alias}                 optional alias-root catalog
-GET …/public/__content__/{alias}/{catalog-prefix}/sitemap.xml
+GET/HEAD …/public/__content__                         descriptor list (host federation)
+GET/HEAD …/public/__content__/{alias}/sitemap.xml     per-alias sitemap
+GET/HEAD …/public/__content__/{alias}                 optional alias-root catalog
+GET/HEAD …/public/__content__/{alias}/{catalog-prefix}/sitemap.xml
                                                   filtered catalog sitemap
-GET …/public/__content__/{alias}/{slug…}         crawlable item page / 410 / 404
+GET/HEAD …/public/__content__/{alias}/{slug…}         crawlable item page / 410 / 404
 ```
+
+`HEAD` is supported for crawler and validator probes. It returns the same
+status and headers as `GET` without the response body.
 
 ## Acceptance Check
 
