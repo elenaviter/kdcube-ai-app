@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
 import { operationUrl } from '../../api/client';
@@ -1131,14 +1131,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                             </div>
                           )) : (
                             <div className="card-fields">
+                              {/* Door and Access are paired per door, so which claims
+                                  belong to which door survives on a multi-door grant.
+                                  Connected apps flatten to one Access row; naming the
+                                  row the same way keeps the two cards readable as the
+                                  same kind of entry. */}
                               {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
-                                <Field label="Door" key={resource}>
-                                  <span className="door-line">
-                                    <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
-                                    {resource !== '*' ? <DoorRef value={resource} /> : null}
-                                  </span>
-                                  <ChipRow entries={grants} title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
-                                </Field>
+                                <Fragment key={resource}>
+                                  <Field label="Door">
+                                    <span className="door-line">
+                                      <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                      {resource !== '*' ? <DoorRef value={resource} /> : null}
+                                    </span>
+                                  </Field>
+                                  <Field label="Access">
+                                    <ChipRow entries={grants} title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
+                                  </Field>
+                                </Fragment>
                               ))}
                               {item.named_service_operations && Object.keys(item.named_service_operations).length ? (
                                 <Field label="Services">

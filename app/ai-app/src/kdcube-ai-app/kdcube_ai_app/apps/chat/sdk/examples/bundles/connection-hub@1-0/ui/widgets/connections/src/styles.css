@@ -452,8 +452,6 @@ h2 {
 .door-line { display: block; min-width: 0; }
 .door-line b { font-weight: 600; color: var(--ink); }
 .door-ref { display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; min-width: 0; }
-/* The claim chips under a door address need their own breathing room. */
-.door-line + .chip-row { margin-top: 7px; }
 .door-uri {
   flex: 1;
   min-width: 0;
