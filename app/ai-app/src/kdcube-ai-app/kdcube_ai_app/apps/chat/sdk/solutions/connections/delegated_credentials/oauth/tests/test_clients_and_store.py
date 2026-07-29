@@ -17,7 +17,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
     redirect_uri_allowed,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.pkce import make_s256_challenge, verify_s256
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import GrantStore
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
+    CLIENT_TTL_SECONDS,
+    GrantStore,
+)
 
 
 # ------------------------------- fake redis -------------------------------
@@ -25,15 +28,25 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
 class FakeRedis:
     def __init__(self):
         self.values: dict[str, str] = {}
+        self.ttls: dict[str, int] = {}
 
     async def set(self, key, value, nx=False, ex=None):
         if nx and key in self.values:
             return False
         self.values[key] = str(value)
+        if ex is not None:
+            self.ttls[key] = int(ex)
         return True
 
     async def setex(self, key, ttl, value):
         self.values[key] = str(value)
+        self.ttls[key] = int(ttl)
+        return True
+
+    async def expire(self, key, ttl):
+        if key not in self.values:
+            return False
+        self.ttls[key] = int(ttl)
         return True
 
     async def get(self, key):
@@ -211,3 +224,28 @@ async def test_access_grant_record_preserves_named_service_catalog(store):
     )
     record = await store.get_access_grant_record("access-token")
     assert record["named_services"] == named_services
+
+
+# --------------------- DCR client registration TTL ---------------------
+
+
+@pytest.mark.asyncio
+async def test_client_registration_carries_sliding_ttl():
+    """A dcr-* registration expires unless used (every retried connect mints a
+    fresh client), and any read re-arms the full TTL so a connector in use
+    never expires. Regression: registrations used to persist with no TTL and
+    accumulated forever."""
+    r = FakeRedis()
+    store = GrantStore(r, tenant="home", project="demo")
+    rec = await store.register_client(
+        redirect_uris=["https://claude.ai/api/mcp/auth_callback"],
+        metadata={"client_name": "Claude"},
+    )
+    key = next(k for k in r.values if rec["client_id"] in k)
+    assert r.ttls.get(key) == CLIENT_TTL_SECONDS
+
+    # Simulate the record nearing expiry; a read must re-arm the full TTL.
+    r.ttls[key] = 60
+    fetched = await store.get_client_record(rec["client_id"])
+    assert fetched is not None and fetched["client_id"] == rec["client_id"]
+    assert r.ttls.get(key) == CLIENT_TTL_SECONDS

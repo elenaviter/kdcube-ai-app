@@ -270,6 +270,14 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   };
 
   const prefillForAccount = (account: DelegatedToKdcubeAccount, targetClaims: string[], notice: string) => {
+    // The pane is summoned by managedAccountId; log the inputs so a "nothing
+    // happened" click is diagnosable from the console, not by inspecting DOM.
+    console.info('[connect-route] prefillForAccount -> summoning connect pane', {
+      accountId: account.account_id,
+      provider: account.provider_id,
+      connectorApp: account.connector_app_id || '(default)',
+      claims: targetClaims,
+    });
     setProviderId(account.provider_id);
     setConnectorAppId(account.connector_app_id || '');
     setManagedAccountId(account.account_id);
@@ -278,11 +286,24 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     setDisplayName(account.display_name || '');
     setWorkspace(account.workspace || '');
     setFormNotice(notice);
-    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // NOT scrolled here: the connect pane mounts on demand, so the form does
+    // not exist yet at this point. The effect below scrolls once it renders.
   };
+
+  // Managing/reconnecting an account summons the connect pane; bring it into
+  // view AFTER it has mounted, otherwise the click appears to do nothing.
+  useEffect(() => {
+    if (!managedAccountId) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [managedAccountId]);
 
   // ── consent-plan (deep-link) wiring ────────────────────────────────────
   const [planDismissed, setPlanDismissed] = useState(false);
+  // The connect form is folded behind its call to action (see connectPane).
+  const [connectOpen, setConnectOpen] = useState(false);
   const planProvider = deepLink.providerId ? providers[deepLink.providerId] : undefined;
   useEffect(() => {
     console.info('[connect-route] delegated-to-kdcube panel mount', {
@@ -670,12 +691,30 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     </section>
   );
 
+  // The connect form is summoned from the tab's action row; managing an
+  // existing account opens it directly (the user came here to edit).
+  const connectPaneOpen = connectOpen || Boolean(managedAccount);
   return (
-    <PaneGroup
-      panes={[
-        { id: 'accounts', title: 'Connected accounts', content: existingPane },
-        { id: 'connect', title: managedAccount ? 'Manage account access' : 'Connect a new account', content: connectPane },
-      ]}
-    />
+    <>
+      {!connectPaneOpen ? (
+        <div className="tab-actions">
+          <button className="btn" type="button" onClick={() => setConnectOpen(true)}>
+            Connect a new account
+          </button>
+        </div>
+      ) : null}
+      <PaneGroup
+        panes={[
+          // The summoned connect/manage surface leads while it is open.
+          ...(connectPaneOpen ? [{
+            id: 'connect',
+            title: managedAccount ? 'Manage account access' : 'Connect a new account',
+            content: connectPane,
+            lead: true,
+          }] : []),
+          { id: 'accounts', title: 'Connected accounts', content: existingPane },
+        ]}
+      />
+    </>
   );
 }

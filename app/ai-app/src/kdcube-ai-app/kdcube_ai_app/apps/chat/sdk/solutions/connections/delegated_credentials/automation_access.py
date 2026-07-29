@@ -1532,6 +1532,87 @@ class AutomationAccessService:
                 origins.add(f"{parts.scheme}://{parts.hostname}".lower())
         return origins
 
+    async def prune_account_from_grants(
+        self, *, grantor_subject: str, provider_id: str, account_id: str
+    ) -> dict[str, Any]:
+        """Drop a connected account from every grant of this user that binds it.
+
+        Called when the user DISCONNECTS the account. Account ids are
+        deterministic (provider + connector app + subject), so a binding left
+        behind would silently come back to life if the same account were
+        reconnected later - re-granting access nobody ticked again. Disconnect
+        therefore closes the bindings too; ``Reconnect`` (re-approval without
+        disconnecting) is the action that preserves them.
+
+        Never raises: a pruning failure must not fail the disconnect itself.
+        """
+        subject = _clean(grantor_subject)
+        provider = _clean(provider_id)
+        account = _clean(account_id)
+        if not subject or not provider or not account:
+            return {"pruned": 0, "grants": []}
+        try:
+            raw_ids = await self._redis.smembers(self._index_key(subject))
+        except Exception:
+            return {"pruned": 0, "grants": []}
+        access_ids = [
+            item.decode("utf-8") if isinstance(item, (bytes, bytearray)) else str(item)
+            for item in (raw_ids or [])
+        ]
+        pruned: list[str] = []
+        for access_id in access_ids:
+            try:
+                raw = await self._redis.get(self._record_key(access_id))
+                if raw is None:
+                    continue
+                record = AutomationAccessRecord.from_mapping(json.loads(raw))
+                accounts = dict(record.account_scope.get(provider) or {})
+                if account not in accounts:
+                    continue
+                accounts.pop(account, None)
+                scope = {
+                    p: {a: list(cl) for a, cl in bound.items()}
+                    for p, bound in record.account_scope.items()
+                }
+                # A provider with no bound accounts drops out entirely - the
+                # runtime is default-closed for delegated callers.
+                if accounts:
+                    scope[provider] = {a: list(cl) for a, cl in accounts.items()}
+                else:
+                    scope.pop(provider, None)
+                record_dict = record.to_dict()
+                record_dict["account_scope"] = scope
+                ttl = 0
+                try:
+                    ttl = await self._redis.ttl(self._record_key(access_id))
+                except Exception:
+                    ttl = 0
+                await self._redis.setex(
+                    self._record_key(access_id),
+                    max(60, int(ttl or 0) or 60),
+                    json.dumps(record_dict),
+                )
+                pruned.append(access_id)
+                await self.notify_change(subject, action="edited", access={
+                    k: v for k, v in record_dict.items()
+                    if k not in ("access_token", "refresh_token", "session_id")
+                })
+            except Exception:
+                _LOGGER.warning(
+                    "[connection_hub.disconnect] pruning account binding failed "
+                    "(non-fatal): access_id=%s provider=%s account=%s",
+                    access_id, provider, account, exc_info=True,
+                )
+                continue
+        if pruned:
+            _LOGGER.info(
+                "[connection_hub.disconnect] cleared account binding from %d grant(s): "
+                "provider=%s account=%s grants=%s",
+                len(pruned), provider, account, pruned,
+            )
+        return {"pruned": len(pruned), "grants": pruned}
+
+
     async def extend_client_access(
         self,
         user: Mapping[str, Any],
@@ -1541,6 +1622,7 @@ class AutomationAccessService:
         claims: Iterable[str],
         account_scope: Mapping[str, Any] | None = None,
         replace: bool = False,
+        label: str | None = None,
     ) -> dict[str, Any]:
         """Edit an EXISTING external client's card (an unknown client is never
         created here; its card is born at OAuth consent). ``replace=False``
@@ -1621,6 +1703,12 @@ class AutomationAccessService:
         record_dict["account_scope"] = {
             p: {a: list(cl) for a, cl in accounts.items()} for p, accounts in account_scope_out.items()
         }
+        # A DCR client registers one fixed name (every Claude connector arrives
+        # as "Claude"), so the user may rename the card to tell connections
+        # apart. Empty/absent label leaves the current one untouched.
+        new_label = _clean(label)
+        if new_label:
+            record_dict["label"] = new_label
         await self._redis.setex(
             self._record_key(access_id), max(60, int(ttl or 0) or 60), json.dumps(record_dict),
         )

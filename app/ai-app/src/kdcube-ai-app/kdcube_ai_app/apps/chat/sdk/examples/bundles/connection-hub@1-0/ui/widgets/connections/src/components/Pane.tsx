@@ -228,12 +228,19 @@ export function PaneGroup({ panes }: { panes: PaneDef[] }) {
     );
   };
 
+  // A lead pane spans the whole row, so the panes that share the two-column
+  // grid are only the non-lead ones. When exactly one of those remains it has
+  // no partner to sit beside — it must span too, instead of rendering as a
+  // lonely half-width column next to empty space.
+  const soloDocked = visibleDocked.filter((item) => !item.pane.lead).length === 1;
+
   return (
     <div className="pane-group" ref={groupRef}>
       {visibleDocked.map((item) => (
         <div
           key={item.pane.id}
-          className={`pane${item.state.expanded ? ' pane--fill' : ''}${item.pane.lead ? ' pane--lead' : ''}`}
+          className={`pane${item.state.expanded ? ' pane--fill' : ''}${item.pane.lead ? ' pane--lead' : ''}${
+            soloDocked && !item.pane.lead ? ' pane--solo' : ''}`}
           ref={(el) => {
             dockedEls.current[item.pane.id] = el;
           }}

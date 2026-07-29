@@ -353,8 +353,8 @@ def render_consent_html(
         (
             _tool_group(name, grants),
             f'    <label class="tool"><input type="checkbox" name="tools" value="{esc(name)}" checked> '
-            f'<b>{esc(name)}</b><span class="desc">{esc(desc)}</span>'
-            f'<span class="grants">Requires: {esc(", ".join(grants) or "none")}</span></label>'
+            f'<span class="row-text"><b>{esc(name)}</b><span class="desc">{esc(desc)}</span>'
+            f'<span class="grants">Requires: {esc(", ".join(grants) or "none")}</span></span></label>'
         )
         for name, desc, grants in tools
     ), css_class="tool") or '    <p class="desc">No selectable tools for the requested scope.</p>'
@@ -363,8 +363,8 @@ def render_consent_html(
         (
             _grant_family(grant),
             f'    <label class="edge"><input type="checkbox" name="platform_grants" value="{esc(grant)}" checked> '
-            f'<b>{esc(label)}</b><span class="desc">{esc(desc)}</span>'
-            f'<span class="grants">{esc(grant)}</span></label>'
+            f'<span class="row-text"><b>{esc(label)}</b><span class="desc">{esc(desc)}</span>'
+            f'<span class="grants">{esc(grant)}</span></span></label>'
         )
         for grant, label, desc in platform_edge_grants
     ), css_class="edge") or '    <p class="desc">No platform-authority grants are requested.</p>'
@@ -626,6 +626,11 @@ def render_consent_html(
     .namespace-row {{ display: block; padding: .55rem .7rem; margin: .4rem 0;
       border: 1px solid var(--line); border-radius: 8px; }}
     .tool input, .edge input {{ margin-top: .2rem; width: 1rem; height: 1rem; accent-color: var(--accent); }}
+    /* Stack name / description / grants vertically beside the checkbox; without
+       this wrapper the three spans sit in one flex row - the description
+       squeezes into a sliver and the grants chip clips at the card edge. */
+    .row-text {{ flex: 1; min-width: 0; }}
+    .row-text b {{ display: block; overflow-wrap: anywhere; }}
     .tool b {{ font-size: .9rem; color: var(--ink); }}
     .edge b {{ font-size: .9rem; color: var(--ink); }}
     .namespace-row b {{ font-size: .9rem; color: var(--ink); }}
@@ -688,7 +693,7 @@ def render_consent_html(
 {namespace_section or '      <p class="desc">No namespace boundaries for the requested scope.</p>'}
     </details>
 {per_account_section}
-    <details class="fold" open>
+    <details class="fold">
       <summary>Capabilities to authorize for this connection ({len(tools)}) — review and narrow</summary>
 {tool_rows}
     </details>

@@ -1233,3 +1233,60 @@ def store_bound_pointer(service):
     # registry_access_id when the pointer was passed.
     bound = getattr(service._store, "bound", [])
     return bound[-1].get("registry_access_id") if bound else None
+
+
+@pytest.mark.asyncio
+async def test_disconnecting_an_account_clears_its_agent_bindings():
+    """Disconnecting a connected account must drop it from every grant that
+    binds it. Account ids are deterministic, so a binding left behind would
+    silently revive - re-granting access nobody ticked - if the same account
+    were reconnected later."""
+    redis = _Redis()
+    service = AutomationAccessService(
+        redis=redis,
+        tenant="demo-tenant",
+        project="demo-project",
+        config=_config(),
+        grant_store=_Store(),
+        authority=_Authority(),
+        minter=_minter,
+    )
+    user = {"user_id": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+    created = await service.create_access(
+        user,
+        label="Agent grant",
+        resource_grants={"https://example.test/mcp": ["records:read"]},
+        ttl_seconds=3600,
+        account_scope={
+            "google": {"google_aaa": ["gmail:read"], "google_bbb": ["gmail:read"]},
+            "slack": {"slack_zzz": ["slack:search"]},
+        },
+    )
+    access_id = created["access"]["access_id"]
+
+    result = await service.prune_account_from_grants(
+        grantor_subject="platform-user-1", provider_id="google", account_id="google_aaa",
+    )
+    assert result["pruned"] == 1 and access_id in result["grants"]
+
+    record = json.loads(redis.values[service._record_key(access_id)])
+    scope = record["account_scope"]
+    # The disconnected account is gone; its provider survives with the sibling.
+    assert "google_aaa" not in scope.get("google", {})
+    assert scope["google"]["google_bbb"] == ["gmail:read"]
+    # An untouched provider is left exactly as it was.
+    assert scope["slack"] == {"slack_zzz": ["slack:search"]}
+
+    # Removing the LAST bound account drops the provider entirely — the runtime
+    # is default-closed, so no provider entry means no access there.
+    await service.prune_account_from_grants(
+        grantor_subject="platform-user-1", provider_id="google", account_id="google_bbb",
+    )
+    record = json.loads(redis.values[service._record_key(access_id)])
+    assert "google" not in record["account_scope"]
+
+    # An account nobody bound is a no-op.
+    noop = await service.prune_account_from_grants(
+        grantor_subject="platform-user-1", provider_id="google", account_id="google_never",
+    )
+    assert noop["pruned"] == 0

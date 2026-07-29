@@ -21,6 +21,8 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
   const [provider, setProvider] = useState(providerOptions[0]);
   const [subject, setSubject] = useState('');
   const [label, setLabel] = useState('');
+  // The add-edge form is folded behind its call to action.
+  const [addOpen, setAddOpen] = useState(false);
   const challenge = telegramChallenge?.challenge;
   const challengePending = challenge?.status === 'pending';
   const telegramLinked = challenge?.status === 'completed' || telegramConnectStatus === 'connected';
@@ -31,6 +33,7 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
     await dispatch(upsertConnectionEdge({ provider: provider.trim(), providerSubject: subject.trim(), label: label.trim() })).unwrap().catch(() => undefined);
     setSubject('');
     setLabel('');
+    setAddOpen(false);
     void dispatch(loadConnectionEdges());
   };
 
@@ -129,6 +132,8 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
     </section>
   );
 
+  // The edge form is folded behind its call to action - the pane reads as
+  // "who is linked", and the form opens only when the user adds one.
   const addPane = (
     <section className="card">
       <form className="form form-flush" onSubmit={submit}>
@@ -155,19 +160,38 @@ export function ConnectionEdgesPanel({ telegramConnectStatus = 'idle' }: Connect
           onChange={(event) => setLabel(event.target.value)}
           placeholder="optional display label"
         />
-        <button className="btn" type="submit" disabled={busy || !subject.trim()}>
-          Add edge
-        </button>
+        <div className="form-actions">
+          <button className="btn" type="submit" disabled={busy || !subject.trim()}>
+            Add edge
+          </button>
+          <button className="btn btn-ghost" type="button" onClick={() => setAddOpen(false)}>
+            Cancel
+          </button>
+        </div>
       </form>
     </section>
   );
 
+  // The add form is summoned from the tab's action row; until then the linked
+  // list spans the full width.
   return (
-    <PaneGroup
-      panes={[
-        { id: 'edges', title: 'Linked identities', content: linkedPane },
-        { id: 'edge-add', title: 'Add connection edge', content: addPane },
-      ]}
-    />
+    <>
+      {!addOpen ? (
+        <div className="tab-actions">
+          <button className="btn" type="button" onClick={() => setAddOpen(true)}>
+            Add connection edge
+          </button>
+        </div>
+      ) : null}
+      <PaneGroup
+        panes={[
+          // The summoned add surface leads while it is open.
+          ...(addOpen ? [{
+            id: 'edge-add', title: 'Add connection edge', content: addPane, lead: true,
+          }] : []),
+          { id: 'edges', title: 'Linked identities', content: linkedPane },
+        ]}
+      />
+    </>
   );
 }

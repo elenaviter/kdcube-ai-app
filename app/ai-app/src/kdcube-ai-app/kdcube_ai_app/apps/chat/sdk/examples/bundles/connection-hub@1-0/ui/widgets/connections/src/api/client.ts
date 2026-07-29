@@ -20,6 +20,12 @@ export function setConnectionsCallOperation(callOperation: ConnectionsCallOperat
   };
 }
 
+/** The absolute URL of an operation on this deployment — the same endpoint the
+ *  widget calls, so a surface can show an operator the exact request to script. */
+export function operationUrl(operation: string): string {
+  return apiUrl('operations', operation);
+}
+
 function apiUrl(route: 'operations' | 'public', operation: string): string {
   const tenant = encodeURIComponent(settings.getTenant());
   const project = encodeURIComponent(settings.getProject());

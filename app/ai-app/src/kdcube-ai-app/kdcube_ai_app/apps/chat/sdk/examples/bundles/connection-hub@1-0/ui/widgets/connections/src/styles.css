@@ -399,6 +399,174 @@ h2 {
   overflow-wrap: break-word;
 }
 
+/* Door alias beside a connected app's fixed DCR name ("Claude · productivity"). */
+.door-suffix {
+  color: var(--muted);
+  font-weight: 500;
+  font-size: .85em;
+  margin-left: .35rem;
+}
+
+/* Grant card: labelled rows (key column + value column) so a card reads at a
+   glance instead of as one paragraph of comma-joined text. */
+.card-fields {
+  display: grid;
+  /* The key column is capped so a narrow pane spends its width on the values
+     (chips wrap into rows instead of one chip per line). */
+  grid-template-columns: minmax(0, 88px) minmax(0, 1fr);
+  gap: 5px 10px;
+  align-items: baseline;
+  margin-top: 8px;
+}
+.card-field-label {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.card-field-value {
+  font-size: 12.5px;
+  color: var(--text-2);
+  min-width: 0;
+  line-height: 1.5;
+}
+
+/* Read-only permission/claim tokens. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.claim-chip {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+/* The door: readable alias + the resource URI. The URI shows on one truncated
+   line and expands to the full, selectable value on click; a copy button puts
+   it on the clipboard (it is what an operator pastes into a client config). */
+.door-line { display: block; min-width: 0; }
+.door-line b { font-weight: 600; color: var(--ink); }
+.door-ref { display: flex; align-items: flex-start; gap: 6px; margin-top: 5px; min-width: 0; }
+/* The claim chips under a door address need their own breathing room. */
+.door-line + .chip-row { margin-top: 7px; }
+.door-uri {
+  flex: 1;
+  min-width: 0;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  padding: 3px 7px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.door-uri:hover { border-color: var(--teal); }
+.door-uri.open {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  user-select: all;
+  cursor: text;
+}
+
+/* Small square icon action (copy), sized to sit beside a one-line field. */
+.icon-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.icon-btn:hover { color: var(--teal-dark); border-color: var(--teal); background: var(--surface-2); }
+.icon-btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* The card's action column. Without an explicit basis the text column
+   (flex: 1 1 240px) crushes it and the armed revoke row overlaps the buttons
+   above it. */
+.account-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 0;
+  align-self: flex-start;   /* sit at the card's top, not vertically centred */
+}
+/* Stacked card actions read as a set: same width, same size, so Edit and
+   Revoke line up instead of sizing to their labels. */
+.account-actions .btn {
+  width: 100%;
+  min-width: 84px;
+  align-self: auto;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: var(--r-md);
+  white-space: nowrap;
+  text-align: center;
+}
+.account-actions .revoke-confirm { width: 100%; justify-content: flex-end; }
+.account-actions .revoke-confirm__q { flex: 1 0 100%; text-align: right; font-size: 11.5px; }
+.account-actions .revoke-confirm .btn { flex: 1 1 0; width: auto; min-width: 0; }
+
+/* Per-provider account binding block. */
+.acct-block { display: block; margin-bottom: 6px; }
+.acct-block:last-child { margin-bottom: 0; }
+.acct-provider {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+  margin-bottom: 2px;
+}
+.acct-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; margin-bottom: 3px; }
+.acct-name { font-size: 12px; color: var(--text-2); }
+
+.count-fold { display: block; }
+.count-fold .chip-row { margin-top: 5px; }
+
+/* Search + result count above the granted-access list. */
+.grant-search { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; }
+.grant-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.grant-search input:focus { outline: none; border-color: var(--teal); }
+
+/* Inline "… N more / show less" toggle for collapsed operation lists. */
+.inline-more {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-left: 4px;
+  color: var(--teal-dark);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.inline-more:hover { text-decoration: underline; }
+
 .account-detail {
   color: var(--muted);
   font-size: 12px;
@@ -711,10 +879,11 @@ h2 {
 /* Two-step inline confirm for a destructive action (Revoke). Arms in place of
    the button, styled with our own tokens — never a native browser dialog. */
 .revoke-confirm {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 .revoke-confirm__q {
   font-size: 12px;
@@ -1414,6 +1583,7 @@ code {
   }
   .pane--fill,
   .pane--lead,
+  .pane--solo,
   .pane:only-child {
     grid-column: 1 / -1;
   }
@@ -1574,3 +1744,137 @@ code {
   padding-right: 2px; /* keep the scrollbar off the card borders */
 }
 .access-map-body > .card { margin: 0; }
+
+/* Rename field on a grant card in edit mode. */
+.rename-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.rename-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--ink);
+}
+.rename-row input:focus { outline: none; border-color: var(--teal); }
+
+/* Submit + Cancel row of a folded creation form. */
+.form-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+
+/* Tab-level action row: the "create/connect/add" trigger lives here, above the
+   panes, so a creation surface is summoned instead of permanently occupying
+   half the tab. */
+.tab-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+/* Copyable client identifier (dcr-…, kdcube-agent:…) under a card title. */
+.id-ref { display: flex; align-items: center; gap: 6px; min-width: 0; margin-top: 2px; }
+.id-value {
+  min-width: 0;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.id-ref .icon-btn { width: 20px; height: 20px; }
+.id-kind {
+  font-size: 9.5px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+/* One action row: the button plus a trailing 24px slot. Revoke's slot holds
+   the "run this from a script" icon; Edit's is empty — so both buttons end up
+   exactly the same width instead of Edit spanning the icon too. */
+.action-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+.action-row .btn { flex: 1 1 auto; width: auto; min-width: 0; }
+.action-slot { flex: 0 0 auto; width: 24px; height: 24px; }
+
+/* The copyable requests behind the info icon — a dialog over the page, so a
+   wide command never stretches the narrow card that opened it. */
+.script-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 99999980;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(13, 30, 44, 0.34);
+}
+.script-dialog {
+  width: min(720px, 100%);
+  max-height: 82vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: 14px 16px 16px;
+  text-align: left;
+}
+.script-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.script-dialog-title { font-size: 13px; font-weight: 700; color: var(--ink); }
+.script-dialog-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.script-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.script-pop-body {
+  margin: 0;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.script-pop-note { margin: 6px 0 0; font-size: 11px; color: var(--muted); }
+.script-pop-note code { font-size: 10.5px; }
+
+/* Multiple request blocks inside one script popover. */
+.script-block + .script-block {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.acct-stale { color: var(--muted); font-size: 11px; }
+
+/* Whose granted-access list this is — grants are per signed-in user, so the
+   identity is stated, not implied. */
+.whose-list { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.whose-list-id {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

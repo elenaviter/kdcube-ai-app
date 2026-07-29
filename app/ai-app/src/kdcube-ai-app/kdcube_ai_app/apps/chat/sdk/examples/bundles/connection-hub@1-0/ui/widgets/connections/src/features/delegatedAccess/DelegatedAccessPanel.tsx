@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
+import { operationUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
 import type {
@@ -114,6 +115,251 @@ function commonOperationGrants(resource: DelegatedAccessResourceOption): string[
   return Array.from(first).filter((grant) => rest.every((grants) => grants.has(grant)));
 }
 
+/** A DCR client registers one fixed name — every Claude Code connector arrives
+ *  as "Claude". The door it is connected to is what tells two connections
+ *  apart, so the card title carries a short door alias derived from the
+ *  grant's resource (".../mcp/productivity" -> "productivity"). */
+function doorAlias(resource?: string): string {
+  if (!resource) return '';
+  const path = resource.replace(/[?#].*$/, '').replace(/\*+$/, '').replace(/\/+$/, '');
+  const match = path.match(/\/mcp\/([^/]+)$/);
+  return match ? match[1] : '';
+}
+
+/** How many granted-access cards render before "show more". */
+const GRANT_PAGE_SIZE = 5;
+
+/** One labelled row of a grant card: small-caps key on the left, value right. */
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <>
+      <span className="card-field-label">{label}</span>
+      <span className="card-field-value">{children}</span>
+    </>
+  );
+}
+
+/** Read-only claim/permission tokens. */
+function ChipRow({ entries, title }: { entries: string[]; title?: (entry: string) => string | undefined }) {
+  return (
+    <span className="chip-row">
+      {entries.map((entry) => (
+        <code className="claim-chip" key={entry} title={title?.(entry)}>{entry}</code>
+      ))}
+    </span>
+  );
+}
+
+/** Copy-to-clipboard icon for any identifier the operator pastes elsewhere
+ *  (a door address, a client id). Confirms with a check for a moment. */
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+  return (
+    <button
+      type="button"
+      className="icon-btn"
+      onClick={copy}
+      title={copied ? 'Copied' : label}
+      aria-label={copied ? 'Copied' : label}
+    >
+      {copied ? (
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path d="M3.5 8.5l3 3 6-6" fill="none" stroke="currentColor" strokeWidth="1.6"
+                strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      ) : (
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <rect x="5.6" y="5.6" width="8" height="8" rx="1.8" fill="none"
+                stroke="currentColor" strokeWidth="1.4" />
+          <path d="M10.4 5.6V4.2A1.8 1.8 0 0 0 8.6 2.4H4.2A1.8 1.8 0 0 0 2.4 4.2v4.4a1.8 1.8 0 0 0 1.8 1.8h1.4"
+                fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+/** One request block: a labelled, copyable command. */
+function ScriptBlock({ title, script, note }: { title: string; script: string; note?: string }) {
+  return (
+    <div className="script-block">
+      <div className="script-pop-head">
+        <span>{title}</span>
+        <CopyButton value={script} label="Copy command" />
+      </div>
+      <pre className="script-pop-body">{script}</pre>
+      {note ? <p className="script-pop-note">{note}</p> : null}
+    </div>
+  );
+}
+
+/** What this card's caller can be done TO from a script, with its identifiers
+ *  already inlined. A grant can always be revoked by access id; a caller with a
+ *  stable client identity (a connected app, a hosted agent) can additionally be
+ *  NARROWED in place - the card is the authority the guard resolves live, so a
+ *  smaller claim set takes effect on that caller's very next call, on the bearer
+ *  it already holds. An automation has no such identity: it presents its token,
+ *  so revoking is the whole vocabulary. */
+function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
+  const accessId = item.access_id;
+  const [resource, claims] = Object.entries(item.resource_grants || {})[0] || ['', []];
+  const canNarrow = Boolean(item.client_id) && item.source !== 'manual' && Boolean(resource);
+  const revoke = [
+    `curl -s -X POST \\`,
+    `  "${operationUrl('delegated_access_revoke')}" \\`,
+    `  -H "Authorization: Bearer $TOKEN" \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '{"access_id": "${accessId}"}'`,
+  ].join('\n');
+  const narrow = canNarrow ? [
+    `curl -s -X POST \\`,
+    `  "${operationUrl('delegated_agent_grant_create')}" \\`,
+    `  -H "Authorization: Bearer $TOKEN" \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '{`,
+    `    "client_id": "${item.client_id}",`,
+    `    "resource": "${resource}",`,
+    `    "claims": ${JSON.stringify(claims)},`,
+    `    "replace": true`,
+    `  }'`,
+  ].join('\n') : '';
+  const script = revoke;
+  return (
+    <>
+      <button
+        type="button"
+        className="icon-btn"
+        onClick={() => setOpen((v) => !v)}
+        title="Revoke from a script"
+        aria-label="Revoke from a script"
+        aria-expanded={open}
+      >
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" strokeWidth="1.4" />
+          <path d="M8 7.2v4" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          <circle cx="8" cy="4.9" r="0.85" fill="currentColor" />
+        </svg>
+      </button>
+      {open ? (
+        // A dialog, not inline content: the commands are wide and the card's
+        // action column is narrow — rendering them in place stretched the whole
+        // card. Fixed positioning keeps the layout untouched.
+        <div
+          className="script-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Manage this caller from a script"
+          onClick={() => setOpen(false)}
+        >
+          <div className="script-dialog" onClick={(event) => event.stopPropagation()}>
+            <div className="script-dialog-head">
+              <div>
+                <div className="script-dialog-title">Manage this caller from a script</div>
+                <div className="script-dialog-sub">{item.label || item.access_id}</div>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setOpen(false)}
+                title="Close"
+                aria-label="Close"
+              >
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                  <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor"
+                        strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+            {canNarrow ? (
+              <ScriptBlock
+                title="Narrow this caller"
+                script={narrow}
+                note="Edit the claims list to the smaller set you want. It becomes the record exactly, and applies on this caller's next call."
+              />
+            ) : null}
+            <ScriptBlock
+              title="Revoke"
+              script={script}
+              note="$TOKEN is a credential allowed to call this deployment's operations."
+            />
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** A copyable identifier under a card title — truncated to one line, full value
+ *  on hover. Which id it is depends on the caller: a connected app and a hosted
+ *  agent are identified by their CLIENT id (what the platform authorizes and
+ *  what appears in logs), while an automation's client id is minted internally
+ *  and never presented by anyone - its actionable id is the ACCESS id, the one
+ *  a revoke takes. */
+function ClientIdRef({ value, kind }: { value: string; kind: 'client' | 'access' }) {
+  const label = kind === 'access' ? 'access id' : 'client id';
+  return (
+    <span className="id-ref" title={`${label}: ${value}`}>
+      <span className="id-kind">{label}</span>
+      <code className="id-value">{value}</code>
+      <CopyButton value={value} label={`Copy ${label}`} />
+    </span>
+  );
+}
+
+/** The door's resource: a long URL/pattern. Shown on one truncated line that
+ *  expands to the full value on click (wrapped, selectable), with a copy
+ *  button — the value operators paste into a client config. */
+function DoorRef({ value }: { value: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="door-ref">
+      <code
+        className={open ? 'door-uri open' : 'door-uri'}
+        title={open ? undefined : value}
+        onClick={() => setOpen((v) => !v)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setOpen((v) => !v); }}
+      >
+        {value}
+      </code>
+      <CopyButton value={value} label="Copy address" />
+    </span>
+  );
+}
+
+/** A service can expose hundreds of operations, so the card shows the COUNT
+ *  and keeps the list folded away; opening reveals it as chips, and it folds
+ *  back with the same control. */
+function CountFold({ entries, noun }: { entries: string[]; noun: string }) {
+  const [open, setOpen] = useState(false);
+  if (!entries.length) return null;
+  return (
+    <span className="count-fold">
+      <button type="button" className="inline-more" onClick={() => setOpen((v) => !v)}>
+        {open ? '▾' : '▸'} {entries.length} {noun}{entries.length === 1 ? '' : 's'}
+      </button>
+      {open ? <ChipRow entries={entries} /> : null}
+    </span>
+  );
+}
+
 export function DelegatedAccessPanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
   const { platformUserId, items, grantOptions, resources, issuedToken, issuedHeader, issuedAccess, busy } = useAppSelector((s) => s.delegatedAccess);
@@ -141,6 +387,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
   const [editingAccessId, setEditingAccessId] = useState<string | null>(null);
+  // Search + "show more" over the granted-access list (see matchedOtherItems).
+  const [grantQuery, setGrantQuery] = useState('');
+  const [grantLimit, setGrantLimit] = useState(GRANT_PAGE_SIZE);
+  // Rename of the card being edited (a DCR client always registers "Claude").
+  const [editLabel, setEditLabel] = useState('');
+  // The automation-creation form is folded behind its call to action.
+  const [createOpen, setCreateOpen] = useState(false);
   const [editPicks, setEditPicks] = useState<Record<string, boolean>>({});
   // Per-account claim binding being edited: {provider_id: {account_id: [claims]}}.
   // Default-closed: a provider with nothing ticked grants NO account to this
@@ -265,6 +518,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       namedServiceOperations: selectedNamedServiceOperations,
       ttlSeconds,
     })).unwrap().catch(() => undefined);
+    // Fold the form back once the credential exists — the issued token renders
+    // above it, which is what the user needs to see next.
+    setCreateOpen(false);
     void dispatch(loadDelegatedAccess());
   };
 
@@ -277,7 +533,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     await dispatch(revokeDelegatedAccess({ accessId })).unwrap().catch(() => undefined);
     void dispatch(loadDelegatedAccess());
   };
-  const renderRevokeControl = (accessId: string) => {
+  const renderRevokeControl = (item: DelegatedAccessRecord) => {
+    const accessId = item.access_id;
     if (confirmRevokeId === accessId) {
       return (
         <span className="revoke-confirm">
@@ -292,9 +549,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       );
     }
     return (
-      <button className="btn btn-danger" type="button" disabled={busy} onClick={() => setConfirmRevokeId(accessId)}>
-        Revoke
-      </button>
+      <span className="action-row">
+        <button className="btn btn-danger" type="button" disabled={busy} onClick={() => setConfirmRevokeId(accessId)}>
+          Revoke
+        </button>
+        <RevokeScript item={item} />
+      </span>
     );
   };
 
@@ -350,6 +610,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(item.access_id);
     setEditPicks(picks);
     setEditAccountScope(seedAccountScopeFromRecord(item));
+    setEditLabel(item.label || '');
   };
   // Toggle one claim on one account for a provider. An account with no claims
   // drops out; a provider with no bound accounts drops out (=> nothing granted
@@ -544,7 +805,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           resource,
           claims,
           replace: true,
-          ...(first ? { accountScope } : {}),
+          ...(first ? { accountScope, label: editLabel.trim() } : {}),
         })).unwrap().catch(() => undefined);
         first = false;
       }
@@ -552,6 +813,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditingAccessId(null);
     setEditPicks({});
     setEditAccountScope({});
+    setEditLabel('');
     void dispatch(loadDelegatedAccess());
   };
 
@@ -758,20 +1020,56 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // "what can lg-react do for me" reads in one place, and dropping one
   // permission never touches the others. Non-agent grants keep the flat rows.
   const agentGroups = new Map<string, DelegatedAccessRecord[]>();
-  const otherItems: DelegatedAccessRecord[] = [];
+  const allOtherItems: DelegatedAccessRecord[] = [];
   items.forEach((item) => {
     if (item.source === 'agent' && item.client_id) {
       const group = agentGroups.get(item.client_id) || [];
       group.push(item);
       agentGroups.set(item.client_id, group);
     } else {
-      otherItems.push(item);
+      allOtherItems.push(item);
     }
   });
+  // A user accumulates grants (every reconnect mints a client), so the list is
+  // searchable by name/id/door and shows the most RECENT first, capped — older
+  // ones stay one click away instead of scrolling forever.
+  const grantQ = grantQuery.trim().toLowerCase();
+  const matchedOtherItems = (grantQ
+    ? allOtherItems.filter((item) => [
+        item.label || '', item.client_id || '', item.access_id,
+        ...Object.keys(item.resource_grants || {}),
+      ].join(' ').toLowerCase().includes(grantQ))
+    : allOtherItems
+  ).slice().sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+  const otherItems = matchedOtherItems.slice(0, grantLimit);
+  const hiddenGrantCount = matchedOtherItems.length - otherItems.length;
+  // Agent cards obey the same search + page size, so one control governs the
+  // whole tab no matter which kind of caller accumulated.
+  const allAgentEntries = Array.from(agentGroups.entries());
+  const matchedAgentEntries = (grantQ
+    ? allAgentEntries.filter(([clientId, records]) => {
+        const who = parseAgentClientId(clientId);
+        return [
+          clientId, who?.agent || '', who?.app || '',
+          ...records.flatMap((record) => [
+            record.label || '', ...Object.keys(record.resource_grants || {}),
+          ]),
+        ].join(' ').toLowerCase().includes(grantQ);
+      })
+    : allAgentEntries
+  ).slice().sort((a, b) => {
+    const newest = (records: DelegatedAccessRecord[]) =>
+      records.reduce((max, record) => Math.max(max, record.created_at || 0), 0);
+    return newest(b[1]) - newest(a[1]);
+  });
+  const agentEntries = matchedAgentEntries.slice(0, grantLimit);
+  const hiddenAgentCount = matchedAgentEntries.length - agentEntries.length;
+  const totalGrantCount = allAgentEntries.length + allOtherItems.length;
+  const matchedGrantCount = matchedAgentEntries.length + matchedOtherItems.length;
   const resourceLabelFor = (resource: string): string =>
     resources.find((r) => r.resource === resource)?.label || '';
-  // The REAL consent is the claim token — that is what renders in the rows.
-  const claimLabel = (claim: string): string => claim;
+  // The REAL consent is the claim token — that is what renders in the rows
+  // (as chips; the vocabulary label rides along as the chip's tooltip).
 
   const grantedPane = (
     <section className="card">
@@ -782,12 +1080,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           you approve here, nothing more. Edit narrows or extends it live;
           revoking stops that caller immediately.
         </p>
-        {platformUserId ? <span className="badge badge-ok" title={platformUserId}>you</span> : null}
+        {platformUserId ? (
+          <span className="whose-list" title={`Signed in as ${platformUserId}`}>
+            <span className="badge badge-ok">you</span>
+            <code className="whose-list-id">{platformUserId}</code>
+          </span>
+        ) : null}
       </div>
 
-      {agentGroups.size ? (
+      {agentEntries.length ? (
         <div>
-          {Array.from(agentGroups.entries()).map(([clientId, records]) => {
+          {agentEntries.map(([clientId, records]) => {
             const who = parseAgentClientId(clientId);
             return (
               <div className="resource-option resource-option-stack" key={clientId}>
@@ -796,7 +1099,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     {who ? `${who.agent} · ${who.app}` : clientId}
                     <span className="badge badge-ok">agent</span>
                   </strong>
-                  <small>{clientId}</small>
+                  <ClientIdRef value={clientId} kind="client" />
                 </span>
                 <ul className="accounts">
                   {records.map((item) => {
@@ -804,72 +1107,103 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     return (
                       <li className="account" key={item.access_id}>
                         <div>
-                          {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
+                          {/* Edit mode keeps the per-claim checkboxes; the
+                              read-only view is the same labelled-row card the
+                              connected-app grants use. */}
+                          {editing ? Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
                             <div key={resource}>
-                              <div className="account-title">{resourceLabelFor(resource) || resource}</div>
-                              {editing ? (
-                                <div className="resource-grants">
-                                  {grants.map((claim) => (
-                                    <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
-                                      <input
-                                        type="checkbox"
-                                        checked={editPicks[`${resource}:${claim}`] !== false}
-                                        onChange={(event) => setEditPicks((current) => ({
-                                          ...current, [`${resource}:${claim}`]: event.target.checked,
-                                        }))}
-                                      />
-                                      <span>{claim}</span>
-                                    </label>
-                                  ))}
-                                </div>
+                              <div className="account-title">{doorAlias(resource) || resourceLabelFor(resource) || resource}</div>
+                              {resource !== '*' ? <DoorRef value={resource} /> : null}
+                              <div className="resource-grants">
+                                {grants.map((claim) => (
+                                  <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
+                                    <input
+                                      type="checkbox"
+                                      checked={editPicks[`${resource}:${claim}`] !== false}
+                                      onChange={(event) => setEditPicks((current) => ({
+                                        ...current, [`${resource}:${claim}`]: event.target.checked,
+                                      }))}
+                                    />
+                                    <span>{claim}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )) : (
+                            <div className="card-fields">
+                              {Object.entries(item.resource_grants || {}).map(([resource, grants]) => (
+                                <Field label="Door" key={resource}>
+                                  <span className="door-line">
+                                    <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                    {resource !== '*' ? <DoorRef value={resource} /> : null}
+                                  </span>
+                                  <ChipRow entries={grants} title={(claim) => grantOptionByName.get(claim)?.label || undefined} />
+                                </Field>
+                              ))}
+                              {item.named_service_operations && Object.keys(item.named_service_operations).length ? (
+                                <Field label="Services">
+                                  <CountFold
+                                    entries={Object.values(item.named_service_operations)
+                                      .flatMap((namespaces) => Object.entries(namespaces))
+                                      .map(([namespace, operations]) => `${namespace} (${operations.join(', ')})`)}
+                                    noun="service"
+                                  />
+                                </Field>
                               ) : (
-                                <div className="account-sub">{grants.map(claimLabel).join(', ')}</div>
+                                <Field label="Operations">
+                                  Every operation the permissions above allow - this grant was
+                                  not narrowed to a shorter list.
+                                </Field>
                               )}
-                              {resourceLabelFor(resource) ? <div className="account-sub"><code>{resource}</code></div> : null}
-                            </div>
-                          ))}
-                          {item.named_service_operations && Object.keys(item.named_service_operations).length ? (
-                            <div className="account-sub">
-                              Named services: {Object.values(item.named_service_operations)
-                                .flatMap((namespaces) => Object.entries(namespaces))
-                                .map(([namespace, operations]) => `${namespace} (${operations.join(', ')})`)
-                                .join('; ')}
-                            </div>
-                          ) : (
-                            <div className="account-sub">
-                              Operation scope: every operation these claims cover (no
-                              per-operation narrowing was selected).
+                              {Object.keys(item.account_scope || {}).length ? (
+                                <Field label="Accounts">
+                                  {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
+                                    <span className="acct-block" key={provider}>
+                                      <span className="acct-provider">{providers[provider]?.label || provider}</span>
+                                      {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
+                                        <span className="acct-line" key={accountId}>
+                                          <span className="acct-name" title={accountId}>
+                                            {accountId === '*'
+                                              ? 'any account'
+                                              : (accountLabelById.get(accountId)
+                                                  || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
+                                          </span>
+                                          <ChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} />
+                                        </span>
+                                      ))}
+                                    </span>
+                                  ))}
+                                </Field>
+                              ) : null}
                             </div>
                           )}
-                          {editing ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this agent')
-                            : (Object.keys(item.account_scope || {}).length ? (
-                            <div className="account-sub">
-                              Accounts: {Object.entries(item.account_scope || {})
-                                .map(([provider, accountsMap]) => `${providers[provider]?.label || provider} → ${Object.entries(accountsMap || {}).map(([accountId, claims]) => `${accountId === '*' ? 'any account' : (accountLabelById.get(accountId) || accountId)} (${(claims || []).includes('*') ? 'all' : (claims || []).join(', ')})`).join(', ')}`)
-                                .join('; ')}
-                            </div>
-                          ) : null)}
-                          <div className="account-sub">
-                            Granted {formatDate(item.created_at) || 'unknown'}
-                            {' · '}expires {formatDate(item.expires_at) || 'unknown'}
+                          {editing ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this agent') : null}
+                          <div className="card-fields">
+                            <Field label="Granted">
+                              {formatDate(item.created_at) || 'unknown'}
+                              {' · expires '}{formatDate(item.expires_at) || 'unknown'}
+                            </Field>
                           </div>
                         </div>
-                        <div className="row" style={{ flexDirection: 'column', gap: 6, alignItems: 'stretch' }}>
+                        <div className="account-actions">
                           {editing ? (
                             <>
                               <button className="btn" type="button" disabled={busy} onClick={() => saveEdit(item)}>
                                 Save
                               </button>
-                              <button className="btn" type="button" disabled={busy} onClick={() => { setEditingAccessId(null); setEditPicks({}); setEditAccountScope({}); }}>
+                              <button className="btn" type="button" disabled={busy} onClick={() => { setEditingAccessId(null); setEditPicks({}); setEditAccountScope({}); setEditLabel(''); }}>
                                 Cancel
                               </button>
                             </>
                           ) : (
                             <>
-                              <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
-                                Edit
-                              </button>
-                              {renderRevokeControl(item.access_id)}
+                              <span className="action-row">
+                                <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
+                                  Edit
+                                </button>
+                                <span className="action-slot" aria-hidden="true" />
+                              </span>
+                              {renderRevokeControl(item)}
                             </>
                           )}
                         </div>
@@ -883,6 +1217,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         </div>
       ) : null}
 
+      {totalGrantCount > GRANT_PAGE_SIZE || grantQ ? (
+        <div className="grant-search">
+          <input
+            type="search"
+            value={grantQuery}
+            placeholder="Search connections by name, client id, or door"
+            onChange={(event) => { setGrantQuery(event.target.value); setGrantLimit(GRANT_PAGE_SIZE); }}
+          />
+          <span className="account-sub">
+            {matchedGrantCount} of {totalGrantCount}
+          </span>
+        </div>
+      ) : null}
+
       {otherItems.length ? (
         <ul className="accounts">
           {otherItems.map((item) => {
@@ -893,21 +1241,42 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             // their own credential flow (only revoke).
             const editable = item.source === 'oauth' && Boolean(item.client_id);
             const editing = editable && editingAccessId === item.access_id;
+            const door = Array.from(new Set(
+              Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
+            )).join(', ');
             return (
               <li className="account" key={item.access_id}>
                 <div>
                   <div className="account-title">
                     {item.label || item.access_id}
+                    {door && !(item.label || '').includes(door)
+                      ? <span className="door-suffix">· {door}</span>
+                      : null}
                     {item.source === 'oauth'
                       ? <span className="badge badge-ok">connected app</span>
                       : <span className="badge badge-warn">manual token</span>}
                   </div>
-                  {item.client_id && item.client_id !== item.label ? <div className="account-sub">{item.client_id}</div> : null}
+                  {item.source === 'manual'
+                    ? <ClientIdRef value={item.access_id} kind="access" />
+                    : (item.client_id && item.client_id !== item.label
+                        ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
+                  {editing ? (
+                    <label className="rename-row">
+                      <span className="card-field-label">Name</span>
+                      <input
+                        type="text"
+                        value={editLabel}
+                        placeholder={item.label || 'Name this connection'}
+                        onChange={(event) => setEditLabel(event.target.value)}
+                      />
+                    </label>
+                  ) : null}
                   {item.resource_grants && Object.keys(item.resource_grants).length ? (
                     editing ? (
                       Object.entries(item.resource_grants).map(([resource, grants]) => (
                         <div key={resource}>
-                          <div className="account-title">{resource === '*' ? 'all resources' : (resourceLabelFor(resource) || resource)}</div>
+                          <div className="account-title">{resource === '*' ? 'all resources' : (doorAlias(resource) || resourceLabelFor(resource) || resource)}</div>
+                          {resource !== '*' ? <DoorRef value={resource} /> : null}
                           <div className="resource-grants">
                             {grants.map((claim) => (
                               <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
@@ -924,53 +1293,99 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           </div>
                         </div>
                       ))
-                    ) : (
-                      <div className="account-sub">
-                        Access: {Object.entries(item.resource_grants).map(([resource, grants]) => `${resource === '*' ? 'all resources' : resource} → ${grants.join(', ')}`).join('; ')}
-                      </div>
-                    )
+                    ) : null
                   ) : null}
-                  {item.operations?.length ? <div className="account-sub">Operations: {item.operations.join(', ')}</div> : null}
-                  {item.named_service_operations && Object.keys(item.named_service_operations).length ? (
-                    <div className="account-sub">
-                      Named services: {Object.values(item.named_service_operations)
-                        .flatMap((namespaces) => Object.entries(namespaces))
-                        .map(([namespace, operations]) => `${namespace} (${operations.join(', ')})`)
-                        .join('; ')}
+                  {/* Read-only view: labelled rows, values as chips. A grant can
+                      carry a long resource URL and dozens of operations, so the
+                      card shows structure at a glance and folds the long lists. */}
+                  {!editing ? (
+                    <div className="card-fields">
+                      {Object.keys(item.resource_grants || {}).length ? (
+                        <>
+                          <Field label="Door">
+                            {Object.keys(item.resource_grants || {}).map((resource) => (
+                              <span className="door-line" key={resource}>
+                                <b>{doorAlias(resource) || (resource === '*' ? 'all resources' : resourceLabelFor(resource) || resource)}</b>
+                                {resource !== '*' ? <DoorRef value={resource} /> : null}
+                              </span>
+                            ))}
+                          </Field>
+                          <Field label="Access">
+                            <ChipRow
+                              entries={Array.from(new Set(Object.values(item.resource_grants || {}).flat()))}
+                              title={(claim) => grantOptionByName.get(claim)?.label || undefined}
+                            />
+                          </Field>
+                        </>
+                      ) : null}
+                      {item.operations?.length ? (
+                        <Field label="Operations"><CountFold entries={item.operations} noun="operation" /></Field>
+                      ) : null}
+                      {(() => {
+                        // A grant can carry an EMPTY namespace map; render the
+                        // row only when it actually names services.
+                        const services = Object.values(item.named_service_operations || {})
+                          .flatMap((namespaces) => Object.entries(namespaces))
+                          .map(([namespace, operations]) => `${namespace} (${operations.join(', ')})`);
+                        return services.length ? (
+                          <Field label="Services"><CountFold entries={services} noun="service" /></Field>
+                        ) : null;
+                      })()}
+                      {Object.keys(item.account_scope || {}).length ? (
+                        <Field label="Accounts">
+                          {Object.entries(item.account_scope || {}).map(([provider, accountsMap]) => (
+                            <span className="acct-block" key={provider}>
+                              <span className="acct-provider">{providers[provider]?.label || provider}</span>
+                              {Object.entries(accountsMap || {}).map(([accountId, claims]) => (
+                                <span className="acct-line" key={accountId}>
+                                  <span className="acct-name" title={accountId}>
+                                    {accountId === '*'
+                                      ? 'any account'
+                                      : (accountLabelById.get(accountId)
+                                          || <>account no longer connected <span className="acct-stale">(binding kept)</span></>)}
+                                  </span>
+                                  <ChipRow entries={(claims || []).includes('*') ? ['all'] : (claims || [])} />
+                                </span>
+                              ))}
+                            </span>
+                          ))}
+                        </Field>
+                      ) : null}
+                      <Field label={item.source === 'oauth' ? 'Approved' : 'Created'}>
+                        {formatDate(item.created_at) || 'unknown'}
+                        {' · expires '}{formatDate(item.expires_at) || 'unknown'}
+                        {item.last_four ? (
+                          // The credential's last characters: a fingerprint that
+                          // identifies WHICH saved token this card is, without
+                          // ever redisplaying it. Rendered as a value, not prose.
+                          <> · token ends with <code className="claim-chip">{item.last_four}</code></>
+                        ) : null}
+                      </Field>
                     </div>
                   ) : null}
-                  {editing ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this app')
-                    : (Object.keys(item.account_scope || {}).length ? (
-                    <div className="account-sub">
-                      Accounts: {Object.entries(item.account_scope || {})
-                        .map(([provider, accountsMap]) => `${providers[provider]?.label || provider} → ${Object.entries(accountsMap || {}).map(([accountId, claims]) => `${accountId === '*' ? 'any account' : (accountLabelById.get(accountId) || accountId)} (${(claims || []).includes('*') ? 'all' : (claims || []).join(', ')})`).join(', ')}`)
-                        .join('; ')}
-                    </div>
-                  ) : null)}
-                  <div className="account-sub">
-                    {item.source === 'oauth' ? 'Approved' : 'Created'} {formatDate(item.created_at) || 'unknown'}
-                    {' · '}expires {formatDate(item.expires_at) || 'unknown'}
-                    {item.last_four ? ` · token ends ${item.last_four}` : ''}
-                  </div>
+                  {editing ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this app') : null}
                 </div>
-                <div className="row" style={{ flexDirection: 'column', gap: 6, alignItems: 'stretch' }}>
+                <div className="account-actions">
                   {editing ? (
                     <>
                       <button className="btn" type="button" disabled={busy} onClick={() => saveEdit(item)}>
                         Save
                       </button>
-                      <button className="btn" type="button" disabled={busy} onClick={() => { setEditingAccessId(null); setEditPicks({}); setEditAccountScope({}); }}>
+                      <button className="btn" type="button" disabled={busy} onClick={() => { setEditingAccessId(null); setEditPicks({}); setEditAccountScope({}); setEditLabel(''); }}>
                         Cancel
                       </button>
                     </>
                   ) : (
                     <>
                       {editable ? (
-                        <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
-                          Edit
-                        </button>
+                        <span className="action-row">
+                          <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
+                            Edit
+                          </button>
+                          <span className="action-slot" aria-hidden="true" />
+                        </span>
                       ) : null}
-                      {renderRevokeControl(item.access_id)}
+                      {renderRevokeControl(item)}
                     </>
                   )}
                 </div>
@@ -978,6 +1393,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             );
           })}
         </ul>
+      ) : null}
+
+      {hiddenGrantCount + hiddenAgentCount > 0 ? (
+        <button
+          type="button"
+          className="inline-more"
+          onClick={() => setGrantLimit((n) => n + GRANT_PAGE_SIZE)}
+        >
+          Show more ({hiddenGrantCount + hiddenAgentCount} older)
+        </button>
+      ) : null}
+      {grantQ && !matchedGrantCount ? (
+        <p className="muted">No connection matches “{grantQuery}”.</p>
       ) : null}
 
       {!items.length ? (
@@ -1039,29 +1467,50 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         {resources.length && !canSubmit ? (
           <p className="muted">Select at least one resource grant.</p>
         ) : null}
-        <button className="btn" type="submit" disabled={busy || !canSubmit}>
-          Create automation access
-        </button>
+        <div className="form-actions">
+          <button className="btn" type="submit" disabled={busy || !canSubmit}>
+            Create automation access
+          </button>
+          <button className="btn btn-ghost" type="button" onClick={() => setCreateOpen(false)}>
+            Cancel
+          </button>
+        </div>
       </form>
     </section>
   );
 
+  // The creation surface is summoned, not resident: its trigger sits in the
+  // tab's action row and the pane exists only while it is open, so the list
+  // spans the full width the rest of the time.
   return (
-    <PaneGroup
-      panes={[
-        ...(pendingGrantPane ? [{
-          id: 'pending-grant',
-          // The claims ride the pane title so the ask reads from the bar alone.
-          title: `Agent access request — ${pendingGrant?.claims.join(', ') || ''}`,
-          content: pendingGrantPane,
-          // The request is THE pending action: it leads the tab — full-row,
-          // generous height, claims and Grant never below the fold — while
-          // Granted access and Create stay visible beneath.
-          lead: true,
-        }] : []),
-        { id: 'granted', title: 'Granted access', content: grantedPane },
-        { id: 'create', title: 'Create automation access', content: createPane },
-      ]}
-    />
+    <>
+      {!createOpen ? (
+        <div className="tab-actions">
+          <button className="btn" type="button" onClick={() => setCreateOpen(true)}>
+            Create automation access
+          </button>
+        </div>
+      ) : null}
+      <PaneGroup
+        panes={[
+          ...(pendingGrantPane ? [{
+            id: 'pending-grant',
+            // The claims ride the pane title so the ask reads from the bar alone.
+            title: `Agent access request — ${pendingGrant?.claims.join(', ') || ''}`,
+            content: pendingGrantPane,
+            // The request is THE pending action: it leads the tab — full-row,
+            // generous height, claims and Grant never below the fold — while
+            // Granted access stays visible beneath.
+            lead: true,
+          }] : []),
+          // A summoned creation surface is the active task: it leads the tab
+          // (full row, at the top) while it is open; the list follows.
+          ...(createOpen ? [{
+            id: 'create', title: 'Create automation access', content: createPane, lead: true,
+          }] : []),
+          { id: 'granted', title: 'Granted access', content: grantedPane },
+        ]}
+      />
+    </>
   );
 }

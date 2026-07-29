@@ -527,6 +527,16 @@ async def register_client(request: Request) -> Response:
         "logo_uri": logo_uri,
         "client_uri": client_uri,
     }
+    # What the client ACTUALLY sends at registration decides the card's default
+    # name. A client that registers one fixed name for every connector it opens
+    # (Claude Code always sends "Claude") cannot be told apart by name alone -
+    # log the raw body keys so that is verifiable, not assumed.
+    LOGGER.info(
+        "[connection_hub.oauth] dcr_register client_name=%r software_id=%r "
+        "body_keys=%s redirect_uris=%s",
+        body.get("client_name"), body.get("software_id"),
+        sorted(str(k) for k in body.keys()), redirect_uris,
+    )
     record = await get_grant_store(request).register_client(
         redirect_uris=redirect_uris, metadata=metadata
     )
@@ -1068,6 +1078,27 @@ async def _issue_tokens(
             or client_metadata.get("client_uri")
             or ""
         ).strip()
+        # A client registers ONE fixed name for every connector it opens (every
+        # Claude Code connection registers as "Claude"), so the registered name
+        # alone cannot tell two connections apart. Qualify it with the door this
+        # grant is for - "Claude · productivity" - which is the part the user
+        # actually recognizes. The user can still rename the card afterwards.
+        door_alias = ""
+        door_path = str(resource or "").split("?", 1)[0].rstrip("*").rstrip("/")
+        if "/mcp/" in door_path:
+            door_alias = door_path.rsplit("/mcp/", 1)[-1].strip("/")
+        registered_name = str(client_metadata.get("client_name") or "")
+        if door_alias and door_alias.lower() not in client_label.lower():
+            client_label = f"{client_label} · {door_alias}" if client_label else door_alias
+        # Card naming is derived, not received: log every input so a wrong card
+        # title is diagnosable from the proc log instead of by inspecting the
+        # rendered UI (grep: connection_hub.oauth card_label).
+        LOGGER.info(
+            "[connection_hub.oauth] card_label client_id=%s registered_name=%r "
+            "metadata_keys=%s resource=%r door_alias=%r -> label=%r",
+            client_id, registered_name, sorted(client_metadata.keys()),
+            str(resource or ""), door_alias, client_label,
+        )
         service = AutomationAccessService(
             redis=store.redis,
             tenant=tenant,

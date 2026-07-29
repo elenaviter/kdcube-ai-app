@@ -1827,6 +1827,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 claims=claims,
                 account_scope=account_scope,
                 replace=bool(payload.get("replace")),
+                # Optional rename: a DCR client registers one fixed name, so the
+                # user may label the card. Empty keeps the existing name.
+                label=str(payload.get("label") or "").strip() or None,
             )
         if not client_id.startswith("kdcube-agent:"):
             return {"ok": False, "error": "delegated_agent_grant_invalid_client"}
@@ -2123,6 +2126,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         account_id: str = "",
         user_id: Optional[str] = None,
         fingerprint: Optional[str] = None,
+        request: Any = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         del fingerprint
@@ -2139,7 +2143,39 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             platform_user_id,
             resolved_account_id,
         )
-        return await _delegated_to_kdcube_operations(self, platform_user_id).disconnect(account_id=resolved_account_id)
+        operations = _delegated_to_kdcube_operations(self, platform_user_id)
+        # Read the provider BEFORE the account is gone — pruning needs it.
+        provider_id = ""
+        try:
+            account = await operations.store.get_account(resolved_account_id)
+            provider_id = str(getattr(account, "provider_id", "") or "")
+        except Exception:
+            LOGGER.warning(
+                "[connection-hub.delegated_to_kdcube] could not read account before disconnect "
+                "(binding pruning skipped): account=%s", resolved_account_id, exc_info=True,
+            )
+        result = await operations.disconnect(account_id=resolved_account_id)
+        # Disconnecting closes this account's per-agent bindings too. Account ids
+        # are deterministic, so a binding left behind would silently revive if the
+        # same account were reconnected later. `Reconnect` (re-approval without
+        # disconnecting) is the action that keeps bindings. Never fails the
+        # disconnect itself.
+        if result.get("removed") and provider_id:
+            try:
+                pruned = await _automation_access_service(self, request).prune_account_from_grants(
+                    grantor_subject=platform_user_id,
+                    provider_id=provider_id,
+                    account_id=resolved_account_id,
+                )
+                if pruned.get("pruned"):
+                    result["bindings_cleared"] = pruned.get("pruned")
+                    result["bindings_cleared_grants"] = pruned.get("grants") or []
+            except Exception:
+                LOGGER.warning(
+                    "[connection-hub.delegated_to_kdcube] binding pruning failed (non-fatal): "
+                    "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
+                )
+        return result
 
     @api(method="POST", alias="delegated_to_kdcube_resolve", route="operations", **_api_visibility("delegated_to_kdcube_resolve"))
     async def delegated_to_kdcube_resolve(

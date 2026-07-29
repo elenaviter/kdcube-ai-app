@@ -25,6 +25,13 @@ AUTH_CODE_TTL_SECONDS = 60
 # must still be able to refresh rather than re-consent.
 REFRESH_TTL_SECONDS = 180 * 24 * 3600
 
+# DCR client registrations carry a SLIDING TTL: every read re-arms it, so a
+# connector in use never expires, while abandoned registrations (every retried
+# `claude mcp add` mints a fresh dcr-* client) age out instead of accumulating
+# forever. Must comfortably outlive REFRESH_TTL_SECONDS - a valid refresh token
+# must never point at an expired client record.
+CLIENT_TTL_SECONDS = 210 * 24 * 3600
+
 # Consent CSRF tokens live only for the duration a human spends on the screen.
 CSRF_TTL_SECONDS = 600
 
@@ -194,14 +201,20 @@ class GrantStore:
             "token_endpoint_auth_method": "none",
             "metadata": metadata or {},
         }
-        # Registrations persist (no TTL) — a connector is long-lived.
-        await self._r.set(self._key("client", client_id), json.dumps(record))
+        # Sliding TTL (see CLIENT_TTL_SECONDS): long-lived for a connector in
+        # use, finite for the registration junk repeated reconnects leave.
+        await self._r.setex(
+            self._key("client", client_id), CLIENT_TTL_SECONDS, json.dumps(record)
+        )
         return record
 
     async def get_client_record(self, client_id: str) -> Optional[Dict[str, Any]]:
-        raw = await self._r.get(self._key("client", client_id))
+        key = self._key("client", client_id)
+        raw = await self._r.get(key)
         if raw is None:
             return None
+        # Re-arm the sliding TTL: any use of the client keeps it alive.
+        await self._r.expire(key, CLIENT_TTL_SECONDS)
         return json.loads(raw)
 
     async def rotate_refresh_token(self, refresh_token: str) -> Optional[str]:
