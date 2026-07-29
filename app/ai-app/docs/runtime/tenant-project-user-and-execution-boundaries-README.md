@@ -674,7 +674,7 @@ generated code
 | PostgreSQL project data | tenant + project schema | database deployment and scoped store implementation |
 | Redis state | tenant + project namespace | namespace helpers and each Redis surface contract |
 | Object/file storage | tenant + project, then app/user/conversation/turn as required | storage key/path builders and store APIs |
-| Current user identity | authenticated actor and `UserSession` | ingress/auth resolver and request-context binding |
+| Current actor and user identity | actor, user, and `UserSession` established by the entry path; public routes do not require a platform-authenticated session | ingress/auth resolver, integration-specific identity projection, and request-context binding |
 | Runtime identity continuity | request, authority, routing, and accounting descriptors | cross-runtime snapshot/bootstrap contract |
 | Cross-authority access | actor, required authority, edge grants | Connection Hub authenticator, edge resolver, grant resolver, and surface guard |
 | Delegated external client | delegate, grantor, resource, tools/operations, `resource_grants` | managed delegated-credential guard and server-side grant records |
@@ -717,7 +717,7 @@ Use claims that name the boundary they describe:
 | Topic | Precise statement |
 | --- | --- |
 | Tenant/project | A running KDCube deployment is bound to one tenant/project. Backing services may be dedicated or shared through PostgreSQL schemas, Redis namespaces, and object/file prefixes. |
-| Concurrent users | Users share worker and processor infrastructure. KDCube binds each request to an authenticated actor and preserves that identity across supported runtime transitions. |
+| Concurrent users | Users share worker and processor infrastructure. KDCube preserves the actor and authority context established by each entry path across supported runtime transitions. Public routes do not require a platform-authenticated session; an app or integration may still carry or resolve identity and enforce its own requirements. |
 | Authorization | Cross-runtime context carries identity and authority facts; guarded services enforce the required authority and grants. |
 | Connection Hub | External identities and delegated clients cross protected boundaries through explicit connection edges, server-side grants, and authority projection. |
 | ReAct | ReAct may propose any logical ref string. The ref grants no authority: trusted resolution keeps tenant/project/user scope in RuntimeCtx, and generated code receives only successfully resolved bytes materialized into the current workspace. |

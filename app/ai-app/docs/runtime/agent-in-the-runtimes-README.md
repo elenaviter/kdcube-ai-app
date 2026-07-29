@@ -57,18 +57,20 @@ Two worked apps ground everything here:
 
 ## 1. Any Surface, One Lane
 
-An agent never binds to a transport. Every way work can arrive — the chat
-widget over SSE/Socket.IO, an authenticated REST operation, a public webhook
-(Telegram included), an MCP call, a Data Bus message, a scheduled automation
-— normalizes into the same `ExternalEventPayload`. From there the serving
-runtime splits two ways (the [runtimes map](runtimes-map-README.md), §3): an
-app's direct surfaces — `@api`, `@mcp`, widgets — answer in place,
-request/response, and any of them can *submit* conversational work; work
-**for the agent** lands on the **conversation event lane**: the ordered work
-lane for one conversation. The lane reserves one accepted start batch for one
-turn. That batch may contain same-ingress siblings, such as a prompt and its
-attachments. Same-conversation turns serialize across workers while different
-conversations run in parallel
+An agent never binds to a transport. Chat over SSE/Socket.IO, REST, public
+webhooks (Telegram included), MCP, Data Bus handlers, and scheduled work keep
+their own payload and lifecycle contracts. Each entry binds the request or
+execution context available for that entry. `public` means the platform route
+does not require an authenticated platform session. The app or integration may
+still carry or resolve an actor and enforce its own authorization; `public`
+does not require the caller to be anonymous. The serving runtime then splits
+two ways (the [runtimes map](runtimes-map-README.md), §3): an app's direct surfaces —
+`@api`, `@mcp`, widgets — answer in place, request/response, and supported
+entries can *submit* conversational work; work **for the agent** lands on the
+**conversation event lane**: the ordered work lane for one conversation. The
+lane reserves one accepted start batch for one turn. That batch may contain
+same-ingress siblings, such as a prompt and its attachments. Same-conversation
+turns serialize across workers while different conversations run in parallel
 ([Reactive Turn Delivery](../sdk/events/reactive-turn-delivery-README.md)).
 
 What makes the lane an *agent* concept rather than plumbing is what happens
@@ -266,7 +268,7 @@ or integrated:
 
 | Gain | Where it comes from |
 | --- | --- |
-| Multi-user serving with bound identity | every entry binds the authenticated actor; platform storage helpers apply tenant/project/user scope, and trusted app code must preserve those owner keys |
+| Multi-user serving with bound identity | each execution uses the actor and authority context established by its entry path; a public route does not require a platform session, while an app or integration may still carry or resolve identity; platform storage helpers apply tenant/project/user scope and trusted app code must preserve those owner keys |
 | Horizontal scale | state keys on the conversation, the agent is rebuilt per turn, so any worker can take the next turn |
 | Ordered conversations under concurrency | the event lane serializes per conversation, parallelizes across conversations |
 | Any-event ingestion | a common request/event context across transports; conversational work enters the lane, while namespaces own block production for domain events |
@@ -300,12 +302,16 @@ The two worked apps make the difference concrete:
 | Generated code | full exec path with exported tool catalog (nested `tool_call` through the supervisor) | `run_python` — isolated computation + hosted files; nested catalog exported only if the adapter passes specs |
 | Streaming | channel protocol through the communicator | LangGraph events mapped to chat events by the stream adapters (`platform/stream_*.py`) |
 
-What the integrated agent **gains** without changing its core: everything in
-§4 — hosting, restore, search, any-event handling, scale, accounting, consent
-— plus the same workspace grammar (fresh per turn, refs in, produced files
-hosted out) and the same pull-over-URIs primitives the native agent uses
-(`pull_refs_into_dir`; the react tools are one adapter over them, the ported
-app binds the same helpers as `read_file`/`pull_files`).
+What the worked integrated agent **gains** without changing its reasoning
+core is the common hosted-agent layer it actually wires: hosting, restore,
+search, ordered start-batch handling, horizontal serving, accounting on
+integrated paths, consent-gated tools, the same workspace grammar (fresh per
+turn, refs in, produced files hosted out), and the same pull-over-URI
+primitives the native agent uses (`pull_refs_into_dir`; the ReAct tools are one
+adapter over them, and the ported app binds the same helpers as
+`read_file`/`pull_files`). Framework-specific capabilities such as live event
+folding or a nested execution-tool catalog still require explicit adapter
+support.
 
 One integrated-agent nuance deserves its own note: **Claude Code**. Hosted
 Claude Code keeps continuity through its *own* session substrate
@@ -348,7 +354,8 @@ execute_core(...)
         |
         +-- tools cross their fences as needed:
         |     exec -> supervisor/executor; accounts -> credential broker;
-        |     namespace ops -> provider; all carrying the portable context
+        |     namespace ops -> provider; context crosses in the shape
+        |     declared for each boundary
         |
         +-- progress streams the whole way: the communicator peers deltas,
         |     steps, and files back to the initiator's surfaces — from proc,

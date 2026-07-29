@@ -123,9 +123,11 @@ generated-code boundary.
 
 The runtimes are all different — different processes, different lifetimes,
 different trust. What holds them together is that every arrow below has a
-declared contract. The portable context (identity, routing, resolved authority,
-accounting subject) rides supported trusted-runtime crossings; the split
-executor deliberately receives a smaller execution payload instead.
+declared contract. Trusted runtime hops restore the full portable context
+(identity, routing, resolved authority, accounting subject). Narrower targets
+receive a boundary-specific projection: an app-venv helper receives serialized
+call data, while the split executor receives reduced, non-secret execution
+context and leaves the full portable spec with its trusted supervisor.
 
 ```text
                               THE WORLD
@@ -168,11 +170,13 @@ executor deliberately receives a smaller execution payload instead.
                                                             | docker|Fargate |
                                                             +----------------+
 
-  ACROSS SUPPORTED TRUSTED-RUNTIME ARROWS: the portable context —
-    identity | routing | authority (already resolved) | accounting subject
-  NEVER ACROSS ANY ARROW: live pools, clients, secrets, large payloads
-    (trusted services are rebuilt from configuration on arrival;
-     the isolated executor receives no portable context at all)
+  EACH BOUNDARY RECEIVES ITS DECLARED CONTEXT SHAPE:
+    trusted runtime -> full portable context and reconstructed services
+    app venv       -> serialized call data, including context passed by caller
+    split executor -> reduced EXEC_CONTEXT + work/artifact/socket surfaces
+  NEVER SERIALIZED AS LIVE OBJECTS: pools, clients, callbacks, large payloads
+  SECRET-BEARING CONFIG: only trusted runtimes that require it; never the
+    restricted executor
 
   ON COMMUNICATOR-ENABLED ARROWS: a comm spec crosses with the work, the far
     runtime rebuilds it, and events (deltas, steps, files, errors,
@@ -195,6 +199,12 @@ widgets/static assets are served by the integrations router
 actor, user, authority) and calls the app surface in place, request/response.
 No lane, no queue, no scheduler — the app answers directly, with full
 identity bound around the call.
+
+`public` means the platform route does not require an authenticated platform
+session. It does not establish the caller's identity or authorization policy.
+The app or integration may still carry or resolve an actor — for example from
+a channel identity or a managed authority projection — and enforce its own
+requirements before protected work runs.
 
 **Scheduled work.** Conversational and queued work goes through ordering and
 scheduling machinery:
@@ -233,11 +243,15 @@ the app's Telegram delivery posts the reply back into the chat
 
 The webhook itself is the direct path (answer fast, never block a scheduler
 tick); the conversation is the scheduled path; the reply rides the
-communicator back out through the channel. One message, three runtimes,
-one identity end to end.
+communicator back out through the channel. One message, three runtimes, one
+actor-and-authority lineage end to end: the Telegram actor remains explicit,
+and a linked platform projection is carried when a protected boundary needs it.
 
-Both entry kinds — direct and scheduled — start from the same normalized
-payload and the same identity contract. The inbound surface matrix is in
+Direct and scheduled entries do **not** share one payload or lifecycle. They do
+share the runtime identity contract: each execution binds its actor, routing,
+and any resolved authority projection before trusted work uses them. A direct
+surface that submits conversational work creates the lane's
+`ExternalEventPayload` at that crossing. The inbound surface matrix is in
 [Bundle Transports](../sdk/bundle/bundle-transports-README.md).
 
 **Delivery guarantee, not transactional promise.** The lane guarantees
@@ -346,20 +360,23 @@ a subprocess boundary:
 ```text
 proc (shared interpreter, shared event loop)
    |
-   |  plain serializable args        <- the ONLY thing that crosses
+   |  serialized call payload
+   |  (plain args, including any context values the caller passes)
    v
 @venv helper in the app's cached venv subprocess   ⚙ @venv(requirements=...)
    |  own interpreter, own deps from the app's requirements.txt
    |  blocking library calls cannot stall the shared event loop
    v
-plain serializable result            <- the ONLY thing that returns
+plain serializable result
 ```
 
 - One cached venv per app id; the venv **rebuilds lazily when the referenced
   `requirements.txt` content changes** — no proc restart.
-- The decorated callable is the boundary: plain data in, plain data out.
-  Live proc objects — communicators, request contexts, DB pools, Redis
-  clients, tool registries — never cross; orchestration stays in proc.
+- The decorated callable is the boundary: serializable data in, serializable
+  data out. Context needed by the helper must be represented in that call
+  payload; a live request-context object is not transported into the child.
+  Live proc objects — communicators, DB pools, Redis clients, tool registries —
+  never cross; orchestration stays in proc.
 - Use it for dependency-heavy leaf work and libraries that do not belong in
   the shared proc interpreter; the app keeps the platform's interpreter clean
   while carrying its own stack.
@@ -396,7 +413,7 @@ across machines.
 | local subprocess | a child Python process on the same host | crash containment only — it inherits host network and environment |
 | Docker combined (legacy) | supervisor and UID-dropped executor child in one container | filtered env and no network namespace for the child, but one shared mount namespace |
 | **Docker split (reference)** | two sibling containers: trusted supervisor and restricted executor | executor has **no network**, a **read-only root filesystem**, narrow work/artifact/log/socket mounts, **no platform secrets and no descriptor payloads**; every tool call crosses an authenticated per-execution socket with peer-credential checks |
-| Fargate / external | the same split contract on a remote ECS task | identical logical contract; transport becomes snapshot-based (work/out zipped to object storage, restored remotely, delta outputs merged back) |
+| Fargate / external | supervisor and generated-code child inside one remote task/container | the same logical supervisor/tool-call contract and snapshot transport, but **not** split Docker's separate-container mount boundary; assess task IAM, network, filesystem, child isolation, and snapshot transport |
 
 ```text
 trusted processor
@@ -432,40 +449,53 @@ Mechanics, mounts, environment tables, and operations:
 ## 9. Cross-Runtime Context: Reconstruction, Not Serialization
 
 ```text
-processor --> async task --> subprocess --> supervisor --> Fargate task
-    |             |              |              |              |
-    +------ the same small JSON room crosses every hop --------+
-            identity | routing | authority (already resolved) | accounting
+processor --> async task --> trusted child/supervisor --> Fargate task
+    |             |                    |                  |
+    +---- full portable context across trusted hops -----+
+          identity | routing | resolved authority | accounting
 
-    live pools, clients, secrets NEVER cross — rebuilt from config on arrival
-    (the split executor receives no room at all: it is stripped)
+app venv: serialized call context, not live proc objects
+split executor: reduced EXEC_CONTEXT; full portable spec stays in supervisor
+live pools and clients are never serialized across the boundary
 ```
 
 A single request may touch the processor, an async task, a worker thread, a
-subprocess, a supervisor container, and a remote ECS task. What crosses those
-hops is a small JSON-safe **portable context**: request identity (tenant,
-project, app, actor, user, roles), routing (session, conversation, turn),
-authority carried **already resolved** (downstream code reads the projection;
-it never re-derives who the actor is), the accounting subject and dimensions,
-the app call context, and the named-service discovery descriptor.
+subprocess, a supervisor container, and a remote ECS task. Across supported
+trusted-runtime hops, the full JSON-safe **portable context** carries request
+identity (tenant, project, app, actor, user, roles), routing (session,
+conversation, turn), authority carried **already resolved** (downstream code
+reads the projection; it never re-derives who the actor is), the accounting
+subject and dimensions, the app call context, and the named-service discovery
+descriptor.
 
-What never crosses: live database pools, Redis clients, provider objects,
-secrets, large payloads. The target runtime **reconstructs** trusted services
-from validated configuration. And identity is never model-selectable: a model
-or tool argument can name an object, but it cannot change the tenant, user,
-authority, or economics subject.
+The final generated-code boundary deliberately narrows that room rather than
+erasing context altogether. The trusted supervisor restores the full portable
+spec. The split executor receives `EXEC_CONTEXT` with safe identifiers such as
+tenant/project/user, conversation/turn, app, and execution ids, plus its narrow
+work, artifact, log, and socket surfaces. It does not receive the full portable
+spec, descriptor payloads, platform or provider credentials, secret-provider
+material, or live services.
+
+Live database pools, Redis clients, provider objects, callbacks, and large
+payloads do not cross as serialized objects. A trusted target runtime
+**reconstructs** them from validated configuration. The complete portable spec
+can carry model-provider configuration, and a trusted Docker/Fargate supervisor
+can receive descriptor payloads or resolve secrets needed by approved tools.
+Those secret-bearing inputs do not enter the restricted executor. Identity is
+never model-selectable: a model or tool argument can name an object, but it
+cannot change the tenant, user, authority, or economics subject.
 
 ### The carried identity is what unlocks accounts
 
 The execution context is not only *who is asking* — it is the key that lets
-supported trusted runtimes link the work to the user's **connected accounts** and this
-agent's **delegated grants** at the moment of use. The context binds the
-authenticated user AND the acting agent's own identity
+supported trusted runtimes link the work to the user's **connected accounts**
+and this agent's **delegated grants** at the moment of use. The context binds
+the resolved platform/grantor user and the acting agent's own identity
 (`kdcube-agent:<app>:<agent>` for a hosted agent; a `dcr-…` client identity
 for an external app), and a guarded operation resolves authority from both:
 
 ```text
-execution context — bound at entry, carried across every hop
+execution context — bound at entry, carried to supported enforcement points
   user identity | acting agent identity | authority projection
         |
         v   at a guarded operation, trusted code checks TWO gates
@@ -494,11 +524,12 @@ structured, never as a bare failure: a reason (`connect_required`,
 a retry hint — the exact fix, addressed to the user and readable by the
 agent.
 
-Because the identity crosses every fence with the work, the two gates hold
-**wherever the call physically happens** — a tool in proc, a named-service
-call relayed from the isolated runtime, a provider operation on another app.
-And because identity is never model-selectable, no prompt can point the
-resolution at another user's accounts. Contracts:
+When a guarded call runs on a supported trusted runtime, the bound identity
+projection reaches that enforcement point with the work — a tool in proc, a
+named-service call relayed through the isolated runtime's trusted supervisor,
+or a provider operation on another app. Because identity is never
+model-selectable, no prompt can point the resolution at another user's
+accounts. Contracts:
 [Tenant, User, Authority, And Execution Boundaries](tenant-project-user-and-execution-boundaries-README.md)
 (Connection Hub rows of the enforcement matrix) and the Connection Hub
 solution docs under `docs/sdk/solutions/connections/`.
@@ -695,15 +726,17 @@ infrastructure.**
 - Durable state is keyed by **conversation**, never kept in process memory.
   The agent is rebuilt fresh per turn; a worker-local singleton is ephemeral
   reuse, not a durable service. Memory is not authority.
-- Users share workers; KDCube binds each request to an authenticated actor
-  and preserves that identity across supported runtime transitions. Platform
-  storage helpers apply tenant/project and app/user/conversation/turn scope;
-  trusted app code must keep those owner keys intact. This is logical data
-  scoping, while the structural isolation claim belongs to the generated-code
-  boundary (§8).
-- Horizontal scale falls out: because nothing turn-relevant lives in a
-  process, adding workers adds capacity; the conversation lane keeps
-  per-conversation order while everything else parallelizes.
+- Users share workers; KDCube binds each execution to the actor and authority
+  context established by its entry path. A public route does not require a
+  platform session; an app or integration may still carry or resolve an actor,
+  and protected boundaries can require and resolve more.
+  Platform storage helpers apply tenant/project and
+  app/user/conversation/turn scope; trusted app code must keep those owner keys
+  intact. This is logical data scoping, while the structural isolation claim
+  belongs to the generated-code boundary (§8).
+- Horizontal scale follows because nothing required to continue a later turn
+  lives only in one process. Adding workers adds capacity; the conversation
+  lane keeps per-conversation order while unrelated work parallelizes.
 - The at-least-once lane (§3) exists for the same reason: a machine can
   disappear mid-turn, and the work must land somewhere else without losing
   its place in the conversation.
