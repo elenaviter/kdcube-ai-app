@@ -4,7 +4,7 @@ title: "Security And Trust Model"
 summary: "Canonical KDCube security model: one tenant/project runtime, trusted applications, request-scoped users, profile-dependent generated-code isolation, server-side credentials, and guarded REST/MCP surfaces."
 status: current
 tags: ["arch", "security", "trust", "tenancy", "apps", "execution", "credentials", "mcp"]
-updated_at: 2026-07-18
+updated_at: 2026-07-29
 keywords: ["KDCube security model", "tenant/project deployment scope", "multi-user runtime", "trusted application", "generated-code isolation", "MCP security", "secret isolation"]
 see_also:
   - repo:kdcube-ai-app/SECURITY.md
@@ -42,8 +42,9 @@ platform operator
 | one KDCube runtime deployment                                    |
 | effective scope: tenant T + project P                            |
 |                                                                  |
-| many authenticated users                                         |
-|   request identity + authority + app/conversation/turn lineage   |
+| many users and callers                                           |
+|   bound identity/authority when present or required              |
+|   app/conversation/turn lineage where applicable                 |
 |                                                                  |
 | trusted application and supervisor code                          |
 |   operator-approved source, SDK services, guarded tools          |
@@ -87,8 +88,9 @@ still binds one effective tenant/project.
 
 Inside one tenant/project deployment, many users may share processes, queues,
 connection pools, and filesystem infrastructure. User separation therefore
-depends on authenticated request context and scoped service contracts, not on
-one operating-system process per user.
+depends on bound request/runtime context and scoped service contracts, not on
+one operating-system process per user. Protected paths verify the identity and
+authority their surface policy requires.
 
 This model does **not** claim that mutually hostile platform operators or
 unreviewed application backends can safely share one processor. Use separate
@@ -121,16 +123,20 @@ untrusted applications in separate deployments.
 
 ## Users Are Isolated By Carried Context And Scoped Services
 
-Ingress authenticates the actor and binds a request context. The context
-carries tenant, project, user, authority, application, conversation, agent,
-and turn lineage across async tasks, threads, subprocesses, application calls,
-and Data Bus work where applicable.
+Ingress resolves the route, verifies the proof required by that surface, and
+binds tenant/project plus the actor, user, authority, routing, and lineage fields
+that apply to the request. Public routes do not require a normal platform
+session; they may still carry identity or enforce app-specific proof.
+Scheduled and internal work starts from system or already-bound runtime
+context. Where applicable, the context carries tenant, project, actor, user,
+authority, application, conversation, agent, and turn lineage across async
+tasks, threads, subprocesses, application calls, and Data Bus work.
 
 ```text
-verified actor
+route + surface-required proof
     |
     v
-bound request context
+tenant/project + applicable actor/user/authority
     |
     +-> storage lookup is scoped
     +-> credential lookup is scoped
@@ -248,11 +254,13 @@ client -> REST or MCP endpoint
        application operation
 ```
 
-A public surface is intentionally public. A managed surface must reject a
-credential whose server-side resource/operation grants do not match the
-request. An MCP endpoint is not automatically privileged, and adding MCP
-support to an application does not turn the whole KDCube repository into an
-MCP connector.
+At the proc routing layer, a public surface means that a normal platform
+session is not required. It may still receive an identified caller, require
+provider proof in app/SDK code, or use a configured managed guard for a narrower
+boundary. A managed surface must reject a credential whose server-side
+resource/operation grants do not match the request. An MCP endpoint is not
+automatically privileged, and adding MCP support to an application does not
+turn the whole KDCube repository into an MCP connector.
 
 ## How To Review This Repository
 

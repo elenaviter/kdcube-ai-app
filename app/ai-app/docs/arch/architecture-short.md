@@ -4,7 +4,7 @@ title: "Architecture Short"
 summary: "Concise current architecture of KDCube: one tenant/project deployment, directional app surfaces, ordered conversation eventing, app Data Bus, authority, storage, isolation, and accounting."
 status: current
 tags: ["arch", "architecture", "overview", "apps", "runtime"]
-updated_at: 2026-07-18
+updated_at: 2026-07-29
 keywords: ["KDCube architecture", "app surfaces", "as provider", "as consumer", "conversation event lane", "isolated execution"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -51,7 +51,9 @@ browser | channel | webhook | REST client | MCP client
                           |
                           v
               ingress and request context
-        authenticate | validate | admit | upload
+       resolve route | verify surface-required proof
+ bind tenant/project | actor/user/authority when applicable
+ validate payload/visibility/limits/budget | admit/upload/queue
                           |
           +---------------+----------------+
           |               |                |
@@ -120,11 +122,14 @@ One ordered event lane is keyed by:
 tenant + project + user + conversation + agent
 ```
 
-Reactive ingress atomically writes prepared events to the lane and admits one
+Reactive ingress atomically writes one prepared batch to the lane and admits one
 bodyless wake to the processor queue. Non-reactive events enter only the lane.
-The lane sequence defines order; the queue schedules work. A live turn consumes
-later events through owner-fenced lane handling rather than repeatedly invoking
-the app entrypoint.
+The lane sequence defines order; the queue schedules work. One accepted start
+batch, possibly containing same-ingress sibling events, starts one app turn.
+Native ReAct can fold eligible later events through owner-fenced lane handling.
+The current run-to-completion adapter consumes only its start batch, so later
+events wait for another turn. A custom adapter must wire live folding
+explicitly. Unconsumed `event.user.steer` expires and never becomes future work.
 
 Conversation Event Bus events carry prompts, attachments, followups, steers,
 approvals, callbacks, and future-turn context. The Data Bus carries app-owned
@@ -137,9 +142,14 @@ set.
 
 ## Identity And Authority
 
-Ingress verifies the actor and binds a request context. Connection Hub owns the
-platform authority/provider registry, connection edges, authority projection,
-connected external accounts, and delegated credentials.
+Ingress resolves the route, verifies the proof required by its surface policy,
+and binds the applicable tenant/project, actor/user, authority, routing, and
+lineage context. Public routes need no normal platform session, though they may
+carry identity or require app-specific proof.
+Scheduled and internal work starts from system or already-bound context.
+Connection Hub owns the platform authority/provider registry, connection
+edges, authority projection, connected external accounts, and delegated
+credentials.
 
 ```text
 external account -> KDCube
@@ -156,8 +166,12 @@ authority source itself.
 ## Cross-Runtime And Isolated Execution
 
 Request identity and authority travel through async, thread, subprocess,
-supervisor, app-call, and Data Bus boundaries in a JSON-safe portable context.
-The context carries situation and policy, not secrets, blobs, or live handles.
+supervisor, app-call, and Data Bus boundaries in the JSON-safe portable
+`comm_ctx`. It carries situation and policy, not credentials, blobs, or live
+handles. A trusted runtime bootstrap is separate and may contain descriptors,
+model configuration, and selected provider keys needed to rebuild trusted
+services. The restricted split executor receives a reduced execution ticket,
+not that full trusted payload or platform/provider credentials.
 
 For generated code, model-proposed refs and paths are untrusted locators. A
 trusted resolver binds tenant/project/user/authority before materializing bytes
@@ -188,9 +202,13 @@ provider, and model.
 ## Deployment
 
 The contracts run in local, Docker Compose, process/container, and ECS/Fargate
-profiles. Deployment-specific ports, task sizes, IAM, DNS, TLS, and storage
-choices belong to deployment descriptors and operations docs, not this stable
-architecture map.
+profiles. Docker split is the reference production profile for untrusted
+generated code: supervisor and executor are separate containers. The current
+Fargate generated-code profile instead runs a trusted supervisor and a
+UID-dropped, network-isolated child in one remote task/container, using filtered
+state and snapshot transport; it is not the split Docker mount boundary.
+Deployment-specific ports, task sizes, IAM, DNS, TLS, and storage choices
+belong to deployment descriptors and operations docs, not this stable map.
 
 ## Read Next
 

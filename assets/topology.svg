@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 540" font-family="Inter, ui-sans-serif, system-ui, sans-serif" role="img" aria-labelledby="ttitle tdesc">
   <title id="ttitle">KDCube deployment topology</title>
-  <desc id="tdesc">A user and an external agent reach your apps inside one KDCube tenant/project platform. Your apps — warm-lit, one deployable unit each with hot reload — serve chat, widgets, REST, MCP, and realms, and use agents, tools, namespaces, and MCP servers. The auth authority is external OIDC or a bundle you deploy. kdcube-services is a deployable named-services gateway federating app realms over MCP; Connection Hub is a deployable claims broker for connected accounts, consent, grants, and automation tokens — brokered at tool boundaries.</desc>
+  <desc id="tdesc">A user and an external agent reach your apps inside one KDCube tenant/project platform. Your apps — warm-lit, one deployable unit each with hot reload — serve chat, widgets, REST, MCP, and realms, and use agents, tools, namespaces, and MCP servers. Protected surfaces authenticate through external OIDC or an application-hosted login; public surfaces do not require a normal platform session. kdcube-services is a deployable named-services gateway federating app realms over MCP; Connection Hub is a deployable claims broker for connected accounts, consent, grants, and automation tokens — brokered at tool boundaries.</desc>
   <defs>
     <linearGradient id="graphite" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%" stop-color="#F1F3F4"/><stop offset="100%" stop-color="#E3E6E8"/>
@@ -26,11 +26,11 @@
   <rect x="396" y="92" width="100" height="18" rx="4" fill="#F3F5F6" stroke="#465864" stroke-opacity="0.3"/>
   <text x="446" y="104.5" font-size="9.5" font-weight="600" fill="#5C6E7A" text-anchor="middle">OIDC / Cognito</text>
   <rect x="502" y="92" width="118" height="18" rx="4" fill="#FFF8E9" stroke="#D9A945" stroke-opacity="0.55"/>
-  <text x="561" y="104.5" font-size="9.5" font-weight="600" fill="#8A6A1C" text-anchor="middle">a bundle you deploy</text>
+  <text x="561" y="104.5" font-size="9.5" font-weight="600" fill="#8A6A1C" text-anchor="middle">app-hosted login</text>
 
   <path d="M505 118 V146" stroke="#B08428" stroke-width="1.1" fill="none" stroke-dasharray="5 4" stroke-opacity="0.6"/>
   <path d="M505 155l-4 -9h8z" fill="#B08428" fill-opacity="0.8"/>
-  <text x="524" y="140" font-size="7.5" letter-spacing="0.12em" fill="#8794A0" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">AUTHENTICATES</text>
+  <text x="524" y="140" font-size="7.5" letter-spacing="0.12em" fill="#8794A0" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">AUTHENTICATES PROTECTED SURFACES</text>
 
   <!-- the platform boundary -->
   <rect x="280" y="155" width="640" height="345" rx="12" fill="none" stroke="#465864" stroke-opacity="0.4" stroke-dasharray="6 5"/>

@@ -4,7 +4,7 @@ title: "Architecture Of What We Built"
 summary: "Current platform-runtime map of KDCube: one tenant/project deployment, browser and external ingress, app loading, ordered conversation eventing, Data Bus, tenant/project/session relay, identity and authority, storage ownership, isolated execution, economics, and deployment profiles."
 status: current
 tags: ["arch", "architecture", "runtime", "services", "ingress", "events", "authority", "execution", "deployment"]
-updated_at: 2026-07-18
+updated_at: 2026-07-29
 keywords: ["platform architecture", "runtime architecture", "tenant project deployment", "conversation event lane", "data bus", "SSE relay", "cross runtime context", "isolated execution", "application site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -22,9 +22,9 @@ see_also:
 # Architecture Of What We Built
 
 This page is the current physical/runtime map of KDCube. It explains the
-platform that loads apps, serves browser surfaces, authenticates actors,
-schedules work, preserves event order, runs tools and agents, stores state, and
-delivers results.
+platform that loads apps, serves browser surfaces, resolves callers according
+to each surface's policy, schedules work, preserves event order, runs tools and
+agents, stores state, and delivers results.
 
 For the architecture an app builder composes on top of this runtime, read
 [Architecture Of What You Build](architecture-of-what-you-build-README.md).
@@ -71,16 +71,18 @@ browser / webhook / REST client / MCP client / channel
              v                                 v
     browser UI + app sites             API / chat / app ingress
                                                |
-                         authenticate, bind request context,
-                         validate, admit, upload, enqueue
+                              resolve route and surface-required proof,
+                              bind tenant/project + applicable identity/authority,
+                              validate payload, visibility, limits, budget;
+                              admit, upload, or enqueue as the surface requires
                                                |
-                                               v
-                              Redis-backed runtime fabric
                          +---------------------+-------------------+
-                         |                     |                   |
-                 conversation lanes      Data Bus streams    queues / relay
-                 + lane state             + results           + locks/catalogs
-                         |                     |                   |
+                         |                                         |
+                         v                                         v
+                 direct app/API dispatch             Redis-backed runtime fabric
+                                                     conversation lanes / Data Bus
+                                                     queues / relay / catalogs
+                         |                                         |
                          +---------------------+-------------------+
                                                |
                                                v
@@ -186,9 +188,12 @@ id cursor drives the close gate, including explicit advancement for events that
 produce no timeline blocks. Superseded turns cannot fold new events or become
 conversation head.
 
-One `@on_reactive_event` call starts the scheduled app turn. Later events fold
-inside that live turn or remain for a future turn; they do not repeatedly call
-the app entrypoint.
+One accepted start batch starts one `@on_reactive_event` app turn. The batch may
+contain same-ingress sibling events. Native KDCube ReAct can fold eligible later
+events into the live turn. A run-to-completion adapter, including the current
+ported LangGraph reference, consumes only its accepted start batch; later work
+waits for a future turn. A custom adapter must wire live folding explicitly.
+Unconsumed `event.user.steer` expires and never becomes future work.
 
 ## Conversation Event Bus, Data Bus, And Relay
 
@@ -210,7 +215,11 @@ ready queues or invent lane state.
 
 ## Identity, Authority, And Delegation
 
-Ingress authenticates the actor and binds runtime context. Connection Hub owns
+Ingress resolves the route, verifies whatever proof that surface requires, and
+binds the applicable tenant/project, actor/user, authority, routing, and lineage
+context. A public route does not require a normal platform session, although it
+may still carry identity or enforce app-specific proof. Scheduled and internal
+work begins from system or already-bound runtime context. Connection Hub owns
 the authority/provider registry, connection edges, authority projection,
 connected external accounts, and delegated credentials.
 
@@ -242,10 +251,15 @@ records; product code does not derive authority by decoding token bodies.
 ## Cross-Runtime Context And Isolated Execution
 
 Request identity must survive async, thread, subprocess, isolated-supervisor,
-app-call, and Data Bus transitions. The portable context carries JSON-safe
+app-call, and Data Bus transitions. The portable `comm_ctx` carries JSON-safe
 identity, authority, routing, app-call, accounting, discovery, and named-service
-client-policy facts. It carries no live handles, secrets, or blobs; services are
-rebuilt on the far side.
+client-policy facts. It carries no live handles, credentials, or blobs.
+
+A trusted runtime bootstrap is a separate payload. It may include descriptors,
+model configuration, and selected provider keys needed to rebuild trusted
+services. The restricted split executor receives neither that full bootstrap
+payload nor platform/provider credentials; it receives a reduced execution
+ticket and materialized inputs.
 
 For generated code, the agent is an untrusted requester:
 
@@ -309,7 +323,10 @@ The same app/runtime contracts run locally and in cloud deployments:
 - process and container workers sharing configured PostgreSQL, Redis, and
   filesystem/object storage;
 - ECS/Fargate profiles with managed stores, task roles, and shared filesystem;
-- external execution tasks for distributed generated-code workloads.
+- the current remote Fargate generated-code profile, where a trusted supervisor
+  and a UID-dropped, network-isolated child share one remote task/container and
+  exchange filtered state and snapshots. This is not split Docker's
+  separate-container mount boundary.
 
 Hosted agent frameworks follow the same horizontal-scaling rule: a graph
 instance is built inside one bound turn and discarded afterward. Shared

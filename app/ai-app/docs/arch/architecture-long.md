@@ -4,7 +4,7 @@ title: "Architecture Long"
 summary: "Detailed current KDCube architecture: deployment scope, app catalogs and surfaces, ingress, ordered conversation lanes, Data Bus and relay, identity and delegation, cross-runtime context, isolated execution, storage, scaling, sites, and economics."
 status: current
 tags: ["arch", "architecture", "runtime", "apps", "events", "identity", "execution", "storage"]
-updated_at: 2026-07-18
+updated_at: 2026-07-29
 keywords: ["KDCube architecture", "tenant project", "app provider consumer", "conversation event bus", "data bus", "isolated execution", "Connection Hub", "site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -73,7 +73,7 @@ user isolation cannot be inferred from process isolation.
 
 ```text
 tenant/project   deployment and persistence namespace
-actor/user       authenticated requester inside that deployment
+actor/user       external caller and platform user when carried or required
 authority        grants projected for the current operation
 app              product/runtime owner
 conversation     ordered interaction lineage
@@ -96,8 +96,9 @@ clients
                v                                         v
        browser/static/site paths                  API and event ingress
                                                          |
-                                  authenticate actor and bind request context
-                                  validate payload, visibility, limits, budget
+                                  resolve route; verify surface-required proof
+                                  bind tenant/project + applicable identity/authority
+                                  validate payload, visibility, limits, budget; admit
                                                          |
                     +---------------------+--------------+----------------+
                     |                     |                               |
@@ -261,16 +262,16 @@ query the site catalog.
 
 ## 7. Ingress And Request Context
 
-Ingress normalizes transport-specific input into a bound request:
+Ingress normalizes transport-specific input according to the surface policy:
 
 ```text
 transport proof and payload
         |
         v
-authenticate / verify actor
+resolve route + verify surface-required proof
         |
         v
-bind tenant + project + actor + user + authority
+bind tenant + project and applicable actor/user/authority
         |
         v
 resolve app + conversation + agent + turn routing
@@ -278,6 +279,11 @@ resolve app + conversation + agent + turn routing
         v
 apply visibility, payload, backpressure, and economics admission
 ```
+
+A public route does not require a normal platform session, although it may
+still carry identity or enforce provider/app-specific proof. Scheduled work
+starts from system runtime context, and internal peer calls carry an already
+bound caller context where applicable.
 
 `ChatIngressSubmitter` provides a proc-local adapter for channels and backend
 webhooks that cannot call browser SSE or Socket.IO ingress directly. After
@@ -302,16 +308,17 @@ work but does not contain the authoritative event body or define its order.
 
 ```text
 reactive ingress
-  atomically append all prepared events to lane L
+  atomically append one prepared start batch to lane L
   atomically admit one ExternalEventLaneWakeup pointer to queue Q
 
 non-reactive ingress
   append events to lane L only
 ```
 
-The processor consumes the wake, resolves the accepted event from lane state,
-reconstructs `ExternalEventPayload` from retained `task_payload`, and invokes
-the routed app's conversation-event surface.
+The processor consumes the wake, resolves the accepted start batch from lane
+state, reconstructs `ExternalEventPayload` from retained `task_payload`, and
+invokes the routed app's conversation-event surface. One start batch may
+contain same-ingress sibling events.
 
 A live turn consumes later events through `ContextBrowser`. Ownership combines:
 
@@ -334,9 +341,13 @@ Supersession can be detected at several boundaries. The invariant is stable: a
 stale turn may briefly resume execution, but it cannot fold new lane events,
 commit an answer, or become conversation head.
 
-`@on_reactive_event` starts one scheduled app turn. Events arriving during that
-turn fold into it when eligible. Passive versus promotable behavior is decided
-by the event's retained `task_payload`, not by `reactive: false` alone.
+`@on_reactive_event` starts one scheduled app turn. Native KDCube ReAct can fold
+eligible later events into that live turn. A run-to-completion adapter,
+including the current ported LangGraph reference, consumes only its accepted
+start batch; later events wait for another turn. A custom adapter gets live
+folding only when it wires that consumer explicitly. Passive versus promotable
+behavior is decided by the event's retained `task_payload`, not by
+`reactive: false` alone.
 
 ## 9. Event Materialization
 
@@ -361,7 +372,8 @@ producing service or explicit source-owned processing.
 Steer and followup are semantic event types nested inside the uniform external
 event transport envelope. Eligible followups may add bounded iteration credit;
 a steer requests active-phase cancellation and bounded finalization. This does
-not promise synchronous termination of every possible external process.
+not promise synchronous termination of every possible external process. An
+unconsumed `event.user.steer` expires and never becomes future work.
 
 ## 10. Data Bus And Client Relay
 
@@ -428,7 +440,7 @@ trusted SDK/tool code, not exposed to the model or generated-code executor.
 ## 12. Cross-Runtime Context
 
 The same request can cross coroutine, thread, subprocess, isolated-supervisor,
-Data Bus, app-call, and named-service boundaries. The portable context room
+Data Bus, app-call, and named-service boundaries. The portable `comm_ctx`
 preserves the situation:
 
 ```text
@@ -440,9 +452,11 @@ named-service discovery descriptors
 named-service consumer-policy ceiling
 ```
 
-It does not carry live database/Redis clients, secrets, provider tokens, or
-arbitrary blobs. Each target runtime restores context variables and rebuilds
-services from descriptors.
+It does not carry live database/Redis clients, credentials, or arbitrary blobs.
+A trusted bootstrap or launch payload is separate: it may contain descriptors,
+model configuration, and selected provider keys needed to rebuild trusted
+services. The restricted split executor receives a reduced execution ticket,
+not that full payload or platform/provider credentials.
 
 Conversation-scoped capability denials travel in the context snapshot. App consumer
 configuration remains the ceiling. Providers authorize through restored
@@ -532,8 +546,10 @@ In split Docker execution:
 
 Oversized supervisor-only environment payloads are streamed over container
 stdin as a JSON env map; this avoids command-line `E2BIG` without widening the
-executor. Distributed Fargate execution uses a separate launch-payload
-transport.
+executor. The current Fargate profile uses a separate launch-payload transport
+and runs the trusted supervisor plus a UID-dropped, network-isolated child in
+one remote task/container. State crosses through filtered payloads and
+snapshots; this is not split Docker's separate-container mount boundary.
 
 Structured harness failures return normal tool-result blocks with
 `status: "error"`; they do not disappear as logs. A repeated identical launch

@@ -89,7 +89,7 @@
     <rect x="830" y="314" width="230" height="44" rx="9" fill="#FFFFFF" stroke="#465864" stroke-opacity="0.4"/>
     <circle cx="848" cy="336" r="3.4" fill="none" stroke="#465864"/><circle cx="848" cy="336" r="1.2" fill="#465864"/>
     <text x="860" y="332" fill="#465864">isolated code + files</text>
-    <text x="860" y="346" font-size="7.5" fill="#8794A0" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">SPLIT EXECUTOR · NO NETWORK / PROVIDER CREDS</text>
+    <text x="860" y="346" font-size="7.5" fill="#8794A0" font-family="JetBrains Mono, ui-monospace, Menlo, monospace">REFERENCE SPLIT · NO NETWORK / PROVIDER CREDS</text>
   </g>
   <g stroke="#B08428" stroke-width="1.1" fill="none" stroke-dasharray="5 4" stroke-opacity="0.6">
     <path d="M740 190 C778 186 792 124 821 119"/>

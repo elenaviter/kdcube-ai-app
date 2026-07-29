@@ -41,6 +41,9 @@ event, and agent surfaces under explicit deployment policy.
 
 - One running deployment is bound to one effective `tenant/project` and may
   serve many users and operator-approved applications.
+- Each surface declares its access policy. Public routes do not require a
+  normal platform session; other routes can require login, provider proof, or
+  delegated access.
 - Application backend code is trusted deployment code. Generated code is a
   separate boundary whose isolation strength depends on the configured
   execution profile.
@@ -98,9 +101,9 @@ Apps may have no UI and no agent, or may host several agents and frontends.
 - **Connect users and systems.** OIDC and application authority, external
   accounts, Telegram identity linking, managed grants, revocable automation
   access, and protected REST or MCP surfaces.
-- **Track economics.** Attribute accountable LLM, embedding, web-search, and
-  tool work to the user, app, conversation, and turn; enforce budgets before
-  covered calls run.
+- **Track economics.** Attribute LLM, embedding, web-search, and tool work to
+  the user, app, conversation, and turn; enforce budgets before covered calls
+  run.
 - **Compose a product.** Ready chat and workspace components, custom widgets,
   scenes, canvases, app-hosted websites, APIs, jobs, and domain services.
 
@@ -116,9 +119,10 @@ subprocess, and isolated-runtime boundaries.
 ## Bring your agent, or use KDCube ReAct Agent
 
 Existing agent frameworks remain responsible for their own graph or loop.
-KDCube supplies the surrounding runtime. In scaled serving, a graph is built
-for the current turn and then discarded; durable state belongs in its
-checkpointer or storage, not in a process-local graph object.
+KDCube supplies the surrounding runtime: multi-user serving, ordered delivery,
+streaming, shared state, guarded tools, and deployment. In scaled serving, a
+graph is built for the current turn and then discarded; durable state belongs
+in its checkpointer or storage, not in a process-local graph object.
 
 The optional built-in ReAct agent uses an event-aware timeline and semantic
 streaming channels rather than requiring a provider-native tool-calling
