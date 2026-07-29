@@ -131,6 +131,7 @@ class _MinimalRedis:
         self.delete_calls = []
         self.lrem_calls = []
         self.set_calls = []
+        self.xack_calls = []
         self.lists = {}
         self.streams = {}
         self.stream_seq = {}
@@ -246,6 +247,7 @@ class _MinimalRedis:
         return out
 
     async def xack(self, *_args, **_kwargs):
+        self.xack_calls.append((_args, _kwargs))
         return 1
 
     async def llen(self, key):
@@ -817,6 +819,46 @@ async def test_background_job_claim_failure_releases_lock_and_capacity(monkeypat
 
     assert processor.get_current_load() == 0
     assert any(str(key).endswith(":job_exec_1") for key in redis.delete_calls)
+
+
+@pytest.mark.asyncio
+async def test_unstarted_background_claim_release_keeps_stream_job_retryable(_patch_processor_dependencies):
+    redis = _MinimalRedis()
+    processor = _build_processor(redis)
+    claim = BackgroundJobClaim(
+        stream_key="jobs:registered",
+        stream_id="1-0",
+        consumer_name="proc-test",
+        fields={},
+        job=BackgroundJob(
+            job_id="job_exec_1",
+            work_kind="news.generation.scheduled",
+            tenant="demo-tenant",
+            project="demo-project",
+            queue_label="registered",
+            bundle_id="news@2026-05-20-12-05",
+            user_id="user-123",
+            metadata={"conversation_id": "job_job_exec_1", "turn_id": "turn_job_exec_1"},
+            payload={"channel": "news"},
+        ),
+    )
+    task_data = processor._background_job_to_chat_task(claim)
+    lock_key = processor._task_lock_key("job_exec_1")
+    lock_token = processor._processor_lock_token("job_exec_1")
+    redis.values[lock_key] = lock_token
+    task_data["_lock_key"] = lock_key
+    task_data["_lock_token"] = lock_token
+    processor._current_load = 1
+
+    released = await processor._release_unstarted_claimed_work(
+        task_data,
+        reason="processor-drain-before-task-start",
+    )
+
+    assert released is True
+    assert processor.get_current_load() == 0
+    assert lock_key in redis.delete_calls
+    assert redis.xack_calls == []
 
 
 @pytest.mark.asyncio
@@ -1574,6 +1616,34 @@ async def test_legacy_queue_requeues_when_conversation_lock_is_held(_patch_proce
     assert redis.lists[inflight_key] == []
     assert redis.values[conversation_lock_key] == "other-processor"
     assert "lock:task-locked" in redis.delete_calls
+
+
+@pytest.mark.asyncio
+async def test_legacy_queue_claim_failure_requeues_and_releases_capacity(monkeypatch, _patch_processor_dependencies):
+    redis = _MinimalRedis()
+    processor = _build_processor(redis)
+    task_payload = _build_task_payload("task-claim-failure", user_type="registered")
+    raw_payload = json.dumps(task_payload).encode("utf-8")
+    ready_key = "queue:registered"
+    inflight_key = "queue:inflight:registered"
+    redis.seed_list(ready_key, [raw_payload])
+
+    def _fail_acquired_log(message, *args, **kwargs):
+        del args, kwargs
+        if str(message).startswith("Process "):
+            raise RuntimeError("legacy claim setup failed")
+
+    monkeypatch.setattr(processor_mod.logger, "info", _fail_acquired_log)
+
+    with pytest.raises(RuntimeError, match="legacy claim setup failed"):
+        await processor._legacy_pop_any_queue_fair()
+
+    assert processor.get_current_load() == 0
+    assert redis.lists[ready_key] == [raw_payload]
+    assert redis.lists[inflight_key] == []
+    assert "lock:task-claim-failure" in redis.delete_calls
+    conversation_lock_key = processor._task_conversation_lock_key(task_payload)
+    assert conversation_lock_key in redis.delete_calls
 
 
 @pytest.mark.asyncio

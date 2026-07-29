@@ -1454,6 +1454,51 @@ class EnhancedChatRequestProcessor:
             reason=f"task-finished:{self._task_logical_id(task_data) or 'unknown'}",
         )
 
+    async def _release_unstarted_claimed_work(self, task_data: Dict[str, Any], *, reason: str) -> bool:
+        """Release work after capacity was reserved but before _process_task owns it."""
+        try:
+            conversation_lock_key = task_data.get("_conversation_lock_key")
+            if conversation_lock_key:
+                await self._release_redis_lock(
+                    conversation_lock_key,
+                    task_data.get("_conversation_lock_token"),
+                )
+
+            background_claim = task_data.get("_background_job_claim")
+            if background_claim is not None:
+                lock_key = task_data.get("_lock_key")
+                if lock_key:
+                    await self._release_redis_lock(lock_key, task_data.get("_lock_token"))
+                logger.info(
+                    "Released unstarted background job claim; left pending for retry: "
+                    "job_id=%s stream=%s id=%s reason=%s",
+                    self._task_logical_id(task_data) or getattr(getattr(background_claim, "job", None), "job_id", None),
+                    getattr(background_claim, "stream_key", None),
+                    getattr(background_claim, "stream_id", None),
+                    reason,
+                )
+                return True
+
+            return await self._requeue_claimed_payload(
+                ready_queue_key=task_data.get("_ready_queue_key") or task_data.get("_queue_key"),
+                inflight_queue_key=task_data.get("_inflight_queue_key"),
+                raw_payload=task_data.get("_raw_payload"),
+                lock_key=task_data.get("_lock_key"),
+                lock_token=task_data.get("_lock_token"),
+                started_key=task_data.get("_started_key"),
+                reason=reason,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to release unstarted claimed work: task_id=%s reason=%s",
+                self._task_logical_id(task_data),
+                reason,
+                exc_info=True,
+            )
+            return False
+        finally:
+            self._current_load = max(0, self._current_load - 1)
+
     async def _inflight_recovery_loop(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -1562,11 +1607,8 @@ class EnhancedChatRequestProcessor:
                     continue
 
                 if self._stop_event.is_set():
-                    await self._requeue_claimed_payload(
-                        ready_queue_key=task_data.get("_ready_queue_key") or task_data.get("_queue_key"),
-                        inflight_queue_key=task_data.get("_inflight_queue_key"),
-                        raw_payload=task_data.get("_raw_payload"),
-                        lock_key=task_data.get("_lock_key"),
+                    await self._release_unstarted_claimed_work(
+                        task_data,
                         reason="processor-drain-before-task-start",
                     )
                     continue
@@ -1815,6 +1857,8 @@ class EnhancedChatRequestProcessor:
         if self._stop_event.is_set() or self._host_draining:
             await self._release_redis_lock(lock_key, lock_token)
             return None
+        task_dict["_lock_key"] = lock_key
+        task_dict["_lock_token"] = lock_token
         load_incremented = False
         try:
             self._current_load += 1
@@ -1827,8 +1871,6 @@ class EnhancedChatRequestProcessor:
                 except Exception:
                     queue_wait_ms = None
             task_dict["_queue_wait_ms"] = queue_wait_ms
-            task_dict["_lock_key"] = lock_key
-            task_dict["_lock_token"] = lock_token
             logger.info(
                 "Process %s acquired background job %s (%s) stream=%s id=%s%s",
                 self.process_id,
@@ -1841,14 +1883,9 @@ class EnhancedChatRequestProcessor:
             return task_dict
         except Exception:
             if load_incremented:
-                self._current_load = max(0, self._current_load - 1)
-            try:
-                await self._release_redis_lock(lock_key, lock_token)
-            except Exception:
-                logger.warning(
-                    "Failed to release background job lock after claim setup failure: job_id=%s",
-                    logical_id,
-                    exc_info=True,
+                await self._release_unstarted_claimed_work(
+                    task_dict,
+                    reason=f"background-claim-setup-failed:{logical_id}",
                 )
             raise
 
@@ -1952,26 +1989,36 @@ class EnhancedChatRequestProcessor:
                         queue_key,
                     )
                     return None
-                self._current_load += 1
-                created_at = (task_dict.get("meta") or {}).get("created_at")
-                queue_wait_ms = None
-                if created_at:
-                    try:
-                        queue_wait_ms = int((time.time() - float(created_at)) * 1000)
-                    except Exception:
-                        queue_wait_ms = None
-                logger.info(
-                    f"Process {self.process_id} acquired task {logical_id} ({user_type})"
-                    + (f" queue_wait_ms={queue_wait_ms}" if queue_wait_ms is not None else "")
-                )
-                task_dict["_queue_wait_ms"] = queue_wait_ms
                 task_dict["_lock_key"] = lock_key
                 task_dict["_lock_token"] = lock_token
                 task_dict["_queue_key"] = queue_key
                 task_dict["_ready_queue_key"] = queue_key
                 task_dict["_inflight_queue_key"] = inflight_queue_key
                 task_dict["_raw_payload"] = raw_payload
-                return task_dict
+                load_incremented = False
+                try:
+                    self._current_load += 1
+                    load_incremented = True
+                    created_at = (task_dict.get("meta") or {}).get("created_at")
+                    queue_wait_ms = None
+                    if created_at:
+                        try:
+                            queue_wait_ms = int((time.time() - float(created_at)) * 1000)
+                        except Exception:
+                            queue_wait_ms = None
+                    task_dict["_queue_wait_ms"] = queue_wait_ms
+                    logger.info(
+                        f"Process {self.process_id} acquired task {logical_id} ({user_type})"
+                        + (f" queue_wait_ms={queue_wait_ms}" if queue_wait_ms is not None else "")
+                    )
+                    return task_dict
+                except Exception:
+                    if load_incremented:
+                        await self._release_unstarted_claimed_work(
+                            task_dict,
+                            reason=f"legacy-claim-setup-failed:{logical_id}",
+                        )
+                    raise
 
             await self._requeue_claimed_payload(
                 ready_queue_key=queue_key,
