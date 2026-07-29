@@ -1815,27 +1815,42 @@ class EnhancedChatRequestProcessor:
         if self._stop_event.is_set() or self._host_draining:
             await self._release_redis_lock(lock_key, lock_token)
             return None
-        self._current_load += 1
-        created_at = (task_dict.get("meta") or {}).get("created_at")
-        queue_wait_ms = None
-        if created_at:
+        load_incremented = False
+        try:
+            self._current_load += 1
+            load_incremented = True
+            created_at = (task_dict.get("meta") or {}).get("created_at")
+            queue_wait_ms = None
+            if created_at:
+                try:
+                    queue_wait_ms = int((time.time() - float(created_at)) * 1000)
+                except Exception:
+                    queue_wait_ms = None
+            task_dict["_queue_wait_ms"] = queue_wait_ms
+            task_dict["_lock_key"] = lock_key
+            task_dict["_lock_token"] = lock_token
+            logger.info(
+                "Process %s acquired background job %s (%s) stream=%s id=%s%s",
+                self.process_id,
+                logical_id,
+                claim.job.queue_label,
+                claim.stream_key,
+                claim.stream_id,
+                f" queue_wait_ms={queue_wait_ms}" if queue_wait_ms is not None else "",
+            )
+            return task_dict
+        except Exception:
+            if load_incremented:
+                self._current_load = max(0, self._current_load - 1)
             try:
-                queue_wait_ms = int((time.time() - float(created_at)) * 1000)
+                await self._release_redis_lock(lock_key, lock_token)
             except Exception:
-                queue_wait_ms = None
-        task_dict["_queue_wait_ms"] = queue_wait_ms
-        task_dict["_lock_key"] = lock_key
-        task_dict["_lock_token"] = lock_token
-        logger.info(
-            "Process %s acquired background job %s (%s) stream=%s id=%s%s",
-            self.process_id,
-            logical_id,
-            claim.job.queue,
-            claim.stream_key,
-            claim.stream_id,
-            f" queue_wait_ms={queue_wait_ms}" if queue_wait_ms is not None else "",
-        )
-        return task_dict
+                logger.warning(
+                    "Failed to release background job lock after claim setup failure: job_id=%s",
+                    logical_id,
+                    exc_info=True,
+                )
+            raise
 
     async def _legacy_pop_any_queue_fair(self) -> Optional[Dict[str, Any]]:
         for _ in range(len(self.QUEUE_ORDER)):

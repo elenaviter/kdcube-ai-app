@@ -725,6 +725,101 @@ def test_background_job_chat_task_carries_accounting_context(_patch_processor_de
 
 
 @pytest.mark.asyncio
+async def test_background_job_claim_uses_queue_label(_patch_processor_dependencies):
+    redis = _MinimalRedis()
+    processor = _build_processor(redis)
+    claim = BackgroundJobClaim(
+        stream_key="jobs:privileged",
+        stream_id="1-0",
+        consumer_name="proc-test",
+        fields={},
+        job=BackgroundJob(
+            job_id="job_exec_1",
+            work_kind="news.generation.scheduled",
+            tenant="demo-tenant",
+            project="demo-project",
+            queue_label="privileged",
+            bundle_id="news@2026-05-20-12-05",
+            user_id="user-123",
+            metadata={
+                "conversation_id": "job_job_exec_1",
+                "turn_id": "turn_job_exec_1",
+                "request_id": "req-job-1",
+                "text": "Scheduled news generation",
+            },
+            payload={"channel": "news"},
+        ),
+    )
+
+    class _FakeBackgroundJobs:
+        async def claim_next(self, **kwargs):
+            del kwargs
+            return claim
+
+        async def ack(self, _claim):
+            raise AssertionError("valid claimed jobs must not be acked during claim")
+
+    processor._background_jobs = _FakeBackgroundJobs()
+
+    task_data = await processor._claim_next_background_job()
+
+    assert task_data is not None
+    assert task_data["user"]["user_type"] == "privileged"
+    assert task_data["request"]["payload"]["work_kind"] == "news.generation.scheduled"
+    assert task_data["_background_job_claim"] is claim
+
+
+@pytest.mark.asyncio
+async def test_background_job_claim_failure_releases_lock_and_capacity(monkeypatch, _patch_processor_dependencies):
+    redis = _MinimalRedis()
+    processor = _build_processor(redis)
+    claim = BackgroundJobClaim(
+        stream_key="jobs:registered",
+        stream_id="1-0",
+        consumer_name="proc-test",
+        fields={},
+        job=BackgroundJob(
+            job_id="job_exec_1",
+            work_kind="news.generation.scheduled",
+            tenant="demo-tenant",
+            project="demo-project",
+            queue_label="registered",
+            bundle_id="news@2026-05-20-12-05",
+            user_id="user-123",
+            metadata={
+                "conversation_id": "job_job_exec_1",
+                "turn_id": "turn_job_exec_1",
+                "request_id": "req-job-1",
+                "text": "Scheduled news generation",
+            },
+            payload={"channel": "news"},
+        ),
+    )
+
+    class _FakeBackgroundJobs:
+        async def claim_next(self, **kwargs):
+            del kwargs
+            return claim
+
+        async def ack(self, _claim):
+            raise AssertionError("valid claimed jobs must not be acked during claim")
+
+    def _fail_info(message, *args, **kwargs):
+        del args, kwargs
+        if str(message).startswith("Process %s acquired background job"):
+            raise RuntimeError("claim setup failed")
+
+    processor._background_jobs = _FakeBackgroundJobs()
+    monkeypatch.setattr(processor_mod.logger, "info", _fail_info)
+
+    with pytest.raises(RuntimeError, match="claim setup failed"):
+        await processor._claim_next_background_job()
+
+    assert processor.get_current_load() == 0
+    assert any(str(key).endswith(":job_exec_1") for key in redis.delete_calls)
+
+
+@pytest.mark.asyncio
 async def test_start_processing_fails_fast_for_unimplemented_streams_backend():
     processor = _build_processor(_MinimalRedis(), scheduler_backend=SCHEDULER_BACKEND_CONVERSATION_STREAMS)
     with pytest.raises(RuntimeError, match="conversation_streams"):
