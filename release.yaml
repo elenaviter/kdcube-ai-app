@@ -1,6 +1,6 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.29.450"
+  ref: "2026.07.29.1625"
   description: |
     This release follows 2026.07.28.210.
 
@@ -28,5 +28,16 @@ platform:
     agents, communication runtime, execution isolation, app surfaces, and
     trusted runtime crossings fit together.
 
+    Scheduled and background job execution now uses the processor queue label
+    consistently when claiming work, and releases local processor capacity when
+    a claimed background job fails before entering the accounted execution path.
+    This prevents stale in-process load from saturating `current_load` and
+    blocking later scheduled jobs, including app-maintained generation jobs.
+
+    The consent flow now separates account details from explanatory text and
+    avoids repeating the same access-gap guidance. Runtime architecture wording
+    was tightened to make the platform/app boundary and delivery signals easier
+    to audit.
+
 config:
-  version: "2026.07.29.450"
+  version: "2026.07.29.1625"
