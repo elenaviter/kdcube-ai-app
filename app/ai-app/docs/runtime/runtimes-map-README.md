@@ -1,7 +1,7 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/runtime/runtimes-map-README.md
 title: "The KDCube Runtimes: Map And Model"
-summary: "The narrative map of every KDCube runtime and the one primitive that organizes them: the fence. The serving runtime with direct surfaces and scheduled work, the Data Bus, the app venv, the agent harness, the isolated execution family, cross-runtime context, named services and MCP as runtime crossings, accounting across the fences, subagent fences, and distribution as the forcing function — with schematics of what crosses each boundary."
+summary: "The narrative map of KDCube runtimes and the explicit boundary contracts that connect them: serving and scheduled work, the Data Bus, app venvs, the agent harness, isolated execution, cross-runtime context, named services and MCP, accounting, subagents, and distributed serving."
 tags: ["runtime", "architecture", "fences", "scheduling", "isolation", "distribution", "exec", "cross-runtime", "data-bus", "venv", "named-services", "mcp", "accounting"]
 keywords:
   [
@@ -27,7 +27,7 @@ keywords:
     "distributed serving",
     "horizontal scaling",
   ]
-updated_at: 2026-07-28
+updated_at: 2026-07-29
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/agent-in-the-runtimes-README.md
@@ -60,8 +60,8 @@ and schedules many kinds of work, a durable Data Bus, per-app virtual
 environments, an agent harness that keeps framework-neutral conversation
 state, an isolated execution family for generated code, provider apps reached
 through named-service discovery over several bridges, and a portable-context
-contract that lets a single request cross all of them without losing its
-identity, authority, or accounting subject.
+contract that lets a single request cross supported runtime boundaries without
+losing its identity, authority, or accounting subject.
 
 This page is the narrative map: what each runtime is FOR, what runs there,
 **what crosses into it**, and what it guarantees. Throughout, **⚙ marks the
@@ -73,38 +73,37 @@ same system is [The Agent In The Runtimes Fusion](agent-in-the-runtimes-README.m
 
 ## 1. One Primitive, Repeated: The Fence
 
-Every runtime boundary in KDCube is the same design move, applied at a
-different layer. Two sides are made deliberately unequal, and exactly one
-narrow, typed thing is allowed to cross — re-checked at the crossing, never
-assumed from before. We call that move a **fence**. Two invariants hold at
-every fence:
+KDCube repeats one design move at runtime boundaries: make the crossing
+explicit. A **fence** declares what may cross, what the target reconstructs,
+and which condition is enforced there. Unrelated process state does not ride
+along implicitly.
 
-1. **The powerful side is the empty side.** The component that can do the
-   most holds the least: generated code with no keys and no network, an agent
-   with no provider token, a spawned child with no ambient authority. Power
-   and trust are never on the same side of a fence.
-2. **Nothing rests on prior state.** Every crossing is re-authorized at the
-   fence. A connect-time approval is a ceiling; the per-call check is the
-   authority.
+Different fences enforce different properties. The split execution fence
+removes network and credentials from generated code. The credential fence
+keeps provider tokens on the trusted side and checks claims per operation. An
+economic fence reserves allowance before integrated spend. A runtime-context
+crossing carries an already-bound identity projection; it does not repeat the
+original login on every hop. Structural isolation belongs specifically to the
+split executor, not to every boundary called a fence.
 
 ```text
-   gated side (powerful, empty)              trusted side
+   source runtime                            target runtime
   +--------------------------+     |     +---------------------------+
-  | can do the most          |     |     | holds credentials,        |
-  | holds the least:         | one typed | authority, funds          |
-  | no keys, no network,     | crossing  |                           |
-  | no ambient authority     | ========> | re-checks EVERY crossing  |
+  | work + bound context     |     |     | reconstructs trusted      |
+  | only declared fields     | one typed | services or applies the   |
+  | leave this runtime       | crossing  | check declared here       |
+  |                          | ========> |                           |
   +--------------------------+     |     +---------------------------+
                                  FENCE
 ```
 
-| Fence | Gated side | The one thing that crosses | Trusted side | Where in this map |
+| Fence | Source side | Declared crossing or check | Target-side effect | Where in this map |
 | --- | --- | --- | --- | --- |
-| **Execution fence** | generated code: no network, no credentials, no descriptor env | `tool_call(id, params)` over an authenticated socket | supervisor with descriptors, tools, provider access | §8 |
+| **Execution fence** | split executor: no network, credentials, or descriptor env | `tool_call(id, params)` over an authenticated socket | supervisor applies the exported catalog and policy | §8 |
 | **Economic fence** | a turn that wants to run | a reservation that must clear admission | funding, quotas, the ledger | §11 |
-| **Credential fence** | agent side: no provider token | a claim, resolved to a credential for one call | Connection Hub broker and the provider token | §9 (the two gates) |
-| **Data fence** (tenant/project/user) | one user's runtime view | nothing — that is the point | another user's data behind scoped stores | every runtime, via scoped stores |
-| **Runtime-identity fence** | a hop to another process or machine | a JSON-safe portable context, authority carried already-resolved | the target runtime re-binding trusted services | §9 |
+| **Credential fence** | agent side: no provider token | an operation claim and bound actor/agent identity | Connection Hub resolves the credential on the trusted side for that call | §9 (the two gates) |
+| **Data fence** (tenant/project/user) | trusted app operation | bound scope applied through storage helpers | scoped storage access; app code must preserve owner keys | every storage-using runtime |
+| **Runtime-identity fence** | a supported hop to another trusted process or machine | JSON-safe portable context with already-resolved authority | target runtime reconstructs trusted services | §9 |
 | **Subagent fence** | a spawned child agent | a serializable spec in, reduced side files out | the coordinating parent runtime | §12 |
 
 Most fences are boundaries in **space** — two processes, two containers, two
@@ -123,9 +122,10 @@ generated-code boundary.
 ## 2. The Map At A Glance: What Crosses The Runtimes
 
 The runtimes are all different — different processes, different lifetimes,
-different trust. What holds them together is that every arrow below carries a
-**typed, narrow crossing**, and the portable context (identity, routing,
-resolved authority, accounting subject) rides every one of them.
+different trust. What holds them together is that every arrow below has a
+declared contract. The portable context (identity, routing, resolved authority,
+accounting subject) rides supported trusted-runtime crossings; the split
+executor deliberately receives a smaller execution payload instead.
 
 ```text
                               THE WORLD
@@ -168,16 +168,15 @@ resolved authority, accounting subject) rides every one of them.
                                                             | docker|Fargate |
                                                             +----------------+
 
-  ACROSS EVERY ARROW: the portable context —
+  ACROSS SUPPORTED TRUSTED-RUNTIME ARROWS: the portable context —
     identity | routing | authority (already resolved) | accounting subject
   NEVER ACROSS ANY ARROW: live pools, clients, secrets, large payloads
     (trusted services are rebuilt from configuration on arrival;
      the isolated executor receives no portable context at all)
 
-  AND BACK UP EVERY ARROW: the communicator — a comm spec crosses with the
-    work, the far runtime rebuilds it, and events (deltas, steps, files,
-    errors, measurements) stream back to the INITIATOR's connected surfaces
-    and into the conversation record (§5)
+  ON COMMUNICATOR-ENABLED ARROWS: a comm spec crosses with the work, the far
+    runtime rebuilds it, and events (deltas, steps, files, errors,
+    measurements) stream back to the INITIATOR's connected surfaces (§5)
 ```
 
 The full per-boundary "what crosses / what does not" tables are in
@@ -202,9 +201,9 @@ scheduling machinery:
 
 | Work kind | Entry | Ordering and exclusivity |
 | --- | --- | --- |
-| **Chat turns** | `@on_reactive_event` → the shared `run()` entry | The conversation event lane reserves one event for one turn; same-conversation turns serialize across workers; different conversations run in parallel |
+| **Chat turns** | `@on_reactive_event` → the shared `run()` entry | The conversation event lane reserves one accepted start batch for one turn; same-ingress siblings may share that batch; same-conversation turns serialize across workers while different conversations run in parallel |
 | **Automations** | saved automation records; due-scanner + run-now | Scheduled and manual runs converge on one execution path; each execution is its own agent turn with its own conversation/turn identity |
-| **Scheduled jobs** | `@cron(...)` methods, auto-discovered | Leader-elected via Redis locks with a declared span — `system` (one execution across the whole deployment), `instance`, or `process`; overlapping ticks are skipped; failures are isolated |
+| **Scheduled jobs** | `@cron(...)` methods, auto-discovered | Redis leases coordinate an active owner by declared span — `system`, `instance`, or `process`; competing ticks are skipped while the lease is valid, and failures are isolated |
 | **Background jobs** | `@on_job` handlers | Claimed fairly off a Redis Stream across processors, deduplicated by key — a burst of webhook-triggered work spreads across the fleet instead of hammering one worker |
 
 The split of responsibilities is deliberate: a public `@api` webhook answers
@@ -266,12 +265,15 @@ and processed by handlers the processor owns.
   bespoke backend route.
 - **Who consumes:** the app's `@data_bus_handler(...)` methods, claimed by
   processor-owned workers from the app-scoped stream.
-- **Ordering:** `serial_per_partition` uses a token lock per partition —
-  strict order inside a partition, parallelism across partitions.
-- **Exactly-once effect on an at-least-once path:** the stream redelivers
-  when a process dies between doing the work and acknowledging it; a relay
-  handler records its response per message id and answers redeliveries from
-  the record.
+- **Ordering:** `serial_per_partition` coordinates one active handler per
+  partition while its lease is valid. It does not promise strict FIFO across
+  retries, late claims, or dead-letter recovery; partitions can run in
+  parallel.
+- **At-least-once effect:** the stream can redeliver when a process dies
+  between doing the work and acknowledging it. A specific relay may record a
+  response per message id and answer redelivery from that record, but every
+  mutating handler still needs durable idempotency and optimistic-concurrency
+  checks at its storage authority.
 - **What it is for:** the durable app-to-app path. It is the leg the
   named-services relay rides when generated code in an isolated runtime calls
   a provider app (§8, §10) — reaching the provider **while preserving the
@@ -293,7 +295,7 @@ they were emitted in the processor, a venv subprocess's trusted caller, the
 ISO supervisor, a subagent fence, or a remote Fargate task.
 
 ```text
-any runtime doing the work
+communicator-enabled runtime doing the work
   (proc | supervisor | subagent fence | remote exec)
         |
         |  the comm SPEC crossed WITH the work (portable, JSON-safe);
@@ -305,12 +307,12 @@ communicator: deltas | steps | files | errors | measurements
         +--------------------+----------------------+
         |                    |                      |
         v                    v                      v
-  PEERED to the        BROADCAST to the        RECORDED as the
-  initiating           user's connected        turn's event
-  conversation/turn    surfaces (an event      artifacts — reload
-  stream (live         like a conversation     replays the same
-  SSE/Socket.IO        title reaches every     citations, cost,
-  envelopes)           open surface)           timing, panels
+  PEERED to the        BROADCAST to the        RECORDED as selected
+  initiating           user's connected        turn event artifacts;
+  conversation/turn    surfaces (an event      reload hydrates the
+  stream (live         like a conversation     durable client view
+  SSE/Socket.IO        title reaches every     (citations, cost,
+  envelopes)           open surface)           timing, panels)
 ```
 
 - **The spec crosses, the object does not.** A live communicator is never
@@ -322,11 +324,11 @@ communicator: deltas | steps | files | errors | measurements
   Some are broadcast to all of the user's connected surfaces, which each
   apply them by relevance (the conversation-title event is the worked
   example).
-- **Live and durable converge.** The same events the clients saw are exported
-  from the communicator's recording (⚙ `comm.export_recorded_events()`) and
-  persisted with the turn, so a
-  reloaded conversation replays what was actually streamed — the harness
-  transparency rule made mechanical.
+- **Live and durable meet at selected artifacts.** Recording policy chooses
+  which communicator events are exported by
+  ⚙ `comm.export_recorded_events()` and persisted with the turn. Reload does
+  not replay the live stream byte for byte; it fetches durable timeline and
+  stream artifacts and hydrates the same client-state model.
 - **The one runtime with no communicator is the ISO executor** — by design.
   Generated code has no channel of its own; progress and results surface
   through the supervisor side, which does hold a rebuilt communicator.
@@ -376,8 +378,9 @@ surface where durable refs become local bytes on demand).
 The harness is what makes "the same conversation, any agent" true: the native
 agent and a ported framework write and read the same block grammar, the same
 ref namespaces, and the same turn workspace contract. Its own documentation
-tree is [Agent Harness Runtime](harness/README.md); its place in this map is
-the layer that owns conversation state so that no agent framework has to.
+tree is [Agent Harness Runtime](harness/README.md). The harness owns the
+platform conversation record; an integrated framework may still own a durable
+checkpointer or reconstruct its own model-facing history.
 
 ## 8. The Isolated Execution Runtimes
 
@@ -455,7 +458,7 @@ authority, or economics subject.
 ### The carried identity is what unlocks accounts
 
 The execution context is not only *who is asking* — it is the key that lets
-any runtime link the work to the user's **connected accounts** and this
+supported trusted runtimes link the work to the user's **connected accounts** and this
 agent's **delegated grants** at the moment of use. The context binds the
 authenticated user AND the acting agent's own identity
 (`kdcube-agent:<app>:<agent>` for a hosted agent; a `dcr-…` client identity
@@ -531,8 +534,9 @@ provider app enforces its own schema, claims, and consent
 MCP itself runs in **both directions** and each is a crossing:
 
 - **As provider:** an app's `@mcp` doors are served through the integrations
-  router (§3) — an external client enters through managed auth, and its calls
-  arrive with the same bound-identity contract as any other surface.
+  router (§3). The door's declared visibility, authentication, guards, and
+  grants determine the caller context; protected calls arrive with bound
+  identity rather than model-supplied authority.
 - **As consumer:** remote MCP servers appear as tools in an agent's
   inventory; the MCP subsystem carries the calls out, subject to the agent's
   inventory and connection authorization.
@@ -545,7 +549,8 @@ Contracts: [Named Service Discovery](../sdk/namespace-services/discovery-README.
 ## 11. Accounting Across The Fences
 
 Spend control is a runtime concern because the calls that cost money happen
-in **different runtimes** — and the attribution must survive every crossing.
+in **different runtimes** — and attribution must survive each supported
+crossing on an integrated accounting path.
 
 ```text
 turn admission — the economic fence, in TIME
@@ -614,11 +619,11 @@ Contracts:
 
 ## 13. Cluster Critical Sections: When Work Must Not Parallelize
 
-Distribution (§14) means many replicas doing the same thing at the same time:
+Distribution (§14) means many replicas attempting the same work at the same time:
 several processors load the same app and would bootstrap the same schema,
 several replicas would materialize the same shared bundle storage, every
-worker sees the same due cron tick. Some work must run **once**. KDCube
-guards it with three substrates, chosen by the resource being protected:
+worker sees the same due cron tick. Some work must not overlap. KDCube
+coordinates it with three substrates, chosen by the resource being protected:
 
 | Substrate | Guards | Mechanism |
 | --- | --- | --- |
@@ -628,7 +633,11 @@ guards it with three substrates, chosen by the resource being protected:
 
 The division of labor: Redis coordinates *before* filesystem work starts; the
 file lock protects the filesystem mutation *itself*. Both are advisory — they
-guard only participants that use the helper.
+guard only participants that use the helper. Redis locks are expiring leases,
+not proof of an exactly-once effect: if a lease is lost, old work may still be
+running. Cron jobs and other side effects therefore remain idempotent, and
+durable mutations use a transaction, revision check, idempotency key, or the
+resource's own conditional-write primitive.
 
 **Schema bootstrap** (⚙ `pg_advisory_xact_lock`) — the most common case. Several replicas load the same
 app; DDL runs once:
@@ -687,11 +696,11 @@ infrastructure.**
   The agent is rebuilt fresh per turn; a worker-local singleton is ephemeral
   reuse, not a durable service. Memory is not authority.
 - Users share workers; KDCube binds each request to an authenticated actor
-  and preserves that identity across supported runtime transitions. Storage
-  is scoped by tenant/project, then app/user/conversation/turn — two users
-  served by the same process resolve to disjoint state by construction of the
-  scoped stores, and the structural isolation claim belongs to the
-  generated-code boundary (§8).
+  and preserves that identity across supported runtime transitions. Platform
+  storage helpers apply tenant/project and app/user/conversation/turn scope;
+  trusted app code must keep those owner keys intact. This is logical data
+  scoping, while the structural isolation claim belongs to the generated-code
+  boundary (§8).
 - Horizontal scale falls out: because nothing turn-relevant lives in a
   process, adding workers adds capacity; the conversation lane keeps
   per-conversation order while everything else parallelizes.
@@ -733,7 +742,7 @@ for in the SDK for that crossing:
 | What crosses a runtime hop | [Cross-Runtime Context](cross-runtime-context-README.md) |
 | Generated-code isolation mechanics | [ISO Runtime](../exec/README-iso-runtime.md) and [Distributed Execution](../exec/distributed-exec-README.md) |
 | Data Bus handlers and inbound surfaces in app code | [Bundle Runtime](../sdk/bundle/bundle-runtime-README.md) and [Bundle Transports](../sdk/bundle/bundle-transports-README.md) |
-| Streaming events back to the initiator from any runtime | [Communication](../service/comm/README-comm.md) and [Comm Recording And Event Sinks](../service/comm/comm-recording-event-sinks-README.md) |
+| Streaming events back to the initiator across communicator-enabled runtimes | [Communication](../service/comm/README-comm.md) and [Comm Recording And Event Sinks](../service/comm/comm-recording-event-sinks-README.md) |
 | Scheduling entries in app code | [Bundle Scheduled Jobs](../sdk/bundle/bundle-scheduled-jobs-README.md) |
 | The app's own dependency environment | [Bundle Venv](../sdk/bundle/bundle-venv-README.md) |
 | Provider discovery and the bridges | [Named Service Discovery](../sdk/namespace-services/discovery-README.md) |

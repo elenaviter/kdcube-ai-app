@@ -121,7 +121,8 @@ appears in the bundle descriptor as the declared default/fallback.
 
 ### `instance`
 
-- Exactly one execution per host (`INSTANCE_ID`).
+- Coordinates one active lease holder per host (`INSTANCE_ID`) while the
+  Redis lease remains valid.
 - Multiple proc processes on the same instance compete; only the one that
   acquires the lock runs.
 
@@ -132,8 +133,8 @@ bundle:cron:lock:{tenant}:{project}:{bundle_id}:{job_alias}:{instance_id}
 
 ### `system`
 
-- Exactly one execution across the whole deployed system for that
-  tenant/project/bundle/job.
+- Coordinates one active lease holder across the deployed system for that
+  tenant/project/bundle/job while the Redis lease remains valid.
 - All instances and all processes compete; only one wins.
 
 Redis lock key:
@@ -244,6 +245,13 @@ If a job is still running when the next tick arrives, the new tick is skipped.
 - `span="process"` — in-process `_running` flag per job.
 - `span="instance"` / `"system"` — the held Redis lock prevents overlap
   naturally. Lock TTL is 1 hour; renewed every 60 seconds while the job runs.
+
+The Redis lock is a renewable lease, not an exactly-once guarantee. If an
+owner stalls past expiry, a replacement can acquire the lease while the old
+code is still capable of acting. Jobs that mutate durable state or call an
+external provider must therefore be idempotent or use a transaction,
+conditional write, provider idempotency key, or another resource-enforced
+guard appropriate to the side effect.
 
 The skip is logged at `INFO` level.
 

@@ -21,7 +21,7 @@ keywords:
     "rehosting",
     "turn lifecycle",
   ]
-updated_at: 2026-07-28
+updated_at: 2026-07-29
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/runtimes-map-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -65,8 +65,9 @@ runtime splits two ways (the [runtimes map](runtimes-map-README.md), §3): an
 app's direct surfaces — `@api`, `@mcp`, widgets — answer in place,
 request/response, and any of them can *submit* conversational work; work
 **for the agent** lands on the **conversation event lane**: the ordered work
-lane for one conversation. The lane reserves one event for one turn,
-serializes same-conversation turns across workers, and lets different
+lane for one conversation. The lane reserves one accepted start batch for one
+turn. That batch may contain same-ingress siblings, such as a prompt and its
+attachments. Same-conversation turns serialize across workers while different
 conversations run in parallel
 ([Reactive Turn Delivery](../sdk/events/reactive-turn-delivery-README.md)).
 
@@ -83,8 +84,10 @@ fenced owner lease on that source and listens live:
   or cancellable tool phase where possible (in isolated execution that
   becomes a container/subprocess kill), then the agent re-enters with the
   steer already on its timeline for a bounded finalize;
-- an event no live owner consumes is **promoted** into a normal scheduled
-  turn — the fallback that keeps run-to-completion frameworks correct.
+- an eligible continuation event no live owner consumes remains in the lane
+  and becomes schedulable after the current turn releases;
+- an unconsumed `event.user.steer` **expires**. A steer controls only the turn
+  that was active when it arrived and is never promoted as future work.
 
 ```text
    followup / steer / external event, arriving MID-TURN
@@ -92,21 +95,19 @@ fenced owner lease on that source and listens live:
                         v
       shared conversation event source (Redis-backed)
                         |
-        does a live turn hold the fenced owner lease?
-              |                        |
-             yes                       no
-              |                        |
-              v                        v
-   FOLD into the running turn      PROMOTE into the next
-   followup -> +1 decision round   scheduled turn
-              (+iteration credit)
-   steer    -> interrupt active
-              generation/tool ->
-              bounded finalize
+              classify + check live ownership
+                 |              |              |
+                 v              v              v
+   FOLD into the running   QUEUE eligible     EXPIRE unconsumed
+   turn when consumed      continuation       event.user.steer
+   followup -> +round      for a later turn   (never future work)
+   steer -> interrupt ->
+            bounded finalize
 ```
 
-The same fold-or-promote path generalizes: subagent completion events travel
-it on the parent's lane. Contract and event shapes:
+Eligible domain and subagent-completion events use the same fold-or-queue
+path on the parent's lane. The steer exception is intentional. Contract and
+event shapes:
 [Shared Timeline Event Bus, Steer, Follow-up](../sdk/agents/react/shared-timeline-event-bus-steer-followup-README.md).
 
 The two worked apps split exactly along this line. The native `workspace`
@@ -115,7 +116,8 @@ boundaries. The LangGraph app takes the safe default: it folds the turn's
 **ingress batch** before reading inputs (`platform/turn_batch.py` —
 attachments ride sibling lane events of the prompt, so a run-to-completion
 door must fold the batch or the agent sees the prompt alone), runs the graph
-start to finish, and lets mid-turn arrivals promote to the next turn.
+start to finish, and lets eligible mid-turn messages wait for the next turn.
+It does not consume live steer; an unconsumed steer expires.
 
 ## 2. Two Layers Of Memory/State, Two Owners
 
@@ -138,8 +140,8 @@ owns this contract; this section places it in the fusion.)
                                    |                       |
                                    v                       v
                         session view rendered      own checkpointer
-                        per round: recent full,    (thread_id =
-                        older -> summaries + URIs, conversation_id);
+                        per round: recent full,    (platform-scoped key from
+                        older -> summaries + URIs, agent + user + conversation);
                         refresh by pull            inputs/outputs captured
                                                    back into the timeline
 ```
@@ -169,9 +171,9 @@ The timeline feeds *everything downstream of the agent*:
   the parent's, by value ([Timeline Fork](../sdk/solutions/timeline/fork-README.md)).
 
 The timeline is **progressive and portable**: because the platform owns it as
-neutral blocks, the harness can pull it anywhere (any worker, any runtime),
-prune and compact it, and render blocks at different levels of detail by age
-and by consuming surface. It is keyed to the conversation, never to a
+neutral blocks, the harness can pull it on any supported trusted worker or
+runtime, prune and compact it, and render blocks at different levels of detail
+by age and by consuming surface. It is keyed to the conversation, never to a
 process.
 
 ### Layer 2: the agent's working memory — what the model sees
@@ -198,9 +200,10 @@ prefix stays cache-pure.
 
 **Integrated agent.** A ported framework keeps its own working memory in its
 own store. The LangGraph app opens a durable checkpointer per agent
-(`AsyncPostgresSaver` routed onto KDCube's Postgres), keyed by the platform
-`conversation_id` as `thread_id` — never the browser session id, which
-changes per session and would open an empty thread on reload. The alternative
+(`AsyncPostgresSaver` routed onto KDCube's Postgres). Its `thread_id` is a
+platform-derived key containing tenant, project, active agent, user, and
+conversation identity — never the browser session id, which changes per
+session and would open an empty thread on reload. The alternative
 design — reconstructing prior turns from the platform record each turn and
 feeding them in — is equally valid; the record is the single source of truth
 at the cost of a reconstruction step. What is unsafe is treating
@@ -263,19 +266,19 @@ or integrated:
 
 | Gain | Where it comes from |
 | --- | --- |
-| Multi-user serving with bound identity | every entry binds the authenticated actor; scoped stores resolve two users on one worker to disjoint state by construction |
+| Multi-user serving with bound identity | every entry binds the authenticated actor; platform storage helpers apply tenant/project/user scope, and trusted app code must preserve those owner keys |
 | Horizontal scale | state keys on the conversation, the agent is rebuilt per turn, so any worker can take the next turn |
 | Ordered conversations under concurrency | the event lane serializes per conversation, parallelizes across conversations |
-| Any-event ingestion | one normalized payload from any transport; namespace-owned block production for domain events |
-| Live follow-up and steer | the shared event source + fenced owner lease; fold into the running turn or promote |
-| Live streaming back to the initiator, from any runtime | the communicator: its spec crosses with the work, the far side rebuilds it; events peer to the conversation and broadcast to the user's surfaces; reload replays exactly what streamed (runtimes map, §5) |
+| Any-event ingestion | a common request/event context across transports; conversational work enters the lane, while namespaces own block production for domain events |
+| Live follow-up and steer | the shared event source + owner lease; a live ReAct turn can fold both, eligible continuations can queue, and an unconsumed steer expires |
+| Live streaming back to the initiator, across communicator-enabled runtimes | a comm spec crosses with supported work and the far side rebuilds it; selected recordable events and durable turn blocks later hydrate the conversation view |
 | Durable history, restore, titles | the platform timeline and turn recording, framework-neutral |
 | Cross-conversation search | the same record, searchable under the caller's user boundary |
 | File hosting both ways | durable `conv:fi:` links: user downloads later, agent code pulls the same bytes into its workspace |
 | Depth on demand over URIs | summaries carry refs; read/pull/search recover exact collapsed content |
 | Cheap subagents | timeline fork by value + fenced child runtimes with reduce |
 | Isolated generated code | the split execution fence; tool calls brokered by the trusted supervisor |
-| Accounting that follows the request | the accounting subject rides the portable context across every fence |
+| Accounting that follows the request | the accounting subject rides supported runtime crossings and attributes integrated model, embedding, search, and participating custom-call paths |
 | Consent-gated capability | demand-driven claims at tool-attempt time; grants per user, per agent, revocable |
 
 None of it is automatic exposure: the app descriptor declares what exists,
@@ -288,11 +291,11 @@ The two worked apps make the difference concrete:
 
 | Dimension | `workspace` (native ReAct) | `ported-langgraph-agents` (integrated) |
 | --- | --- | --- |
-| Reasoning core | KDCube ReAct rounds, protocol, action governance | the original LangGraph graphs, unchanged under `solution/` |
+| Reasoning core | KDCube ReAct rounds, protocol, action governance | framework/domain-owned LangGraph graphs under `solution/`; deliberate integration changes stay small and documented |
 | Construction | agent built fresh per turn from `config.react` ⊕ `surfaces.as_consumer` (inventory, instructions, traits, event sources) | dispatcher resolves the agent id, builds a fresh graph per turn bound to the turn's identity |
-| Working memory | the rendered session view over the timeline (age-graded detail, refresh-by-URI) | the framework checkpointer on KDCube Postgres, `thread_id = conversation_id` |
+| Working memory | the rendered session view over the timeline (age-graded detail, refresh-by-URI) | the framework checkpointer on KDCube Postgres, keyed by platform-scoped agent + user + conversation identity |
 | Timeline role | source of truth — state and record are one | reflection — inputs/outputs captured into the record |
-| Mid-turn events | folds follow-up/steer live at decision boundaries | folds the ingress batch at start; mid-turn arrivals promote to next turn |
+| Mid-turn events | folds follow-up/steer live at decision boundaries | folds the accepted ingress batch at start; eligible mid-turn messages wait for the next turn, while unconsumed steer expires |
 | Tools | SDK tools + named services + MCP, taught by composed instruction blocks | app `@tool`s + selected SDK wrappers + MCP tools + consent placeholders, mapped by the adapter |
 | Generated code | full exec path with exported tool catalog (nested `tool_call` through the supervisor) | `run_python` — isolated computation + hosted files; nested catalog exported only if the adapter passes specs |
 | Streaming | channel protocol through the communicator | LangGraph events mapped to chat events by the stream adapters (`platform/stream_*.py`) |
@@ -327,10 +330,10 @@ a person, webhook, automation, or MCP client submits work
         |
         v
 ingress normalizes to ExternalEventPayload
-  and appends to the conversation event source
+  and atomically appends the accepted start batch to the conversation source
         |
         v
-the lane reserves the event for ONE turn        <- serialized per conversation
+the lane reserves the accepted batch for ONE turn <- serialized per conversation
         |
         v
 run() binds identity, opens turn + accounting context,
@@ -361,14 +364,16 @@ recording lands the turn:
   produced files hosted as conv:fi: links
         |
         v
-the lane reservation finalizes; the next event may become the next turn
+the lane reservation finalizes; eligible pending work may schedule next
         |
         v
 read side, any time later, any worker:
   restore in chat | cross-conversation search | file download | pull by URI
 ```
 
-Every arrow that crosses a runtime is one of the fences from the
-[runtimes map](runtimes-map-README.md); every durable noun on the right-hand
-side lives in the timeline layer of §2. That is the fusion: one agent, any
-surface in, every runtime underneath, one owned record out.
+Every supported runtime crossing follows one of the boundary contracts from
+the [runtimes map](runtimes-map-README.md). Conversation-facing durable output
+on the right-hand side becomes timeline blocks or durable refs; framework
+checkpoints and app-domain state remain in their own stores. That is the
+fusion: one agent, any declared surface in, several runtimes underneath, one
+platform-owned conversation record out.

@@ -69,7 +69,10 @@ This page explains the followup/steer behavior after those fields exist.
   followup that cleared finalize) advances on each clear, so a bare steer with no fresh followup still gets its
   bounded wrap-up. Without this, finalize (set once and never otherwise cleared) would truncate every later
   generation in the same turn — e.g. one a followup started.
-- if no live owner consumes the event, processor promotes it from that same retained source into a normal scheduled turn
+- if no live owner consumes an eligible continuation event, processor may
+  promote it from that same retained source into a normal scheduled turn;
+  `event.user.steer` is the exception: it controls only the turn active at
+  ingress and expires if that turn does not consume it
 
 Subagent completions (`subagent.converged` / `subagent.failed`) travel this same
 fold-or-promote path on the parent lane; their client-facing thread/persona
@@ -119,8 +122,8 @@ Live React owner
   marks event consumed
         |
         +--> if owner closes before consume
-                proc claims unconsumed event
-                promotes task_payload once as a normal ready-queue turn
+                eligible continuation -> proc may promote once
+                event.user.steer      -> terminalize / expire
 ```
 
 ## 1. Problem
@@ -174,11 +177,13 @@ Ingress already handles busy conversations:
 - current kinds are `regular`, `followup`, `steer`
 - continuations are published into the shared per-conversation external event source
 - the live React owner can now consume them through the active timeline listener
-- processor promotes the next unconsumed continuation after the current task completes
+- processor may promote the next eligible unconsumed continuation after the
+  current task completes; an unconsumed `event.user.steer` expires
 
 This is now both:
 - a shared live timeline contribution model for active React turns
-- and a fallback continuation scheduling model when no live owner consumes the event
+- and a fallback continuation scheduling model for eligible events when no
+  live owner consumes them
 
 ### What is missing
 
@@ -301,7 +306,9 @@ Notes:
 - `target_turn_id` is the user’s intended target if they supplied one; it is preserved as advisory metadata
 - `active_turn_id_at_ingress` is what ingress observed as currently active from server conversation state
 - `owner_turn_id` is the live owner lease turn id observed by ingress, when a React owner exists
-- `task_payload` is present when proc can promote the event into a normal fallback turn if no live owner consumes it
+- `task_payload` is present when proc can promote an eligible event into a
+  normal fallback turn if no live owner consumes it; steer is terminalized
+  rather than handed to a future turn
 - `text` is the user-visible message content when relevant
 - `payload` carries structured event fields
 
@@ -556,7 +563,8 @@ This avoids dead targeting of closed turns.
 
 ## 15. Fallback Execution Path
 
-If no live owner exists, the event must still be handled.
+If no live owner exists, an eligible continuation event must still be handled.
+An unconsumed `event.user.steer` is not continuation work and expires instead.
 
 The correct fallback is:
 
@@ -636,7 +644,8 @@ Handle only:
 
 Wire fallback promotion cleanly:
 
-- if no owner exists, processor promotes pending event-log items to normal continuation tasks
+- if no owner exists, processor promotes eligible pending event-log items to
+  normal continuation tasks and terminalizes unconsumed steer
 - current queue behavior remains user-visible compatible
 - during migration, the old Redis mailbox can survive as an implementation detail behind the new abstraction, but it should stop being the conceptual source of truth
 
@@ -663,7 +672,8 @@ Needed behavior:
 - append canonical external event envelope into shared event log
 - check active owner lease
 - if live owner exists, publish wake notification
-- otherwise rely on continuation task promotion
+- otherwise rely on continuation-task promotion for eligible events; steer
+  remains active-turn-only control
 
 ### Processor
 
@@ -673,7 +683,8 @@ Current file:
 
 Needed behavior:
 
-- after turn completion, promote pending external events when no live owner handled them
+- after turn completion, promote eligible pending external events when no
+  live owner handled them and terminalize unconsumed steer
 - maintain compatibility with current continuation execution path
 - eventually stop thinking in terms of a destructive mailbox as the canonical truth
 
