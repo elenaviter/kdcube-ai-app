@@ -83,6 +83,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
     authorize_consent as oauth_authorize_consent,
     oauth_logout,
     register_client as oauth_register_client,
+    revoke as oauth_revoke,
     token as oauth_token,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata import (
@@ -1649,12 +1650,19 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     issuer,
                     authorization_endpoint=f"{public_base}/authorize",
                     token_endpoint=f"{public_base}/token",
+                    revocation_endpoint=f"{public_base}/revoke",
                     registration_endpoint=f"{public_base}/register",
                     scopes_supported=parsed_cfg.supported_scopes(),
                     service_name=parsed_cfg.brand or "KDCube",
                     logo_uri=kdcube_icon_url(request=request, public_base_url=issuer),
                     client_uri=kdcube_website_url(request=request, public_base_url=issuer),
                     icons=[icon] if icon else None,
+                    dynamic_client_registration_supported=(
+                        parsed_cfg.dynamic_client_registration.enabled
+                    ),
+                    client_id_metadata_document_supported=(
+                        parsed_cfg.client_id_metadata_documents.enabled
+                    ),
                 )
             )
         if path in {".well-known/oauth-protected-resource", "protected-resource"}:
@@ -1727,6 +1735,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return await oauth_logout(request)
         if path == "token":
             return await oauth_token(request)
+        if path == "revoke":
+            return await oauth_revoke(request)
 
         return JSONResponse(status_code=404, content={"error": "oauth_route_not_found", "path": path})
 

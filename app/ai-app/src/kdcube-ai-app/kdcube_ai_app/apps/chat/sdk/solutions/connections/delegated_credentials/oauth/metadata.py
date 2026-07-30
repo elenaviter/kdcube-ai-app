@@ -22,6 +22,7 @@ def authorization_server_metadata(
     *,
     authorization_endpoint: str | None = None,
     token_endpoint: str | None = None,
+    revocation_endpoint: str | None = None,
     registration_endpoint: str | None = None,
     scopes_supported: Iterable[str] | None = None,
     service_name: str | None = None,
@@ -42,7 +43,7 @@ def authorization_server_metadata(
         "token_endpoint": token_endpoint or f"{issuer}/oauth/token",
         # RFC 7009 token revocation — a disconnecting client revokes its token
         # here, which also retires its Connection Hub card (no orphan).
-        "revocation_endpoint": f"{issuer}/oauth/revoke",
+        "revocation_endpoint": revocation_endpoint or f"{issuer}/oauth/revoke",
         "revocation_endpoint_auth_methods_supported": ["none"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "response_types_supported": ["code"],
