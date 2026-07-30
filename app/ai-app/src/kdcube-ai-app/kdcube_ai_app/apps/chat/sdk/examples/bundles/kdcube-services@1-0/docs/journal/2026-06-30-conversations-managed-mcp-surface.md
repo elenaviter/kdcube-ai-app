@@ -68,7 +68,7 @@ entrypoint.py
   thin bundle and surface wiring
 
 surfaces/mcp/conversations.py
-  FastMCP tool registration and tool argument schema
+  MCP server tool registration and tool argument schema
   stateless streamable HTTP because the proc bridge dispatches per request
 
 services/conversations/export.py

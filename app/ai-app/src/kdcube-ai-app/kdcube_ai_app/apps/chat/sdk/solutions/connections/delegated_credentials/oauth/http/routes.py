@@ -23,9 +23,15 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.clients import (
+    CLIENT_REGISTRATION_PRE_REGISTERED,
     client_from_record,
     dcr_redirect_allowed,
     get_client,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.client_metadata import (
+    ClientMetadataError,
+    is_client_metadata_id,
+    resolve_client_metadata_document,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
     OAuthDelegatedClientConfig,
@@ -162,6 +168,7 @@ def _consent_payload(
         "state": req.state or "",
         "code_challenge": req.code_challenge,
         "code_challenge_method": req.code_challenge_method,
+        "client": req.client.snapshot() if req.client is not None else {},
     }
     return {
         # `request` is kept for existing renderers. `oauth_request` avoids a
@@ -475,12 +482,36 @@ def _request_with_scopes(req: AuthorizeRequest, scopes: Iterable[str]) -> Author
         code_challenge=req.code_challenge,
         code_challenge_method=req.code_challenge_method,
         resource=req.resource,
+        client=req.client,
     )
 
 
-async def _dyn_client_resolver(request: Request, client_id: Optional[str]):
-    """A sync resolver for the one client_id in play, backed by the DCR store."""
+def _request_state_value(request: Request, name: str) -> Any:
+    request_state = getattr(request, "state", None)
+    value = getattr(request_state, name, None) if request_state is not None else None
+    if value is not None:
+        return value
+    return getattr(getattr(request.app, "state", None), name, None)
+
+
+async def _dynamic_client_resolver(request: Request, client_id: Optional[str]):
+    """Resolve the request's non-pre-registered client before pure validation."""
     if not client_id:
+        return None
+    if get_client(client_id, request) is not None:
+        return None
+    cfg = oauth_delegated_config(request)
+    if is_client_metadata_id(client_id):
+        if not cfg.client_id_metadata_documents.enabled:
+            return None
+        client = await resolve_client_metadata_document(
+            client_id,
+            config=cfg.client_id_metadata_documents,
+            store=get_grant_store(request),
+            fetcher=_request_state_value(request, "oauth_client_metadata_fetcher"),
+        )
+        return lambda cid: client if cid == client_id else None
+    if not cfg.dynamic_client_registration.enabled:
         return None
     record = await get_grant_store(request).get_client_record(client_id)
     if record is None:
@@ -496,12 +527,50 @@ async def _dyn_client_resolver(request: Request, client_id: Optional[str]):
     return lambda cid: client if cid == client_id else None
 
 
+def _client_metadata_error_response(error: ClientMetadataError) -> JSONResponse:
+    return JSONResponse(
+        status_code=error.status_code,
+        content={"error": error.code, "error_description": error.description},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 @router.post("/oauth/register", include_in_schema=False)
 async def register_client(request: Request) -> Response:
+    cfg = oauth_delegated_config(request)
+    if not cfg.dynamic_client_registration.enabled:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "not_found"},
+        )
     try:
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, Mapping):
+        body = {}
+    application_type = str(
+        body.get("application_type")
+        or cfg.dynamic_client_registration.default_application_type
+        or "native"
+    ).strip().lower()
+    if application_type not in {"native", "web"}:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_client_metadata",
+                "error_description": "application_type must be 'native' or 'web'",
+            },
+        )
+    token_auth_method = str(body.get("token_endpoint_auth_method") or "none").strip()
+    if token_auth_method != "none":
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "invalid_client_metadata",
+                "error_description": "only public clients using token_endpoint_auth_method 'none' are supported",
+            },
+        )
     redirect_uris = body.get("redirect_uris") or []
     if not isinstance(redirect_uris, list) or not redirect_uris:
         return JSONResponse(
@@ -511,7 +580,11 @@ async def register_client(request: Request) -> Response:
     # DCR is open (pre-auth), so restrict registrable redirects to the trusted set
     # (claude.ai callback + loopback) — an attacker cannot register a client that
     # delivers a stolen code to their own server.
-    if not all(dcr_redirect_allowed(u, request) for u in redirect_uris):
+    if not all(
+        isinstance(uri, str)
+        and dcr_redirect_allowed(uri, request, application_type=application_type)
+        for uri in redirect_uris
+    ):
         return JSONResponse(
             status_code=400,
             content={
@@ -533,17 +606,21 @@ async def register_client(request: Request) -> Response:
     # log the raw body keys so that is verifiable, not assumed.
     LOGGER.info(
         "[connection_hub.oauth] dcr_register client_name=%r software_id=%r "
-        "body_keys=%s redirect_uris=%s",
+        "application_type=%s body_keys=%s redirect_uris=%s",
         body.get("client_name"), body.get("software_id"),
+        application_type,
         sorted(str(k) for k in body.keys()), redirect_uris,
     )
     record = await get_grant_store(request).register_client(
-        redirect_uris=redirect_uris, metadata=metadata
+        redirect_uris=redirect_uris,
+        application_type=application_type,
+        metadata=metadata,
     )
     content = {
         "client_id": record["client_id"],
         "redirect_uris": record["redirect_uris"],
         "token_endpoint_auth_method": "none",
+        "application_type": application_type,
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "client_name": body.get("client_name"),
@@ -559,8 +636,16 @@ async def register_client(request: Request) -> Response:
 async def authorize(request: Request) -> Response:
     issuer = resolve_issuer(request)
     params = dict(request.query_params)
-    resolver = await _dyn_client_resolver(request, params.get("client_id"))
     cfg = oauth_delegated_config(request)
+    try:
+        resolver = await _dynamic_client_resolver(request, params.get("client_id"))
+    except ClientMetadataError as error:
+        LOGGER.warning(
+            "[connection-hub.oauth] client_metadata_rejected client_id=%s error=%s",
+            str(params.get("client_id") or ""),
+            error.code,
+        )
+        return _client_metadata_error_response(error)
     try:
         req = parse_authorize_request(
             params,
@@ -607,7 +692,16 @@ async def authorize(request: Request) -> Response:
     subject = _user_subject(user or {})
     if not subject:
         return JSONResponse(status_code=401, content={"error": "login_required"})
-    csrf = await get_grant_store(request).create_csrf_token(subject)
+    csrf_context = {
+        "client_id": req.client_id,
+        "client_metadata_digest": (
+            req.client.snapshot_digest() if req.client is not None else ""
+        ),
+    }
+    csrf = await get_grant_store(request).create_csrf_token(
+        subject,
+        context=csrf_context,
+    )
     LOGGER.info(
         "[connection-hub.oauth] authorize csrf_minted subject=%s client_id=%s resource=%s",
         subject,
@@ -616,7 +710,10 @@ async def authorize(request: Request) -> Response:
     )
     # trusted = a statically pre-registered client (not a dynamically-registered one),
     # so the consent screen can flag unknown clients for anti-phishing.
-    trusted = get_client(req.client_id, request) is not None
+    trusted = bool(
+        req.client is not None
+        and req.client.registration_kind == CLIENT_REGISTRATION_PRE_REGISTERED
+    )
     custom = await _render_custom_consent_if_configured(
         request,
         req=render_req,
@@ -793,8 +890,16 @@ async def authorize_consent(request: Request) -> Response:
     issuer = resolve_issuer(request)
     form = await request.form()
     params = _consent_authorize_params(request, form)
-    resolver = await _dyn_client_resolver(request, params.get("client_id"))
     cfg = oauth_delegated_config(request)
+    try:
+        resolver = await _dynamic_client_resolver(request, params.get("client_id"))
+    except ClientMetadataError as error:
+        LOGGER.warning(
+            "[connection-hub.oauth] consent client_metadata_rejected client_id=%s error=%s",
+            str(params.get("client_id") or ""),
+            error.code,
+        )
+        return _client_metadata_error_response(error)
     try:
         req = parse_authorize_request(
             params,
@@ -830,7 +935,13 @@ async def authorize_consent(request: Request) -> Response:
     # at GET /oauth/authorize. Blocks a forged cross-site POST riding the session
     # cookie. Checked before the decision branch so deny is protected too.
     csrf_value = form.get("csrf_token")
-    if hasattr(store, "consume_csrf_token_with_reason"):
+    csrf_context: dict[str, Any] = {}
+    if hasattr(store, "consume_csrf_token_context"):
+        csrf_ok, csrf_reason, csrf_context = await store.consume_csrf_token_context(
+            csrf_value,
+            subject,
+        )
+    elif hasattr(store, "consume_csrf_token_with_reason"):
         csrf_ok, csrf_reason = await store.consume_csrf_token_with_reason(csrf_value, subject)
     else:
         csrf_ok = await store.consume_csrf_token(csrf_value, subject)
@@ -852,6 +963,27 @@ async def authorize_consent(request: Request) -> Response:
             status_code=403,
             content={"error": "invalid_csrf", "error_description": "CSRF token missing, expired, or invalid"},
         )
+
+    expected_client_id = str(csrf_context.get("client_id") or "")
+    expected_digest = str(csrf_context.get("client_metadata_digest") or "")
+    current_digest = req.client.snapshot_digest() if req.client is not None else ""
+    if (
+        expected_client_id
+        and (
+            expected_client_id != req.client_id
+            or not expected_digest
+            or expected_digest != current_digest
+        )
+    ):
+        LOGGER.warning(
+            "[connection-hub.oauth] consent client metadata changed "
+            "client_id=%s",
+            req.client_id,
+        )
+        return _client_metadata_error_response(ClientMetadataError(
+            "invalid_client_metadata",
+            "client metadata changed after the consent page was shown; restart authorization",
+        ))
 
     if (form.get("decision") or "").strip() != "approve":
         url = build_redirect(
@@ -926,6 +1058,7 @@ async def authorize_consent(request: Request) -> Response:
         delegation_edges=delegation_edges,
         named_services=named_services,
         account_scope=account_scope,
+        client_metadata=req.client.snapshot() if req.client is not None else {},
     )
     url = build_redirect(req.redirect_uri, {"code": code, "state": req.state, "iss": issuer})
     return RedirectResponse(url, status_code=302)
@@ -989,6 +1122,7 @@ async def _issue_tokens(
     named_services=None,
     refresh_token=None,
     account_scope=None,
+    client_metadata=None,
 ) -> JSONResponse:
     tenant, project = oauth_tenant_project(request)
     # This is the common credential envelope understood by the Connection Hub
@@ -1061,6 +1195,7 @@ async def _issue_tokens(
             delegation_edges=list(delegation_edges or []),
             named_services=dict(named_services or {}),
             registry_access_id=registry_access_id,
+            client_metadata=dict(client_metadata or {}),
         )
     # Register the grant in the user's Connection Hub registry (Delegated by
     # KDCube tab) so the connection is visible and revocable. Registry write
@@ -1070,12 +1205,14 @@ async def _issue_tokens(
             AutomationAccessService,
         )
 
-        client_record = await store.get_client_record(client_id) or {}
-        client_metadata = dict(client_record.get("metadata") or {})
+        metadata_snapshot = dict(client_metadata or {})
+        if not metadata_snapshot:
+            client_record = await store.get_client_record(client_id) or {}
+            metadata_snapshot = dict(client_record.get("metadata") or {})
         client_label = str(
-            client_metadata.get("client_name")
-            or client_metadata.get("name")
-            or client_metadata.get("client_uri")
+            metadata_snapshot.get("client_name")
+            or metadata_snapshot.get("name")
+            or metadata_snapshot.get("client_uri")
             or ""
         ).strip()
         # A client registers ONE fixed name for every connector it opens (every
@@ -1087,7 +1224,7 @@ async def _issue_tokens(
         door_path = str(resource or "").split("?", 1)[0].rstrip("*").rstrip("/")
         if "/mcp/" in door_path:
             door_alias = door_path.rsplit("/mcp/", 1)[-1].strip("/")
-        registered_name = str(client_metadata.get("client_name") or "")
+        registered_name = str(metadata_snapshot.get("client_name") or "")
         if door_alias and door_alias.lower() not in client_label.lower():
             client_label = f"{client_label} · {door_alias}" if client_label else door_alias
         # Card naming is derived, not received: log every input so a wrong card
@@ -1096,7 +1233,7 @@ async def _issue_tokens(
         LOGGER.info(
             "[connection_hub.oauth] card_label client_id=%s registered_name=%r "
             "metadata_keys=%s resource=%r door_alias=%r -> label=%r",
-            client_id, registered_name, sorted(client_metadata.keys()),
+            client_id, registered_name, sorted(metadata_snapshot.keys()),
             str(resource or ""), door_alias, client_label,
         )
         service = AutomationAccessService(
@@ -1166,6 +1303,7 @@ async def token(request: Request) -> Response:
             delegation_edges=payload.get("delegation_edges") or [],
             named_services=payload.get("named_services") or {},
             account_scope=payload.get("account_scope") or None,
+            client_metadata=payload.get("client_metadata") or {},
         )
 
     if grant_type == "refresh_token":
@@ -1212,6 +1350,7 @@ async def token(request: Request) -> Response:
             delegation_edges=rec.get("delegation_edges") or [],
             named_services=rec.get("named_services") or {},
             refresh_token=new_rt,
+            client_metadata=rec.get("client_metadata") or {},
         )
 
     return _token_error("unsupported_grant_type", f"unsupported grant_type: {grant_type}")

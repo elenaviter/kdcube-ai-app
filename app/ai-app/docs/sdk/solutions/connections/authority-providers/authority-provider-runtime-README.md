@@ -4,7 +4,8 @@ title: "Authority Provider Runtime"
 summary: "Canonical Connection Hub runtime contract for authenticator selection, authority-scoped identities, linkers, grant resolvers, and surface guards."
 status: design
 tags: ["sdk", "solutions", "connections", "connection-hub", "authority-provider", "authenticator-selector", "surface-guard", "grants"]
-updated_at: 2026-07-03
+updated_at: 2026-07-30
+keywords: ["authority provider", "authenticator selection", "surface guard", "credential envelope", "MCP connector metadata", "KDCubeMCPServer"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/credential-envelope-README.md
@@ -780,7 +781,7 @@ For MCP clients, authority-provider metadata is not enough for a good UX. The
 MCP server should also advertise connector metadata:
 
 ```text
-FastMCP(..., stateless_http=True, icons=[...], website_url=..., instructions=...)
+KDCubeMCPServer(..., stateless_http=True, icons=[...], website_url=..., instructions=...)
 tool annotations: readOnlyHint / destructiveHint / idempotentHint
 ```
 

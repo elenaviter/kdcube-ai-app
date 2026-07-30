@@ -4,7 +4,7 @@ title: "How To Assemble A Bundle With SDK Building Blocks"
 summary: "Tier 1 bundle-builder map for choosing reusable KDCube SDK and platform blocks before writing custom bundle services: tools, event sources, agents, storage, widgets, jobs, integrations, and solutions."
 tags: ["sdk", "bundle", "tier-1", "building-blocks", "integrations", "solutions", "tools"]
 keywords: ["bundle building blocks", "sdk integrations", "sdk solutions", "bundle assembly map", "reuse sdk components", "surface first app design", "as consumer", "as provider", "mcp consumer surface", "mcp provider surface", "per-agent mcp allow-list", "telegram integration", "email integration", "automations solution", "delivery integration", "shared sdk widget components", "built in tools", "react tools", "bundle events", "event sources", "artifact rehosters"]
-updated_at: 2026-07-16
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/what-i-should-know-about-app-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
@@ -111,7 +111,7 @@ and tests. An app may be MCP-only, API-only, widget-only, or backend-only.
   explicit `kind: mcp` entry and concrete `allowed` tool list under
   `surfaces.as_consumer.agents.<agent>.tools`.
 - **Provide MCP:** expose ordinary async domain operations through a stateless
-  FastMCP app and `@mcp(...)`; put the boundary policy under
+  `KDCubeMCPServer` and `@mcp(...)`; put the boundary policy under
   `surfaces.as_provider.mcp.<alias>.auth` and choose its real owner: public,
   app-owned (`mode: bundle`), or platform-managed (`mode: managed`).
 

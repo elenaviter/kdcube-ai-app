@@ -295,7 +295,7 @@ paths:
       description: |
         Stateless streamable-HTTP MCP endpoint. The managed MCP guard validates
         the delegated credential, resource, selected tool, and grants before
-        FastMCP dispatch. Tool schemas are authoritative through `tools/list`.
+        MCP server dispatch. Tool schemas are authoritative through `tools/list`.
       operationId: conversations_mcp
       security:
         - DelegatedBearerAuth: []

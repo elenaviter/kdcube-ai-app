@@ -79,19 +79,18 @@ def build_named_services_mcp_app(
     """Build the managed MCP surface for configured KDCube named services."""
 
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
         from mcp.types import Icon, ToolAnnotations
     except Exception as exc:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from exc
 
     # The proc MCP bridge dispatches every HTTP exchange independently.
-    # Stateless FastMCP keeps initialize/tools/list/tools/call valid across
-    # fresh app instances and distributed proc workers.
+    # Stateless HTTP keeps both modern and legacy calls valid across fresh app
+    # instances and distributed proc workers.
     icons = kdcube_mcp_icons(Icon, request=request)
-    mcp = FastMCP(
+    mcp = KDCubeMCPServer(
         name,
         instructions=NAMED_SERVICES_MCP_INSTRUCTIONS,
-        stateless_http=True,
         icons=icons,
         website_url=kdcube_website_url(request=request),
     )

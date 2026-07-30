@@ -389,7 +389,9 @@ def result_payload_from_call_tool(result: Any) -> Mapping[str, Any]:
     (``runtime/mcp/mcp_adapter.py``). Returns ``{}`` when nothing parses, so the
     classifier still receives a mapping.
     """
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
+    if structured is None:
+        structured = getattr(result, "structuredContent", None)
     if isinstance(structured, Mapping):
         return structured
 

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Elena Viter
 
-"""Descriptor-backed configuration for the OAuth delegated credential delegated credential adapter."""
+"""Descriptor-backed configuration for the OAuth delegated credential adapter."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -34,11 +34,28 @@ class OAuthDelegatedPublicClientConfig:
     client_id: str
     redirect_uris: tuple[str, ...]
     token_endpoint_auth_method: str = "none"
+    application_type: str = "native"
+    client_name: str = ""
+    client_uri: str = ""
+    logo_uri: str = ""
 
 
 @dataclass(frozen=True)
 class OAuthDelegatedDynamicClientRegistrationConfig:
     allowed_redirect_uris: tuple[str, ...]
+    enabled: bool = True
+    default_application_type: str = "native"
+
+
+@dataclass(frozen=True)
+class OAuthDelegatedClientMetadataDocumentsConfig:
+    enabled: bool = True
+    allowed_domains: tuple[str, ...] = ()
+    allow_subdomains: bool = True
+    fetch_timeout_seconds: float = 5.0
+    max_document_bytes: int = 5 * 1024
+    cache_ttl_seconds: int = 3600
+    cache_max_ttl_seconds: int = 24 * 3600
 
 
 @dataclass(frozen=True)
@@ -114,6 +131,7 @@ class OAuthDelegatedClientConfig:
     consent_ui: OAuthDelegatedConsentUIConfig
     public_clients: tuple[OAuthDelegatedPublicClientConfig, ...]
     dynamic_client_registration: OAuthDelegatedDynamicClientRegistrationConfig
+    client_id_metadata_documents: OAuthDelegatedClientMetadataDocumentsConfig
     capabilities: tuple[OAuthDelegatedCapabilityConfig, ...]
     resources: tuple[OAuthDelegatedResourceConfig, ...]
 
@@ -234,6 +252,22 @@ def _coerce_string_tuple(value: Any) -> tuple[str, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(str(item).strip() for item in value if str(item).strip())
     return ()
+
+
+def _coerce_int(value: Any, default: int, *, minimum: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, parsed)
+
+
+def _coerce_float(value: Any, default: float, *, minimum: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, parsed)
 
 
 def _ordered_union(values: Any) -> tuple[str, ...]:
@@ -432,6 +466,10 @@ def _parse_public_clients(raw: Any) -> tuple[OAuthDelegatedPublicClientConfig, .
                 client_id=client_id,
                 redirect_uris=redirects,
                 token_endpoint_auth_method=_coerce_str(item.get("token_endpoint_auth_method")) or "none",
+                application_type=_coerce_str(item.get("application_type")) or "native",
+                client_name=_coerce_str(item.get("client_name")) or "",
+                client_uri=_coerce_str(item.get("client_uri")) or "",
+                logo_uri=_coerce_str(item.get("logo_uri")) or "",
             )
         )
     return tuple(clients)
@@ -473,6 +511,8 @@ def _parse_config(raw: Any, *, settings: Any | None = None) -> OAuthDelegatedCli
     dcr = node.get("dynamic_client_registration")
     dcr_node = dcr if isinstance(dcr, Mapping) else {}
     allowed_redirects = _coerce_string_tuple(dcr_node.get("allowed_redirect_uris")) or DEFAULT_DCR_REDIRECT_URIS
+    cimd = node.get("client_id_metadata_documents")
+    cimd_node = cimd if isinstance(cimd, Mapping) else {}
 
     tenant = _coerce_str(node.get("tenant")) or _coerce_str(getattr(settings, "TENANT", None)) or "home"
     project = _coerce_str(node.get("project")) or _coerce_str(getattr(settings, "PROJECT", None)) or "demo"
@@ -490,6 +530,27 @@ def _parse_config(raw: Any, *, settings: Any | None = None) -> OAuthDelegatedCli
         public_clients=_parse_public_clients(node.get("public_clients")),
         dynamic_client_registration=OAuthDelegatedDynamicClientRegistrationConfig(
             allowed_redirect_uris=allowed_redirects,
+            enabled=_coerce_bool(dcr_node.get("enabled"), True),
+            default_application_type=(
+                _coerce_str(dcr_node.get("default_application_type")) or "native"
+            ),
+        ),
+        client_id_metadata_documents=OAuthDelegatedClientMetadataDocumentsConfig(
+            enabled=_coerce_bool(cimd_node.get("enabled"), True),
+            allowed_domains=_coerce_string_tuple(cimd_node.get("allowed_domains")),
+            allow_subdomains=_coerce_bool(cimd_node.get("allow_subdomains"), True),
+            fetch_timeout_seconds=_coerce_float(
+                cimd_node.get("fetch_timeout_seconds"), 5.0, minimum=0.1
+            ),
+            max_document_bytes=_coerce_int(
+                cimd_node.get("max_document_bytes"), 5 * 1024, minimum=1024
+            ),
+            cache_ttl_seconds=_coerce_int(
+                cimd_node.get("cache_ttl_seconds"), 3600, minimum=1
+            ),
+            cache_max_ttl_seconds=_coerce_int(
+                cimd_node.get("cache_max_ttl_seconds"), 24 * 3600, minimum=1
+            ),
         ),
         capabilities=_parse_capabilities(node.get("capabilities")),
         resources=_parse_resources(node.get("resources")),
@@ -497,7 +558,7 @@ def _parse_config(raw: Any, *, settings: Any | None = None) -> OAuthDelegatedCli
 
 
 def oauth_delegated_config(source: Any | None = None) -> OAuthDelegatedClientConfig:
-    """Resolve OAuth delegated credential delegated-credential config from app state or assembly.
+    """Resolve OAuth delegated-credential config from app state or assembly.
 
     Tests may set ``app.state.oauth_delegated_config`` to a mapping or ``OAuthDelegatedClientConfig``.
     Connection Hub mounts this adapter by setting a request-local config from

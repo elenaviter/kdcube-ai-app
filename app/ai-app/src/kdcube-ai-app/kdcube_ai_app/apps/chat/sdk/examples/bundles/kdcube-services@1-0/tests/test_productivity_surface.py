@@ -124,7 +124,7 @@ async def test_surface_builds_with_declared_tool_roster():
     tools = {tool.name for tool in await app.list_tools()}
     assert tools == ALL_TOOLS
 
-    schemas = {tool.name: tool.inputSchema for tool in await app.list_tools()}
+    schemas = {tool.name: tool.input_schema for tool in await app.list_tools()}
     assert schemas["productivity_sheets_search"]["properties"]["query"]["description"]
     assert schemas["productivity_sheets_read"]["properties"]["ranges"]["description"]
     assert schemas["productivity_sheets_update_values"]["properties"]["updates"][

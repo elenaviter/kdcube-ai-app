@@ -189,8 +189,8 @@ bundles:
                   #   allowed: [web_search, web_fetch]
                   # ── MCP tools (optional) ─────────────────────────────────
                   # Declare a KDCube-served MCP endpoint as a `kind: mcp` connection to
-                  # bind its tools (via langchain-mcp-adapters; degrades to none if the
-                  # lib/endpoint is unavailable). Reached over streamable_http.
+                  # bind its tools through the platform MCP adapter. An unreachable
+                  # optional endpoint contributes no tools. Reached over streamable_http.
                   #
                   # STATIC auth — a fixed bearer for a protected endpoint:
                   # - name: knowledge

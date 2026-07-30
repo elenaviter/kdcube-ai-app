@@ -97,10 +97,17 @@ bundles:
               - "http://127.0.0.1/callback"
               - "https://claude.ai/api/mcp/auth_callback"
             dynamic_client_registration:
+              enabled: true
               allowed_redirect_uris:
               - "https://claude.ai/api/mcp/auth_callback"
               - "http://localhost/callback"
               - "http://127.0.0.1/callback"
+            client_id_metadata_documents:
+              enabled: true
+              # Empty permits any public HTTPS metadata host. Set domains to
+              # narrow this deployment to operator-approved client publishers.
+              allowed_domains: []
+              allow_subdomains: true
             capabilities:
             - grant: "kdcube:role:super-admin"
               label: "Use all platform and application APIs"

@@ -1041,7 +1041,7 @@ async def test_email_mcp_token_is_task_scoped_and_verifiable(tmp_path, monkeypat
         request=SimpleNamespace(headers={mcp_mod.EMAIL_MCP_TOKEN_HEADER: prepared["token"]}),
         storage_root=tmp_path,
     )
-    assert getattr(mcp_app.settings, "stateless_http", False) is True
+    assert mcp_app.kdcube_stateless_http is True
 
 
 def test_email_mcp_task_state_is_user_task_account_scoped(tmp_path):

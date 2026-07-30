@@ -6,8 +6,8 @@
 Framework-neutral. Given a bundle's declared ``kind: mcp`` tool connections and
 the current turn's user, this produces the standard MCP server map —
 ``{server_id: {url, transport, headers}}`` — that any MCP client consumes
-(``langchain-mcp-adapters``'s ``MultiServerMCPClient``, the platform's own
-``runtime/mcp`` adapter, a raw client). It is the ONE place the delegated
+(KDCube's LangChain binding, the platform's ``runtime/mcp`` adapter, or a raw
+client). It is the ONE place the delegated
 per-user bearer is minted and injected, so every hosted agent (any framework)
 reaches a delegated KDCube ``@mcp`` surface the same way.
 
@@ -181,6 +181,10 @@ async def resolve_mcp_server_map(
             "url": url,
             "transport": conn.get("transport") or "streamable_http",
         }
+        if conn.get("protocol_mode") is not None:
+            entry["protocol_mode"] = str(conn.get("protocol_mode") or "auto")
+        if conn.get("read_timeout_seconds") is not None:
+            entry["read_timeout_seconds"] = float(conn["read_timeout_seconds"])
         headers: Dict[str, Any] = dict(conn.get("headers") or {})
 
         if is_delegated_connection(conn):

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html as _html
 from typing import Any, Iterable, List, Mapping, Tuple
+from urllib.parse import urlsplit
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.account_requirements import (
     AccountRequirements,
@@ -22,6 +23,11 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
     OAuthDelegatedClientConfig,
     oauth_delegated_config,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.clients import (
+    CLIENT_REGISTRATION_DYNAMIC,
+    CLIENT_REGISTRATION_METADATA_DOCUMENT,
+    CLIENT_REGISTRATION_PRE_REGISTERED,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.flow import AuthorizeRequest
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.boundary_policy import (
@@ -539,13 +545,29 @@ def render_consent_html(
         f'Connection Hub &#8594; Delegated by KDCube &#8599;</a> — narrow, extend, or revoke it there anytime.</p>\n'
     ) if hub_base else ""
 
-    # Never present an arbitrary client with a hardcoded trusted brand. Show the
-    # exact client_id + where the code will be sent, and flag clients that are not
-    # pre-registered so a phishing link to /oauth/authorize is recognizable.
-    if trusted:
+    client = req.client
+    registration_kind = (
+        client.registration_kind if client is not None else CLIENT_REGISTRATION_DYNAMIC
+    )
+    client_name = str(client.client_name or "").strip() if client is not None else ""
+    client_uri = str(client.client_uri or "").strip() if client is not None else ""
+    if registration_kind == CLIENT_REGISTRATION_PRE_REGISTERED or trusted:
         trust_badge = '<span class="badge ok">pre-registered client</span>'
+    elif registration_kind == CLIENT_REGISTRATION_METADATA_DOCUMENT:
+        metadata_host = urlsplit(req.client_id).hostname or req.client_id
+        trust_badge = (
+            '<span class="badge ok">metadata published by '
+            f'{esc(metadata_host)}</span>'
+        )
     else:
-        trust_badge = '<span class="badge warn">⚠ newly registered &mdash; verify you started this</span>'
+        trust_badge = '<span class="badge warn">dynamically registered &mdash; verify you started this</span>'
+    redirect_host = urlsplit(req.redirect_uri).hostname or req.redirect_uri
+    localhost_warning = ""
+    if redirect_host in {"localhost", "127.0.0.1", "::1"}:
+        localhost_warning = (
+            '<p class="warn-text"><strong>Local callback:</strong> approve only if you started '
+            'the client on this device. Another local process could otherwise receive the code.</p>'
+        )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -681,10 +703,12 @@ def render_consent_html(
     <h1>Authorize an MCP connection to {esc(brand)}</h1>
     <p class="sub">An application is requesting access to this workspace's data over MCP.</p>
     <div class="details">
-      <div class="row"><span class="k">Client</span> <span><code>{esc(req.client_id)}</code> {trust_badge}</span></div>
-      <div class="row"><span class="k">Sends code to</span> <code>{esc(req.redirect_uri)}</code></div>
+      <div class="row"><span class="k">Client</span> <span>{f'<strong>{esc(client_name)}</strong> ' if client_name else ''}<code>{esc(req.client_id)}</code> {trust_badge}</span></div>
+      {f'<div class="row"><span class="k">Client site</span> <code>{esc(client_uri)}</code></div>' if client_uri else ''}
+      <div class="row"><span class="k">Sends code to</span> <span><code>{esc(req.redirect_uri)}</code><br><span class="desc">Host: {esc(redirect_host)}</span></span></div>
       <div class="row"><span class="k">Scope</span> <span class="scope">{scope_list}</span></div>
     </div>
+{localhost_warning}
     <p class="warn-text">Only approve if <strong>you</strong> started this connection and recognize the
     client and the redirect URL above. The connection can receive only the scopes and capabilities
     you approve here, and only if your KDCube account is allowed to delegate them.</p>

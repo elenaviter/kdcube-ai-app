@@ -77,6 +77,8 @@ def test_mcp_services_config_accepts_dict_payload():
             "docs": {
                 "transport": "http",
                 "url": "https://mcp.example.com",
+                "protocol_mode": "legacy",
+                "read_timeout_seconds": 17.5,
                 "auth": {"type": "bearer", "secret": "bundles.react.mcp@2026-03-09.secrets.docs.token"},
             }
         }
@@ -91,6 +93,8 @@ def test_mcp_services_config_accepts_dict_payload():
     assert server is not None
     assert server.transport == "http"
     assert server.endpoint == "https://mcp.example.com"
+    assert server.protocol_mode == "legacy"
+    assert server.read_timeout_seconds == 17.5
     assert server.auth_profile == {"type": "bearer", "secret": "bundles.react.mcp@2026-03-09.secrets.docs.token"}
 
 

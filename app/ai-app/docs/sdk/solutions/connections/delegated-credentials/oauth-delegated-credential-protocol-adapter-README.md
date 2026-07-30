@@ -1,9 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
 title: "OAuth Delegated Credential Protocol Adapter"
-summary: "How the OAuth2 protocol adapter issues and verifies delegated Connection Hub credentials for least-privilege external client access."
+summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, then issues and verifies least-privilege Connection Hub credentials."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
-keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "dynamic client registration", "tool consent", "feedback reader", "descriptor configuration"]
+keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "descriptor configuration"]
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
@@ -49,6 +50,33 @@ The key split is:
 | Integration authorization | KDCube OAuth2 AS | User consents to descriptor-configured grants and resource tools they are allowed to delegate. |
 | Integration execution | KDCube protected resource server | External client calls allowed resource tools with a least-privilege token. |
 
+## Three Client Registration Paths
+
+KDCube resolves an OAuth client in this order:
+
+1. **Pre-registered client.** `public_clients` in the Connection Hub descriptor
+   supplies a stable client id and callback set.
+2. **Client ID Metadata Document (CIMD).** An HTTPS URL used as `client_id`
+   identifies and hosts the public client's metadata. This is the current MCP
+   registration path for clients that support URL-based registration.
+3. **Dynamic Client Registration (DCR).** A client first calls
+   `/oauth/register`; KDCube stores the generated `dcr-...` client id. This path
+   remains available for existing clients and can be disabled independently.
+
+All three paths lead into the same PKCE, consent, grant, token, refresh, and
+revocation machinery. Registration does not grant authority. It establishes
+the client identity and valid callback URIs that the user sees before deciding
+what to delegate.
+
+CIMD resolution is an SSRF-sensitive server operation. KDCube accepts HTTPS
+metadata URLs with a path, resolves every address before connecting, rejects
+non-public addresses and redirects, pins the approved addresses for the
+request, sends no ambient credentials or cookies, and limits the decoded JSON
+document to 5 KiB by default. The document's `client_id` must exactly equal its
+URL, only public clients using PKCE are accepted, and callback matching is
+exact. Valid documents may be cached according to response cache headers;
+network errors and malformed documents are never cached.
+
 ## Runtime Shape
 
 ```
@@ -73,16 +101,16 @@ Client learns:
   resource               = concrete bundle MCP URL
 
 
-Client dynamic registration, when used
+Client registration resolution
   |
-  | 2. POST /oauth/register
-  |    redirect_uris = client callback URIs
+  | 2a. match a descriptor pre-registration
+  | 2b. resolve an HTTPS Client ID Metadata Document
+  | 2c. or, for a DCR client, POST /oauth/register first
   v
-KDCube DCR allowlist check
+Validated public OAuth client
   |
-  | only descriptor-allowed redirect URIs are accepted
+  | client identity + callback set; no resource authority yet
   v
-Public OAuth client record
 
 
 Human consent
@@ -104,6 +132,7 @@ User consent page
   |
   | 5. User approves platform delegation grants and selected operation set
   |    CSRF token is single-use and bound to grantor subject
+  |    displayed client metadata is fingerprinted and rechecked on submit
   v
 Authorization code
   |
@@ -258,8 +287,10 @@ no matching selected operation must fail closed.
 ## Descriptor Contract
 
 This is a Connection Hub delegated-credential protocol adapter. OAuth metadata,
-authorization, token, refresh, and dynamic-client-registration routes are served
-by the `connection-hub@1-0` bundle public operation:
+authorization, token, refresh, revocation, and optional DCR routes are served by
+the `connection-hub@1-0` bundle public operation. CIMD uses the authorization
+route and the client-provided HTTPS metadata URL; it does not add a KDCube
+registration endpoint:
 
 ```text
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth
@@ -298,15 +329,29 @@ bundles:
               issuer: ""
               public_clients:
                 - client_id: "claude"
+                  client_name: "Claude"
+                  application_type: "native"
                   redirect_uris:
                     - "https://claude.ai/api/mcp/auth_callback"
                     - "http://localhost/callback"
                     - "http://127.0.0.1/callback"
               dynamic_client_registration:
+                enabled: true
+                default_application_type: "native"
                 allowed_redirect_uris:
                   - "https://claude.ai/api/mcp/auth_callback"
                   - "http://localhost/callback"
                   - "http://127.0.0.1/callback"
+              client_id_metadata_documents:
+                enabled: true
+                # Empty means any public HTTPS metadata host may identify a
+                # client. Set domains to narrow publishers for this deployment.
+                allowed_domains: []
+                allow_subdomains: true
+                fetch_timeout_seconds: 5.0
+                max_document_bytes: 5120
+                cache_ttl_seconds: 3600
+                cache_max_ttl_seconds: 86400
               capabilities:
                 - grant: "memories:read"
                   label: "Read memories"
@@ -442,19 +487,36 @@ Rules:
   requests.
 - `issuer` is the public origin advertised in OAuth metadata. If omitted, local
   development derives it from the mounted Connection Hub public operation URL.
-- `public_clients[*].redirect_uris` configures known public clients.
+- `public_clients[*]` configures known public clients. Their
+  `redirect_uris`, `application_type`, and optional display metadata are owned
+  by the descriptor.
+- `client_id_metadata_documents.enabled` advertises and accepts HTTPS URL
+  client ids. `allowed_domains` is an optional publisher allowlist; an empty
+  list keeps the open CIMD model while the resolver still enforces public
+  addresses, HTTPS, no redirects, bounded bodies, and exact client-id and
+  callback matching. Cache settings apply only to valid documents. Errors and
+  malformed documents are fetched again on the next authorization attempt.
+- `dynamic_client_registration.enabled` controls whether `/oauth/register` is
+  advertised and served. Keep it enabled while clients still use DCR; disable
+  it only after those clients have migrated to pre-registration or CIMD.
 - `dynamic_client_registration.allowed_redirect_uris` constrains pre-auth
   dynamic client registration. Registration runs before any user has
   authenticated, so this allowlist is the defense that keeps an attacker from
   registering a "client" whose redirect points at their own server: a stolen
   authorization code can only be delivered to a known app callback or to the
   user's own machine.
-- Redirect URI matching follows RFC 8252: loopback redirects (`localhost`,
+- Pre-registered and DCR native-client redirect matching follows RFC 8252:
+  loopback redirects (`localhost`,
   `127.0.0.1`, `::1`) match on **any port**, because a native client binds a
   dynamic local port for its callback — but scheme, host, and path must match
   an allowlisted entry exactly. All non-loopback redirects must match exactly,
   including the port. Implementation: `redirect_uri_allowed()` in
   `kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/oauth/clients.py`.
+- CIMD callback matching is exact for every redirect URI, including loopback
+  ports. The metadata document must publish the concrete callback the client
+  sends. Web-client callbacks must use HTTPS. Native-client callbacks may use
+  HTTPS or HTTP on `localhost`, `127.0.0.1`, or `::1`; other schemes and
+  duplicate callback entries are rejected before consent.
 - Practical consequence for native MCP clients: an entry like
   `http://localhost/callback` admits `http://localhost:52791/callback`, but not
   `http://localhost:52791/auth/callback` — a client whose callback uses a
@@ -554,6 +616,11 @@ named — never the provider-connect tab, whose state is not the problem.
   matches (the app's stable identity across re-registrations). The sibling
   donates its per-account binding to the new card, then is revoked. Statically
   registered client ids are keyed stably and never pile up.
+- **CIMD identity is stable at the URL.** The client id is the metadata URL,
+  so reconnects address the same client identity. The consent POST re-resolves
+  the client and compares a digest of the metadata shown to the user; a change
+  requires a fresh authorization page instead of silently approving different
+  callbacks or display metadata.
 - **Refresh rotations preserve the card.** Re-registration on token issuance
   merges the card's existing grants and per-account binding (a rotation never
   wipes the user's ticks), and rotated refresh records keep the registry-card
@@ -568,7 +635,8 @@ store, normally Redis.
 | Record | Purpose | Lifetime |
 |---|---|---|
 | Dynamic client record | Stores registered public client metadata and redirect URIs. | Until registration expiry or cleanup policy. |
-| CSRF token | Single-use consent POST protection bound to grantor subject. | Short TTL. |
+| Valid CIMD cache entry | Stores one validated public client snapshot. Errors and malformed documents are not cached. | Response cache policy, capped by descriptor TTL. |
+| CSRF token | Single-use consent POST protection bound to grantor subject plus client metadata digest. | Short TTL. |
 | Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations, delegation edges, and grantor authority facts captured at consent. | Short TTL, single use. |
 | Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope, delegation edges, and server-side grantor authority facts. | Same TTL as access token. |
 | Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, delegation edges, grantor authority facts, and rotation state. | Long-lived, rotating. |
@@ -585,7 +653,10 @@ records disappear. The solution-level durability design note is
 |---|---|
 | No platform session on Connection Hub `/public/oauth/authorize` | `login_required`; client must start from an authenticated browser session. |
 | Authenticated user lacks the configured delegable role/permission for a requested grant | `forbidden`; the user can only delegate grants allowed by descriptor policy. |
+| DCR is disabled | `/oauth/register` is not advertised and returns `404`; pre-registered and CIMD clients continue to work. |
 | DCR redirect URI is not allowlisted | `invalid_redirect_uri`; client is not registered. |
+| CIMD URL resolves to a private address, redirects, exceeds the size cap, or returns malformed metadata | Authorization fails closed; the failed document is not cached. |
+| CIMD metadata changes after the consent page is shown | Consent submit fails and the client must restart authorization. |
 | Bad redirect URI on authorize/token | Request fails; codes are not delivered to unvalidated redirects. |
 | Missing or invalid PKCE verifier | Token request fails with `invalid_grant`. |
 | Token has grant but no selected operation | Bundle MCP `tools/call` fails closed. |
@@ -677,9 +748,13 @@ named_services_list
   -> named_services_search / named_services_get / named_services_upsert / ...
 ```
 
-The FastMCP apps are built with `stateless_http=True`, because current bundle
-MCP requests are dispatched request-by-request through proc workers. Protocol
-session state is not stored in a bundle-local FastMCP object.
+MCP apps return `KDCubeMCPServer`, whose proc-serving default is
+`stateless_http=True`. Requests are dispatched independently through proc
+workers, so protocol session state is not stored in one bundle-local server
+object. The SDK v2 server accepts both the MCP 2026-07-28 discovery flow and
+legacy `initialize` clients; this wire negotiation is independent of whether
+the OAuth client was pre-registered, resolved through CIMD, or registered by
+DCR.
 
 For connector UX, MCP apps should advertise:
 
@@ -876,34 +951,44 @@ the provider token never enters the delegated-client bearer.
 Use focused tests and one live connector test.
 
 1. Connection Hub OAuth metadata routes return issuer, authorization endpoint,
-   token endpoint, registration endpoint, and concrete protected-resource
-   metadata.
-2. DCR accepts only descriptor-allowed redirect URIs.
-3. Authorization requires an authenticated platform session.
-4. Consent POST validates CSRF and re-validates client, redirect URI, and PKCE.
-5. Token issue stores selected operations and nested named-service catalogs on both
+   token endpoint, conditional registration endpoint, CIMD capability flag,
+   and concrete protected-resource metadata.
+2. Pre-registered clients resolve without a network metadata fetch.
+3. A valid CIMD client resolves only from a public HTTPS endpoint, uses exact
+   callback matching, and is cached only when its response permits caching.
+4. CIMD redirects, private addresses, oversized or malformed documents, and
+   metadata changes between display and approval fail closed; failures are not
+   cached.
+5. DCR accepts only descriptor-allowed redirect URIs and remains usable when
+   explicitly enabled.
+6. Authorization requires an authenticated platform session.
+7. Consent POST validates CSRF and re-validates client, redirect URI, PKCE, and
+   the client metadata snapshot shown to the user.
+8. Token issue stores selected operations and nested named-service catalogs on both
    access grant and refresh record.
-6. Refresh rotation preserves selected operations and nested named-service catalogs.
-7. Integration token without a selected-operation grant fails closed at the managed
+9. Refresh rotation preserves selected operations and nested named-service catalogs.
+10. Integration token without a selected-operation grant fails closed at the managed
    bundle MCP guard.
-8. Users can consent only to grants permitted by the Connection Hub descriptor
+11. Users can consent only to grants permitted by the Connection Hub descriptor
    (`delegable_roles` / `delegable_permissions`).
-9. Bundle MCP `tools/list` and `tools/call` return MCP-shaped responses, not
+12. Bundle MCP modern discovery and legacy initialization both reach the same
+    stateless server and tool catalog.
+13. Bundle MCP `tools/list` and `tools/call` return MCP-shaped responses, not
    unhandled HTTP 500s for authorization failures.
-10. `named_services` advertises server instructions that tell clients to call
+14. `named_services` advertises server instructions that tell clients to call
     `named_services_list` first and then inspect capabilities/schema.
-11. MCP server icon metadata resolves to the KDCube favicon, and
+15. MCP server icon metadata resolves to the KDCube favicon, and
     `ToolAnnotations` split read-only tools from write/action/delete tools in
     clients that honor MCP annotations.
-12. Manual automation access to a named-services resource stores only selected
+16. Manual automation access to a named-services resource stores only selected
     namespace operations; sibling operations and namespaces fail at the bridge.
-13. Removing a required domain or MCP-entry grant clears/rejects its selected
+17. Removing a required domain or MCP-entry grant clears/rejects its selected
     namespace operation.
-14. A missing provider-account claim fails independently without exposing the
+18. A missing provider-account claim fails independently without exposing the
     provider credential to the delegated client.
-15. The feature is disabled when
+19. The feature is disabled when
     `connection-hub@1-0.config.connections.delegated_credentials.oauth.enabled: false`.
-16. The "Accounts this connection needs" panel resolves a hard provider claim
+20. The "Accounts this connection needs" panel resolves a hard provider claim
     (`sheets:read` → a Google row) and an any-of door claim (`mail:read` → one
     "connect one of" choice over its `connected_accounts` options), folds a door
     claim into a hard-required provider, and treats a door claim already backed

@@ -7,12 +7,18 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
-import inspect
 import logging
 import os
+
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import (
+    mcp_tool_schema,
+    normalize_mcp_tool_result,
+    open_mcp_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +33,8 @@ class MCPServerSpec:
     args: List[str] = field(default_factory=list)
     env: Optional[Dict[str, str]] = None
     auth_profile: Optional[Dict[str, Any]] = None
+    protocol_mode: str = "auto"
+    read_timeout_seconds: Optional[float] = None
 
 
 @dataclass
@@ -74,7 +82,7 @@ class PythonSDKMCPAdapter:
 
     async def list_tools(self) -> List[MCPToolSchema]:
         logger.info("MCP adapter list_tools: server=%s transport=%s opening session", self.server.server_id, self.server.transport)
-        async with await self._session() as session:
+        async with self._session() as session:
             logger.info("MCP adapter list_tools: server=%s session ready, sending ListToolsRequest", self.server.server_id)
             resp = await session.list_tools()
             tools = [self._tool_from_sdk(t) for t in (getattr(resp, "tools", []) or [])]
@@ -89,34 +97,21 @@ class PythonSDKMCPAdapter:
         trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         logger.info("MCP adapter call_tool: server=%s tool=%s opening session", self.server.server_id, tool_id)
-        async with await self._session() as session:
+        async with self._session() as session:
             logger.info("MCP adapter call_tool: server=%s tool=%s session ready, calling", self.server.server_id, tool_id)
             result = await session.call_tool(tool_id, params or {})
             logger.info("MCP adapter call_tool: server=%s tool=%s call completed", self.server.server_id, tool_id)
-            # Prefer structuredContent if present, otherwise return raw content blocks
-            structured = getattr(result, "structuredContent", None)
-            if structured is not None:
-                return structured
-            return {
-                "content": [
-                    {"type": getattr(b, "type", None), "text": getattr(b, "text", None)}
-                    for b in (getattr(result, "content", []) or [])
-                ],
-            }
+            return normalize_mcp_tool_result(result)
 
     def _tool_from_sdk(self, tool: Any) -> MCPToolSchema:
-        # tool can be pydantic or dataclass-like
-        tool_id = getattr(tool, "name", None) or getattr(tool, "id", None) or ""
-        desc = getattr(tool, "description", None) or ""
-        schema = getattr(tool, "inputSchema", None) or getattr(tool, "params_schema", None) or {}
-        if hasattr(schema, "model_dump"):
-            schema = schema.model_dump()
+        normalized = mcp_tool_schema(tool)
+        tool_id = normalized["name"]
         return MCPToolSchema(
             id=str(tool_id),
             name=str(tool_id),
-            description=str(desc),
-            params_schema=schema if isinstance(schema, dict) else {},
-            returns_schema=None,
+            description=str(normalized["description"]),
+            params_schema=normalized["input_schema"],
+            returns_schema=normalized["output_schema"],
             tags=None,
         )
 
@@ -154,22 +149,8 @@ class PythonSDKMCPAdapter:
             return {str(header): str(token)}
         return {}
 
-    async def _session(self):
-        transport = (self.server.transport or "stdio").strip().lower()
-        if transport in {"stdio", "local"}:
-            return _stdio_session(self.server, env=await _resolve_stdio_env(self.server))
-        if transport in {"sse"}:
-            return _sse_session(self.server, headers=await self._auth_headers())
-        if transport in {"streamable-http", "streamable_http", "http"}:
-            return _streamable_http_session(self.server, headers=await self._auth_headers())
-        return _stdio_session(self.server, env=await _resolve_stdio_env(self.server))
-
-
-def _supports_kwarg(fn, name: str) -> bool:
-    try:
-        return name in inspect.signature(fn).parameters
-    except Exception:
-        return False
+    def _session(self):
+        return _adapter_client_context(self)
 
 
 async def _resolve_secret_ref(value: str) -> str:
@@ -232,68 +213,20 @@ async def _resolve_stdio_env(server: MCPServerSpec) -> dict | None:
     return env
 
 
-def _stdio_session(server: MCPServerSpec, *, env: dict | None):
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _cm():
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        params = StdioServerParameters(
-            command=server.command or "",
-            args=server.args or [],
-            env=env,
-        )
-        async with stdio_client(params) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
-    return _cm()
-
-
-def _sse_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _cm():
-        from mcp import ClientSession
-        from mcp.client.sse import sse_client
-        kwargs = {"url": server.endpoint}
-        if headers and _supports_kwarg(sse_client, "headers"):
-            kwargs["headers"] = headers
-        async with sse_client(**kwargs) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
-    return _cm()
-
-
-def _streamable_http_session(server: MCPServerSpec, *, headers: Dict[str, str] | None):
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def _cm():
-        from mcp import ClientSession
-        client_fn = None
-        try:
-            from mcp.client.streamable_http import streamablehttp_client as _client_fn  # type: ignore
-            client_fn = _client_fn
-        except Exception:
-            try:
-                from mcp.client import streamable_http as _streamable_http  # type: ignore
-                client_fn = getattr(_streamable_http, "streamablehttp_client", None)
-            except Exception:
-                client_fn = None
-        if not client_fn:
-            raise ImportError("mcp streamable-http client is not available")
-        kwargs = {"url": server.endpoint}
-        if headers and _supports_kwarg(client_fn, "headers"):
-            kwargs["headers"] = headers
-        async with client_fn(**kwargs) as (read, write, *_rest):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                yield session
-    return _cm()
+@asynccontextmanager
+async def _adapter_client_context(adapter: PythonSDKMCPAdapter):
+    server = adapter.server
+    async with open_mcp_client(
+        transport=server.transport,
+        endpoint=server.endpoint,
+        command=server.command,
+        args=server.args,
+        env=await _resolve_stdio_env(server),
+        headers=await adapter._auth_headers(),
+        mode=server.protocol_mode,
+        read_timeout_seconds=server.read_timeout_seconds,
+    ) as client:
+        yield client
 
 
 class MCPToolsSubsystemLike(Protocol):

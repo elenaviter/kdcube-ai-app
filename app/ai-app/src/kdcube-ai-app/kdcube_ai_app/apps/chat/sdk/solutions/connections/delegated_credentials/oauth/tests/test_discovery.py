@@ -82,6 +82,7 @@ def test_well_known_authorization_server_served(client):
         client_uri=TEST_WEBSITE,
         icons=[TEST_ICON_DESCRIPTOR],
         scopes_supported=["records:read"],
+        client_id_metadata_document_supported=True,
     )
 
 
@@ -96,6 +97,7 @@ def test_well_known_openid_configuration_alias_served(client):
         client_uri=TEST_WEBSITE,
         icons=[TEST_ICON_DESCRIPTOR],
         scopes_supported=["records:read"],
+        client_id_metadata_document_supported=True,
     )
     assert data["registration_endpoint"] == f"{ISSUER}/oauth/register"
 

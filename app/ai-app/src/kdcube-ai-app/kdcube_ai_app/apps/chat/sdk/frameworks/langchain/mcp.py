@@ -5,28 +5,35 @@
 
 For any hosted LangGraph/LangChain agent: given a standard MCP server map —
 ``{server_id: {url, transport, headers}}`` — load its tools as LangChain
-``BaseTool``s via ``langchain-mcp-adapters``. Reusable by any bundle; the
+``BaseTool``s through KDCube's official-SDK adapter. Reusable by any bundle; the
 per-user delegated bearer (if any) is already resolved into ``headers`` by
 ``solutions/connections/delegated_mcp.resolve_mcp_server_map`` — this module
 knows nothing about delegated credentials, only the neutral server map.
 
 Degrades cleanly: returns ``[]`` (with a logged hint) when the map is empty,
-``langchain-mcp-adapters`` is not installed, or the endpoint is unreachable — so
-the agent is always buildable with its plain tools regardless of MCP state.
+the MCP/LangChain dependencies are unavailable, or the endpoint is unreachable,
+so the agent remains buildable with its plain tools regardless of MCP state.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
+
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import (
+    mcp_tool_schema,
+    normalize_mcp_tool_result,
+    open_mcp_client,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def mcp_adapters_available() -> bool:
-    """Whether the optional ``langchain-mcp-adapters`` package is importable."""
+    """Whether the official MCP SDK and LangChain tool API are importable."""
     try:
-        import langchain_mcp_adapters  # noqa: F401
+        from langchain_core.tools import StructuredTool  # noqa: F401
+        from mcp.client import Client  # noqa: F401
         return True
     except Exception:
         return False
@@ -50,39 +57,68 @@ async def load_mcp_tools_from_server_map(
         return []
     if not mcp_adapters_available():
         logger.warning(
-            "frameworks.langchain.mcp: langchain-mcp-adapters not installed; skipping "
-            "MCP tools. Install `langchain-mcp-adapters` (>=0.1.7) to enable them."
+            "frameworks.langchain.mcp: MCP SDK or LangChain tool support is not "
+            "installed; skipping MCP tools."
         )
         return []
-    try:
-        from langchain_mcp_adapters.client import MultiServerMCPClient  # lazy, optional
+    from langchain_core.tools import StructuredTool
 
-        client = MultiServerMCPClient(server_map)
-        tools = await client.get_tools()
-        logger.info(
-            "frameworks.langchain.mcp: loaded %d MCP tool(s) from %d server(s).",
-            len(tools), len(server_map),
-        )
-        tools = list(tools)
-        # Chat-side post-processing, applied ONCE here so EVERY MCP consumer
-        # inherits it (no bundle re-implements it): a KDCube MCP result's
-        # self-describing consent block becomes a chat banner, and a file
-        # becomes a card. Driven entirely by the result; a no-op for non-KDCube
-        # or non-consent results, so it is always safe to apply.
+    tools: List[Any] = []
+    server_errors: Dict[str, BaseException] = {}
+    for server_id, entry in server_map.items():
         try:
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_result import (
-                bind_chat_result_handling,
+            async with _open_server_entry(entry) as client:
+                listed = await client.list_tools()
+                for raw_tool in getattr(listed, "tools", None) or []:
+                    normalized = mcp_tool_schema(raw_tool)
+                    tool_name = normalized["name"]
+                    if not tool_name:
+                        continue
+
+                    async def _call_mcp_tool(
+                        _server_entry: Mapping[str, Any] = dict(entry),
+                        _tool_name: str = tool_name,
+                        **params: Any,
+                    ) -> Any:
+                        async with _open_server_entry(_server_entry) as call_client:
+                            result = await call_client.call_tool(_tool_name, params or {})
+                            return normalize_mcp_tool_result(result)
+
+                    tools.append(StructuredTool(
+                        name=tool_name,
+                        description=normalized["description"] or tool_name,
+                        args_schema=normalized["input_schema"],
+                        coroutine=_call_mcp_tool,
+                        metadata={"mcp_server_id": server_id},
+                    ))
+        except Exception as exc:  # noqa: BLE001 - one optional server must not break the graph
+            server_errors[server_id] = exc
+            logger.warning(
+                "frameworks.langchain.mcp: MCP tool load failed for %s (%s); "
+                "continuing without that server.",
+                server_id,
+                exc,
             )
 
-            tools = bind_chat_result_handling(tools)
-        except Exception:  # pragma: no cover - never fail a load over the wrapper
-            logger.info("frameworks.langchain.mcp: chat result-handling bind skipped", exc_info=True)
-        return tools
-    except Exception as e:  # noqa: BLE001 - never fail a build over an optional tool source
-        if error_sink is not None:
-            error_sink["_load_error"] = e
-        logger.warning("frameworks.langchain.mcp: MCP tool load failed (%s); continuing without.", e)
-        return []
+    if error_sink is not None and server_errors:
+        error_sink["_server_errors"] = server_errors
+        error_sink["_load_error"] = next(iter(server_errors.values()))
+
+    logger.info(
+        "frameworks.langchain.mcp: loaded %d MCP tool(s) from %d/%d server(s).",
+        len(tools), len(server_map) - len(server_errors), len(server_map),
+    )
+    # Chat-side post-processing, applied once so every MCP consumer inherits
+    # consent banners and file-card handling from self-describing results.
+    try:
+        from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_result import (
+            bind_chat_result_handling,
+        )
+
+        tools = bind_chat_result_handling(tools)
+    except Exception:  # pragma: no cover - never fail a load over the wrapper
+        logger.info("frameworks.langchain.mcp: chat result-handling bind skipped", exc_info=True)
+    return tools
 
 
 async def load_mcp_server_instructions(
@@ -90,46 +126,58 @@ async def load_mcp_server_instructions(
     *,
     timeout_s: float = 6.0,
 ) -> Dict[str, str]:
-    """Fetch each MCP server's `instructions` from its initialize handshake.
+    """Fetch each MCP server's instructions from its negotiated connection.
 
-    An MCP server may publish usage instructions in the initialize result —
+    An MCP server may publish usage instructions during protocol negotiation,
     the operating guide MCP-native clients (e.g. Claude's connectors) surface
-    to their model. ``MultiServerMCPClient.get_tools()`` drops them, so a
-    LangChain-bound agent never sees what a connector-bound agent is taught.
-    This helper recovers them with one short raw handshake per server
-    (streamable_http only), best-effort: ``{server_id: instructions}`` for the
-    servers that publish any; failures and absences are skipped silently —
-    never raises."""
+    to their model. Tool schemas do not carry that server-level guide, so this
+    helper reads it from the negotiated KDCube client session. It is best-effort:
+    ``{server_id: instructions}`` for servers that publish any; failures and
+    absences are skipped silently — never raises."""
     out: Dict[str, str] = {}
     if not server_map:
         return out
     try:
         import asyncio
 
-        from mcp import ClientSession  # lazy, optional
-        from mcp.client.streamable_http import streamablehttp_client
+        from mcp.client import Client  # noqa: F401
     except Exception:
         return out
     for server_id, entry in server_map.items():
-        url = str((entry or {}).get("url") or "").strip()
-        transport = str((entry or {}).get("transport") or "").strip().lower()
-        if not url or transport not in {"streamable_http", "http", ""}:
-            continue
-        headers = (entry or {}).get("headers") or None
         try:
             async with asyncio.timeout(timeout_s):
-                async with streamablehttp_client(url, headers=headers) as (read, write, _):
-                    async with ClientSession(read, write) as session:
-                        init = await session.initialize()
-                        instructions = str(getattr(init, "instructions", "") or "").strip()
-                        if instructions:
-                            out[server_id] = instructions
+                async with _open_server_entry(entry) as client:
+                    instructions = str(client.instructions or "").strip()
+                    if instructions:
+                        out[server_id] = instructions
         except Exception:
             logger.info(
                 "frameworks.langchain.mcp: no server instructions from %r (non-fatal).",
                 server_id,
             )
     return out
+
+
+def _open_server_entry(entry: Mapping[str, Any]):
+    transport = str(entry.get("transport") or "streamable_http")
+    return open_mcp_client(
+        transport=transport,
+        endpoint=str(entry.get("url") or entry.get("endpoint") or ""),
+        command=(str(entry.get("command")) if entry.get("command") else None),
+        args=entry.get("args") or (),
+        env=entry.get("env") if isinstance(entry.get("env"), Mapping) else None,
+        headers=(
+            entry.get("headers")
+            if isinstance(entry.get("headers"), Mapping)
+            else None
+        ),
+        mode=str(entry.get("protocol_mode") or "auto"),
+        read_timeout_seconds=(
+            float(entry["read_timeout_seconds"])
+            if entry.get("read_timeout_seconds") is not None
+            else None
+        ),
+    )
 
 
 def _iter_exc_chain(error: Any):
@@ -149,9 +197,7 @@ def _iter_exc_chain(error: Any):
 
 
 def load_error_looks_like_denial(error: Any) -> bool:
-    """Whether a MultiServerMCPClient load error carries an auth/consent denial
-    (403/401). langchain-mcp-adapters wraps the HTTP failure in a TaskGroup /
-    ExceptionGroup, so walk the exception chain's text for the status."""
+    """Whether an MCP load error carries an auth/consent denial (403/401)."""
     if error is None:
         return False
     text = " ".join(str(x) for x in _iter_exc_chain(error)).lower()

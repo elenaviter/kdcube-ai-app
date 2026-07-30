@@ -28,6 +28,8 @@ def authorization_server_metadata(
     logo_uri: str | None = None,
     client_uri: str | None = None,
     icons: Iterable[Mapping[str, Any]] | None = None,
+    dynamic_client_registration_supported: bool = True,
+    client_id_metadata_document_supported: bool = False,
 ) -> Dict[str, Any]:
     """RFC 8414 authorization-server metadata.
 
@@ -38,9 +40,6 @@ def authorization_server_metadata(
         "issuer": issuer,
         "authorization_endpoint": authorization_endpoint or f"{issuer}/oauth/authorize",
         "token_endpoint": token_endpoint or f"{issuer}/oauth/token",
-        # RFC 7591 dynamic client registration — Claude.ai self-registers here
-        # when the connector is added without an OAuth Client ID.
-        "registration_endpoint": registration_endpoint or f"{issuer}/oauth/register",
         # RFC 7009 token revocation — a disconnecting client revokes its token
         # here, which also retires its Connection Hub card (no orphan).
         "revocation_endpoint": f"{issuer}/oauth/revoke",
@@ -54,6 +53,12 @@ def authorization_server_metadata(
         "scopes_supported": list(scopes_supported or []),
         # jwks_uri intentionally omitted: tokens are opaque (kst1).
     }
+    if dynamic_client_registration_supported:
+        # RFC 7591 remains available for clients that do not publish a Client
+        # ID Metadata Document.
+        out["registration_endpoint"] = registration_endpoint or f"{issuer}/oauth/register"
+    if client_id_metadata_document_supported:
+        out["client_id_metadata_document_supported"] = True
     if service_name:
         # Non-standard but harmless for OAuth clients. Some connector UIs use
         # this metadata to present the sign-in service.

@@ -4,7 +4,8 @@ title: "Protect Bundle MCP With Managed Credentials"
 summary: "Recipe for exposing a bundle MCP surface protected by Connection Hub delegated credentials, with tool-centric grants and descriptor-owned policy."
 status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "mcp", "managed-auth", "bundle-surfaces", "named-services", "least-privilege"]
-updated_at: 2026-07-17
+updated_at: 2026-07-30
+keywords: ["managed MCP credentials", "KDCubeMCPServer", "delegated client", "selected tool grants", "stateless MCP", "Connection Hub MCP"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
@@ -66,21 +67,19 @@ async def memories_mcp(self, request: Request, **kwargs):
 The handler should not parse OAuth tokens itself. Managed auth is applied by the
 bundle integration bridge and delegated credential guard.
 
-For proc-served bundle MCP, build the FastMCP app as stateless:
+For proc-served bundle MCP, return the platform MCP server with stateless HTTP:
 
 ```python
-from mcp.server.fastmcp import FastMCP
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
 
-mcp = FastMCP("KDCube Memories", stateless_http=True)
+mcp = KDCubeMCPServer("KDCube Memories", stateless_http=True)
 ```
 
 KDCube's current bundle MCP route is dispatched request-by-request through proc.
-FastMCP's stateful streamable HTTP session manager stores `mcp-session-id`
-transports in local Python memory, not in Redis/Postgres. That is not stable for
-fresh app instances, multiple proc workers, container restarts, or calls routed
-to a different machine. Keep durable state in KDCube stores, Connection Hub
-credential records, and product storage, not in bundle-local FastMCP session
-memory.
+Durable state therefore cannot depend on one process-local MCP server object.
+Keep it in KDCube stores, Connection Hub credential records, and product
+storage. `KDCubeMCPServer` accepts both MCP 2026-07-28 clients and legacy
+`initialize` clients through the same stateless app surface.
 
 ## Descriptor Surface
 
@@ -217,7 +216,7 @@ Managed credentials do not require a stateful MCP transport. The delegated
 credential, consent record, resource match, selected tools, selected grants, and
 identity scope are stored by Connection Hub and are checked on every request.
 That makes `tools/list` and `tools/call` work even when proc dispatches through
-fresh FastMCP app instances.
+fresh MCP server instances.
 
 Stateful MCP would need a different platform component:
 
@@ -281,7 +280,7 @@ Claude's own post-connection "Tool permissions" UI is driven by the MCP tools
 returned by the MCP server. The read-only/write/delete grouping comes from MCP
 `ToolAnnotations`, not from Connection Hub consent. KDCube MCP surfaces should
 set `readOnlyHint`, `destructiveHint`, server `icons`, and `website_url` when
-building the FastMCP app; the SDK helper
+building the MCP server; the SDK helper
 `kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata` provides the
 standard KDCube favicon and annotation helpers.
 
@@ -602,7 +601,7 @@ credentials and user consent.
 - Do not call this mechanism by old branch names; OAuth is only the protocol
   adapter.
 - Do not hardcode tool grants in the MCP handler.
-- Do not rely on bundle-local stateful FastMCP sessions for proc-served bundle
-  MCP. Use `stateless_http=True`.
+- Do not rely on bundle-local stateful MCP sessions for proc-served bundle MCP.
+  Return `KDCubeMCPServer` and keep `stateless_http=True`.
 - Do not let a token with a broad grant call tools the user did not select.
 - Do not use `mode: managed` for a bundle-owned shared-secret endpoint.

@@ -3,7 +3,8 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
 title: "MCP"
 summary: "MCP tool integration: agent-scoped allow-lists, consumer-surface MCP service config, named-secret auth, and runtime execution flow (host + isolated)."
 tags: ["sdk", "tools", "mcp", "runtime", "transport", "auth"]
-keywords: ["surfaces.as_consumer", "MCP_SERVICES", "MCPToolsSubsystem", "mcp.<alias>.<tool>", "stdio", "http", "streamable-http", "sse", "oauth_gui", "tool_call"]
+keywords: ["surfaces.as_consumer", "MCPToolsSubsystem", "mcp.<alias>.<tool>", "stdio", "http", "streamable-http", "sse", "MCP 2026-07-28", "legacy initialize", "tool_call"]
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
@@ -30,7 +31,7 @@ For task-oriented builder paths, start with:
 - [Expose An MCP Service From A KDCube App](../../recipes/apps/expose-mcp-service-README.md)
 
 The first recipe covers `surfaces.as_consumer`; the second covers
-`surfaces.as_provider`, including app-native FastMCP, Connection Hub managed
+`surfaces.as_provider`, including app-native MCP, Connection Hub managed
 authorization, economics, and when named services are optional rather than
 required.
 
@@ -42,8 +43,10 @@ You configure MCP in the consumer surface:
 1. `surfaces.as_consumer.agents.<agent_id>.tools` in app props (what is visible/exposed to that agent).
 2. `surfaces.as_consumer.mcp.services` in app props (how to connect and authenticate).
 
-Top-level `mcp.services` and `MCP_SERVICES` env JSON are still supported as
-legacy / local-dev fallbacks, but they are not the preferred platform contract.
+Some older runtime code still recognizes legacy top-level and process-environment
+fallbacks. They are compatibility paths, not application configuration. New and
+maintained apps declare MCP services under `surfaces.as_consumer` and resolve
+secret references server-side.
 
 ### 1) Agent tool connection
 
@@ -110,6 +113,8 @@ surfaces:
           docs:
             transport: http
             url: https://mcp.example.com
+            protocol_mode: auto
+            read_timeout_seconds: 120
             auth:
               type: bearer
               secret: b:docs.token
@@ -118,11 +123,9 @@ surfaces:
             url: http://127.0.0.1:8787/sse
 ```
 
-Legacy/dev fallback:
-
-```bash
-export MCP_SERVICES='{"mcpServers":{"docs":{"transport":"http","url":"https://mcp.example.com"}}}'
-```
+`protocol_mode: auto` is the default. The MCP SDK v2 client first uses the
+2026-07-28 `server/discover` flow and falls back to legacy `initialize` when the
+peer is older. Set `protocol_mode: legacy` only for a known legacy endpoint.
 
 ## Supported transports
 
@@ -159,9 +162,8 @@ Minimum checklist:
   client config
 - HTTP/SSE endpoints are reachable from the process that acts as MCP client
 - stdio commands and their dependencies exist in the process that starts them
-- streamable HTTP FastMCP apps are either created with `stateless_http=True` or
-  are run behind a server/lifespan path that correctly initializes the MCP
-  session manager
+- bundle-served streamable HTTP apps return `KDCubeMCPServer`, whose default is
+  stateless HTTP and whose server accepts modern and legacy clients
 - logs include enough non-secret context to debug failures: server alias,
   transport, URL host, tool id, run id when applicable, and final status
 
@@ -430,7 +432,7 @@ surfaces:
   - confirm server exposes that `tool_id` and allow-list includes it.
   - confirm the MCP URL is reachable from the client process, not just from the
     host browser or another container.
-  - for bundle-served FastMCP over streamable HTTP, confirm the app is
-    `stateless_http=True` or has a valid lifespan/session-manager path.
+  - for bundle-served streamable HTTP, confirm the `@mcp` method returns
+    `KDCubeMCPServer` with `stateless_http=True`.
   - confirm auth headers are present and that secrets resolve in the runtime
     that creates the MCP client.

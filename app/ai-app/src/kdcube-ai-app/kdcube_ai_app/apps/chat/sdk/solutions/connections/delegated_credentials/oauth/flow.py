@@ -15,7 +15,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.clients import get_client, redirect_uri_allowed
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.clients import (
+    PublicClient,
+    get_client,
+    redirect_uri_allowed,
+)
 
 
 @dataclass
@@ -28,6 +32,7 @@ class AuthorizeRequest:
     code_challenge: str
     code_challenge_method: str
     resource: Optional[str] = None
+    client: Optional[PublicClient] = None
 
 
 class AuthorizeError(Exception):
@@ -110,6 +115,7 @@ def parse_authorize_request(
         code_challenge=code_challenge,
         code_challenge_method=method,
         resource=(params.get("resource") or None),
+        client=client,
     )
 
 

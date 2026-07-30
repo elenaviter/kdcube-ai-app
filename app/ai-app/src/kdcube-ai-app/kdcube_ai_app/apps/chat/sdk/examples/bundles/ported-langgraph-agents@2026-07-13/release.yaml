@@ -46,7 +46,8 @@ bundle:
       `bundle_call_context.role_models`, so a pick for one agent never cross-applies.
     - lg-react tools, both ways (`config.tools.mode`: plain | mcp | both): the
       preserved plain LangChain tools and/or KDCube-served MCP tools via
-      langchain-mcp-adapters (streamable_http), degrading to plain when absent.
+      KDCube's MCP SDK v2 adapter (streamable_http), degrading to plain when an
+      optional endpoint is unavailable.
     - A shared Telegram Bot API webhook (`@api(route="public",
       alias="telegram_webhook")`) drives the SAME `execute_core` for the DEFAULT
       agent; all protocol mechanics reused from the Telegram SDK; the trust boundary
@@ -85,8 +86,8 @@ bundle:
 
     Known follow-ups
 
-    - MCP path: `langchain-mcp-adapters` is an optional dependency, not installed in
-      the current environment. lg-react runs on plain tools until it is installed
-      and `config.tools.mcp.servers` points at a reachable KDCube-served MCP endpoint.
+    - MCP path: lg-react runs on plain tools until
+      `config.tools.mcp.servers` points at a reachable KDCube-served MCP endpoint.
+      The platform MCP adapter negotiates modern and legacy wire protocols.
     - Reactive tier: in-turn followup/steer is intentionally not implemented; both
       agents are run-to-completion.

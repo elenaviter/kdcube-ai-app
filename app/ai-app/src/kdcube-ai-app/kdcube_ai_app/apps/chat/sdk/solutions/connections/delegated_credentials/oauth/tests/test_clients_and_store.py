@@ -13,6 +13,8 @@ from __future__ import annotations
 import pytest
 
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.clients import (
+    CLIENT_REGISTRATION_METADATA_DOCUMENT,
+    PublicClient,
     get_client,
     redirect_uri_allowed,
 )
@@ -92,6 +94,17 @@ def test_foreign_redirect_uri_rejected():
     assert not redirect_uri_allowed(client, "https://claude.ai:9999/api/mcp/auth_callback")
 
 
+def test_metadata_document_redirect_requires_exact_port():
+    client = PublicClient(
+        client_id="https://client.example.test/oauth/client.json",
+        redirect_uris=("http://127.0.0.1:41001/callback",),
+        registration_kind=CLIENT_REGISTRATION_METADATA_DOCUMENT,
+    )
+
+    assert redirect_uri_allowed(client, "http://127.0.0.1:41001/callback")
+    assert not redirect_uri_allowed(client, "http://127.0.0.1:41002/callback")
+
+
 # ------------------------------- PKCE -------------------------------
 
 def test_pkce_s256_roundtrip():
@@ -127,6 +140,7 @@ async def test_auth_code_consume_returns_bound_payload(store):
         sub="google:admin@example.test",
         scopes=["records:read"],
         operations=["records_export"],
+        client_metadata={"client_name": "Verified client"},
     )
     payload = await store.consume_auth_code(code)
     assert payload["client_id"] == "claude"
@@ -134,6 +148,7 @@ async def test_auth_code_consume_returns_bound_payload(store):
     assert payload["scopes"] == ["records:read"]
     assert payload["operations"] == ["records_export"]
     assert payload["redirect_uri"] == "http://localhost:9999/callback"
+    assert payload["client_metadata"]["client_name"] == "Verified client"
 
 
 @pytest.mark.asyncio
@@ -157,7 +172,10 @@ async def test_unknown_auth_code_returns_none(store):
 @pytest.mark.asyncio
 async def test_refresh_token_validates_then_rotates(store):
     rt = await store.create_refresh_token(
-        client_id="claude", sub="google:admin@example.test", scopes=["records:read"],
+        client_id="claude",
+        sub="google:admin@example.test",
+        scopes=["records:read"],
+        client_metadata={"client_name": "Verified client"},
     )
     rec = await store.validate_refresh_token(rt)
     assert rec["sub"] == "google:admin@example.test"
@@ -168,6 +186,8 @@ async def test_refresh_token_validates_then_rotates(store):
     # Old token no longer valid after rotation (reuse detection boundary).
     assert await store.validate_refresh_token(rt) is None
     assert await store.validate_refresh_token(new_rt) is not None
+    rotated = await store.validate_refresh_token(new_rt)
+    assert rotated["client_metadata"]["client_name"] == "Verified client"
 
 
 @pytest.mark.asyncio

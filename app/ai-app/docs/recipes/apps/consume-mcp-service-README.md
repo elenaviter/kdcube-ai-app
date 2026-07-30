@@ -4,7 +4,8 @@ title: "Connect An MCP Service To A KDCube Agent"
 summary: "Builder recipe for registering an MCP server once, exposing an allow-listed tool view to each KDCube agent through surfaces.as_consumer, resolving secrets, and verifying the resulting mcp.<alias>.<tool> catalog and runtime calls."
 status: active
 tags: ["recipes", "kdcube-for-agents", "mcp", "as-consumer", "agents", "tools", "governance"]
-updated_at: 2026-07-18
+updated_at: 2026-07-30
+keywords: ["MCP consumer surface", "protocol_mode", "MCP server registry", "per-agent MCP tools", "MCP 2026-07-28", "legacy initialize", "streamable HTTP"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
@@ -77,6 +78,8 @@ bundles:
                   docs:
                     transport: streamable-http
                     url: https://mcp.example.com/docs
+                    protocol_mode: auto
+                    read_timeout_seconds: 120
 ```
 
 The key `docs` is the `server_id` used by agent tool declarations.
@@ -88,6 +91,16 @@ Supported consumer transports:
 | `streamable-http` or `http` | `url` | The KDCube process that owns the MCP tool subsystem |
 | `sse` | `url` | The KDCube process that owns the MCP tool subsystem |
 | `stdio` | `command`, optional `args` and `env` | A child process started by that runtime |
+
+`protocol_mode: auto` is the default. The MCP SDK v2 client first negotiates
+the MCP 2026-07-28 discovery flow and falls back to legacy `initialize` when
+the peer is older. Use `protocol_mode: legacy` only for a known legacy server.
+`read_timeout_seconds` bounds protocol reads without introducing synchronous
+work into the proc event loop.
+
+For stdio, `env` is an explicit descriptor-owned child-process projection, not
+platform configuration from ambient environment variables. Secret values use
+secret references and are resolved server-side.
 
 The URL must be reachable from the runtime process, not only from the builder's
 browser. In Docker, `127.0.0.1` points to the current container. Use service DNS

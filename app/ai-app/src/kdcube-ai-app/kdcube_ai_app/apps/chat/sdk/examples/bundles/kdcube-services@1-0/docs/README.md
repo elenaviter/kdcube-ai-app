@@ -70,10 +70,10 @@ entrypoint.py
   @mcp(alias="<family>", auth_config="surfaces.as_provider.mcp.<family>.auth")
 ```
 
-Use stateless streamable HTTP for FastMCP adapters served through the proc
-bridge. The bridge invokes the bundle surface per request, so the MCP session
-cannot depend on a process-local FastMCP session manager surviving between
-`initialize` and `tools/list`.
+Use `KDCubeMCPServer` with stateless streamable HTTP for adapters served through
+the proc bridge. The bridge invokes the bundle surface per request, so durable
+work cannot depend on one process-local server object. The same server supports
+modern discovery and legacy initialization clients.
 
 Do not add service logic to `entrypoint.py`. Do not add per-tool authorization
 checks inside service modules unless that check is truly domain-specific and

@@ -43,11 +43,10 @@ def test_no_mcp_connection_returns_empty() -> None:
     assert tools == [] and consents == []
 
 
-def test_mcp_connection_degrades_to_empty_when_adapter_absent() -> None:
+def test_delegated_mcp_without_user_degrades_to_empty() -> None:
     m = _mcp_module()
-    # langchain-mcp-adapters is not installed in the test env: the delegated MCP
-    # connection resolves a server map but binding degrades to [] — never a crash.
-    # (No user -> the delegated server is dropped before any bind is attempted.)
+    # No user -> the delegated server is dropped before any bind is attempted,
+    # while the graph remains buildable with its plain tools.
     tools, consents = asyncio.run(m.load_mcp_tools_for_connections([_MCP_CONN], user_sub=None))
     assert tools == [] and consents == []
 

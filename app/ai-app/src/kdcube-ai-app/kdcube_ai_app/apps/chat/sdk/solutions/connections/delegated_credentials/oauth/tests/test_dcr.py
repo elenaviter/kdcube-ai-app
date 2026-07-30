@@ -56,6 +56,7 @@ def test_register_returns_public_client(client):
     assert "client_secret" not in body          # public client
     assert body["token_endpoint_auth_method"] == "none"
     assert body["redirect_uris"] == [CB]
+    assert body["application_type"] == "native"
     assert body["logo_uri"] == f"{ISSUER}/img/favicon.svg"
     assert body["client_uri"] == ISSUER
 
@@ -94,3 +95,63 @@ def test_registered_client_redirect_must_match(client):
         "code_challenge_method": "S256",
     }, headers={"Authorization": "Bearer admin-tok"}, follow_redirects=False)
     assert r.status_code == 400
+
+
+def test_register_rejects_unknown_application_type(client):
+    response = client.post(
+        "/oauth/register",
+        json={"redirect_uris": [CB], "application_type": "service"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_client_metadata"
+
+
+def test_register_rejects_loopback_redirect_for_web_client(client):
+    response = client.post(
+        "/oauth/register",
+        json={
+            "redirect_uris": ["http://127.0.0.1/callback"],
+            "application_type": "web",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_redirect_uri"
+
+
+def test_register_accepts_https_redirect_for_web_client(client):
+    response = client.post(
+        "/oauth/register",
+        json={"redirect_uris": [CB], "application_type": "web"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["application_type"] == "web"
+
+
+def test_register_rejects_confidential_client_auth(client):
+    response = client.post(
+        "/oauth/register",
+        json={
+            "redirect_uris": [CB],
+            "token_endpoint_auth_method": "client_secret_basic",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_client_metadata"
+
+
+def test_register_is_absent_when_dcr_is_disabled():
+    app = FastAPI()
+    enable_delegated_client(app, issuer=ISSUER)
+    app.state.oauth_delegated_config["dynamic_client_registration"] = {"enabled": False}
+    mount_test_oauth_adapter(app)
+
+    test_client = TestClient(app)
+    response = test_client.post("/oauth/register", json={"redirect_uris": [CB]})
+    discovery = test_client.get("/.well-known/oauth-authorization-server")
+
+    assert response.status_code == 404
+    assert "registration_endpoint" not in discovery.json()

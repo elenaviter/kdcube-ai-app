@@ -1,11 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
 title: "Authenticated MCP: The Full Configuration Chain"
-summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, DCR redirect fence, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates with their full error vocabulary, the demand-ordering rule, the declaration-parity pattern for plain MCP tools, and the three scenarios this chain enables - hosted agents, external MCP connections, and bounded automation tokens."
+summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, OAuth client registration, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates, and the three scenarios this chain enables."
 status: active
 tags: ["sdk", "connections", "connection-hub", "mcp", "managed-auth", "delegated-credentials", "delegated-accounts", "named-services", "consent", "connected-accounts", "automation", "agents"]
-updated_at: 2026-07-26
-keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
+updated_at: 2026-07-30
+keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "Client ID Metadata Document", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md
@@ -26,7 +26,8 @@ The same chain enables three scenarios:
    `kdcube-agent:<app>:<agent>`, acting on the user's connected accounts with
    demand-driven consent raised in chat.
 2. **An external MCP connection** - Claude Code or another MCP-speaking app
-   connects to a KDCube MCP URL via OAuth with dynamic client registration (DCR) and
+   connects to a KDCube MCP URL through OAuth, identifies itself through a
+   pre-registration, Client ID Metadata Document, or retained DCR path, and
    works under a KDCube-issued delegated credential.
 3. **User-created automation access** - a bounded token minted in Connection
    Hub for scripts and integrations, narrowed to selected resources, grants,
@@ -60,7 +61,7 @@ surfaces:
 boundary; `selected_tool_grants: true` requires the concrete MCP tool to be
 present in the caller's grant record. The surface declares only how the
 endpoint is protected - the tool/grant catalog lives in Connection Hub config
-(next layers). Handler mechanics (the `@mcp` entrypoint, stateless FastMCP,
+(next layers). Handler mechanics (the `@mcp` entrypoint, stateless MCP server,
 `mode: bundle` for app-owned auth) are in
 [Protect Bundle MCP With Managed Credentials](../../../../recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md).
 
@@ -135,18 +136,22 @@ grant whose `delegable_roles`/`delegable_permissions` match nothing the user
 holds is filtered out (and a direct automation request for it fails with
 `delegated_access_grants_not_delegable` - see the troubleshooting table).
 
-## Layer 4 - the registration fence: DCR redirect allowlist
+## Layer 4 - the OAuth client identity and callback fence
 
-External MCP-speaking apps not pre-listed in `public_clients` register
-themselves via dynamic client registration. DCR runs **before any user
-authenticates**, so the only thing keeping an authorization code deliverable
-solely to a known callback is the redirect allowlist:
+External MCP-speaking apps identify themselves through one of three paths:
+descriptor `public_clients`, an HTTPS Client ID Metadata Document (CIMD), or
+retained Dynamic Client Registration (DCR). Registration identifies the client
+and its callbacks; it grants no resource authority.
+
+DCR runs **before any user authenticates**, so its callback allowlist is a
+mandatory deployment fence:
 
 ```yaml
 connections:
   delegated_credentials:
     oauth:
       dynamic_client_registration:
+        enabled: true
         allowed_redirect_uris:
         - https://claude.ai/api/mcp/auth_callback
         - http://localhost/callback
@@ -154,7 +159,12 @@ connections:
 ```
 
 Loopback entries match any port (RFC 8252); scheme, host, and path must match
-exactly. The connect journey this fences is
+exactly. CIMD instead uses the HTTPS metadata URL as the client id and requires
+exact callback matches. Its resolver rejects private addresses, redirects,
+oversized or malformed documents, and never caches failed fetches. The complete
+registration precedence and CIMD controls are owned by
+[OAuth Delegated Credential Protocol Adapter](../delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md).
+The connect journey is
 [Delegate A KDCube Service To An External Client](../../../../recipes/connections/delegate-kdcube-service-to-external-client-README.md).
 
 ## Layer 5 - namespace boundary policy: door claims per operation
@@ -227,7 +237,7 @@ row state its complete requirement.
   memories, tasks). Read/write on an account-backed realm is decided per
   account at gate 2, so the user consents per account, not per connection.
 
-The external-client (DCR) authorize page surfaces these same requirements up
+The external-client OAuth authorize page surfaces these same requirements up
 front as an *Accounts this connection needs* panel — a single-provider claim as
 a required row, a multi-provider door claim as a "connect one of" choice — and
 lets the operator connect in place instead of discovering the gap at first call.
@@ -493,7 +503,7 @@ Scoping of the connect ask, per the provider's `connected_accounts` contract:
 
 ## Declaration parity for plain MCP tools
 
-A PLAIN ``@mcp`` tool - a FastMCP tool on a managed bundle surface with no
+A PLAIN ``@mcp`` tool - an MCP tool on a managed bundle surface with no
 named-service registration behind it - participates in the same chain. The
 tool declares which connected-account provider claims it needs, per tool, in
 the existing application tool shape
@@ -619,9 +629,10 @@ Retrying the same call then succeeds. The per-account binding
 [Configuring Agent Access To Services And Accounts](../configuring-agent-service-access/configuring-agent-service-access-README.md).
 
 **2. External MCP connection.** The MCP-speaking app probes the URL, gets the
-protected-resource challenge, registers via DCR (layer 4 fence), and opens
-the OAuth authorize page: the DCR-issued client id, a review of the resource's
-ceiling with collapsible capability sections, and per-account default-closed
+protected-resource challenge, resolves its OAuth client identity through
+pre-registration, CIMD, or DCR (layer 4), and opens the OAuth authorize page:
+a review of the client and resource ceiling with collapsible capability
+sections, and per-account default-closed
 binding for account-backed namespaces - with links into the hub for
 connecting more accounts and to where the connection's card will live. After
 approval the card sits under **Delegated by KDCube**, editable and revocable;

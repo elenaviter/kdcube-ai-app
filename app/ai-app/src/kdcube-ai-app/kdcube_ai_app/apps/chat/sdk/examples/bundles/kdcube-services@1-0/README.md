@@ -306,8 +306,8 @@ kdcube-services@1-0/
   entrypoint.py                  # thin surface adapter
   surfaces/
     mcp/
-      conversations.py           # FastMCP tool registration
-      named_services.py          # FastMCP named-service bridge registration
+      conversations.py           # MCP tool registration
+      named_services.py          # MCP named-service bridge registration
       productivity.py            # productivity surface composition
       productivity_sheets.py     # typed Google Sheets MCP registrations
   services/
@@ -364,14 +364,15 @@ Bearer token
   -> proc managed MCP guard
   -> Connection Hub delegated credential grant record
   -> authority_id + resource + selected tool + required grants
-  -> FastMCP tool dispatch
+  -> MCP tool dispatch
 ```
 
 The tool does not check roles itself. By the time it runs, the surface guard has
 validated the delegated credential and selected tool grant.
 
-The FastMCP surface uses stateless streamable HTTP because the proc bridge
-dispatches each bundle MCP request independently.
+The `KDCubeMCPServer` surface uses stateless streamable HTTP because the proc
+bridge dispatches each bundle MCP request independently. It negotiates modern
+and legacy MCP clients on the same endpoint.
 
 For the complete ownership map, including conversation read-through storage,
 provider-owned bytes, temporary upload staging, Redis coordination, generated

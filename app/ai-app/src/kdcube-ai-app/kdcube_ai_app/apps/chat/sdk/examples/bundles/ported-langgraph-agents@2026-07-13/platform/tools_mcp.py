@@ -15,7 +15,7 @@
 #     `@mcp`-surface auth platform bundles use) and injecting it; static connections
 #     keep their declared headers.
 #   - `frameworks/langchain/mcp.load_mcp_tools_from_server_map` — bind that map as
-#     LangChain tools via `langchain-mcp-adapters` (degrades to none when absent).
+#     LangChain tools through KDCube's MCP SDK v2 adapter.
 #
 # This bundle file is the thin adapter: pass the agent's connection list + this
 # turn's user, get LangChain tools.
@@ -176,9 +176,9 @@ async def load_mcp_tools_for_connections(
     # bundle adapter carries none of that logic.
     tools = await load_mcp_tools_from_server_map(server_map, error_sink=error_sink)
 
-    # An MCP server may publish an operating guide in its initialize result —
-    # what MCP-native clients (e.g. Claude connectors) show their model. The
-    # LangChain tool loader drops it, so recover it here for the system prompt.
+    # An MCP server may publish an operating guide during protocol negotiation —
+    # what MCP-native clients (e.g. Claude connectors) show their model. Tool
+    # schemas do not carry it, so recover it here for the system prompt.
     # Only when tools actually loaded (a consent-denied door would just 403).
     if instructions_sink is not None and tools:
         try:
@@ -191,14 +191,15 @@ async def load_mcp_tools_for_connections(
     #   * dropped BEFORE any server contact (the consented-token path returned no
     #     bearer -> DROP_CONSENT_PENDING in drop_sink) — no transport error exists;
     #   * denied AT connect time (an unbound bearer met the @mcp guard's 403).
-    load_error = error_sink.get("_load_error")
-    denied_at_load = load_error is not None and load_error_looks_like_denial(load_error) and not tools
+    server_errors = error_sink.get("_server_errors") or {}
     consents: List[MCPConsentRequired] = []
     for c in conns:
         if not is_delegated_connection(c):
             continue
         server_id = str(c.get("server_id") or c.get("server") or c.get("name") or "").strip()
         dropped_pending = drop_sink.get(server_id) == DROP_CONSENT_PENDING
+        server_error = server_errors.get(server_id)
+        denied_at_load = load_error_looks_like_denial(server_error)
         if not dropped_pending and not (denied_at_load and server_id in server_map):
             continue
         claims = c.get("scopes") or c.get("claims") or []

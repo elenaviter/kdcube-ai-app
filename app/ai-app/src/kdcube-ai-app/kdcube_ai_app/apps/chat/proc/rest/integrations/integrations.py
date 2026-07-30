@@ -919,11 +919,14 @@ def _head_response_from(response: Response) -> Response:
 
 def _coerce_bundle_mcp_asgi_app(result: Any, *, transport: str):
     if transport == "streamable-http" and hasattr(result, "streamable_http_app"):
-        return result.streamable_http_app()
+        app_factory = result.streamable_http_app
+        if _callable_accepts_kwarg(app_factory, "stateless_http"):
+            return app_factory(stateless_http=True)
+        return app_factory()
     if callable(result):
         return result
     raise RuntimeError(
-        f"Bundle MCP endpoint must return a FastMCP app or ASGI app for transport={transport}"
+        f"Bundle MCP endpoint must return an MCPServer or ASGI app for transport={transport}"
     )
 
 
@@ -937,15 +940,6 @@ def _build_mcp_dispatch_path(*, transport: str, mcp_path: str) -> str:
 def _filtered_proxy_headers(headers: httpx.Headers) -> Dict[str, str]:
     blocked = {"content-length", "transfer-encoding", "connection"}
     return {k: v for k, v in headers.items() if k.lower() not in blocked}
-
-
-def _mcp_bridge_session_id(*, request: Request, method: str) -> str:
-    existing = str(request.headers.get("Mcp-Session-Id") or request.headers.get("mcp-session-id") or "").strip()
-    if existing:
-        return existing
-    if method == "initialize":
-        return f"kdcube-stateless-{uuid.uuid4().hex}"
-    return ""
 
 
 def _mcp_jsonrpc_method(body: bytes) -> str:
@@ -1001,7 +995,7 @@ def _log_bundle_mcp_response(
 ) -> None:
     content_type = response.headers.get("content-type", "")
     body = response.content or b""
-    if method not in {"initialize", "tools/list", "tools/call"}:
+    if method not in {"server/discover", "initialize", "tools/list", "tools/call"}:
         logger.info(
             "Bundle MCP response method=%s status=%s content_type=%s body_bytes=%s",
             method or "<unknown>",
@@ -1083,20 +1077,8 @@ async def _dispatch_bundle_mcp_request(
 
     _log_bundle_mcp_response(method=method, response=response)
     response_headers = _filtered_proxy_headers(response.headers)
-    # Do not synthesize Mcp-Session-Id for stateless bundle MCP surfaces.
-    # Claude accepts the OAuth/token path and reaches tools/list; advertising a
-    # fake stateful session from this stateless proc bridge can make the client
-    # treat the server as stateful even though the bundle app is recreated per
-    # request. If a real stateful MCP app returns its own session header, the
-    # filtered upstream headers above will still preserve it.
-    # bridge_session_id = _mcp_bridge_session_id(request=request, method=method)
-    # if bridge_session_id:
-    #     response_headers.setdefault("Mcp-Session-Id", bridge_session_id)
-    #     logger.info(
-    #         "Bundle MCP bridge session header method=%s incoming=%s",
-    #         method or "<unknown>",
-    #         bool(request.headers.get("Mcp-Session-Id") or request.headers.get("mcp-session-id")),
-    #     )
+    # Stateless bundle surfaces do not synthesize Mcp-Session-Id. Any header
+    # emitted by an explicitly stateful ASGI app is preserved above.
     return Response(
         content=response.content,
         status_code=response.status_code,

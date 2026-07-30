@@ -57,31 +57,31 @@ async def _list_and_call(
     tool: str,
     params: Mapping[str, Any],
 ) -> tuple[list[dict], Mapping[str, Any]]:
-    """Open one streamable-http session: initialize, list tools, call one tool.
+    """Open one negotiated streamable-HTTP client, list tools, call one tool.
 
     `mcp` is imported lazily so this module imports cleanly even where the SDK
     is absent (the classifier and its tests need no transport).
     """
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+    from kdcube_ai_app.apps.chat.sdk.runtime.mcp.client import open_mcp_client
 
     headers = {"Authorization": f"Bearer {bearer}"}
-    async with streamablehttp_client(url, headers=headers) as (read, write, *_rest):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
+    async with open_mcp_client(
+        transport="streamable-http",
+        endpoint=url,
+        headers=headers,
+    ) as client:
+        listed = await client.list_tools()
+        roster = [
+            {
+                "id": getattr(t, "name", "") or getattr(t, "id", ""),
+                "description": (getattr(t, "description", "") or "").strip(),
+            }
+            for t in (getattr(listed, "tools", None) or [])
+        ]
 
-            listed = await session.list_tools()
-            roster = [
-                {
-                    "id": getattr(t, "name", "") or getattr(t, "id", ""),
-                    "description": (getattr(t, "description", "") or "").strip(),
-                }
-                for t in (getattr(listed, "tools", None) or [])
-            ]
-
-            result = await session.call_tool(tool, dict(params))
-            payload = result_payload_from_call_tool(result)
-            return roster, payload
+        result = await client.call_tool(tool, dict(params))
+        payload = result_payload_from_call_tool(result)
+        return roster, payload
 
 
 # --------------------------------------------------------------------------

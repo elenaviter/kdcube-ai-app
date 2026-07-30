@@ -11,7 +11,7 @@ def run_stdio(app: Any) -> None:
         return app.run_stdio()
     if hasattr(app, "run"):
         return app.run()
-    raise RuntimeError("FastMCP does not expose run_stdio/run")
+    raise RuntimeError("MCP server does not expose run_stdio/run")
 
 
 def run_sse(app: Any, *, host: str, port: int) -> None:
@@ -19,7 +19,7 @@ def run_sse(app: Any, *, host: str, port: int) -> None:
         return app.run_sse(host=host, port=port)
     if hasattr(app, "run"):
         return app.run(transport="sse", host=host, port=port)
-    raise RuntimeError("FastMCP does not expose run_sse/run")
+    raise RuntimeError("MCP server does not expose run_sse/run")
 
 
 def run_http(app: Any, *, host: str, port: int) -> None:
@@ -27,4 +27,4 @@ def run_http(app: Any, *, host: str, port: int) -> None:
         return app.run_http(host=host, port=port)
     if hasattr(app, "run"):
         return app.run(transport="streamable-http", host=host, port=port)
-    raise RuntimeError("FastMCP does not expose run_http/run")
+    raise RuntimeError("MCP server does not expose run_http/run")

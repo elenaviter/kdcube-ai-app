@@ -147,16 +147,15 @@ def build_productivity_mcp_app(
     """Build the managed productivity MCP surface (plain tools, stateless)."""
 
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
         from mcp.types import Icon, ToolAnnotations
     except Exception as exc:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from exc
 
     icons = kdcube_mcp_icons(Icon, request=request)
-    mcp = FastMCP(
+    mcp = KDCubeMCPServer(
         name,
         instructions=PRODUCTIVITY_MCP_INSTRUCTIONS,
-        stateless_http=True,
         icons=icons,
         website_url=kdcube_website_url(request=request),
     )

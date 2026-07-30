@@ -72,11 +72,11 @@ async def web_search(
 
 def _build_mcp_app():
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
     except Exception as e:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from e
 
-    mcp = FastMCP("web_search")
+    mcp = KDCubeMCPServer("web_search")
 
     @mcp.tool(
         name="web_search",

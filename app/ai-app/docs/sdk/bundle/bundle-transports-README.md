@@ -4,6 +4,7 @@ title: "Bundle Transports"
 summary: "Complete transport map for bundle capabilities: chat, Data Bus, background jobs, REST operations, widgets, static UI, communicator streams, public routes, and MCP endpoints."
 tags: ["sdk", "bundle", "transport", "protocol", "mcp", "rest", "sse", "socketio", "widgets", "auth", "background-jobs", "data-bus"]
 keywords: ["bundle transport map", "chat transport", "data bus transport", "background job transport", "on_job transport", "operations rest transport", "widget transport", "static ui transport", "communicator streaming", "public route transport", "mcp endpoint transport"]
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-provider-surfaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-consumer-surfaces-README.md
@@ -286,6 +287,7 @@ What the bundle shares with the client:
 ### 4.1 Minimal shape
 
 ```python
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
 from kdcube_ai_app.infra.plugin.bundle_loader import mcp
 
 @mcp(
@@ -294,9 +296,7 @@ from kdcube_ai_app.infra.plugin.bundle_loader import mcp
     transport="streamable-http",
 )
 async def tools_mcp(self, request=None, **kwargs):
-    from mcp.server.fastmcp import FastMCP
-
-    app = FastMCP("my-app", stateless_http=True)
+    app = KDCubeMCPServer("my-app", stateless_http=True)
 
     @app.tool()
     async def ping() -> dict:
@@ -311,6 +311,8 @@ Important:
 - it is **not** the raw HTTP handler
 - proc calls the provider method, obtains the MCP app, and dispatches the HTTP request into that subapp
 - if the provider accepts `request=`, proc passes the original FastAPI request
+- `KDCubeMCPServer` serves modern MCP 2026-07-28 clients and legacy
+  `initialize` clients from this same stateless surface
 
 ### 4.2 Route families
 
@@ -438,9 +440,9 @@ Bundle code:
 
 ```python
 from fastapi import HTTPException, Request
-from mcp.server.fastmcp import FastMCP
 
 from kdcube_ai_app.apps.chat.sdk.config import get_secret
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
 from kdcube_ai_app.infra.plugin.bundle_loader import mcp
 
 @mcp(
@@ -466,7 +468,7 @@ async def partner_tools_mcp(self, request: Request, **kwargs):
             detail=f"Missing or invalid {header_name}",
         )
 
-    app = FastMCP("partner-tools", stateless_http=True)
+    app = KDCubeMCPServer("partner-tools", stateless_http=True)
 
     @app.tool()
     async def ping() -> dict:
@@ -507,7 +509,7 @@ For managed delegated-client access, point the decorator at the descriptor:
     auth_config="surfaces.as_provider.mcp.partner_tools.auth",
 )
 async def partner_tools_mcp(self, request: Request, **kwargs):
-    return FastMCP("partner-tools", stateless_http=True)
+    return KDCubeMCPServer("partner-tools", stateless_http=True)
 ```
 
 ```yaml

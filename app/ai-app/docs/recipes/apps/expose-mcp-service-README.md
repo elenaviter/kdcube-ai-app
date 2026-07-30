@@ -1,10 +1,11 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
 title: "Expose An MCP Service From A KDCube App"
-summary: "Builder recipe for exposing ordinary FastMCP tools from any KDCube app, choosing public, app-owned, or Connection Hub managed authorization, and adding accounting or named-service semantics only when the product needs them."
+summary: "Builder recipe for exposing MCP tools from any KDCube app, choosing public, app-owned, or Connection Hub managed authorization, and adding accounting or named-service semantics only when the product needs them."
 status: active
-tags: ["recipes", "kdcube-for-agents", "mcp", "as-provider", "fastmcp", "governance", "economics"]
-updated_at: 2026-07-16
+tags: ["recipes", "kdcube-for-agents", "mcp", "as-provider", "governance", "economics"]
+updated_at: 2026-07-30
+keywords: ["KDCubeMCPServer", "MCP provider surface", "stateless MCP", "managed MCP auth", "bundle MCP", "MCP 2026-07-28", "legacy MCP client"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
@@ -33,7 +34,7 @@ The shortest valid path is deliberately small:
 ordinary async domain method
         |
         v
-FastMCP tool
+MCP tool
         |
         v
 one @mcp(...) method on the app entrypoint
@@ -45,9 +46,9 @@ one @mcp(...) method on the app entrypoint
 You do **not** need a named-service provider to expose MCP. Named services are
 an optional higher-level contract for reusable object realms. A product-specific
 tool such as `search_reports`, `run_forecast`, or `create_invoice` can be an
-ordinary FastMCP tool.
+ordinary MCP tool.
 
-## 1. Build A Stateless FastMCP App
+## 1. Build A Stateless MCP Server
 
 Keep the MCP surface in a focused module. The tools should call ordinary async
 domain services rather than duplicating product logic inside the transport:
@@ -59,6 +60,9 @@ from __future__ import annotations
 from typing import Annotated, Any, Awaitable, Callable
 
 from pydantic import Field
+from mcp.types import ToolAnnotations
+
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
 
 
 SearchReports = Callable[[str, int], Awaitable[list[dict[str, Any]]]]
@@ -70,10 +74,7 @@ def build_reports_mcp_app(
     search_reports: SearchReports,
     get_report: GetReport,
 ):
-    from mcp.server.fastmcp import FastMCP
-    from mcp.types import ToolAnnotations
-
-    mcp = FastMCP(
+    mcp = KDCubeMCPServer(
         "Acme reports",
         stateless_http=True,
         instructions=(
@@ -132,10 +133,15 @@ def build_reports_mcp_app(
     return mcp
 ```
 
-`stateless_http=True` is required for the current proc-served app MCP path.
-KDCube dispatches each MCP request to an app instance; the next request may run
-in another worker or after a restart. Durable state belongs in product storage,
-not in a FastMCP session object held in one Python process.
+`KDCubeMCPServer` defaults to `stateless_http=True` for proc-served app MCP.
+The explicit argument above makes that distributed-serving contract visible in
+the example. KDCube may dispatch the next request to another worker or after a
+restart. Durable state belongs in product storage, not in a server object held
+in one Python process.
+
+The same server accepts MCP 2026-07-28 clients and legacy `initialize` clients.
+App tools do not branch on protocol version; negotiation happens in the MCP
+server adapter.
 
 The functions that perform I/O are async. App code runs in a concurrent proc
 runtime; blocking network, database, filesystem, or subprocess work on the event
@@ -144,7 +150,7 @@ unavoidable blocking library to a bounded worker thread.
 
 ## 2. Declare The MCP Surface On The App
 
-Expose the FastMCP app from the entrypoint:
+Expose the MCP server from the entrypoint:
 
 ```python
 # entrypoint.py
@@ -260,7 +266,7 @@ MCP request
   -> required grants are present
   -> requested tool was selected in this consent
   -> project actor/grantor authority into request context
-  -> invoke app FastMCP tool
+  -> invoke app MCP tool
 ```
 
 `@mcp` deliberately does not accept `roles=` or `user_types=`. MCP endpoint
@@ -511,7 +517,7 @@ per-agent consent grant. See
 | Symptom | Check |
 | --- | --- |
 | Endpoint is `404` | App is enabled, `@mcp` alias and route match the URL, and provider surface is enabled |
-| FastMCP asks for a stale session id | App was not built with `stateless_http=True` |
+| Client asks for a stale MCP session id | Return `KDCubeMCPServer` from `@mcp` and keep `stateless_http=True` |
 | Managed tool runs without expected product scope | Domain code ignored projected identity and trusted caller-supplied ids |
 | `tool not consented` | Tool was not selected for this Connection Hub grant, or `selected_tool_grants` policy differs from intent |
 | `required delegated grant is missing` | Connection Hub resource tool policy requires a grant absent from this credential's resource grants |

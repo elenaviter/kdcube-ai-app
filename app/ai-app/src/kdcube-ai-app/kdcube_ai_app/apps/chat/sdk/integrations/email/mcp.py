@@ -406,7 +406,7 @@ async def build_email_mcp_app(*, entrypoint: Any, request: Any, storage_root: st
         _raise_unauthorized(str(exc))
 
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
     except Exception as exc:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from exc
 
@@ -443,7 +443,7 @@ async def build_email_mcp_app(*, entrypoint: Any, request: Any, storage_root: st
         }
         return current, current_ids, current_messages
 
-    mcp = FastMCP(EMAIL_MCP_SERVER_NAME, stateless_http=True)
+    mcp = KDCubeMCPServer(EMAIL_MCP_SERVER_NAME)
 
     @mcp.tool(
         name="task_context",

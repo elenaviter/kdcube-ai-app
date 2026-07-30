@@ -61,6 +61,8 @@ async def well_known_authorization_server(request: Request) -> JSONResponse:
             logo_uri=kdcube_icon_url(request=request, public_base_url=issuer),
             client_uri=kdcube_website_url(request=request, public_base_url=issuer),
             icons=[icon] if icon else None,
+            dynamic_client_registration_supported=cfg.dynamic_client_registration.enabled,
+            client_id_metadata_document_supported=cfg.client_id_metadata_documents.enabled,
         )
     )
 

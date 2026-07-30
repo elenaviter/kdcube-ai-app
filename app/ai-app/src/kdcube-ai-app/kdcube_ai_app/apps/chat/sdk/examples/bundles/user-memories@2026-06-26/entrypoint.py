@@ -35,10 +35,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.chatbot.entrypoint_with_memory import
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry import CredentialEnvelope
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.hub import delegated_primary_user_id
 
-try:
-    from . import memory_mcp_tools
-except Exception:  # pragma: no cover - bundle loader may import entrypoint as a loose module
-    import memory_mcp_tools  # type: ignore
+from . import memory_mcp_tools
 
 BUNDLE_ID = "user-memories@2026-06-26"
 WORKFLOW_NAME = "user_memories"

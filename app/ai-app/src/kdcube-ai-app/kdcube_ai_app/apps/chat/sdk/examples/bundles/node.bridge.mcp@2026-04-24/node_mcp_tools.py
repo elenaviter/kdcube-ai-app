@@ -5,11 +5,11 @@ from typing import Any, Callable
 
 def build_node_bridge_mcp_app(*, name: str, bridge_provider: Callable[[], Any]):
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
     except Exception as e:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from e
 
-    mcp = FastMCP(name)
+    mcp = KDCubeMCPServer(name)
 
     @mcp.tool(
         name="node_status",

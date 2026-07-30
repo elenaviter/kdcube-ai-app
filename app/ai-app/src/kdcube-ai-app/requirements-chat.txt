@@ -24,13 +24,10 @@ langgraph-checkpoint==3.0.1
 # Pulls psycopg-pool transitively. Without it the checkpointer degrades to an in-memory
 # saver (no cross-turn history) — see docs/sdk/solutions/conversation/hosted-agent-conversation-README.md.
 langgraph-checkpoint-postgres==3.0.5
-# Bind KDCube-served MCP tools as LangChain tools for hosted LangGraph/LangChain
-# agents (sdk/frameworks/langchain/mcp.py). 0.1.7+ supports langchain 1.x.
-langchain-mcp-adapters>=0.1.7
 langmem==0.0.30
 dramatiq==1.18.0
 PyJWT[crypto]==2.10.1
-pydantic==2.11.7
+pydantic==2.13.4
 python-dotenv==1.1.1
 PyYAML==6.0.2
 python-socketio==5.13.0
@@ -109,7 +106,13 @@ geopy
 folium
 
 stripe==14.3.0
-mcp>=1.26,<2  # v2 = MCP spec 2026-07-28, breaking (FastMCP -> MCPServer); deliberate migration, see journal 26/07/mcp-conformance
+# KDCube binds MCP SDK v2 tools directly as LangChain StructuredTools; the
+# third-party langchain-mcp adapter still imports MCP SDK v1 internals. MCP SDK
+# v2 serves both 2026-07-28 stateless clients and legacy initialize clients.
+# This set is tested with FastAPI 0.116.1 and the Starlette version it resolves.
+sse-starlette==3.0.3
+httpx2==2.9.1
+mcp==2.0.0
 
 # faiss vector backend for the generic hybrid index (infra/index/faiss); used by any bundle.
 faiss-cpu==1.14.3

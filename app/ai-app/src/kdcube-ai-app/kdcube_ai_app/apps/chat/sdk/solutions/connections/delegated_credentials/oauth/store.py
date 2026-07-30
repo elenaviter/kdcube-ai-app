@@ -73,6 +73,7 @@ class GrantStore:
         delegation_edges: Optional[List[Dict[str, Any]]] = None,
         named_services: Optional[Dict[str, Any]] = None,
         account_scope: Optional[Dict[str, Any]] = None,
+        client_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         code = secrets.token_urlsafe(32)
         payload = {
@@ -91,6 +92,7 @@ class GrantStore:
             # Per-account claim picks made on the consent screen; carried to
             # token exchange so the registry card is born with the binding.
             "account_scope": dict(account_scope or {}),
+            "client_metadata": dict(client_metadata or {}),
         }
         await self._r.setex(self._key("code", code), self._auth_code_ttl, json.dumps(payload))
         return code
@@ -119,6 +121,7 @@ class GrantStore:
         delegation_edges: Optional[List[Dict[str, Any]]] = None,
         named_services: Optional[Dict[str, Any]] = None,
         registry_access_id: str = "",
+        client_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
         rt = secrets.token_urlsafe(40)
         payload = {
@@ -133,6 +136,7 @@ class GrantStore:
             "grantor_authority": grantor_authority or {},
             "delegation_edges": list(delegation_edges or []),
             "named_services": named_services or {},
+            "client_metadata": dict(client_metadata or {}),
         }
         await self._r.setex(self._key("refresh", rt), self._refresh_ttl, json.dumps(payload))
         return rt
@@ -159,11 +163,18 @@ class GrantStore:
 
     # ------------------------------ consent CSRF ------------------------------
 
-    async def create_csrf_token(self, sub: str) -> str:
-        """Mint a single-use CSRF token bound to the consenting admin's subject."""
+    async def create_csrf_token(
+        self,
+        sub: str,
+        *,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Mint a single-use CSRF token bound to the user and consent context."""
         token = secrets.token_urlsafe(32)
         await self._r.setex(
-            self._key("csrf", token), CSRF_TTL_SECONDS, json.dumps({"sub": sub})
+            self._key("csrf", token),
+            CSRF_TTL_SECONDS,
+            json.dumps({"sub": sub, "context": dict(context or {})}),
         )
         return token
 
@@ -174,31 +185,47 @@ class GrantStore:
 
     async def consume_csrf_token_with_reason(self, token: Optional[str], sub: str) -> tuple[bool, str]:
         """Consume a CSRF token and return a non-secret diagnostic reason."""
+        ok, reason, _context = await self.consume_csrf_token_context(token, sub)
+        return ok, reason
+
+    async def consume_csrf_token_context(
+        self,
+        token: Optional[str],
+        sub: str,
+    ) -> tuple[bool, str, Dict[str, Any]]:
+        """Consume a CSRF token and return its server-authored consent context."""
         if not token:
-            return False, "missing"
+            return False, "missing", {}
         key = self._key("csrf", token)
         raw = await self._r.get(key)
         if raw is None:
-            return False, "not_found"
+            return False, "not_found", {}
         await self._r.delete(key)  # single use
         try:
-            stored_sub = json.loads(raw).get("sub")
+            payload = json.loads(raw)
+            stored_sub = payload.get("sub")
         except Exception:
-            return False, "malformed_record"
+            return False, "malformed_record", {}
         if stored_sub != sub:
-            return False, "subject_mismatch"
-        return True, "ok"
+            return False, "subject_mismatch", {}
+        context = payload.get("context")
+        return True, "ok", dict(context) if isinstance(context, dict) else {}
 
     # ------------------------- dynamic client registration -------------------------
 
     async def register_client(
-        self, *, redirect_uris: List[str], metadata: Optional[Dict[str, Any]] = None
+        self,
+        *,
+        redirect_uris: List[str],
+        application_type: str = "native",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         client_id = "dcr-" + secrets.token_urlsafe(16)
         record = {
             "client_id": client_id,
             "redirect_uris": list(redirect_uris),
             "token_endpoint_auth_method": "none",
+            "application_type": application_type,
             "metadata": metadata or {},
         }
         # Sliding TTL (see CLIENT_TTL_SECONDS): long-lived for a connector in
@@ -217,6 +244,39 @@ class GrantStore:
         await self._r.expire(key, CLIENT_TTL_SECONDS)
         return json.loads(raw)
 
+    # ----------------------- client metadata documents -----------------------
+
+    def _client_metadata_key(self, client_id: str) -> str:
+        digest = hashlib.sha256(client_id.encode("utf-8")).hexdigest()
+        return self._key("client-metadata", digest)
+
+    async def cache_client_metadata_document(
+        self,
+        client_id: str,
+        client: Dict[str, Any],
+        *,
+        ttl_seconds: int,
+    ) -> None:
+        payload = {"status": "ok", "client": dict(client or {})}
+        await self._r.setex(
+            self._client_metadata_key(client_id),
+            max(1, int(ttl_seconds)),
+            json.dumps(payload),
+        )
+
+    async def get_client_metadata_cache(self, client_id: str) -> Optional[Dict[str, Any]]:
+        raw = await self._r.get(self._client_metadata_key(client_id))
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    async def delete_client_metadata_cache(self, client_id: str) -> bool:
+        return bool(await self._r.delete(self._client_metadata_key(client_id)))
+
     async def rotate_refresh_token(self, refresh_token: str) -> Optional[str]:
         rec = await self.validate_refresh_token(refresh_token)
         if rec is None:
@@ -231,6 +291,7 @@ class GrantStore:
             grantor_authority=rec.get("grantor_authority") or {},
             delegation_edges=rec.get("delegation_edges") or [],
             named_services=rec.get("named_services") or {},
+            client_metadata=rec.get("client_metadata") or {},
             # Keep the registry-card pointer across rotations: without it the
             # rotated record froze its scopes and RFC 7009 revocation could no
             # longer find the card to retire.

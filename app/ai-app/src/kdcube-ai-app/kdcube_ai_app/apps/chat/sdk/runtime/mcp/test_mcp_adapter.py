@@ -1,10 +1,17 @@
+import asyncio
+
 from kdcube_ai_app.apps.chat.sdk.runtime.mcp.mcp_adapter import MCPServerSpec, PythonSDKMCPAdapter
 
 
 def test_auth_headers_supports_secret_key(monkeypatch):
+    async def get_secret(key, default=None):
+        if key == "bundles.react.mcp@2026-03-09.secrets.docs.token":
+            return "secret-token"
+        return default
+
     monkeypatch.setattr(
         "kdcube_ai_app.apps.chat.sdk.config.get_secret",
-        lambda key, default=None: "secret-token" if key == "bundles.react.mcp@2026-03-09.secrets.docs.token" else default,
+        get_secret,
     )
     adapter = PythonSDKMCPAdapter(
         MCPServerSpec(
@@ -18,4 +25,4 @@ def test_auth_headers_supports_secret_key(monkeypatch):
             },
         )
     )
-    assert adapter._auth_headers() == {"Authorization": "Bearer secret-token"}
+    assert asyncio.run(adapter._auth_headers()) == {"Authorization": "Bearer secret-token"}

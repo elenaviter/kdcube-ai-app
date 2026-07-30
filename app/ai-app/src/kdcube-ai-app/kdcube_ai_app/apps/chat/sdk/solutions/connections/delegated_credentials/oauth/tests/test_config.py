@@ -35,7 +35,18 @@ def test_delegated_client_reads_explicit_connection_hub_mount_config():
             },
         ],
         "dynamic_client_registration": {
+            "enabled": False,
+            "default_application_type": "web",
             "allowed_redirect_uris": ["https://allowed.example.test/callback"],
+        },
+        "client_id_metadata_documents": {
+            "enabled": True,
+            "allowed_domains": ["clients.example.test"],
+            "allow_subdomains": False,
+            "fetch_timeout_seconds": 2.5,
+            "max_document_bytes": 32000,
+            "cache_ttl_seconds": 120,
+            "cache_max_ttl_seconds": 600,
         },
     }
     mount_test_oauth_adapter(app)
@@ -47,6 +58,15 @@ def test_delegated_client_reads_explicit_connection_hub_mount_config():
     assert cfg.project == "project-b"
     assert cfg.auth_cookie_name == "__Secure-KDCUBE"
     assert cfg.brand == "KDCube"  # default when delegated_client brand is unset
+    assert cfg.dynamic_client_registration.enabled is False
+    assert cfg.dynamic_client_registration.default_application_type == "web"
+    assert cfg.client_id_metadata_documents.enabled is True
+    assert cfg.client_id_metadata_documents.allowed_domains == ("clients.example.test",)
+    assert cfg.client_id_metadata_documents.allow_subdomains is False
+    assert cfg.client_id_metadata_documents.fetch_timeout_seconds == 2.5
+    assert cfg.client_id_metadata_documents.max_document_bytes == 32000
+    assert cfg.client_id_metadata_documents.cache_ttl_seconds == 120
+    assert cfg.client_id_metadata_documents.cache_max_ttl_seconds == 600
 
     assert get_client("local-client", app) is not None
     assert get_client("claude", app) is None
@@ -56,6 +76,8 @@ def test_delegated_client_reads_explicit_connection_hub_mount_config():
     response = TestClient(app).get("/.well-known/oauth-authorization-server")
     assert response.status_code == 200
     assert response.json()["issuer"] == "https://mcp.example.test"
+    assert "registration_endpoint" not in response.json()
+    assert response.json()["client_id_metadata_document_supported"] is True
 
 
 def test_delegated_client_brand_defaults_to_kdcube():

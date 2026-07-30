@@ -24,7 +24,7 @@ see_also:
   staging, signing secrets, generated output, and cleanup.
 - `entrypoint.py` — thin bundle/surface adapter.
 - `services/` — product service modules.
-- `surfaces/mcp/` — service-family FastMCP adapters only. Keep `mcp` nested
+- `surfaces/mcp/` — service-family MCP adapters only. Keep `mcp` nested
   under `surfaces/`; a top-level `mcp/` package shadows the installed MCP SDK.
 - Connection Hub delegated credentials docs:
   `docs/sdk/solutions/connections/delegated-credentials/`.

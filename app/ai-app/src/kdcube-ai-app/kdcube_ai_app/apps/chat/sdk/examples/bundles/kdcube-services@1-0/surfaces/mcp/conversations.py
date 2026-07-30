@@ -25,15 +25,14 @@ def build_conversations_mcp_app(
     request: Any = None,
 ):
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
         from mcp.types import Icon, ToolAnnotations
     except Exception as exc:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from exc
 
     icons = kdcube_mcp_icons(Icon, request=request)
-    mcp = FastMCP(
+    mcp = KDCubeMCPServer(
         name,
-        stateless_http=True,
         icons=icons,
         website_url=kdcube_website_url(request=request),
     )

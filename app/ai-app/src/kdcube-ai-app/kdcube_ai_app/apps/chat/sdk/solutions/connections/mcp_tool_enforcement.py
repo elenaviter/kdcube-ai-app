@@ -3,7 +3,7 @@
 
 """Connected-account enforcement for PLAIN MCP tools.
 
-A plain ``@mcp`` tool (a FastMCP tool on a managed bundle surface, with no
+A plain ``@mcp`` tool (an MCPServer tool on a managed bundle surface, with no
 named-service registration behind it) declares which connected-account
 provider claims each of its operations needs and enforces them at execution
 time with ONE call. The declaration format is the existing application tool

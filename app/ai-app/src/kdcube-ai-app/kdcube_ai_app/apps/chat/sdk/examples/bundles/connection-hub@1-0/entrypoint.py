@@ -435,8 +435,12 @@ def _oauth_adapter_config(entrypoint: Any, request: Any) -> Dict[str, Any]:
     )
     cfg.setdefault(
         "dynamic_client_registration",
-        {"allowed_redirect_uris": list(DEFAULT_DCR_REDIRECT_URIS)},
+        {
+            "enabled": True,
+            "allowed_redirect_uris": list(DEFAULT_DCR_REDIRECT_URIS),
+        },
     )
+    cfg.setdefault("client_id_metadata_documents", {"enabled": True})
     public_base = _oauth_public_base_url(request)
     cfg["issuer"] = str(cfg.get("issuer") or public_base).rstrip("/")
     return cfg
@@ -1362,7 +1366,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             },
                         ],
                         "dynamic_client_registration": {
+                            "enabled": True,
                             "allowed_redirect_uris": list(DEFAULT_DCR_REDIRECT_URIS),
+                        },
+                        "client_id_metadata_documents": {
+                            "enabled": True,
+                            "allowed_domains": [],
+                            "allow_subdomains": True,
+                            "fetch_timeout_seconds": 5.0,
+                            "max_document_bytes": 5120,
+                            "cache_ttl_seconds": 3600,
+                            "cache_max_ttl_seconds": 86400,
                         },
                         "capabilities": [
                             {

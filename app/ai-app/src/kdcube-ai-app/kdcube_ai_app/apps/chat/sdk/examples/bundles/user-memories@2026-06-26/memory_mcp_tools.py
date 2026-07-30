@@ -1,5 +1,5 @@
 """
-FastMCP tool surface for the standalone user-memories bundle.
+MCP tool surface for the standalone user-memories bundle.
 
 This module is intentionally small and read-only. The authorization boundary is
 not implemented here: the bundle MCP route is guarded by the platform-managed
@@ -112,7 +112,7 @@ def build_user_memories_mcp_app(
     search_embedding_factory: SearchEmbeddingFactory | None = None,
     request: Any = None,
 ):
-    """Build the read-only FastMCP app for user memory access.
+    """Build the read-only MCP server for user memory access.
 
     Parameters:
     - ``store_factory`` returns the memory store bound to the current runtime.
@@ -125,7 +125,7 @@ def build_user_memories_mcp_app(
       call.
     """
     try:
-        from mcp.server.fastmcp import FastMCP
+        from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
         from mcp.types import Icon, ToolAnnotations
     except Exception as exc:  # pragma: no cover - runtime dependency
         raise ImportError("mcp server SDK is not installed") from exc
@@ -133,9 +133,8 @@ def build_user_memories_mcp_app(
     # The proc MCP bridge dispatches requests independently; stateless HTTP
     # keeps initialize/tools/list/tool calls valid across fresh app instances.
     icons = kdcube_mcp_icons(Icon, request=request)
-    mcp = FastMCP(
+    mcp = KDCubeMCPServer(
         name,
-        stateless_http=True,
         icons=icons,
         website_url=kdcube_website_url(request=request),
     )

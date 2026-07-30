@@ -156,9 +156,7 @@ async def _process_text(text: str) -> str | None:
 
 
 async def _process_content(content: Any) -> Any | None:
-    # langchain-mcp-adapters tools are content_and_artifact: content is a STRING
-    # (single text block) or a LIST of content blocks ({"type": "text", ...});
-    # plain dict/str cover direct callers.
+    # MCP bindings may return a string, a structured dict, or content blocks.
     if isinstance(content, str):
         return await _process_text(content)
     if isinstance(content, dict):

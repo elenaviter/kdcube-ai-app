@@ -1505,9 +1505,11 @@ async def test_dispatch_bundle_mcp_request_runs_asgi_lifespan():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_bundle_mcp_request_runs_fastmcp_streamable_http_lifespan():
-    fastmcp = pytest.importorskip("mcp.server.fastmcp")
-    mcp_app = fastmcp.FastMCP("test-tools", stateless_http=True)
+async def test_dispatch_bundle_mcp_request_runs_mcpserver_streamable_http_lifespan():
+    pytest.importorskip("mcp.server")
+    from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
+
+    mcp_app = KDCubeMCPServer("test-tools")
 
     @mcp_app.tool(name="hello")
     async def _hello():

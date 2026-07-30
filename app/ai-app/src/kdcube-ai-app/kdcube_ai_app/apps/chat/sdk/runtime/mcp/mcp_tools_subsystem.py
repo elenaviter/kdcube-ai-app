@@ -176,6 +176,13 @@ class MCPToolsSubsystem:
         args = cfg.get("args") or []
         env = cfg.get("env") or None
         auth = cfg.get("auth") or cfg.get("credentials")
+        protocol_mode = str(cfg.get("protocol_mode") or "auto").strip()
+        read_timeout_raw = cfg.get("read_timeout_seconds")
+        read_timeout_seconds = (
+            float(read_timeout_raw)
+            if read_timeout_raw is not None
+            else None
+        )
 
         if _is_interactive_auth(auth):
             return None
@@ -196,6 +203,8 @@ class MCPToolsSubsystem:
             args=[str(x) for x in (args or [])],
             env=env if isinstance(env, dict) else None,
             auth_profile=auth if isinstance(auth, dict) else None,
+            protocol_mode=protocol_mode,
+            read_timeout_seconds=read_timeout_seconds,
         )
 
     def _adapter_factory_for_server(self, server_id: str) -> Optional[MCPAdapterFactory]:

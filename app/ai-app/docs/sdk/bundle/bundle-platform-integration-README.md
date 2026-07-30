@@ -4,7 +4,7 @@ title: "Bundle Platform Integration"
 summary: "Declarative platform contract for exposing bundle capabilities through decorators, manifest metadata, REST operations, widgets, MCP routes, static UI, public routes, Data Bus handlers, scheduled jobs, and background job handlers."
 tags: ["sdk", "bundle", "integration", "decorators", "widgets", "operations", "mcp", "ui", "manifest", "cron", "scheduled-jobs", "background-jobs", "data-bus"]
 keywords: ["decorator based integration", "bundle manifest contract", "rest operations exposure", "widget exposure", "mcp route exposure", "static ui exposure", "public route exposure", "data bus handler", "scheduled job exposure", "on_job background job handler"]
-updated_at: 2026-06-06
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-entrypoint-classes-README.md
@@ -709,8 +709,9 @@ Current fields:
 
 Current rule:
 
-- the decorated method must return a `FastMCP` app exposing
-  `streamable_http_app()` or an ASGI app already prepared for MCP HTTP handling
+- the decorated method should return `KDCubeMCPServer`, or an ASGI app already
+  prepared for MCP HTTP handling; older zero-argument
+  `streamable_http_app()` providers remain accepted
 - proc resolves the bundle endpoint, obtains that MCP app from the bundle
   method, and dispatches the incoming request into it
 - proc forwards the original request headers and body to the MCP subapp
@@ -1468,7 +1469,9 @@ Current rules:
   - `route="public"` is not callable through `/mcp/...`
 - current supported transport is `streamable-http`
 - proc rewrites the routed request onto the MCP subapp path expected by the
-  current FastMCP HTTP transport
+  streamable HTTP transport
+- `KDCubeMCPServer` accepts the modern MCP 2026-07-28 discovery flow and legacy
+  `initialize` clients on the same stateless provider surface
 - bundle code returns the MCP app; proc does not synthesize MCP tools from
   ordinary `@api(...)` methods
 - proc forwards original request headers/body to the bundle MCP subapp

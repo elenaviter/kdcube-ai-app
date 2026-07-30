@@ -34,7 +34,7 @@ async def test_named_services_get_exposes_provider_filters() -> None:
         bridge_factory=lambda **_kwargs: None,
     )
 
-    schemas = {tool.name: tool.inputSchema for tool in await app.list_tools()}
+    schemas = {tool.name: tool.input_schema for tool in await app.list_tools()}
     get_schema = schemas["named_services_get"]
     assert "filters_json" in get_schema["properties"]
     assert "ranges" in get_schema["properties"]["filters_json"]["description"]
@@ -52,7 +52,7 @@ async def test_search_and_generic_call_expose_pagination_cursor() -> None:
         bridge_factory=lambda **_kwargs: None,
     )
 
-    schemas = {tool.name: tool.inputSchema for tool in await app.list_tools()}
+    schemas = {tool.name: tool.input_schema for tool in await app.list_tools()}
 
     assert "cursor" in schemas["named_services_search"]["properties"]
     assert "cursor" in schemas["named_services_call"]["properties"]

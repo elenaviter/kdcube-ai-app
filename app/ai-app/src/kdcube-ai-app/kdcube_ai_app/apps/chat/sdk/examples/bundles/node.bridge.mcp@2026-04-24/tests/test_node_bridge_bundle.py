@@ -109,14 +109,14 @@ class _DummyConfig:
 
 
 def test_build_node_bridge_mcp_app_returns_streamable_http_app():
-    pytest.importorskip("mcp.server.fastmcp")
+    pytest.importorskip("mcp.server.mcpserver")
     mod = _load_entrypoint_module()
     app = mod.node_mcp_tools.build_node_bridge_mcp_app(
         name="node.bridge.test",
         bridge_provider=lambda: None,
     )
     assert app is not None
-    assert hasattr(app, "_mcp_server")
+    assert hasattr(app, "streamable_http_app")
 
 
 @pytest.mark.asyncio

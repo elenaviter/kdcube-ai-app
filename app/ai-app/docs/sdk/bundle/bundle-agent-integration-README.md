@@ -4,7 +4,7 @@ title: "Bundle Agent Integration"
 summary: "Canonical bundle guide for wiring React agents, bundle-local tools and skills, MCP connectors, bundle-served MCP endpoints, and Claude Code subagents with deployable auth and network requirements."
 tags: ["sdk", "bundle", "agents", "react", "claude-code", "tools", "skills", "mcp", "deployment"]
 keywords: ["bundle agent integration", "React tool config", "skill config", "event_source_reader", "bundle served MCP", "Claude Code MCP", "ClaudeCodeAgent", "mcp_base_url", "agent runtime context"]
-updated_at: 2026-07-16
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
@@ -1095,8 +1095,8 @@ Route shape:
 ```
 
 For MCP, `public` and `operations` are URL families. They are not proc-side
-auth modes. Proc forwards the request into the bundle MCP app, and the bundle
-owns authentication.
+auth modes. The descriptor chooses a public, bundle-owned, or managed boundary.
+The example below is bundle-owned; managed auth is enforced before app dispatch.
 
 MCP service shape:
 
@@ -1104,7 +1104,8 @@ MCP service shape:
 from typing import Any
 
 from fastapi import HTTPException
-from mcp.server.fastmcp import FastMCP
+
+from kdcube_ai_app.apps.chat.sdk.runtime.mcp.server import KDCubeMCPServer
 
 
 TOKEN_HEADER = "X-Example-MCP-Token"
@@ -1116,7 +1117,7 @@ def build_scoped_data_mcp_app(*, entrypoint: Any, request: Any, storage_root: st
     if not expected.ok:
         raise HTTPException(status_code=401, detail=expected.error)
 
-    mcp = FastMCP(SERVER_NAME, stateless_http=True)
+    mcp = KDCubeMCPServer(SERVER_NAME, stateless_http=True)
 
     @mcp.tool(name="task_context")
     async def task_context() -> dict:
