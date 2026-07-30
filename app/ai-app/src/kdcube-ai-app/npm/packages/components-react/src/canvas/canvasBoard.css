@@ -785,6 +785,64 @@ button {
   -webkit-line-clamp: unset;
 }
 
+/* --- User-text note pin: the card face IS the note ------------------------- */
+/* The whole face renders the note as scrollable markdown, so resizing the card
+   taller reveals more of it (was: raw title + 2-line clamp + empty area). */
+/* A note pin is always tall enough to read/edit reliably, even if a small rect
+   was persisted. */
+.canvas-card.user-text {
+  min-height: 150px;
+}
+.canvas-card-text-zone.note {
+  position: relative;
+  gap: 4px;
+  cursor: default;
+}
+.canvas-card-note-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  user-select: text;
+  /* Read the note on a neutral paper surface, so the namespace color stays a
+     thin frame around the card instead of tinting the whole reading area. */
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+}
+/* Rendered note paragraphs must not inherit the card's 2-line clamp. */
+.canvas-card-note-body p,
+.canvas-card-note-body li {
+  display: block;
+  flex: none;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  -webkit-line-clamp: unset;
+}
+.canvas-card-note-body p { margin: 0 0 6px; }
+.canvas-card-note-body .canvas-md { font-size: 12px; }
+.canvas-card-note-empty {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
+  font-size: 12px;
+}
+/* Editing in place fills the note zone (the editor is a flex column). */
+.canvas-card-text-zone.note.editing { cursor: default; }
+.canvas-card-text-zone.note.editing .canvas-mde { flex: 1 1 auto; min-height: 0; }
+.canvas-card-text-zone.note.editing .canvas-mde textarea {
+  flex: 1 1 auto;
+  min-height: 80px;
+  max-height: none;
+  resize: none;
+}
+.canvas-card-text-zone.note.editing .canvas-mde-preview {
+  flex: 1 1 auto;
+  min-height: 80px;
+  max-height: none;
+}
+
 .canvas-card-description {
   border-top: 1px dashed var(--line-soft);
   padding-top: 5px;
@@ -1463,7 +1521,10 @@ button {
 
 .canvas-mde textarea {
   width: 100%;
-  min-height: 64px;
+  min-width: 100%;
+  min-height: 140px;
+  max-height: 70vh;
+  box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--surface);
@@ -1472,7 +1533,9 @@ button {
   font: inherit;
   font-size: 12px;
   line-height: 1.5;
-  resize: vertical;
+  /* Resize in both directions during editing (was vertical-only). The card
+   * itself also stays resizable via its corner handle. */
+  resize: both;
 }
 
 .canvas-mde textarea:focus {
@@ -1482,7 +1545,9 @@ button {
 }
 
 .canvas-mde-preview {
-  min-height: 64px;
+  min-height: 140px;
+  max-height: 70vh;
+  overflow: auto;
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
   background: var(--surface-2);
@@ -1610,6 +1675,11 @@ button {
   border-style: dashed;
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(8, 189, 178, 0.12);
+  /* A comfortable composing surface — the tiny default box was cramped and
+   * only grew downward. The inner textarea is resizable in both directions. */
+  min-width: 340px;
+  width: auto;
+  max-width: 90vw;
 }
 
 .canvas-card.user-text.draft .canvas-card-body {

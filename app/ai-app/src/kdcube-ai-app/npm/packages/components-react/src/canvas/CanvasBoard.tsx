@@ -239,6 +239,28 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
+// A user-authored text pin (own note). Its body is markdown; it is viewable
+// (rendered) and editable inline, and its content update rides `update_card
+// content={text}`. Other `cnv:*:text` kinds (agent/provided) stay read-only.
+function isUserTextCard(card: { object_kind?: string }): boolean {
+  return String(card.object_kind || '') === 'cnv:user:text'
+}
+
+// Decode a base64 (optionally data-URL) payload to UTF-8 text. The hosted
+// user-text object is fetched via the object `download` action, which returns
+// the full file (never the 240-char card preview).
+function decodeBase64ToText(value: string): string {
+  const raw = String(value || '')
+  const comma = raw.indexOf(',')
+  const encoded = comma >= 0 && raw.slice(0, comma).includes('base64') ? raw.slice(comma + 1) : raw
+  try {
+    const bytes = Uint8Array.from(atob(encoded), (c) => c.charCodeAt(0))
+    return new TextDecoder('utf-8').decode(bytes)
+  } catch {
+    try { return atob(encoded) } catch { return '' }
+  }
+}
+
 // --- Lightweight markdown (self-contained, no dependency) -------------------
 // Supports headings, bold/italic, inline code, code fences, links, blockquotes
 // and ordered/unordered lists — enough for canvas text, descriptions, and
@@ -770,6 +792,12 @@ export function CanvasBoard({
   const [textDraft, setTextDraft] = useState<{ rect: CanvasCard['rect']; text: string } | null>(null)
   const [descDraftByCard, setDescDraftByCard] = useState<Record<string, string>>({})
   const [commentDraftByCard, setCommentDraftByCard] = useState<Record<string, string>>({})
+  // Full body of a user-text pin, fetched on demand (the card only carries a
+  // 240-char preview). `undefined` = not fetched; string = fetched (may be '').
+  const [userTextByCard, setUserTextByCard] = useState<Record<string, string>>({})
+  const [userTextLoadingByCard, setUserTextLoadingByCard] = useState<Record<string, boolean>>({})
+  // Draft while editing a user-text pin's body; `undefined` = not editing.
+  const [textEditByCard, setTextEditByCard] = useState<Record<string, string | undefined>>({})
   const [resolverStateByCard, setResolverStateByCard] = useState<Record<string, CanvasObjectActionResponse>>({})
   const [resolverLoadingByCard, setResolverLoadingByCard] = useState<Record<string, boolean>>({})
   const [resolverNoticeByCard, setResolverNoticeByCard] = useState<Record<string, string>>({})
@@ -1302,6 +1330,18 @@ export function CanvasBoard({
     setExpandMaxHeight(maxH)
     setExpandedCardId(cardId)
   }, [])
+
+  // Load each user-text pin's full body so the card face renders the whole note
+  // (the card itself only carries a 240-char preview). Fetched once per card;
+  // editing re-fetches fresh. Notes are few, so a per-card fetch is fine.
+  useEffect(() => {
+    cards.forEach((card) => {
+      if (isUserTextCard(card) && userTextByCard[card.id] === undefined && !userTextLoadingByCard[card.id]) {
+        void ensureUserText(card)
+      }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cards])
 
   const runPinSearch = useCallback(async () => {
     const query = searchInput.trim()
@@ -1994,6 +2034,66 @@ export function CanvasBoard({
     cancelDescriptionEdit(card.id)
   }
 
+  // Fetch the full body of a user-text pin via the object `download` action
+  // (returns the whole file, not the card's 240-char preview). Calling
+  // onObjectAction directly returns the content WITHOUT triggering a browser
+  // download — that side effect only happens in runObjectAction.
+  async function ensureUserText(card: CanvasCard, force = false): Promise<string> {
+    if (!onObjectAction) return userTextByCard[card.id] ?? ''
+    if (!force && userTextByCard[card.id] !== undefined) return userTextByCard[card.id]
+    setUserTextLoadingByCard((current) => ({ ...current, [card.id]: true }))
+    let text = userTextByCard[card.id] ?? ''
+    try {
+      const res = await onObjectAction(card, 'download')
+      if (res && res.ok) {
+        if (typeof res.text === 'string' && res.text) text = res.text
+        else if (typeof res.content_base64 === 'string' && res.content_base64) text = decodeBase64ToText(res.content_base64)
+        else if (typeof res.download_url === 'string' && res.download_url) {
+          try { text = await (await fetch(res.download_url, { credentials: 'include' })).text() } catch { /* keep prior */ }
+        } else text = ''
+      }
+      setUserTextByCard((current) => ({ ...current, [card.id]: text }))
+    } catch {
+      setUserTextByCard((current) => ({ ...current, [card.id]: current[card.id] ?? '' }))
+    } finally {
+      setUserTextLoadingByCard((current) => ({ ...current, [card.id]: false }))
+    }
+    return text
+  }
+
+  function startTextEdit(card: CanvasCard) {
+    // Open immediately with whatever body we have, then seed from the fresh
+    // fetch so the editor never starts from the truncated preview or a stale copy.
+    setTextEditByCard((current) => ({ ...current, [card.id]: userTextByCard[card.id] ?? '' }))
+    void ensureUserText(card, true).then((fresh) => {
+      setTextEditByCard((current) => (card.id in current ? { ...current, [card.id]: fresh } : current))
+    })
+  }
+
+  function updateTextEditDraft(cardId: string, value: string) {
+    setTextEditByCard((current) => ({ ...current, [cardId]: value }))
+  }
+
+  function cancelTextEdit(cardId: string) {
+    setTextEditByCard((current) => {
+      const next = { ...current }
+      delete next[cardId]
+      return next
+    })
+  }
+
+  function commitTextEdit(card: CanvasCard) {
+    const draft = textEditByCard[card.id]
+    if (draft === undefined) return
+    const text = draft
+    void applyCardOperations([
+      { op: 'update_card', card_id: card.id, content: { text } },
+    ], 'Edit note')
+    // Optimistically reflect the saved body in the rendered view.
+    setUserTextByCard((current) => ({ ...current, [card.id]: text }))
+    cancelTextEdit(card.id)
+  }
+
   function updateCommentDraft(cardId: string, value: string) {
     setCommentDraftByCard((current) => ({ ...current, [cardId]: value }))
   }
@@ -2521,6 +2621,10 @@ export function CanvasBoard({
             const wantsDownload = capabilities?.download === true
             const wantsOpen = capabilities?.open === true
             const isObjectRefCard = Boolean(card.ref)
+            const isUserText = isUserTextCard(card)
+            const userTextBody = userTextByCard[card.id]
+            const isEditingText = textEditByCard[card.id] !== undefined
+            const userTextLoading = Boolean(userTextLoadingByCard[card.id])
             const presentation = cardPresentation(card, namespaceStyles, resolverState)
             const visibleSummary = card.summary || (isObjectRefCard ? card.ref : '')
             const providerAttachmentContexts = providerObjectAttachmentContexts(card, resolverState)
@@ -2528,7 +2632,7 @@ export function CanvasBoard({
               <article
                 key={card.id}
                 data-card-id={card.id}
-                className={`canvas-card ${pinned ? 'expanded' : ''} ${dragged ? 'moving' : ''} ${card.selected || locallySelected ? 'selected' : ''} ${locallySelected ? 'multi-selected' : ''} ${pendingSuggestion ? 'suggested' : ''} ns-${cssClassToken(presentation.key)} ${searchActive ? (matchedCardIds?.has(card.id) ? 'search-match' : 'search-dim') : ''}`}
+                className={`canvas-card ${isUserText ? 'user-text' : ''} ${pinned ? 'expanded' : ''} ${dragged ? 'moving' : ''} ${card.selected || locallySelected ? 'selected' : ''} ${locallySelected ? 'multi-selected' : ''} ${pendingSuggestion ? 'suggested' : ''} ns-${cssClassToken(presentation.key)} ${searchActive ? (matchedCardIds?.has(card.id) ? 'search-match' : 'search-dim') : ''}`}
                 draggable
                 onClick={(event) => selectCard(card, event)}
                 onDragStart={(event) => {
@@ -2556,6 +2660,20 @@ export function CanvasBoard({
                   </span>
                   {enumTag ? <span className="canvas-card-enum" title={`${enumTag} — pin position in this kind on the board`}>{enumTag}</span> : null}
                   <span className="canvas-card-buttons">
+                    {isUserText && !isEditingText ? (
+                      <button
+                        type="button"
+                        title="Edit note"
+                        aria-label="Edit note"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          startTextEdit(card)
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                      >
+                        <PenLine size={13} />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       title={infoTooltip}
@@ -2643,17 +2761,47 @@ export function CanvasBoard({
                     </button>
                   </span>
                 </div>
-                <div
-                  className="canvas-card-text-zone"
-                  title="Hold to edit description"
-                  onPointerDown={(event) => startDescriptionHold(card, event)}
-                  onPointerMove={moveDescriptionHold}
-                  onPointerUp={clearDescriptionHold}
-                  onPointerCancel={clearDescriptionHold}
-                >
-                  <h3>{card.title}</h3>
-                  <p>{visibleSummary}</p>
-                </div>
+                {isUserText ? (
+                  <div className={`canvas-card-text-zone note ${isEditingText ? 'editing' : ''}`}>
+                    {isEditingText ? (
+                      <InlineMarkdownEditor
+                        value={textEditByCard[card.id] || ''}
+                        onChange={(value) => updateTextEditDraft(card.id, value)}
+                        onSave={() => commitTextEdit(card)}
+                        onCancel={() => cancelTextEdit(card.id)}
+                        placeholder="Write your note… (markdown supported)"
+                        saveLabel="Save note"
+                        saveDisabled={(textEditByCard[card.id] || '') === (userTextBody ?? '')}
+                      />
+                    ) : (
+                      <div
+                        className="canvas-card-note-body"
+                        /* Wheel-scroll to read; the card drags from elsewhere. */
+                        onWheel={(event) => event.stopPropagation()}
+                      >
+                        {userTextLoading && userTextBody === undefined ? (
+                          <p className="canvas-card-note-empty">Loading…</p>
+                        ) : (userTextBody ?? card.summary ?? '').trim() ? (
+                          <Markdown text={userTextBody ?? card.summary ?? ''} />
+                        ) : (
+                          <p className="canvas-card-note-empty">Empty note — use the pencil (top-right) to write.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div
+                    className="canvas-card-text-zone"
+                    title="Hold to edit description"
+                    onPointerDown={(event) => startDescriptionHold(card, event)}
+                    onPointerMove={moveDescriptionHold}
+                    onPointerUp={clearDescriptionHold}
+                    onPointerCancel={clearDescriptionHold}
+                  >
+                    <h3>{card.title}</h3>
+                    <p>{visibleSummary}</p>
+                  </div>
+                )}
                 <span className="canvas-card-kind">
                   <Grip size={12} />
                   {pendingSuggestion ? <span className="canvas-card-kind-label">pending suggestion</span> : null}
