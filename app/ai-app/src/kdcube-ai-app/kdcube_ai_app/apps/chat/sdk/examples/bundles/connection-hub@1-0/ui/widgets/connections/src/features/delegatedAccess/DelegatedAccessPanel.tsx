@@ -60,7 +60,8 @@ type PendingAgentGrant = {
   resource: string;
   claims: string[];
   // A per-account ask (the account can do it, this agent is not bound): the
-  // exact account + claim to tick, so the card names it and pre-checks it.
+  // exact account + claim to tick, so the card names it and opens the provider.
+  // The user still ticks the checkbox explicitly; the picker is default-closed.
   accountId?: string;
   accountClaim?: string;
 };

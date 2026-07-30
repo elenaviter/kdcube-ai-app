@@ -146,6 +146,139 @@ test('a per-agent grant demand routes the banner to the Delegated-by-KDCube tab 
   assert.deepEqual(banner.consentClaims, ['memories:read'])
 })
 
+test('a per-account agent grant deep link preserves account_id/account_claim from the served URL', () => {
+  const env = {
+    type: 'chat.step',
+    timestamp: '2026-07-29T12:00:00.000Z',
+    service: { request_id: 'req:turn-1' },
+    conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: 'turn-1' },
+    event: { step: 'delegated_to_kdcube.consent', status: 'completed', title: 'Consent', agent: 'connection-hub' },
+    data: {
+      error: { code: 'needs_connected_account_consent' },
+      consent: {
+        kind: 'delegated_to_kdcube.connected_account',
+        reason: 'agent_grant_required',
+        provider_id: 'google',
+        claims: ['gmail:read'],
+        account_id: 'google_cc4e6c3955b5f55d',
+        candidates: [{
+          account_id: 'google_cc4e6c3955b5f55d',
+          label: 'KDCube Demo Reader',
+          email: 'kdcube.demo.reader@gmail.com',
+          claims: ['gmail:read'],
+        }],
+        url: '/widgets/connections_settings'
+          + '?tab=delegated_by_kdcube&pending_agent_grant=1'
+          + '&agent_client_id=kdcube-agent%3Aworkspace%402026-03-31-13-36%3Amain'
+          + '&resource=%2A%2Fapi%2Fintegrations%2Fbundles%2F%2A%2F%2A%2Fkdcube-services%401-0%2Fpublic%2Fmcp%2Fnamed_services%2A'
+          + '&claims=&account_id=google_cc4e6c3955b5f55d&account_claim=gmail%3Aread',
+        action_label: 'Grant this agent access',
+        tools: ['mail'],
+      },
+    },
+  }
+  const shown = applyChatStep(baseState(), env)
+  assert.equal(shown.banners.length, 1)
+  const banner = shown.banners[0]
+  assert.equal(banner.text, 'Grant this agent gmail:read on KDCube Demo Reader.')
+  assert.equal(banner.actionLabel, 'Grant this agent access')
+  assert.equal(banner.consent.tab, 'delegated_by_kdcube')
+  assert.equal(banner.consent.params.pending_agent_grant, '1')
+  assert.equal(banner.consent.params.agent_client_id, 'kdcube-agent:workspace@2026-03-31-13-36:main')
+  assert.equal(banner.consent.params.account_id, 'google_cc4e6c3955b5f55d')
+  assert.equal(banner.consent.params.account_claim, 'gmail:read')
+  assert.equal(banner.consent.params.claims, undefined)
+  assert.deepEqual(banner.consentClaims, ['gmail:read'])
+  assert.deepEqual(banner.consentTools, ['mail'])
+})
+
+test('nested tool-result details still raise the precise per-account agent grant banner', () => {
+  const env = {
+    type: 'chat.step',
+    timestamp: '2026-07-29T12:00:00.000Z',
+    service: { request_id: 'req:turn-1' },
+    conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: 'turn-1' },
+    event: { step: 'react.tool', status: 'error', title: 'Tool result', agent: 'react.tool' },
+    data: {
+      result: [{
+        artifact_id: 'named_services.search_objects',
+        error: {
+          code: 'needs_connected_account_consent',
+          message: 'Grant this agent gmail:read on account KDCube Demo Reader.',
+          where: 'named_services.search_objects',
+          details: {
+            reason: 'agent_grant_required',
+            provider_id: 'google',
+            claims: ['gmail:read'],
+            account_id: 'google_cc4e6c3955b5f55d',
+            connection_hub_url: '/widgets/connections_settings'
+              + '?tab=delegated_by_kdcube&pending_agent_grant=1'
+              + '&agent_client_id=kdcube-agent%3Aworkspace%402026-03-31-13-36%3Amain'
+              + '&resource=%2A%2Fapi%2Fintegrations%2Fbundles%2F%2A%2F%2A%2Fkdcube-services%401-0%2Fpublic%2Fmcp%2Fnamed_services%2A'
+              + '&claims=&account_id=google_cc4e6c3955b5f55d&account_claim=gmail%3Aread',
+            action_label: 'Grant this agent access',
+            consent: {
+              kind: 'delegated_to_kdcube.connected_account',
+              reason: 'agent_grant_required',
+              provider_id: 'google',
+              claims: ['gmail:read'],
+              account_id: 'google_cc4e6c3955b5f55d',
+              candidates: [{
+                account_id: 'google_cc4e6c3955b5f55d',
+                label: 'KDCube Demo Reader',
+                email: 'kdcube.demo.reader@gmail.com',
+                claims: ['gmail:read'],
+              }],
+            },
+          },
+        },
+      }],
+    },
+  }
+  const shown = applyChatStep(baseState(), env)
+  assert.equal(shown.banners.length, 1)
+  const banner = shown.banners[0]
+  assert.equal(banner.text, 'Grant this agent gmail:read on account KDCube Demo Reader.')
+  assert.equal(banner.actionLabel, 'Grant this agent access')
+  assert.equal(banner.consent.tab, 'delegated_by_kdcube')
+  assert.equal(banner.consent.params.account_id, 'google_cc4e6c3955b5f55d')
+  assert.equal(banner.consent.params.account_claim, 'gmail:read')
+  assert.equal(banner.consent.params.claims, undefined)
+  assert.deepEqual(banner.consentClaims, ['gmail:read'])
+})
+
+test('a more specific per-account agent grant demand supersedes the previous account demand', () => {
+  function accountDemand(accountId) {
+    return {
+      type: 'chat.step',
+      timestamp: '2026-07-29T12:00:00.000Z',
+      service: { request_id: `req:${accountId}` },
+      conversation: { session_id: 'session-1', conversation_id: 'conv-1', turn_id: 'turn-1' },
+      event: { step: 'delegated_to_kdcube.consent', status: 'completed', title: 'Consent', agent: 'connection-hub' },
+      data: {
+        error: { code: 'needs_connected_account_consent' },
+        consent: {
+          kind: 'delegated_to_kdcube.connected_account',
+          reason: 'agent_grant_required',
+          provider_id: 'google',
+          claims: ['gmail:read'],
+          account_id: accountId,
+          url: '/widgets/connections_settings'
+            + '?tab=delegated_by_kdcube&pending_agent_grant=1'
+            + '&agent_client_id=kdcube-agent%3Aworkspace%402026-03-31-13-36%3Amain'
+            + '&resource=%2A%2Fapi%2Fintegrations%2Fbundles%2F%2A%2F%2A%2Fkdcube-services%401-0%2Fpublic%2Fmcp%2Fnamed_services%2A'
+            + `&account_id=${accountId}&account_claim=gmail%3Aread`,
+          action_label: 'Grant this agent access',
+        },
+      },
+    }
+  }
+  let state = applyChatStep(baseState(), accountDemand('google_610de3d5454c4c5e'))
+  state = applyChatStep(state, accountDemand('google_cc4e6c3955b5f55d'))
+  assert.equal(state.banners.length, 1)
+  assert.equal(state.banners[0].consent.params.account_id, 'google_cc4e6c3955b5f55d')
+})
+
 test('one agent, two pending resources -> TWO coexisting banners (surfaced live: slack swallowed memories)', () => {
   function agentDemand(resource, claims, toolName) {
     return {

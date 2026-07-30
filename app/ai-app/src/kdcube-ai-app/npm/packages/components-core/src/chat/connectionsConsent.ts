@@ -100,6 +100,8 @@ export function agentGrantConsentOpen(args: {
   agentClientId: string
   resource: string
   claims: string[]
+  accountId?: string
+  accountClaim?: string
   url?: string
 }): ConnectionsConsentOpen {
   const params: Record<string, string> = { pending_agent_grant: '1' }
@@ -109,6 +111,10 @@ export function agentGrantConsentOpen(args: {
   if (resource) params.resource = resource
   const claims = (args.claims || []).map((item) => String(item || '').trim()).filter(Boolean)
   if (claims.length) params.claims = claims.join(',')
+  const accountId = String(args.accountId || '').trim()
+  if (accountId) params.account_id = accountId
+  const accountClaim = String(args.accountClaim || '').trim()
+  if (accountClaim) params.account_claim = accountClaim
   return { tab: 'delegated_by_kdcube', params, url: String(args.url || '').trim() }
 }
 

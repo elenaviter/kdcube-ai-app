@@ -98,6 +98,31 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    const text = stringValue(value)
+    if (text) return text
+  }
+  return ''
+}
+
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => stringValue(item)).filter(Boolean)
+  }
+  const text = stringValue(value)
+  if (!text) return []
+  return text.split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+function firstStringList(...values: unknown[]): string[] {
+  for (const value of values) {
+    const list = stringList(value)
+    if (list.length) return list
+  }
+  return []
+}
+
 /** The agent persona a turn's triggering input carries, or null when the user
  *  authored it. Reads the `authored_by: "agent"` contract (`agent_title` plus
  *  the optional `handoff` — the helper's own message back to the delegating
@@ -131,6 +156,33 @@ function consentActionUrl(value: unknown): string {
   return ''
 }
 
+function queryParamsFromUrl(url: string): Record<string, string> {
+  const query = url.includes('?') ? url.slice(url.indexOf('?') + 1) : ''
+  if (!query) return {}
+  try {
+    const params: Record<string, string> = {}
+    const search = new URLSearchParams(query)
+    search.forEach((value, key) => {
+      const cleanKey = key.trim()
+      const cleanValue = value.trim()
+      if (cleanKey && cleanValue) params[cleanKey] = cleanValue
+    })
+    return params
+  } catch {
+    return {}
+  }
+}
+
+function accountLabelFromCandidates(candidates: unknown, accountId: string): string {
+  if (!Array.isArray(candidates) || !accountId) return ''
+  for (const item of candidates) {
+    const record = recordValue(item)
+    if (!record || stringValue(record.account_id) !== accountId) continue
+    return firstString(record.label, record.email, record.workspace, record.display_name, record.account_id)
+  }
+  return ''
+}
+
 function findConnectedAccountConsentPayload(value: unknown, depth = 0): Record<string, unknown> | null {
   if (depth > 5 || value == null) return null
   if (Array.isArray(value)) {
@@ -147,7 +199,7 @@ function findConnectedAccountConsentPayload(value: unknown, depth = 0): Record<s
   if (code === 'needs_connected_account_consent' || code === 'needs_connected_account') {
     return record
   }
-  for (const key of ['consent', 'connected_account', 'result', 'items', 'data']) {
+  for (const key of ['consent', 'connected_account', 'result', 'items', 'data', 'details', 'payload']) {
     const found = findConnectedAccountConsentPayload(record[key], depth + 1)
     if (found) return found
   }
@@ -166,31 +218,43 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
   const payload = findConnectedAccountConsentPayload(data)
   if (!payload) return null
   const error = recordValue(payload.error) || {}
-  const consent = recordValue(payload.consent)
-    || recordValue(payload.connected_account)
-    || recordValue(error.consent)
-    || {}
-  const provider = stringValue(consent.provider_label || consent.provider_id)
-  const connector = stringValue(consent.connector_app_label || consent.connector_app_id)
-  const tool = stringValue(consent.tool_label || consent.tool_id)
-  const claims = Array.isArray(consent.claims)
-    ? consent.claims.map((item) => stringValue(item)).filter(Boolean)
-    : []
+  const details = recordValue(error.details) || recordValue(payload.details) || {}
+  const consent = {
+    ...details,
+    ...(recordValue(details.consent) || {}),
+    ...(recordValue(error.consent) || {}),
+    ...(recordValue(payload.connected_account) || {}),
+    ...(recordValue(payload.consent) || {}),
+  }
+  const providerId = firstString(consent.provider_id, details.provider_id)
+  const provider = firstString(consent.provider_label, providerId)
+  const connector = firstString(consent.connector_app_label, consent.connector_app_id)
+  const tool = firstString(consent.tool_label, consent.tool_id)
+  const claims = firstStringList(consent.claims, details.claims, payload.claims)
   const url = consentActionUrl(
     consent.url
     || consent.consent_url
     || consent.connect_url
     || consent.action_url
+    || consent.connection_hub_url
+    || details.connection_hub_url
     || payload.url
     || payload.consent_url
     || payload.connect_url
-    || payload.action_url,
+    || payload.action_url
+    || payload.connection_hub_url,
   )
+  const urlParams = queryParamsFromUrl(url)
+  const accountId = firstString(consent.account_id, urlParams.account_id)
+  const accountClaim = firstString(consent.account_claim, urlParams.account_claim)
+  const candidates = consent.candidates || details.candidates
+  const accountLabel = accountLabelFromCandidates(candidates, accountId)
+  const actionLabel = firstString(consent.action_label, details.action_label, payload.action_label, error.action_label)
   // The claims render as compact chips after the sentence, so the text drops
   // the server's inline "(needs: …)" enumeration and stays short.
   const message = stringValue(error.message || payload.message).replace(/\s*\(needs:[^)]*\)/, '')
   const subject = [provider, connector].filter(Boolean).join(' / ')
-  const text = message
+  let text = message
     || `Connect or approve ${subject || 'an external account'}${tool ? ` for ${tool}` : ''}.`
   const blockedTools = Array.isArray(consent.tools)
     ? consent.tools.map((item) => stringValue(item)).filter(Boolean)
@@ -199,37 +263,44 @@ function connectedAccountConsentBanner(data: Record<string, unknown> | undefined
   // "Delegated by KDCube" tab with the pending agent + resource + claims so the
   // panel offers a one-click grant, rather than the connect-an-account card.
   const grant = recordValue(consent.grant)
-  const agentClientId = stringValue(consent.agent_client_id)
+  const grantPayload = recordValue(grant?.payload)
+  const agentClientId = firstString(consent.agent_client_id, grantPayload?.client_id, urlParams.agent_client_id)
   if (agentClientId) {
-    const resource = stringValue(consent.resource)
-    const grantClaims = Array.isArray(grant?.claims)
-      ? (grant?.claims as unknown[]).map((item) => stringValue(item)).filter(Boolean)
-      : claims
+    const resource = firstString(consent.resource, grantPayload?.resource, urlParams.resource)
+    const explicitGrantClaims = firstStringList(grant?.claims, grantPayload?.claims, urlParams.claims)
+    const grantClaims = explicitGrantClaims.length ? explicitGrantClaims : (accountClaim ? [] : claims)
+    const displayClaims = accountClaim ? [accountClaim] : grantClaims
+    const displayClaimText = displayClaims.join(', ')
+    if (!message) {
+      text = accountClaim
+        ? `Grant this agent ${accountClaim} on ${accountLabel || 'a connected account'}.`
+        : `Grant this agent access${displayClaimText ? ` to ${displayClaimText}` : ''}${resource ? ` on ${resource}` : ''}.`
+    }
     return {
       text: text || `Grant this agent access to ${resource || 'your data'}.`,
-      actionLabel: stringValue(consent.action_label) || 'Grant access',
+      actionLabel: actionLabel || 'Grant access',
       actionUrl: url,
-      consent: agentGrantConsentOpen({ agentClientId, resource, claims: grantClaims, url }),
+      consent: agentGrantConsentOpen({ agentClientId, resource, claims: grantClaims, accountId, accountClaim, url }),
       // The supersession prefix runs through the FIRST '|': keep agent AND
       // resource before it, so one agent's demands on different resources
       // coexist as separate banners (memories next to the named-services
       // bridge), and only a changed claim set on the SAME resource supersedes.
-      signature: `agent:${agentClientId}:${resource}|${[...grantClaims].sort().join(',')}`,
+      signature: `agent:${agentClientId}:${resource}|${[...new Set([...grantClaims, ...displayClaims])].sort().join(',')}|${accountId}|${accountClaim}`,
       tools: blockedTools,
-      claims: grantClaims,
+      claims: displayClaims,
     }
   }
   return {
     text,
-    actionLabel: stringValue(consent.action_label || payload.action_label) || 'Open Connection Hub',
+    actionLabel: actionLabel || 'Open Connection Hub',
     actionUrl: url,
     consent: connectionsConsentOpen({
-      provider: stringValue(consent.provider_id),
+      provider: providerId,
       claims,
-      accountId: stringValue(consent.account_id),
+      accountId,
       url,
     }),
-    signature: `${stringValue(consent.provider_id)}|${[...claims].sort().join(',')}`,
+    signature: `${providerId}|${[...claims].sort().join(',')}`,
     tools: blockedTools,
     claims,
   }
@@ -364,7 +435,8 @@ export function upsertConsentBanner(
     tone: 'warning' as BannerTone,
     text: trimmed,
     placement: 'composer' as const,
-    ...(input.actionLabel && input.actionUrl ? { actionLabel: input.actionLabel, actionUrl: input.actionUrl } : {}),
+    ...(input.actionLabel ? { actionLabel: input.actionLabel } : {}),
+    ...(input.actionUrl ? { actionUrl: input.actionUrl } : {}),
     consent: input.consent,
     consentSignature: input.signature,
     ...(input.tools.length ? { consentTools: input.tools } : {}),
