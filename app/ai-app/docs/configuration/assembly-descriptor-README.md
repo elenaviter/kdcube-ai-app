@@ -215,6 +215,7 @@ items:
                   region: eu-west-1
                   user_pool_id: eu-west-1_PRIMARY
                   app_client_id: primary-client
+                  hosted_ui_domain: https://auth.example.com
                   trusted_providers:
                     - alias: primary
                       kind: cognito
@@ -294,6 +295,13 @@ credentials.
 `frontend.config` is public browser config. The installer and
 `GET /api/cp-frontend-config` use the same builder and merge this section into
 the generated frontend config. Do not put secrets here.
+
+For Cognito, declare `hosted_ui_domain` on the selected platform authority
+provider's `authenticator` (or under `auth.cognito` for the legacy top-level
+shape). The generated `auth.oidcConfig` then contains the matching `authority`,
+`client_id`, and `end_session_endpoint`. A browser takes all three from the
+same `/api/cp-frontend-config` response; combining runtime login metadata with
+a site-local logout domain can address two different Cognito pools.
 
 Example:
 

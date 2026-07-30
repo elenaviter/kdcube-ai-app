@@ -170,6 +170,17 @@ def _build_oidc_authority(region: str, user_pool_id: str) -> str:
     return ""
 
 
+def _build_cognito_end_session_endpoint(hosted_ui_domain: Any) -> str:
+    raw = as_text(hosted_ui_domain).rstrip("/")
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    if raw.endswith("/logout"):
+        return raw
+    return f"{raw}/logout"
+
+
 def build_frontend_config(
     *,
     tenant: str,
@@ -257,6 +268,17 @@ def build_frontend_config(
             oidc_cfg["authority"] = authority
         if client_id:
             oidc_cfg["client_id"] = client_id
+        hosted_ui_domain = (
+            as_text(provider_auth.get("hosted_ui_domain"))
+            or as_text(get_nested(assembly or {}, "auth", "cognito", "hosted_ui_domain"))
+        )
+        end_session_endpoint = _build_cognito_end_session_endpoint(hosted_ui_domain)
+        if end_session_endpoint:
+            oidc_cfg["end_session_endpoint"] = end_session_endpoint
+        elif not as_text(get_nested(frontend_overrides, "auth", "oidcConfig", "end_session_endpoint")):
+            # Drop an endpoint inherited from a template or an old generated
+            # file after the selected Cognito provider changes.
+            oidc_cfg.pop("end_session_endpoint", None)
         auth["idTokenHeaderName"] = as_text(auth.get("idTokenHeaderName")) or id_token_header
         auth["oidcConfig"] = oidc_cfg
     elif auth_type == "delegated":

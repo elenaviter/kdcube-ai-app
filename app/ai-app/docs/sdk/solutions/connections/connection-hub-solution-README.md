@@ -4,7 +4,7 @@ title: "Connection Hub Solution"
 summary: "Canonical map of Connection Hub roles: connection edges, identity-family resolution, request authenticators, authority projection, delegated connections, link flows, and widget auth-context transport."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
-updated_at: 2026-07-17
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-edges/connection-edges-README.md
@@ -111,6 +111,7 @@ authority_registry:
             region: eu-west-1
             user_pool_id: eu-west-1_PRIMARY
             app_client_id: primary-client
+            hosted_ui_domain: https://auth.example.com
             service_client_id: primary-client
             cookie:
               auth_token_cookie_name: __Secure-LATC

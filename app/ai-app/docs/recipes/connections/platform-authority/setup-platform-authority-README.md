@@ -4,7 +4,7 @@ title: "Set Up A Platform Authority Provider"
 summary: "Recipe for selecting and configuring the KDCube platform authority provider: Cognito/multi-Cognito, SimpleIDP, or a bundle-hosted platform session."
 status: draft
 tags: ["recipes", "connections", "connection-hub", "platform-authority", "cognito", "multi-cognito", "simple-idp", "bundle-session"]
-updated_at: 2026-07-03
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/platform-authority/host-platform-authority-in-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
@@ -110,6 +110,7 @@ items:
                   region: eu-west-1
                   user_pool_id: eu-west-1_PRIMARY
                   app_client_id: primary-client
+                  hosted_ui_domain: https://auth.example.com
                   service_client_id: primary-client
                   cookie:
                     auth_token_cookie_name: __Secure-LATC
@@ -140,7 +141,8 @@ Expected browser config:
     "authType": "cognito",
     "oidcConfig": {
       "authority": "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_PRIMARY",
-      "client_id": "primary-client"
+      "client_id": "primary-client",
+      "end_session_endpoint": "https://auth.example.com/logout"
     },
     "authTokenCookieName": "__Secure-LATC",
     "idTokenCookieName": "__Secure-LITC",
@@ -149,6 +151,11 @@ Expected browser config:
   }
 }
 ```
+
+The selected provider supplies all three OIDC values. See
+[Authority Provider Runtime](../../../sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md#browser-auth-contract)
+for the distinction between KDCube platform logout and upstream Cognito
+browser-session logout.
 
 Expected browser flow:
 
@@ -363,4 +370,3 @@ For every provider method, verify:
 - `/profile` returns anonymous before login and a platform user after login.
 - Registered-user surfaces reject anonymous and work after login.
 - Logout or site-data clearing returns `/profile` to anonymous.
-

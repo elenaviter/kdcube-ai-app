@@ -48,6 +48,25 @@ class _Settings:
         }
 
 
+class _CognitoSettings(_Settings):
+    AUTH = SimpleNamespace(
+        COGNITO_REGION="eu-west-1",
+        COGNITO_USER_POOL_ID="eu-west-1_DEMO",
+        COGNITO_APP_CLIENT_ID="demo-client",
+        AUTH_TOKEN_COOKIE_NAME="__Secure-LATC",
+        ID_TOKEN_COOKIE_NAME="__Secure-LITC",
+    )
+
+    def connection_hub_platform_auth_config(self):
+        return {
+            "auth_provider": "cognito",
+            "region": "eu-west-1",
+            "user_pool_id": "eu-west-1_DEMO",
+            "app_client_id": "demo-client",
+            "hosted_ui_domain": "https://auth.demo.example.test",
+        }
+
+
 def _request() -> Request:
     return Request(
         {
@@ -102,3 +121,22 @@ def test_frontend_config_is_public_descriptor_resolution_without_runtime_service
         "tenant-one/project-one/workspace%401-0/public/platform_login"
     )
     assert response.headers["cache-control"] == "no-store, no-cache"
+
+
+def test_frontend_config_keeps_cognito_login_and_logout_on_selected_provider(monkeypatch):
+    assembly = {
+        "context": {"tenant": "tenant-one", "project": "project-one"},
+        "auth": {"type": "cognito"},
+        "proxy": {"route_prefix": "/platform"},
+    }
+    monkeypatch.setattr(frontend_config, "get_settings", lambda: _CognitoSettings())
+    monkeypatch.setattr(frontend_config, "_load_assembly_descriptor", lambda: assembly)
+
+    response = frontend_config.cp_frontend_config(_request())
+    payload = json.loads(response.body)
+
+    assert payload["auth"]["oidcConfig"] == {
+        "authority": "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_DEMO",
+        "client_id": "demo-client",
+        "end_session_endpoint": "https://auth.demo.example.test/logout",
+    }

@@ -40,6 +40,7 @@ auth:
     user_pool_id: eu-west-1_XXXXXXXXX # COGNITO_USER_POOL_ID
     app_client_id: ""                 # COGNITO_APP_CLIENT_ID
     service_client_id: ""             # COGNITO_SERVICE_CLIENT_ID
+    hosted_ui_domain: ""              # public Cognito hosted/custom domain used for browser logout
 
   proxy_login:
     redis_key_prefix: "proxylogin:<TENANT>:<PROJECT>:"
@@ -285,6 +286,7 @@ frontend:
    #   oidcConfig:
    #     authority: "https://cognito-idp.eu-west-1.amazonaws.com/eu-west-1_XXXXXXXXX"
    #     client_id: "<app_client_id>"
+   #     end_session_endpoint: "https://auth.example.com/logout"
    # auth:
    #   authType: "delegated"
    #   totpAppName: "Example App"

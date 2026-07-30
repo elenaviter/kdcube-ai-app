@@ -297,6 +297,8 @@ def cognito_platform_auth_config(provider_result: Mapping[str, Any] | None) -> d
         "user_pool_id": _str(_provider_field(provider, "user_pool_id", "pool_id")) or _str(first.get("user_pool_id")),
         "app_client_id": _str(_provider_field(provider, "app_client_id", "client_id")) or _str(first.get("app_client_id")),
         "service_client_id": _str(_provider_field(provider, "service_client_id")) or _str(first.get("app_client_id")),
+        "hosted_ui_domain": _str(_provider_field(provider, "hosted_ui_domain", "hosted_ui"))
+        or _str(first.get("hosted_ui_domain")),
         "trusted_providers": trusted,
         **_token_transport_config(provider),
         "jwks_cache_ttl_seconds": _provider_field(provider, "jwks_cache_ttl_seconds") or 86400,

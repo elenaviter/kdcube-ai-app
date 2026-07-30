@@ -100,6 +100,10 @@ Notes:
 - `auth.connection_hub` selects the platform authority provider. For Cognito,
   the selected provider under `connection-hub@1-0.config.authority_registry`
   supplies both browser-facing OIDC config and server-side token verification.
+- `authenticator.hosted_ui_domain` is public browser metadata read directly
+  from that selected provider and emitted as
+  `auth.oidcConfig.end_session_endpoint`; it has no separate process-setting
+  knob.
 - `auth.idp: session` is the bundle session auth provider. It requires the
   platform secret `services.session_token.secret`.
 

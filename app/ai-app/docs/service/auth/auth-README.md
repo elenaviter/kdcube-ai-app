@@ -4,7 +4,7 @@ title: "Auth"
 summary: "Authentication providers and token transport across REST/SSE/Socket.IO."
 tags: ["service", "auth", "security", "tokens"]
 keywords: ["delegated auth", "cookie auth", "JWT", "SSE auth", "Socket.IO"]
-updated_at: 2026-06-28
+updated_at: 2026-07-30
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
@@ -186,6 +186,7 @@ items:
                   region: eu-west-1
                   user_pool_id: eu-west-1_PRIMARY
                   app_client_id: primary-client
+                  hosted_ui_domain: https://auth.example.com
                   service_client_id: primary-client
                   cookie:
                     auth_token_cookie_name: __Secure-LATC
@@ -206,8 +207,8 @@ items:
 
 The control-plane frontend config, ingress, proc, and deployment descriptors
 all resolve Cognito runtime fields from the selected Connection Hub provider.
-Environment variables may still override runtime values for deployment
-mechanics, but the descriptor owner is Connection Hub.
+Deployment wiring projects those effective descriptor values into each
+service; Connection Hub remains their configuration owner.
 
 ## Bundle Builder Reading Path
 

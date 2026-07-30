@@ -216,6 +216,7 @@ items:
                   region: eu-west-1
                   user_pool_id: eu-west-1_PRIMARY
                   app_client_id: primary-client
+                  hosted_ui_domain: https://auth.example.com
                   trusted_providers:
                     - alias: primary
                       kind: cognito

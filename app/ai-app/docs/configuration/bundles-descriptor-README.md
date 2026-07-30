@@ -160,6 +160,7 @@ bundles:
                     region: eu-west-1
                     user_pool_id: eu-west-1_PRIMARY
                     app_client_id: primary-client
+                    hosted_ui_domain: https://auth.example.com
                     service_client_id: primary-client
                     cookie:
                       auth_token_cookie_name: __Secure-LATC
@@ -171,12 +172,18 @@ bundles:
                         region: eu-west-1
                         user_pool_id: eu-west-1_PRIMARY
                         app_client_id: primary-client
+                        hosted_ui_domain: https://auth.example.com
                       - alias: peer
                         kind: cognito
                         region: eu-west-1
                         user_pool_id: eu-west-1_PEER
                         app_client_id: peer-client
+                        hosted_ui_domain: https://peer-auth.example.com
 ```
+
+`hosted_ui_domain` is public provider metadata. For the selected Cognito
+provider, ingress publishes it as `auth.oidcConfig.end_session_endpoint` in
+`/api/cp-frontend-config`, alongside that provider's authority and client ID.
 
 Provider surface policy keys:
 

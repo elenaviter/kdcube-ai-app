@@ -32,6 +32,7 @@ def _registry():
                             "user_pool_id": "pool-a",
                             "app_client_id": "client-a",
                             "service_client_id": "service-a",
+                            "hosted_ui_domain": "https://auth.example.test",
                             "trusted_providers": [
                                 {
                                     "alias": "secondary",
@@ -168,6 +169,7 @@ def test_cognito_platform_auth_config_normalizes_registry_provider():
     assert config["user_pool_id"] == "pool-a"
     assert config["app_client_id"] == "client-a"
     assert config["service_client_id"] == "service-a"
+    assert config["hosted_ui_domain"] == "https://auth.example.test"
     assert config["auth_token_cookie_name"] == "__Secure-AUTH"
     assert config["id_token_cookie_name"] == "__Secure-ID"
     assert [row["alias"] for row in config["trusted_providers"]] == ["primary", "secondary"]

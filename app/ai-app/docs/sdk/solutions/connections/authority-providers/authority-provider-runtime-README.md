@@ -132,6 +132,7 @@ authority_registry:
             region: eu-west-1
             user_pool_id: eu-west-1_PRIMARY
             app_client_id: primary-client
+            hosted_ui_domain: https://auth.example.com
             service_client_id: primary-client
             jwks_cache_ttl_seconds: 86400
             cookie:
@@ -265,7 +266,11 @@ Browser configuration:
 
 - `/api/cp-frontend-config` returns `auth.authType: cognito`,
   `auth.oidcConfig.authority`, `auth.oidcConfig.client_id`,
+  `auth.oidcConfig.end_session_endpoint`,
   `auth.authTokenCookieName`, and `auth.idTokenCookieName`.
+- `end_session_endpoint` comes from the selected provider's
+  `authenticator.hosted_ui_domain`. Login and provider logout therefore address
+  the same Cognito pool and app client.
 - Browser clients run the OIDC callback flow and write:
 
   | Cookie | Meaning in Cognito mode |
@@ -418,9 +423,15 @@ ids, tenant/project ids, or descriptor internals.
 | --- | --- | --- |
 | `auth.authType` | Selected platform provider. | Selects the browser auth driver, for example `cognito`, `bundle`, or `simple`. |
 | `auth.oidcConfig` | Cognito/multi-Cognito provider. | Browser OIDC driver config. Present only for OIDC-backed browser auth. |
+| `auth.oidcConfig.end_session_endpoint` | Selected Cognito provider `authenticator.hosted_ui_domain`. | Hosted browser-session logout endpoint for the same provider used by OIDC login. |
 | `auth.loginUrl` | Connection Hub provider `entrypoints.login`, when the provider hosts browser login. | Where the browser navigates to create a platform session. |
 | `auth.profileUrl` | Platform default `/profile` unless overridden. | Server-side current-session probe after the browser has established auth cookies. |
 | `auth.logoutUrl` | Platform default `/api/platform/logout` unless overridden. | Generic platform logout. It clears platform cookies and invalidates bundle-session storage when applicable. |
+
+`auth.logoutUrl` and `auth.oidcConfig.end_session_endpoint` have different
+jobs. The first clears KDCube's platform session. The second ends the upstream
+Cognito hosted-browser session so the next login can choose a different
+identity provider or account.
 
 OIDC metadata, when present, is a browser login driver. The browser completes
 the OIDC callback and writes the platform cookies from the OIDC tokens. After
