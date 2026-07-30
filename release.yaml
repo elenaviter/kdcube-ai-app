@@ -1,43 +1,38 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.29.1625"
+  ref: "2026.07.30.1642"
   description: |
-    This release follows 2026.07.28.210.
+    This release follows 2026.07.29.1625.
 
-    Reactive event lane delivery is hardened around ownership, follow-up
-    cancellation, delivery-state locking, and same-conversation turn safety.
-    The runtime now preserves and documents the distinction between a turn's
-    accepted ingress batch, eligible continuation work, live follow-up, and
-    steer events that only affect the active live turn.
+    Google Docs joins the productivity integration and named-service surfaces.
+    Agents can discover, read, create, edit, format, import, export, comment on,
+    and embed images in documents through bounded typed operations or governed
+    flexible edits. Access follows the existing two-gate model: the caller
+    needs a delegated grant and the user needs the matching connected Google
+    account claim; the Google credential remains on the trusted server side.
 
-    Public content routes now support crawler-style HEAD probes in addition to
-    GET. The platform dispatches HEAD through the same public-content handler,
-    preserves the GET response status and headers, and returns an empty body so
-    sitemap validators and search tooling can verify runtime-generated content
-    without receiving the full page or XML payload.
+    MCP clients and servers now support Client ID Metadata Documents from the
+    2026-07-28 protocol revision alongside legacy Dynamic Client Registration.
+    Registration mode is explicit, existing DCR integrations remain available,
+    and the runtime MCP adapters share one compatibility-aware client path.
 
-    Connection Hub cleanup is more robust after account disconnects and
-    reauthorization. Stale bindings are pruned, grant cards are easier to read,
-    dynamic client registration records have a bounded TTL, and agent grant
-    cards now name the claim row involved in a requested capability so users can
-    understand which access path is being approved.
+    OAuth discovery and token revocation now preserve mounted application
+    routes. Discovery metadata advertises the served endpoints, and Connection
+    Hub exposes the matching revocation route instead of assuming a root mount.
 
-    The agentic runtime documentation now includes the runtimes map and the
-    agent-in-the-runtimes model, with corrected boundary, identity projection,
-    scheduled-job, and event-handling semantics. These docs clarify how hosted
-    agents, communication runtime, execution isolation, app surfaces, and
-    trusted runtime crossings fit together.
+    Browser logout now comes from the same selected Cognito authority provider
+    as login. The public frontend configuration returns the matching
+    end-session endpoint, preventing a scene configured for one authority from
+    attempting logout against another Cognito domain.
 
-    Scheduled and background job execution now uses the processor queue label
-    consistently when claiming work, and releases local processor capacity when
-    a claimed background job fails before entering the accounted execution path.
-    This prevents stale in-process load from saturating `current_load` and
-    blocking later scheduled jobs, including app-maintained generation jobs.
+    Connection Hub grant recovery now reads nested consent details and served
+    recovery URLs. Agent-grant banners retain the requested account and claims,
+    then open the precise delegated-access card instead of losing the
+    account-specific context.
 
-    The consent flow now separates account details from explanatory text and
-    avoids repeating the same access-gap guidance. Runtime architecture wording
-    was tightened to make the platform/app boundary and delivery signals easier
-    to audit.
+    Canvas user-text pins now show the full markdown note on the card face and
+    support in-place editing. Resizing reveals more of the scrollable note while
+    the namespace color remains a compact frame around a neutral reading area.
 
 config:
-  version: "2026.07.29.1625"
+  version: "2026.07.30.1642"
