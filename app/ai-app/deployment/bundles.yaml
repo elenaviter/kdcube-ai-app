@@ -219,6 +219,36 @@ bundles:
               - kdcube:role:super-admin
               delegable_permissions:
               - sheets:write
+            - grant: docs:read
+              label: Read Google Docs
+              description: Find documents and read or export their content through a connected Google account.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
+              delegable_permissions:
+              - docs:read
+            - grant: docs:write
+              label: Edit Google Docs
+              description: Create, edit, embed images into, and import Google documents through a connected Google account.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
+              delegable_permissions:
+              - docs:write
+            - grant: docs:comment
+              label: Comment on Google Docs
+              description: Read and write comments and replies on Google documents through a connected Google account.
+              delegable_roles:
+              - kdcube:role:registered
+              - kdcube:role:paid
+              - kdcube:role:privileged
+              - kdcube:role:super-admin
+              delegable_permissions:
+              - docs:comment
             # Slack is a single provider, so it uses its OWN real claims (the
             # exact capabilities the Slack API needs), not an invented namespace
             # claim. These match SLACK_CONNECTED_ACCOUNT_CLAIMS.
@@ -1103,6 +1133,202 @@ bundles:
                             grants:
                             - named_services:use
                             - sheets:write
+                  docs:
+                    label: Documents
+                    description: Find, inspect, read, create, and edit documents through connected accounts.
+                    authority_id: delegated_client
+                    tools:
+                      about:
+                        operation: provider.about
+                        label: About documents
+                        description: Explain the docs namespace, object refs, and connected-account model.
+                        grants:
+                        - named_services:use
+                      capabilities:
+                        operation: provider.capabilities
+                        label: Document capabilities
+                        description: Read the bounded operations available for connected documents.
+                        grants:
+                        - named_services:use
+                      list:
+                        operation: object.list
+                        label: List recent documents
+                        description: List recently modified documents visible to the connected account.
+                        grants:
+                        - named_services:use
+                        - docs:read
+                      schema:
+                        operation: object.schema
+                        label: Document schema
+                        description: Read document refs, fields, ranges, and mutation payloads.
+                        grants:
+                        - named_services:use
+                      search:
+                        operation: object.search
+                        label: Search documents
+                        description: Find documents by title through a connected account.
+                        grants:
+                        - named_services:use
+                        - docs:read
+                      get:
+                        operation: object.get
+                        label: Read document
+                        description: Inspect document metadata or read or export its content by ref.
+                        grants:
+                        - named_services:use
+                        - docs:read
+                      upsert:
+                        operation: object.upsert
+                        label: Create or update document
+                        description: Create a document, insert or replace text, or import content.
+                        grants:
+                        - named_services:use
+                        - docs:write
+                      action:
+                        operation: object.action
+                        label: Document action
+                        description: Apply text styling, insert page breaks, embed images, or import content.
+                        operations:
+                          object.action.insert_text:
+                            label: Insert document text
+                            description: Insert text at one explicit document location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.append_text:
+                            label: Append document text
+                            description: Append text to the end of a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.replace_text:
+                            label: Replace document text
+                            description: Replace matching text throughout a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.apply_text_style:
+                            label: Style document text
+                            description: Apply bounded text styling to one explicit range.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_page_break:
+                            label: Insert document page break
+                            description: Insert a page break at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.embed_image:
+                            label: Embed document image
+                            description: Embed an image at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.import:
+                            label: Import document content
+                            description: Import external content into a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                      delete:
+                        operation: object.delete
+                        label: Delete document content
+                        description: Delete bounded document content by stable ref.
+                        grants:
+                        - named_services:use
+                        - docs:write
+                      call:
+                        label: Generic document call
+                        description: Generic docs namespace call with per-operation grants.
+                        operations:
+                          provider.about:
+                            label: About documents
+                            description: Explain the docs namespace and connected-account model.
+                            grants:
+                            - named_services:use
+                          provider.capabilities:
+                            label: Document capabilities
+                            description: Read the operations available for connected documents.
+                            grants:
+                            - named_services:use
+                          object.list:
+                            label: List recent documents
+                            description: List recently modified documents.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.schema:
+                            label: Document schema
+                            description: Read document refs, fields, ranges, and mutation payloads.
+                            grants:
+                            - named_services:use
+                          object.search:
+                            label: Search documents
+                            description: Find documents by title.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.get:
+                            label: Read document
+                            description: Inspect metadata or read or export document content.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.upsert:
+                            label: Create or update document
+                            description: Create a document, insert or replace text, or import content.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_text:
+                            label: Insert document text
+                            description: Insert text at one explicit document location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.append_text:
+                            label: Append document text
+                            description: Append text to the end of a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.replace_text:
+                            label: Replace document text
+                            description: Replace matching text throughout a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.apply_text_style:
+                            label: Style document text
+                            description: Apply bounded text styling to one explicit range.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_page_break:
+                            label: Insert document page break
+                            description: Insert a page break at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.embed_image:
+                            label: Embed document image
+                            description: Embed an image at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.import:
+                            label: Import document content
+                            description: Import external content into a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.delete:
+                            label: Delete document content
+                            description: Delete bounded document content by stable ref.
+                            grants:
+                            - named_services:use
+                            - docs:write
                   slack:
                     label: Slack
                     description: List Slack workspaces/channels, search messages/files, read channel history, download files,
@@ -1328,6 +1554,86 @@ bundles:
                   label: Format Google Sheet range
                   description: Apply bounded common formatting to a spreadsheet range.
                   grants: [sheets:write]
+                productivity_docs_get_structure:
+                  label: Read Google Doc structure
+                  description: Read the document's structural graph and tabs with element indices.
+                  grants: [docs:read]
+                productivity_docs_list_tabs:
+                  label: List Google Doc tabs
+                  description: Enumerate a document's tabs without pulling full content.
+                  grants: [docs:read]
+                productivity_docs_batch_edit:
+                  label: Batch-edit Google Doc
+                  description: Apply a bounded list of native, allowlisted Docs edit requests, optionally to one tab.
+                  grants: [docs:write]
+                productivity_docs_search:
+                  label: Find Google Docs
+                  description: Find documents visible to a connected Google account.
+                  grants: [docs:read]
+                productivity_docs_get:
+                  label: Read Google Doc
+                  description: Read the structured content of a document.
+                  grants: [docs:read]
+                productivity_docs_export:
+                  label: Export Google Doc
+                  description: Export a document to a supported format.
+                  grants: [docs:read]
+                productivity_docs_list_comments:
+                  label: List Google Doc comments
+                  description: List comments and replies on a document.
+                  grants: [docs:read]
+                productivity_docs_get_comment:
+                  label: Read Google Doc comment
+                  description: Read one comment thread from a document.
+                  grants: [docs:read]
+                productivity_docs_create:
+                  label: Create Google Doc
+                  description: Create a document with optional initial content.
+                  grants: [docs:write]
+                productivity_docs_insert_text:
+                  label: Insert Google Doc text
+                  description: Insert text at an explicit document location.
+                  grants: [docs:write]
+                productivity_docs_append_text:
+                  label: Append Google Doc text
+                  description: Append text to the end of a document.
+                  grants: [docs:write]
+                productivity_docs_replace_text:
+                  label: Replace Google Doc text
+                  description: Replace matching text throughout a document.
+                  grants: [docs:write]
+                productivity_docs_apply_text_style:
+                  label: Style Google Doc text
+                  description: Apply bounded text styling to an explicit document range.
+                  grants: [docs:write]
+                productivity_docs_insert_page_break:
+                  label: Insert Google Doc page break
+                  description: Insert a page break at an explicit document location.
+                  grants: [docs:write]
+                productivity_docs_embed_image:
+                  label: Embed Google Doc image
+                  description: Embed an image at an explicit document location.
+                  grants: [docs:write]
+                productivity_docs_import:
+                  label: Import Google Doc
+                  description: Import external content into a Google document.
+                  grants: [docs:write]
+                productivity_docs_create_comment:
+                  label: Comment on Google Doc
+                  description: Create a comment on a document.
+                  grants: [docs:comment]
+                productivity_docs_reply_comment:
+                  label: Reply to Google Doc comment
+                  description: Reply to a comment thread on a document.
+                  grants: [docs:comment]
+                productivity_docs_resolve_comment:
+                  label: Resolve Google Doc comment
+                  description: Resolve a comment thread on a document.
+                  grants: [docs:comment]
+                productivity_docs_delete_comment:
+                  label: Delete Google Doc comment
+                  description: Delete a comment or reply on a document.
+                  grants: [docs:comment]
             - resource: '*/api/integrations/bundles/*/*/user-memories@2026-06-26/public/mcp/memories*'
               identity_scope: grantor_identity_family
               tools:
@@ -1390,6 +1696,9 @@ bundles:
                   - gmail:send
                   - sheets:read
                   - sheets:write
+                  - docs:read
+                  - docs:write
+                  - docs:comment
               claims:
                 gmail:read:
                   label: Read Gmail
@@ -1428,6 +1737,32 @@ bundles:
                   # create_spreadsheet makes a Drive file; drive.file is the
                   # least-privilege Drive write scope it needs.
                   - https://www.googleapis.com/auth/drive.file
+                docs:read:
+                  label: Read Google Docs
+                  description: Find documents and read or export their content.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  - https://www.googleapis.com/auth/documents.readonly
+                  - https://www.googleapis.com/auth/drive.readonly
+                docs:write:
+                  label: Edit Google Docs
+                  description: Create, edit, embed images into, and import Google documents.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  - https://www.googleapis.com/auth/documents
+                  - https://www.googleapis.com/auth/drive.file
+                docs:comment:
+                  label: Comment on Google Docs
+                  description: Read and write comments and replies on Google documents.
+                  provider_scopes:
+                  - openid
+                  - email
+                  - profile
+                  - https://www.googleapis.com/auth/drive
             slack:
               label: Slack
               adapter: slack.oauth_user_token
@@ -2425,6 +2760,16 @@ bundles:
                         strategy:
                         - exploitation
                   sheets:
+                    allowed:
+                    - provider.about
+                    - object.list
+                    - object.search
+                    - object.get
+                    - object.schema
+                    - object.upsert
+                    - object.action
+                    - object.delete
+                  docs:
                     allowed:
                     - provider.about
                     - object.list

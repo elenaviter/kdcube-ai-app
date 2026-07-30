@@ -357,6 +357,42 @@ The table lists caller grants under **Delegated by KDCube**. On the separate
 connected-account boundary, reads require `sheets:read` and mutations require
 both `sheets:read` and `sheets:write` from the approving user's Google account.
 
+### Named-service namespace: `docs`
+
+The `docs` namespace exposes connected documents through the same generic tools.
+Google Docs is the first backing provider; the agent contract stays
+provider-neutral:
+
+```text
+docs.document
+  docs:<provider>:<account_id>:document:<document_id>
+```
+
+| Named-service operation | Behavior | Required namespace grants |
+| --- | --- | --- |
+| `object.search` | Find documents by title. | `named_services:use`, `docs:read` |
+| `object.get` | Read text/structure, export to a format, or read comments; a turnless result can carry a signed full-snapshot URL, and stream mode returns a materializable document snapshot. | `named_services:use`, `docs:read` |
+| `object.upsert` | Create a document. | `named_services:use`, `docs:write` |
+| `object.action` | Typed edits (`insert_text`, `append_text`, `replace_text`, `apply_text_style`, `insert_page_break`, `embed_image`, `import`) authorized as exact `object.action.<action>`, plus comment mutations (`create_comment`, `reply_comment`, `resolve_comment`, `delete_comment`). | edits: `named_services:use`, `docs:write`; comments: `named_services:use`, `docs:comment` |
+
+Document deletion is not exposed; comment deletion is the `delete_comment`
+action. `object.schema` is authoritative for action payloads and bounds. Edits
+are typed `batchUpdate` requests, never raw document JSON. The adapter calls the
+same `GoogleDocsService` as the typed productivity surface, so credential custody,
+account selection, claim-upgrade behavior, and provider limits do not diverge.
+Unlike Sheets, the Docs service runs async in-proc over raw REST (no venv).
+
+For `response_mode=stream`, `object.get` returns media type
+`application/vnd.kdcube.docs.snapshot+json;version=1` carrying a
+`kdcube.docs.snapshot.v1` document. The shared snapshot, signed-URL, and
+`react.pull`/`react.read` harness mechanics are the same as the `sheets`
+namespace above; only the object kind and media type differ.
+
+The table lists caller grants under **Delegated by KDCube**. On the separate
+connected-account boundary, reads require `docs:read`, edits require `docs:write`,
+and comment mutations require `docs:comment` from the approving user's Google
+account.
+
 ## MCP Endpoint: Productivity
 
 ```text
@@ -379,14 +415,26 @@ its connected-account provider claim before resolving a live credential.
 | Structure | `productivity_sheets_create_spreadsheet`, `productivity_sheets_add_tab`, `productivity_sheets_update_tab`, `productivity_sheets_delete_tab` | `sheets:read`, `sheets:write` |
 | Presentation | `productivity_sheets_format_range` | `sheets:read`, `sheets:write` |
 
+The `productivity_docs_*` tool group covers Google Docs over the same connected
+account, split into three claims:
+
+| Group | Tools | Connected-account claims |
+| --- | --- | --- |
+| Find and read | `productivity_docs_search`, `productivity_docs_get`, `productivity_docs_export`, `productivity_docs_list_comments`, `productivity_docs_get_comment` | `docs:read` |
+| Edit | `productivity_docs_create`, `productivity_docs_insert_text`, `productivity_docs_append_text`, `productivity_docs_replace_text`, `productivity_docs_apply_text_style`, `productivity_docs_insert_page_break`, `productivity_docs_embed_image`, `productivity_docs_import` | `docs:write` |
+| Comment | `productivity_docs_create_comment`, `productivity_docs_reply_comment`, `productivity_docs_resolve_comment`, `productivity_docs_delete_comment` | `docs:comment` |
+
 Search uses Google Drive metadata. Later calls accept the returned stable
-spreadsheet id or a full Google Sheets URL. Describe returns stable tab ids for
-structural and formatting operations. MCP `tools/list` is authoritative for
-the typed parameters and bounds.
+spreadsheet/document id or a full Google Sheets/Docs URL. Describe returns stable
+tab ids for structural and formatting operations; Docs edits address a stable
+document id. MCP `tools/list` is authoritative for the typed parameters and
+bounds. Docs edits are typed `batchUpdate` operations, never raw JSON, and comment
+operations require `docs:comment`, distinct from the `docs:write` edit claim.
 
 The Google token crosses only from Connection Hub into the trusted app service
-and its app-owned venv subprocess. It is never an MCP argument or result. See
-the [Google Sheets recipe](../../../../../../../../../../docs/recipes/connections/integrations/google-sheets-README.md)
+(Sheets through an app-owned venv subprocess; Docs async in-proc). It is never an
+MCP argument or result. See
+the [Google Services recipe](../../../../../../../../../../docs/recipes/connections/integrations/google-service-README.md)
 for provider claims, resource configuration, consent, and verification.
 
 ## Signed File Routes

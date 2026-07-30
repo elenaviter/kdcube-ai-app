@@ -10,9 +10,9 @@ primary_surfaces:
   - "Widget `bundle_storage` — privileged operational storage browser"
   - "Privileged platform administration widgets — economics, conversations, gateway, Redis, and apps"
   - "MCP endpoint `conversations` — delegated access to conversations_export"
-  - "MCP endpoint `named_services` — delegated access to configured namespaces, including provider-neutral spreadsheets"
-  - "MCP endpoint `productivity` — governed Slack, mail, and Google Sheets tools over connected accounts"
-  - "Signed public transfer — conversation, mail, Slack, Sheets snapshots, and staged uploads"
+  - "MCP endpoint `named_services` — delegated access to configured namespaces, including provider-neutral spreadsheets and documents"
+  - "MCP endpoint `productivity` — governed Slack, mail, Google Sheets, and Google Docs tools over connected accounts"
+  - "Signed public transfer — conversation, mail, Slack, Sheets/Docs snapshots, and staged uploads"
 links:
   config: config/bundles.template.yaml
   interface: interface/README.md
@@ -227,6 +227,28 @@ short-lived signed snapshot URL when file delivery is configured, including
 beside selected inline ranges. The MCP surface does not provide `react.*`
 tools.
 
+The built-in `docs` namespace is the same kind of ontology adapter over the
+Google Docs service used by `public/mcp/productivity`:
+
+```text
+named_services_search namespace=docs
+  -> docs:google:<account_id>:document:<document_id>
+named_services_get <document ref>
+  -> text/structure, exported bytes, comments, or a signed full-snapshot URL
+named_services_upsert  -> create a document
+named_services_action  -> bounded typed edits (docs:write) and comment
+                          mutations (docs:comment)
+```
+
+The namespace stays provider-neutral with Google as its first backing provider.
+A read requires the caller's `docs:read` grant plus the same connected-account
+claim; edits require `docs:write` and comment mutations require `docs:comment`,
+each checked independently on the connected Google account. Docs splits reads,
+edits, and comments into three claims where Sheets used two. The generic
+snapshot/harness pull path is shared with `sheets`; only the object kind and the
+`kdcube.docs.snapshot.v1` media type differ. See
+[interface/README.md](interface/README.md) for the full operation/grant table.
+
 ### Productivity
 
 MCP endpoint:
@@ -236,13 +258,19 @@ MCP endpoint:
 ```
 
 This typed MCP surface runs over accounts the approving user connected through
-Connection Hub. It currently exposes Slack search, mail search/read, and Google
-Sheets tools.
+Connection Hub. It currently exposes Slack search, mail search/read, Google
+Sheets tools, and Google Docs tools.
 
 | Sheets tools | Caller grant | Connected Google claim |
 | --- | --- | --- |
 | `productivity_sheets_search`, `productivity_sheets_describe`, `productivity_sheets_read` | `sheets:read` | `sheets:read` |
 | values, spreadsheet, tab, and formatting mutations | `sheets:write` | `sheets:read` + `sheets:write` |
+
+| Docs tools | Caller grant | Connected Google claim |
+| --- | --- | --- |
+| `productivity_docs_search`, `productivity_docs_get`, `productivity_docs_export`, `productivity_docs_list_comments`, `productivity_docs_get_comment` | `docs:read` | `docs:read` |
+| document creation and typed edits (`productivity_docs_create`, `insert/append/replace_text`, `apply_text_style`, `insert_page_break`, `embed_image`, `import`) | `docs:write` | `docs:write` |
+| comment mutations (`productivity_docs_create_comment`, `reply_comment`, `resolve_comment`, `delete_comment`) | `docs:comment` | `docs:comment` |
 
 The caller grant is selected under **Delegated by KDCube**. The Google claim is
 approved under **Delegated to KDCube**. The app resolves the credential only
@@ -250,8 +278,11 @@ after both controls pass and never returns it to the MCP client or model.
 
 Sheets calls use the app-owned `requirements.txt` and async `@venv` helper in
 `services/productivity/google_sheets.py`; provider normalization lives in the
-SDK proxy. The [Google Sheets recipe](../../../../../../../../../docs/recipes/connections/integrations/google-sheets-README.md)
-contains the exact setup and regression walk.
+SDK proxy. Docs calls instead run async in-proc over raw REST in
+`services/productivity/google_docs.py` (the Docs and Drive APIs via the SDK
+proxy), with no venv. The
+[Google Services recipe](../../../../../../../../../docs/recipes/connections/integrations/google-service-README.md)
+contains the exact setup and regression walk for both.
 
 ### Signed File Transfer
 
@@ -261,7 +292,7 @@ three session-less, signed routes:
 | Alias | Method | Purpose |
 | --- | --- | --- |
 | `integration_file_upload` | POST | Upload one short-lived `staged:` file for a later mail/Slack action. |
-| `integration_file_download` | GET | Stream a complete Mail message/attachment, Slack file, or Sheets snapshot under the signed delegated-user scope. |
+| `integration_file_download` | GET | Stream a complete Mail message/attachment, Slack file, or Sheets/Docs snapshot under the signed delegated-user scope. |
 | `conv_file_download` | GET | Stream a `conv:fi:` conversation artifact under the signed user/conversation scope. |
 
 These routes are public only in transport terms. A managed MCP call mints the

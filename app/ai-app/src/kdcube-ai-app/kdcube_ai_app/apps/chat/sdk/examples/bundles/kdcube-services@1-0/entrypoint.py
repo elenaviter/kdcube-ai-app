@@ -33,6 +33,10 @@ from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
     save_staged,
     staging_root,
 )
+from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
+    make_docs_named_service_provider,
+    parse_docs_ref,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.mail import make_mail_named_service_provider
 from kdcube_ai_app.apps.chat.sdk.integrations.mail.named_service import parse_mail_ref
 from kdcube_ai_app.apps.chat.sdk.integrations.sheets import (
@@ -60,8 +64,11 @@ from .services.conversations.named_service import build_conversation_named_servi
 from .services.named_services import NamedServicesMcpBridge
 from .services.named_services.request_scope import get_public_base_url
 from .services.productivity import (
+    GoogleDocsService,
     GoogleSheetsService,
+    bind_docs_service,
     bind_service as bind_productivity_service,
+    fetch_google_docs_snapshot,
     fetch_google_sheets_snapshot,
 )
 from .surfaces.mcp import conversations as conversations_mcp_module
@@ -323,6 +330,7 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         gmail_tools_module.bind_service(self)
         slack_tools_module.bind_service(self)
         bind_productivity_service(self)
+        bind_docs_service(self)
         actor = getattr(self.comm_context, "actor", None)
         return productivity_mcp_module.build_productivity_mcp_app(
             name="KDCube productivity",
@@ -387,6 +395,17 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
         providers.append(
             make_sheets_named_service_provider(
                 execute_operation=sheets_service.execute,
+                bundle_id=self._named_services_bundle_id(),
+                file_url_factory=self._integration_file_url,
+            )
+        )
+        # The docs namespace is the same ontology-adapter pattern over the
+        # governed Docs service used by public/mcp/productivity.
+        bind_docs_service(self)
+        docs_service = GoogleDocsService()
+        providers.append(
+            make_docs_named_service_provider(
+                execute_operation=docs_service.execute,
                 bundle_id=self._named_services_bundle_id(),
                 file_url_factory=self._integration_file_url,
             )
@@ -664,6 +683,10 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             sheets_parsed = parse_sheets_ref(ref)
         except ValueError:
             sheets_parsed = {}
+        try:
+            docs_parsed = parse_docs_ref(ref)
+        except ValueError:
+            docs_parsed = {}
         if mail_parsed.get("kind") == "attachment":
             result = await fetch_mail_attachment(
                 self,
@@ -695,6 +718,15 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             )
         elif sheets_parsed.get("kind") in {"spreadsheet", "tab"}:
             result = await fetch_google_sheets_snapshot(
+                self,
+                user_id=user_id,
+                tenant=tenant,
+                project=project,
+                object_ref=ref,
+                bundle_id=self._named_services_bundle_id(),
+            )
+        elif docs_parsed.get("document_id"):
+            result = await fetch_google_docs_snapshot(
                 self,
                 user_id=user_id,
                 tenant=tenant,

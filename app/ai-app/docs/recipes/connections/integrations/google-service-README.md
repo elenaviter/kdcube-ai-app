@@ -1,9 +1,9 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
-title: "Google Services Through KDCube (Gmail, Sheets)"
-summary: "One recipe for connecting Google services to KDCube: one Google OAuth client, one google provider, one gmail connector app serving Gmail and Sheets (extensible to Drive/Calendar/Docs). Configure provider claims, wire each service's tools and named services, connect, grant, and verify."
+title: "Google Services Through KDCube (Gmail, Sheets, Docs)"
+summary: "One recipe for connecting Google services to KDCube: one Google OAuth client, one google provider, one gmail connector app serving Gmail, Sheets, and Docs (extensible to Drive/Calendar). Configure provider claims, wire each service's tools and named services, connect, grant, and verify."
 status: active
-tags: ["recipes", "connections", "connection-hub", "google", "gmail", "sheets", "oauth", "connected-accounts", "delegated-to-kdcube", "mcp"]
+tags: ["recipes", "connections", "connection-hub", "google", "gmail", "sheets", "docs", "oauth", "connected-accounts", "delegated-to-kdcube", "mcp"]
 updated_at: 2026-07-28
 see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
@@ -14,7 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
 ---
-# Google Services Through KDCube (Gmail, Sheets)
+# Google Services Through KDCube (Gmail, Sheets, Docs)
 
 Use this recipe to let a signed-in KDCube user connect their own Google account,
 then let KDCube tools and named services act on that user's behalf across Google
@@ -30,7 +30,7 @@ Google user
 
 **One client serves every Google service.** One Google OAuth client, one
 `google` provider (`adapter: google.oauth`), and one `gmail` connector app back
-Gmail, Sheets, and any Drive/Calendar/Docs service added the same way. Each
+Gmail, Sheets, Docs, and any Drive/Calendar service added the same way. Each
 service only adds claims, provider scopes, and tools; it does not add an OAuth
 client, adapter, or code.
 
@@ -47,7 +47,8 @@ That doc covers, in one place:
   with `.../connection-hub@1-0/public/delegated_to_kdcube_oauth_callback`) for
   the local, custom-authority, demo, and dev runtimes;
 - enabling the per-service product APIs in the same project (Gmail API for mail;
-  Sheets API plus Drive API for spreadsheets);
+  Sheets API plus Drive API for spreadsheets; Docs API plus Drive API for
+  documents);
 - the client id/secret keys and the hub-level `oauth_state_secret`.
 
 A completed Google OAuth connection proves identity and consent worked; it does
@@ -59,7 +60,7 @@ Cloud project that owns the OAuth client.
 Under the `connection-hub@1-0` item at
 `config.connections.delegated_to_kdcube.providers.google`, allow every claim on
 the one `gmail` connector app and define each claim's provider scopes. Add only
-the services you use; the block below shows Gmail and Sheets together:
+the services you use; the block below shows Gmail, Sheets, and Docs together:
 
 ```yaml
 connector_apps:
@@ -73,6 +74,9 @@ connector_apps:
       - gmail:send
       - sheets:read
       - sheets:write
+      - docs:read
+      - docs:write
+      - docs:comment
 claims:
   gmail:read:
     label: Read Gmail
@@ -114,6 +118,45 @@ claims:
       # makes. Without it, create fails with "Request had insufficient
       # authentication scopes" even though spreadsheets (read/write) is granted.
       - https://www.googleapis.com/auth/drive.file
+  docs:read:
+    label: Read Google Docs
+    description: Find documents, read their text and structure, export to a
+      format, and read comments.
+    provider_scopes:
+      - openid
+      - email
+      - profile
+      - https://www.googleapis.com/auth/documents.readonly
+      # Docs read uses drive.readonly, not sheets' drive.metadata.readonly:
+      # get/export stream the document's Drive content (full text, exported
+      # bytes), not only file metadata, and search lists Docs files by content.
+      - https://www.googleapis.com/auth/drive.readonly
+  docs:write:
+    label: Edit Google Docs
+    description: Create documents and apply typed edits - insert/append/replace
+      text, text styling, page breaks, embedded images, and import.
+    provider_scopes:
+      - openid
+      - email
+      - profile
+      - https://www.googleapis.com/auth/documents
+      # create posts to the Drive API and import uploads a Drive FILE, so a
+      # Drive WRITE scope is required. drive.file is least-privilege: the app
+      # may create and manage only the files it makes - same rule as Sheets.
+      - https://www.googleapis.com/auth/drive.file
+  docs:comment:
+    label: Comment on Google Docs
+    description: List, create, reply to, resolve, and delete comments on a
+      document through the Drive comments API.
+    provider_scopes:
+      - openid
+      - email
+      - profile
+      # Comments (and export) are Drive operations that act on ANY document the
+      # user names, including ones this app did not create, so drive.file (which
+      # covers only app-created files) is insufficient here - the full drive
+      # scope is required.
+      - https://www.googleapis.com/auth/drive
 ```
 
 The client secret stays in `bundles.secrets.yaml` at the `client_secret_ref`
@@ -323,6 +366,116 @@ The SDK mechanics behind these tools (the async gspread proxy, the credential
 resolver, and the snapshot artifacts) are in
 [Google SDK Integration](../../../sdk/integrations/google/google-README.md).
 
+### Google Docs
+
+Docs has the same two MCP doors on `kdcube-services@1-0` as Sheets: the typed
+`productivity_docs_*` tools (`public/mcp/productivity`) and the generic `docs`
+named-service namespace (`public/mcp/named_services`). Both call the same bounded
+async app service; the agent never receives a Google token. Docs differs from
+Sheets in one mechanical way: the proxy speaks raw REST to the Docs API and the
+Drive API over async `httpx`, so it runs in-proc with no `@venv`/`gspread`
+subprocess. No new connector app, adapter, or requirement is added.
+
+The same managed `productivity` and `named_services` surfaces already declared
+for Sheets serve Docs; no additional surface wiring is needed. Publish the
+delegable Docs capabilities and tools in Connection Hub under
+`config.connections.delegated_credentials.oauth`.
+
+Docs splits into three connected-account claims (Sheets had two). `docs:read`
+covers find, read, export, and reading comments; `docs:write` covers document
+creation and typed edits; `docs:comment` covers comment mutations. For the typed
+productivity door, grant each `productivity_docs_*` tool:
+
+```yaml
+resources:
+  - resource: "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/productivity*"
+    label: KDCube productivity MCP
+    tools:
+      productivity_docs_search:           {grants: [docs:read]}
+      productivity_docs_get:              {grants: [docs:read]}
+      productivity_docs_export:           {grants: [docs:read]}
+      productivity_docs_list_comments:    {grants: [docs:read]}
+      productivity_docs_get_comment:      {grants: [docs:read]}
+      productivity_docs_create:           {grants: [docs:write]}
+      productivity_docs_insert_text:      {grants: [docs:write]}
+      productivity_docs_append_text:      {grants: [docs:write]}
+      productivity_docs_replace_text:     {grants: [docs:write]}
+      productivity_docs_apply_text_style: {grants: [docs:write]}
+      productivity_docs_insert_page_break:{grants: [docs:write]}
+      productivity_docs_embed_image:      {grants: [docs:write]}
+      productivity_docs_import:           {grants: [docs:write]}
+      productivity_docs_create_comment:   {grants: [docs:comment]}
+      productivity_docs_reply_comment:    {grants: [docs:comment]}
+      productivity_docs_resolve_comment:  {grants: [docs:comment]}
+      productivity_docs_delete_comment:   {grants: [docs:comment]}
+```
+
+For the generic named-services door, add the `docs` namespace alongside `sheets`
+on its resource. As with Sheets, the bridge authorizes the exact
+`object.action.<action>`, so granting one edit does not grant every edit, and the
+comment mutations key on `docs:comment` rather than `docs:write`:
+
+```yaml
+- resource: "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
+  label: KDCube named services MCP
+  named_services:
+    connector_apps:
+      google: gmail
+    namespaces:
+      docs:
+        label: Documents
+        authority_id: delegated_client
+        tools:
+          about:        {operation: provider.about,        grants: [named_services:use]}
+          capabilities: {operation: provider.capabilities, grants: [named_services:use]}
+          schema:       {operation: object.schema,         grants: [named_services:use]}
+          search:       {operation: object.search,         grants: [named_services:use, docs:read]}
+          get:          {operation: object.get,            grants: [named_services:use, docs:read]}
+          upsert:       {operation: object.upsert,         grants: [named_services:use, docs:write]}
+          action:
+            operation: object.action
+            operations:
+              object.action.insert_text:       {grants: [named_services:use, docs:write]}
+              object.action.append_text:       {grants: [named_services:use, docs:write]}
+              object.action.replace_text:      {grants: [named_services:use, docs:write]}
+              object.action.apply_text_style:  {grants: [named_services:use, docs:write]}
+              object.action.insert_page_break: {grants: [named_services:use, docs:write]}
+              object.action.embed_image:       {grants: [named_services:use, docs:write]}
+              object.action.import:            {grants: [named_services:use, docs:write]}
+              object.action.create_comment:    {grants: [named_services:use, docs:comment]}
+              object.action.reply_comment:     {grants: [named_services:use, docs:comment]}
+              object.action.resolve_comment:   {grants: [named_services:use, docs:comment]}
+              object.action.delete_comment:    {grants: [named_services:use, docs:comment]}
+```
+
+These are caller grants under **Delegated by KDCube**; the separate connected
+Google account holds `docs:read`/`docs:write`/`docs:comment`. The connect/grant
+two-gate machinery is identical to Sheets above.
+
+**Connect and grant.** Connect the Google account under **Delegated to
+KDCube** (an account connected earlier for Gmail or Sheets returns
+`claim_upgrade_required` when Docs access is first requested; approve it), then
+select the required Docs tools and account claims under **Delegated by KDCube**.
+
+Document refs are provider-neutral at the agent boundary:
+
+```text
+docs:<provider>:<account_id>:document:<document_id>
+```
+
+Search returns at most 50 results. Operations are bounded: text reads and
+replacements are capped at 200,000 characters, at most 50 replacements per
+`replace_text`, comment bodies at 20,000 characters, at most 100 comments listed,
+titles at 300 characters, and export/import at 10 MiB. `create` and `import` are
+not exactly-once; on an `outcome_unknown` transport failure, search/get before
+retrying. Provider failures preserve Google's safe message plus `provider_status`,
+`provider_code`, `provider_reason`, `stage`, and `retryable`, per the
+[Provider Error And Observability Contract](../../../sdk/integrations/provider-error-contract-README.md).
+
+The SDK mechanics (the async REST proxy over the Docs and Drive APIs, and the
+shared credential resolver) are in
+[Google SDK Integration](../../../sdk/integrations/google/google-README.md).
+
 ## Verify
 
 Refresh the runtime after descriptor changes, then walk both services on
@@ -355,13 +508,33 @@ disposable data:
    named-services endpoint, and fetch `ret.object.snapshot.download.url` to verify
    the complete JSON snapshot.
 
+**Docs.** On a disposable document:
+
+1. `search`, `get`, and `export` work with a read-only grant.
+2. A write tool (`insert_text`, `create`, ...) is denied until both the
+   selected-tool grant and the `docs:write` connected-account claim exist.
+3. Create a document, append/insert/replace text, apply a style, insert a page
+   break, embed an image, and import a source document.
+4. A comment tool (`create_comment`, `resolve_comment`, ...) is denied until the
+   `docs:comment` claim exists - `docs:write` alone does not authorize it.
+5. Revoke the caller's tool grant; the next call stops at gate 1. Restore it,
+   revoke the Google claim; the next call stops at gate 2.
+6. Inspect tool output, timeline, logs, and model input: no Google bearer or
+   refresh token appears.
+7. Repeat search/get and one disposable edit through `namespace=docs` on the
+   named-services endpoint, and fetch the signed snapshot URL to verify the
+   complete JSON snapshot.
+
 ## Add another Google service, the same way
 
-Any other Google API connects the same way: enable the API in Google Cloud, add
-its scopes to the OAuth consent screen, and add a claim under
-`providers.google.claims` mapping to the real Google scopes, then wire its tools
-or named service as Sheets does above. The connect, grant, and two-gate machinery
-are unchanged.
+Any other Google API connects the same way: enable the API in Google Cloud, and
+add a claim under `providers.google.claims` mapping to the real Google scopes,
+then wire its tools or named service as Sheets does above. Scopes are managed as
+connector claims in `bundles.yaml` (Connection Hub) — **not** on the console
+consent screen: while the OAuth app is in *Testing*, the descriptor drives the
+authorization request and a test user grants the scopes at connect time. The
+console is only for enabling the API, the OAuth client, redirect URIs, and test
+users. The connect, grant, and two-gate machinery are unchanged.
 
 | Service | Read claim -> scope | Read-write claim -> scope |
 | --- | --- | --- |

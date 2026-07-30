@@ -44,6 +44,11 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_tool_enforcement impo
 )
 
 from ...services.named_services.request_scope import set_public_base_url_from_request
+from ...services.productivity.google_docs import GoogleDocsService
+from .productivity_docs import (
+    DOCS_PRODUCTIVITY_TOOLS,
+    register_google_docs_tools,
+)
 from .productivity_sheets import (
     SHEETS_PRODUCTIVITY_TOOLS,
     register_google_sheets_tools,
@@ -53,10 +58,12 @@ ConfigFactory = Callable[[], Mapping[str, Any]]
 
 PRODUCTIVITY_MCP_INSTRUCTIONS = """\
 This MCP server exposes productivity tools that run on the approving user's
-connected accounts (Slack, mail, Google Sheets). For Sheets, use search when
-the spreadsheet id is unknown, describe before structural changes, and pass
-the returned stable ids to read or write tools. Each tool names the account
-access it needs. When a call reports a consent requirement, relay the reason
+connected accounts (Slack, mail, Google Sheets, Google Docs). For Sheets, use
+search when the spreadsheet id is unknown, describe before structural changes,
+and pass the returned stable ids to read or write tools. For Docs, use search
+when the document id is unknown, get before editing, and pass the returned
+document id and text indices to the edit and comment tools. Each tool names the
+account access it needs. When a call reports a consent requirement, relay the reason
 and connection_hub_url to the user instead of retrying blindly:
 connect_required, claim_upgrade_required, and reconnect_required are fixed by
 the user at connection_hub_url; account_required is fixed by resending the
@@ -102,6 +109,7 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     **SHEETS_PRODUCTIVITY_TOOLS,
+    **DOCS_PRODUCTIVITY_TOOLS,
     # TODO(productivity): LinkedIn - same declaration shape once the linkedin
     # integration ships:
     # "productivity_linkedin_search": {
@@ -308,6 +316,12 @@ def build_productivity_mcp_app(
         mcp=mcp,
         tool_annotations_type=ToolAnnotations,
         enforce=_enforce,
+    )
+
+    register_google_docs_tools(
+        mcp,
+        service=GoogleDocsService(),
+        enforce_tool=_enforce,
     )
 
     return mcp

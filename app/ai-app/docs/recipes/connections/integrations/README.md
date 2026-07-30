@@ -41,7 +41,7 @@ credentials.
 | Recipe | Use when |
 | --- | --- |
 | [Custom OAuth/OIDC Service Integration](custom-oauth-oidc-service-README.md) | A service such as S1 exposes OAuth/OIDC, and KDCube tools need that user's S1 token. |
-| [Google Services (Gmail, Sheets)](google-service-README.md) | Users should connect their Google account, and KDCube tools/named services should act on Gmail (search, read, send, forward, attachments) or Sheets (typed productivity tools or the provider-neutral `sheets` named-service namespace) without receiving the Google token. |
+| [Google Services (Gmail, Sheets, Docs)](google-service-README.md) | Users should connect their Google account, and KDCube tools/named services should act on Gmail (search, read, send, forward, attachments), Sheets, or Docs (typed productivity tools or the provider-neutral `sheets`/`docs` named-service namespaces) without receiving the Google token. |
 | [Slack Integration](slack-README.md) | Users should connect Slack workspaces, and KDCube tools should search, list channels, read history, read/write files, or post messages. |
 | [Mail Named Service Over MCP](mail-named-service-README.md) | Connected mail accounts should be exposed to external agents as a provider-neutral `mail` namespace. |
 | [Telegram Integration](telegram-README.md) | Telegram users should connect a channel identity to a KDCube platform user. |

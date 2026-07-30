@@ -146,11 +146,14 @@ through Drive, which is why `sheets:read` maps to
 
 ## The same pattern for other Google services
 
-Every Google service connects the same way: enable its API in Google Cloud, add
-its scopes to the OAuth consent screen, and add a claim under
-`providers.google.claims` mapping to the real Google scopes. The `google.oauth`
-adapter, connector app, and credential-resolution path are unchanged, and the
-read-write-supersedes-read-only collapse is generic across services.
+Every Google service connects the same way: enable its API in Google Cloud, and
+add a claim under `providers.google.claims` mapping to the real Google scopes.
+Scopes are managed as connector claims in `bundles.yaml` (Connection Hub), not
+on the console consent screen — while the OAuth app is in *Testing*, the
+descriptor drives the authorization request and a test user grants the scopes at
+connect time. The `google.oauth` adapter, connector app, and
+credential-resolution path are unchanged, and the read-write-supersedes-read-only
+collapse is generic across services.
 
 | Service | Read claim -> scope | Read-write claim -> scope |
 | --- | --- | --- |
@@ -162,3 +165,8 @@ read-write-supersedes-read-only collapse is generic across services.
 Connecting a read + write pair for ANY of these sends only the read-write scope
 (Google grants read and write), because the adapter drops `<X>.readonly` when
 `<X>` is present.
+
+Runtime shape varies by service. Docs runs async in-proc over raw REST (the Docs
+API plus the Drive API via `httpx`, in `.../integrations/google/docs_proxy.py`),
+with no venv/`gspread` subprocess — unlike Sheets, whose `gspread` proxy runs in
+an app-owned `@venv`.

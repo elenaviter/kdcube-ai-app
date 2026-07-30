@@ -32,12 +32,43 @@ SHEETS_WRITE_TOOLS = {
     "productivity_sheets_delete_tab",
     "productivity_sheets_format_range",
 }
+DOCS_READ_TOOLS = {
+    "productivity_docs_search",
+    "productivity_docs_get",
+    "productivity_docs_export",
+    "productivity_docs_list_comments",
+    "productivity_docs_get_comment",
+    # flexible / tab-aware read (evaluation surface, side by side with typed)
+    "productivity_docs_get_structure",
+    "productivity_docs_list_tabs",
+}
+DOCS_WRITE_TOOLS = {
+    "productivity_docs_create",
+    "productivity_docs_insert_text",
+    "productivity_docs_append_text",
+    "productivity_docs_replace_text",
+    "productivity_docs_apply_text_style",
+    "productivity_docs_insert_page_break",
+    "productivity_docs_embed_image",
+    "productivity_docs_import",
+    # flexible native batch edit (evaluation surface, side by side with typed)
+    "productivity_docs_batch_edit",
+}
+DOCS_COMMENT_TOOLS = {
+    "productivity_docs_create_comment",
+    "productivity_docs_reply_comment",
+    "productivity_docs_resolve_comment",
+    "productivity_docs_delete_comment",
+}
 ALL_TOOLS = {
     "productivity_slack_search",
     "productivity_mail_search",
     "productivity_mail_get",
     *SHEETS_READ_TOOLS,
     *SHEETS_WRITE_TOOLS,
+    *DOCS_READ_TOOLS,
+    *DOCS_WRITE_TOOLS,
+    *DOCS_COMMENT_TOOLS,
 }
 
 
@@ -60,6 +91,15 @@ def test_every_tool_declares_provider_claims():
         **{
             name: ("google", ["sheets:read", "sheets:write"])
             for name in SHEETS_WRITE_TOOLS
+        },
+        **{name: ("google", ["docs:read"]) for name in DOCS_READ_TOOLS},
+        **{
+            name: ("google", ["docs:read", "docs:write"])
+            for name in DOCS_WRITE_TOOLS
+        },
+        **{
+            name: ("google", ["docs:read", "docs:comment"])
+            for name in DOCS_COMMENT_TOOLS
         },
     }
     for name, (provider_id, claims) in expectations.items():
@@ -91,5 +131,15 @@ async def test_surface_builds_with_declared_tool_roster():
         "description"
     ]
     assert schemas["productivity_sheets_format_range"]["properties"]["sheet_id"][
+        "description"
+    ]
+    assert schemas["productivity_docs_get"]["properties"]["document_ref"]["description"]
+    assert schemas["productivity_docs_replace_text"]["properties"]["replacements"][
+        "description"
+    ]
+    assert schemas["productivity_docs_apply_text_style"]["properties"]["start_index"][
+        "description"
+    ]
+    assert schemas["productivity_docs_reply_comment"]["properties"]["comment_id"][
         "description"
     ]

@@ -25,6 +25,15 @@ bundle:
     - Publishes the same spreadsheet capability through the provider-neutral
       `sheets` named-service namespace, with stable spreadsheet/tab refs and
       per-operation read/write grants.
+    - Adds Google Docs find, read, export, typed edit (insert/append/replace
+      text, styles, page breaks, embedded images, import), and comment tools to
+      the managed productivity MCP surface, split into `docs:read`, `docs:write`,
+      and `docs:comment` claims. Docs runs async in-proc over raw REST (Docs and
+      Drive APIs), no venv, and Google credentials stay behind the
+      connected-account boundary.
+    - Publishes the same document capability through the provider-neutral `docs`
+      named-service namespace, with stable document refs, typed `batchUpdate`
+      edits, and per-operation read/write/comment grants.
     - Streams complete `kdcube.sheets.snapshot.v1` artifacts so consumer apps
       can resolve spreadsheet and tab refs through the generic harness pull
       path.
