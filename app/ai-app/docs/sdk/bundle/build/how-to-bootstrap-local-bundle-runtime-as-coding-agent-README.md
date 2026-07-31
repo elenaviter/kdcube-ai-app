@@ -451,7 +451,7 @@ Agent rule:
   --descriptors-location <seed> --dry-run`, then apply with `--reload` only
   after the user accepts that descriptor source as authority.
 - if the user wants to **reseed platform/runtime descriptors** such as
-  `assembly.yaml`, `gateway.yaml`, or platform `secrets.yaml`: create a new
+  `assembly.yaml`, `gateway.yaml`, `economics.yaml`, or platform `secrets.yaml`: create a new
   runtime or intentionally replace the runtime descriptor files; do not hide
   that behind bundle reload.
 - if the user wants to **change a single bundle's config / secrets**:

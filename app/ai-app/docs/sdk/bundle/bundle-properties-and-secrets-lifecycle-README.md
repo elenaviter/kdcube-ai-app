@@ -183,7 +183,7 @@ bundles.yaml + bundles.secrets.yaml
 
 `bundle config apply` is a user/operator action for reapplying seed bundle
 descriptors to an existing runtime. It does not touch `assembly.yaml`,
-`gateway.yaml`, or `secrets.yaml`. Export is the reverse safety valve: use it
+`gateway.yaml`, `economics.yaml`, or `secrets.yaml`. Export is the reverse safety valve: use it
 before replacing runtime bundle descriptors when Bundle Admin or runtime writes
 may have made the live state newer than the seed files.
 

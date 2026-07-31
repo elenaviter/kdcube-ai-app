@@ -312,7 +312,7 @@ proc clears bundle cache and reloads code/config on the next request
 ```
 
 `bundle config apply` does not rebuild platform images, restart Docker, or
-touch `assembly.yaml`, `gateway.yaml`, or `secrets.yaml`. With `--reload`, it
+touch `assembly.yaml`, `gateway.yaml`, `economics.yaml`, or `secrets.yaml`. With `--reload`, it
 also reloads the changed bundle ids after staging descriptor changes.
 
 ### Export Before Replacing Live Bundle State
@@ -631,7 +631,7 @@ Two hard rules:
 
 - `kdcube config export` exports bundle descriptors by default. Add
   `--include-platform-descriptors` only when you intentionally need
-  `assembly.yaml`, `gateway.yaml`, and platform secrets in the reviewed export.
+  `assembly.yaml`, `gateway.yaml`, `economics.yaml`, and platform secrets in the reviewed export.
   User props and user secrets are never exported.
 - Bundle Admin writes live deployment-scoped bundle state only. It does not rewrite platform/global deployment descriptors.
 - In async bundle code, use `get_secret(...)`, `set_user_secret(...)`, and

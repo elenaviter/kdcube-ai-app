@@ -98,6 +98,7 @@ The main descriptor files are:
 | `assembly.yaml` | tenant/project, platform ref, auth, ports, infra, storage, ReAct/runtime settings |
 | `secrets.yaml` | platform secrets such as model keys, infra passwords, git tokens |
 | `gateway.yaml` | gateway capacity, throttling, process limits |
+| `economics.yaml` | quota policies, budgets, plan catalog, price table |
 | `bundles.yaml` | app registry, source refs, app props, non-secret config |
 | `bundles.secrets.yaml` | app-level secrets |
 

@@ -232,7 +232,7 @@ dc-infra up -d
 ```
 
 If you use the CLI instead of managing `.env` files by hand, the recommended flow is:
-1. provide `assembly.yaml`, `secrets.yaml`, `gateway.yaml`, `bundles.yaml`, and optionally `bundles.secrets.yaml`
+1. provide `assembly.yaml`, `secrets.yaml`, `gateway.yaml`, `economics.yaml`, `bundles.yaml`, and optionally `bundles.secrets.yaml`
 2. let the CLI render `config/.env*`, runtime frontend config, and runtime nginx config
 3. run compose with the generated workdir
 
