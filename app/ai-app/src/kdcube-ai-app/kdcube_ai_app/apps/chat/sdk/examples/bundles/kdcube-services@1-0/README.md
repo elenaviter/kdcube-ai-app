@@ -292,7 +292,7 @@ three session-less, signed routes:
 | Alias | Method | Purpose |
 | --- | --- | --- |
 | `integration_file_upload` | POST | Upload one short-lived `staged:` file for a later mail/Slack action. |
-| `integration_file_download` | GET | Stream a complete Mail message/attachment, Slack file, or Sheets/Docs snapshot under the signed delegated-user scope. |
+| `integration_file_download` | GET | Stream a complete Mail message/attachment, Slack file, Sheets/Docs snapshot, or portable Docs export under the signed delegated-user scope. |
 | `conv_file_download` | GET | Stream a `conv:fi:` conversation artifact under the signed user/conversation scope. |
 
 These routes are public only in transport terms. A managed MCP call mints the

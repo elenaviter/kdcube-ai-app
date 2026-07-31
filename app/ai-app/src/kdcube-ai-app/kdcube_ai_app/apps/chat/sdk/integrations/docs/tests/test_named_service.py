@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
+    ACTION_COPY,
     ACTION_CREATE_COMMENT,
     ACTION_DELETE_COMMENT,
     ACTION_EXPORT,
@@ -13,14 +14,17 @@ from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
     DOCS_COMMENT_CLAIM,
     DOCS_CONNECTED_ACCOUNT_REQUIREMENTS,
     DOCS_DOCUMENT_KIND,
+    DOCS_EXPORT_KIND,
     DOCS_GRANT_HINTS,
     DOCS_READ_CLAIM,
     DOCS_SNAPSHOT_MEDIA_TYPE,
     DOCS_SNAPSHOT_SCHEMA,
     DOCS_WRITE_CLAIM,
     DocsNamedServiceProvider,
+    document_export_ref,
     document_ref,
     docs_named_service_spec,
+    parse_docs_export_ref,
     parse_docs_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
@@ -38,6 +42,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     OBJECT_SEARCH,
     OBJECT_UPSERT,
     PROVIDER_ABOUT,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.widgets.send_to_user import (
+    collect_file_deliveries,
 )
 
 
@@ -78,6 +85,9 @@ class _FakeDocs:
                         }
                     ],
                     "next_cursor": "next-1",
+                    "exact_match_count": 1,
+                    "incomplete_search": False,
+                    "match_mode": "exact_then_title_prefix",
                 },
             }
         if operation == "get":
@@ -116,6 +126,20 @@ class _FakeDocs:
                     "title": kwargs["payload"]["title"],
                     "web_url": "https://docs.google.com/document/d/created-1/edit",
                     "revision_id": "rev-1",
+                },
+            }
+        if operation == "copy":
+            return {
+                "ok": True,
+                "ret": {
+                    "account_id": account_id,
+                    "source_document_id": kwargs["payload"]["document_ref"],
+                    "document_id": "copied-1",
+                    "title": kwargs["payload"]["title"],
+                    "web_url": (
+                        "https://docs.google.com/document/d/copied-1/edit"
+                    ),
+                    "copied": True,
                 },
             }
         if operation == "export":
@@ -178,6 +202,21 @@ def test_docs_refs_are_provider_neutral_and_stable() -> None:
         "object_kind": DOCS_DOCUMENT_KIND,
     }
 
+    export_ref = document_export_ref("account-1", "doc-1", "docx")
+    assert export_ref == "docs:google:account-1:export:docx:doc-1"
+    assert parse_docs_export_ref(export_ref) == {
+        "ref": export_ref,
+        "provider": "google",
+        "account_id": "account-1",
+        "document_id": "doc-1",
+        "format": "docx",
+        "mime_type": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        "extension": "docx",
+        "object_kind": DOCS_EXPORT_KIND,
+    }
+
 
 @pytest.mark.parametrize(
     "bad_ref",
@@ -211,6 +250,10 @@ def test_write_grant_and_connected_account_claims_are_separate_boundaries() -> N
         DOCS_COMMENT_CLAIM,
     ]
     assert claims_by_operation["object.action.export"] == [DOCS_READ_CLAIM]
+    assert claims_by_operation["object.action.copy"] == [
+        DOCS_READ_CLAIM,
+        DOCS_WRITE_CLAIM,
+    ]
 
 
 @pytest.mark.anyio
@@ -233,6 +276,10 @@ async def test_about_and_schema_return_expected_shape() -> None:
     assert schema.ok is True
     assert schema.extra["schema"]["refs"]["document"].startswith("docs:<provider>")
     assert DOCS_DOCUMENT_KIND in schema.extra["schema"]["object_kinds"]
+    assert schema.extra["schema"]["actions"][ACTION_COPY]["payload"] == [
+        "title",
+        "parent_id",
+    ]
     assert fake.calls == []
 
 
@@ -253,6 +300,9 @@ async def test_search_returns_named_service_objects() -> None:
     assert response.next_cursor == "next-1"
     assert response.items[0]["ref"] == "docs:google:account-1:document:doc-1"
     assert response.items[0]["object_kind"] == DOCS_DOCUMENT_KIND
+    assert response.extra["exact_match_count"] == 1
+    assert response.extra["incomplete_search"] is False
+    assert response.extra["match_mode"] == "exact_then_title_prefix"
     assert fake.calls == [
         {
             "operation": "search",
@@ -262,6 +312,39 @@ async def test_search_returns_named_service_objects() -> None:
             "account_id": "account-1",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_copy_returns_the_new_document_ref_and_uses_read_write_claims() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_COPY,
+            payload={"title": "26_007", "parent_id": "folder-1"},
+            idempotency_key="invoice-26-007",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object_ref == "docs:google:account-1:document:copied-1"
+    assert response.object["source_document_id"] == "doc-1"
+    assert response.object["title"] == "26_007"
+    assert fake.calls[-1] == {
+        "operation": ACTION_COPY,
+        "claim": (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM),
+        "tool_name": "named_services.docs.object.action.copy",
+        "payload": {
+            "title": "26_007",
+            "parent_id": "folder-1",
+            "document_ref": "doc-1",
+            "idempotency_key": "invoice-26-007",
+        },
+        "account_id": "account-1",
+    }
 
 
 @pytest.mark.anyio
@@ -513,7 +596,10 @@ async def test_actions_gate_on_the_right_claim_per_verb() -> None:
         ),
     )
     assert exported.ok is True
-    assert fake.calls[-1]["operation"] == ACTION_EXPORT
+    assert exported.object_ref == "docs:google:account-1:export:pdf:doc-1"
+    assert exported.object["filename"] == "Launch plan.pdf"
+    assert exported.object["delivery"]["response_mode"] == "stream"
+    assert fake.calls[-1]["operation"] == "get"
     assert fake.calls[-1]["claim"] == DOCS_READ_CLAIM
     assert fake.calls[-1]["payload"]["document_ref"] == "doc-1"
 
@@ -530,6 +616,104 @@ async def test_actions_gate_on_the_right_claim_per_verb() -> None:
     assert commented.ok is True
     assert fake.calls[-1]["operation"] == ACTION_CREATE_COMMENT
     assert fake.calls[-1]["claim"] == (DOCS_READ_CLAIM, DOCS_COMMENT_CLAIM)
+
+
+@pytest.mark.anyio
+async def test_export_action_returns_downloadable_file_object_without_base64() -> None:
+    fake = _FakeDocs()
+
+    async def file_url_factory(ctx: NamedServiceContext, info: dict[str, Any]):
+        assert ctx.user_id == "user-1"
+        assert info["ref"] == "docs:google:account-1:export:docx:doc-1"
+        return {
+            "url": "https://example.test/download?token=signed",
+            "expires_at": "2026-07-31T12:00:00Z",
+        }
+
+    response = await _provider(
+        fake,
+        file_url_factory=file_url_factory,
+    ).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_EXPORT,
+            payload={"format": "docx"},
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object_ref == "docs:google:account-1:export:docx:doc-1"
+    assert response.object["object_kind"] == DOCS_EXPORT_KIND
+    assert response.object["filename"] == "Launch plan.docx"
+    assert response.object["download"] == {
+        "encoding": "url",
+        "url": "https://example.test/download?token=signed",
+        "expires_at": "2026-07-31T12:00:00Z",
+    }
+    model_payload, files = collect_file_deliveries(response.to_dict())
+    assert files == [
+        {
+            "object_ref": "docs:google:account-1:export:docx:doc-1",
+            "ref": "docs:google:account-1:export:docx:doc-1",
+            "filename": "Launch plan.docx",
+            "mime": (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            "description": DOCS_EXPORT_KIND,
+        }
+    ]
+    assert model_payload["ret"]["object"]["download"]["encoding"] == "chat"
+    assert "content_base64" not in json.dumps(response.to_dict())
+    assert [call["operation"] for call in fake.calls] == ["get"]
+
+
+@pytest.mark.anyio
+async def test_export_ref_streams_complete_file_bytes_for_react_pull() -> None:
+    fake = _FakeDocs()
+    export_ref = "docs:google:account-1:export:pdf:doc-1"
+
+    result = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="docs",
+            object_ref=export_ref,
+            response_mode="stream",
+            context={"source": "react.pull", "materialize": True},
+        ),
+    )
+
+    assert isinstance(result, NamedServiceStreamResult)
+    assert result.response.ok is True
+    assert result.response.object_ref == export_ref
+    assert result.filename == "Launch plan.pdf"
+    assert result.media_type == "application/pdf"
+    assert b"".join([chunk async for chunk in result.chunks]) == b"\x00\x00"
+    assert [call["operation"] for call in fake.calls] == ["get", "export"]
+    assert all(call["claim"] == DOCS_READ_CLAIM for call in fake.calls)
+
+
+@pytest.mark.anyio
+async def test_export_action_rejects_unknown_format_before_provider_call() -> None:
+    fake = _FakeDocs()
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_EXPORT,
+            payload={"format": "pages"},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "docs_export_format_invalid"
+    assert fake.calls == []
 
 
 @pytest.mark.anyio

@@ -119,9 +119,6 @@ def _json_preview(value: Any, *, max_text: int = 6000, max_items: int = 40, max_
 
     def _walk(item: Any, depth: int) -> Any:
         nonlocal truncated
-        if depth >= max_depth:
-            truncated = True
-            return {"__truncated__": True, "type": type(item).__name__}
         if item is None or isinstance(item, (bool, int, float)):
             return item
         if isinstance(item, str):
@@ -136,6 +133,12 @@ def _json_preview(value: Any, *, max_text: int = 6000, max_items: int = 40, max_
             except Exception:
                 size = 0
             return {"__bytes__": True, "size_bytes": size}
+        # Depth limits containers, not their scalar leaves. Checking depth
+        # before scalar handling erased useful fields at the boundary (for
+        # example every title/ref in a named-service list result).
+        if depth >= max_depth:
+            truncated = True
+            return {"__truncated__": True, "type": type(item).__name__}
         if isinstance(item, dict):
             out: Dict[str, Any] = {}
             for index, (key, val) in enumerate(item.items()):
@@ -202,7 +205,10 @@ def _tool_result_payload(result_state: Any = None, exception: Optional[BaseExcep
     if isinstance(result_state, dict):
         last_tool_result = result_state.get("last_tool_result")
         if last_tool_result is not None:
-            result_preview, result_truncated = _json_preview(last_tool_result)
+            result_preview, result_truncated = _json_preview(
+                last_tool_result,
+                max_depth=8,
+            )
             payload["result"] = result_preview
             payload["result_truncated"] = bool(result_truncated)
         else:

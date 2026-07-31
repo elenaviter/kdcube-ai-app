@@ -12,7 +12,8 @@ it runs directly on the proc event loop with no subprocess.
 
 Operations span two Google APIs:
   - Docs API  (docs.googleapis.com/v1): read, create, and typed edits.
-  - Drive API (www.googleapis.com/drive/v3): search, export, import, comments.
+  - Drive API (www.googleapis.com/drive/v3): search, copy, export, import,
+    comments.
 
 Provider failures are normalized through the shared ``provider_errors`` helper,
 so the service layer's ``credential_failure`` handling matches Gmail and Slack.
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 import base64
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import httpx
@@ -183,36 +184,146 @@ def _extract_paragraph_text(paragraph: Mapping[str, Any]) -> str:
     return "".join(parts)
 
 
-def _extract_document_text(document: Mapping[str, Any], *, limit: int) -> str:
-    body = document.get("body")
-    content = body.get("content") if isinstance(body, Mapping) else None
-    chunks: list[str] = []
-    total = 0
+def _iter_structural_text(content: Any) -> Iterator[str]:
+    """Yield readable text from paragraphs, tables, and table-of-contents blocks."""
+
     for block in content or []:
         if not isinstance(block, Mapping):
             continue
         paragraph = block.get("paragraph")
         if isinstance(paragraph, Mapping):
-            text = _extract_paragraph_text(paragraph)
-            chunks.append(text)
-            total += len(text)
-        elif isinstance(block.get("table"), Mapping):
-            chunks.append("[table]\n")
-        if total >= limit:
-            chunks.append("\n[truncated]")
+            yield _extract_paragraph_text(paragraph)
+            continue
+        table = block.get("table")
+        if isinstance(table, Mapping):
+            yield "[table]\n"
+            for row in table.get("tableRows") or []:
+                if not isinstance(row, Mapping):
+                    continue
+                for index, cell in enumerate(row.get("tableCells") or []):
+                    if index:
+                        yield " | "
+                    if isinstance(cell, Mapping):
+                        yield from _iter_structural_text(cell.get("content"))
+                yield "\n"
+            continue
+        table_of_contents = block.get("tableOfContents")
+        if isinstance(table_of_contents, Mapping):
+            yield from _iter_structural_text(table_of_contents.get("content"))
+
+
+def _iter_document_text(document: Mapping[str, Any]) -> Iterator[str]:
+    tabs = document.get("tabs")
+
+    def _walk_tab(tab: Mapping[str, Any]):
+        properties = (
+            tab.get("tabProperties")
+            if isinstance(tab.get("tabProperties"), Mapping)
+            else {}
+        )
+        title = _clean(properties.get("title"))
+        if title:
+            yield f"[tab: {title}]\n"
+        document_tab = (
+            tab.get("documentTab")
+            if isinstance(tab.get("documentTab"), Mapping)
+            else {}
+        )
+        body = document_tab.get("body")
+        if isinstance(body, Mapping):
+            yield from _iter_structural_text(body.get("content"))
+        for child in tab.get("childTabs") or []:
+            if isinstance(child, Mapping):
+                yield from _walk_tab(child)
+
+    if isinstance(tabs, list) and tabs:
+        for tab in tabs:
+            if isinstance(tab, Mapping):
+                yield from _walk_tab(tab)
+        return
+    body = document.get("body")
+    if isinstance(body, Mapping):
+        yield from _iter_structural_text(body.get("content"))
+
+
+def _extract_document_text(document: Mapping[str, Any], *, limit: int) -> str:
+    chunks: list[str] = []
+    remaining = max(0, limit)
+    truncated = False
+    for piece in _iter_document_text(document):
+        if not piece:
+            continue
+        if len(piece) > remaining:
+            chunks.append(piece[:remaining])
+            truncated = True
             break
+        chunks.append(piece)
+        remaining -= len(piece)
+        if remaining == 0:
+            truncated = True
+            break
+    if truncated:
+        chunks.append("\n[truncated]")
     return "".join(chunks)
+
+
+def _default_document_body(document: Mapping[str, Any]) -> Mapping[str, Any]:
+    body = document.get("body")
+    if isinstance(body, Mapping):
+        return body
+
+    def _find(tabs: Any) -> Mapping[str, Any]:
+        for tab in tabs or []:
+            if not isinstance(tab, Mapping):
+                continue
+            document_tab = tab.get("documentTab")
+            if isinstance(document_tab, Mapping) and isinstance(
+                document_tab.get("body"), Mapping
+            ):
+                return document_tab["body"]
+            nested = _find(tab.get("childTabs"))
+            if nested:
+                return nested
+        return {}
+
+    return _find(document.get("tabs"))
 
 
 def _body_end_index(document: Mapping[str, Any]) -> int:
     """The insertion index just before the body's trailing newline."""
-    body = document.get("body")
-    content = body.get("content") if isinstance(body, Mapping) else None
+    body = _default_document_body(document)
+    content = body.get("content")
     end = 1
     for block in content or []:
         if isinstance(block, Mapping):
             end = max(end, _int(block.get("endIndex"), default=end))
     return max(1, end - 1)
+
+
+def _document_tabs(document: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def _walk(tabs: Any, *, parent_tab_id: str = "") -> None:
+        for tab in tabs or []:
+            if not isinstance(tab, Mapping):
+                continue
+            properties = (
+                tab.get("tabProperties")
+                if isinstance(tab.get("tabProperties"), Mapping)
+                else {}
+            )
+            tab_id = _clean(properties.get("tabId"))
+            records.append(
+                {
+                    "tab_id": tab_id,
+                    "title": _clean(properties.get("title")),
+                    "parent_tab_id": parent_tab_id,
+                }
+            )
+            _walk(tab.get("childTabs"), parent_tab_id=tab_id)
+
+    _walk(document.get("tabs"))
+    return records
 
 
 # --------------------------------------------------------------------------- #
@@ -225,30 +336,82 @@ async def _search(
     query = _clean(payload.get("query"))
     limit = max(1, min(_int(payload.get("limit"), default=20), MAX_SEARCH_RESULTS))
     escaped = query.replace("\\", "\\\\").replace("'", "\\'")
-    clauses = [f"mimeType = '{DOCS_MIME_TYPE}'", "trashed = false"]
-    if escaped:
-        clauses.append(f"name contains '{escaped}'")
-    params = {
-        "q": " and ".join(clauses),
-        "pageSize": limit,
-        "orderBy": "modifiedTime desc",
-        "fields": (
-            "nextPageToken,files(id,name,createdTime,modifiedTime,ownedByMe,"
-            "webViewLink,owners(displayName,emailAddress))"
-        ),
-    }
     cursor = _clean(payload.get("cursor"))
-    if cursor:
-        params["pageToken"] = cursor
-    response = await client.get(
-        f"{DRIVE_API}/files", headers=_headers(access_token), params=params
-    )
-    _raise_for_status(response, operation="search", mutating=False)
-    body = response.json()
+
+    async def _list(
+        *,
+        title_clause: str = "",
+        page_token: str = "",
+        page_size: int = limit,
+    ) -> dict[str, Any]:
+        clauses = [f"mimeType = '{DOCS_MIME_TYPE}'", "trashed = false"]
+        if title_clause:
+            clauses.append(title_clause)
+        params = {
+            "q": " and ".join(clauses),
+            "pageSize": page_size,
+            "orderBy": "modifiedTime desc",
+            "spaces": "drive",
+            "corpora": "user",
+            "includeItemsFromAllDrives": "true",
+            "supportsAllDrives": "true",
+            "fields": (
+                "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,"
+                "createdTime,modifiedTime,ownedByMe,webViewLink,"
+                "capabilities(canCopy),owners(displayName,emailAddress))"
+            ),
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = await client.get(
+            f"{DRIVE_API}/files", headers=_headers(access_token), params=params
+        )
+        _raise_for_status(response, operation="search", mutating=False)
+        value = response.json()
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    # Drive defines `name contains` as prefix matching. On the first page,
+    # issue the exact-title query separately, then add prefix matches and
+    # de-duplicate. Cursor pages continue only the prefix query so exact hits
+    # are not repeated.
+    exact_body: dict[str, Any] = {}
+    if escaped and not cursor:
+        exact_body = await _list(title_clause=f"name = '{escaped}'")
+
+    rows: list[Mapping[str, Any]] = []
+    seen_ids: set[str] = set()
+    for body in (exact_body,):
+        for row in body.get("files") or []:
+            if not isinstance(row, Mapping):
+                continue
+            document_id = _clean(row.get("id"))
+            if not document_id or document_id in seen_ids:
+                continue
+            seen_ids.add(document_id)
+            rows.append(row)
+
+    # Reserve the remainder of the requested page for title-prefix matches. This
+    # keeps nextPageToken aligned with rows actually returned; fetching a full
+    # prefix page and slicing after prepending exact hits would skip rows.
+    prefix_body: dict[str, Any] = {}
+    prefix_budget = limit if cursor else max(0, limit - len(rows))
+    if prefix_budget:
+        prefix_body = await _list(
+            title_clause=f"name contains '{escaped}'" if escaped else "",
+            page_token=cursor,
+            page_size=prefix_budget,
+        )
+        for row in prefix_body.get("files") or []:
+            if not isinstance(row, Mapping):
+                continue
+            document_id = _clean(row.get("id"))
+            if not document_id or document_id in seen_ids:
+                continue
+            seen_ids.add(document_id)
+            rows.append(row)
+
     items: list[dict[str, Any]] = []
-    for row in (body.get("files") or []):
-        if not isinstance(row, Mapping):
-            continue
+    for row in rows[:limit]:
         document_id = _clean(row.get("id"))
         owners = [
             {
@@ -267,12 +430,35 @@ async def _search(
                 "owned_by_me": bool(row.get("ownedByMe")),
                 "owners": owners,
                 "web_url": _clean(row.get("webViewLink")) or _web_url(document_id),
+                "mime_type": _clean(row.get("mimeType")) or DOCS_MIME_TYPE,
+                "parent_ids": [
+                    _clean(parent)
+                    for parent in (row.get("parents") or [])
+                    if _clean(parent)
+                ],
+                "copyable": bool((row.get("capabilities") or {}).get("canCopy")),
+                "exact_title_match": bool(
+                    query and _clean(row.get("name")).casefold() == query.casefold()
+                ),
             }
         )
+    exact_match_count = sum(1 for item in items if item["exact_title_match"])
     return {
         "items": items,
         "count": len(items),
-        "next_cursor": _clean(body.get("nextPageToken")),
+        "next_cursor": _clean(prefix_body.get("nextPageToken")),
+        "exact_match_count": exact_match_count,
+        "incomplete_search": bool(
+            exact_body.get("incompleteSearch")
+            or prefix_body.get("incompleteSearch")
+        ),
+        "match_mode": (
+            "exact_then_title_prefix"
+            if query and not cursor
+            else "title_prefix_page"
+            if query
+            else "recent_documents"
+        ),
     }
 
 
@@ -281,7 +467,9 @@ async def _get(
 ) -> dict[str, Any]:
     document_id = _document_id(payload.get("document_ref"))
     response = await client.get(
-        f"{DOCS_API}/documents/{document_id}", headers=_headers(access_token)
+        f"{DOCS_API}/documents/{document_id}",
+        headers=_headers(access_token),
+        params={"includeTabsContent": "true"},
     )
     _raise_for_status(response, operation="get", mutating=False)
     document = response.json()
@@ -290,11 +478,7 @@ async def _get(
     text = ""
     if include_text is None or bool(include_text):
         text = _extract_document_text(document, limit=MAX_TEXT_CHARS)
-    tabs = [
-        {"title": _clean((tab.get("tabProperties") or {}).get("title"))}
-        for tab in (document.get("tabs") or [])
-        if isinstance(tab, Mapping)
-    ]
+    tabs = _document_tabs(document)
     return {
         "document_id": document_id,
         "title": _clean(document.get("title")),
@@ -426,6 +610,52 @@ async def _create(
         ) or result["revision_id"]
         result["completed_stages"] = ["create", "write_initial_text"]
     return result
+
+
+async def _copy(
+    client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    source_document_id = _document_id(payload.get("document_ref"))
+    title = _clean(payload.get("title"))
+    if not title or len(title) > MAX_TITLE_CHARS:
+        raise DocsValidationError(
+            "invalid_title",
+            f"title is required and must be at most {MAX_TITLE_CHARS} characters.",
+        )
+    body: dict[str, Any] = {"name": title}
+    parent_id = _clean(payload.get("parent_id"))
+    if parent_id:
+        body["parents"] = [parent_id]
+    response = await client.post(
+        f"{DRIVE_API}/files/{source_document_id}/copy",
+        headers=_headers(access_token),
+        params={
+            "supportsAllDrives": "true",
+            "fields": (
+                "id,name,mimeType,parents,createdTime,modifiedTime,ownedByMe,"
+                "webViewLink,capabilities(canCopy)"
+            ),
+        },
+        json=body,
+    )
+    _raise_for_status(response, operation="copy", mutating=True)
+    row = response.json()
+    row = dict(row) if isinstance(row, Mapping) else {}
+    document_id = _clean(row.get("id"))
+    return {
+        "source_document_id": source_document_id,
+        "document_id": document_id,
+        "title": _clean(row.get("name")) or title,
+        "web_url": _clean(row.get("webViewLink")) or _web_url(document_id),
+        "mime_type": _clean(row.get("mimeType")) or DOCS_MIME_TYPE,
+        "parent_ids": [
+            _clean(parent)
+            for parent in (row.get("parents") or [])
+            if _clean(parent)
+        ],
+        "copied": True,
+        "idempotency_key": _clean(payload.get("idempotency_key")),
+    }
 
 
 async def _insert_text(
@@ -969,6 +1199,7 @@ _OPERATIONS = {
     "get_comment": _get_comment,
     # write (docs:write)
     "create": _create,
+    "copy": _copy,
     "insert_text": _insert_text,
     "append_text": _append_text,
     "replace_text": _replace_text,
@@ -983,11 +1214,23 @@ _OPERATIONS = {
     "delete_comment": _delete_comment,
 }
 
-MUTATING_OPERATIONS = frozenset({
-    "create", "insert_text", "append_text", "replace_text", "apply_text_style",
-    "insert_page_break", "embed_image", "import",
-    "create_comment", "reply_comment", "resolve_comment", "delete_comment",
-})
+MUTATING_OPERATIONS = frozenset(
+    {
+        "create",
+        "copy",
+        "insert_text",
+        "append_text",
+        "replace_text",
+        "apply_text_style",
+        "insert_page_break",
+        "embed_image",
+        "import",
+        "create_comment",
+        "reply_comment",
+        "resolve_comment",
+        "delete_comment",
+    }
+)
 
 
 async def execute_google_docs_operation(

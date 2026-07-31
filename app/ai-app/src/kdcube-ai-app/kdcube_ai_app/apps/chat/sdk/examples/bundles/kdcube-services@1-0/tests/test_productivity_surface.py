@@ -44,6 +44,7 @@ DOCS_READ_TOOLS = {
 }
 DOCS_WRITE_TOOLS = {
     "productivity_docs_create",
+    "productivity_docs_copy",
     "productivity_docs_insert_text",
     "productivity_docs_append_text",
     "productivity_docs_replace_text",
@@ -79,6 +80,13 @@ def _surface_module():
     return module
 
 
+def _docs_service_module():
+    _name, module = load_dynamic_module_for_path(
+        BUNDLE_ROOT / "services" / "productivity" / "google_docs.py"
+    )
+    return module
+
+
 def test_every_tool_declares_provider_claims():
     module = _surface_module()
     declared = {name: config for name, config in module.PRODUCTIVITY_TOOLS.items()}
@@ -110,6 +118,64 @@ def test_every_tool_declares_provider_claims():
 
 
 @pytest.mark.asyncio
+async def test_signed_docs_export_download_reauthorizes_and_returns_file_bytes(
+    monkeypatch,
+):
+    module = _docs_service_module()
+    token_calls = []
+
+    async def resolve_token(_entrypoint, **kwargs):
+        token_calls.append(kwargs)
+        return "provider-token", None
+
+    class FakeDocsService:
+        def __init__(self):
+            self.calls = []
+
+        async def _execute_with_access_token(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["operation"] == "get":
+                return {
+                    "ok": True,
+                    "ret": {"document_id": "doc-1", "title": "Invoice 26_007"},
+                }
+            return {
+                "ok": True,
+                "ret": {
+                    "document_id": "doc-1",
+                    "format": "docx",
+                    "content_base64": "ZG9jeC1ieXRlcw==",
+                },
+            }
+
+    service = FakeDocsService()
+    monkeypatch.setattr(module, "resolve_connected_account_access_token", resolve_token)
+    monkeypatch.setattr(module, "GoogleDocsService", lambda: service)
+
+    result = await module.fetch_google_docs_export(
+        object(),
+        user_id="user-1",
+        tenant="demo",
+        project="project",
+        object_ref="docs:google:account-1:export:docx:doc-1",
+    )
+
+    assert result == {
+        "ok": True,
+        "data": b"docx-bytes",
+        "filename": "Invoice 26_007.docx",
+        "mime_type": (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        "status": 200,
+    }
+    assert token_calls[0]["account_id"] == "account-1"
+    assert token_calls[0]["claim"] == "docs:read"
+    assert [call["operation"] for call in service.calls] == ["get", "export"]
+    assert all(call["access_token"] == "provider-token" for call in service.calls)
+
+
+@pytest.mark.asyncio
 async def test_surface_builds_with_declared_tool_roster():
     module = _surface_module()
     app = module.build_productivity_mcp_app(
@@ -134,6 +200,7 @@ async def test_surface_builds_with_declared_tool_roster():
         "description"
     ]
     assert schemas["productivity_docs_get"]["properties"]["document_ref"]["description"]
+    assert schemas["productivity_docs_copy"]["properties"]["title"]["description"]
     assert schemas["productivity_docs_replace_text"]["properties"]["replacements"][
         "description"
     ]

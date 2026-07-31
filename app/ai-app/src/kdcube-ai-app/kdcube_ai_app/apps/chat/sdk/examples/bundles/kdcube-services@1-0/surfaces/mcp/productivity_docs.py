@@ -104,6 +104,13 @@ DOCS_PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
         "description": "Create a document, optionally with initial text.",
         **_requirement(_WRITE_CLAIMS),
     },
+    "productivity_docs_copy": {
+        "label": "Copy Google Doc",
+        "description": (
+            "Copy a document under a new title while preserving its structure."
+        ),
+        **_requirement(_WRITE_CLAIMS),
+    },
     "productivity_docs_insert_text": {
         "label": "Insert Google Doc text",
         "description": "Insert text at an index in a document.",
@@ -189,10 +196,12 @@ def register_google_docs_tools(
         title="Find Google Docs",
         description=(
             "Find documents visible to the approving user's connected Google "
-            "account. Use this when the document id or URL is unknown. A blank "
-            "query lists recently modified documents. Returns stable document "
-            "ids, titles, URLs, ownership metadata, and next_cursor; pass a "
-            "returned document_id to productivity_docs_get to read it."
+            "account. Use this when the document id or URL is unknown. A non-blank "
+            "query checks the exact title first, then returns title-prefix matches; "
+            "check exact_title_match before selecting among similar names. A blank "
+            "query lists recently modified documents. Returns stable document ids, "
+            "titles, URLs, ownership metadata, search completeness, and next_cursor; "
+            "pass a returned document_id to productivity_docs_get to read it."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Find Google Docs"),
         structured_output=False,
@@ -200,7 +209,7 @@ def register_google_docs_tools(
     async def _productivity_docs_search(
         query: Annotated[
             str,
-            Field(description="Optional case-insensitive document title fragment."),
+            Field(description="Optional document title or title prefix."),
         ] = "",
         limit: Annotated[
             int,
@@ -453,6 +462,69 @@ def register_google_docs_tools(
             payload={
                 "title": title,
                 "initial_text": initial_text,
+                "idempotency_key": idempotency_key,
+            },
+            account_id=account_id,
+        )
+
+    @mcp.tool(
+        name="productivity_docs_copy",
+        title="Copy Google Doc",
+        description=(
+            "Copy an existing Google Doc under a new title while preserving its "
+            "provider-managed structure and formatting. Search for both the source "
+            "and intended target title first. A provider timeout may leave the copy "
+            "outcome unknown, so search for the target before retrying. Returns the "
+            "new document_id and web_url."
+        ),
+        annotations=write_annotations(ToolAnnotations, title="Copy Google Doc"),
+        structured_output=False,
+    )
+    async def _productivity_docs_copy(
+        document_ref: Annotated[
+            str,
+            Field(description="Source document id or full Google Docs URL."),
+        ],
+        title: Annotated[
+            str,
+            Field(min_length=1, max_length=300, description="New document title."),
+        ],
+        parent_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional Drive folder id for the copy. Omit it to let Google "
+                    "use the source/default placement."
+                )
+            ),
+        ] = "",
+        idempotency_key: Annotated[
+            str,
+            Field(
+                description=(
+                    "Optional caller correlation key returned with the result. It "
+                    "does not make Google's copy operation exactly-once."
+                )
+            ),
+        ] = "",
+        account_id: Annotated[
+            str,
+            Field(
+                description="Optional connected Google account id when several are available."
+            ),
+        ] = "",
+    ) -> dict[str, Any]:
+        denial = await _enforce("productivity_docs_copy", "copy")
+        if denial is not None:
+            return denial
+        return await docs.execute(
+            operation="copy",
+            claim=_WRITE_CLAIMS,
+            tool_name="productivity_docs_copy",
+            payload={
+                "document_ref": document_ref,
+                "title": title,
+                "parent_id": parent_id,
                 "idempotency_key": idempotency_key,
             },
             account_id=account_id,

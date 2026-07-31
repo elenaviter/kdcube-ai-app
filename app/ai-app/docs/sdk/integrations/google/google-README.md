@@ -1,9 +1,9 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
 title: "Google SDK Integration"
-summary: "SDK mechanics for Google connected accounts: the google.oauth adapter, connected-account credential resolution, and the scope machinery (claim to provider-scope union, the read-write-supersedes-read-only collapse, and the Drive write scope needed to create a spreadsheet)."
-tags: ["sdk", "integrations", "google", "gmail", "sheets", "oauth", "provider-scopes"]
-keywords: ["google oauth adapter", "google.oauth", "provider scopes", "readonly collapse", "drive.file", "gspread create", "connected account credential"]
+summary: "SDK mechanics for Google connected accounts: the google.oauth adapter, connected-account credential resolution, scope machinery, and the Gmail, Sheets, and Docs provider execution paths."
+tags: ["sdk", "integrations", "google", "gmail", "sheets", "docs", "oauth", "provider-scopes"]
+keywords: ["google oauth adapter", "google.oauth", "provider scopes", "readonly collapse", "drive.file", "gspread create", "google docs proxy", "connected account credential"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
@@ -12,6 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_to_kdcube/providers/google.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/sheets_proxy.py
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/docs_proxy.py
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/integrations/google/gmail_tools.py
 ---
 
@@ -169,4 +170,8 @@ Connecting a read + write pair for ANY of these sends only the read-write scope
 Runtime shape varies by service. Docs runs async in-proc over raw REST (the Docs
 API plus the Drive API via `httpx`, in `.../integrations/google/docs_proxy.py`),
 with no venv/`gspread` subprocess — unlike Sheets, whose `gspread` proxy runs in
-an app-owned `@venv`.
+an app-owned `@venv`. The Docs proxy owns exact-title-first Drive discovery,
+Shared Drive-compatible listing, provider-native copy, tab/table-aware text
+extraction, typed edits, comments, import, and export. The operator-facing
+configuration and complete clone-and-edit workflow are documented in
+[Google Services Through KDCube](../../../recipes/connections/integrations/google-service-README.md).

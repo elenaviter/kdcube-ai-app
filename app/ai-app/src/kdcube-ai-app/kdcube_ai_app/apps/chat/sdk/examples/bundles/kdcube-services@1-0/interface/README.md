@@ -445,7 +445,7 @@ model context:
 | Alias | Method | Required query | Result |
 | --- | --- | --- | --- |
 | `integration_file_upload` | POST | `object_ref`, `upload_token` | Raw request bytes become a short-lived, single-use `staged:` ref. |
-| `integration_file_download` | GET | `object_ref`, `download_token` | Complete Mail message JSON, raw Mail attachment/Slack file bytes, or a Sheets JSON snapshot with `Content-Disposition` and `private, no-store`. |
+| `integration_file_download` | GET | `object_ref`, `download_token` | Complete Mail message JSON, raw Mail attachment/Slack file bytes, a Sheets/Docs JSON snapshot, or a portable Google Docs export with `Content-Disposition` and `private, no-store`. |
 | `conv_file_download` | GET | `object_ref`, `download_token` | Raw conversation artifact bytes under token-bound user/conversation scope. |
 
 The routes require no browser session because the HMAC token binds the exact

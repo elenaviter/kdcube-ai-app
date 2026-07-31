@@ -4,7 +4,7 @@ title: "Google Services Through KDCube (Gmail, Sheets, Docs)"
 summary: "One recipe for connecting Google services to KDCube: one Google OAuth client, one google provider, one gmail connector app serving Gmail, Sheets, and Docs (extensible to Drive/Calendar). Configure provider claims, wire each service's tools and named services, connect, grant, and verify."
 status: active
 tags: ["recipes", "connections", "connection-hub", "google", "gmail", "sheets", "docs", "oauth", "connected-accounts", "delegated-to-kdcube", "mcp"]
-updated_at: 2026-07-28
+updated_at: 2026-07-31
 see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
@@ -133,8 +133,9 @@ claims:
       - https://www.googleapis.com/auth/drive.readonly
   docs:write:
     label: Edit Google Docs
-    description: Create documents and apply typed edits - insert/append/replace
-      text, text styling, page breaks, embedded images, and import.
+    description: Create or copy documents and apply typed edits -
+      insert/append/replace text, text styling, page breaks, embedded images,
+      and import.
     provider_scopes:
       - openid
       - email
@@ -383,8 +384,9 @@ delegable Docs capabilities and tools in Connection Hub under
 
 Docs splits into three connected-account claims (Sheets had two). `docs:read`
 covers find, read, export, and reading comments; `docs:write` covers document
-creation and typed edits; `docs:comment` covers comment mutations. For the typed
-productivity door, grant each `productivity_docs_*` tool:
+creation, provider-native copy, and typed edits; `docs:comment` covers comment
+mutations. For the typed productivity door, grant each
+`productivity_docs_*` tool:
 
 ```yaml
 resources:
@@ -397,6 +399,7 @@ resources:
       productivity_docs_list_comments:    {grants: [docs:read]}
       productivity_docs_get_comment:      {grants: [docs:read]}
       productivity_docs_create:           {grants: [docs:write]}
+      productivity_docs_copy:             {grants: [docs:write]}
       productivity_docs_insert_text:      {grants: [docs:write]}
       productivity_docs_append_text:      {grants: [docs:write]}
       productivity_docs_replace_text:     {grants: [docs:write]}
@@ -435,17 +438,22 @@ comment mutations key on `docs:comment` rather than `docs:write`:
           action:
             operation: object.action
             operations:
+              object.action.copy:              {grants: [named_services:use, docs:write]}
               object.action.insert_text:       {grants: [named_services:use, docs:write]}
               object.action.append_text:       {grants: [named_services:use, docs:write]}
               object.action.replace_text:      {grants: [named_services:use, docs:write]}
               object.action.apply_text_style:  {grants: [named_services:use, docs:write]}
               object.action.insert_page_break: {grants: [named_services:use, docs:write]}
               object.action.embed_image:       {grants: [named_services:use, docs:write]}
+              object.action.export:            {grants: [named_services:use, docs:read]}
               object.action.import:            {grants: [named_services:use, docs:write]}
+              object.action.list_comments:     {grants: [named_services:use, docs:read]}
+              object.action.get_comment:       {grants: [named_services:use, docs:read]}
               object.action.create_comment:    {grants: [named_services:use, docs:comment]}
               object.action.reply_comment:     {grants: [named_services:use, docs:comment]}
               object.action.resolve_comment:   {grants: [named_services:use, docs:comment]}
               object.action.delete_comment:    {grants: [named_services:use, docs:comment]}
+          delete:       {operation: object.delete,         grants: [named_services:use, docs:comment]}
 ```
 
 These are caller grants under **Delegated by KDCube**; the separate connected
@@ -461,16 +469,54 @@ Document refs are provider-neutral at the agent boundary:
 
 ```text
 docs:<provider>:<account_id>:document:<document_id>
+docs:<provider>:<account_id>:export:<format>:<document_id>
 ```
 
 Search returns at most 50 results. Operations are bounded: text reads and
 replacements are capped at 200,000 characters, at most 50 replacements per
 `replace_text`, comment bodies at 20,000 characters, at most 100 comments listed,
-titles at 300 characters, and export/import at 10 MiB. `create` and `import` are
-not exactly-once; on an `outcome_unknown` transport failure, search/get before
-retrying. Provider failures preserve Google's safe message plus `provider_status`,
-`provider_code`, `provider_reason`, `stage`, and `retryable`, per the
+titles at 300 characters, and export/import at 10 MiB.
+
+A non-blank search does not enumerate Drive pages looking for a title. It asks
+Drive for the exact title first, then fills the remaining result page with
+title-prefix matches. Exact rows carry `exact_title_match: true`; the response
+also carries `exact_match_count`, `match_mode`, and `incomplete_search`. The
+Drive query includes files visible through My Drive and Shared Drives. Search is
+title discovery, not semantic or document-body search.
+
+`copy` uses Drive's native file copy, preserving the Google document structure
+and formatting. `create`, `copy`, and `import` are not exactly-once; on an
+`outcome_unknown` transport failure, search for the intended target title before
+retrying. Provider failures preserve Google's safe message plus
+`provider_status`, `provider_code`, `provider_reason`, `stage`, and `retryable`, per the
 [Provider Error And Observability Contract](../../../sdk/integrations/provider-error-contract-README.md).
+
+For a ReAct agent, declare `docs` as both a named-service namespace and an event
+source. The namespace tools discover and mutate document refs; the event source
+lets `react.pull` resolve a `docs:...` ref into a complete JSON snapshot. The
+snapshot includes tab metadata, paragraph text, table-cell text, and open
+comments, so a document such as an invoice can be inspected before bounded
+replacement edits:
+
+```yaml
+event_sources:
+  - kind: named_service
+    namespace: docs
+    enabled: true
+    discovery: {mode: service_discovery}
+    policies:
+      block_production: {mode: provider, operation: block.produce}
+      pull: {mode: provider, operation: object.get}
+```
+
+A reliable clone-and-edit chain is: search the exact source title, search the
+intended target title to avoid duplicates, copy the source ref, get or pull the
+new ref, replace the explicit old values on that new ref, get it again to verify,
+then call `object.action export` when the user asks for a file. Export returns a
+portable `docs:...:export:...` ref. In KDCube chat, the tool gate emits that ref
+as a file card and keeps the signed URL out of model context. A materializing
+client can stream the same export ref; a turnless MCP client receives the
+short-lived download URL.
 
 The SDK mechanics (the async REST proxy over the Docs and Drive APIs, and the
 shared credential resolver) are in
@@ -510,20 +556,30 @@ disposable data:
 
 **Docs.** On a disposable document:
 
-1. `search`, `get`, and `export` work with a read-only grant.
-2. A write tool (`insert_text`, `create`, ...) is denied until both the
+1. Create an old document whose title contains an underscore and whose body has
+   a table. Verify an exact-title search returns it first with
+   `exact_title_match: true`, without paginating a blank list.
+2. `search`, `get`, and `export` work with a read-only grant; `get` includes the
+   table-cell text and all tab titles.
+3. A write tool (`insert_text`, `copy`, `create`, ...) is denied until both the
    selected-tool grant and the `docs:write` connected-account claim exist.
-3. Create a document, append/insert/replace text, apply a style, insert a page
+4. Copy the old document to a new title, update table values with explicit
+   replacements, and re-read the new document to verify the source is unchanged.
+5. Create a document, append/insert/replace text, apply a style, insert a page
    break, embed an image, and import a source document.
-4. A comment tool (`create_comment`, `resolve_comment`, ...) is denied until the
+6. A comment tool (`create_comment`, `resolve_comment`, ...) is denied until the
    `docs:comment` claim exists - `docs:write` alone does not authorize it.
-5. Revoke the caller's tool grant; the next call stops at gate 1. Restore it,
+7. Revoke the caller's tool grant; the next call stops at gate 1. Restore it,
    revoke the Google claim; the next call stops at gate 2.
-6. Inspect tool output, timeline, logs, and model input: no Google bearer or
+8. Inspect tool output, timeline, logs, and model input: no Google bearer or
    refresh token appears.
-7. Repeat search/get and one disposable edit through `namespace=docs` on the
-   named-services endpoint, and fetch the signed snapshot URL to verify the
-   complete JSON snapshot.
+9. Repeat search/copy/get through `namespace=docs`, pull the returned document
+   ref from ReAct, and fetch the signed snapshot URL from a turnless client to
+   verify the complete JSON snapshot.
+10. Call `object.action export` on the copied ref. Verify KDCube chat receives a
+    downloadable file card, the model-visible result contains a delivery note
+    rather than a signed URL or base64, and a streaming get of the export ref
+    yields the complete file bytes.
 
 ## Add another Google service, the same way
 

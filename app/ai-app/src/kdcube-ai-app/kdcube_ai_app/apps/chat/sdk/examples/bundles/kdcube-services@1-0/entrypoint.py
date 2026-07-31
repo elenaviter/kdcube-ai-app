@@ -35,6 +35,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.file_staging import (
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
     make_docs_named_service_provider,
+    parse_docs_export_ref,
     parse_docs_ref,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.mail import make_mail_named_service_provider
@@ -68,6 +69,7 @@ from .services.productivity import (
     GoogleSheetsService,
     bind_docs_service,
     bind_service as bind_productivity_service,
+    fetch_google_docs_export,
     fetch_google_docs_snapshot,
     fetch_google_sheets_snapshot,
 )
@@ -687,6 +689,10 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
             docs_parsed = parse_docs_ref(ref)
         except ValueError:
             docs_parsed = {}
+        try:
+            docs_export_parsed = parse_docs_export_ref(ref)
+        except ValueError:
+            docs_export_parsed = {}
         if mail_parsed.get("kind") == "attachment":
             result = await fetch_mail_attachment(
                 self,
@@ -724,6 +730,14 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
                 project=project,
                 object_ref=ref,
                 bundle_id=self._named_services_bundle_id(),
+            )
+        elif docs_export_parsed.get("document_id"):
+            result = await fetch_google_docs_export(
+                self,
+                user_id=user_id,
+                tenant=tenant,
+                project=project,
+                object_ref=ref,
             )
         elif docs_parsed.get("document_id"):
             result = await fetch_google_docs_snapshot(

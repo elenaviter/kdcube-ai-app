@@ -109,6 +109,114 @@ async def test_react_round_tool_call_event_reports_managed_error(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_react_round_preserves_named_service_result_scalar_leaves(
+    monkeypatch, tmp_path
+):
+    async def _fake_tool(*, react, ctx_browser, state, tool_call_id):
+        del react, ctx_browser, tool_call_id
+        state["last_tool_result"] = [
+            {
+                "artifact_id": "named_services.list_objects",
+                "output": {
+                    "items": [
+                        {
+                            "document_id": "doc-1",
+                            "title": "26_006",
+                            "owned_by_me": True,
+                            "ref": "docs:google:account-1:document:doc-1",
+                        }
+                    ]
+                },
+            }
+        ]
+        return state
+
+    monkeypatch.setattr(round_mod.react_tools, "handle_external_tool", _fake_tool)
+
+    runtime = RuntimeCtx(turn_id="turn_tool", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+    comm = _FakeComm()
+    react = SimpleNamespace(ctx_browser=ctx, comm=comm)
+    state = {
+        "last_decision": {
+            "tool_call": {
+                "tool_id": "named_services.list_objects",
+                "tool_call_id": "tc_docs",
+                "params": {"namespace": "docs"},
+            },
+        },
+    }
+
+    await ReactRound.execute(react, state)
+
+    item = comm.events[-1]["data"]["result"][0]["output"]["items"][0]
+    assert item == {
+        "document_id": "doc-1",
+        "title": "26_006",
+        "owned_by_me": True,
+        "ref": "docs:google:account-1:document:doc-1",
+    }
+    assert comm.events[-1]["data"]["result_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_react_round_preserves_nested_named_service_schema(
+    monkeypatch, tmp_path
+):
+    async def _fake_tool(*, react, ctx_browser, state, tool_call_id):
+        del react, ctx_browser, tool_call_id
+        state["last_tool_result"] = [
+            {
+                "artifact_id": "named_services.object_schema",
+                "output": {
+                    "extra": {
+                        "schema": {
+                            "search": {
+                                "filters": {
+                                    "account_id": {
+                                        "type": "string",
+                                        "description": "Connected account id.",
+                                    }
+                                }
+                            },
+                            "actions": {
+                                "copy": {
+                                    "description": "Copy a document.",
+                                    "payload": ["title"],
+                                }
+                            },
+                        }
+                    }
+                },
+            }
+        ]
+        return state
+
+    monkeypatch.setattr(round_mod.react_tools, "handle_external_tool", _fake_tool)
+
+    runtime = RuntimeCtx(turn_id="turn_tool", outdir=str(tmp_path), workdir=str(tmp_path))
+    ctx = FakeBrowser(runtime)
+    comm = _FakeComm()
+    react = SimpleNamespace(ctx_browser=ctx, comm=comm)
+    await ReactRound.execute(
+        react,
+        {
+            "last_decision": {
+                "tool_call": {
+                    "tool_id": "named_services.object_schema",
+                    "tool_call_id": "tc_schema",
+                    "params": {"namespace": "docs"},
+                },
+            },
+        },
+    )
+
+    schema = comm.events[-1]["data"]["result"][0]["output"]["extra"]["schema"]
+    assert schema["search"]["filters"]["account_id"]["type"] == "string"
+    assert schema["actions"]["copy"]["payload"] == ["title"]
+
+
+@pytest.mark.asyncio
 async def test_react_round_uses_distinct_steps_for_multiple_tool_calls(monkeypatch, tmp_path):
     async def _fake_rg(*, ctx_browser, state, tool_call_id):
         state["last_tool_result"] = [{"ok": True, "call": tool_call_id}]

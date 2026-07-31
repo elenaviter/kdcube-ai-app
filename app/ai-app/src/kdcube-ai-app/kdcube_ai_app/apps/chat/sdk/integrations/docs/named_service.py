@@ -13,6 +13,7 @@ a spreadsheet-plus-tab pair.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -61,12 +62,29 @@ DOCS_WRITE_CLAIM = "docs:write"
 DOCS_COMMENT_CLAIM = "docs:comment"
 
 DOCS_DOCUMENT_KIND = "docs.document"
+DOCS_EXPORT_KIND = "docs.export"
 DOCS_TRANSPORTS = (TRANSPORT_LOCAL, TRANSPORT_API)
 DOCS_SNAPSHOT_SCHEMA = "kdcube.docs.snapshot.v1"
 DOCS_SNAPSHOT_MEDIA_TYPE = "application/vnd.kdcube.docs.snapshot+json"
 
+DOCS_EXPORT_FORMATS: dict[str, tuple[str, str]] = {
+    "pdf": ("application/pdf", "pdf"),
+    "docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docx",
+    ),
+    "odt": ("application/vnd.oasis.opendocument.text", "odt"),
+    "rtf": ("application/rtf", "rtf"),
+    "txt": ("text/plain", "txt"),
+    "html": ("text/html", "html"),
+    "epub": ("application/epub+zip", "epub"),
+    "markdown": ("text/markdown", "md"),
+    "md": ("text/markdown", "md"),
+}
+
 # The bounded verbs a caller may name through object.action. Each verb maps to
 # the identically named underlying proxy operation.
+ACTION_COPY = "copy"
 ACTION_INSERT_TEXT = "insert_text"
 ACTION_APPEND_TEXT = "append_text"
 ACTION_REPLACE_TEXT = "replace_text"
@@ -89,6 +107,7 @@ DOCS_READ_ACTIONS = frozenset(
 # Body-mutating actions gate on docs:read + docs:write.
 DOCS_WRITE_ACTIONS = frozenset(
     {
+        ACTION_COPY,
         ACTION_INSERT_TEXT,
         ACTION_APPEND_TEXT,
         ACTION_REPLACE_TEXT,
@@ -109,6 +128,7 @@ DOCS_COMMENT_ACTIONS = frozenset(
 )
 
 DOCS_ACTIONS = (
+    ACTION_COPY,
     ACTION_INSERT_TEXT,
     ACTION_APPEND_TEXT,
     ACTION_REPLACE_TEXT,
@@ -160,7 +180,8 @@ DOCS_SEARCH_SCOPES = (
         object_kind=DOCS_DOCUMENT_KIND,
         description=(
             "Find documents by title through an approved connected account. "
-            "A blank query lists recently modified documents."
+            "A non-blank query returns exact title matches first, then title "
+            "prefix matches. A blank query lists recently modified documents."
         ),
         filters_schema=DOCS_SEARCH_FILTERS,
     ),
@@ -233,6 +254,9 @@ DOCS_SCHEMA = {
     "namespace": DOCS_NAMESPACE,
     "refs": {
         "document": "docs:<provider>:<account_id>:document:<document_id>",
+        "export": (
+            "docs:<provider>:<account_id>:export:<format>:<document_id>"
+        ),
     },
     "object_kinds": {
         DOCS_DOCUMENT_KIND: {
@@ -252,8 +276,36 @@ DOCS_SCHEMA = {
                 "modified_time",
             ],
         },
+        DOCS_EXPORT_KIND: {
+            "description": (
+                "One portable export of a document. Resolve the ref to stream "
+                "the bytes or use its short-lived download capability."
+            ),
+            "fields": [
+                "ref",
+                "provider",
+                "account_id",
+                "document_id",
+                "format",
+                "filename",
+                "mime_type",
+                "download",
+            ],
+        },
     },
-    "search": {"filters": DOCS_SEARCH_FILTERS},
+    "search": {
+        "description": (
+            "A non-blank query checks the exact title first and then returns "
+            "title-prefix matches. Check exact_title_match before choosing "
+            "among similarly named documents."
+        ),
+        "filters": DOCS_SEARCH_FILTERS,
+        "result_metadata": [
+            "exact_match_count",
+            "incomplete_search",
+            "match_mode",
+        ],
+    },
     "get": {
         "description": (
             "Read a document by ref. A document get returns metadata and the "
@@ -266,11 +318,12 @@ DOCS_SCHEMA = {
         "description": (
             "A materializing client can resolve a document ref through "
             "object.get with response_mode=stream. The JSON snapshot carries "
-            "document metadata, the extracted body text, and open comments."
+            "document metadata, the extracted body text, and open comments. "
+            "An export ref streams the complete portable file bytes instead."
         ),
         "schema": DOCS_SNAPSHOT_SCHEMA,
         "media_type": DOCS_SNAPSHOT_MEDIA_TYPE,
-        "refs": ["document"],
+        "refs": ["document", "export"],
     },
     "upsert": {
         "create": {
@@ -286,6 +339,16 @@ DOCS_SCHEMA = {
         },
     },
     "actions": {
+        ACTION_COPY: {
+            "description": (
+                "Copy a document under a new title while preserving its "
+                "provider-managed structure. Search for the target title "
+                "before retrying an uncertain copy result."
+            ),
+            "object_ref": "source document ref",
+            "payload": ["title", "parent_id"],
+            "claim": "docs:write",
+        },
         ACTION_INSERT_TEXT: {
             "description": "Insert text at an index (defaults to the body end).",
             "object_ref": "document ref",
@@ -332,9 +395,14 @@ DOCS_SCHEMA = {
             "claim": "docs:write",
         },
         ACTION_EXPORT: {
-            "description": "Export the document to a bounded file format.",
+            "description": (
+                "Produce a portable file ref and deliver it as a chat file "
+                "when a chat lane is active. A materializing client can stream "
+                "the returned ref without placing base64 in model context."
+            ),
             "object_ref": "document ref",
             "payload": ["format"],
+            "formats": sorted(DOCS_EXPORT_FORMATS),
             "claim": "docs:read",
         },
         ACTION_IMPORT: {
@@ -401,8 +469,8 @@ DOCS_SCHEMA = {
 
 DOCS_INTRO = (
     "Use namespace `docs` for user-connected documents. Search by title, get a "
-    "document ref to read metadata and body text, then use object.upsert or a "
-    "declared object.action for explicit changes and comments."
+    "document ref to read metadata and body text, then copy it or use "
+    "object.upsert and declared object.actions for explicit changes and comments."
 )
 
 DOCS_PRESENTATION = {
@@ -489,7 +557,7 @@ def docs_named_service_spec(*, bundle_id: str | None = None) -> NamedServiceProv
         bundle_id=bundle_id,
         namespace=DOCS_NAMESPACE,
         refs=("docs:*",),
-        object_kinds=(DOCS_DOCUMENT_KIND,),
+        object_kinds=(DOCS_DOCUMENT_KIND, DOCS_EXPORT_KIND),
         search_scopes=DOCS_SEARCH_SCOPES,
         operations=_operations(),
         label="Documents",
@@ -536,6 +604,50 @@ def document_ref(account_id: Any, document_id: Any) -> str:
     )
 
 
+def _export_format(value: Any) -> tuple[str, str, str]:
+    fmt = _text(value).lower() or "pdf"
+    target = DOCS_EXPORT_FORMATS.get(fmt)
+    if target is None:
+        raise ValueError(
+            "Invalid document export format. Allowed: "
+            + ", ".join(sorted(DOCS_EXPORT_FORMATS))
+            + "."
+        )
+    return fmt, target[0], target[1]
+
+
+def document_export_ref(account_id: Any, document_id: Any, format: Any) -> str:
+    fmt, _mime_type, _extension = _export_format(format)
+    account = _text(account_id)
+    document = _text(document_id)
+    if not account or not document:
+        raise ValueError("Document export refs require account_id and document_id.")
+    return (
+        f"{DOCS_NAMESPACE}:{GOOGLE_PROVIDER_KEY}:"
+        f"{account}:export:{fmt}:{document}"
+    )
+
+
+def parse_docs_export_ref(value: Any) -> dict[str, Any]:
+    ref = _text(value)
+    parts = ref.split(":")
+    if len(parts) != 6 or parts[0].lower() != DOCS_NAMESPACE:
+        raise ValueError("Invalid docs export ref.")
+    if parts[3] != "export" or not all(parts[index] for index in (1, 2, 4, 5)):
+        raise ValueError("Invalid docs export ref.")
+    fmt, mime_type, extension = _export_format(parts[4])
+    return {
+        "ref": ref,
+        "provider": parts[1].lower(),
+        "account_id": parts[2],
+        "document_id": parts[5],
+        "format": fmt,
+        "mime_type": mime_type,
+        "extension": extension,
+        "object_kind": DOCS_EXPORT_KIND,
+    }
+
+
 def parse_docs_ref(value: Any) -> dict[str, Any]:
     ref = _text(value)
     parts = ref.split(":")
@@ -550,6 +662,39 @@ def parse_docs_ref(value: Any) -> dict[str, Any]:
         "document_id": parts[4],
         "object_kind": DOCS_DOCUMENT_KIND,
     }
+
+
+def document_export_filename(*, title: Any, document_id: Any, extension: str) -> str:
+    stem = _text(title) or _text(document_id) or "document"
+    stem = re.sub(r"[\\/\x00-\x1f]+", "_", stem).strip(" .") or "document"
+    return f"{stem}.{extension}"
+
+
+def _export_object(
+    parsed: Mapping[str, Any],
+    *,
+    title: Any = "",
+    byte_size: Any = None,
+) -> dict[str, Any]:
+    size = _int(byte_size, default=-1, minimum=-1)
+    obj = {
+        "ref": _text(parsed.get("ref")),
+        "object_ref": _text(parsed.get("ref")),
+        "object_kind": DOCS_EXPORT_KIND,
+        "provider": _text(parsed.get("provider")) or GOOGLE_PROVIDER_KEY,
+        "account_id": _text(parsed.get("account_id")),
+        "document_id": _text(parsed.get("document_id")),
+        "format": _text(parsed.get("format")),
+        "filename": document_export_filename(
+            title=title,
+            document_id=parsed.get("document_id"),
+            extension=_text(parsed.get("extension")) or "bin",
+        ),
+        "mime_type": _text(parsed.get("mime_type")) or "application/octet-stream",
+    }
+    if size >= 0:
+        obj["size_bytes"] = size
+    return obj
 
 
 def _document_object(
@@ -710,11 +855,21 @@ async def _json_chunks(
         yield bytes(pending)
 
 
+async def _bytes_chunks(
+    value: bytes,
+    *,
+    chunk_bytes: int = 64 * 1024,
+) -> AsyncIterator[bytes]:
+    for offset in range(0, len(value), chunk_bytes):
+        yield value[offset : offset + chunk_bytes]
+        await asyncio.sleep(0)
+
+
 @named_service_provider(
     provider_id=PROVIDER_ID,
     namespace=DOCS_NAMESPACE,
     refs=("docs:*",),
-    object_kinds=(DOCS_DOCUMENT_KIND,),
+    object_kinds=(DOCS_DOCUMENT_KIND, DOCS_EXPORT_KIND),
     search_scopes=DOCS_SEARCH_SCOPES,
     operations=_operations(),
     label="Documents",
@@ -750,7 +905,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             if hasattr(out, "__await__"):
                 out = await out
         except Exception:
-            LOGGER.exception("docs snapshot url factory failed for %s", ref)
+            LOGGER.exception("docs file url factory failed for %s", ref)
             return None
         return dict(out) if isinstance(out, Mapping) and out.get("url") else None
 
@@ -798,6 +953,129 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         ret = result.get("ret")
         return (dict(ret or {}) if isinstance(ret, Mapping) else {}), None
 
+    async def _export_reference_response(
+        self,
+        ctx: NamedServiceContext,
+        request: NamedServiceRequest,
+        *,
+        parsed: Mapping[str, Any],
+    ) -> NamedServiceResponse:
+        metadata, error = await self._execute(
+            request=request,
+            operation="get",
+            claim=DOCS_READ_CLAIM,
+            payload={
+                "document_ref": _text(parsed.get("document_id")),
+                "include_text": False,
+            },
+            account_id=_text(parsed.get("account_id")),
+        )
+        if error is not None:
+            return error
+        obj = _export_object(
+            parsed,
+            title=(metadata or {}).get("title"),
+        )
+        url_info = await self._download_url(ctx, ref=obj["ref"])
+        if url_info is not None:
+            obj["download"] = {"encoding": "url", **url_info}
+        else:
+            obj["delivery"] = {
+                "response_mode": "stream",
+                "note": (
+                    "Resolve this export ref with a streaming object.get to "
+                    "receive the file bytes."
+                ),
+            }
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=obj["ref"],
+            object=obj,
+            extra={"action": ACTION_EXPORT, "source_document_ref": request.object_ref},
+        )
+
+    async def _materialize_export(
+        self,
+        *,
+        request: NamedServiceRequest,
+        parsed: Mapping[str, Any],
+    ) -> NamedServiceResponse | NamedServiceStreamResult:
+        metadata, error = await self._execute(
+            request=request,
+            operation="get",
+            claim=DOCS_READ_CLAIM,
+            payload={
+                "document_ref": _text(parsed.get("document_id")),
+                "include_text": False,
+            },
+            account_id=_text(parsed.get("account_id")),
+        )
+        if error is not None:
+            return error
+        exported, error = await self._execute(
+            request=request,
+            operation=ACTION_EXPORT,
+            claim=DOCS_READ_CLAIM,
+            payload={
+                "document_ref": _text(parsed.get("document_id")),
+                "format": _text(parsed.get("format")),
+            },
+            account_id=_text(parsed.get("account_id")),
+        )
+        if error is not None:
+            return error
+        encoded = _text((exported or {}).get("content_base64"))
+        if not encoded:
+            return NamedServiceResponse.error_response(
+                code="docs_export_payload_missing",
+                message="The document provider returned no export bytes.",
+                status=502,
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        try:
+            data = base64.b64decode(
+                encoded,
+                validate=True,
+            )
+        except (ValueError, TypeError) as exc:
+            return NamedServiceResponse.error_response(
+                code="docs_export_payload_invalid",
+                message="The document provider returned invalid export bytes.",
+                status=502,
+                details={"error": str(exc)},
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        obj = _export_object(
+            parsed,
+            title=(metadata or {}).get("title"),
+            byte_size=len(data),
+        )
+        response = NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=obj["ref"],
+            object=obj,
+            attrs={
+                "materialization": {
+                    "media_type": obj["mime_type"],
+                    "filename": obj["filename"],
+                    "size_bytes": len(data),
+                    "complete": True,
+                }
+            },
+        )
+        return NamedServiceStreamResult(
+            response=response,
+            chunks=_bytes_chunks(data),
+            filename=obj["filename"],
+            media_type=obj["mime_type"],
+        )
+
     def _provider_not_supported(
         self,
         request: NamedServiceRequest,
@@ -829,9 +1107,20 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                     "first connected-account provider."
                 ),
                 "workflow": [
-                    "Call object.search to find a document by title.",
+                    (
+                        "Call object.search to find a document by title; exact "
+                        "title matches are returned first."
+                    ),
                     "Call object.get with its ref to read metadata and body text.",
+                    (
+                        "To clone a document, search for the target title first, "
+                        "then call object.action copy on the source ref."
+                    ),
                     "Call object.upsert or a declared object.action for bounded changes.",
+                    (
+                        "When the user needs a file, call object.action export; "
+                        "the returned export ref is delivered or streamed out of band."
+                    ),
                     "Use the comment actions to read or manage comment threads.",
                 ],
                 "providers": DOCS_PROVIDER_CATALOG,
@@ -1103,12 +1392,33 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                 "count": len(items),
                 "query": query,
                 "account_id": resolved_account_id,
+                "exact_match_count": _int(ret.get("exact_match_count")),
+                "incomplete_search": bool(ret.get("incomplete_search")),
+                "match_mode": _text(ret.get("match_mode")),
             },
         )
 
     async def object_get(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
     ) -> NamedServiceResponse | NamedServiceStreamResult:
+        try:
+            export_parsed = parse_docs_export_ref(request.object_ref)
+        except ValueError:
+            export_parsed = None
+        if export_parsed is not None:
+            unsupported = self._provider_not_supported(request, export_parsed)
+            if unsupported is not None:
+                return unsupported
+            if _is_materialization_request(request):
+                return await self._materialize_export(
+                    request=request,
+                    parsed=export_parsed,
+                )
+            return await self._export_reference_response(
+                ctx,
+                request,
+                parsed=export_parsed,
+            )
         try:
             parsed = parse_docs_ref(request.object_ref)
         except ValueError as exc:
@@ -1303,7 +1613,6 @@ class DocsNamedServiceProvider(NamedServiceProvider):
     async def object_action(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
     ) -> NamedServiceResponse:
-        del ctx
         action = _text(request.action)
         if action not in DOCS_ACTIONS:
             return NamedServiceResponse.error_response(
@@ -1342,6 +1651,28 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         unsupported = self._provider_not_supported(request, parsed)
         if unsupported is not None:
             return unsupported
+        if action == ACTION_EXPORT:
+            try:
+                ref = document_export_ref(
+                    parsed["account_id"],
+                    parsed["document_id"],
+                    request.payload.get("format"),
+                )
+                export_parsed = parse_docs_export_ref(ref)
+            except ValueError as exc:
+                return NamedServiceResponse.error_response(
+                    code="docs_export_format_invalid",
+                    message=str(exc),
+                    status=400,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or DOCS_NAMESPACE,
+                    object_ref=request.object_ref,
+                )
+            return await self._export_reference_response(
+                ctx,
+                request,
+                parsed=export_parsed,
+            )
         payload = dict(request.payload or {})
         payload["document_ref"] = parsed["document_id"]
         if request.idempotency_key:
@@ -1433,6 +1764,7 @@ def make_docs_named_service_provider(
 
 
 __all__ = [
+    "ACTION_COPY",
     "ACTION_APPEND_TEXT",
     "ACTION_APPLY_TEXT_STYLE",
     "ACTION_CREATE_COMMENT",
@@ -1451,6 +1783,8 @@ __all__ = [
     "DOCS_COMMENT_CLAIM",
     "DOCS_CONNECTED_ACCOUNT_REQUIREMENTS",
     "DOCS_DOCUMENT_KIND",
+    "DOCS_EXPORT_FORMATS",
+    "DOCS_EXPORT_KIND",
     "DOCS_GRANT_HINTS",
     "DOCS_NAMESPACE",
     "DOCS_READ_CLAIM",
@@ -1460,8 +1794,11 @@ __all__ = [
     "DOCS_WRITE_CLAIM",
     "DocsNamedServiceProvider",
     "GOOGLE_PROVIDER_KEY",
+    "document_export_filename",
+    "document_export_ref",
     "document_ref",
     "docs_named_service_spec",
     "make_docs_named_service_provider",
+    "parse_docs_export_ref",
     "parse_docs_ref",
 ]

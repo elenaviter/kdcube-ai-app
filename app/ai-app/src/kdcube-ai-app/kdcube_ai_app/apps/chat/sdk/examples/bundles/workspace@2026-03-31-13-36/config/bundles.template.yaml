@@ -390,6 +390,20 @@ bundles:
                       #     - object.upsert
                       #     - object.action
                       #     - object.delete
+                      # Docs uses exact-title-first discovery and supports
+                      # provider-native copy plus bounded edits. Keep
+                      # object.get available for metadata/text reads; the
+                      # paired event-source policy also lets react.pull
+                      # materialize docs: refs as complete JSON snapshots.
+                      # docs:
+                      #   allowed:
+                      #     - provider.about
+                      #     - object.list
+                      #     - object.search
+                      #     - object.get
+                      #     - object.schema
+                      #     - object.upsert
+                      #     - object.action
                     tool_traits:
                       provider_about:
                         strategy: [exploration]
@@ -574,6 +588,21 @@ bundles:
                   # JSON chunks. Enable this with the sheets tool entry above.
                   # - kind: named_service
                   #   namespace: sheets
+                  #   enabled: true
+                  #   discovery:
+                  #     mode: service_discovery
+                  #   policies:
+                  #     block_production:
+                  #       mode: provider
+                  #       operation: block.produce
+                  #     pull:
+                  #       mode: provider
+                  #       operation: object.get
+                  # Docs pull stores a complete JSON snapshot with document
+                  # metadata, extracted body text, tabs, and open comments.
+                  # Enable this with the docs namespace tool entry above.
+                  # - kind: named_service
+                  #   namespace: docs
                   #   enabled: true
                   #   discovery:
                   #     mode: service_discovery

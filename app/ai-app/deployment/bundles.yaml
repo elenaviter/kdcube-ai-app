@@ -238,7 +238,7 @@ bundles:
               - docs:read
             - grant: docs:write
               label: Edit Google Docs
-              description: Create, edit, embed images into, and import Google documents through a connected Google account.
+              description: Create, copy, edit, embed images into, and import Google documents through a connected Google account.
               delegable_roles:
               - kdcube:role:registered
               - kdcube:role:paid
@@ -1173,7 +1173,7 @@ bundles:
                       search:
                         operation: object.search
                         label: Search documents
-                        description: Find documents by title through a connected account.
+                        description: Find exact document titles first, followed by title-prefix matches.
                         grants:
                         - named_services:use
                         - docs:read
@@ -1194,8 +1194,14 @@ bundles:
                       action:
                         operation: object.action
                         label: Document action
-                        description: Apply text styling, insert page breaks, embed images, or import content.
+                        description: Copy or export documents, apply bounded edits, and manage comments.
                         operations:
+                          object.action.copy:
+                            label: Copy document
+                            description: Copy a source document under a new title while preserving its structure.
+                            grants:
+                            - named_services:use
+                            - docs:write
                           object.action.insert_text:
                             label: Insert document text
                             description: Insert text at one explicit document location.
@@ -1232,19 +1238,61 @@ bundles:
                             grants:
                             - named_services:use
                             - docs:write
+                          object.action.export:
+                            label: Export document
+                            description: Deliver a portable document file without placing file bytes in model context.
+                            grants:
+                            - named_services:use
+                            - docs:read
                           object.action.import:
                             label: Import document content
                             description: Import external content into a document.
                             grants:
                             - named_services:use
                             - docs:write
+                          object.action.list_comments:
+                            label: List document comments
+                            description: Read comment threads on a document.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.get_comment:
+                            label: Read document comment
+                            description: Read one comment thread by id.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.create_comment:
+                            label: Create document comment
+                            description: Add a comment to a document.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.reply_comment:
+                            label: Reply to document comment
+                            description: Reply to one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.resolve_comment:
+                            label: Resolve document comment
+                            description: Resolve one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.delete_comment:
+                            label: Delete document comment
+                            description: Delete one document comment.
+                            grants:
+                            - named_services:use
+                            - docs:comment
                       delete:
                         operation: object.delete
-                        label: Delete document content
-                        description: Delete bounded document content by stable ref.
+                        label: Delete document comment
+                        description: Delete one comment identified in the payload; document deletion is not exposed.
                         grants:
                         - named_services:use
-                        - docs:write
+                        - docs:comment
                       call:
                         label: Generic document call
                         description: Generic docs namespace call with per-operation grants.
@@ -1272,7 +1320,7 @@ bundles:
                             - named_services:use
                           object.search:
                             label: Search documents
-                            description: Find documents by title.
+                            description: Find exact document titles first, followed by title-prefix matches.
                             grants:
                             - named_services:use
                             - docs:read
@@ -1285,6 +1333,12 @@ bundles:
                           object.upsert:
                             label: Create or update document
                             description: Create a document, insert or replace text, or import content.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.copy:
+                            label: Copy document
+                            description: Copy a source document under a new title while preserving its structure.
                             grants:
                             - named_services:use
                             - docs:write
@@ -1324,18 +1378,60 @@ bundles:
                             grants:
                             - named_services:use
                             - docs:write
+                          object.action.export:
+                            label: Export document
+                            description: Deliver a portable document file without placing file bytes in model context.
+                            grants:
+                            - named_services:use
+                            - docs:read
                           object.action.import:
                             label: Import document content
                             description: Import external content into a document.
                             grants:
                             - named_services:use
                             - docs:write
-                          object.delete:
-                            label: Delete document content
-                            description: Delete bounded document content by stable ref.
+                          object.action.list_comments:
+                            label: List document comments
+                            description: Read comment threads on a document.
                             grants:
                             - named_services:use
-                            - docs:write
+                            - docs:read
+                          object.action.get_comment:
+                            label: Read document comment
+                            description: Read one comment thread by id.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.create_comment:
+                            label: Create document comment
+                            description: Add a comment to a document.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.reply_comment:
+                            label: Reply to document comment
+                            description: Reply to one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.resolve_comment:
+                            label: Resolve document comment
+                            description: Resolve one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.delete_comment:
+                            label: Delete document comment
+                            description: Delete one document comment.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.delete:
+                            label: Delete document comment
+                            description: Delete one comment identified in the payload; document deletion is not exposed.
+                            grants:
+                            - named_services:use
+                            - docs:comment
                   slack:
                     label: Slack
                     description: List Slack workspaces/channels, search messages/files, read channel history, download files,
@@ -1597,6 +1693,10 @@ bundles:
                   label: Create Google Doc
                   description: Create a document with optional initial content.
                   grants: [docs:write]
+                productivity_docs_copy:
+                  label: Copy Google Doc
+                  description: Copy a document under a new title while preserving its structure.
+                  grants: [docs:write]
                 productivity_docs_insert_text:
                   label: Insert Google Doc text
                   description: Insert text at an explicit document location.
@@ -1755,7 +1855,7 @@ bundles:
                   - https://www.googleapis.com/auth/drive.readonly
                 docs:write:
                   label: Edit Google Docs
-                  description: Create, edit, embed images into, and import Google documents.
+                  description: Create, copy, edit, embed images into, and import Google documents.
                   provider_scopes:
                   - openid
                   - email
@@ -2869,6 +2969,18 @@ bundles:
                     operation: object.get
               - kind: named_service
                 namespace: sheets
+                enabled: true
+                discovery:
+                  mode: service_discovery
+                policies:
+                  block_production:
+                    mode: provider
+                    operation: block.produce
+                  pull:
+                    mode: provider
+                    operation: object.get
+              - kind: named_service
+                namespace: docs
                 enabled: true
                 discovery:
                   mode: service_discovery

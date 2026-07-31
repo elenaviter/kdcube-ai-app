@@ -404,7 +404,7 @@ paths:
   /bundles/{tenant}/{project}/{bundle_id}/public/integration_file_download:
     get:
       tags: [Signed Files]
-      summary: Stream one mail message/attachment, Slack file, or Sheets/Docs snapshot by signed object ref.
+      summary: Stream one mail message/attachment, Slack file, Sheets/Docs snapshot, or portable Docs export by signed object ref.
       operationId: integration_file_download
       security:
         - SignedDownloadToken: []

@@ -1,7 +1,7 @@
 ---
 id: kdcube-services@1-0/docs/journal/2026-07-29-google-docs-productivity.md
 title: "Google Docs Productivity Surface"
-summary: "Google Docs joins the productivity door and the named-service registry, mirroring Sheets, with comments, image embed, export, and import."
+summary: "Google Docs joins the productivity door and named-service registry with exact-title discovery, native copy, editing, comments, and portable export delivery."
 status: active
 tags: ["kdcube-services", "productivity", "google", "docs", "named-services", "mcp"]
 ---
@@ -22,21 +22,32 @@ reaches the agent).
   **async in-proc** (no `@venv`): Docs speaks raw REST to the Docs API + Drive
   API over `httpx`, needing no heavy blocking dependency, so unlike Sheets it
   adds nothing to `requirements.txt`.
-- **MCP** `surfaces/mcp/productivity_docs.py` — 17 typed tools
-  (`productivity_docs_*`): search, get, export, list_comments, get_comment
+- **MCP** `surfaces/mcp/productivity_docs.py` — 18 typed
+  `productivity_docs_*` tools: search, get, export, list_comments, get_comment
   (`docs:read`); create, insert_text, append_text, replace_text,
-  apply_text_style, insert_page_break, embed_image, import
+  copy, apply_text_style, insert_page_break, embed_image, import
   (`docs:read`+`docs:write`); create_comment, reply_comment, resolve_comment,
   delete_comment (`docs:read`+`docs:comment`). `delete_comment` is the only
   destructive annotation; `resolve_comment` is a write (it posts a resolving
-  reply). Registered in `productivity.py` next to Sheets; `bind_docs_service`
-  is rebound per request in the MCP-door method for correct identity.
+  reply). Three additional tools provide separately governed structure, tab,
+  and native batch-edit access. Registered in `productivity.py` next to Sheets;
+  `bind_docs_service` is rebound per request in the MCP-door method for correct
+  identity.
 - **Named service** — the entrypoint's `_named_service_providers()` registers
   the `docs` namespace (SDK `integrations/docs/named_service.py`); the
-  signed-download branch serves `kdcube.docs.snapshot.v1` snapshots via
-  `fetch_google_docs_snapshot`. Single `docs.document` object kind (flatter
-  than Sheets' spreadsheet+tab); comment mutations route through `object.action`
-  and `object.delete`=delete_comment.
+  signed-download branch serves `kdcube.docs.snapshot.v1` snapshots and
+  portable document exports. Exact-title search runs before Google's
+  title-prefix query, and `object.action.copy` uses Drive's native copy so the
+  document structure and formatting survive. `docs.document` represents the
+  provider document; `docs.export` represents one resolvable file export.
+  Comment mutations route through `object.action`, while `object.delete`
+  deletes one comment rather than the document file.
+
+Named-service export returns a portable ref and filename. In KDCube chat, the
+signed URL becomes a file card and is removed from model-visible output. A
+materializing client can stream the export ref, while a turnless MCP client can
+use the short-lived signed URL. Google credentials remain on the trusted side
+for every route.
 
 ## New vs Sheets
 
@@ -61,6 +72,8 @@ grants, the `docs` tool catalog, the `productivity_docs_*` MCP grants, and the
 agent named-service namespace allow-list. Operator: enable the Google Docs API
 and register the new scopes on the OAuth consent screen, then reconnect.
 
-Verification: 96 automated tests (proxy 14, named-service 24, bundle roster +
-import contract). See the platform feature journal
-`journal/26/07/productivity/journal/2026.07.29-google-docs-plan.md`.
+The original Docs pack passed 96 automated tests. The exact-search/copy/export
+follow-up passed 55 focused proxy, named-service, ReAct projection, claim-roster,
+and signed-download tests. The full bundle suite reached 280 passes and 35
+skips; three surface-construction tests stop at a stale local MCP SDK import
+before bundle code runs.

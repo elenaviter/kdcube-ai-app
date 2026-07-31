@@ -70,6 +70,7 @@ def test_get_extracts_text_and_ids_and_url_forms():
 
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/documents/DOC1"
+        assert request.url.params["includeTabsContent"] == "true"
         assert request.headers["Authorization"] == "Bearer tok-123"
         return _json_response(request, doc)
 
@@ -79,6 +80,227 @@ def test_get_extracts_text_and_ids_and_url_forms():
     assert out["ret"]["document_id"] == "DOC1"
     assert out["ret"]["text"] == "Hello world\n"
     assert out["ret"]["end_index"] == 19
+
+
+def test_get_includes_nested_tab_and_table_cell_text_for_document_edits():
+    def _paragraph(text: str) -> dict[str, Any]:
+        return {"paragraph": {"elements": [{"textRun": {"content": text}}]}}
+
+    document = {
+        "documentId": "INVOICE",
+        "title": "26_006",
+        "tabs": [
+            {
+                "tabProperties": {"tabId": "tab-main", "title": "Invoice"},
+                "documentTab": {
+                    "body": {
+                        "content": [
+                            {
+                                "startIndex": 1,
+                                "endIndex": 40,
+                                "table": {
+                                    "tableRows": [
+                                        {
+                                            "tableCells": [
+                                                {"content": [_paragraph("276/006\n")]},
+                                                {"content": [_paragraph("5000.00\n")]},
+                                            ]
+                                        },
+                                        {
+                                            "tableCells": [
+                                                {"content": [_paragraph("01.07.2026\n")]},
+                                                {"content": [_paragraph("Total\n")]},
+                                            ]
+                                        },
+                                    ]
+                                },
+                            }
+                        ]
+                    }
+                },
+                "childTabs": [
+                    {
+                        "tabProperties": {
+                            "tabId": "tab-notes",
+                            "title": "Notes",
+                        },
+                        "documentTab": {
+                            "body": {"content": [_paragraph("Internal note\n")]}
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+    out = _run(
+        "get",
+        {"document_ref": "INVOICE", "include_text": True},
+        lambda request: _json_response(request, document),
+    )
+
+    assert out["ok"] is True
+    text = out["ret"]["text"]
+    assert "[tab: Invoice]" in text
+    assert "276/006" in text
+    assert "5000.00" in text
+    assert "01.07.2026" in text
+    assert "[tab: Notes]" in text
+    assert "Internal note" in text
+    assert out["ret"]["tabs"] == [
+        {"tab_id": "tab-main", "title": "Invoice", "parent_tab_id": ""},
+        {
+            "tab_id": "tab-notes",
+            "title": "Notes",
+            "parent_tab_id": "tab-main",
+        },
+    ]
+    assert out["ret"]["end_index"] == 39
+
+
+def test_search_returns_exact_title_before_prefix_matches_and_supports_shared_drives():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        query = request.url.params["q"]
+        assert request.url.params["spaces"] == "drive"
+        assert request.url.params["corpora"] == "user"
+        assert request.url.params["includeItemsFromAllDrives"] == "true"
+        assert request.url.params["supportsAllDrives"] == "true"
+        if "name = '26_006'" in query:
+            return _json_response(
+                request,
+                {
+                    "files": [
+                        {
+                            "id": "exact",
+                            "name": "26_006",
+                            "mimeType": docs_proxy.DOCS_MIME_TYPE,
+                            "parents": ["shared-folder"],
+                            "capabilities": {"canCopy": True},
+                        }
+                    ]
+                },
+            )
+        assert "name contains '26_006'" in query
+        return _json_response(
+            request,
+            {
+                "files": [
+                    {
+                        "id": "prefix",
+                        "name": "26_006 Archive",
+                        "mimeType": docs_proxy.DOCS_MIME_TYPE,
+                        "capabilities": {"canCopy": False},
+                    },
+                    # The exact query and prefix query may return the same row.
+                    {"id": "exact", "name": "26_006"},
+                ],
+                "nextPageToken": "next-page",
+                "incompleteSearch": True,
+            },
+        )
+
+    out = _run("search", {"query": "26_006", "limit": 5}, handler)
+
+    assert out["ok"] is True
+    assert len(requests) == 2
+    assert [item["document_id"] for item in out["ret"]["items"]] == [
+        "exact",
+        "prefix",
+    ]
+    assert out["ret"]["items"][0]["exact_title_match"] is True
+    assert out["ret"]["items"][0]["copyable"] is True
+    assert out["ret"]["items"][0]["parent_ids"] == ["shared-folder"]
+    assert out["ret"]["exact_match_count"] == 1
+    assert out["ret"]["next_cursor"] == "next-page"
+    assert out["ret"]["incomplete_search"] is True
+    assert out["ret"]["match_mode"] == "exact_then_title_prefix"
+
+
+def test_search_cursor_continues_prefix_query_without_repeating_exact_lookup():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert "name contains '26_006'" in request.url.params["q"]
+        assert "name = '26_006'" not in request.url.params["q"]
+        assert request.url.params["pageToken"] == "page-2"
+        return _json_response(request, {"files": []})
+
+    out = _run(
+        "search",
+        {"query": "26_006", "limit": 5, "cursor": "page-2"},
+        handler,
+    )
+
+    assert out["ok"] is True
+    assert len(requests) == 1
+    assert out["ret"]["match_mode"] == "title_prefix_page"
+
+
+def test_copy_preserves_provider_document_and_returns_the_new_identity():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/drive/v3/files/SOURCE/copy"
+        assert request.url.params["supportsAllDrives"] == "true"
+        assert json.loads(request.content) == {
+            "name": "26_007",
+            "parents": ["invoices-folder"],
+        }
+        return _json_response(
+            request,
+            {
+                "id": "CLONE",
+                "name": "26_007",
+                "mimeType": docs_proxy.DOCS_MIME_TYPE,
+                "parents": ["invoices-folder"],
+                "webViewLink": "https://docs.google.com/document/d/CLONE/edit",
+            },
+        )
+
+    out = _run(
+        "copy",
+        {
+            "document_ref": "SOURCE",
+            "title": "26_007",
+            "parent_id": "invoices-folder",
+            "idempotency_key": "invoice-26-007",
+        },
+        handler,
+    )
+
+    assert out["ok"] is True
+    assert out["ret"] == {
+        "source_document_id": "SOURCE",
+        "document_id": "CLONE",
+        "title": "26_007",
+        "web_url": "https://docs.google.com/document/d/CLONE/edit",
+        "mime_type": docs_proxy.DOCS_MIME_TYPE,
+        "parent_ids": ["invoices-folder"],
+        "copied": True,
+        "idempotency_key": "invoice-26-007",
+    }
+
+
+def test_copy_5xx_marks_outcome_unknown_to_prevent_blind_retry():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json_response(
+            request,
+            {"error": {"message": "upstream timeout"}},
+            status=503,
+        )
+
+    out = _run(
+        "copy",
+        {"document_ref": "SOURCE", "title": "26_007"},
+        handler,
+    )
+
+    assert out["ok"] is False
+    assert out["ret"]["outcome_unknown"] is True
+    assert out["ret"]["retryable"] is True
 
 
 def test_append_text_inserts_at_body_end():
