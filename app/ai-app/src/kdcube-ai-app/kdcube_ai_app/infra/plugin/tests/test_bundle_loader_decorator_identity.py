@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import pytest
+
 from kdcube_ai_app.infra.plugin.bundle_loader import (
     APIEndpointSpec as CurrentAPIEndpointSpec,
     AUTHORITY_PROVIDER_ATTR,
@@ -18,6 +20,7 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
     UI_WIDGET_ATTR,
     UIWidgetSpec as CurrentUIWidgetSpec,
     API_METHOD_ATTR,
+    api,
     discover_bundle_interface_manifest,
 )
 
@@ -176,6 +179,7 @@ def test_manifest_discovery_accepts_reloaded_decorator_dataclasses():
     assert isinstance(manifest.api_endpoints[0], CurrentAPIEndpointSpec)
     assert manifest.api_endpoints[0].method_name == "api_method"
     assert manifest.api_endpoints[0].alias == "run_now"
+    assert manifest.api_endpoints[0].csrf is False
     assert manifest.api_endpoints[0].user_types == ("registered",)
     assert manifest.api_endpoints[0].roles == ("admin",)
 
@@ -203,3 +207,19 @@ def test_manifest_discovery_accepts_reloaded_decorator_dataclasses():
     assert manifest.authority_providers[0].method_name == "authority_provider_method"
     assert manifest.authority_providers[0].authority_id == "custom.identity"
     assert manifest.authority_providers[0].authenticator_id == "custom.identity.oauth"
+
+
+def test_api_decorator_preserves_csrf_metadata_and_limits_it_to_operations_post():
+    @api(alias="grant_create", csrf=True)
+    async def grant_create():
+        return None
+
+    spec = getattr(grant_create, API_METHOD_ATTR)
+    assert spec.csrf is True
+    assert spec.http_method == "POST"
+    assert spec.route == "operations"
+
+    with pytest.raises(ValueError, match="POST on the operations route"):
+        api(alias="bad_get", method="GET", csrf=True)
+    with pytest.raises(ValueError, match="POST on the operations route"):
+        api(alias="bad_public", route="public", csrf=True)

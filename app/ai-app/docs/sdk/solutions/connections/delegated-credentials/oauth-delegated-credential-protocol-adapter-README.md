@@ -3,8 +3,8 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-crede
 title: "OAuth Delegated Credential Protocol Adapter"
 summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, then issues and verifies least-privilege Connection Hub credentials."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
-keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "descriptor configuration"]
-updated_at: 2026-07-30
+keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
@@ -624,8 +624,24 @@ named — never the provider-connect tab, whose state is not the problem.
 - **Refresh rotations preserve the card.** Re-registration on token issuance
   merges the card's existing grants and per-account binding (a rotation never
   wipes the user's ticks), and rotated refresh records keep the registry-card
-  pointer. Cards stamp `last_issued_at` on every issuance — a stale value
-  marks a disconnect orphan; cards also expire with the refresh-token TTL.
+  pointer. The replacement refresh record receives the card's current scopes
+  and operations rather than the token's older snapshot. Cards stamp
+  `last_issued_at` on every issuance — a stale value marks a disconnect
+  orphan; cards also expire with the refresh-token TTL.
+- **Single-use state is consumed atomically.** Authorization-code exchange and
+  consent-CSRF validation use an awaited Redis Lua `GET`+`DEL` transition, so
+  concurrent workers cannot both accept the same record. Refresh first reads
+  one exact token snapshot, validates current live authority, and then passes
+  that snapshot to an awaited Lua compare-and-rotate transition. The script
+  deletes the old record and creates one replacement in the same Redis action;
+  a stale or concurrent consumer receives `invalid_grant`.
+- **A card pointer makes the card authoritative.** Every managed MCP/REST call
+  and refresh resolves the current pointed-to card before using delegated
+  authority. A missing or expired card is revoked authority. An unavailable
+  store, malformed record, unsupported schema, invalid structure, or binding
+  mismatch denies the request; the runtime never falls back to the access or
+  refresh token's older grant snapshot. Legacy records without a card pointer
+  retain their snapshot contract.
 
 ## Storage
 
@@ -637,6 +653,7 @@ store, normally Redis.
 | Dynamic client record | Stores registered public client metadata and redirect URIs. | Until registration expiry or cleanup policy. |
 | Valid CIMD cache entry | Stores one validated public client snapshot. Errors and malformed documents are not cached. | Response cache policy, capped by descriptor TTL. |
 | CSRF token | Single-use consent POST protection bound to grantor subject plus client metadata digest. | Short TTL. |
+| Bundle operation CSRF token | Protects cookie-authenticated state-changing bundle operations; binds subject, tenant, project, bundle, operation, and method. Connection Hub keeps an exhaustive protected-or-exempt inventory of every effective POST surface. | Ten minutes, single use. |
 | Authorization code | Stores client, redirect URI, PKCE challenge, grantor subject, resource, final scopes, selected operations, delegation edges, and grantor authority facts captured at consent. | Short TTL, single use. |
 | Access grant | Binds an access token to selected operations, the `delegated_client` credential envelope, delegation edges, and server-side grantor authority facts. | Same TTL as access token. |
 | Refresh token | Stores client, grantor subject, resource, scopes, selected operations, credential envelope, delegation edges, grantor authority facts, and rotation state. | Long-lived, rotating. |
@@ -644,7 +661,18 @@ store, normally Redis.
 
 Redis loss is safe but product-visible: missing records fail closed, but
 long-lived connectors can require re-consent if dynamic client or refresh-token
-records disappear. The solution-level durability design note is
+records disappear. State-store resolution belongs to the delegated-credential
+adapter, below MCP and REST dispatch. It reuses a request application's shared
+async client when available and otherwise uses the platform's shared async
+client factory. Resolution and I/O failures are logged with the failed
+operation and returned as `503 temporarily_unavailable` by OAuth routes and
+managed MCP/REST authorization guards; raw storage errors are not returned to
+clients. The operation CSRF service uses the same shared state infrastructure:
+the local CLI derives the `chat-proc` connection from descriptor-owned
+`infra.redis`, and the ECS task receives the corresponding logical secret
+through Secrets Manager. `REDIS_URL` is internal service wiring, not an
+operator configuration surface. No separate descriptor field or
+deployment-specific store is required. The solution-level durability design note is
 [Grant Storage Durability](../../sdk/solutions/connections/delegated-connections/design/grant-storage-durability-README.md).
 
 ## Failure Modes
@@ -661,6 +689,12 @@ records disappear. The solution-level durability design note is
 | Missing or invalid PKCE verifier | Token request fails with `invalid_grant`. |
 | Token has grant but no selected operation | Bundle MCP `tools/call` fails closed. |
 | Tool is not listed by endpoint policy or not selected during consent | Bundle MCP `tools/call` returns an MCP tool authorization error. |
+| Pointed-to live grant card is absent or expired | The delegated credential is treated as revoked. |
+| Pointed-to live grant card cannot be read, decoded, structurally validated, or bound to this credential | Managed MCP/REST calls fail closed with `503`; refresh does not rotate and returns `temporarily_unavailable` for store failure or `invalid_grant` for invalid authority state. |
+| Cookie-authenticated grant mutation omits, reuses, or changes the operation CSRF token context | Proc rejects the mutation with `403`; Redis failure returns `503`. |
+| Two workers exchange one authorization code or consume one consent-CSRF token concurrently | One Lua transition wins; the other request sees the record as absent and cannot replay it. |
+| Two workers rotate one refresh token concurrently | Current live authority is checked before rotation; one compare-and-rotate script wins and creates one replacement, while the stale request receives `invalid_grant`. |
+| OAuth shared state cannot be read or changed | OAuth routes and managed MCP/REST guards log the store operation and return `503 temporarily_unavailable`; they do not continue from guessed state. |
 | Refresh token is invalid or rotated | Token request fails with `invalid_grant`. |
 
 ## What This Is Not
@@ -755,6 +789,35 @@ object. The SDK v2 server accepts both the MCP 2026-07-28 discovery flow and
 legacy `initialize` clients; this wire negotiation is independent of whether
 the OAuth client was pre-registered, resolved through CIMD, or registered by
 DCR.
+
+### MCP 2026-07-28 support boundary
+
+The modern Streamable HTTP path targets the MCP `2026-07-28` core through the
+official Python SDK v2. KDCube's wire regression records the actual exchange
+through `KDCubeMCPServer` and the proc bridge and checks:
+
+- `server/discover` replaces the modern initialize handshake;
+- every request carries protocol version, client capabilities, and client
+  identity metadata;
+- `MCP-Protocol-Version`, `Mcp-Method`, and operation-specific `Mcp-Name`
+  headers agree with the body;
+- modern requests carry no `Mcp-Session-Id`;
+- ordinary results carry `resultType: complete` and server identity;
+- cacheable list results carry `ttlMs` and `cacheScope`;
+- a legacy client can still negotiate the retained initialize path.
+
+The authorization adapter implements the corresponding registration and OAuth
+changes: CIMD is supported, DCR remains as a separately configurable
+compatibility path, DCR records carry `application_type`, authorization
+responses carry `iss`, and persisted delegated state remains issuer- and
+resource-bound.
+
+This is a support statement for the capabilities KDCube exposes, backed by the
+focused wire and OAuth suites. It is not a blanket claim that every optional
+MCP extension is implemented. KDCube does not currently claim the Tasks
+extension, and a distributable full-conformance claim additionally requires a
+green report from the official MCP conformance runner plus live external-client
+DCR and CIMD journeys.
 
 For connector UX, MCP apps should advertise:
 
@@ -993,3 +1056,18 @@ Use focused tests and one live connector test.
     "connect one of" choice over its `connected_accounts` options), folds a door
     claim into a hard-required provider, and treats a door claim already backed
     by one connected account as satisfied (no "connect the others").
+21. Concurrent authorization-code and consent-CSRF consumers produce exactly
+    one successful result under real Redis.
+22. Concurrent refresh requests using the same exact token snapshot create
+    exactly one replacement token; the other request cannot rotate stale state.
+23. Every effective Connection Hub operation POST is classified as either
+    cookie-CSRF protected or explicitly read-only; every public POST is listed
+    under its protocol-specific exemption.
+24. Redis failures on OAuth state operations are logged and returned as
+    `503 temporarily_unavailable` rather than an unstructured `500`.
+25. The recorded modern Streamable HTTP exchange contains the required
+    per-request metadata and routing headers, contains no session header, and
+    returns `resultType`, server identity, and cache hints.
+26. The official MCP conformance runner is executed for the exact public
+    surface before publishing an unqualified conformance claim; unsupported
+    optional capabilities remain outside the claim.

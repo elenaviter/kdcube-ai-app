@@ -22,6 +22,10 @@ from fastapi import Request
 
 from kdcube_ai_app.apps.chat.sdk.config import get_settings
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import oauth_delegated_config
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
+    GrantStore,
+    GrantStoreUnavailable,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_projection import (
     authority_has_platform_privilege,
 )
@@ -142,13 +146,19 @@ def get_grant_store(request: Request) -> Any:
     if store is not None:
         return store
 
-    from kdcube_ai_app.apps.chat.sdk.config import get_settings
     from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
-    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import GrantStore
-
-    tenant, project = oauth_tenant_project(request)
-    redis = get_async_redis_client(get_settings().REDIS_URL)
+    try:
+        # In proc, reuse the application-owned async pool. The factory fallback
+        # keeps the adapter usable when mounted standalone in SDK tests/apps.
+        redis = getattr(request.app.state, "redis_async", None)
+        if redis is None:
+            redis = get_async_redis_client(get_settings().REDIS_URL)
+        tenant, project = oauth_tenant_project(request)
+    except GrantStoreUnavailable:
+        raise
+    except Exception as exc:
+        raise GrantStoreUnavailable("initialize") from exc
     return GrantStore(redis, tenant, project)
 
 

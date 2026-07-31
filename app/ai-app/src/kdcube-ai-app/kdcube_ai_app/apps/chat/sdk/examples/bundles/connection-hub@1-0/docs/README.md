@@ -4,6 +4,11 @@ title: "Connection Hub Design"
 summary: "Design overview of connection-hub@1-0: connection edges, connected provider accounts, delegated client credentials, shared OAuth callbacks, named-service boundaries, and the Connections widget."
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "mcp", "oauth", "delegated-credentials", "email", "design"]
+keywords: ["connection hub app", "delegated access", "connected accounts", "grant mutation csrf", "live grant authority"]
+updated_at: 2026-08-01
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-platform-integration-README.md
 ---
 
 # Connection Hub Design
@@ -160,6 +165,10 @@ named_service_operations
 copy of the descriptor's `named_services` policy in `GrantStore`. KDCube
 Services uses that stored policy for its runtime `NamedServiceBoundaryCatalog`,
 so unselected namespaces and operations are denied without a second registry.
+Pointer-backed OAuth and bundle-session credentials resolve this record on
+every managed call and refresh. Missing, expired, malformed, unavailable, or
+mismatched live authority fails closed; a pointed credential does not recover
+its older embedded grant snapshot.
 
 A provider may separately publish `metadata.connected_accounts`. Connection
 Hub renders those requirements and links to **Delegated to KDCube**, preserving
@@ -201,8 +210,16 @@ account at call time.
 - `delegated_to_kdcube_oauth_callback` (public) — the shared OAuth browser
   redirect for delegated to KDCube providers such as Gmail and Slack.
 - `delegated_access_list`, `delegated_access_create`,
-  `delegated_access_revoke` (operations) — list, issue, and revoke manual or
-  OAuth-created delegated access. Manual named-service access accepts the exact
+  `delegated_agent_grant_create`, `delegated_access_revoke` (operations) —
+  list, issue, extend, and revoke delegated access. State-changing Connection
+  Hub operations opt into proc's one-time CSRF contract for
+  cookie-authenticated browsers, including grant, connected-account,
+  connection-edge, authenticator, DCR-allowlist, email-account, and generic
+  named-service mutations. Every effective POST operation is classified in
+  `CSRF_PROTECTED_OPERATION_ALIASES` or
+  `CSRF_EXEMPT_POST_OPERATION_ALIASES`; public protocol POSTs have a separate
+  explicit exemption inventory. Explicit token and authenticated internal
+  calls keep their existing request proof. Manual named-service access accepts the exact
   `named_service_operations[resource][namespace][]` selector.
 - `email_accounts_status`, `email_connect_app_password`, `email_disconnect_account`
   (operations) — older iCloud-only email integration surface.

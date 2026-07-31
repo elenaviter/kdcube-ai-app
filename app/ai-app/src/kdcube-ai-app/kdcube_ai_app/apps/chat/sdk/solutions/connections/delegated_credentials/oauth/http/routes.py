@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+from functools import wraps
 from typing import Any, Iterable, Mapping, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -27,6 +28,11 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
     client_from_record,
     dcr_redirect_allowed,
     get_client,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.live_grant import (
+    LiveGrantCardError,
+    live_grants_for_resource,
+    resolve_live_grant_card,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.client_metadata import (
     ClientMetadataError,
@@ -59,6 +65,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
     parse_authorize_request,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.pkce import verify_s256
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
+    GrantStoreUnavailable,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry_config import (
     resolve_authority_provider_instance,
 )
@@ -81,6 +90,33 @@ _AUTHORIZE_FORM_KEYS = (
     "client_id", "redirect_uri", "response_type", "scope",
     "resource", "state", "code_challenge", "code_challenge_method",
 )
+
+
+def _normalize_grant_store_unavailable(fn):
+    """Expose shared-state outages as OAuth's retryable 503 response."""
+
+    @wraps(fn)
+    async def _wrapped(*args: Any, **kwargs: Any) -> Response:
+        try:
+            return await fn(*args, **kwargs)
+        except GrantStoreUnavailable as exc:
+            LOGGER.exception(
+                "[connection-hub.oauth] grant_store_unavailable route=%s operation=%s",
+                fn.__name__,
+                exc.operation,
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "temporarily_unavailable",
+                    "error_description": (
+                        "OAuth authorization state is temporarily unavailable"
+                    ),
+                },
+                headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+            )
+
+    return _wrapped
 
 
 def _same_origin_authorize_referrer_params(request: Request) -> dict[str, str]:
@@ -536,6 +572,7 @@ def _client_metadata_error_response(error: ClientMetadataError) -> JSONResponse:
 
 
 @router.post("/oauth/register", include_in_schema=False)
+@_normalize_grant_store_unavailable
 async def register_client(request: Request) -> Response:
     cfg = oauth_delegated_config(request)
     if not cfg.dynamic_client_registration.enabled:
@@ -633,6 +670,7 @@ async def register_client(request: Request) -> Response:
 
 
 @router.get("/oauth/authorize", include_in_schema=False)
+@_normalize_grant_store_unavailable
 async def authorize(request: Request) -> Response:
     issuer = resolve_issuer(request)
     params = dict(request.query_params)
@@ -886,6 +924,7 @@ async def _seed_account_scope_for_consent(
 
 
 @router.post("/oauth/authorize/consent", include_in_schema=False)
+@_normalize_grant_store_unavailable
 async def authorize_consent(request: Request) -> Response:
     issuer = resolve_issuer(request)
     form = await request.form()
@@ -1270,6 +1309,7 @@ async def _issue_tokens(
 
 
 @router.post("/oauth/token", include_in_schema=False)
+@_normalize_grant_store_unavailable
 async def token(request: Request) -> Response:
     form = await request.form()
     grant_type = (form.get("grant_type") or "").strip()
@@ -1311,45 +1351,76 @@ async def token(request: Request) -> Response:
         client_id = form.get("client_id")
         if not rt:
             return _token_error("invalid_request", "missing refresh_token")
-        rec = await store.validate_refresh_token(rt)
-        if rec is None:
+        refresh_state = await store.get_refresh_token_state(rt)
+        if refresh_state is None:
             return _token_error("invalid_grant", "refresh token invalid or expired")
+        rec = refresh_state.record
         if client_id and rec["client_id"] != client_id:
             return _token_error("invalid_grant", "client mismatch")
-        new_rt = await store.rotate_refresh_token(rt)
         # The registry card is the authority: a pointer-carrying refresh record
         # re-derives its scopes from the card AS IT IS NOW — a hub-side
         # extension rides the next refresh, and a revoked card (gone) ends the
         # session. Records without a pointer keep their frozen scopes.
         scopes = rec["scopes"]
+        operations = list(rec.get("operations") or [])
+        account_scope: Mapping[str, Mapping[str, list[str] | tuple[str, ...]]] | None = None
         card_pointer = str(rec.get("registry_access_id") or "").strip()
         if card_pointer:
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
-                automation_record_key,
-            )
-
             tenant, project = oauth_tenant_project(request)
-            raw_card = await store.redis.get(automation_record_key(tenant, project, card_pointer))
-            if raw_card is None:
-                return _token_error("invalid_grant", "delegated consent was revoked")
+            credential = rec.get("credential")
+            credential = credential if isinstance(credential, Mapping) else {}
             try:
-                card = json.loads(raw_card)
-                card_map = card.get("resource_grants") or {}
-                entry = card_map.get(str(rec.get("resource") or "") or "*")
-                if isinstance(entry, list) and entry:
-                    scopes = [str(scope) for scope in entry]
-            except Exception:
-                scopes = rec["scopes"]
+                card = await resolve_live_grant_card(
+                    store.redis,
+                    tenant=tenant,
+                    project=project,
+                    access_id=card_pointer,
+                    expected_client_id=str(rec.get("client_id") or ""),
+                    expected_grantor_subject=str(rec.get("sub") or ""),
+                    expected_delegate_subject=str(credential.get("subject") or ""),
+                )
+            except LiveGrantCardError as exc:
+                LOGGER.warning(
+                    "[connection-hub.oauth] refresh denied reason=live_grant_%s client_id=%s",
+                    exc.reason,
+                    str(rec.get("client_id") or ""),
+                )
+                status = 503 if exc.reason == "lookup_unavailable" else 400
+                return _token_error(
+                    "temporarily_unavailable" if status == 503 else "invalid_grant",
+                    "current delegated authorization state is unavailable",
+                    status=status,
+                )
+            if card is None:
+                return _token_error("invalid_grant", "delegated consent was revoked")
+            live_scopes = live_grants_for_resource(
+                card,
+                str(rec.get("resource") or "") or "*",
+            )
+            if live_scopes is None:
+                return _token_error("invalid_grant", "delegated consent no longer covers this resource")
+            scopes = list(live_scopes)
+            operations = list(card.operations)
+            account_scope = card.account_scope
+        new_rt = await store.rotate_refresh_token(
+            rt,
+            scopes=list(scopes),
+            operations=list(operations),
+            state=refresh_state,
+        )
+        if not new_rt:
+            return _token_error("invalid_grant", "refresh token invalid or expired")
         return await _issue_tokens(
             request, store,
             sub=rec["sub"], scopes=scopes, client_id=rec["client_id"],
-            operations=rec.get("operations") or [],
+            operations=operations,
             resource=rec.get("resource"),
             identity_scope=rec.get("identity_scope") or "",
             grantor_authority=rec.get("grantor_authority") or {},
             delegation_edges=rec.get("delegation_edges") or [],
             named_services=rec.get("named_services") or {},
             refresh_token=new_rt,
+            account_scope=account_scope,
             client_metadata=rec.get("client_metadata") or {},
         )
 
@@ -1357,6 +1428,7 @@ async def token(request: Request) -> Response:
 
 
 @router.post("/oauth/revoke", include_in_schema=False)
+@_normalize_grant_store_unavailable
 async def revoke(request: Request) -> Response:
     """RFC 7009 token revocation. A client that disconnects can revoke its
     refresh or access token here; the matching Connection Hub card is retired

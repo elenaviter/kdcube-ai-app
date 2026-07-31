@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -11,16 +14,38 @@ from starlette.requests import Request as StarletteRequest
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth import (
     surface_guard,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
+    GrantStoreUnavailable,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
+    ACCESS_SOURCE_OAUTH,
+    AutomationAccessRecord,
+    automation_record_key,
+)
 
 GUARD_RESOURCE = "http://testserver/guard"
 
 
 class _GrantStore:
-    def __init__(self, record=None):
+    def __init__(self, record=None, redis=None):
         self.record = record
+        self.redis = redis
 
     async def get_access_grant_record(self, access_token: str):
+        if isinstance(self.record, Exception):
+            raise self.record
         return self.record
+
+
+class _Redis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.fail_get = False
+
+    async def get(self, key: str):
+        if self.fail_get:
+            raise RuntimeError("redis unavailable")
+        return self.values.get(key)
 
 
 def _authority(
@@ -45,6 +70,7 @@ def _authority(
                 resource: list(scopes or ["records:read"]),
             },
             "grantor_subject": grantor_subject,
+            "client_id": "claude",
             "identity_scope": identity_scope,
         },
     }
@@ -98,7 +124,15 @@ def test_extract_mcp_tool_calls_handles_batch():
     assert calls == [(2, "records_export")]
 
 
-def _client(monkeypatch, *, grant_record, auth=None, user=None, return_projection=False):
+def _client(
+    monkeypatch,
+    *,
+    grant_record,
+    auth=None,
+    user=None,
+    return_projection=False,
+    redis=None,
+):
     async def fake_authenticate(token: str):
         if token != "reader":
             return None
@@ -115,7 +149,8 @@ def _client(monkeypatch, *, grant_record, auth=None, user=None, return_projectio
     )
 
     app = FastAPI()
-    app.state.oauth_grant_store = _GrantStore(grant_record)
+    app.state.oauth_grant_store = _GrantStore(grant_record, redis=redis)
+    app.state.oauth_delegated_config = {"tenant": "home", "project": "demo"}
     auth = auth or {
         "mode": "managed",
         "authority_id": "delegated_client",
@@ -143,7 +178,15 @@ def _client(monkeypatch, *, grant_record, auth=None, user=None, return_projectio
     return TestClient(app)
 
 
-def _rest_client(monkeypatch, *, grant_record, auth=None, user=None, operation="records_export"):
+def _rest_client(
+    monkeypatch,
+    *,
+    grant_record,
+    auth=None,
+    user=None,
+    operation="records_export",
+    redis=None,
+):
     async def fake_authenticate(token: str):
         if token != "reader":
             return None
@@ -160,7 +203,8 @@ def _rest_client(monkeypatch, *, grant_record, auth=None, user=None, operation="
     )
 
     app = FastAPI()
-    app.state.oauth_grant_store = _GrantStore(grant_record)
+    app.state.oauth_grant_store = _GrantStore(grant_record, redis=redis)
+    app.state.oauth_delegated_config = {"tenant": "home", "project": "demo"}
     auth = auth or {
         "mode": "managed",
         "authority_id": "delegated_client",
@@ -184,6 +228,138 @@ def _rest_client(monkeypatch, *, grant_record, auth=None, user=None, operation="
         return denial or JSONResponse({"ok": True, "projection": projection})
 
     return TestClient(app)
+
+
+def _pointer_grant(access_id: str = "oauth-access-1") -> dict:
+    return {
+        "registry_access_id": access_id,
+        "operations": ["records_export"],
+        "credential": _authority(),
+    }
+
+
+def _live_card(
+    *,
+    access_id: str = "oauth-access-1",
+    operations=("records_export",),
+    resource_grants=None,
+) -> AutomationAccessRecord:
+    return AutomationAccessRecord(
+        access_id=access_id,
+        label="Claude records",
+        client_id="claude",
+        grantor_subject="a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d",
+        delegate_subject=(
+            "integration:claude:a1b2c3d4-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+        ),
+        operations=tuple(operations),
+        resource_grants=(
+            resource_grants
+            if resource_grants is not None
+            else {GUARD_RESOURCE: ("records:read",)}
+        ),
+        expires_at=int(time.time()) + 3600,
+        source=ACCESS_SOURCE_OAUTH,
+    )
+
+
+def _store_live_card(redis: _Redis, card: AutomationAccessRecord) -> None:
+    redis.values[
+        automation_record_key("home", "demo", card.access_id)
+    ] = json.dumps(card.to_dict())
+
+
+def test_managed_mcp_guard_fails_closed_when_live_card_is_malformed(monkeypatch):
+    redis = _Redis()
+    redis.values[
+        automation_record_key("home", "demo", "oauth-access-1")
+    ] = "{"
+    client = _client(
+        monkeypatch,
+        grant_record=_pointer_grant(),
+        redis=redis,
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "temporarily_unavailable"
+
+
+def test_managed_rest_guard_fails_closed_when_live_lookup_is_unavailable(monkeypatch):
+    redis = _Redis()
+    redis.fail_get = True
+    client = _rest_client(
+        monkeypatch,
+        grant_record=_pointer_grant(),
+        redis=redis,
+    )
+
+    response = client.post("/guard", headers={"Authorization": "Bearer reader"})
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "temporarily_unavailable"
+
+
+def test_managed_mcp_guard_reports_grant_store_unavailable(monkeypatch, caplog):
+    client = _client(
+        monkeypatch,
+        grant_record=GrantStoreUnavailable("access_grant.get"),
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": "temporarily_unavailable",
+        "error_description": "Current delegated authorization state is unavailable",
+    }
+    assert "operation=access_grant.get" in caplog.text
+
+
+def test_managed_rest_guard_reports_grant_store_unavailable(monkeypatch, caplog):
+    client = _rest_client(
+        monkeypatch,
+        grant_record=GrantStoreUnavailable("access_grant.get"),
+    )
+
+    response = client.post("/guard", headers={"Authorization": "Bearer reader"})
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": "temporarily_unavailable",
+        "error_description": "Current delegated authorization state is unavailable",
+    }
+    assert "operation=access_grant.get" in caplog.text
+
+
+def test_managed_mcp_guard_applies_live_operation_narrowing(monkeypatch):
+    redis = _Redis()
+    _store_live_card(redis, _live_card(operations=()))
+    client = _client(
+        monkeypatch,
+        grant_record=_pointer_grant(),
+        redis=redis,
+    )
+
+    response = client.post(
+        "/guard",
+        json=_rpc_tool_call(),
+        headers={"Authorization": "Bearer reader"},
+    )
+
+    assert response.status_code == 200
+    result = response.json()["result"]
+    assert result["isError"] is True
+    assert "not consented" in result["content"][0]["text"]
 
 
 def test_managed_guard_uses_connection_hub_resource_policy(monkeypatch):

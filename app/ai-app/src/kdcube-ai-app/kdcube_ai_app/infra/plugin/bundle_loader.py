@@ -98,6 +98,7 @@ class APIEndpointSpec:
     user_types_config: str | None = None
     roles: tuple[str, ...] = ()
     roles_config: str | None = None
+    csrf: bool = False
 
 
 @dataclass(frozen=True)
@@ -405,13 +406,18 @@ def _provider_surface_node(
         node = node.get(norm_alias)
         if not isinstance(node, Mapping):
             return None
-        # Prefer method-specific policy, but allow alias-level policy for
-        # bundles that expose one method per alias or have older decorator
-        # helpers that only know the alias.
-        if "visibility" in node or "auth" in node:
-            return node
-        node = node.get(norm_method)
-        return node if isinstance(node, Mapping) else None
+        # Alias policy supplies defaults; method policy overrides individual
+        # fields. This lets one alias carry shared auth while POST selects
+        # CSRF, without either declaration hiding the other.
+        alias_policy = {
+            key: node[key]
+            for key in ("visibility", "auth", "csrf")
+            if key in node
+        }
+        method_node = node.get(norm_method)
+        if isinstance(method_node, Mapping):
+            return {**alias_policy, **method_node}
+        return alias_policy or None
     node = section.get(norm_alias)
     return node if isinstance(node, Mapping) else None
 
@@ -510,9 +516,13 @@ def _coerce_string_override(value: Any) -> str | None:
     return stripped or None
 
 
+def _coerce_bool_override(value: Any) -> bool | None:
+    """Keep explicit descriptor booleans distinct from a missing override."""
+    return value if isinstance(value, bool) else None
+
+
 def apply_api_overrides(spec: APIEndpointSpec, props: dict[str, Any]) -> APIEndpointSpec:
-    """Return a new APIEndpointSpec with bundle-props overrides applied for any
-    fields whose ``*_config`` path resolves to a valid value."""
+    """Apply descriptor-owned visibility and CSRF policy to an API surface."""
     visibility = provider_surface_visibility(
         props,
         "api",
@@ -520,18 +530,33 @@ def apply_api_overrides(spec: APIEndpointSpec, props: dict[str, Any]) -> APIEndp
         http_method=spec.http_method,
         route=spec.route,
     )
+    surface_node = _provider_surface_node(
+        props,
+        "api",
+        alias=spec.alias,
+        http_method=spec.http_method,
+        route=spec.route,
+    )
+    csrf = _coerce_bool_override(
+        surface_node.get("csrf") if surface_node is not None else None
+    )
     if visibility is not None:
         user_types = _coerce_string_list_override(visibility.get("user_types"))
         roles = _coerce_string_list_override(visibility.get("roles"))
     else:
         user_types = _coerce_string_list_override(_resolve_override_value(spec.user_types_config, props))
         roles = _coerce_string_list_override(_resolve_override_value(spec.roles_config, props))
-    if user_types is None and roles is None:
+    if user_types is None and roles is None and csrf is None:
         return spec
+    if csrf and (spec.http_method != "POST" or spec.route != "operations"):
+        raise ValueError("csrf=True APIs must use POST on the operations route")
     return dataclasses.replace(
         spec,
         user_types=user_types if user_types is not None else spec.user_types,
         roles=roles if roles is not None else spec.roles,
+        csrf=(
+            csrf if csrf is not None else spec.csrf
+        ),
     )
 
 
@@ -824,21 +849,23 @@ def api(
         method: str = "POST",
         alias: str | None = None,
         route: str = "operations",
+        csrf: bool = False,
         user_types: List[str] | Tuple[str, ...] | None = None,
         user_types_config: str | None = None,
         roles: List[str] | Tuple[str, ...] | None = None,
         roles_config: str | None = None,
 ):
     """
-    ``user_types`` / ``roles`` are decorator defaults — the contract baseline
-    declared in code. ``user_types_config`` / ``roles_config`` are dot-paths
-    into bundle props; when set and resolvable, the resolved value overrides
-    the decorator default at request time. Empty list resolves to "no
-    restriction" (intentional override). Invalid types fall back silently to
-    the decorator default.
+    ``user_types`` / ``roles`` / ``csrf`` are decorator defaults. The matching
+    ``surfaces.as_provider.api`` descriptor node overrides them at request
+    time. ``user_types_config`` / ``roles_config`` retain compatibility with
+    direct dot-path overrides. Empty visibility lists mean "no restriction";
+    absent or invalid descriptor values retain the decorator default.
     """
     http_method = _normalize_http_method(method)
     resolved_route = _normalize_api_route(route)
+    if csrf and (http_method != "POST" or resolved_route != "operations"):
+        raise ValueError("csrf=True APIs must use POST on the operations route")
     resolved_user_types, resolved_roles = _normalize_visibility_selectors(
         user_types=user_types,
         roles=roles,
@@ -857,6 +884,7 @@ def api(
                 alias=resolved_alias,
                 http_method=http_method,
                 route=resolved_route,
+                csrf=bool(csrf),
                 user_types=resolved_user_types,
                 user_types_config=resolved_user_types_config,
                 roles=resolved_roles,
@@ -2626,6 +2654,7 @@ def discover_bundle_interface_manifest(target: Any, *, bundle_id: str | None = N
                 alias=str(getattr(api_spec, "alias", "") or ""),
                 http_method=str(getattr(api_spec, "http_method", "POST") or "POST"),
                 route=str(getattr(api_spec, "route", "operations") or "operations"),
+                csrf=bool(getattr(api_spec, "csrf", False)),
                 user_types=tuple(getattr(api_spec, "user_types", ()) or ()),
                 user_types_config=getattr(api_spec, "user_types_config", None),
                 roles=tuple(getattr(api_spec, "roles", ()) or ()),

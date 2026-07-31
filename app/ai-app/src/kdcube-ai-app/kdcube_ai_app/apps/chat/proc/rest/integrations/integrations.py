@@ -21,7 +21,7 @@ from typing import Optional, Dict, Any, Set, List, Tuple, Mapping
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from starlette.datastructures import UploadFile as StarletteUploadFile
 
@@ -144,6 +144,14 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
     delegated_rest_runtime_projection,
     mcp_auth_mode,
     rest_auth_mode,
+)
+from kdcube_ai_app.apps.chat.proc.rest.integrations.operation_csrf import (
+    OPERATION_CSRF_HEADER,
+    OPERATION_CSRF_TTL_SECONDS,
+    authenticated_session_subject,
+    consume_request_operation_csrf_token,
+    mint_request_operation_csrf_token,
+    request_uses_cookie_auth,
 )
 from kdcube_ai_app.infra.secrets import (
     SecretsManagerError,
@@ -3264,6 +3272,133 @@ async def call_bundle_op(
     )
 
 
+async def _bundle_operation_csrf_token(
+        *,
+        tenant: str,
+        project: str,
+        bundle_id: Optional[str],
+        operation: str,
+        request: Request,
+        session: UserSession,
+) -> JSONResponse:
+    """Mint a token only when the resolved operation opts into CSRF checks."""
+
+    workflow, spec_resolved, tenant_id, project_id, _comm_context = _unpack_loaded_bundle_workflow(
+        await _load_bundle_workflow(
+            tenant=tenant,
+            project=project,
+            bundle_id=bundle_id,
+            payload=BundleSuggestionsRequest(),
+            request=request,
+            session=session,
+        )
+    )
+    endpoint_spec, allowed_methods = resolve_bundle_api_endpoint(
+        workflow,
+        alias=operation,
+        http_method="POST",
+        route="operations",
+        bundle_id=spec_resolved.id,
+    )
+    if endpoint_spec is None:
+        if allowed_methods:
+            raise HTTPException(
+                status_code=405,
+                detail=f"Bundle operation {operation} does not support POST. Allowed: {', '.join(allowed_methods)}",
+            )
+        raise HTTPException(status_code=404, detail=f"Bundle does not support operation {operation}")
+    props = _authoritative_bundle_props(
+        tenant=tenant_id,
+        project=project_id,
+        bundle_id=spec_resolved.id,
+    )
+    endpoint_spec = apply_api_overrides(endpoint_spec, props)
+    endpoint_auth = provider_surface_auth(
+        props,
+        "api",
+        alias=endpoint_spec.alias,
+        http_method=endpoint_spec.http_method,
+        route=endpoint_spec.route,
+    )
+    _ensure_operations_session_authorized(session)
+    if not _endpoint_visible(endpoint_spec.user_types, endpoint_spec.roles, session, endpoint_auth):
+        raise HTTPException(status_code=403, detail=f"Bundle operation {operation} is not visible to this user")
+    if not is_bundle_enabled(props) or not is_api_enabled(props, endpoint_spec):
+        raise HTTPException(status_code=404, detail=f"Bundle operation {operation} is not available")
+
+    required = bool(endpoint_spec.csrf and request_uses_cookie_auth(request))
+    payload: dict[str, Any] = {
+        "csrf_required": required,
+        "bundle_id": spec_resolved.id,
+        "operation": endpoint_spec.alias,
+    }
+    if required:
+        subject = authenticated_session_subject(session)
+        if not subject:
+            raise HTTPException(status_code=403, detail="Authenticated user identity is required.")
+        try:
+            payload["csrf_token"] = await mint_request_operation_csrf_token(
+                request,
+                subject=subject,
+                tenant=tenant_id,
+                project=project_id,
+                bundle_id=spec_resolved.id,
+                operation=endpoint_spec.alias,
+                method="POST",
+            )
+        except Exception:
+            logger.exception(
+                "[operation-csrf] token mint failed tenant=%s project=%s bundle=%s operation=%s",
+                tenant_id,
+                project_id,
+                spec_resolved.id,
+                endpoint_spec.alias,
+            )
+            raise HTTPException(status_code=503, detail="Operation CSRF protection is unavailable.")
+        payload["expires_in"] = OPERATION_CSRF_TTL_SECONDS
+    return JSONResponse(
+        payload,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@router.get("/bundles/{tenant}/{project}/{bundle_id}/operations/{operation}/csrf")
+async def get_bundle_operation_csrf_token(
+        tenant: str,
+        project: str,
+        bundle_id: str,
+        operation: str,
+        request: Request,
+        session: UserSession = Depends(auth_without_pressure([RequireUser()])),
+):
+    return await _bundle_operation_csrf_token(
+        tenant=tenant,
+        project=project,
+        bundle_id=bundle_id,
+        operation=operation,
+        request=request,
+        session=session,
+    )
+
+
+@router.get("/bundles/{tenant}/{project}/operations/{operation}/csrf")
+async def get_default_bundle_operation_csrf_token(
+        tenant: str,
+        project: str,
+        operation: str,
+        request: Request,
+        session: UserSession = Depends(auth_without_pressure([RequireUser()])),
+):
+    return await _bundle_operation_csrf_token(
+        tenant=tenant,
+        project=project,
+        bundle_id=None,
+        operation=operation,
+        request=request,
+        session=session,
+    )
+
+
 @router.post("/bundles/{tenant}/{project}/operations/{operation}")
 async def call_bundle_op_default(
         tenant: str,
@@ -4974,6 +5109,53 @@ async def _serve_public_content_route(
     return response
 
 
+async def _enforce_bundle_operation_csrf(
+        *,
+        endpoint_spec: APIEndpointSpec,
+        request: Request,
+        session: UserSession,
+        tenant: str,
+        project: str,
+        bundle_id: str,
+        request_method: str,
+        internal_peer_call: bool,
+) -> None:
+    if (
+        not endpoint_spec.csrf
+        or endpoint_spec.route != "operations"
+        or request_method != "POST"
+        or internal_peer_call
+        or not request_uses_cookie_auth(request)
+    ):
+        return
+    subject = authenticated_session_subject(session)
+    if not subject:
+        raise HTTPException(status_code=403, detail="Authenticated user identity is required.")
+    validation = await consume_request_operation_csrf_token(
+        request,
+        request.headers.get(OPERATION_CSRF_HEADER, ""),
+        subject=subject,
+        tenant=tenant,
+        project=project,
+        bundle_id=bundle_id,
+        operation=endpoint_spec.alias,
+        method=request_method,
+    )
+    if validation.ok:
+        return
+    logger.warning(
+        "[operation-csrf] denied reason=%s tenant=%s project=%s bundle=%s operation=%s",
+        validation.reason,
+        tenant,
+        project,
+        bundle_id,
+        endpoint_spec.alias,
+    )
+    if validation.reason == "store_unavailable":
+        raise HTTPException(status_code=503, detail="Operation CSRF protection is unavailable.")
+    raise HTTPException(status_code=403, detail="Operation CSRF token is missing, expired, or invalid.")
+
+
 async def _call_bundle_op_inner(
         *,
         tenant: str,
@@ -5072,6 +5254,16 @@ async def _call_bundle_op_inner(
         raise HTTPException(status_code=404, detail=f"Bundle {spec_resolved.id} is disabled")
     if not is_api_enabled(_props, endpoint_spec):
         raise HTTPException(status_code=404, detail=f"Bundle operation {operation} is not available")
+    await _enforce_bundle_operation_csrf(
+        endpoint_spec=endpoint_spec,
+        request=request,
+        session=session,
+        tenant=tenant_id,
+        project=project_id,
+        bundle_id=spec_resolved.id,
+        request_method=request_method,
+        internal_peer_call=_internal_peer_call,
+    )
 
     try:
         fn = getattr(workflow, endpoint_spec.method_name)

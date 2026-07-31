@@ -4,6 +4,8 @@ title: "Connection Hub Build Journal"
 summary: "Compatibility index for the connection-hub@1-0 dated build journal."
 status: active
 tags: ["connection-hub", "journal", "connections", "identity"]
+keywords: ["connection hub build journal", "delegated credentials changes", "connection hub history"]
+updated_at: 2026-08-01
 ---
 
 # Connection Hub Build Journal
@@ -13,6 +15,9 @@ as dated files in this directory.
 
 ## Entries
 
+- [2026-07-31 - Live grant authority and operation CSRF](2026-07-31-live-grant-authority-and-operation-csrf.md)
+- [2026-07-27 - Exact named-service actions and Sheets](2026-07-27-exact-named-service-actions-and-sheets.md)
+- [2026-07-17 - Automation access catalog parity](2026-07-17-automation-access-catalog-parity.md)
 - [2026-07-05 - Managed REST guard](2026-07-05-managed-rest-guard.md)
 - [2026-07-05 - Delegated access for automation](2026-07-05-delegated-access-for-automation.md)
 - [2026-07-01 - Authority registry descriptor](2026-07-01-authority-registry-descriptor.md)

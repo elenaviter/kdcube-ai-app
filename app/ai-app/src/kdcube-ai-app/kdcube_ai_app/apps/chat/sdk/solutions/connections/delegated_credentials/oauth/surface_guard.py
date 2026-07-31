@@ -25,12 +25,17 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.cre
     normalize_resource,
     resource_matches,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.live_grant import (
+    LiveGrantCardError,
+    resolve_live_grant_card,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_projection import (
     authority_has_platform_privilege,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.grants import oauth_tenant_project
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
     GrantStore,
+    GrantStoreUnavailable,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.metadata import (
     protected_resource_metadata_url,
@@ -406,14 +411,43 @@ async def _default_grant_store(request: Request) -> GrantStore:
     if override is not None:
         return override
 
-    redis = getattr(request.app.state, "redis_async", None)
-    if redis is None:
-        from kdcube_ai_app.apps.chat.sdk.config import get_settings
-        from kdcube_ai_app.infra.redis.client import get_async_redis_client
+    try:
+        redis = getattr(request.app.state, "redis_async", None)
+        if redis is None:
+            from kdcube_ai_app.apps.chat.sdk.config import get_settings
+            from kdcube_ai_app.infra.redis.client import get_async_redis_client
 
-        redis = get_async_redis_client(get_settings().REDIS_URL)
-    tenant, project = oauth_tenant_project(request)
-    return GrantStore(redis, tenant, project)
+            redis = get_async_redis_client(get_settings().REDIS_URL)
+        tenant, project = oauth_tenant_project(request)
+        return GrantStore(redis, tenant, project)
+    except GrantStoreUnavailable:
+        raise
+    except Exception as exc:
+        raise GrantStoreUnavailable("initialize") from exc
+
+
+async def _access_grant_record(
+    *,
+    request: Request,
+    token: str,
+    logger: logging.Logger,
+    surface_label: str,
+) -> tuple[Optional[Dict[str, Any]], JSONResponse | None]:
+    try:
+        grant_store = await _default_grant_store(request)
+        return await grant_store.get_access_grant_record(token), None
+    except GrantStoreUnavailable as exc:
+        logger.exception(
+            "[connection-hub.oauth.%s_guard] unavailable operation=%s resource=%s",
+            surface_label,
+            exc.operation,
+            _request_resource(request),
+        )
+        return None, _json_response(
+            503,
+            "temporarily_unavailable",
+            "Current delegated authorization state is unavailable",
+        )
 
 
 async def _authenticate_delegated_client_access_token(token: str) -> dict[str, Any] | None:
@@ -449,25 +483,25 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
     access_id = str(grant_record.get("registry_access_id") or "").strip()
     if not access_id:
         return grant_record
-    try:
-        from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
-            automation_record_key,
-        )
-
-        tenant, project = oauth_tenant_project(request)
-        store = await _default_grant_store(request)
-        raw = await store.redis.get(automation_record_key(tenant, project, access_id))
-    except Exception:
-        logger.warning("[connection-hub.oauth.guard] live card resolution unavailable; snapshot kept", exc_info=True)
-        return grant_record
-    if raw is None:
+    credential = grant_record.get("credential")
+    credential = credential if isinstance(credential, Mapping) else {}
+    attrs = credential.get("attrs")
+    attrs = attrs if isinstance(attrs, Mapping) else {}
+    tenant, project = oauth_tenant_project(request)
+    store = await _default_grant_store(request)
+    card = await resolve_live_grant_card(
+        store.redis,
+        tenant=tenant,
+        project=project,
+        access_id=access_id,
+        expected_client_id=str(attrs.get("client_id") or ""),
+        expected_grantor_subject=str(attrs.get("grantor_subject") or ""),
+        expected_delegate_subject=str(credential.get("subject") or ""),
+    )
+    if card is None:
         logger.info("[connection-hub.oauth.guard] registry card %s gone — binding treated as revoked", access_id)
         return None
-    try:
-        card = json.loads(raw)
-    except Exception:
-        return grant_record
-    resource_grants = card.get("resource_grants") if isinstance(card.get("resource_grants"), dict) else {}
+    resource_grants = card.resource_grants
     all_grants = sorted({str(g) for grants in resource_grants.values() for g in (grants or [])})
     resolved = dict(grant_record)
     credential = dict(resolved.get("credential") or {})
@@ -475,15 +509,21 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
     attrs["resource_grants"] = {res: list(grants or []) for res, grants in resource_grants.items()}
     attrs["scopes"] = all_grants
     attrs["grants"] = all_grants
+    attrs["operations"] = list(card.operations)
+    attrs["account_scope"] = {
+        provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+        for provider, accounts in card.account_scope.items()
+    }
     credential["attrs"] = attrs
     resolved["credential"] = credential
-    if card.get("operations"):
-        resolved["operations"] = list(card.get("operations") or [])
+    resolved["operations"] = list(card.operations)
     resolved["grants"] = all_grants
     # Carry the card's per-agent account binding so the door can enforce it
     # (which connected account(s) this client may use per provider).
-    if isinstance(card.get("account_scope"), dict):
-        resolved["account_scope"] = dict(card.get("account_scope") or {})
+    resolved["account_scope"] = {
+        provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+        for provider, accounts in card.account_scope.items()
+    }
     return resolved
 
 
@@ -625,9 +665,23 @@ async def delegated_platform_admin_runtime_projection(
     if user is None:
         return {}
 
-    grant_store = await _default_grant_store(request)
-    grant_record = await grant_store.get_access_grant_record(token)
-    grant_record = await _live_grant_record(request, grant_record)
+    grant_record, unavailable = await _access_grant_record(
+        request=request,
+        token=token,
+        logger=REST_LOGGER,
+        surface_label="rest",
+    )
+    if unavailable is not None:
+        return {}
+    try:
+        grant_record = await _live_grant_record(request, grant_record)
+    except LiveGrantCardError as exc:
+        REST_LOGGER.warning(
+            "[connection-hub.oauth.rest_guard] denied reason=live_grant_%s resource=%s",
+            exc.reason,
+            _request_resource(request),
+        )
+        return {}
     envelope = _grant_record_credential(grant_record)
     if authority_id and envelope.issuer_authority_id != authority_id:
         return {}
@@ -742,9 +796,33 @@ async def _authorize_delegated_managed_request(
         )
         return _json_response(403, "forbidden", "required permission is missing"), user, CredentialEnvelope(), {}
 
-    grant_store = await _default_grant_store(request)
-    grant_record = await grant_store.get_access_grant_record(token)
-    grant_record = await _live_grant_record(request, grant_record)
+    grant_record, unavailable = await _access_grant_record(
+        request=request,
+        token=token,
+        logger=logger,
+        surface_label=surface_label,
+    )
+    if unavailable is not None:
+        return unavailable, user, CredentialEnvelope(), {}
+    try:
+        grant_record = await _live_grant_record(request, grant_record)
+    except LiveGrantCardError as exc:
+        logger.warning(
+            "[connection-hub.oauth.%s_guard] denied reason=live_grant_%s resource=%s",
+            surface_label,
+            exc.reason,
+            _request_resource(request),
+        )
+        return (
+            _json_response(
+                503,
+                "temporarily_unavailable",
+                "Current delegated authorization state is unavailable",
+            ),
+            user,
+            CredentialEnvelope(),
+            {},
+        )
     envelope = _grant_record_credential(grant_record)
     try:
         request.state.delegated_credential = {
@@ -844,9 +922,27 @@ async def authorize_delegated_mcp_request(
         )
         return _json_response(403, "forbidden", "required permission is missing")
 
-    grant_store = await _default_grant_store(request)
-    grant_record = await grant_store.get_access_grant_record(token)
-    grant_record = await _live_grant_record(request, grant_record)
+    grant_record, unavailable = await _access_grant_record(
+        request=request,
+        token=token,
+        logger=LOGGER,
+        surface_label="mcp",
+    )
+    if unavailable is not None:
+        return unavailable
+    try:
+        grant_record = await _live_grant_record(request, grant_record)
+    except LiveGrantCardError as exc:
+        LOGGER.warning(
+            "[connection-hub.oauth.mcp_guard] denied reason=live_grant_%s resource=%s",
+            exc.reason,
+            _request_resource(request),
+        )
+        return _json_response(
+            503,
+            "temporarily_unavailable",
+            "Current delegated authorization state is unavailable",
+        )
     envelope = _grant_record_credential(grant_record)
     try:
         request.state.delegated_credential = {

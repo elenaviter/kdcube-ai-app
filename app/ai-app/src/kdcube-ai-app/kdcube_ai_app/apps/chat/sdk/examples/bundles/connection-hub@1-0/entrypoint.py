@@ -101,6 +101,54 @@ LOGGER = logging.getLogger("kdcube.playground.connection_hub")
 # refreshes it. Bounded by _bounded_ttl (7 days) inside create_access.
 AGENT_GRANT_DEFAULT_TTL_SECONDS = 7 * 24 * 3600
 
+# Operation POSTs are classified exhaustively. Mutations require a distributed,
+# single-use CSRF token when browser cookies carry authentication. Read-only
+# POST adapters are explicit exemptions; bearer/internal callers are unaffected.
+CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
+    "authenticators_remove",
+    "authenticators_upsert",
+    "connection_edge_challenge_claim",
+    "connection_edge_challenge_create",
+    "connection_edge_remove",
+    "connection_edge_upsert",
+    "connections_disconnect",
+    "connections_start_oauth",
+    "dcr_allowlist_set",
+    "delegated_access_create",
+    "delegated_access_revoke",
+    "delegated_agent_grant_create",
+    "delegated_to_kdcube_connect_credential",
+    "delegated_to_kdcube_disconnect",
+    "delegated_to_kdcube_start_oauth",
+    "email_connect_app_password",
+    "email_disconnect_account",
+    "named_service",
+})
+CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
+    "agent_capabilities",
+    "agent_selection_update",
+    "authority_provider_resolve",
+    "connection_edge_challenge_status",
+    "delegated_identity_scope_resolve",
+    "delegated_to_kdcube_resolve",
+    "economic_usage",
+    "identity_family_resolve",
+    "identity_resolve",
+    "opex",
+    "react_context_preview",
+})
+# These public POSTs use their own protocol authentication/anti-forgery contract
+# or are read-only resolvers. They never inherit browser-operation CSRF.
+CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
+    "authority_provider_entrypoint_resolve",
+    "federated_data_bus_claim",
+    "oauth",
+    "request_authenticate",
+    "telegram_connection_edge_complete",
+    "telegram_connection_edge_remove",
+    "telegram_connection_edge_start",
+})
+
 
 def _api_visibility(alias: str) -> Dict[str, str]:
     return {
@@ -1581,7 +1629,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 
-    @api(method="POST", alias="named_service", route="operations", **_api_visibility("named_service"))
+    @api(
+        method="POST",
+        alias="named_service",
+        route="operations",
+        csrf=True,
+        **_api_visibility("named_service"),
+    )
     async def named_service(self, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Any:
         payload = _payload(data, **kwargs)
         LOGGER.info(
@@ -1776,7 +1830,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
         return await _automation_access_service(self, request).list_access(user)
 
-    @api(method="POST", alias="delegated_access_create", route="operations", **_api_visibility("delegated_access_create"))
+    @api(
+        method="POST",
+        alias="delegated_access_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_create"),
+    )
     async def delegated_access_create(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -1806,7 +1866,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         except ValueError as exc:
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
 
-    @api(method="POST", alias="delegated_agent_grant_create", route="operations", **_api_visibility("delegated_agent_grant_create"))
+    @api(
+        method="POST",
+        alias="delegated_agent_grant_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_agent_grant_create"),
+    )
     async def delegated_agent_grant_create(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -1937,7 +2003,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 client_id, resource, exc_info=True,
             )
 
-    @api(method="POST", alias="delegated_access_revoke", route="operations", **_api_visibility("delegated_access_revoke"))
+    @api(
+        method="POST",
+        alias="delegated_access_revoke",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_revoke"),
+    )
     async def delegated_access_revoke(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -1978,7 +2050,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
         return await _delegated_to_kdcube_operations(self, platform_user_id).catalog(provider_id=provider)
 
-    @api(method="POST", alias="delegated_to_kdcube_start_oauth", route="operations", **_api_visibility("delegated_to_kdcube_start_oauth"))
+    @api(
+        method="POST",
+        alias="delegated_to_kdcube_start_oauth",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_to_kdcube_start_oauth"),
+    )
     async def delegated_to_kdcube_start_oauth(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -2113,7 +2191,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 link=_request_origin(request),
             )
 
-    @api(method="POST", alias="delegated_to_kdcube_connect_credential", route="operations", **_api_visibility("delegated_to_kdcube_connect_credential"))
+    @api(
+        method="POST",
+        alias="delegated_to_kdcube_connect_credential",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_to_kdcube_connect_credential"),
+    )
     async def delegated_to_kdcube_connect_credential(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -2143,7 +2227,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             LOGGER.warning("[connection-hub.delegated_to_kdcube] connect credential failed: %s", exc, exc_info=True)
             return {"ok": False, "error": "invalid_delegated_to_kdcube_request", "message": str(exc)}
 
-    @api(method="POST", alias="delegated_to_kdcube_disconnect", route="operations", **_api_visibility("delegated_to_kdcube_disconnect"))
+    @api(
+        method="POST",
+        alias="delegated_to_kdcube_disconnect",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_to_kdcube_disconnect"),
+    )
     async def delegated_to_kdcube_disconnect(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -2246,7 +2336,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         del kwargs
         return await connections_settings.catalog(self, user_id=user_id, fingerprint=fingerprint)
 
-    @api(method="POST", alias="connections_start_oauth", route="operations", **_api_visibility("connections_start_oauth"))
+    @api(
+        method="POST",
+        alias="connections_start_oauth",
+        route="operations",
+        csrf=True,
+        **_api_visibility("connections_start_oauth"),
+    )
     async def connections_start_oauth(
         self,
         request: Any = None,
@@ -2284,7 +2380,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             fingerprint=fingerprint,
         )
 
-    @api(method="POST", alias="connections_disconnect", route="operations", **_api_visibility("connections_disconnect"))
+    @api(
+        method="POST",
+        alias="connections_disconnect",
+        route="operations",
+        csrf=True,
+        **_api_visibility("connections_disconnect"),
+    )
     async def connections_disconnect(
         self,
         provider: str = "",
@@ -2411,7 +2513,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "edges": _edge_store(self).list_edges(target_user_id=requested_user),
         }
 
-    @api(method="POST", alias="connection_edge_upsert", route="operations", **_api_visibility("connection_edge_upsert"))
+    @api(
+        method="POST",
+        alias="connection_edge_upsert",
+        route="operations",
+        csrf=True,
+        **_api_visibility("connection_edge_upsert"),
+    )
     async def connection_edge_upsert(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -2460,7 +2568,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
         return {"ok": True, "edge": row, "principal": principal}
 
-    @api(method="POST", alias="connection_edge_remove", route="operations", **_api_visibility("connection_edge_remove"))
+    @api(
+        method="POST",
+        alias="connection_edge_remove",
+        route="operations",
+        csrf=True,
+        **_api_visibility("connection_edge_remove"),
+    )
     async def connection_edge_remove(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -2486,7 +2600,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             target_user_id=current_user,
         )
 
-    @api(method="POST", alias="connection_edge_challenge_create", route="operations", **_api_visibility("connection_edge_challenge_create"))
+    @api(
+        method="POST",
+        alias="connection_edge_challenge_create",
+        route="operations",
+        csrf=True,
+        **_api_visibility("connection_edge_challenge_create"),
+    )
     async def connection_edge_challenge_create(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -2531,7 +2651,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             ),
         }
 
-    @api(method="POST", alias="connection_edge_challenge_claim", route="operations", **_api_visibility("connection_edge_challenge_claim"))
+    @api(
+        method="POST",
+        alias="connection_edge_challenge_claim",
+        route="operations",
+        csrf=True,
+        **_api_visibility("connection_edge_challenge_claim"),
+    )
     async def connection_edge_challenge_claim(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -3262,7 +3388,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "providers": sorted({str(item.get("provider") or "") for item in items if item.get("provider")}),
         }
 
-    @api(method="POST", alias="authenticators_upsert", route="operations", **_api_visibility("authenticators_upsert"))
+    @api(
+        method="POST",
+        alias="authenticators_upsert",
+        route="operations",
+        csrf=True,
+        **_api_visibility("authenticators_upsert"),
+    )
     async def authenticators_upsert(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -3325,7 +3457,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         await _invalidate_authenticator_selector_cache(self)
         return {"ok": True, "authenticator": row}
 
-    @api(method="POST", alias="authenticators_remove", route="operations", **_api_visibility("authenticators_remove"))
+    @api(
+        method="POST",
+        alias="authenticators_remove",
+        route="operations",
+        csrf=True,
+        **_api_visibility("authenticators_remove"),
+    )
     async def authenticators_remove(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -3370,7 +3508,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "defaults": list(DEFAULT_DCR_REDIRECT_URIS),
         }
 
-    @api(method="POST", alias="dcr_allowlist_set", route="operations", **_api_visibility("dcr_allowlist_set"))
+    @api(
+        method="POST",
+        alias="dcr_allowlist_set",
+        route="operations",
+        csrf=True,
+        **_api_visibility("dcr_allowlist_set"),
+    )
     async def dcr_allowlist_set(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -3454,7 +3598,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         del kwargs
         return await email_settings.status(self, user_id=user_id, fingerprint=fingerprint)
 
-    @api(method="POST", alias="email_connect_app_password", route="operations", **_api_visibility("email_connect_app_password"))
+    @api(
+        method="POST",
+        alias="email_connect_app_password",
+        route="operations",
+        csrf=True,
+        **_api_visibility("email_connect_app_password"),
+    )
     async def email_connect_app_password(
         self,
         provider: str = "icloud",
@@ -3478,7 +3628,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             fingerprint=fingerprint,
         )
 
-    @api(method="POST", alias="email_disconnect_account", route="operations", **_api_visibility("email_disconnect_account"))
+    @api(
+        method="POST",
+        alias="email_disconnect_account",
+        route="operations",
+        csrf=True,
+        **_api_visibility("email_disconnect_account"),
+    )
     async def email_disconnect_account(
         self,
         account_id: str = "",

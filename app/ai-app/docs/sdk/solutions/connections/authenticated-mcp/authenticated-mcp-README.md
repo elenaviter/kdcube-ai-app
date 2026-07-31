@@ -4,7 +4,7 @@ title: "Authenticated MCP: The Full Configuration Chain"
 summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, OAuth client registration, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates, and the three scenarios this chain enables."
 status: active
 tags: ["sdk", "connections", "connection-hub", "mcp", "managed-auth", "delegated-credentials", "delegated-accounts", "named-services", "consent", "connected-accounts", "automation", "agents"]
-updated_at: 2026-07-30
+updated_at: 2026-08-01
 keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "Client ID Metadata Document", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
@@ -166,6 +166,13 @@ registration precedence and CIMD controls are owned by
 [OAuth Delegated Credential Protocol Adapter](../delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md).
 The connect journey is
 [Delegate A KDCube Service To An External Client](../../../../recipes/connections/delegate-kdcube-service-to-external-client-README.md).
+
+All three registration paths enter the same authorization-code, consent,
+refresh, revocation, resource, and per-operation grant machinery. Single-use
+OAuth state changes are atomic across workers, and a pointer-backed credential
+resolves its current Connection Hub card on every managed call and refresh.
+The protocol support boundary and conformance gates are owned by
+[OAuth Delegated Credential Protocol Adapter](../delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md#mcp-2026-07-28-support-boundary).
 
 ## Layer 5 - namespace boundary policy: door claims per operation
 

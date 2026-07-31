@@ -2,8 +2,9 @@
 id: repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
 title: "Bundles Descriptor"
 summary: "Bundle registry and non-secret bundle deployment configuration in bundles.yaml: default bundle, git or local bundle sources, module paths, and bundle-scoped config."
-tags: ["service", "configuration", "bundle", "bundle-registry", "deployment", "descriptor"]
-keywords: ["bundle registry", "default bundle selection", "git bundle source", "local path bundle source", "bundle module mapping", "bundle configuration", "bundle inventory", "file-backed bundle authority", "bundle reload workflow", "deployment bundle catalog"]
+tags: ["service", "configuration", "bundle", "bundle-registry", "deployment", "descriptor", "api-security"]
+keywords: ["bundle registry", "default bundle selection", "git bundle source", "local path bundle source", "bundle module mapping", "bundle configuration", "bundle inventory", "file-backed bundle authority", "bundle reload workflow", "deployment bundle catalog", "operation csrf override"]
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/descriptors-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
@@ -11,6 +12,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/service-runtime-configuration-mapping-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-configure-and-run-bundle-README.md
 ---
 # Bundles Descriptor
@@ -190,8 +192,8 @@ Provider surface policy keys:
 | Surface | Policy path |
 |---|---|
 | bundle | `surfaces.as_provider.bundle.visibility` |
-| API | `surfaces.as_provider.api.<route>.<alias>.<METHOD>.visibility` / `.auth` |
-| API alias fallback | `surfaces.as_provider.api.<route>.<alias>.visibility` / `.auth` |
+| API | `surfaces.as_provider.api.<route>.<alias>.<METHOD>.visibility` / `.auth` / `.csrf` |
+| API alias fallback | `surfaces.as_provider.api.<route>.<alias>.visibility` / `.auth` / `.csrf` |
 | MCP | `surfaces.as_provider.mcp.<alias>.auth` |
 | widget | `surfaces.as_provider.widget.<alias>.visibility` / `.auth` |
 
@@ -210,12 +212,13 @@ bundles:
             api:
               operations:
                 admin_data:
-                  GET:
+                  POST:
+                    csrf: true
                     visibility:
                       roles: [kdcube:role:super-admin]
                     auth:
                       authority_id: platform
-                      grants: [admin:read]
+                      grants: [admin:write]
             widget:
               dashboard:
                 visibility:
@@ -241,6 +244,11 @@ credential and each called MCP tool's required grants before the request enters
 the bundle MCP app. If `mode` is absent or set to `bundle`, the auth block is
 treated as bundle-owned metadata; bundle code reads it and enforces its own
 header/JWT/API-key scheme.
+
+`csrf` is an explicit Boolean override for the API decorator default. It is
+supported for `POST` operations surfaces only and defaults to `false` when
+neither code nor descriptor opts in. See
+[Bundle Operation CSRF](../sdk/bundle/bundle-operation-csrf-README.md).
 
 ```yaml
 surfaces:

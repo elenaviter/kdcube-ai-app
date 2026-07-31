@@ -3,12 +3,13 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-platform-integration-RE
 title: "Bundle Platform Integration"
 summary: "Declarative platform contract for exposing bundle capabilities through decorators, manifest metadata, REST operations, widgets, MCP routes, static UI, public routes, Data Bus handlers, scheduled jobs, and background job handlers."
 tags: ["sdk", "bundle", "integration", "decorators", "widgets", "operations", "mcp", "ui", "manifest", "cron", "scheduled-jobs", "background-jobs", "data-bus"]
-keywords: ["decorator based integration", "bundle manifest contract", "rest operations exposure", "widget exposure", "mcp route exposure", "static ui exposure", "public route exposure", "data bus handler", "scheduled job exposure", "on_job background job handler"]
-updated_at: 2026-07-30
+keywords: ["decorator based integration", "bundle manifest contract", "rest operations exposure", "operation csrf protection", "widget exposure", "mcp route exposure", "static ui exposure", "public route exposure", "data bus handler", "scheduled job exposure", "on_job background job handler"]
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-entrypoint-classes-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-configure-and-run-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-transports-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/auth-bundle-federated-README.md
@@ -550,6 +551,7 @@ Current signature:
     alias="preferences_exec_report",
     route="operations",
     user_types=("registered",),
+    csrf=True,
 )
 async def preferences_exec_report(self, **kwargs):
     ...
@@ -580,6 +582,18 @@ Current fields:
   - tuple/list of raw external roles
   - use actual auth role ids such as `kdcube:role:super-admin`
   - empty means no raw-role restriction
+- `csrf`
+  - opt-in for selected state-changing browser operations
+  - valid only for `POST` methods on the `operations` route
+  - default: `False`
+  - the decorator declares the code default; descriptor surface policy may
+    override it with `true` or `false`
+  - when enabled, a cookie-authenticated browser obtains a short-lived token
+    from the operation's `/csrf` route and sends it in
+    `X-KDCube-CSRF-Token` on the operation POST
+  - explicit bearer/ID-token callers and authenticated internal peer calls do
+    not use the browser CSRF exchange; their non-ambient credential remains the
+    request proof
 - `surfaces.as_provider.api.<route>.<alias>.<METHOD>.visibility`
   - descriptor-owned `user_types` / `roles` policy for this API surface
   - empty lists are valid intentional overrides meaning "no restriction"
@@ -594,6 +608,11 @@ Current fields:
 - `surfaces.as_provider.api.<route>.<alias>.auth`
   - alias-level fallback for authority/grant policy
   - method-specific policy wins when both are present
+- `surfaces.as_provider.api.operations.<alias>.<METHOD>.csrf`
+  - descriptor-owned override for the decorator's `csrf` default
+  - Boolean; absent or invalid values retain the decorator default
+- `surfaces.as_provider.api.operations.<alias>.csrf`
+  - alias-level fallback when the alias has one method
 - canonical feature gate: `enabled.api["<route>.<alias>.<METHOD>"]` (flat key)
   - boolean (or string equivalent) under `enabled.api` in bundle props
   - if the resolved value is falsy, this endpoint returns 404
@@ -618,6 +637,8 @@ Important current rule:
   bundle method or a delegated SDK helper
 - platform-managed security boundaries are descriptor-owned under
   `surfaces.as_provider.<surface>.auth`
+- CSRF is resolved per API surface from the `@api` default and the bundle
+  descriptor override; no policy is inferred from `POST` itself
 - bundle API methods do not receive a separate communicator argument from proc
   by default
 - if bundle code needs request-bound execution context, use runtime helpers:
@@ -1186,6 +1207,7 @@ class APIEndpointSpec:
     user_types_config: str | None = None
     roles: tuple[str, ...] = ()
     roles_config: str | None = None
+    csrf: bool = False
 ```
 
 ### 2.2 `UIWidgetSpec`
@@ -1380,7 +1402,8 @@ Example:
       "http_method": "POST",
       "route": "operations",
       "user_types": ["registered"],
-      "roles": []
+      "roles": [],
+      "csrf": true
     }
   ],
   "mcp_endpoints": [
@@ -1416,6 +1439,7 @@ Example:
 ```text
 GET  /api/integrations/bundles/{tenant}/{project}/{bundle_id}/operations/{alias}
 POST /api/integrations/bundles/{tenant}/{project}/{bundle_id}/operations/{alias}
+GET  /api/integrations/bundles/{tenant}/{project}/{bundle_id}/operations/{alias}/csrf
 ```
 
 Current rules:
@@ -1427,6 +1451,19 @@ Current rules:
 - if the alias exists for a different HTTP method on the same route, proc
   returns `405`
 - if the alias is not declared for route `operations`, proc returns `404`
+- for a resolved `csrf=True` POST invoked with platform session cookies, the
+  caller first fetches the `/csrf` route and supplies the returned token in
+  `X-KDCube-CSRF-Token`; the token is bound to subject, tenant, project,
+  bundle, operation, and method, expires after ten minutes, and is consumed
+  once
+- token creation and consumption use proc's shared Redis client, so the GET and
+  POST may land on different workers; Redis unavailability fails closed with
+  `503`, while a missing, expired, reused, or mismatched token returns `403`
+- the `/csrf` response reports `csrf_required: false` for an endpoint without
+  the opt-in or a request authenticated by an explicit bearer/ID-token header
+
+The complete declaration and browser-client contract is in
+[Bundle Operation CSRF](bundle-operation-csrf-README.md).
 
 ### 3.3 Public route
 

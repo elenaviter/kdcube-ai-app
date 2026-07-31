@@ -4,8 +4,8 @@ title: "Protect Bundle MCP With Managed Credentials"
 summary: "Recipe for exposing a bundle MCP surface protected by Connection Hub delegated credentials, with tool-centric grants and descriptor-owned policy."
 status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "mcp", "managed-auth", "bundle-surfaces", "named-services", "least-privilege"]
-updated_at: 2026-07-30
-keywords: ["managed MCP credentials", "KDCubeMCPServer", "delegated client", "selected tool grants", "stateless MCP", "Connection Hub MCP"]
+updated_at: 2026-08-01
+keywords: ["managed MCP credentials", "KDCubeMCPServer", "delegated client", "selected tool grants", "stateless MCP", "MCP 2026-07-28", "Connection Hub MCP"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
@@ -80,6 +80,14 @@ Durable state therefore cannot depend on one process-local MCP server object.
 Keep it in KDCube stores, Connection Hub credential records, and product
 storage. `KDCubeMCPServer` accepts both MCP 2026-07-28 clients and legacy
 `initialize` clients through the same stateless app surface.
+
+The modern path uses the official Python SDK v2 and emits the 2026-07-28
+per-request metadata, routing headers, result discriminator, server identity,
+and cache hints. Registration supports descriptor pre-registration and CIMD,
+with DCR retained as an independently configurable compatibility path. The
+exact support boundary and the evidence required before making a broad
+conformance claim are recorded in
+[OAuth Delegated Credential Protocol Adapter](../../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md#mcp-2026-07-28-support-boundary).
 
 ## Descriptor Surface
 
@@ -594,6 +602,44 @@ credentials and user consent.
 12. For a provider-backed namespace, revoke the provider claim while retaining
     the KDCube automation grant; confirm the upstream call fails closed.
 ```
+
+### Platform regression after a source change
+
+Platform source changes must be restaged into the local runtime before this
+test describes the running system:
+
+```bash
+kdcube refresh \
+  --tenant <tenant> \
+  --project <project> \
+  --path "$REPO" \
+  --build
+```
+
+Then identify the running proc container and verify its dependency set:
+
+```bash
+docker exec <proc-container> python -c \
+"from importlib.metadata import version; print(version('mcp'), version('httpx2'), version('pydantic'))"
+```
+
+Expected versions for this implementation are `2.0.0`, `2.9.1`, and
+`2.13.4`. Run the focused modern/legacy wire, registration, and mounted-route
+suite inside that same container:
+
+```bash
+docker exec <proc-container> python -m pytest -q \
+  /app/kdcube_ai_app/apps/chat/sdk/runtime/mcp/test_mcp_v2_conformance.py \
+  /app/kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/oauth/tests/test_client_metadata.py \
+  /app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/tests/test_oauth_discovery.py
+```
+
+The wire test records KDCube's actual HTTP exchange; it does not infer protocol
+behavior from package versions. Complete one real external connector journey
+afterward: authorize, consent, call, refresh, edit or revoke the Connection Hub
+card, confirm the next call sees the change, then reconnect. Exercise both DCR
+and a controlled public-HTTPS CIMD client before publishing a registration-wide
+conformance claim.
 
 ## What Not To Do
 

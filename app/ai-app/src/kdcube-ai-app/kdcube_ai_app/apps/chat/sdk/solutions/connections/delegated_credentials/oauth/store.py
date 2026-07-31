@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 # Authorization codes are exchanged immediately by the client.
@@ -36,6 +37,58 @@ CLIENT_TTL_SECONDS = 210 * 24 * 3600
 CSRF_TTL_SECONDS = 600
 
 
+_ATOMIC_GETDEL = """
+local value = redis.call('GET', KEYS[1])
+if not value then
+    return nil
+end
+redis.call('DEL', KEYS[1])
+return value
+"""
+
+_ATOMIC_GET_AND_EXPIRE = """
+local value = redis.call('GET', KEYS[1])
+if not value then
+    return nil
+end
+redis.call('EXPIRE', KEYS[1], ARGV[1])
+return value
+"""
+
+_ATOMIC_ROTATE_REFRESH_TOKEN = """
+local current = redis.call('GET', KEYS[1])
+if not current then
+    return 0
+end
+if current ~= ARGV[1] then
+    return -1
+end
+if redis.call('EXISTS', KEYS[2]) == 1 then
+    return -2
+end
+redis.call('DEL', KEYS[1])
+redis.call('SETEX', KEYS[2], ARGV[3], ARGV[2])
+return 1
+"""
+
+
+class GrantStoreUnavailable(RuntimeError):
+    """The shared OAuth state store could not complete an operation."""
+
+    def __init__(self, operation: str):
+        self.operation = str(operation or "unknown")
+        super().__init__(f"OAuth grant store unavailable during {self.operation}")
+
+
+@dataclass(frozen=True)
+class RefreshTokenState:
+    """Exact Redis record used to authorize one refresh-token rotation."""
+
+    token: str
+    raw: Any
+    record: Dict[str, Any]
+
+
 class GrantStore:
     def __init__(
         self,
@@ -51,6 +104,21 @@ class GrantStore:
         self._project = project
         self._auth_code_ttl = auth_code_ttl
         self._refresh_ttl = refresh_ttl
+
+    async def _redis_call(
+        self,
+        operation: str,
+        method_name: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        try:
+            method = getattr(self._r, method_name)
+            return await method(*args, **kwargs)
+        except GrantStoreUnavailable:
+            raise
+        except Exception as exc:
+            raise GrantStoreUnavailable(operation) from exc
 
     def _key(self, kind: str, token: str) -> str:
         return f"{self._tenant}:{self._project}:kdcube:oauth:{kind}:{token}"
@@ -94,16 +162,30 @@ class GrantStore:
             "account_scope": dict(account_scope or {}),
             "client_metadata": dict(client_metadata or {}),
         }
-        await self._r.setex(self._key("code", code), self._auth_code_ttl, json.dumps(payload))
+        await self._redis_call(
+            "authorization_code.create",
+            "setex",
+            self._key("code", code),
+            self._auth_code_ttl,
+            json.dumps(payload),
+        )
         return code
 
     async def consume_auth_code(self, code: str) -> Optional[Dict[str, Any]]:
-        key = self._key("code", code)
-        raw = await self._r.get(key)
+        raw = await self._redis_call(
+            "authorization_code.consume",
+            "eval",
+            _ATOMIC_GETDEL,
+            1,
+            self._key("code", code),
+        )
         if raw is None:
             return None
-        await self._r.delete(key)  # single use
-        return json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     # ----------------------------- refresh tokens -----------------------------
 
@@ -138,20 +220,52 @@ class GrantStore:
             "named_services": named_services or {},
             "client_metadata": dict(client_metadata or {}),
         }
-        await self._r.setex(self._key("refresh", rt), self._refresh_ttl, json.dumps(payload))
+        await self._redis_call(
+            "refresh_token.create",
+            "setex",
+            self._key("refresh", rt),
+            self._refresh_ttl,
+            json.dumps(payload),
+        )
         return rt
 
-    async def validate_refresh_token(self, refresh_token: str) -> Optional[Dict[str, Any]]:
-        raw = await self._r.get(self._key("refresh", refresh_token))
+    async def get_refresh_token_state(
+        self,
+        refresh_token: str,
+    ) -> Optional[RefreshTokenState]:
+        token = str(refresh_token or "").strip()
+        if not token:
+            return None
+        raw = await self._redis_call(
+            "refresh_token.read",
+            "get",
+            self._key("refresh", token),
+        )
         if raw is None:
             return None
-        return json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return RefreshTokenState(token=token, raw=raw, record=payload)
+
+    async def validate_refresh_token(self, refresh_token: str) -> Optional[Dict[str, Any]]:
+        state = await self.get_refresh_token_state(refresh_token)
+        return dict(state.record) if state is not None else None
 
     async def revoke_refresh_token(self, refresh_token: str) -> bool:
         token = str(refresh_token or "").strip()
         if not token:
             return False
-        return bool(await self._r.delete(self._key("refresh", token)))
+        return bool(
+            await self._redis_call(
+                "refresh_token.revoke",
+                "delete",
+                self._key("refresh", token),
+            )
+        )
 
     @property
     def redis(self) -> Any:
@@ -171,7 +285,9 @@ class GrantStore:
     ) -> str:
         """Mint a single-use CSRF token bound to the user and consent context."""
         token = secrets.token_urlsafe(32)
-        await self._r.setex(
+        await self._redis_call(
+            "consent_csrf.create",
+            "setex",
             self._key("csrf", token),
             CSRF_TTL_SECONDS,
             json.dumps({"sub": sub, "context": dict(context or {})}),
@@ -196,11 +312,15 @@ class GrantStore:
         """Consume a CSRF token and return its server-authored consent context."""
         if not token:
             return False, "missing", {}
-        key = self._key("csrf", token)
-        raw = await self._r.get(key)
+        raw = await self._redis_call(
+            "consent_csrf.consume",
+            "eval",
+            _ATOMIC_GETDEL,
+            1,
+            self._key("csrf", token),
+        )
         if raw is None:
             return False, "not_found", {}
-        await self._r.delete(key)  # single use
         try:
             payload = json.loads(raw)
             stored_sub = payload.get("sub")
@@ -230,19 +350,31 @@ class GrantStore:
         }
         # Sliding TTL (see CLIENT_TTL_SECONDS): long-lived for a connector in
         # use, finite for the registration junk repeated reconnects leave.
-        await self._r.setex(
-            self._key("client", client_id), CLIENT_TTL_SECONDS, json.dumps(record)
+        await self._redis_call(
+            "dynamic_client.register",
+            "setex",
+            self._key("client", client_id),
+            CLIENT_TTL_SECONDS,
+            json.dumps(record),
         )
         return record
 
     async def get_client_record(self, client_id: str) -> Optional[Dict[str, Any]]:
-        key = self._key("client", client_id)
-        raw = await self._r.get(key)
+        raw = await self._redis_call(
+            "dynamic_client.read",
+            "eval",
+            _ATOMIC_GET_AND_EXPIRE,
+            1,
+            self._key("client", client_id),
+            CLIENT_TTL_SECONDS,
+        )
         if raw is None:
             return None
-        # Re-arm the sliding TTL: any use of the client keeps it alive.
-        await self._r.expire(key, CLIENT_TTL_SECONDS)
-        return json.loads(raw)
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
 
     # ----------------------- client metadata documents -----------------------
 
@@ -258,14 +390,20 @@ class GrantStore:
         ttl_seconds: int,
     ) -> None:
         payload = {"status": "ok", "client": dict(client or {})}
-        await self._r.setex(
+        await self._redis_call(
+            "client_metadata.cache",
+            "setex",
             self._client_metadata_key(client_id),
             max(1, int(ttl_seconds)),
             json.dumps(payload),
         )
 
     async def get_client_metadata_cache(self, client_id: str) -> Optional[Dict[str, Any]]:
-        raw = await self._r.get(self._client_metadata_key(client_id))
+        raw = await self._redis_call(
+            "client_metadata.read",
+            "get",
+            self._client_metadata_key(client_id),
+        )
         if raw is None:
             return None
         try:
@@ -275,28 +413,81 @@ class GrantStore:
         return payload if isinstance(payload, dict) else None
 
     async def delete_client_metadata_cache(self, client_id: str) -> bool:
-        return bool(await self._r.delete(self._client_metadata_key(client_id)))
-
-    async def rotate_refresh_token(self, refresh_token: str) -> Optional[str]:
-        rec = await self.validate_refresh_token(refresh_token)
-        if rec is None:
-            return None
-        await self._r.delete(self._key("refresh", refresh_token))
-        return await self.create_refresh_token(
-            client_id=rec["client_id"], sub=rec["sub"], scopes=rec["scopes"],
-            operations=rec.get("operations") or [],
-            resource=rec.get("resource") or "",
-            identity_scope=rec.get("identity_scope") or "",
-            credential=rec.get("credential") or {},
-            grantor_authority=rec.get("grantor_authority") or {},
-            delegation_edges=rec.get("delegation_edges") or [],
-            named_services=rec.get("named_services") or {},
-            client_metadata=rec.get("client_metadata") or {},
-            # Keep the registry-card pointer across rotations: without it the
-            # rotated record froze its scopes and RFC 7009 revocation could no
-            # longer find the card to retire.
-            registry_access_id=str(rec.get("registry_access_id") or "").strip(),
+        return bool(
+            await self._redis_call(
+                "client_metadata.delete",
+                "delete",
+                self._client_metadata_key(client_id),
+            )
         )
+
+    async def rotate_refresh_token(
+        self,
+        refresh_token: str,
+        *,
+        scopes: Optional[List[str]] = None,
+        operations: Optional[List[str]] = None,
+        state: Optional[RefreshTokenState] = None,
+    ) -> Optional[str]:
+        """Rotate a refresh token and persist any freshly resolved authority.
+
+        Pointer-backed callers resolve the current grant card before rotation.
+        Their replacement record keeps that live snapshot for observability and
+        consistency, while the pointer remains the authority on every use.
+        """
+        token = str(refresh_token or "").strip()
+        current = state or await self.get_refresh_token_state(token)
+        if current is None:
+            return None
+        if current.token != token:
+            raise ValueError("refresh token state does not match the token being rotated")
+
+        rec = current.record
+        replacement = {
+            "registry_access_id": str(rec.get("registry_access_id") or "").strip(),
+            "client_id": rec["client_id"],
+            "sub": rec["sub"],
+            "scopes": list(rec.get("scopes") or []) if scopes is None else list(scopes),
+            "operations": (
+                list(rec.get("operations") or [])
+                if operations is None
+                else list(operations)
+            ),
+            "resource": rec.get("resource") or "",
+            "identity_scope": rec.get("identity_scope") or "",
+            "credential": rec.get("credential") or {},
+            "grantor_authority": rec.get("grantor_authority") or {},
+            "delegation_edges": list(rec.get("delegation_edges") or []),
+            "named_services": rec.get("named_services") or {},
+            "client_metadata": dict(rec.get("client_metadata") or {}),
+        }
+        encoded_replacement = json.dumps(replacement)
+
+        # A generated-token collision must not consume the old token. The Lua
+        # transition checks the replacement key before deleting the old key.
+        for _attempt in range(3):
+            new_token = secrets.token_urlsafe(40)
+            if new_token == token:
+                continue
+            result = await self._redis_call(
+                "refresh_token.rotate",
+                "eval",
+                _ATOMIC_ROTATE_REFRESH_TOKEN,
+                2,
+                self._key("refresh", token),
+                self._key("refresh", new_token),
+                current.raw,
+                encoded_replacement,
+                self._refresh_ttl,
+            )
+            code = int(result)
+            if code == 1:
+                return new_token
+            if code in {0, -1}:
+                return None
+            if code != -2:
+                raise GrantStoreUnavailable("refresh_token.rotate")
+        raise GrantStoreUnavailable("refresh_token.rotate")
 
     # ---------------------- access-token operation grant ----------------------
 
@@ -330,19 +521,33 @@ class GrantStore:
         }
         if str(registry_access_id or "").strip():
             payload["registry_access_id"] = str(registry_access_id).strip()
-        await self._r.setex(
-            self._agrant_key(access_token), max(1, int(ttl_seconds)), json.dumps(payload),
+        await self._redis_call(
+            "access_grant.bind",
+            "setex",
+            self._agrant_key(access_token),
+            max(1, int(ttl_seconds)),
+            json.dumps(payload),
         )
 
     async def revoke_access_grant(self, access_token: str) -> bool:
         token = str(access_token or "").strip()
         if not token:
             return False
-        return bool(await self._r.delete(self._agrant_key(token)))
+        return bool(
+            await self._redis_call(
+                "access_grant.revoke",
+                "delete",
+                self._agrant_key(token),
+            )
+        )
 
     async def get_access_grant_record(self, access_token: str) -> Optional[Dict[str, Any]]:
         """Grant metadata bound to ``access_token`` (None if no grant record)."""
-        raw = await self._r.get(self._agrant_key(access_token))
+        raw = await self._redis_call(
+            "access_grant.read",
+            "get",
+            self._agrant_key(access_token),
+        )
         if raw is None:
             return None
         try:

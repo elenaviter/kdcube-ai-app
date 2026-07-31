@@ -8,6 +8,8 @@ unit tests independent of the bundle-session authority.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -24,6 +26,9 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.authority_registry import
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.pkce import make_s256_challenge
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.test_clients_and_store import FakeRedis
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.tests.helpers import enable_delegated_client
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access import (
+    automation_record_key,
+)
 
 VERIFIER = "code-verifier-" + "z" * 60
 CHALLENGE = make_s256_challenge(VERIFIER)
@@ -203,6 +208,115 @@ async def test_refresh_token_rotates_and_issues_new_access(ctx):
     assert again.status_code == 400
 
 
+@pytest.mark.asyncio
+async def test_refresh_token_keeps_old_token_when_live_card_lookup_is_unavailable(ctx):
+    client, store = ctx
+    code = await _seed_code(store)
+    first = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": "http://127.0.0.1:9000/callback",
+        "client_id": "claude",
+        "code_verifier": VERIFIER,
+    }).json()
+    refresh_token = first["refresh_token"]
+    refresh_record = await store.validate_refresh_token(refresh_token)
+    card_key = automation_record_key(
+        "home",
+        "demo",
+        refresh_record["registry_access_id"],
+    )
+    original_get = store.redis.get
+
+    async def failing_card_get(key):
+        if key == card_key:
+            raise RuntimeError("live card unavailable")
+        return await original_get(key)
+
+    store.redis.get = failing_card_get
+
+    response = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": "claude",
+    })
+
+    assert response.status_code == 503
+    assert response.json()["error"] == "temporarily_unavailable"
+    assert await store.validate_refresh_token(refresh_token) is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_rejects_malformed_live_card_without_rotation(ctx):
+    client, store = ctx
+    code = await _seed_code(store)
+    first = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": "http://127.0.0.1:9000/callback",
+        "client_id": "claude",
+        "code_verifier": VERIFIER,
+    }).json()
+    refresh_token = first["refresh_token"]
+    refresh_record = await store.validate_refresh_token(refresh_token)
+    card_key = automation_record_key(
+        "home",
+        "demo",
+        refresh_record["registry_access_id"],
+    )
+    store.redis.values[card_key] = "{"
+
+    response = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": "claude",
+    })
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_grant"
+    assert await store.validate_refresh_token(refresh_token) is not None
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_applies_empty_live_grant_narrowing(ctx):
+    client, store = ctx
+    code = await _seed_code(store)
+    first = client.post("/oauth/token", data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": "http://127.0.0.1:9000/callback",
+        "client_id": "claude",
+        "code_verifier": VERIFIER,
+    }).json()
+    refresh_token = first["refresh_token"]
+    refresh_record = await store.validate_refresh_token(refresh_token)
+    card_key = automation_record_key(
+        "home",
+        "demo",
+        refresh_record["registry_access_id"],
+    )
+    card = json.loads(store.redis.values[card_key])
+    card["operations"] = []
+    card["resource_grants"] = {
+        resource: [] for resource in card["resource_grants"]
+    }
+    store.redis.values[card_key] = json.dumps(card)
+
+    response = client.post("/oauth/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": "claude",
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scope"] == ""
+    assert await store.get_access_grant(body["access_token"]) == []
+    rotated = await store.validate_refresh_token(body["refresh_token"])
+    assert rotated["operations"] == []
+    assert rotated["scopes"] == []
+
+
 def test_unknown_refresh_token_is_invalid_grant(ctx):
     client, _ = ctx
     r = client.post("/oauth/token", data={
@@ -210,3 +324,25 @@ def test_unknown_refresh_token_is_invalid_grant(ctx):
     })
     assert r.status_code == 400
     assert r.json()["error"] == "invalid_grant"
+
+
+def test_grant_store_outage_is_logged_and_returned_as_retryable_503(ctx, caplog):
+    client, store = ctx
+
+    async def unavailable_get(key):
+        raise ConnectionError("redis unavailable")
+
+    store.redis.get = unavailable_get
+    with caplog.at_level("ERROR", logger="kdcube.connection_hub.oauth"):
+        response = client.post("/oauth/token", data={
+            "grant_type": "refresh_token",
+            "refresh_token": "cannot-read",
+            "client_id": "claude",
+        })
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": "temporarily_unavailable",
+        "error_description": "OAuth authorization state is temporarily unavailable",
+    }
+    assert "route=token operation=refresh_token.read" in caplog.text

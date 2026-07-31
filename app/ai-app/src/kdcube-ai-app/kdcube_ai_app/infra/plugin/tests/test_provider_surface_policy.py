@@ -134,6 +134,93 @@ def test_provider_surface_policy_allows_api_alias_level_defaults() -> None:
     ) == {"authority_id": "platform", "grants": ["status:read"]}
 
 
+def test_provider_surface_policy_overrides_operation_csrf_in_both_directions() -> None:
+    enabled_props = {
+        "surfaces": {
+            "as_provider": {
+                "api": {
+                    "operations": {
+                        "save": {"POST": {"csrf": True}},
+                    },
+                },
+            },
+        },
+    }
+    disabled_props = {
+        "surfaces": {
+            "as_provider": {
+                "api": {
+                    "operations": {
+                        "save": {"csrf": False},
+                    },
+                },
+            },
+        },
+    }
+
+    default_off = APIEndpointSpec(
+        method_name="save",
+        alias="save",
+        http_method="POST",
+        route="operations",
+    )
+    default_on = APIEndpointSpec(
+        method_name="save",
+        alias="save",
+        http_method="POST",
+        route="operations",
+        csrf=True,
+    )
+
+    assert apply_api_overrides(default_off, enabled_props).csrf is True
+    assert apply_api_overrides(default_on, disabled_props).csrf is False
+
+
+def test_provider_surface_method_policy_overrides_alias_defaults_per_field() -> None:
+    props = {
+        "surfaces": {
+            "as_provider": {
+                "api": {
+                    "operations": {
+                        "save": {
+                            "csrf": True,
+                            "auth": {
+                                "authority_id": "platform",
+                                "grants": ["settings:write"],
+                            },
+                            "POST": {
+                                "csrf": False,
+                                "visibility": {"roles": ["kdcube:role:editor"]},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    spec = APIEndpointSpec(
+        method_name="save",
+        alias="save",
+        http_method="POST",
+        route="operations",
+    )
+
+    resolved = apply_api_overrides(spec, props)
+
+    assert resolved.csrf is False
+    assert resolved.roles == ("kdcube:role:editor",)
+    assert provider_surface_auth(
+        props,
+        "api",
+        alias="save",
+        http_method="POST",
+        route="operations",
+    ) == {
+        "authority_id": "platform",
+        "grants": ["settings:write"],
+    }
+
+
 def test_provider_surface_policy_controls_bundle_widget_and_mcp() -> None:
     props = {
         "surfaces": {

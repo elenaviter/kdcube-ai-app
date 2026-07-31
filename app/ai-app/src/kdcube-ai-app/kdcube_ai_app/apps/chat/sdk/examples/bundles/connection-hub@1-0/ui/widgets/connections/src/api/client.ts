@@ -9,6 +9,7 @@ export type ConnectionsCallOperation = <T>(
   method: 'GET' | 'POST',
   operation: string,
   payload?: Record<string, unknown>,
+  options?: { headers?: Record<string, string> },
 ) => Promise<T>;
 
 let hostCallOperation: ConnectionsCallOperation | null = null;
@@ -33,6 +34,34 @@ function apiUrl(route: 'operations' | 'public', operation: string): string {
   return `${settings.getBaseUrl()}/api/integrations/bundles/${tenant}/${project}/${bundleId}/${route}/${operation}`;
 }
 
+function operationCsrfUrl(operation: string): string {
+  return `${apiUrl('operations', operation)}/csrf`;
+}
+
+async function operationCsrfToken(operation: string, headers: Headers): Promise<string> {
+  const response = await fetch(operationCsrfUrl(operation), {
+    method: 'GET',
+    credentials: 'include',
+    cache: 'no-store',
+    headers,
+  });
+  const text = await response.text();
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = text ? JSON.parse(text) as Record<string, unknown> : {};
+  } catch {
+    parsed = {};
+  }
+  if (!response.ok) {
+    const detail = parsed.detail ? String(parsed.detail) : text || response.statusText;
+    throw new Error(detail || `CSRF preparation failed: ${response.status}`);
+  }
+  if (!parsed.csrf_required) return '';
+  const token = String(parsed.csrf_token || '').trim();
+  if (!token) throw new Error('Operation CSRF token was not returned.');
+  return token;
+}
+
 function unwrap<T>(operation: string, parsed: unknown): T {
   if (parsed && typeof parsed === 'object' && operation in parsed) {
     return (parsed as Record<string, unknown>)[operation] as T;
@@ -46,14 +75,22 @@ async function request<T>(
   payload: Record<string, unknown> = {},
   route: 'operations' | 'public' = 'operations',
 ): Promise<T> {
-  if (hostCallOperation && route === 'operations') {
-    return hostCallOperation<T>(method, operation, payload);
-  }
   const headers = settings.authHeaders({ Accept: 'application/json' });
   const init: RequestInit = { method, credentials: 'include', headers };
+  const bridgeHeaders: Record<string, string> = {};
   if (method === 'POST') {
     headers.set('Content-Type', 'application/json');
+    if (route === 'operations') {
+      const csrfToken = await operationCsrfToken(operation, headers);
+      if (csrfToken) {
+        headers.set('X-KDCube-CSRF-Token', csrfToken);
+        bridgeHeaders['X-KDCube-CSRF-Token'] = csrfToken;
+      }
+    }
     init.body = JSON.stringify({ data: payload });
+  }
+  if (hostCallOperation && route === 'operations') {
+    return hostCallOperation<T>(method, operation, payload, { headers: bridgeHeaders });
   }
   const response = await fetch(apiUrl(route, operation), init);
   const text = await response.text();

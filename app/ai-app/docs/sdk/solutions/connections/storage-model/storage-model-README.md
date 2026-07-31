@@ -4,7 +4,8 @@ title: "Connection Hub Storage Model"
 summary: "Storage map for Connection Hub data: descriptors, secrets, request-authenticator metadata, connection edges, link challenges, delegated account tokens, and runtime caches."
 status: active
 tags: ["sdk", "connections", "connection-hub", "storage", "postgres", "secrets", "connection-edges"]
-updated_at: 2026-07-17
+keywords: ["connection hub storage", "delegated grant records", "live grant authority", "bundle operation csrf", "redis authorization state"]
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-token-storage-README.md
@@ -58,6 +59,7 @@ user-scoped secrets
 | Delegated OAuth code/CSRF/access grant | Redis `GrantStore`, keys `{tenant}:{project}:kdcube:oauth:{code,csrf,agrant}:...` | sensitive auth state | Access grant is keyed by `sha256(access_token)` and carries credential envelope, grantor authority, delegation edges, selected operations, `resource_grants`, and the narrowed `named_services` policy when applicable. |
 | Delegated OAuth refresh token / dynamic client registration | Redis `GrantStore`, keys `{tenant}:{project}:kdcube:oauth:{refresh,client}:...` | yes, auth token | Current implementation is Redis-backed; durable production backing is a strengthening target. |
 | Delegated automation access listing | Redis, keys `{tenant}:{project}:kdcube:delegated-access:automation:*` | sensitive metadata | UI-visible records contain label, expiry, last four chars, session id, `resource_grants`, and selected named-service operations when applicable; raw token is shown only at creation. Provider tokens stay in user-scoped connected-account secrets. |
+| Bundle operation CSRF token | Redis, key `{tenant}:{project}:kdcube:bundle-operation-csrf:<sha256(token)>` | short-lived request proof | One-time record binds the authenticated subject and exact bundle operation context. The raw token is returned only to the authenticated browser and is never used as delegated authority. |
 | Bundle-session record | Redis, keys `{tenant}:{project}:kdcube:auth:bundle-session:*` | sensitive auth state | Backs `kst1` platform/bundle-session tokens and delegated-client access tokens. |
 | Live link update | Data Bus / event delivery | no | Signals original iframe after browser claim completes. |
 
@@ -206,6 +208,15 @@ code / csrf / access grant:
 refresh token / dynamic client registration:
   currently Redis in the demo implementation
   target production storage is durable
+
+single-use OAuth transitions:
+  authorization code and consent CSRF use awaited Redis Lua GET+DEL
+  refresh uses awaited Redis Lua compare+delete+create
+  concurrent workers produce one winner
+
+bundle operation csrf:
+  Redis, ten-minute TTL, consumed atomically once
+  shared by local and cloud proc workers through the descriptor-derived proc connection
 ```
 
 The server-side grant records carry enforcement state:

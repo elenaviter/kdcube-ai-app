@@ -14,6 +14,7 @@ super-admin requirement.
 from __future__ import annotations
 
 import inspect
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -21,6 +22,7 @@ from fastapi import HTTPException
 from starlette.datastructures import Headers
 
 from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
+from kdcube_ai_app.apps.chat.proc.rest.integrations import operation_csrf
 from kdcube_ai_app.auth.AuthManager import RequirementBase, RequireRoles
 from kdcube_ai_app.infra.plugin.bundle_loader import api
 
@@ -120,11 +122,41 @@ def _session(roles: list[str]) -> SimpleNamespace:
     )
 
 
-def _request() -> SimpleNamespace:
+class _Redis:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    async def setex(self, key: str, _ttl: int, value: str) -> bool:
+        self.values[key] = value
+        return True
+
+    async def eval(self, _script: str, _numkeys: int, key: str):
+        return self.values.pop(key, None)
+
+
+def _request(
+    *,
+    redis=None,
+    cookie: bool = False,
+    csrf_token: str = "",
+    authorization: str = "",
+) -> SimpleNamespace:
+    headers: dict[str, str] = {}
+    if csrf_token:
+        headers[operation_csrf.OPERATION_CSRF_HEADER] = csrf_token
+    if authorization:
+        headers["Authorization"] = authorization
     return SimpleNamespace(
-        headers=Headers({}),
+        method="POST",
+        headers=Headers(headers),
+        cookies={"__Secure-LATC": "ambient-session"} if cookie else {},
         state=SimpleNamespace(),
-        app=SimpleNamespace(state=SimpleNamespace(redis_async=object(), pg_pool=object())),
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                redis_async=redis or _Redis(),
+                pg_pool=object(),
+            )
+        ),
     )
 
 
@@ -142,6 +174,14 @@ class _Workflow:
     @api(alias="telegram_user_admin_data", roles=(SUPER_ADMIN_ROLE,))
     async def telegram_user_admin_data(self, **kwargs):
         return {"ok": "telegram_user_admin_data"}
+
+    @api(alias="delegated_access_create", csrf=True)
+    async def delegated_access_create(self, **kwargs):
+        return {"ok": "delegated_access_create"}
+
+    @api(alias="agent_selection_update")
+    async def agent_selection_update(self, **kwargs):
+        return {"ok": "agent_selection_update"}
 
 
 def _patch_bundle_runtime(monkeypatch):
@@ -166,6 +206,18 @@ def _patch_bundle_runtime(monkeypatch):
             PROJECT="project-a",
         ),
     )
+    monkeypatch.setattr(
+        operation_csrf,
+        "get_settings",
+        lambda: SimpleNamespace(
+            AUTH=SimpleNamespace(
+                ID_TOKEN_HEADER_NAME="X-ID-Token",
+                AUTH_TOKEN_COOKIE_NAME="__Secure-LATC",
+                ID_TOKEN_COOKIE_NAME="__Secure-LITC",
+                MASQUERADED_TOKEN_COOKIE_NAME="__Secure-LMTC",
+            )
+        ),
+    )
     monkeypatch.setattr(integrations, "_resolve_bundle_spec_from_runtime", _resolve_bundle_async)
     monkeypatch.setattr(integrations, "create_workflow_config", _create_workflow_config)
     monkeypatch.setattr(integrations, "get_workflow_instance_async", _get_workflow_instance)
@@ -174,16 +226,23 @@ def _patch_bundle_runtime(monkeypatch):
     )
 
 
-async def _dispatch(operation: str, session: SimpleNamespace):
+async def _dispatch(
+    operation: str,
+    session: SimpleNamespace,
+    *,
+    request=None,
+    internal_peer_call: bool = False,
+):
     return await integrations._call_bundle_op_inner(
         tenant="tenant-a",
         project="project-a",
         bundle_id=None,
         payload=integrations.BundleSuggestionsRequest(bundle_id="bundle.demo", data={}),
-        request=_request(),
+        request=request or _request(),
         operation=operation,
         route="operations",
         session=session,
+        _internal_peer_call=internal_peer_call,
     )
 
 
@@ -208,3 +267,101 @@ async def test_declared_super_admin_op_admits_super_admin(monkeypatch):
     _patch_bundle_runtime(monkeypatch)
     result = await _dispatch("telegram_user_admin_data", _session([SUPER_ADMIN_ROLE]))
     assert result["telegram_user_admin_data"] == {"ok": "telegram_user_admin_data"}
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticated_protected_operation_requires_single_use_csrf(monkeypatch):
+    _patch_bundle_runtime(monkeypatch)
+    redis = _Redis()
+    session = _session(["kdcube:role:member"])
+    token_response = await integrations._bundle_operation_csrf_token(
+        tenant="tenant-a",
+        project="project-a",
+        bundle_id="bundle.demo",
+        operation="delegated_access_create",
+        request=_request(redis=redis, cookie=True),
+        session=session,
+    )
+    token_payload = json.loads(token_response.body)
+    token = token_payload["csrf_token"]
+    request = _request(redis=redis, cookie=True, csrf_token=token)
+
+    result = await _dispatch(
+        "delegated_access_create",
+        session,
+        request=request,
+    )
+    assert result["delegated_access_create"] == {"ok": "delegated_access_create"}
+
+    with pytest.raises(HTTPException) as replay:
+        await _dispatch(
+            "delegated_access_create",
+            session,
+            request=request,
+        )
+    assert replay.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_protected_operation_rejects_missing_csrf_for_cookie_auth(monkeypatch):
+    _patch_bundle_runtime(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _dispatch(
+            "delegated_access_create",
+            _session(["kdcube:role:member"]),
+            request=_request(cookie=True),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_cookie_authenticated_unprotected_post_does_not_require_csrf(monkeypatch):
+    """Regression: generic bundle POSTs remain unchanged unless they opt in."""
+    _patch_bundle_runtime(monkeypatch)
+    session = _session(["kdcube:role:member"])
+    request = _request(cookie=True)
+
+    token_response = await integrations._bundle_operation_csrf_token(
+        tenant="tenant-a",
+        project="project-a",
+        bundle_id="bundle.demo",
+        operation="agent_selection_update",
+        request=request,
+        session=session,
+    )
+    token_payload = json.loads(token_response.body)
+    result = await _dispatch(
+        "agent_selection_update",
+        session,
+        request=request,
+    )
+
+    assert token_payload == {
+        "csrf_required": False,
+        "bundle_id": "bundle.demo",
+        "operation": "agent_selection_update",
+    }
+    assert result["agent_selection_update"] == {"ok": "agent_selection_update"}
+
+
+@pytest.mark.asyncio
+async def test_protected_operation_keeps_non_ambient_and_internal_callers_compatible(monkeypatch):
+    _patch_bundle_runtime(monkeypatch)
+    session = _session(["kdcube:role:member"])
+
+    bearer_result = await _dispatch(
+        "delegated_access_create",
+        session,
+        request=_request(cookie=True, authorization="Bearer explicit"),
+    )
+    peer_result = await _dispatch(
+        "delegated_access_create",
+        session,
+        request=_request(cookie=True),
+        internal_peer_call=True,
+    )
+
+    assert bearer_result["delegated_access_create"]["ok"] == "delegated_access_create"
+    assert peer_result["delegated_access_create"]["ok"] == "delegated_access_create"

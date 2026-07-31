@@ -67,6 +67,7 @@ Curated index of platform, service, and SDK documentation.
 * App Client Communication: [client-transport-protocols-README.md](service/comm/client-transport-protocols-README.md)
 * App Chat Stream Events: [chat-stream-events-README.md](sdk/solutions/chat/chat-stream-events-README.md)
 * App Transports: [bundle-transports-README.md](sdk/bundle/bundle-transports-README.md)
+* App Operation CSRF: [bundle-operation-csrf-README.md](sdk/bundle/bundle-operation-csrf-README.md)
 
 ## Agents, Tools, Skills, And Memory
 

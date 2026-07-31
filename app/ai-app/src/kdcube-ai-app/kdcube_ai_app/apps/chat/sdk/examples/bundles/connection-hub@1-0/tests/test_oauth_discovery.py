@@ -9,6 +9,7 @@ from starlette.requests import Request
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import (
     load_dynamic_module_for_path,
 )
+from kdcube_ai_app.infra.plugin.bundle_loader import discover_bundle_interface_manifest
 
 
 def _load_entrypoint_module():
@@ -36,6 +37,37 @@ def _request(*, method: str = "GET") -> Request:
             "server": ("runtime.example.test", 443),
         }
     )
+
+
+def test_connection_hub_post_surfaces_have_explicit_csrf_classification():
+    module = _load_entrypoint_module()
+    manifest = discover_bundle_interface_manifest(
+        module.ConnectionHubEntrypoint,
+        bundle_id="connection-hub@1-0",
+    )
+
+    operation_posts = {
+        spec.alias
+        for spec in manifest.api_endpoints
+        if spec.route == "operations" and spec.http_method == "POST"
+    }
+    public_posts = {
+        spec.alias
+        for spec in manifest.api_endpoints
+        if spec.route == "public" and spec.http_method == "POST"
+    }
+    protected = {
+        spec.alias
+        for spec in manifest.api_endpoints
+        if spec.csrf
+    }
+
+    assert protected == set(module.CSRF_PROTECTED_OPERATION_ALIASES)
+    assert protected.isdisjoint(module.CSRF_EXEMPT_POST_OPERATION_ALIASES)
+    assert operation_posts == (
+        protected | set(module.CSRF_EXEMPT_POST_OPERATION_ALIASES)
+    )
+    assert public_posts == set(module.CSRF_EXEMPT_PUBLIC_POST_ALIASES)
 
 
 @pytest.mark.asyncio
