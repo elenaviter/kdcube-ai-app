@@ -204,7 +204,19 @@ async def test_surface_builds_with_declared_tool_roster():
     assert schemas["productivity_docs_replace_text"]["properties"]["replacements"][
         "description"
     ]
+    assert schemas["productivity_docs_replace_text"]["properties"]["tab_ids"][
+        "description"
+    ]
+    assert schemas["productivity_docs_replace_text"]["properties"]["all_tabs"][
+        "description"
+    ]
     assert schemas["productivity_docs_apply_text_style"]["properties"]["start_index"][
+        "description"
+    ]
+    assert schemas["productivity_docs_apply_text_style"]["properties"]["tab_id"][
+        "description"
+    ]
+    assert schemas["productivity_docs_batch_edit"]["properties"]["all_tabs"][
         "description"
     ]
     assert schemas["productivity_docs_reply_comment"]["properties"]["comment_id"][

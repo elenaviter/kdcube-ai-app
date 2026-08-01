@@ -4,9 +4,11 @@
 """Provider-neutral document named-service integration."""
 
 from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
+    DOCS_IMPORT_SOURCE_KIND,
     DOCS_NAMESPACE,
     DocsNamedServiceProvider,
     document_export_ref,
+    document_source_ref,
     docs_named_service_spec,
     make_docs_named_service_provider,
     parse_docs_export_ref,
@@ -14,9 +16,11 @@ from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
 )
 
 __all__ = [
+    "DOCS_IMPORT_SOURCE_KIND",
     "DOCS_NAMESPACE",
     "DocsNamedServiceProvider",
     "document_export_ref",
+    "document_source_ref",
     "docs_named_service_spec",
     "make_docs_named_service_provider",
     "parse_docs_export_ref",

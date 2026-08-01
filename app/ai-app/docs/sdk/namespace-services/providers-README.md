@@ -4,7 +4,7 @@ title: "Namespace Services: Providers"
 summary: "Transport-neutral SDK concept for apps (bundles) and platform subsystems that publish namespace service provider surfaces: namespace ownership, object operations, resolvers, capabilities, relations, and integrations over API, MCP, Data Bus, or local adapters."
 status: current
 tags: ["sdk", "namespace-services", "named-service-provider", "services", "namespaces", "objects", "resolvers", "mcp", "api", "data-bus", "apps", "bundles"]
-updated_at: 2026-07-27
+updated_at: 2026-08-01
 keywords:
   [
     "named service provider",
@@ -18,6 +18,9 @@ keywords:
     "mcp object operations",
     "api object operations",
     "data bus object command",
+    "domain selector",
+    "provider-bounded search",
+    "provider translation",
   ]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md
@@ -235,6 +238,81 @@ Open vocabulary fields are still fields or facets on an object. They are not
 new namespaces and not separate object families unless the provider also
 advertises a concrete `object_kind`, ref grammar, capabilities, and operations
 for them.
+
+### Domain Operations And Provider Translation
+
+The provider schema describes the realm, not the third-party API used to
+implement it. A useful provider exposes user-recognizable objects, selectors,
+relations, actions, and claims. The adapter translates that domain request
+into the provider's concrete identifiers and call sequence.
+
+```text
+agent-facing request
+  object kind + declared selector + declared action
+        |
+        v
+NamedServiceProvider
+  validate scope and claims
+  resolve selector to provider-owned ids
+  perform one or more provider calls
+  normalize the result or return an actionable denial
+        |
+        v
+third-party or internal service
+```
+
+For example, a document provider can let an agent address "the second tab" for
+a tab edit and "my unresolved comment containing payment terms" for a
+document-level reply. The adapter reads the relevant bounded provider result,
+resolves a `tabId` or `commentId`, and then performs the requested action. Those
+ids are provider handles. They may be returned for diagnostics or later exact
+operations, but they are not the user's required vocabulary.
+
+Here, **domain meaning** does not imply semantic search. Search and selector
+quality cannot exceed what the provider can execute. An adapter may use the
+provider's own search/filter operation or evaluate explicit predicates over a
+bounded response it has already read, such as one document's tabs or comments.
+KDCube does not build a secondary index over the provider's object space. A
+provider-backed semantic-search selector is declared only when the provider
+supplies that capability.
+
+Provider implementations follow these rules:
+
+1. **Publish the domain surface.** Object kinds and action names describe the
+   domain. Do not copy an endpoint inventory into `object.schema`.
+2. **Make natural selectors explicit.** If the provider can resolve title,
+   position, author, status, or text predicates safely, declare those selectors
+   and their ambiguity behavior. Do not label an exact or substring predicate
+   as semantic search.
+3. **Keep translation inside the provider.** Generic clients do not sequence
+   provider calls or construct provider ids.
+4. **Return choices for ambiguity.** When several objects match, return bounded
+   candidates with human labels and opaque refs instead of selecting silently.
+5. **Advertise only executable capabilities.** Features that require a preview
+   program, account capability, or missing API remain unavailable. A specific
+   request must not be silently downgraded to a broader effect.
+
+Google Docs illustrates the last rule. The stable
+[Drive comments API](https://developers.google.com/workspace/drive/api/guides/manage-comments)
+provides document-level threads. Native tab anchors and richer comment
+mutations are part of the
+[Docs API Developer Preview](https://developers.google.com/workspace/docs/api/reference/rest/v1/documents),
+whose use requires [preview program registration](https://developers.google.com/workspace/preview).
+A provider using only the stable surface must describe comments as
+document-level and reject a tab-anchored request with a precise capability
+error. Seeing both a tab and a Drive comment in one document is not evidence
+that the comment belongs to that tab.
+
+The shipped `docs` provider follows that boundary. Its tab selector supports
+exact title, literal title fragment, 1-based position, and hierarchy. Its
+document-comment selector supports literal text and quoted-text fragments,
+author (`me` included), resolved state, and position. It reads at most five
+provider pages of 100 comments while resolving one selector. If more results
+remain, it returns `docs_comment_selector_incomplete`; if several candidates
+match, it returns them rather than choosing one.
+
+The agent-facing ontology and discovery sequence are owned by
+[Ontologic Tools](ontologic-tools-README.md#a-schema-is-the-realms-language).
 
 ## Provider Execution Surfaces
 

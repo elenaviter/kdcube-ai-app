@@ -15,7 +15,7 @@ shape each), this one works with the document's native structure:
   but stays governed: an **allowlist** of request kinds (unknown/dangerous
   kinds are rejected), per-request bounds, a total-count cap, and optional
   ``tab_id`` targeting stamped into each request's location/range.
-- ``list_tabs`` enumerates tabs without pulling full content.
+- ``list_tabs`` enumerates tabs without returning body content.
 
 The trade-off to compare: fewer operations and richer edits (compound, tab-
 aware, native schema) vs. one write grant covering all of them instead of the
@@ -29,6 +29,7 @@ from ``docs_proxy`` so the two proxies never drift on transport or failures.
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -44,10 +45,14 @@ from kdcube_ai_app.apps.chat.sdk.integrations.google.docs_proxy import (
     _body_end_index,
     _clean,
     _document_id,
+    _document_tabs,
     _extract_paragraph_text,
+    _fetch_document,
     _headers,
     _int,
     _raise_for_status,
+    _select_single_tab,
+    _tab_selection_details,
     _web_url,
     _PROVIDER_ID,
     _TIMEOUT,
@@ -88,7 +93,12 @@ _ALLOWED_REQUEST_KINDS = frozenset({
 _TEXT_KINDS = {"insertText", "replaceAllText"}
 
 # Keys inside a request that carry a Location/Range where a tabId belongs.
-_LOCATION_KEYS = ("location", "range", "endOfSegmentLocation")
+_LOCATION_KEYS = (
+    "location",
+    "range",
+    "endOfSegmentLocation",
+    "tableStartLocation",
+)
 
 MUTATING_OPERATIONS = frozenset({"batch_edit"})
 
@@ -226,7 +236,7 @@ async def _list_tabs(
     response = await client.get(
         f"{DOCS_API}/documents/{document_id}",
         headers=_headers(access_token),
-        params={"includeTabsContent": "false"},
+        params={"includeTabsContent": "true"},
     )
     _raise_for_status(response, operation="list_tabs", mutating=False)
     document = response.json()
@@ -248,16 +258,28 @@ def _stamp_tab_id(request: dict[str, Any], tab_id: str) -> None:
     """Inject tabId into a request's Location/Range so the edit targets a tab."""
     if not tab_id:
         return
-    for _kind, spec in request.items():
-        if not isinstance(spec, dict):
-            continue
-        for key in _LOCATION_KEYS:
-            target = spec.get(key)
-            if isinstance(target, dict) and "tabId" not in target:
-                target["tabId"] = tab_id
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in _LOCATION_KEYS and isinstance(child, dict):
+                    existing = _clean(child.get("tabId"))
+                    if existing and existing != tab_id:
+                        raise DocsValidationError(
+                            "conflicting_tab_scope",
+                            f"A request targets tab_id '{existing}', but the batch "
+                            f"targets '{tab_id}'.",
+                        )
+                    child["tabId"] = tab_id
+                _walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                _walk(child)
+
+    _walk(request)
 
 
-def _validate_request(raw: Any, *, tab_id: str) -> dict[str, Any]:
+def _validate_request(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping) or len(raw) != 1:
         raise DocsValidationError(
             "invalid_request",
@@ -283,9 +305,26 @@ def _validate_request(raw: Any, *, tab_id: str) -> dict[str, Any]:
                 f"A '{kind}' request carries {len(text)} characters; "
                 f"the limit is {MAX_TEXT_CHARS}.",
             )
-    request = {kind: dict(spec)}
-    _stamp_tab_id(request, tab_id)
-    return request
+    return {kind: copy.deepcopy(dict(spec))}
+
+
+def _stamp_replace_tabs(request: dict[str, Any], tab_ids: list[str]) -> None:
+    replacement = request.get("replaceAllText")
+    if not isinstance(replacement, dict):
+        return
+    existing = replacement.get("tabsCriteria")
+    if isinstance(existing, Mapping):
+        existing_ids = [
+            _clean(value) for value in existing.get("tabIds") or [] if _clean(value)
+        ]
+        if existing_ids and existing_ids != tab_ids:
+            raise DocsValidationError(
+                "conflicting_tab_scope",
+                "A replaceAllText request carries tabsCriteria that conflicts "
+                "with the batch tab scope.",
+            )
+    if tab_ids:
+        replacement["tabsCriteria"] = {"tabIds": tab_ids}
 
 
 async def _batch_edit(
@@ -303,9 +342,48 @@ async def _batch_edit(
             "request_too_large" if raw_requests else "requests_required",
             f"Provide 1-{MAX_EDIT_REQUESTS} requests.",
         )
-    tab_id = _clean(payload.get("tab_id"))
-    requests = [_validate_request(item, tab_id=tab_id) for item in raw_requests]
+    requests = [_validate_request(item) for item in raw_requests]
     kinds = sorted({next(iter(req)) for req in requests})
+    document = await _fetch_document(
+        client, access_token=access_token, document_id=document_id
+    )
+    tabs = _document_tabs(document)
+    tab_id = _clean(payload.get("tab_id"))
+    all_tabs = payload.get("all_tabs") is True
+    if tab_id and all_tabs:
+        raise DocsValidationError(
+            "invalid_tab_scope",
+            "Provide tab_id or all_tabs=true, not both.",
+            details=_tab_selection_details(tabs),
+        )
+    if all_tabs:
+        unsupported = [kind for kind in kinds if kind != "replaceAllText"]
+        if unsupported:
+            raise DocsValidationError(
+                "all_tabs_not_supported",
+                "all_tabs=true is supported only when every request is "
+                "replaceAllText. Other edits need one tab_id.",
+                details={
+                    **_tab_selection_details(tabs),
+                    "request_kinds": unsupported,
+                },
+            )
+        selected_tab_ids = [
+            _clean(tab.get("tab_id")) for tab in tabs if _clean(tab.get("tab_id"))
+        ]
+        tab_scope = "all"
+    else:
+        selected, _ = _select_single_tab(document, {"tab_id": tab_id})
+        selected_tab_ids = [selected]
+        tab_scope = "selected" if tab_id else "single"
+
+    for request in requests:
+        if "replaceAllText" in request:
+            _stamp_replace_tabs(
+                request, [value for value in selected_tab_ids if value]
+            )
+        elif selected_tab_ids:
+            _stamp_tab_id(request, selected_tab_ids[0])
     response = await client.post(
         f"{DOCS_API}/documents/{document_id}:batchUpdate",
         headers=_headers(access_token),
@@ -318,7 +396,10 @@ async def _batch_edit(
     return {
         "document_id": document_id,
         "web_url": _web_url(document_id),
-        "tab_id": tab_id,
+        "tab_id": selected_tab_ids[0] if len(selected_tab_ids) == 1 else "",
+        "tab_ids": selected_tab_ids,
+        "tab_scope": tab_scope,
+        "tab_count": len(tabs),
         "applied_requests": len(requests),
         "request_kinds": kinds,
         "reply_count": len(replies),
@@ -371,15 +452,19 @@ async def execute_google_docs_flex_operation(
             ret = await handler(client, access_token=token, payload=body)
         return {"ok": True, "error": None, "ret": ret}
     except DocsValidationError as exc:
+        ret = {"outcome_unknown": False, **exc.details}
+        error = {
+            "code": exc.code,
+            "message": str(exc),
+            "where": where,
+            "managed": True,
+        }
+        if exc.details:
+            error["details"] = exc.details
         return {
             "ok": False,
-            "error": {
-                "code": exc.code,
-                "message": str(exc),
-                "where": where,
-                "managed": True,
-            },
-            "ret": {"outcome_unknown": False},
+            "error": error,
+            "ret": ret,
         }
     except _DocsApiError as exc:
         return exc.failure.error_result(where=where)

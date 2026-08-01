@@ -102,7 +102,7 @@ def test_get_structure_synthesizes_single_tab_for_tabless_doc():
 
 def test_list_tabs_omits_content():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.params["includeTabsContent"] == "false"
+        assert request.url.params["includeTabsContent"] == "true"
         return _json(request, _TABBED_DOC)
 
     out = _run("list_tabs", {"document_ref": "D1"}, handler)
@@ -114,6 +114,8 @@ def test_batch_edit_passes_allowlisted_requests_and_stamps_tab_id():
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return _json(request, _TABBED_DOC)
         captured["body"] = json.loads(request.content)
         return _json(request, {"replies": [{}, {}]})
 
@@ -125,8 +127,89 @@ def test_batch_edit_passes_allowlisted_requests_and_stamps_tab_id():
     assert out["ret"]["applied_requests"] == 2
     assert out["ret"]["request_kinds"] == ["insertText", "replaceAllText"]
     sent = captured["body"]["requests"]
-    # tab_id stamped into the location that has one
     assert sent[0]["insertText"]["location"]["tabId"] == "t.1"
+    assert sent[1]["replaceAllText"]["tabsCriteria"] == {"tabIds": ["t.1"]}
+    assert out["ret"]["tab_scope"] == "selected"
+    assert out["ret"]["tab_count"] == 3
+
+
+def test_batch_edit_requires_tab_for_multi_tab_document():
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return _json(request, _TABBED_DOC)
+
+    out = _run(
+        "batch_edit",
+        {
+            "document_ref": "D1",
+            "requests": [
+                {"insertText": {"location": {"index": 1}, "text": "Hello"}}
+            ],
+        },
+        handler,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "docs_tab_selection_required"
+    assert out["ret"]["tab_count"] == 3
+    assert methods == ["GET"]
+
+
+def test_batch_edit_all_tabs_is_explicit_and_replace_only():
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return _json(request, _TABBED_DOC)
+        captured["body"] = json.loads(request.content)
+        return _json(request, {"replies": [{}]})
+
+    out = _run(
+        "batch_edit",
+        {
+            "document_ref": "D1",
+            "all_tabs": True,
+            "requests": [
+                {
+                    "replaceAllText": {
+                        "containsText": {"text": "old"},
+                        "replaceText": "new",
+                    }
+                }
+            ],
+        },
+        handler,
+    )
+
+    assert out["ok"] is True
+    assert out["ret"]["tab_scope"] == "all"
+    assert out["ret"]["tab_ids"] == ["t.0", "t.0.1", "t.1"]
+    replacement = captured["body"]["requests"][0]["replaceAllText"]
+    assert replacement["tabsCriteria"] == {
+        "tabIds": ["t.0", "t.0.1", "t.1"]
+    }
+
+
+def test_batch_edit_rejects_all_tabs_for_non_replace_request():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _json(request, _TABBED_DOC)
+
+    out = _run(
+        "batch_edit",
+        {
+            "document_ref": "D1",
+            "all_tabs": True,
+            "requests": [
+                {"insertText": {"location": {"index": 1}, "text": "Hello"}}
+            ],
+        },
+        handler,
+    )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "all_tabs_not_supported"
 
 
 def test_batch_edit_rejects_request_kind_not_in_allowlist():
@@ -151,6 +234,11 @@ def test_batch_edit_bounds_request_count():
 
 def test_batch_edit_5xx_marks_outcome_unknown_and_redacts():
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return _json(
+                request,
+                {"documentId": "D1", "body": {"content": [{"endIndex": 2}]}},
+            )
         return _json(request, {"error": {"message": "server error with Bearer tok-xyz"}}, status=503)
 
     out = _run("batch_edit", {"document_ref": "D1", "requests": [

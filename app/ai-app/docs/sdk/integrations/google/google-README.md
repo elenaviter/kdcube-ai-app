@@ -170,8 +170,18 @@ Connecting a read + write pair for ANY of these sends only the read-write scope
 Runtime shape varies by service. Docs runs async in-proc over raw REST (the Docs
 API plus the Drive API via `httpx`, in `.../integrations/google/docs_proxy.py`),
 with no venv/`gspread` subprocess — unlike Sheets, whose `gspread` proxy runs in
-an app-owned `@venv`. The Docs proxy owns exact-title-first Drive discovery,
-Shared Drive-compatible listing, provider-native copy, tab/table-aware text
-extraction, typed edits, comments, import, and export. The operator-facing
-configuration and complete clone-and-edit workflow are documented in
+an app-owned `@venv`. The Docs proxy owns exact and logical-title-first Drive
+discovery, Shared Drive-compatible listing, provider-native copy for Google
+Docs, DOCX/ODT/RTF copy-and-convert into native Docs, tab/table-aware text
+extraction, typed edits, comments, import, and export. Import sources are
+reported separately from native documents, and their original bytes remain
+unchanged during conversion. A native read reports every tab and its stable id.
+On a multi-tab document, typed edits require an explicit tab scope; the named
+service can resolve that scope from a title, literal title fragment, position,
+or hierarchy. It also resolves document-level comments from bounded lexical
+predicates such as text, author, and resolved state. Ambiguity returns
+candidates before any provider write is sent. Stable Drive comments remain
+document-scoped, and tab-scoped comment requests receive a precise capability
+error. The operator-facing
+configuration and complete agent scenario catalog are documented in
 [Google Services Through KDCube](../../../recipes/connections/integrations/google-service-README.md).

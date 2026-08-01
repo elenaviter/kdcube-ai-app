@@ -4,6 +4,11 @@ title: "KDCube Services Interface"
 summary: "Public contract for KDCube-owned managed service widgets and MCP surfaces."
 status: active
 tags: ["interface", "widget", "mcp", "storage", "delegated-credentials", "connection-hub"]
+keywords: ["kdcube services interface", "named services surface", "productivity mcp", "document namespace", "delegated access"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/kdcube-services@1-0/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/providers-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
 ---
 
 # KDCube Services — Interface
@@ -366,14 +371,16 @@ provider-neutral:
 ```text
 docs.document
   docs:<provider>:<account_id>:document:<document_id>
+docs.import_source
+  docs:<provider>:<account_id>:source:<file_id>
 ```
 
 | Named-service operation | Behavior | Required namespace grants |
 | --- | --- | --- |
-| `object.search` | Find documents by title. | `named_services:use`, `docs:read` |
-| `object.get` | Read text/structure, export to a format, or read comments; a turnless result can carry a signed full-snapshot URL, and stream mode returns a materializable document snapshot. | `named_services:use`, `docs:read` |
+| `object.search` | Find native documents and compatible DOCX/ODT/RTF import sources by provider or logical title. | `named_services:use`, `docs:read` |
+| `object.get` | Read native text from every tab plus tab ids, titles, hierarchy, and end indices, or inspect import-source metadata; a turnless native result can carry a signed full-snapshot URL, and stream mode returns a materializable snapshot. | `named_services:use`, `docs:read` |
 | `object.upsert` | Create a document. | `named_services:use`, `docs:write` |
-| `object.action` | Typed edits (`insert_text`, `append_text`, `replace_text`, `apply_text_style`, `insert_page_break`, `embed_image`, `import`) authorized as exact `object.action.<action>`, plus comment mutations (`create_comment`, `reply_comment`, `resolve_comment`, `delete_comment`). | edits: `named_services:use`, `docs:write`; comments: `named_services:use`, `docs:comment` |
+| `object.action` | `copy` preserves a native Doc or converts an import source into a new native Doc. Native refs also support typed edits, export, and comment actions authorized as exact `object.action.<action>`. Multi-tab edits accept declared natural tab selectors; document-level comments accept declared natural comment selectors. | edits: `named_services:use`, `docs:write`; reads: `named_services:use`, `docs:read`; comments: `named_services:use`, `docs:comment` |
 
 Document deletion is not exposed; comment deletion is the `delete_comment`
 action. `object.schema` is authoritative for action payloads and bounds. Edits
@@ -389,9 +396,9 @@ For `response_mode=stream`, `object.get` returns media type
 namespace above; only the object kind and media type differ.
 
 The table lists caller grants under **Delegated by KDCube**. On the separate
-connected-account boundary, reads require `docs:read`, edits require `docs:write`,
-and comment mutations require `docs:comment` from the approving user's Google
-account.
+connected-account boundary, reads require `docs:read`; creation, copy/conversion,
+and edits require `docs:read` + `docs:write`; comment mutations require
+`docs:read` + `docs:comment` from the approving user's Google account.
 
 ## MCP Endpoint: Productivity
 
@@ -421,15 +428,24 @@ account, split into three claims:
 | Group | Tools | Connected-account claims |
 | --- | --- | --- |
 | Find and read | `productivity_docs_search`, `productivity_docs_get`, `productivity_docs_export`, `productivity_docs_list_comments`, `productivity_docs_get_comment` | `docs:read` |
-| Edit | `productivity_docs_create`, `productivity_docs_insert_text`, `productivity_docs_append_text`, `productivity_docs_replace_text`, `productivity_docs_apply_text_style`, `productivity_docs_insert_page_break`, `productivity_docs_embed_image`, `productivity_docs_import` | `docs:write` |
-| Comment | `productivity_docs_create_comment`, `productivity_docs_reply_comment`, `productivity_docs_resolve_comment`, `productivity_docs_delete_comment` | `docs:comment` |
+| Edit | `productivity_docs_create`, `productivity_docs_copy`, `productivity_docs_insert_text`, `productivity_docs_append_text`, `productivity_docs_replace_text`, `productivity_docs_apply_text_style`, `productivity_docs_insert_page_break`, `productivity_docs_embed_image`, `productivity_docs_import` | `docs:read`, `docs:write` |
+| Comment | `productivity_docs_create_comment`, `productivity_docs_reply_comment`, `productivity_docs_resolve_comment`, `productivity_docs_delete_comment` | `docs:read`, `docs:comment` |
 
-Search uses Google Drive metadata. Later calls accept the returned stable
-spreadsheet/document id or a full Google Sheets/Docs URL. Describe returns stable
-tab ids for structural and formatting operations; Docs edits address a stable
-document id. MCP `tools/list` is authoritative for the typed parameters and
-bounds. Docs edits are typed `batchUpdate` operations, never raw JSON, and comment
-operations require `docs:comment`, distinct from the `docs:write` edit claim.
+Search uses Google Drive metadata. Docs search returns native documents and
+compatible DOCX/ODT/RTF import sources; extensionless queries can exactly match
+their logical title. Copy converts an import source into a new native Google Doc
+and leaves the source unchanged. Later calls accept the returned stable
+spreadsheet/document id or a full Google Sheets/Docs URL. Sheets describe
+returns stable sheet ids. A Docs read returns every document tab with its stable
+tab id and body indices. Through `named_services`, multi-tab edits can resolve
+tabs by title, literal title fragment, position, or hierarchy, and
+document-level comment actions can resolve one thread by text, author, resolved
+state, or position. Exact ids remain valid for direct typed operations.
+Ambiguity returns candidates and performs no write; a tab-scoped comment request
+returns `tab_anchored_comments_unavailable`. MCP `tools/list` is authoritative
+for typed parameters and bounds. Docs edits are typed `batchUpdate` operations,
+never raw JSON, and comment operations require `docs:comment`, distinct from the
+`docs:write` edit claim.
 
 The Google token crosses only from Connection Hub into the trusted app service
 (Sheets through an app-owned venv subprocess; Docs async in-proc). It is never an

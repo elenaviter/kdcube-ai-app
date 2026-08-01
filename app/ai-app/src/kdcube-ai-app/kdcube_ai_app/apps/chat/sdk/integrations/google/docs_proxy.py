@@ -39,6 +39,11 @@ DRIVE_API = "https://www.googleapis.com/drive/v3"
 DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 
 DOCS_MIME_TYPE = "application/vnd.google-apps.document"
+DOCX_MIME_TYPE = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+ODT_MIME_TYPE = "application/vnd.oasis.opendocument.text"
+RTF_MIME_TYPE = "application/rtf"
 _PROVIDER_ID = "google"
 _SERVICE = "google_docs"
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
@@ -54,6 +59,9 @@ MAX_COMMENTS = 100
 
 _DOC_URL_RE = re.compile(
     r"https?://docs\.google\.com/document/(?:u/\d+/)?d/([A-Za-z0-9_-]+)"
+)
+_DRIVE_FILE_URL_RE = re.compile(
+    r"https?://drive\.google\.com/(?:file/d/|open\?id=)([A-Za-z0-9_-]+)"
 )
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -81,20 +89,40 @@ _IMPORT_FORMATS: dict[str, str] = {
     "html": "text/html",
     "markdown": "text/markdown",
     "md": "text/markdown",
-    "docx": (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ),
-    "odt": "application/vnd.oasis.opendocument.text",
-    "rtf": "application/rtf",
+    "docx": DOCX_MIME_TYPE,
+    "odt": ODT_MIME_TYPE,
+    "rtf": RTF_MIME_TYPE,
 }
+
+# Provider files that can participate in Docs discovery and become editable
+# native Google Docs through Drive upload conversion. Plain-text import remains
+# available through the explicit import operation; listing every text file in a
+# user's Drive would make the document namespace noisy.
+_IMPORTABLE_DRIVE_DOCUMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    DOCX_MIME_TYPE: ("docx", (".docx",)),
+    ODT_MIME_TYPE: ("odt", (".odt",)),
+    RTF_MIME_TYPE: ("rtf", (".rtf",)),
+}
+_DRIVE_DOCUMENT_MIME_TYPES = (DOCS_MIME_TYPE, *_IMPORTABLE_DRIVE_DOCUMENTS)
+_DRIVE_FILE_FIELDS = (
+    "id,name,mimeType,parents,createdTime,modifiedTime,ownedByMe,webViewLink,"
+    "size,capabilities(canCopy),owners(displayName,emailAddress)"
+)
 
 _TEXT_STYLE_BOOL_FIELDS = {"bold", "italic", "underline", "strikethrough"}
 
 
 class DocsValidationError(ValueError):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = str(code or "invalid_request")
+        self.details = dict(details or {})
 
 
 class _DocsApiError(Exception):
@@ -121,16 +149,16 @@ def _document_id(document_ref: Any) -> str:
     if not value:
         raise DocsValidationError(
             "document_ref_required",
-            "document_ref must be a Google Docs URL or document id.",
+            "document_ref must be a Google Docs/Drive URL or document id.",
         )
-    match = _DOC_URL_RE.search(value)
+    match = _DOC_URL_RE.search(value) or _DRIVE_FILE_URL_RE.search(value)
     if match:
         return match.group(1)
     if _ID_RE.fullmatch(value):
         return value
     raise DocsValidationError(
         "invalid_document_ref",
-        "document_ref must be a Google Docs URL or document id.",
+        "document_ref must be a Google Docs/Drive URL or document id.",
     )
 
 
@@ -140,6 +168,106 @@ def _web_url(document_id: str) -> str:
 
 def _headers(access_token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
+
+
+def _source_format(mime_type: Any) -> str:
+    record = _IMPORTABLE_DRIVE_DOCUMENTS.get(_clean(mime_type))
+    return record[0] if record else ""
+
+
+def _logical_title(name: Any, mime_type: Any) -> str:
+    title = _clean(name)
+    record = _IMPORTABLE_DRIVE_DOCUMENTS.get(_clean(mime_type))
+    if record is None:
+        return title
+    for suffix in record[1]:
+        if title.casefold().endswith(suffix.casefold()):
+            return title[: -len(suffix)]
+    return title
+
+
+def _exact_title_candidates(query: str) -> list[str]:
+    candidates = [query]
+    known_suffixes = {
+        suffix.casefold()
+        for _format, suffixes in _IMPORTABLE_DRIVE_DOCUMENTS.values()
+        for suffix in suffixes
+    }
+    if not any(query.casefold().endswith(suffix) for suffix in known_suffixes):
+        for _format, suffixes in _IMPORTABLE_DRIVE_DOCUMENTS.values():
+            candidates.extend(f"{query}{suffix}" for suffix in suffixes)
+    return list(dict.fromkeys(candidates))
+
+
+def _drive_document_mime_clause() -> str:
+    clauses = [f"mimeType = '{mime_type}'" for mime_type in _DRIVE_DOCUMENT_MIME_TYPES]
+    return f"({' or '.join(clauses)})"
+
+
+def _drive_document_row(
+    row: Mapping[str, Any],
+    *,
+    query: str = "",
+) -> dict[str, Any]:
+    document_id = _clean(row.get("id"))
+    name = _clean(row.get("name"))
+    mime_type = _clean(row.get("mimeType")) or DOCS_MIME_TYPE
+    logical_title = _logical_title(name, mime_type)
+    native_document = mime_type == DOCS_MIME_TYPE
+    owners = [
+        {
+            "display_name": _clean(owner.get("displayName")),
+            "email": _clean(owner.get("emailAddress")),
+        }
+        for owner in (row.get("owners") or [])
+        if isinstance(owner, Mapping)
+    ]
+    size = _int(row.get("size"), default=-1)
+    result: dict[str, Any] = {
+        "document_id": document_id,
+        "title": name,
+        "logical_title": logical_title,
+        "created_time": _clean(row.get("createdTime")),
+        "modified_time": _clean(row.get("modifiedTime")),
+        "owned_by_me": bool(row.get("ownedByMe")),
+        "owners": owners,
+        "web_url": _clean(row.get("webViewLink")) or _web_url(document_id),
+        "mime_type": mime_type,
+        "source_format": _source_format(mime_type),
+        "native_document": native_document,
+        "conversion_required": not native_document,
+        "parent_ids": [
+            _clean(parent) for parent in (row.get("parents") or []) if _clean(parent)
+        ],
+        "copyable": bool((row.get("capabilities") or {}).get("canCopy")),
+        "exact_title_match": bool(
+            query and query.casefold() in {name.casefold(), logical_title.casefold()}
+        ),
+    }
+    if size >= 0:
+        result["size_bytes"] = size
+    if not native_document:
+        result["next_action"] = (
+            "Copy this import source to create an editable native Google Doc."
+        )
+    return result
+
+
+async def _drive_file_metadata(
+    client: httpx.AsyncClient,
+    *,
+    access_token: str,
+    file_id: str,
+    operation: str,
+) -> dict[str, Any]:
+    response = await client.get(
+        f"{DRIVE_API}/files/{file_id}",
+        headers=_headers(access_token),
+        params={"supportsAllDrives": "true", "fields": _DRIVE_FILE_FIELDS},
+    )
+    _raise_for_status(response, operation=operation, mutating=False)
+    value = response.json()
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 def _raise_for_status(
@@ -162,8 +290,7 @@ def _raise_for_status(
         fallback="Google Docs operation failed.",
         mutating=mutating,
         retry_after=_clean(
-            response.headers.get("Retry-After")
-            or response.headers.get("retry-after")
+            response.headers.get("Retry-After") or response.headers.get("retry-after")
         ),
     )
     raise _DocsApiError(failure)
@@ -172,6 +299,7 @@ def _raise_for_status(
 # --------------------------------------------------------------------------- #
 # Document text extraction (Docs API body -> plain text)
 # --------------------------------------------------------------------------- #
+
 
 def _extract_paragraph_text(paragraph: Mapping[str, Any]) -> str:
     parts: list[str] = []
@@ -289,9 +417,8 @@ def _default_document_body(document: Mapping[str, Any]) -> Mapping[str, Any]:
     return _find(document.get("tabs"))
 
 
-def _body_end_index(document: Mapping[str, Any]) -> int:
+def _body_end_index_from_body(body: Mapping[str, Any]) -> int:
     """The insertion index just before the body's trailing newline."""
-    body = _default_document_body(document)
     content = body.get("content")
     end = 1
     for block in content or []:
@@ -300,10 +427,17 @@ def _body_end_index(document: Mapping[str, Any]) -> int:
     return max(1, end - 1)
 
 
-def _document_tabs(document: Mapping[str, Any]) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
+def _document_tab_entries(
+    document: Mapping[str, Any],
+) -> list[tuple[dict[str, Any], Mapping[str, Any]]]:
+    entries: list[tuple[dict[str, Any], Mapping[str, Any]]] = []
 
-    def _walk(tabs: Any, *, parent_tab_id: str = "") -> None:
+    def _walk(
+        tabs: Any,
+        *,
+        parent_tab_id: str = "",
+        nesting_level: int = 0,
+    ) -> None:
         for tab in tabs or []:
             if not isinstance(tab, Mapping):
                 continue
@@ -313,22 +447,159 @@ def _document_tabs(document: Mapping[str, Any]) -> list[dict[str, Any]]:
                 else {}
             )
             tab_id = _clean(properties.get("tabId"))
-            records.append(
-                {
-                    "tab_id": tab_id,
-                    "title": _clean(properties.get("title")),
-                    "parent_tab_id": parent_tab_id,
-                }
+            document_tab = (
+                tab.get("documentTab")
+                if isinstance(tab.get("documentTab"), Mapping)
+                else {}
             )
-            _walk(tab.get("childTabs"), parent_tab_id=tab_id)
+            body = (
+                document_tab.get("body")
+                if isinstance(document_tab.get("body"), Mapping)
+                else {}
+            )
+            entries.append(
+                (
+                    {
+                        "tab_id": tab_id,
+                        "title": _clean(properties.get("title")),
+                        "index": _int(properties.get("index")),
+                        "parent_tab_id": parent_tab_id,
+                        "nesting_level": nesting_level,
+                        "end_index": _body_end_index_from_body(body),
+                    },
+                    body,
+                )
+            )
+            _walk(
+                tab.get("childTabs"),
+                parent_tab_id=tab_id,
+                nesting_level=nesting_level + 1,
+            )
 
     _walk(document.get("tabs"))
-    return records
+    if not entries:
+        body = _default_document_body(document)
+        entries.append(
+            (
+                {
+                    "tab_id": "",
+                    "title": _clean(document.get("title")),
+                    "index": 0,
+                    "parent_tab_id": "",
+                    "nesting_level": 0,
+                    "end_index": _body_end_index_from_body(body),
+                },
+                body,
+            )
+        )
+    return entries
+
+
+def _body_end_index(document: Mapping[str, Any], *, tab_id: str = "") -> int:
+    entries = _document_tab_entries(document)
+    if tab_id:
+        for record, body in entries:
+            if record["tab_id"] == tab_id:
+                return _body_end_index_from_body(body)
+    return _body_end_index_from_body(entries[0][1])
+
+
+def _document_tabs(document: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [record for record, _body in _document_tab_entries(document)]
+
+
+def _tab_selection_details(tabs: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    return {
+        "tab_count": len(tabs),
+        "tabs": [dict(tab) for tab in tabs],
+        "next_action": (
+            "Choose a tab_id from tabs and retry. If the user's request does not "
+            "identify a tab, ask which tab to edit. For replace_text, pass tab_ids "
+            "or explicitly set all_tabs=true."
+        ),
+    }
+
+
+def _select_single_tab(
+    document: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> tuple[str, list[dict[str, Any]]]:
+    tabs = _document_tabs(document)
+    requested = _clean(payload.get("tab_id"))
+    if requested:
+        if not any(tab["tab_id"] == requested for tab in tabs):
+            raise DocsValidationError(
+                "docs_tab_not_found",
+                f"tab_id '{requested}' does not identify a tab in this document.",
+                details=_tab_selection_details(tabs),
+            )
+        return requested, tabs
+    if len(tabs) > 1:
+        raise DocsValidationError(
+            "docs_tab_selection_required",
+            "This document has multiple tabs. Choose the tab before editing it.",
+            details=_tab_selection_details(tabs),
+        )
+    return _clean(tabs[0].get("tab_id")), tabs
+
+
+def _replace_tab_selection(
+    document: Mapping[str, Any],
+    payload: Mapping[str, Any],
+) -> tuple[list[str], str, list[dict[str, Any]]]:
+    tabs = _document_tabs(document)
+    raw_tab_ids = payload.get("tab_ids")
+    if raw_tab_ids is None:
+        requested: list[str] = []
+    elif isinstance(raw_tab_ids, Sequence) and not isinstance(
+        raw_tab_ids, (str, bytes)
+    ):
+        requested = []
+        for value in raw_tab_ids:
+            tab_id = _clean(value)
+            if tab_id and tab_id not in requested:
+                requested.append(tab_id)
+    else:
+        raise DocsValidationError(
+            "invalid_tab_ids",
+            "tab_ids must be a list of tab ids returned by the document read.",
+            details=_tab_selection_details(tabs),
+        )
+    all_tabs = payload.get("all_tabs") is True
+    if requested and all_tabs:
+        raise DocsValidationError(
+            "invalid_tab_scope",
+            "Provide tab_ids or all_tabs=true, not both.",
+            details=_tab_selection_details(tabs),
+        )
+    ordered_known = [_clean(tab.get("tab_id")) for tab in tabs]
+    known = set(ordered_known)
+    missing = [tab_id for tab_id in requested if tab_id not in known]
+    if missing:
+        raise DocsValidationError(
+            "docs_tab_not_found",
+            "One or more tab_ids do not identify tabs in this document: "
+            + ", ".join(missing),
+            details=_tab_selection_details(tabs),
+        )
+    if all_tabs:
+        return [tab_id for tab_id in ordered_known if tab_id], "all", tabs
+    if requested:
+        return requested, "selected", tabs
+    if len(tabs) > 1:
+        raise DocsValidationError(
+            "docs_tab_selection_required",
+            "This document has multiple tabs. Choose tab_ids or explicitly set "
+            "all_tabs=true before replacing text.",
+            details=_tab_selection_details(tabs),
+        )
+    return [_clean(tabs[0].get("tab_id"))], "single", tabs
 
 
 # --------------------------------------------------------------------------- #
 # Read operations (docs:read)
 # --------------------------------------------------------------------------- #
+
 
 async def _search(
     client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
@@ -344,7 +615,7 @@ async def _search(
         page_token: str = "",
         page_size: int = limit,
     ) -> dict[str, Any]:
-        clauses = [f"mimeType = '{DOCS_MIME_TYPE}'", "trashed = false"]
+        clauses = [_drive_document_mime_clause(), "trashed = false"]
         if title_clause:
             clauses.append(title_clause)
         params = {
@@ -355,11 +626,7 @@ async def _search(
             "corpora": "user",
             "includeItemsFromAllDrives": "true",
             "supportsAllDrives": "true",
-            "fields": (
-                "nextPageToken,incompleteSearch,files(id,name,mimeType,parents,"
-                "createdTime,modifiedTime,ownedByMe,webViewLink,"
-                "capabilities(canCopy),owners(displayName,emailAddress))"
-            ),
+            "fields": (f"nextPageToken,incompleteSearch,files({_DRIVE_FILE_FIELDS})"),
         }
         if page_token:
             params["pageToken"] = page_token
@@ -376,7 +643,11 @@ async def _search(
     # are not repeated.
     exact_body: dict[str, Any] = {}
     if escaped and not cursor:
-        exact_body = await _list(title_clause=f"name = '{escaped}'")
+        exact_clauses = [
+            "name = '" + candidate.replace("\\", "\\\\").replace("'", "\\'") + "'"
+            for candidate in _exact_title_candidates(query)
+        ]
+        exact_body = await _list(title_clause=f"({' or '.join(exact_clauses)})")
 
     rows: list[Mapping[str, Any]] = []
     seen_ids: set[str] = set()
@@ -410,38 +681,7 @@ async def _search(
             seen_ids.add(document_id)
             rows.append(row)
 
-    items: list[dict[str, Any]] = []
-    for row in rows[:limit]:
-        document_id = _clean(row.get("id"))
-        owners = [
-            {
-                "display_name": _clean(owner.get("displayName")),
-                "email": _clean(owner.get("emailAddress")),
-            }
-            for owner in (row.get("owners") or [])
-            if isinstance(owner, Mapping)
-        ]
-        items.append(
-            {
-                "document_id": document_id,
-                "title": _clean(row.get("name")),
-                "created_time": _clean(row.get("createdTime")),
-                "modified_time": _clean(row.get("modifiedTime")),
-                "owned_by_me": bool(row.get("ownedByMe")),
-                "owners": owners,
-                "web_url": _clean(row.get("webViewLink")) or _web_url(document_id),
-                "mime_type": _clean(row.get("mimeType")) or DOCS_MIME_TYPE,
-                "parent_ids": [
-                    _clean(parent)
-                    for parent in (row.get("parents") or [])
-                    if _clean(parent)
-                ],
-                "copyable": bool((row.get("capabilities") or {}).get("canCopy")),
-                "exact_title_match": bool(
-                    query and _clean(row.get("name")).casefold() == query.casefold()
-                ),
-            }
-        )
+    items = [_drive_document_row(row, query=query) for row in rows[:limit]]
     exact_match_count = sum(1 for item in items if item["exact_title_match"])
     return {
         "items": items,
@@ -449,17 +689,32 @@ async def _search(
         "next_cursor": _clean(prefix_body.get("nextPageToken")),
         "exact_match_count": exact_match_count,
         "incomplete_search": bool(
-            exact_body.get("incompleteSearch")
-            or prefix_body.get("incompleteSearch")
+            exact_body.get("incompleteSearch") or prefix_body.get("incompleteSearch")
         ),
         "match_mode": (
             "exact_then_title_prefix"
             if query and not cursor
-            else "title_prefix_page"
-            if query
-            else "recent_documents"
+            else "title_prefix_page" if query else "recent_documents"
         ),
     }
+
+
+async def _get_source(
+    client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    file_id = _document_id(payload.get("document_ref"))
+    row = await _drive_file_metadata(
+        client,
+        access_token=access_token,
+        file_id=file_id,
+        operation="get_source",
+    )
+    result = _drive_document_row(row)
+    if result["native_document"]:
+        result["next_action"] = (
+            "Read this native document with the document get operation."
+        )
+    return result
 
 
 async def _get(
@@ -485,8 +740,14 @@ async def _get(
         "revision_id": _clean(document.get("revisionId")),
         "web_url": _web_url(document_id),
         "text": text,
+        "tab_count": len(tabs),
         "tabs": tabs,
         "end_index": _body_end_index(document),
+        "tab_selection": {
+            "required_for_mutation": len(tabs) > 1,
+            "single_tab_parameter": "tab_id",
+            "replace_parameters": ["tab_ids", "all_tabs"],
+        },
     }
 
 
@@ -529,11 +790,14 @@ async def _export(
 # Write operations (docs:write) — typed batchUpdate, never raw JSON
 # --------------------------------------------------------------------------- #
 
+
 async def _fetch_document(
     client: httpx.AsyncClient, *, access_token: str, document_id: str
 ) -> dict[str, Any]:
     response = await client.get(
-        f"{DOCS_API}/documents/{document_id}", headers=_headers(access_token)
+        f"{DOCS_API}/documents/{document_id}",
+        headers=_headers(access_token),
+        params={"includeTabsContent": "true"},
     )
     _raise_for_status(response, operation="get", mutating=False)
     body = response.json()
@@ -605,9 +869,10 @@ async def _create(
             requests=[{"insertText": {"location": {"index": 1}, "text": initial_text}}],
             operation="create",
         )
-        result["revision_id"] = _clean(
-            (update.get("writeControl") or {}).get("requiredRevisionId")
-        ) or result["revision_id"]
+        result["revision_id"] = (
+            _clean((update.get("writeControl") or {}).get("requiredRevisionId"))
+            or result["revision_id"]
+        )
         result["completed_stages"] = ["create", "write_initial_text"]
     return result
 
@@ -622,22 +887,87 @@ async def _copy(
             "invalid_title",
             f"title is required and must be at most {MAX_TITLE_CHARS} characters.",
         )
-    body: dict[str, Any] = {"name": title}
-    parent_id = _clean(payload.get("parent_id"))
-    if parent_id:
-        body["parents"] = [parent_id]
-    response = await client.post(
-        f"{DRIVE_API}/files/{source_document_id}/copy",
-        headers=_headers(access_token),
-        params={
-            "supportsAllDrives": "true",
-            "fields": (
-                "id,name,mimeType,parents,createdTime,modifiedTime,ownedByMe,"
-                "webViewLink,capabilities(canCopy)"
-            ),
-        },
-        json=body,
+    source = await _drive_file_metadata(
+        client,
+        access_token=access_token,
+        file_id=source_document_id,
+        operation="copy_source_metadata",
     )
+    source_mime_type = _clean(source.get("mimeType"))
+    source_format = _source_format(source_mime_type)
+    if source_mime_type not in _DRIVE_DOCUMENT_MIME_TYPES:
+        raise DocsValidationError(
+            "document_source_not_supported",
+            "The source file is not a native Google Doc or a supported document "
+            "import source (DOCX, ODT, or RTF).",
+        )
+
+    parent_id = _clean(payload.get("parent_id"))
+    conversion_applied = source_mime_type != DOCS_MIME_TYPE
+    if not conversion_applied:
+        body: dict[str, Any] = {"name": title}
+        if parent_id:
+            body["parents"] = [parent_id]
+        response = await client.post(
+            f"{DRIVE_API}/files/{source_document_id}/copy",
+            headers=_headers(access_token),
+            params={
+                "supportsAllDrives": "true",
+                "fields": _DRIVE_FILE_FIELDS,
+            },
+            json=body,
+        )
+    else:
+        source_size = _int(source.get("size"), default=-1)
+        if source_size > MAX_IMPORT_BYTES:
+            raise DocsValidationError(
+                "import_too_large",
+                f"Import source is {source_size} bytes; the limit is {MAX_IMPORT_BYTES}.",
+            )
+        download = await client.get(
+            f"{DRIVE_API}/files/{source_document_id}",
+            headers=_headers(access_token),
+            params={"alt": "media", "supportsAllDrives": "true"},
+        )
+        _raise_for_status(
+            download,
+            operation="copy_source_download",
+            mutating=False,
+        )
+        raw = download.content
+        if len(raw) > MAX_IMPORT_BYTES:
+            raise DocsValidationError(
+                "import_too_large",
+                f"Import source is {len(raw)} bytes; the limit is {MAX_IMPORT_BYTES}.",
+            )
+        source_parent_ids = [
+            _clean(value) for value in (source.get("parents") or []) if _clean(value)
+        ]
+        target_parent_id = parent_id or next(iter(source_parent_ids), "")
+        metadata: dict[str, Any] = {"name": title, "mimeType": DOCS_MIME_TYPE}
+        if target_parent_id:
+            metadata["parents"] = [target_parent_id]
+        response = await client.post(
+            f"{DRIVE_UPLOAD_API}/files",
+            headers=_headers(access_token),
+            params={
+                "uploadType": "multipart",
+                "supportsAllDrives": "true",
+                "fields": _DRIVE_FILE_FIELDS,
+            },
+            files={
+                "metadata": (
+                    "metadata",
+                    _json_dumps(metadata),
+                    "application/json",
+                ),
+                "file": (
+                    _clean(source.get("name")) or f"source.{source_format}",
+                    raw,
+                    source_mime_type,
+                ),
+            },
+        )
     _raise_for_status(response, operation="copy", mutating=True)
     row = response.json()
     row = dict(row) if isinstance(row, Mapping) else {}
@@ -648,10 +978,14 @@ async def _copy(
         "title": _clean(row.get("name")) or title,
         "web_url": _clean(row.get("webViewLink")) or _web_url(document_id),
         "mime_type": _clean(row.get("mimeType")) or DOCS_MIME_TYPE,
+        "native_document": True,
+        "conversion_required": False,
+        "conversion_applied": conversion_applied,
+        "source_name": _clean(source.get("name")),
+        "source_mime_type": source_mime_type,
+        "source_format": source_format,
         "parent_ids": [
-            _clean(parent)
-            for parent in (row.get("parents") or [])
-            if _clean(parent)
+            _clean(parent) for parent in (row.get("parents") or []) if _clean(parent)
         ],
         "copied": True,
         "idempotency_key": _clean(payload.get("idempotency_key")),
@@ -663,17 +997,20 @@ async def _insert_text(
 ) -> dict[str, Any]:
     document_id = _document_id(payload.get("document_ref"))
     text = _bounded_text(payload.get("text"))
+    document = await _fetch_document(
+        client, access_token=access_token, document_id=document_id
+    )
+    tab_id, tabs = _select_single_tab(document, payload)
     index = payload.get("index")
     if index is None:
-        document = await _fetch_document(
-            client, access_token=access_token, document_id=document_id
-        )
-        location = {"index": _body_end_index(document)}
+        location = {"index": _body_end_index(document, tab_id=tab_id)}
     else:
         idx = _int(index, default=1)
         if idx < 1:
             raise DocsValidationError("invalid_index", "index must be >= 1.")
         location = {"index": idx}
+    if tab_id:
+        location["tabId"] = tab_id
     await _batch_update(
         client,
         access_token=access_token,
@@ -686,6 +1023,8 @@ async def _insert_text(
         "web_url": _web_url(document_id),
         "inserted_chars": len(text),
         "index": location["index"],
+        "tab_id": tab_id,
+        "tab_count": len(tabs),
     }
 
 
@@ -697,12 +1036,16 @@ async def _append_text(
     document = await _fetch_document(
         client, access_token=access_token, document_id=document_id
     )
-    index = _body_end_index(document)
+    tab_id, tabs = _select_single_tab(document, payload)
+    index = _body_end_index(document, tab_id=tab_id)
+    location: dict[str, Any] = {"index": index}
+    if tab_id:
+        location["tabId"] = tab_id
     await _batch_update(
         client,
         access_token=access_token,
         document_id=document_id,
-        requests=[{"insertText": {"location": {"index": index}, "text": text}}],
+        requests=[{"insertText": {"location": location, "text": text}}],
         operation="append_text",
     )
     return {
@@ -710,6 +1053,8 @@ async def _append_text(
         "web_url": _web_url(document_id),
         "appended_chars": len(text),
         "index": index,
+        "tab_id": tab_id,
+        "tab_count": len(tabs),
     }
 
 
@@ -728,6 +1073,10 @@ async def _replace_text(
             "request_too_large" if raw else "replacements_required",
             f"Provide 1-{MAX_REPLACEMENTS} replacements.",
         )
+    document = await _fetch_document(
+        client, access_token=access_token, document_id=document_id
+    )
+    tab_ids, tab_scope, tabs = _replace_tab_selection(document, payload)
     requests: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, Mapping):
@@ -737,17 +1086,17 @@ async def _replace_text(
         find = str(item.get("find") or "")
         if not find:
             raise DocsValidationError("invalid_replacement", "find must not be empty.")
-        requests.append(
-            {
-                "replaceAllText": {
-                    "containsText": {
-                        "text": find,
-                        "matchCase": bool(item.get("match_case")),
-                    },
-                    "replaceText": str(item.get("replace") or ""),
-                }
-            }
-        )
+        replacement: dict[str, Any] = {
+            "containsText": {
+                "text": find,
+                "matchCase": bool(item.get("match_case")),
+            },
+            "replaceText": str(item.get("replace") or ""),
+        }
+        selected_ids = [tab_id for tab_id in tab_ids if tab_id]
+        if selected_ids:
+            replacement["tabsCriteria"] = {"tabIds": selected_ids}
+        requests.append({"replaceAllText": replacement})
     result = await _batch_update(
         client,
         access_token=access_token,
@@ -766,6 +1115,9 @@ async def _replace_text(
         "web_url": _web_url(document_id),
         "replacements": len(requests),
         "occurrences_changed": occurrences,
+        "tab_scope": tab_scope,
+        "tab_ids": tab_ids,
+        "tab_count": len(tabs),
     }
 
 
@@ -773,6 +1125,10 @@ async def _apply_text_style(
     client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
     document_id = _document_id(payload.get("document_ref"))
+    document = await _fetch_document(
+        client, access_token=access_token, document_id=document_id
+    )
+    tab_id, tabs = _select_single_tab(document, payload)
     start = _int(payload.get("start_index"), default=-1)
     end = _int(payload.get("end_index"), default=-1)
     if start < 1 or end <= start:
@@ -803,6 +1159,9 @@ async def _apply_text_style(
             "Provide at least one of: bold, italic, underline, strikethrough, "
             "font_size, link_url.",
         )
+    text_range: dict[str, Any] = {"startIndex": start, "endIndex": end}
+    if tab_id:
+        text_range["tabId"] = tab_id
     await _batch_update(
         client,
         access_token=access_token,
@@ -810,7 +1169,7 @@ async def _apply_text_style(
         requests=[
             {
                 "updateTextStyle": {
-                    "range": {"startIndex": start, "endIndex": end},
+                    "range": text_range,
                     "textStyle": style,
                     "fields": ",".join(fields),
                 }
@@ -823,6 +1182,8 @@ async def _apply_text_style(
         "web_url": _web_url(document_id),
         "range": {"start_index": start, "end_index": end},
         "applied_fields": sorted(fields),
+        "tab_id": tab_id,
+        "tab_count": len(tabs),
     }
 
 
@@ -830,17 +1191,20 @@ async def _insert_page_break(
     client: httpx.AsyncClient, *, access_token: str, payload: Mapping[str, Any]
 ) -> dict[str, Any]:
     document_id = _document_id(payload.get("document_ref"))
+    document = await _fetch_document(
+        client, access_token=access_token, document_id=document_id
+    )
+    tab_id, tabs = _select_single_tab(document, payload)
     index = payload.get("index")
     if index is None:
-        document = await _fetch_document(
-            client, access_token=access_token, document_id=document_id
-        )
-        location = {"index": _body_end_index(document)}
+        location = {"index": _body_end_index(document, tab_id=tab_id)}
     else:
         idx = _int(index, default=1)
         if idx < 1:
             raise DocsValidationError("invalid_index", "index must be >= 1.")
         location = {"index": idx}
+    if tab_id:
+        location["tabId"] = tab_id
     await _batch_update(
         client,
         access_token=access_token,
@@ -852,6 +1216,8 @@ async def _insert_page_break(
         "document_id": document_id,
         "web_url": _web_url(document_id),
         "index": location["index"],
+        "tab_id": tab_id,
+        "tab_count": len(tabs),
     }
 
 
@@ -866,17 +1232,20 @@ async def _embed_image(
             "image_uri must be a public http(s) URL that Google can fetch once "
             "at insert time (PNG/JPEG/GIF, <=25MB, <=2000px per side).",
         )
+    document = await _fetch_document(
+        client, access_token=access_token, document_id=document_id
+    )
+    tab_id, tabs = _select_single_tab(document, payload)
     index = payload.get("index")
     if index is None:
-        document = await _fetch_document(
-            client, access_token=access_token, document_id=document_id
-        )
-        location = {"index": _body_end_index(document)}
+        location = {"index": _body_end_index(document, tab_id=tab_id)}
     else:
         idx = _int(index, default=1)
         if idx < 1:
             raise DocsValidationError("invalid_index", "index must be >= 1.")
         location = {"index": idx}
+    if tab_id:
+        location["tabId"] = tab_id
     insert: dict[str, Any] = {"location": location, "uri": image_uri}
     width = payload.get("width_pt")
     height = payload.get("height_pt")
@@ -897,14 +1266,17 @@ async def _embed_image(
     object_id = ""
     for reply in result.get("replies") or []:
         if isinstance(reply, Mapping):
-            object_id = _clean(
-                (reply.get("insertInlineImage") or {}).get("objectId")
-            ) or object_id
+            object_id = (
+                _clean((reply.get("insertInlineImage") or {}).get("objectId"))
+                or object_id
+            )
     return {
         "document_id": document_id,
         "web_url": _web_url(document_id),
         "index": location["index"],
         "object_id": object_id,
+        "tab_id": tab_id,
+        "tab_count": len(tabs),
     }
 
 
@@ -976,8 +1348,8 @@ async def _import_document(
 
 _COMMENT_FIELDS = (
     "id,content,anchor,resolved,createdTime,modifiedTime,"
-    "author(displayName,emailAddress),quotedFileContent(value),"
-    "replies(id,content,action,createdTime,author(displayName,emailAddress))"
+    "author(displayName,emailAddress,me),quotedFileContent(value),"
+    "replies(id,content,action,createdTime,author(displayName,emailAddress,me))"
 )
 
 
@@ -995,6 +1367,7 @@ def _comment_row(row: Mapping[str, Any]) -> dict[str, Any]:
             "action": _clean(reply.get("action")),
             "created_time": _clean(reply.get("createdTime")),
             "author": _clean((reply.get("author") or {}).get("displayName")),
+            "author_is_me": bool((reply.get("author") or {}).get("me")),
         }
         for reply in (row.get("replies") or [])
         if isinstance(reply, Mapping)
@@ -1009,6 +1382,7 @@ def _comment_row(row: Mapping[str, Any]) -> dict[str, Any]:
         "modified_time": _clean(row.get("modifiedTime")),
         "author": _clean(author.get("displayName")),
         "author_email": _clean(author.get("emailAddress")),
+        "author_is_me": bool(author.get("me")),
         "replies": replies,
     }
 
@@ -1193,6 +1567,7 @@ def _json_dumps(value: Mapping[str, Any]) -> bytes:
 _OPERATIONS = {
     # read (docs:read)
     "search": _search,
+    "get_source": _get_source,
     "get": _get,
     "export": _export,
     "list_comments": _list_comments,
@@ -1278,15 +1653,19 @@ async def execute_google_docs_operation(
             ret = await handler(client, access_token=token, payload=body)
         return {"ok": True, "error": None, "ret": ret}
     except DocsValidationError as exc:
+        ret = {"outcome_unknown": False, **exc.details}
+        error = {
+            "code": exc.code,
+            "message": str(exc),
+            "where": where,
+            "managed": True,
+        }
+        if exc.details:
+            error["details"] = exc.details
         return {
             "ok": False,
-            "error": {
-                "code": exc.code,
-                "message": str(exc),
-                "where": where,
-                "managed": True,
-            },
-            "ret": {"outcome_unknown": False},
+            "error": error,
+            "ret": ret,
         }
     except _DocsApiError as exc:
         return exc.failure.error_result(where=where)
@@ -1308,5 +1687,7 @@ __all__ = [
     "MAX_SEARCH_RESULTS",
     "MAX_TEXT_CHARS",
     "MAX_EXPORT_BYTES",
+    "DOCS_MIME_TYPE",
+    "DOCX_MIME_TYPE",
     "DocsValidationError",
 ]

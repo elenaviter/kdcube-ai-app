@@ -4,7 +4,7 @@ title: "Namespace Services"
 summary: "Index and mental model for namespace-owning service providers, clients, object resolution, and app-to-app integration."
 status: current
 tags: ["sdk", "namespace-services", "providers", "clients", "resolvers", "apps"]
-updated_at: 2026-07-27
+updated_at: 2026-08-01
 keywords:
   [
     "namespace services",
@@ -141,8 +141,8 @@ and provider-backed refs gain a live cross-app/object-owner bridge.
 | --- | --- |
 | [Build A Complete Named Service](../../recipes/components/named-service-README.md) | End-to-end builder recipe: provider shape, progressive discovery, complete retrieval, exact action grants, connected credentials, external MCP clients, and harness materialization. |
 | [Components Ecosystem Architecture](../solutions/ecosystem-component/components-ecosystem-README.md) | End-to-end architecture map for provider apps, consumer apps, scene, ReAct, Pinboard, chat, events, data bus, and config. |
-| [Ontologic Tools](ontologic-tools-README.md) | The model-facing tool surface for operating any realm by satisfying schemas: how the nine tools compose, the schema `tools` block as affordance, and the per-field `update` strategy. |
-| [Providers](providers-README.md) | Provider contract, operation vocabulary, auth context, transport adapters, the presentation layer (the realm's human reader), and connected-account requirement declarations. |
+| [Ontologic Tools](ontologic-tools-README.md) | The model-facing tool surface for operating any realm by satisfying schemas: the realm's semantic language, progressive discovery, tool composition, affordances, and update strategy. |
+| [Providers](providers-README.md) | Provider contract, semantic-to-provider translation, capability honesty, operation vocabulary, auth context, transport adapters, presentation, and connected-account requirements. |
 | [Clients](clients-README.md) | Client config, tool exposure, current resolver behavior, and client ids. |
 | [Integration](integration-README.md) | Visual provider-host/client-app flow using task-tracker and workspace. |
 | [Discovery Registry](discovery-README.md) | Canonical provider-publication lifecycle: explicit ownership, authoritative per-app reconciliation and withdrawal, Redis record/index schema, TTL/expiry, resolution, and the rule that reads go through the discovery module. |

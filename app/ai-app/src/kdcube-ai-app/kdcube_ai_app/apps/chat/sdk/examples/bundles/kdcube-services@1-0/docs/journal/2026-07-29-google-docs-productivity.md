@@ -4,6 +4,11 @@ title: "Google Docs Productivity Surface"
 summary: "Google Docs joins the productivity door and named-service registry with exact-title discovery, native copy, editing, comments, and portable export delivery."
 status: active
 tags: ["kdcube-services", "productivity", "google", "docs", "named-services", "mcp"]
+keywords: ["google docs productivity", "document named service", "google docs mcp", "connected account", "document export"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/kdcube-services@1-0/docs/journal/2026-08-01-docs-explicit-tab-selection.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
 ---
 
 # Google Docs Productivity Surface
@@ -13,6 +18,13 @@ exposed on **both** surfaces — the `docs` named-service namespace and the
 `productivity_docs_*` MCP tools — through the same two-gate delegated-credential
 model (a caller grant *and* a connected-account claim; the Google token never
 reaches the agent).
+
+The later [import-source discovery update](2026-08-01-docs-import-source-discovery.md)
+extends title lookup and copy to compatible DOCX, ODT, and RTF files stored in
+Drive. Native Google Docs continue to use the provider-native copy path below.
+The [explicit tab-selection update](2026-08-01-docs-explicit-tab-selection.md)
+adds complete multi-tab metadata, exact mutation scope, and natural lexical tab
+selectors on the provider-neutral named-service path.
 
 ## What the app gained
 

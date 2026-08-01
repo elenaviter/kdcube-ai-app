@@ -64,23 +64,26 @@ DOCS_PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     },
     "productivity_docs_list_tabs": {
         "label": "List Google Doc tabs",
-        "description": "Enumerate a document's tabs without pulling full content.",
+        "description": "List a document's tabs without returning body content.",
         **_requirement(_READ_CLAIMS),
     },
     "productivity_docs_batch_edit": {
         "label": "Batch-edit Google Doc",
-        "description": "Apply a bounded list of native, allowlisted Docs edit requests, optionally to one tab.",
+        "description": "Apply bounded native Docs edits with explicit tab scope.",
         **_requirement(_WRITE_CLAIMS),
     },
     # ── read (docs:read) ──────────────────────────────────────────────────
     "productivity_docs_search": {
         "label": "Find Google Docs",
-        "description": "Find documents visible to the user's connected Google account.",
+        "description": (
+            "Find native Google Docs and compatible document import sources "
+            "visible to the user's connected Google account."
+        ),
         **_requirement(_READ_CLAIMS),
     },
     "productivity_docs_get": {
         "label": "Read Google Doc",
-        "description": "Read a document's title, text, tabs, and revision.",
+        "description": "Read a document's title, text, full tab inventory, and revision.",
         **_requirement(_READ_CLAIMS),
     },
     "productivity_docs_export": {
@@ -107,23 +110,24 @@ DOCS_PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     "productivity_docs_copy": {
         "label": "Copy Google Doc",
         "description": (
-            "Copy a document under a new title while preserving its structure."
+            "Copy a native document, or convert a DOCX, ODT, or RTF source "
+            "into a new native Google Doc."
         ),
         **_requirement(_WRITE_CLAIMS),
     },
     "productivity_docs_insert_text": {
         "label": "Insert Google Doc text",
-        "description": "Insert text at an index in a document.",
+        "description": "Insert text at an index in a selected document tab.",
         **_requirement(_WRITE_CLAIMS),
     },
     "productivity_docs_append_text": {
         "label": "Append Google Doc text",
-        "description": "Append text to the end of a document body.",
+        "description": "Append text to the end of a selected document tab.",
         **_requirement(_WRITE_CLAIMS),
     },
     "productivity_docs_replace_text": {
         "label": "Replace Google Doc text",
-        "description": "Replace all occurrences of find strings in a document.",
+        "description": "Replace text in selected tabs or explicitly in every tab.",
         **_requirement(_WRITE_CLAIMS),
     },
     "productivity_docs_apply_text_style": {
@@ -196,12 +200,15 @@ def register_google_docs_tools(
         title="Find Google Docs",
         description=(
             "Find documents visible to the approving user's connected Google "
-            "account. Use this when the document id or URL is unknown. A non-blank "
-            "query checks the exact title first, then returns title-prefix matches; "
-            "check exact_title_match before selecting among similar names. A blank "
-            "query lists recently modified documents. Returns stable document ids, "
-            "titles, URLs, ownership metadata, search completeness, and next_cursor; "
-            "pass a returned document_id to productivity_docs_get to read it."
+            "account. Results include native Google Docs and compatible DOCX, ODT, "
+            "or RTF import sources. A non-blank query checks the requested title and "
+            "logical filename first, so '26_006' can exactly match '26_006.docx', "
+            "then returns title-prefix matches. Check exact_title_match, "
+            "native_document, and conversion_required before acting. Read native "
+            "documents with productivity_docs_get; copy an import source to create "
+            "an editable native document. Search uses Drive metadata and does not "
+            "inspect tabs; get the chosen document before editing it. A blank query "
+            "lists recent results."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Find Google Docs"),
         structured_output=False,
@@ -242,9 +249,10 @@ def register_google_docs_tools(
         title="Read Google Doc",
         description=(
             "Read a document by id or full Google Docs URL. Use search first when "
-            "the id is unknown. Returns the title, extracted text, tab titles, the "
-            "current revision_id, and end_index. The end_index and text indices are "
-            "the coordinates the edit tools (insert_text, apply_text_style) expect."
+            "the id is unknown. Returns extracted text with tab markers, tab_count, "
+            "and each tab's tab_id, title, hierarchy, and end_index. Read all tabs "
+            "when useful. Before editing a multi-tab document, choose the intended "
+            "tab; ambiguous writes are rejected with the available tabs."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Read Google Doc"),
         structured_output=False,
@@ -471,11 +479,12 @@ def register_google_docs_tools(
         name="productivity_docs_copy",
         title="Copy Google Doc",
         description=(
-            "Copy an existing Google Doc under a new title while preserving its "
-            "provider-managed structure and formatting. Search for both the source "
-            "and intended target title first. A provider timeout may leave the copy "
-            "outcome unknown, so search for the target before retrying. Returns the "
-            "new document_id and web_url."
+            "Copy a native Google Doc under a new title, or convert a compatible "
+            "DOCX, ODT, or RTF search result into a new native Google Doc. The "
+            "source stays unchanged. Search for both the source and intended target "
+            "title first. A provider timeout may leave the outcome unknown, so "
+            "search for the target before retrying. Returns the new native "
+            "document_id and web_url."
         ),
         annotations=write_annotations(ToolAnnotations, title="Copy Google Doc"),
         structured_output=False,
@@ -483,7 +492,12 @@ def register_google_docs_tools(
     async def _productivity_docs_copy(
         document_ref: Annotated[
             str,
-            Field(description="Source document id or full Google Docs URL."),
+            Field(
+                description=(
+                    "Source id or URL returned by document search. It may identify "
+                    "a native Google Doc or a compatible import source."
+                )
+            ),
         ],
         title: Annotated[
             str,
@@ -535,9 +549,10 @@ def register_google_docs_tools(
         title="Insert Google Doc text",
         description=(
             "Insert text at a body index. Omit index to insert at the end of the "
-            "body. Use productivity_docs_get first for the end_index or the "
+            "selected tab. Use productivity_docs_get first for tab_id, end_index, or the "
             "coordinates around the text you want to edit. This changes the "
-            "document each time it succeeds."
+            "document each time it succeeds. tab_id is required for a multi-tab "
+            "document."
         ),
         annotations=write_annotations(
             ToolAnnotations, title="Insert Google Doc text"
@@ -557,6 +572,15 @@ def register_google_docs_tools(
             int | None,
             Field(ge=1, description="Optional 1-based body index; omit to append."),
         ] = None,
+        tab_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Target tab_id returned by productivity_docs_get. Required "
+                    "when the document has multiple tabs."
+                )
+            ),
+        ] = "",
         account_id: Annotated[
             str,
             Field(
@@ -571,7 +595,12 @@ def register_google_docs_tools(
             operation="insert_text",
             claim=_WRITE_CLAIMS,
             tool_name="productivity_docs_insert_text",
-            payload={"document_ref": document_ref, "text": text, "index": index},
+            payload={
+                "document_ref": document_ref,
+                "text": text,
+                "index": index,
+                "tab_id": tab_id,
+            },
             account_id=account_id,
         )
 
@@ -579,9 +608,9 @@ def register_google_docs_tools(
         name="productivity_docs_append_text",
         title="Append Google Doc text",
         description=(
-            "Append text to the end of the document body. This changes the "
+            "Append text to the end of the selected tab. This changes the "
             "document each time it succeeds; repeating the call appends again "
-            "rather than replacing."
+            "rather than replacing. tab_id is required for a multi-tab document."
         ),
         annotations=write_annotations(
             ToolAnnotations, title="Append Google Doc text"
@@ -597,6 +626,15 @@ def register_google_docs_tools(
             str,
             Field(min_length=1, description="Text to append at the end of the body."),
         ],
+        tab_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Target tab_id returned by productivity_docs_get. Required "
+                    "when the document has multiple tabs."
+                )
+            ),
+        ] = "",
         account_id: Annotated[
             str,
             Field(
@@ -611,7 +649,11 @@ def register_google_docs_tools(
             operation="append_text",
             claim=_WRITE_CLAIMS,
             tool_name="productivity_docs_append_text",
-            payload={"document_ref": document_ref, "text": text},
+            payload={
+                "document_ref": document_ref,
+                "text": text,
+                "tab_id": tab_id,
+            },
             account_id=account_id,
         )
 
@@ -619,10 +661,11 @@ def register_google_docs_tools(
         name="productivity_docs_replace_text",
         title="Replace Google Doc text",
         description=(
-            "Replace every occurrence of each find string across the document. "
+            "Replace every occurrence of each find string in selected tabs. "
             "Each replacement is {find, replace, match_case?}. Use "
-            "productivity_docs_get first to confirm the text; returns "
-            "occurrences_changed so you can verify what was matched."
+            "productivity_docs_get first to confirm the text and tab ids. For a "
+            "multi-tab document, pass tab_ids or explicitly set all_tabs=true. "
+            "Returns occurrences_changed so you can verify what was matched."
         ),
         annotations=write_annotations(
             ToolAnnotations, title="Replace Google Doc text"
@@ -645,6 +688,23 @@ def register_google_docs_tools(
                 ),
             ),
         ],
+        tab_ids: Annotated[
+            list[str] | None,
+            Field(
+                description=(
+                    "Tabs in which to replace text. Use ids returned by "
+                    "productivity_docs_get."
+                )
+            ),
+        ] = None,
+        all_tabs: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Explicitly replace across every tab. Do not combine with tab_ids."
+                )
+            ),
+        ] = False,
         account_id: Annotated[
             str,
             Field(
@@ -659,7 +719,12 @@ def register_google_docs_tools(
             operation="replace_text",
             claim=_WRITE_CLAIMS,
             tool_name="productivity_docs_replace_text",
-            payload={"document_ref": document_ref, "replacements": replacements},
+            payload={
+                "document_ref": document_ref,
+                "replacements": replacements,
+                "tab_ids": tab_ids,
+                "all_tabs": all_tabs,
+            },
             account_id=account_id,
         )
 
@@ -668,7 +733,7 @@ def register_google_docs_tools(
         title="Style Google Doc text",
         description=(
             "Apply character styling to a text range. Provide start_index and "
-            "end_index from productivity_docs_get plus at least one of bold, "
+            "end_index and tab_id from productivity_docs_get plus at least one of bold, "
             "italic, underline, strikethrough, font_size, or link_url."
         ),
         annotations=write_annotations(
@@ -707,6 +772,15 @@ def register_google_docs_tools(
             str,
             Field(description="Optional http(s) URL to link the range to."),
         ] = "",
+        tab_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Target tab_id returned by productivity_docs_get. Required "
+                    "when the document has multiple tabs."
+                )
+            ),
+        ] = "",
         account_id: Annotated[
             str,
             Field(
@@ -731,6 +805,7 @@ def register_google_docs_tools(
                 "strikethrough": strikethrough,
                 "font_size": font_size,
                 "link_url": link_url,
+                "tab_id": tab_id,
             },
             account_id=account_id,
         )
@@ -740,7 +815,8 @@ def register_google_docs_tools(
         title="Insert Google Doc page break",
         description=(
             "Insert a page break at a body index. Omit index to break at the end "
-            "of the body. Use productivity_docs_get for the coordinates."
+            "of the selected tab. Use productivity_docs_get for tab_id and the "
+            "coordinates."
         ),
         annotations=write_annotations(
             ToolAnnotations, title="Insert Google Doc page break"
@@ -756,6 +832,15 @@ def register_google_docs_tools(
             int | None,
             Field(ge=1, description="Optional 1-based body index; omit to append."),
         ] = None,
+        tab_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Target tab_id returned by productivity_docs_get. Required "
+                    "when the document has multiple tabs."
+                )
+            ),
+        ] = "",
         account_id: Annotated[
             str,
             Field(
@@ -772,7 +857,11 @@ def register_google_docs_tools(
             operation="insert_page_break",
             claim=_WRITE_CLAIMS,
             tool_name="productivity_docs_insert_page_break",
-            payload={"document_ref": document_ref, "index": index},
+            payload={
+                "document_ref": document_ref,
+                "index": index,
+                "tab_id": tab_id,
+            },
             account_id=account_id,
         )
 
@@ -782,7 +871,8 @@ def register_google_docs_tools(
         description=(
             "Embed an inline image at a body index. image_uri must be a public "
             "http(s) URL that Google fetches once at insert time (PNG/JPEG/GIF, "
-            "<=25MB, <=2000px per side). Omit index to append at the end."
+            "<=25MB, <=2000px per side). Omit index to append at the selected "
+            "tab's end."
         ),
         annotations=write_annotations(
             ToolAnnotations, title="Embed Google Doc image"
@@ -810,6 +900,15 @@ def register_google_docs_tools(
             int | None,
             Field(ge=1, description="Optional display height in points."),
         ] = None,
+        tab_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Target tab_id returned by productivity_docs_get. Required "
+                    "when the document has multiple tabs."
+                )
+            ),
+        ] = "",
         account_id: Annotated[
             str,
             Field(
@@ -830,6 +929,7 @@ def register_google_docs_tools(
                 "index": index,
                 "width_pt": width_pt,
                 "height_pt": height_pt,
+                "tab_id": tab_id,
             },
             account_id=account_id,
         )
@@ -1158,8 +1258,9 @@ def register_google_docs_tools(
         title="List Google Doc tabs",
         description=(
             "Enumerate a document's tabs (tab_id, title, index, parent tab) "
-            "without pulling their content. Use before productivity_docs_get_structure "
-            "or productivity_docs_batch_edit to pick a tab_id."
+            "without returning body content. Use before "
+            "productivity_docs_get_structure or productivity_docs_batch_edit to "
+            "pick a tab_id."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="List Google Doc tabs"),
         structured_output=False,
@@ -1187,7 +1288,9 @@ def register_google_docs_tools(
         title="Batch-edit Google Doc",
         description=(
             "Apply a list (1-50) of native Google Docs batchUpdate requests in "
-            "one call, optionally all targeting one tab_id. Each request is a "
+            "one call. A multi-tab document requires one tab_id. The only "
+            "all-tabs batch is replaceAllText-only with explicit all_tabs=true. "
+            "Each request is a "
             "single-key object of an allowlisted kind (insertText, "
             "deleteContentRange, replaceAllText, updateTextStyle, "
             "updateParagraphStyle, createParagraphBullets, insertTable, "
@@ -1208,8 +1311,23 @@ def register_google_docs_tools(
         ],
         tab_id: Annotated[
             str,
-            Field(description="Optional tab_id (from list_tabs/get_structure) to target; stamped into each request's location/range."),
+            Field(
+                description=(
+                    "Target tab_id from list_tabs/get_structure. Required when "
+                    "the document has multiple tabs unless all_tabs=true is used "
+                    "for a replaceAllText-only batch."
+                )
+            ),
         ] = "",
+        all_tabs: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Explicitly target every tab. Supported only when every "
+                    "request is replaceAllText."
+                )
+            ),
+        ] = False,
         account_id: Annotated[
             str,
             Field(description="Optional connected Google account id when several are available."),
@@ -1222,6 +1340,11 @@ def register_google_docs_tools(
             operation="batch_edit",
             claim=_WRITE_CLAIMS,
             tool_name="productivity_docs_batch_edit",
-            payload={"document_ref": document_ref, "requests": requests, "tab_id": tab_id},
+            payload={
+                "document_ref": document_ref,
+                "requests": requests,
+                "tab_id": tab_id,
+                "all_tabs": all_tabs,
+            },
             account_id=account_id,
         )

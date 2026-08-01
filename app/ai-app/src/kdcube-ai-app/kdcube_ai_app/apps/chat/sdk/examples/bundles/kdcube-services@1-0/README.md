@@ -4,6 +4,11 @@ title: "KDCube Services App"
 summary: "Built-in KDCube service surfaces for delegated clients: conversations, named services, and connected-account productivity tools."
 status: active
 tags: ["app", "bundle", "mcp", "storage", "connection-hub", "delegated-credentials", "conversations"]
+keywords: ["kdcube services", "named services mcp", "google docs productivity", "delegated credentials", "signed file transfer"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/kdcube-services@1-0/interface/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
 module: entrypoint
 singleton: false
 primary_surfaces:
@@ -233,8 +238,13 @@ Google Docs service used by `public/mcp/productivity`:
 ```text
 named_services_search namespace=docs
   -> docs:google:<account_id>:document:<document_id>
+  -> docs:google:<account_id>:source:<file_id> for DOCX/ODT/RTF imports
 named_services_get <document ref>
   -> text/structure, exported bytes, comments, or a signed full-snapshot URL
+named_services_action copy <source ref>
+  -> editable native document ref; the source file stays unchanged
+named_services_get <native document ref>
+  -> text from every tab plus stable tab ids, titles, hierarchy, and end indices
 named_services_upsert  -> create a document
 named_services_action  -> bounded typed edits (docs:write) and comment
                           mutations (docs:comment)
@@ -242,12 +252,19 @@ named_services_action  -> bounded typed edits (docs:write) and comment
 
 The namespace stays provider-neutral with Google as its first backing provider.
 A read requires the caller's `docs:read` grant plus the same connected-account
-claim; edits require `docs:write` and comment mutations require `docs:comment`,
-each checked independently on the connected Google account. Docs splits reads,
-edits, and comments into three claims where Sheets used two. The generic
+claim; edits require `docs:read` + `docs:write`, and comment mutations require
+`docs:read` + `docs:comment` on the connected Google account. The caller-facing
+grant remains the exact requested operation's grant. Docs splits reads, edits,
+and comments into three claims where Sheets used two. The generic
 snapshot/harness pull path is shared with `sheets`; only the object kind and the
 `kdcube.docs.snapshot.v1` media type differ. See
 [interface/README.md](interface/README.md) for the full operation/grant table.
+On a multi-tab document, named-service edits can select one tab by title,
+literal title fragment, position, or hierarchy; exact tab ids remain accepted.
+Document-level comment actions can select one thread by literal text, author,
+resolved state, or position. Ambiguous selectors return candidates and perform
+no provider write. The stable Drive path returns a precise capability error for
+tab-scoped comment requests.
 
 ### Productivity
 
@@ -269,8 +286,8 @@ Sheets tools, and Google Docs tools.
 | Docs tools | Caller grant | Connected Google claim |
 | --- | --- | --- |
 | `productivity_docs_search`, `productivity_docs_get`, `productivity_docs_export`, `productivity_docs_list_comments`, `productivity_docs_get_comment` | `docs:read` | `docs:read` |
-| document creation and typed edits (`productivity_docs_create`, `insert/append/replace_text`, `apply_text_style`, `insert_page_break`, `embed_image`, `import`) | `docs:write` | `docs:write` |
-| comment mutations (`productivity_docs_create_comment`, `reply_comment`, `resolve_comment`, `delete_comment`) | `docs:comment` | `docs:comment` |
+| document creation, copy/conversion, and typed edits (`productivity_docs_create`, `copy`, `insert/append/replace_text`, `apply_text_style`, `insert_page_break`, `embed_image`, `import`) | `docs:write` | `docs:read` + `docs:write` |
+| comment mutations (`productivity_docs_create_comment`, `reply_comment`, `resolve_comment`, `delete_comment`) | `docs:comment` | `docs:read` + `docs:comment` |
 
 The caller grant is selected under **Delegated by KDCube**. The Google claim is
 approved under **Delegated to KDCube**. The app resolves the credential only

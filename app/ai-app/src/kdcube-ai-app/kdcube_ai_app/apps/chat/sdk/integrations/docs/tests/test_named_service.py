@@ -5,17 +5,22 @@ from typing import Any
 
 import pytest
 
+import kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service as docs_named_service
 from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
     ACTION_COPY,
     ACTION_CREATE_COMMENT,
     ACTION_DELETE_COMMENT,
     ACTION_EXPORT,
+    ACTION_GET_COMMENT,
     ACTION_APPEND_TEXT,
+    ACTION_REPLACE_TEXT,
+    ACTION_REPLY_COMMENT,
     DOCS_COMMENT_CLAIM,
     DOCS_CONNECTED_ACCOUNT_REQUIREMENTS,
     DOCS_DOCUMENT_KIND,
     DOCS_EXPORT_KIND,
     DOCS_GRANT_HINTS,
+    DOCS_IMPORT_SOURCE_KIND,
     DOCS_READ_CLAIM,
     DOCS_SNAPSHOT_MEDIA_TYPE,
     DOCS_SNAPSHOT_SCHEMA,
@@ -23,6 +28,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.docs.named_service import (
     DocsNamedServiceProvider,
     document_export_ref,
     document_ref,
+    document_source_ref,
     docs_named_service_spec,
     parse_docs_export_ref,
     parse_docs_ref,
@@ -65,6 +71,25 @@ class _FakeDocs:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.error: dict[str, Any] | None = None
+        self.tabs: list[dict[str, Any]] = [
+            {
+                "tab_id": "tab-main",
+                "title": "Main",
+                "index": 0,
+                "parent_tab_id": "",
+                "nesting_level": 0,
+                "end_index": 41,
+            }
+        ]
+        self.comments: list[dict[str, Any]] = [
+            {
+                "comment_id": "c-1",
+                "content": "Please expand.",
+                "resolved": False,
+                "author": "Reviewer",
+                "author_is_me": False,
+            }
+        ]
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(dict(kwargs))
@@ -73,6 +98,33 @@ class _FakeDocs:
         operation = kwargs["operation"]
         account_id = kwargs.get("account_id") or "account-1"
         if operation == "search":
+            query = kwargs["payload"].get("query")
+            if query == "26_006":
+                return {
+                    "ok": True,
+                    "ret": {
+                        "account_id": account_id,
+                        "items": [
+                            {
+                                "document_id": "source-docx",
+                                "title": "26_006.docx",
+                                "logical_title": "26_006",
+                                "mime_type": (
+                                    "application/vnd.openxmlformats-officedocument."
+                                    "wordprocessingml.document"
+                                ),
+                                "source_format": "docx",
+                                "native_document": False,
+                                "conversion_required": True,
+                                "copyable": True,
+                                "exact_title_match": True,
+                            }
+                        ],
+                        "exact_match_count": 1,
+                        "incomplete_search": False,
+                        "match_mode": "exact_then_title_prefix",
+                    },
+                }
             return {
                 "ok": True,
                 "ret": {
@@ -90,6 +142,25 @@ class _FakeDocs:
                     "match_mode": "exact_then_title_prefix",
                 },
             }
+        if operation == "get_source":
+            return {
+                "ok": True,
+                "ret": {
+                    "account_id": account_id,
+                    "document_id": "source-docx",
+                    "title": "26_006.docx",
+                    "logical_title": "26_006",
+                    "mime_type": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "source_format": "docx",
+                    "native_document": False,
+                    "conversion_required": True,
+                    "copyable": True,
+                    "next_action": "Copy this import source.",
+                },
+            }
         if operation == "get":
             return {
                 "ok": True,
@@ -100,7 +171,8 @@ class _FakeDocs:
                     "revision_id": "rev-9",
                     "web_url": "https://docs.google.com/document/d/doc-1/edit",
                     "text": "Intro paragraph.\nSecond paragraph body.",
-                    "tabs": [{"title": "Main"}],
+                    "tab_count": len(self.tabs),
+                    "tabs": list(self.tabs),
                     "end_index": 41,
                 },
             }
@@ -110,10 +182,8 @@ class _FakeDocs:
                 "ret": {
                     "account_id": account_id,
                     "document_id": "doc-1",
-                    "comments": [
-                        {"comment_id": "c-1", "content": "Please expand.", "resolved": False}
-                    ],
-                    "count": 1,
+                    "comments": list(self.comments),
+                    "count": len(self.comments),
                     "next_cursor": "",
                 },
             }
@@ -136,9 +206,7 @@ class _FakeDocs:
                     "source_document_id": kwargs["payload"]["document_ref"],
                     "document_id": "copied-1",
                     "title": kwargs["payload"]["title"],
-                    "web_url": (
-                        "https://docs.google.com/document/d/copied-1/edit"
-                    ),
+                    "web_url": ("https://docs.google.com/document/d/copied-1/edit"),
                     "copied": True,
                 },
             }
@@ -217,6 +285,16 @@ def test_docs_refs_are_provider_neutral_and_stable() -> None:
         "object_kind": DOCS_EXPORT_KIND,
     }
 
+    source_ref = document_source_ref("account-1", "source-docx")
+    assert source_ref == "docs:google:account-1:source:source-docx"
+    assert parse_docs_ref(source_ref) == {
+        "ref": source_ref,
+        "provider": "google",
+        "account_id": "account-1",
+        "document_id": "source-docx",
+        "object_kind": DOCS_IMPORT_SOURCE_KIND,
+    }
+
 
 @pytest.mark.parametrize(
     "bad_ref",
@@ -238,9 +316,7 @@ def test_write_grant_and_connected_account_claims_are_separate_boundaries() -> N
     assert DOCS_GRANT_HINTS["object.upsert"] == [DOCS_WRITE_CLAIM]
     assert DOCS_GRANT_HINTS["object.action.export"] == [DOCS_READ_CLAIM]
     assert DOCS_GRANT_HINTS["object.action.create_comment"] == [DOCS_COMMENT_CLAIM]
-    claims_by_operation = DOCS_CONNECTED_ACCOUNT_REQUIREMENTS[0][
-        "claims_by_operation"
-    ]
+    claims_by_operation = DOCS_CONNECTED_ACCOUNT_REQUIREMENTS[0]["claims_by_operation"]
     assert claims_by_operation["object.upsert"] == [
         DOCS_READ_CLAIM,
         DOCS_WRITE_CLAIM,
@@ -276,9 +352,15 @@ async def test_about_and_schema_return_expected_shape() -> None:
     assert schema.ok is True
     assert schema.extra["schema"]["refs"]["document"].startswith("docs:<provider>")
     assert DOCS_DOCUMENT_KIND in schema.extra["schema"]["object_kinds"]
+    assert DOCS_IMPORT_SOURCE_KIND in schema.extra["schema"]["object_kinds"]
     assert schema.extra["schema"]["actions"][ACTION_COPY]["payload"] == [
         "title",
         "parent_id",
+    ]
+    assert "hierarchy" in schema.extra["schema"]["selectors"]["tab_selector"]["fields"]
+    assert schema.extra["schema"]["delete"]["payload"] == [
+        "comment_id",
+        "comment_selector",
     ]
     assert fake.calls == []
 
@@ -315,6 +397,50 @@ async def test_search_returns_named_service_objects() -> None:
 
 
 @pytest.mark.anyio
+async def test_search_returns_docx_as_import_source_with_copy_guidance() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_SEARCH,
+            namespace="docs",
+            query="26_006",
+            limit=5,
+            filters={"account_id": "account-1"},
+        ),
+    )
+
+    assert response.ok is True
+    item = response.items[0]
+    assert item["ref"] == "docs:google:account-1:source:source-docx"
+    assert item["object_kind"] == DOCS_IMPORT_SOURCE_KIND
+    assert item["logical_title"] == "26_006"
+    assert item["conversion_required"] is True
+
+
+@pytest.mark.anyio
+async def test_get_import_source_returns_metadata_instead_of_reading_docs_body() -> (
+    None
+):
+    fake = _FakeDocs()
+    source_ref = "docs:google:account-1:source:source-docx"
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="docs",
+            object_ref=source_ref,
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object_ref == source_ref
+    assert response.object["object_kind"] == DOCS_IMPORT_SOURCE_KIND
+    assert response.object["conversion_required"] is True
+    assert fake.calls[-1]["operation"] == "get_source"
+
+
+@pytest.mark.anyio
 async def test_copy_returns_the_new_document_ref_and_uses_read_write_claims() -> None:
     fake = _FakeDocs()
     response = await _provider(fake).dispatch(
@@ -345,6 +471,44 @@ async def test_copy_returns_the_new_document_ref_and_uses_read_write_claims() ->
         },
         "account_id": "account-1",
     }
+
+
+@pytest.mark.anyio
+async def test_copy_import_source_returns_native_document_ref() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:source:source-docx",
+            action=ACTION_COPY,
+            payload={"title": "26_007"},
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object_ref == "docs:google:account-1:document:copied-1"
+    assert fake.calls[-1]["operation"] == ACTION_COPY
+    assert fake.calls[-1]["claim"] == (DOCS_READ_CLAIM, DOCS_WRITE_CLAIM)
+
+
+@pytest.mark.anyio
+async def test_import_source_must_be_copied_before_upsert() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_UPSERT,
+            namespace="docs",
+            object_ref="docs:google:account-1:source:source-docx",
+            object={"replacements": [{"find": "old", "replace": "new"}]},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "docs_import_source_requires_copy"
+    assert fake.calls == []
 
 
 @pytest.mark.anyio
@@ -459,6 +623,32 @@ async def test_get_stream_materializes_complete_doc_snapshot_for_react_pull() ->
 
 
 @pytest.mark.anyio
+async def test_get_stream_materializes_import_source_metadata_for_react_pull() -> None:
+    fake = _FakeDocs()
+    ref = "docs:google:account-1:source:source-docx"
+
+    result = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_GET,
+            namespace="docs",
+            object_ref=ref,
+            response_mode="stream",
+            context={"source": "react.pull", "materialize": True},
+        ),
+    )
+
+    assert isinstance(result, NamedServiceStreamResult)
+    snapshot = json.loads(b"".join([chunk async for chunk in result.chunks]))
+    assert snapshot["object_ref"] == ref
+    assert snapshot["object_kind"] == DOCS_IMPORT_SOURCE_KIND
+    assert snapshot["object"]["logical_title"] == "26_006"
+    assert snapshot["object"]["conversion_required"] is True
+    assert snapshot["materialization"]["complete_text"] is False
+    assert [call["operation"] for call in fake.calls] == ["get_source"]
+
+
+@pytest.mark.anyio
 async def test_event_resolve_maps_doc_refs_without_calling_google() -> None:
     fake = _FakeDocs()
     ref = "docs:google:account-1:document:doc-1"
@@ -491,7 +681,14 @@ async def test_block_produce_projects_document_inventory_and_preview() -> None:
             "web_url": "https://docs.google.com/document/d/doc-1/edit",
             "revision_id": "rev-9",
             "text": "First heading line.\nBody content here.",
-            "tabs": [{"title": "Main"}],
+            "tabs": [
+                {"tab_id": "main", "title": "Main", "parent_tab_id": ""},
+                {
+                    "tab_id": "notes",
+                    "title": "Notes",
+                    "parent_tab_id": "main",
+                },
+            ],
             "end_index": 41,
         },
         "comments": [{"comment_id": "c-1", "content": "note"}],
@@ -530,6 +727,8 @@ async def test_block_produce_projects_document_inventory_and_preview() -> None:
     assert "Launch plan" in block["text"]
     assert "First heading line." in block["text"]
     assert "comment_count: 1" in block["text"]
+    assert "position=2; title=Notes; hierarchy=Main / Notes" in block["text"]
+    assert "mutation_scope: use tab_selector" in block["text"]
     assert logical_path in block["text"]
     assert physical_path in block["text"]
     assert fake.calls == []
@@ -559,12 +758,13 @@ async def test_upsert_create_and_edit_route_to_google_operations() -> None:
             operation=OBJECT_UPSERT,
             namespace="docs",
             object_ref="docs:google:account-1:document:doc-1",
-            object={"text": "More body."},
+            object={"text": "More body.", "tab_id": "tab-main"},
         ),
     )
     assert appended.ok is True
     assert fake.calls[-1]["operation"] == "append_text"
     assert fake.calls[-1]["payload"]["text"] == "More body."
+    assert fake.calls[-1]["payload"]["tab_id"] == "tab-main"
 
     replaced = await provider.dispatch(
         _ctx(),
@@ -572,11 +772,388 @@ async def test_upsert_create_and_edit_route_to_google_operations() -> None:
             operation=OBJECT_UPSERT,
             namespace="docs",
             object_ref="docs:google:account-1:document:doc-1",
-            object={"replacements": [{"find": "a", "replace": "b"}]},
+            object={
+                "replacements": [{"find": "a", "replace": "b"}],
+                "tab_ids": ["tab-main"],
+                "all_tabs": False,
+            },
         ),
     )
     assert replaced.ok is True
     assert fake.calls[-1]["operation"] == "replace_text"
+    assert fake.calls[-1]["payload"]["tab_ids"] == ["tab-main"]
+    assert fake.calls[-1]["payload"]["all_tabs"] is False
+
+
+@pytest.mark.anyio
+async def test_tab_selection_error_preserves_available_tabs() -> None:
+    fake = _FakeDocs()
+    fake.error = {
+        "ok": False,
+        "error": {
+            "code": "docs_tab_selection_required",
+            "message": "This document has multiple tabs.",
+        },
+        "ret": {
+            "outcome_unknown": False,
+            "tab_count": 2,
+            "tabs": [
+                {"tab_id": "tab-main", "title": "Main"},
+                {"tab_id": "tab-notes", "title": "Notes"},
+            ],
+            "next_action": "Choose a tab_id and retry.",
+        },
+    }
+    provider = _provider(fake)
+
+    response = await provider.dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_APPEND_TEXT,
+            payload={"text": "More body."},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "docs_tab_selection_required"
+    assert response.error.details["ret"]["tab_count"] == 2
+    assert response.error.details["ret"]["tabs"][1]["tab_id"] == "tab-notes"
+
+
+@pytest.mark.anyio
+async def test_tab_selector_resolves_title_fragment_before_single_tab_action() -> None:
+    fake = _FakeDocs()
+    fake.tabs = [
+        {
+            "tab_id": "tab-main",
+            "title": "Overview",
+            "parent_tab_id": "",
+            "nesting_level": 0,
+            "end_index": 20,
+        },
+        {
+            "tab_id": "tab-invoices",
+            "title": "July Invoices",
+            "parent_tab_id": "",
+            "nesting_level": 0,
+            "end_index": 80,
+        },
+    ]
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_APPEND_TEXT,
+            payload={
+                "text": "Paid.",
+                "tab_selector": {"title_contains": "invoices"},
+            },
+        ),
+    )
+
+    assert response.ok is True
+    assert [call["operation"] for call in fake.calls] == ["get", ACTION_APPEND_TEXT]
+    assert fake.calls[-1]["payload"]["tab_id"] == "tab-invoices"
+    assert "tab_selector" not in fake.calls[-1]["payload"]
+    resolution = response.extra["selector_resolution"]
+    assert resolution["matches"][0]["title"] == "July Invoices"
+    assert resolution["matches"][0]["position"] == 2
+
+
+@pytest.mark.anyio
+async def test_tab_selector_ambiguity_returns_hierarchical_candidates() -> None:
+    fake = _FakeDocs()
+    fake.tabs = [
+        {
+            "tab_id": "tab-current",
+            "title": "Current",
+            "parent_tab_id": "",
+            "nesting_level": 0,
+        },
+        {
+            "tab_id": "tab-current-notes",
+            "title": "Notes",
+            "parent_tab_id": "tab-current",
+            "nesting_level": 1,
+        },
+        {
+            "tab_id": "tab-archive",
+            "title": "Archive",
+            "parent_tab_id": "",
+            "nesting_level": 0,
+        },
+        {
+            "tab_id": "tab-archive-notes",
+            "title": "Notes",
+            "parent_tab_id": "tab-archive",
+            "nesting_level": 1,
+        },
+    ]
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_APPEND_TEXT,
+            payload={"text": "More.", "tab_selector": {"title": "Notes"}},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "docs_tab_selector_ambiguous"
+    assert [
+        candidate["hierarchy"] for candidate in response.error.details["candidates"]
+    ] == [["Current", "Notes"], ["Archive", "Notes"]]
+    assert [call["operation"] for call in fake.calls] == ["get"]
+
+
+@pytest.mark.anyio
+async def test_plural_tab_selectors_resolve_before_replacement() -> None:
+    fake = _FakeDocs()
+    fake.tabs = [
+        {"tab_id": "tab-a", "title": "January", "parent_tab_id": ""},
+        {"tab_id": "tab-b", "title": "February", "parent_tab_id": ""},
+    ]
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_REPLACE_TEXT,
+            payload={
+                "replacements": [{"find": "draft", "replace": "final"}],
+                "tab_selectors": [
+                    {"title": "January"},
+                    {"position": 2},
+                ],
+            },
+        ),
+    )
+
+    assert response.ok is True
+    assert fake.calls[-1]["payload"]["tab_ids"] == ["tab-a", "tab-b"]
+    assert "tab_selectors" not in fake.calls[-1]["payload"]
+
+
+@pytest.mark.anyio
+async def test_comment_selector_resolves_my_matching_comment_before_reply() -> None:
+    fake = _FakeDocs()
+    fake.comments = [
+        {
+            "comment_id": "c-reviewer",
+            "content": "Please verify the invoice total.",
+            "resolved": False,
+            "author": "Reviewer",
+            "author_is_me": False,
+        },
+        {
+            "comment_id": "c-mine",
+            "content": "Invoice total is ready for review.",
+            "resolved": False,
+            "author": "Elena Viter",
+            "author_is_me": True,
+        },
+    ]
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_REPLY_COMMENT,
+            payload={
+                "comment_selector": {
+                    "text_contains": "invoice total",
+                    "author": "me",
+                    "resolved": False,
+                },
+                "content": "Confirmed.",
+            },
+        ),
+    )
+
+    assert response.ok is True
+    assert [call["operation"] for call in fake.calls] == [
+        "list_comments",
+        ACTION_REPLY_COMMENT,
+    ]
+    assert fake.calls[-1]["payload"]["comment_id"] == "c-mine"
+    assert "comment_selector" not in fake.calls[-1]["payload"]
+    assert response.extra["selector_resolution"]["match"]["author_is_me"] is True
+
+
+@pytest.mark.anyio
+async def test_comment_selector_follows_bounded_provider_pagination() -> None:
+    class _PagedComments(_FakeDocs):
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            if kwargs["operation"] != "list_comments":
+                return await super().execute(**kwargs)
+            self.calls.append(dict(kwargs))
+            cursor = kwargs["payload"].get("cursor")
+            if not cursor:
+                return {
+                    "ok": True,
+                    "ret": {
+                        "comments": [
+                            {
+                                "comment_id": "c-first",
+                                "content": "First page.",
+                                "author": "Reviewer",
+                                "resolved": False,
+                            }
+                        ],
+                        "next_cursor": "page-2",
+                    },
+                }
+            return {
+                "ok": True,
+                "ret": {
+                    "comments": [
+                        {
+                            "comment_id": "c-target",
+                            "content": "Payment terms need review.",
+                            "author": "Reviewer",
+                            "resolved": False,
+                        }
+                    ],
+                    "next_cursor": "",
+                },
+            }
+
+    fake = _PagedComments()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_GET_COMMENT,
+            payload={"comment_selector": {"text_contains": "payment terms"}},
+        ),
+    )
+
+    assert response.ok is True
+    assert [call["operation"] for call in fake.calls] == [
+        "list_comments",
+        "list_comments",
+        ACTION_GET_COMMENT,
+    ]
+    assert fake.calls[1]["payload"]["cursor"] == "page-2"
+    assert fake.calls[-1]["payload"]["comment_id"] == "c-target"
+    assert response.extra["selector_resolution"]["scanned_pages"] == 2
+
+
+@pytest.mark.anyio
+async def test_comment_selector_reports_incomplete_bounded_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _MoreComments(_FakeDocs):
+        async def execute(self, **kwargs: Any) -> dict[str, Any]:
+            if kwargs["operation"] != "list_comments":
+                return await super().execute(**kwargs)
+            self.calls.append(dict(kwargs))
+            return {
+                "ok": True,
+                "ret": {
+                    "comments": [
+                        {
+                            "comment_id": "c-possible",
+                            "content": "Payment terms need review.",
+                            "author": "Reviewer",
+                            "resolved": False,
+                        }
+                    ],
+                    "next_cursor": "more-comments",
+                },
+            }
+
+    monkeypatch.setattr(docs_named_service, "COMMENT_SELECTOR_MAX_PAGES", 1)
+    fake = _MoreComments()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_GET_COMMENT,
+            payload={"comment_selector": {"text_contains": "payment terms"}},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "docs_comment_selector_incomplete"
+    assert response.error.details["next_cursor"] == "more-comments"
+    assert response.error.details["candidates"][0]["comment_id"] == "c-possible"
+    assert [call["operation"] for call in fake.calls] == ["list_comments"]
+
+
+@pytest.mark.anyio
+async def test_comment_selector_ambiguity_does_not_run_the_requested_action() -> None:
+    fake = _FakeDocs()
+    fake.comments = [
+        {
+            "comment_id": "c-1",
+            "content": "Please update the total.",
+            "resolved": False,
+            "author": "Reviewer A",
+        },
+        {
+            "comment_id": "c-2",
+            "content": "The total needs a currency.",
+            "resolved": False,
+            "author": "Reviewer B",
+        },
+    ]
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_GET_COMMENT,
+            payload={"comment_selector": {"text_contains": "total"}},
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "docs_comment_selector_ambiguous"
+    assert len(response.error.details["candidates"]) == 2
+    assert [call["operation"] for call in fake.calls] == ["list_comments"]
+
+
+@pytest.mark.anyio
+async def test_tab_scoped_comment_request_names_the_capability_boundary() -> None:
+    fake = _FakeDocs()
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            action=ACTION_CREATE_COMMENT,
+            payload={
+                "content": "Review this tab.",
+                "tab_selector": {"title": "Main"},
+            },
+        ),
+    )
+
+    assert response.ok is False
+    assert response.error.code == "tab_anchored_comments_unavailable"
+    assert response.error.details["supported_scope"] == "document"
+    assert fake.calls == []
 
 
 @pytest.mark.anyio
@@ -760,6 +1337,42 @@ async def test_delete_removes_a_comment_and_refuses_document_deletion() -> None:
     )
     assert refused.ok is False
     assert refused.error.code == "docs_document_delete_not_supported"
+
+
+@pytest.mark.anyio
+async def test_delete_accepts_a_natural_comment_selector() -> None:
+    fake = _FakeDocs()
+    fake.comments = [
+        {
+            "comment_id": "c-own",
+            "content": "Remove this obsolete note.",
+            "resolved": True,
+            "author": "Elena Viter",
+            "author_is_me": True,
+        }
+    ]
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_DELETE,
+            namespace="docs",
+            object_ref="docs:google:account-1:document:doc-1",
+            payload={
+                "comment_selector": {
+                    "text_contains": "obsolete note",
+                    "author": "me",
+                }
+            },
+        ),
+    )
+
+    assert response.ok is True
+    assert [call["operation"] for call in fake.calls] == [
+        "list_comments",
+        ACTION_DELETE_COMMENT,
+    ]
+    assert fake.calls[-1]["payload"]["comment_id"] == "c-own"
 
 
 @pytest.mark.anyio

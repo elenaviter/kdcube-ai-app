@@ -4,7 +4,8 @@ title: "Google Services Through KDCube (Gmail, Sheets, Docs)"
 summary: "One recipe for connecting Google services to KDCube: one Google OAuth client, one google provider, one gmail connector app serving Gmail, Sheets, and Docs (extensible to Drive/Calendar). Configure provider claims, wire each service's tools and named services, connect, grant, and verify."
 status: active
 tags: ["recipes", "connections", "connection-hub", "google", "gmail", "sheets", "docs", "oauth", "connected-accounts", "delegated-to-kdcube", "mcp"]
-updated_at: 2026-07-31
+keywords: ["google connected account", "google docs named service", "google sheets tools", "google oauth scopes", "document tab selector", "document comment selector"]
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/connection-hub@1-0/docs/integrations/google.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/google/google-README.md
@@ -129,7 +130,7 @@ claims:
       - https://www.googleapis.com/auth/documents.readonly
       # Docs read uses drive.readonly, not sheets' drive.metadata.readonly:
       # get/export stream the document's Drive content (full text, exported
-      # bytes), not only file metadata, and search lists Docs files by content.
+      # bytes), not only file metadata; search reads document-file metadata.
       - https://www.googleapis.com/auth/drive.readonly
   docs:write:
     label: Edit Google Docs
@@ -383,9 +384,10 @@ delegable Docs capabilities and tools in Connection Hub under
 `config.connections.delegated_credentials.oauth`.
 
 Docs splits into three connected-account claims (Sheets had two). `docs:read`
-covers find, read, export, and reading comments; `docs:write` covers document
-creation, provider-native copy, and typed edits; `docs:comment` covers comment
-mutations. For the typed productivity door, grant each
+and `docs:write` together cover document creation, copy/conversion, and typed
+edits; `docs:read` alone covers find, read, export, and reading comments;
+`docs:read` and `docs:comment` together cover comment mutations. For the typed
+productivity door, grant each caller-visible
 `productivity_docs_*` tool:
 
 ```yaml
@@ -469,33 +471,128 @@ Document refs are provider-neutral at the agent boundary:
 
 ```text
 docs:<provider>:<account_id>:document:<document_id>
+docs:<provider>:<account_id>:source:<file_id>
 docs:<provider>:<account_id>:export:<format>:<document_id>
 ```
+
+### What an agent can do with the Docs realm
+
+The named-service schema gives an agent a document vocabulary, not a list of
+Google endpoint names. These are complete user-facing scenarios supported by
+the current `docs` provider:
+
+| User request | What the agent can do |
+| --- | --- |
+| "Find `26_006`, copy it as `26_007`, update the invoice values, and send me the result." | Search by exact logical title, so `26_006` can match `26_006.docx`; recognize the result as an import source; copy and convert it to a native Google Doc; read its content and tab inventory; replace the named old values; read again to verify; export the result and return it as a file. |
+| "Append this approval note to the tab whose title contains `July`." | Read the document structure, resolve the literal title fragment to one tab, translate it to Google's `tabId`, and append only there. |
+| "Replace `Draft` with `Final` in the second tab." | Resolve the 1-based tab position from Google's current document structure and scope the replacement to that tab. A nested tab can instead be selected by its full root-to-tab hierarchy. |
+| "Replace the old company name everywhere in this document." | Use `all_tabs=true` only because the user explicitly requested every tab. An omitted tab scope never silently becomes an all-tab edit. |
+| "Reply `Approved` to my unresolved comment about payment terms." | Read bounded document-level comment pages, match literal text, connected-user authorship, and unresolved state, translate the one match to Google's `commentId`, then reply. The same selectors support reading, resolving, and deleting a thread. |
+| "Create a report with a styled heading, a page break, this image, and give me a DOCX." | Create a native document, insert and style text, insert the page break and image, verify the document, export it, and return the portable file. |
+| "Use my work Google account for this document." | Select the requested connected account when several accounts are eligible. Without a clear selection, return `account_required` with the available choices instead of guessing. |
+
+The same realm works for a KDCube ReAct agent and for an external MCP client.
+The ReAct agent can pull a document ref into its turn as a structured snapshot;
+an external client can call the same named-service discovery, schema, search,
+get, action, and export operations over MCP. Both paths keep the Google token on
+the trusted service side.
+
+The provider also states its present boundaries so the agent does not invent a
+workflow:
+
+- document discovery searches Drive titles; it does not search document-body
+  meaning and KDCube does not build a second index over the user's Drive;
+- title, title-fragment, position, and hierarchy selectors choose an existing
+  tab for content operations; creating, renaming, moving, or deleting the tab
+  itself is not part of the current Docs action set;
+- stable Google Drive comments are document-level. The agent can select a
+  thread naturally by literal text, quoted text, author, and resolved state,
+  but it cannot claim that the thread belongs to a particular tab;
+- several matching tabs or comments produce bounded candidates and no write.
+  The agent can use the user's wording to narrow the selector or ask one short
+  disambiguating question.
 
 Search returns at most 50 results. Operations are bounded: text reads and
 replacements are capped at 200,000 characters, at most 50 replacements per
 `replace_text`, comment bodies at 20,000 characters, at most 100 comments listed,
-titles at 300 characters, and export/import at 10 MiB.
+titles at 300 characters, and export/import at 10 MiB. A natural comment
+selector may inspect up to five such comment pages; it reports an incomplete
+bounded scan when more provider pages remain.
 
 A non-blank search does not enumerate Drive pages looking for a title. It asks
-Drive for the exact title first, then fills the remaining result page with
-title-prefix matches. Exact rows carry `exact_title_match: true`; the response
-also carries `exact_match_count`, `match_mode`, and `incomplete_search`. The
-Drive query includes files visible through My Drive and Shared Drives. Search is
-title discovery, not semantic or document-body search.
+Drive for exact provider titles and exact logical titles first, then fills the
+remaining result page with title-prefix matches. A logical title removes the
+known extension from a compatible import source, so `26_006` exactly matches
+`26_006.docx`. Exact rows carry `exact_title_match: true`; each result also says
+whether it is a native document or an import source that requires conversion.
+The response carries `exact_match_count`, `match_mode`, and
+`incomplete_search`. The Drive query includes files visible through My Drive
+and Shared Drives. Search is title discovery, not semantic or document-body
+search.
 
-`copy` uses Drive's native file copy, preserving the Google document structure
-and formatting. `create`, `copy`, and `import` are not exactly-once; on an
-`outcome_unknown` transport failure, search for the intended target title before
-retrying. Provider failures preserve Google's safe message plus
+`copy` uses Drive's native copy for a native Google Doc. For a DOCX, ODT, or RTF
+source, it reads that source and creates a new native Google Doc through Drive's
+upload conversion; the original file is unchanged. The returned document ref
+is immediately usable by `get`, replacement edits, comments, and export. Import
+sources have their own `docs:...:source:...` refs, and their metadata tells the
+agent to copy before editing. `create`, `copy`, and `import` are not exactly-once;
+on an `outcome_unknown` transport failure, search for the intended target title
+before retrying. Provider failures preserve Google's safe message plus
 `provider_status`, `provider_code`, `provider_reason`, `stage`, and `retryable`, per the
 [Provider Error And Observability Contract](../../../sdk/integrations/provider-error-contract-README.md).
 
+### Read and edit document tabs
+
+Drive title search returns document metadata; it does not open the document or
+inspect its tabs. Read the selected native document before editing it. `get`
+returns the extracted text from every tab, `tab_count`, and a `tabs` inventory
+with each tab's stable `tab_id`, title, order, parent, nesting level, and body
+end index.
+
+Single-tab documents keep the short form: the caller can omit tab selection.
+For a document with several tabs, the write scope is explicit:
+
+- named-service insert, append, styling, page-break, and image operations accept
+  one `tab_selector` by exact title, literal title fragment, 1-based position,
+  or root-to-tab hierarchy;
+- named-service replacement accepts one `tab_selector`, several
+  `tab_selectors`, or `all_tabs=true` when replacing in every tab is
+  intentional;
+- exact `tab_id` and `tab_ids` remain available to callers that already hold
+  the provider handles;
+- the flexible batch editor requires one `tab_id`; `all_tabs=true` is available
+  only for a batch made entirely of `replaceAllText` requests.
+
+If a multi-tab mutation omits that scope, the provider returns
+`docs_tab_selection_required` with the available tabs and sends no write to
+Google. An agent can then choose a tab named by the user, or ask which tab to
+edit when the request is ambiguous. This avoids relying on Google API defaults:
+some omitted tab ids target the first tab, while an unscoped replacement can
+span every tab.
+
+### Address document comments naturally
+
+The stable Drive comments path manages document-level threads. Named-service
+actions that read, reply to, resolve, or delete one comment accept either an
+exact `comment_id` or a `comment_selector`. A selector can combine a literal
+comment or quoted-text fragment, an author (`author: me` selects the connected
+user), resolved state, and 1-based position. The adapter pages through a bounded
+provider result, translates one unambiguous match to the provider id, performs
+the action, and returns the resolved candidate in `selector_resolution`.
+
+Several matches return `docs_comment_selector_ambiguous` with bounded
+candidates. A bounded scan with more provider pages returns
+`docs_comment_selector_incomplete`. Stable Drive comments do not carry native
+Google Docs tab placement, so a request that combines a comment action with a
+tab selector returns `tab_anchored_comments_unavailable` rather than creating a
+broader document comment silently.
+
 For a ReAct agent, declare `docs` as both a named-service namespace and an event
-source. The namespace tools discover and mutate document refs; the event source
-lets `react.pull` resolve a `docs:...` ref into a complete JSON snapshot. The
-snapshot includes tab metadata, paragraph text, table-cell text, and open
-comments, so a document such as an invoice can be inspected before bounded
+source. The namespace tools discover document and import-source refs. A native
+document resolves through `react.pull` into a complete JSON snapshot with tab
+metadata, paragraph text, table-cell text, and open comments. An import source
+resolves to file metadata and conversion guidance; after `object.action.copy`,
+the returned native document ref can be pulled and inspected before bounded
 replacement edits:
 
 ```yaml
@@ -580,6 +677,17 @@ disposable data:
     downloadable file card, the model-visible result contains a delivery note
     rather than a signed URL or base64, and a streaming get of the export ref
     yields the complete file bytes.
+11. Create a document with two tabs and read it. Verify `tab_count` and the tab
+    inventory are present. Append by `tab_selector.title`, replace another tab
+    by `tab_selector.position`, and select a nested tab by full hierarchy. Create
+    duplicate tab titles and verify the adapter returns candidates instead of
+    writing. Then explicitly replace across all tabs and verify both scopes.
+12. Create two document-level comments with overlapping text. Reply using a
+    selector that adds author or resolved state, and verify
+    `selector_resolution` names the chosen thread. Retry with only the shared
+    text and verify the ambiguous response performs no mutation. Add a tab
+    selector to a comment request and verify
+    `tab_anchored_comments_unavailable`.
 
 ## Add another Google service, the same way
 

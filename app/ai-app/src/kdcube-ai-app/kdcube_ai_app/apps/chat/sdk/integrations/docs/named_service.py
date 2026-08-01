@@ -20,6 +20,15 @@ import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
+from kdcube_ai_app.apps.chat.sdk.integrations.docs.selectors import (
+    DocsSelectorError,
+    SELECTOR_CANDIDATE_LIMIT,
+    comment_candidates,
+    matching_comments,
+    resolve_comment_selector,
+    resolve_tab_selector,
+    tab_candidates,
+)
 from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
     CONSENT_ERROR_CONTRACT,
     tool_error_response,
@@ -62,6 +71,7 @@ DOCS_WRITE_CLAIM = "docs:write"
 DOCS_COMMENT_CLAIM = "docs:comment"
 
 DOCS_DOCUMENT_KIND = "docs.document"
+DOCS_IMPORT_SOURCE_KIND = "docs.import_source"
 DOCS_EXPORT_KIND = "docs.export"
 DOCS_TRANSPORTS = (TRANSPORT_LOCAL, TRANSPORT_API)
 DOCS_SNAPSHOT_SCHEMA = "kdcube.docs.snapshot.v1"
@@ -101,9 +111,7 @@ ACTION_RESOLVE_COMMENT = "resolve_comment"
 ACTION_DELETE_COMMENT = "delete_comment"
 
 # Read-only actions gate on docs:read alone.
-DOCS_READ_ACTIONS = frozenset(
-    {ACTION_EXPORT, ACTION_LIST_COMMENTS, ACTION_GET_COMMENT}
-)
+DOCS_READ_ACTIONS = frozenset({ACTION_EXPORT, ACTION_LIST_COMMENTS, ACTION_GET_COMMENT})
 # Body-mutating actions gate on docs:read + docs:write.
 DOCS_WRITE_ACTIONS = frozenset(
     {
@@ -145,6 +153,29 @@ DOCS_ACTIONS = (
     ACTION_DELETE_COMMENT,
 )
 
+DOCS_SINGLE_TAB_ACTIONS = frozenset(
+    {
+        ACTION_INSERT_TEXT,
+        ACTION_APPEND_TEXT,
+        ACTION_APPLY_TEXT_STYLE,
+        ACTION_INSERT_PAGE_BREAK,
+        ACTION_EMBED_IMAGE,
+    }
+)
+DOCS_COMMENT_REFERENCE_ACTIONS = frozenset(
+    {
+        ACTION_GET_COMMENT,
+        ACTION_REPLY_COMMENT,
+        ACTION_RESOLVE_COMMENT,
+        ACTION_DELETE_COMMENT,
+    }
+)
+DOCS_DOCUMENT_COMMENT_ACTIONS = DOCS_COMMENT_ACTIONS | frozenset(
+    {ACTION_LIST_COMMENTS, ACTION_GET_COMMENT}
+)
+COMMENT_SELECTOR_PAGE_SIZE = 100
+COMMENT_SELECTOR_MAX_PAGES = 5
+
 # How many characters of body text block.produce previews inline.
 BLOCK_PREVIEW_CHARS = 800
 
@@ -177,11 +208,11 @@ DOCS_SEARCH_SCOPES = (
     NamedServiceSearchScope(
         namespace=DOCS_NAMESPACE,
         label="documents",
-        object_kind=DOCS_DOCUMENT_KIND,
         description=(
             "Find documents by title through an approved connected account. "
-            "A non-blank query returns exact title matches first, then title "
-            "prefix matches. A blank query lists recently modified documents."
+            "A non-blank query returns exact logical-title matches first, then "
+            "title-prefix matches. Results can be native documents or supported "
+            "import sources such as DOCX. A blank query lists recent results."
         ),
         filters_schema=DOCS_SEARCH_FILTERS,
     ),
@@ -198,9 +229,11 @@ DOCS_GRANT_HINTS = {
         f"object.action.{action}": (
             [DOCS_READ_CLAIM]
             if action in DOCS_READ_ACTIONS
-            else [DOCS_COMMENT_CLAIM]
-            if action in DOCS_COMMENT_ACTIONS
-            else [DOCS_WRITE_CLAIM]
+            else (
+                [DOCS_COMMENT_CLAIM]
+                if action in DOCS_COMMENT_ACTIONS
+                else [DOCS_WRITE_CLAIM]
+            )
         )
         for action in DOCS_ACTIONS
     },
@@ -254,9 +287,8 @@ DOCS_SCHEMA = {
     "namespace": DOCS_NAMESPACE,
     "refs": {
         "document": "docs:<provider>:<account_id>:document:<document_id>",
-        "export": (
-            "docs:<provider>:<account_id>:export:<format>:<document_id>"
-        ),
+        "import_source": "docs:<provider>:<account_id>:source:<file_id>",
+        "export": ("docs:<provider>:<account_id>:export:<format>:<document_id>"),
     },
     "object_kinds": {
         DOCS_DOCUMENT_KIND: {
@@ -276,6 +308,29 @@ DOCS_SCHEMA = {
                 "modified_time",
             ],
         },
+        DOCS_IMPORT_SOURCE_KIND: {
+            "description": (
+                "A compatible document file visible in Drive that must be "
+                "copied and converted before native Google Docs edits."
+            ),
+            "fields": [
+                "ref",
+                "provider",
+                "account_id",
+                "document_id",
+                "title",
+                "logical_title",
+                "mime_type",
+                "source_format",
+                "size_bytes",
+                "web_url",
+                "created_time",
+                "modified_time",
+                "copyable",
+                "conversion_required",
+                "next_action",
+            ],
+        },
         DOCS_EXPORT_KIND: {
             "description": (
                 "One portable export of a document. Resolve the ref to stream "
@@ -293,11 +348,51 @@ DOCS_SCHEMA = {
             ],
         },
     },
+    "selectors": {
+        "tab_selector": {
+            "description": (
+                "Identify one tab from the selected document's returned tab "
+                "metadata. Matching is case-insensitive and lexical; duplicate "
+                "matches return bounded candidates instead of being guessed."
+            ),
+            "fields": {
+                "title": "Exact tab title.",
+                "title_contains": "Literal fragment of the tab title.",
+                "position": "1-based position in the document's flattened tab order.",
+                "hierarchy": (
+                    "Exact root-to-tab title path as a list, or as titles joined "
+                    "with / or >."
+                ),
+            },
+        },
+        "comment_selector": {
+            "description": (
+                "Identify one document-level comment from bounded Drive comment "
+                "pages. Matching is case-insensitive and lexical. Use author='me' "
+                "for a comment written by the connected account."
+            ),
+            "fields": {
+                "text_contains": "Literal fragment in the comment or quoted text.",
+                "quoted_text_contains": "Literal fragment in quoted document text.",
+                "author": "Exact display name, or 'me'.",
+                "author_contains": "Literal fragment of the author display name.",
+                "resolved": "Whether the comment thread is resolved.",
+                "position": "1-based position in the bounded provider result.",
+            },
+            "scope": (
+                "The stable Drive provider path manages document-level comments. "
+                "A tab-scoped request returns tab_anchored_comments_unavailable."
+            ),
+        },
+    },
     "search": {
         "description": (
-            "A non-blank query checks the exact title first and then returns "
-            "title-prefix matches. Check exact_title_match before choosing "
-            "among similarly named documents."
+            "A non-blank query checks native titles and logical import-source "
+            "titles first, then returns title-prefix matches. For example, "
+            "26_006 is an exact logical-title match for 26_006.docx. Check "
+            "exact_title_match and object_kind before choosing a result. Search "
+            "uses Drive metadata, so read the selected native document to learn "
+            "its tabs before editing."
         ),
         "filters": DOCS_SEARCH_FILTERS,
         "result_metadata": [
@@ -308,9 +403,13 @@ DOCS_SCHEMA = {
     },
     "get": {
         "description": (
-            "Read a document by ref. A document get returns metadata and the "
-            "extracted body text. On a configured turnless transport it also "
-            "offers a short-lived URL for the complete JSON snapshot."
+            "Read an object by ref. A native document returns metadata and "
+            "extracted body text plus tab_count, each tab's id, title, hierarchy, "
+            "and end index, and whether mutation requires tab selection. An "
+            "import source returns file metadata and "
+            "the instruction to copy it into an editable native document. On "
+            "a configured turnless transport, native documents can also offer "
+            "a short-lived URL for the complete JSON snapshot."
         ),
         "filters": ["include_text"],
     },
@@ -323,7 +422,7 @@ DOCS_SCHEMA = {
         ),
         "schema": DOCS_SNAPSHOT_SCHEMA,
         "media_type": DOCS_SNAPSHOT_MEDIA_TYPE,
-        "refs": ["document", "export"],
+        "refs": ["document", "import_source", "export"],
     },
     "upsert": {
         "create": {
@@ -333,42 +432,83 @@ DOCS_SCHEMA = {
         "document": {
             "description": (
                 "Use a document ref with object.text/index to insert or append "
-                "body text, or object.replacements to substitute text."
+                "body text, or object.replacements to substitute text. Multi-tab "
+                "edits accept tab selectors resolved from document metadata. "
+                "Replacement can also use explicit all_tabs=true."
             ),
-            "object": ["text", "index", "replacements"],
+            "object": [
+                "text",
+                "index",
+                "replacements",
+                "tab_id",
+                "tab_ids",
+                "tab_selector",
+                "tab_selectors",
+                "all_tabs",
+            ],
         },
+    },
+    "delete": {
+        "description": (
+            "Remove one document-level comment identified by comment_id or "
+            "comment_selector. Document files remain under their provider's "
+            "lifecycle controls."
+        ),
+        "object_ref": "document ref",
+        "payload": ["comment_id", "comment_selector"],
+        "claim": "docs:comment",
     },
     "actions": {
         ACTION_COPY: {
             "description": (
-                "Copy a document under a new title while preserving its "
-                "provider-managed structure. Search for the target title "
-                "before retrying an uncertain copy result."
+                "Copy a document under a new title. Native Google Docs use "
+                "provider-native copy. A compatible import source such as DOCX "
+                "is converted into a new native Google Doc while the source "
+                "stays unchanged. Search for the target title before retrying "
+                "an uncertain copy result."
             ),
-            "object_ref": "source document ref",
+            "object_ref": "native document or import-source ref",
             "payload": ["title", "parent_id"],
             "claim": "docs:write",
         },
         ACTION_INSERT_TEXT: {
-            "description": "Insert text at an index (defaults to the body end).",
+            "description": (
+                "Insert text at an index (defaults to the selected tab's end). "
+                "Choose a multi-tab target with tab_id or tab_selector."
+            ),
             "object_ref": "document ref",
-            "payload": ["text", "index"],
+            "payload": ["text", "index", "tab_id", "tab_selector"],
             "claim": "docs:write",
         },
         ACTION_APPEND_TEXT: {
-            "description": "Append text at the end of the body.",
+            "description": (
+                "Append text at the selected tab's body end. Choose a multi-tab "
+                "target with tab_id or tab_selector."
+            ),
             "object_ref": "document ref",
-            "payload": ["text"],
+            "payload": ["text", "tab_id", "tab_selector"],
             "claim": "docs:write",
         },
         ACTION_REPLACE_TEXT: {
-            "description": "Replace all matches of find with replace text.",
+            "description": (
+                "Replace matches in selected tab_ids/tab_selectors, or in every "
+                "tab only when all_tabs=true is explicit."
+            ),
             "object_ref": "document ref",
-            "payload": ["replacements"],
+            "payload": [
+                "replacements",
+                "tab_ids",
+                "tab_selector",
+                "tab_selectors",
+                "all_tabs",
+            ],
             "claim": "docs:write",
         },
         ACTION_APPLY_TEXT_STYLE: {
-            "description": "Apply bounded character styling to a text range.",
+            "description": (
+                "Apply bounded character styling to a text range in one tab. "
+                "Choose a multi-tab target with tab_id or tab_selector."
+            ),
             "object_ref": "document ref",
             "payload": [
                 "start_index",
@@ -379,19 +519,30 @@ DOCS_SCHEMA = {
                 "strikethrough",
                 "font_size",
                 "link_url",
+                "tab_id",
+                "tab_selector",
             ],
             "claim": "docs:write",
         },
         ACTION_INSERT_PAGE_BREAK: {
-            "description": "Insert a page break (defaults to the body end).",
+            "description": (
+                "Insert a page break (defaults to the selected tab's body end)."
+            ),
             "object_ref": "document ref",
-            "payload": ["index"],
+            "payload": ["index", "tab_id", "tab_selector"],
             "claim": "docs:write",
         },
         ACTION_EMBED_IMAGE: {
             "description": "Embed a public image URL inline in the document.",
             "object_ref": "document ref",
-            "payload": ["image_uri", "index", "width_pt", "height_pt"],
+            "payload": [
+                "image_uri",
+                "index",
+                "width_pt",
+                "height_pt",
+                "tab_id",
+                "tab_selector",
+            ],
             "claim": "docs:write",
         },
         ACTION_EXPORT: {
@@ -418,9 +569,9 @@ DOCS_SCHEMA = {
             "claim": "docs:read",
         },
         ACTION_GET_COMMENT: {
-            "description": "Read one comment thread by id.",
+            "description": "Read one document-level comment by id or selector.",
             "object_ref": "document ref",
-            "payload": ["comment_id"],
+            "payload": ["comment_id", "comment_selector"],
             "claim": "docs:read",
         },
         ACTION_CREATE_COMMENT: {
@@ -430,21 +581,21 @@ DOCS_SCHEMA = {
             "claim": "docs:comment",
         },
         ACTION_REPLY_COMMENT: {
-            "description": "Reply to an existing comment.",
+            "description": "Reply to one document-level comment by id or selector.",
             "object_ref": "document ref",
-            "payload": ["comment_id", "content"],
+            "payload": ["comment_id", "comment_selector", "content"],
             "claim": "docs:comment",
         },
         ACTION_RESOLVE_COMMENT: {
-            "description": "Resolve an existing comment thread.",
+            "description": "Resolve one document-level comment by id or selector.",
             "object_ref": "document ref",
-            "payload": ["comment_id", "content"],
+            "payload": ["comment_id", "comment_selector", "content"],
             "claim": "docs:comment",
         },
         ACTION_DELETE_COMMENT: {
-            "description": "Delete an existing comment thread.",
+            "description": "Delete one document-level comment by id or selector.",
             "object_ref": "document ref",
-            "payload": ["comment_id"],
+            "payload": ["comment_id", "comment_selector"],
             "claim": "docs:comment",
         },
     },
@@ -468,9 +619,10 @@ DOCS_SCHEMA = {
 }
 
 DOCS_INTRO = (
-    "Use namespace `docs` for user-connected documents. Search by title, get a "
-    "document ref to read metadata and body text, then copy it or use "
-    "object.upsert and declared object.actions for explicit changes and comments."
+    "Use namespace `docs` for user-connected documents. Search by title; native "
+    "documents can be read and edited directly, while a DOCX, ODT, or RTF import "
+    "source is copied into a native document before editing. Use object.upsert "
+    "and declared object.actions for explicit changes and comments."
 )
 
 DOCS_PRESENTATION = {
@@ -507,7 +659,7 @@ DOCS_PRESENTATION = {
         },
         "object.delete": {
             "label": "Delete document comment",
-            "description": "Delete one comment; document-file deletion is not exposed.",
+            "description": "Delete one document comment.",
         },
     },
     "actions": {
@@ -551,13 +703,19 @@ def _spec_metadata() -> dict[str, Any]:
     }
 
 
-def docs_named_service_spec(*, bundle_id: str | None = None) -> NamedServiceProviderSpec:
+def docs_named_service_spec(
+    *, bundle_id: str | None = None
+) -> NamedServiceProviderSpec:
     return NamedServiceProviderSpec(
         provider_id=PROVIDER_ID,
         bundle_id=bundle_id,
         namespace=DOCS_NAMESPACE,
         refs=("docs:*",),
-        object_kinds=(DOCS_DOCUMENT_KIND, DOCS_EXPORT_KIND),
+        object_kinds=(
+            DOCS_DOCUMENT_KIND,
+            DOCS_IMPORT_SOURCE_KIND,
+            DOCS_EXPORT_KIND,
+        ),
         search_scopes=DOCS_SEARCH_SCOPES,
         operations=_operations(),
         label="Documents",
@@ -604,6 +762,13 @@ def document_ref(account_id: Any, document_id: Any) -> str:
     )
 
 
+def document_source_ref(account_id: Any, file_id: Any) -> str:
+    return (
+        f"{DOCS_NAMESPACE}:{GOOGLE_PROVIDER_KEY}:"
+        f"{_text(account_id)}:source:{_text(file_id)}"
+    )
+
+
 def _export_format(value: Any) -> tuple[str, str, str]:
     fmt = _text(value).lower() or "pdf"
     target = DOCS_EXPORT_FORMATS.get(fmt)
@@ -623,8 +788,7 @@ def document_export_ref(account_id: Any, document_id: Any, format: Any) -> str:
     if not account or not document:
         raise ValueError("Document export refs require account_id and document_id.")
     return (
-        f"{DOCS_NAMESPACE}:{GOOGLE_PROVIDER_KEY}:"
-        f"{account}:export:{fmt}:{document}"
+        f"{DOCS_NAMESPACE}:{GOOGLE_PROVIDER_KEY}:" f"{account}:export:{fmt}:{document}"
     )
 
 
@@ -653,14 +817,20 @@ def parse_docs_ref(value: Any) -> dict[str, Any]:
     parts = ref.split(":")
     if len(parts) != 5 or parts[0].lower() != DOCS_NAMESPACE:
         raise ValueError("Invalid docs object ref.")
-    if parts[3] != "document" or not all(parts[index] for index in (1, 2, 4)):
+    ref_kind = parts[3]
+    if ref_kind not in {"document", "source"} or not all(
+        parts[index] for index in (1, 2, 4)
+    ):
         raise ValueError("Invalid docs document ref.")
+    object_kind = (
+        DOCS_IMPORT_SOURCE_KIND if ref_kind == "source" else DOCS_DOCUMENT_KIND
+    )
     return {
         "ref": ref,
         "provider": parts[1].lower(),
         "account_id": parts[2],
         "document_id": parts[4],
-        "object_kind": DOCS_DOCUMENT_KIND,
+        "object_kind": object_kind,
     }
 
 
@@ -705,11 +875,19 @@ def _document_object(
 ) -> dict[str, Any]:
     row = dict(value or {})
     document_id = _text(row.get("document_id"))
-    ref = document_ref(account_id, document_id)
+    import_source = bool(row.get("conversion_required")) or (
+        row.get("native_document") is False
+    )
+    object_kind = DOCS_IMPORT_SOURCE_KIND if import_source else DOCS_DOCUMENT_KIND
+    ref = (
+        document_source_ref(account_id, document_id)
+        if import_source
+        else document_ref(account_id, document_id)
+    )
     return {
         **row,
         "ref": ref,
-        "object_kind": DOCS_DOCUMENT_KIND,
+        "object_kind": object_kind,
         "provider": provider,
         "account_id": account_id,
         "document_id": document_id,
@@ -749,7 +927,9 @@ def _snapshot_inventory_text(
     target: Mapping[str, Any],
 ) -> str:
     obj = snapshot.get("object") if isinstance(snapshot.get("object"), Mapping) else {}
-    comments = snapshot.get("comments") if isinstance(snapshot.get("comments"), list) else []
+    comments = (
+        snapshot.get("comments") if isinstance(snapshot.get("comments"), list) else []
+    )
     materialization = (
         snapshot.get("materialization")
         if isinstance(snapshot.get("materialization"), Mapping)
@@ -765,11 +945,7 @@ def _snapshot_inventory_text(
     )
     body_text = obj.get("text") if isinstance(obj.get("text"), str) else ""
     preview = body_text[:BLOCK_PREVIEW_CHARS]
-    tabs = [
-        _text(tab.get("title"))
-        for tab in obj.get("tabs") or []
-        if isinstance(tab, Mapping) and _text(tab.get("title"))
-    ]
+    tabs = [dict(tab) for tab in obj.get("tabs") or [] if isinstance(tab, Mapping)]
     lines = [
         "[DOCS SNAPSHOT]",
         f"object_ref: {object_ref}",
@@ -783,6 +959,17 @@ def _snapshot_inventory_text(
     revision_id = _text(obj.get("revision_id"))
     if revision_id:
         lines.append(f"revision_id: {revision_id}")
+    if obj.get("conversion_required"):
+        lines.extend(
+            [
+                f"provider_filename: {_text(obj.get('title'))}",
+                f"logical_title: {_text(obj.get('logical_title'))}",
+                f"source_format: {_text(obj.get('source_format'))}",
+                f"mime_type: {_text(obj.get('mime_type'))}",
+                "conversion_required: yes",
+                "next_action: copy this source to a new native document before editing",
+            ]
+        )
     for label, key in (
         ("source_bytes", "source_bytes"),
         ("source_text_symbols", "source_text_symbols"),
@@ -798,6 +985,7 @@ def _snapshot_inventory_text(
             f"word_count: {_word_count(body_text)}",
             f"char_count: {len(body_text)}",
             f"end_index: {_int(obj.get('end_index'))}",
+            f"tab_count: {_int(obj.get('tab_count'), default=len(tabs))}",
             f"comment_count: {len(comments)}",
             f"text_materialized: {'yes' if body_text else 'no'}",
         ]
@@ -808,8 +996,22 @@ def _snapshot_inventory_text(
     lines.append("tabs:")
     if not tabs:
         lines.append("- none reported")
-    for title in tabs:
-        lines.append(f"- {title}")
+    for tab in tab_candidates(tabs):
+        title = _text(tab.get("title")) or "<untitled>"
+        tab_id = _text(tab.get("tab_id")) or "<single-tab-default>"
+        parent = _text(tab.get("parent_tab_id"))
+        suffix = f"; parent_tab_id={parent}" if parent else ""
+        hierarchy = " / ".join(tab.get("hierarchy") or [])
+        lines.append(
+            f"- position={tab.get('position')}; title={title}; hierarchy={hierarchy}; "
+            f"tab_id={tab_id}; end_index={_int(tab.get('end_index'))}{suffix}"
+        )
+    if len(tabs) > 1:
+        lines.append(
+            "mutation_scope: use tab_selector with title, title_contains, "
+            "position, or hierarchy; exact tab ids and all_tabs=true remain "
+            "available for explicit calls"
+        )
     lines.append("text_preview:")
     if preview:
         lines.append(preview)
@@ -952,6 +1154,260 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             )
         ret = result.get("ret")
         return (dict(ret or {}) if isinstance(ret, Mapping) else {}), None
+
+    def _selector_error_response(
+        self,
+        request: NamedServiceRequest,
+        error: DocsSelectorError,
+    ) -> NamedServiceResponse:
+        return NamedServiceResponse.error_response(
+            code=error.code,
+            message=str(error),
+            status=error.status,
+            details=error.details,
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=request.object_ref,
+        )
+
+    def _tab_comment_scope_error(
+        self,
+        request: NamedServiceRequest,
+    ) -> NamedServiceResponse:
+        return NamedServiceResponse.error_response(
+            code="tab_anchored_comments_unavailable",
+            message=(
+                "This provider manages comments at document scope. Remove the tab "
+                "selector and identify the document-level comment instead."
+            ),
+            status=422,
+            details={
+                "supported_scope": "document",
+                "next_action": (
+                    "List document comments, then use comment_selector with text, "
+                    "author, resolved state, or position."
+                ),
+            },
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=request.object_ref,
+        )
+
+    @staticmethod
+    def _requests_tab_scoped_comment(payload: Mapping[str, Any]) -> bool:
+        tab_keys = {
+            "tab_id",
+            "tab_ids",
+            "tab_selector",
+            "tab_selectors",
+            "tab_title",
+            "tab_position",
+        }
+        if any(
+            key in payload and payload.get(key) not in (None, "", [])
+            for key in tab_keys
+        ):
+            return True
+        selector = payload.get("comment_selector")
+        return isinstance(selector, Mapping) and any(
+            _text(key).startswith("tab_") or _text(key) == "tab" for key in selector
+        )
+
+    async def _resolve_tab_payload(
+        self,
+        *,
+        request: NamedServiceRequest,
+        parsed: Mapping[str, Any],
+        payload: Mapping[str, Any],
+        plural: bool,
+    ) -> tuple[
+        dict[str, Any] | None,
+        dict[str, Any] | None,
+        NamedServiceResponse | None,
+    ]:
+        resolved_payload = dict(payload or {})
+        single_selector = resolved_payload.get("tab_selector")
+        raw_plural = resolved_payload.get("tab_selectors")
+        plural_selectors = (
+            list(raw_plural)
+            if isinstance(raw_plural, Sequence)
+            and not isinstance(raw_plural, (str, bytes))
+            else []
+        )
+        selectors = plural_selectors or (
+            [single_selector] if single_selector not in (None, "") else []
+        )
+        if raw_plural not in (None, []) and not plural_selectors:
+            error = DocsSelectorError(
+                "docs_tab_selector_invalid",
+                "tab_selectors must be a non-empty list of tab selectors.",
+                status=400,
+            )
+            return None, None, self._selector_error_response(request, error)
+        if not selectors:
+            return resolved_payload, None, None
+
+        if plural:
+            if (
+                resolved_payload.get("tab_ids")
+                or resolved_payload.get("all_tabs") is True
+            ):
+                error = DocsSelectorError(
+                    "docs_tab_selector_conflict",
+                    "Use tab selectors, tab_ids, or all_tabs=true as one tab scope.",
+                    status=400,
+                )
+                return None, None, self._selector_error_response(request, error)
+        elif len(selectors) != 1 or resolved_payload.get("tab_id"):
+            error = DocsSelectorError(
+                "docs_tab_selector_conflict",
+                "Use one tab_selector or one tab_id for a single-tab action.",
+                status=400,
+            )
+            return None, None, self._selector_error_response(request, error)
+
+        metadata, provider_error = await self._execute(
+            request=request,
+            operation="get",
+            claim=DOCS_READ_CLAIM,
+            payload={
+                "document_ref": _text(parsed.get("document_id")),
+                "include_text": False,
+            },
+            account_id=_text(parsed.get("account_id")),
+        )
+        if provider_error is not None:
+            return None, None, provider_error
+        tabs = [
+            dict(tab)
+            for tab in (metadata or {}).get("tabs") or []
+            if isinstance(tab, Mapping)
+        ]
+        try:
+            matches = [resolve_tab_selector(tabs, selector) for selector in selectors]
+        except DocsSelectorError as error:
+            return None, None, self._selector_error_response(request, error)
+
+        unique_matches: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for match in matches:
+            tab_id = _text(match.get("tab_id"))
+            if tab_id not in seen:
+                seen.add(tab_id)
+                unique_matches.append(match)
+        resolved_payload.pop("tab_selector", None)
+        resolved_payload.pop("tab_selectors", None)
+        if plural:
+            resolved_payload["tab_ids"] = [
+                _text(match.get("tab_id")) for match in unique_matches
+            ]
+        else:
+            resolved_payload["tab_id"] = _text(unique_matches[0].get("tab_id"))
+        return (
+            resolved_payload,
+            {
+                "kind": "tab",
+                "selectors": selectors,
+                "matches": unique_matches,
+            },
+            None,
+        )
+
+    async def _resolve_comment_payload(
+        self,
+        *,
+        request: NamedServiceRequest,
+        parsed: Mapping[str, Any],
+        payload: Mapping[str, Any],
+    ) -> tuple[
+        dict[str, Any] | None,
+        dict[str, Any] | None,
+        NamedServiceResponse | None,
+    ]:
+        resolved_payload = dict(payload or {})
+        comment_id = _text(resolved_payload.get("comment_id"))
+        selector = resolved_payload.get("comment_selector")
+        if comment_id and selector not in (None, ""):
+            error = DocsSelectorError(
+                "docs_comment_selector_conflict",
+                "Use comment_id or comment_selector, not both.",
+                status=400,
+            )
+            return None, None, self._selector_error_response(request, error)
+        if comment_id or selector in (None, ""):
+            return resolved_payload, None, None
+
+        comments: list[dict[str, Any]] = []
+        cursor = ""
+        scanned_pages = 0
+        scanned_cursors: set[str] = set()
+        try:
+            for _page in range(COMMENT_SELECTOR_MAX_PAGES):
+                list_payload: dict[str, Any] = {
+                    "document_ref": _text(parsed.get("document_id")),
+                    "include_resolved": True,
+                    "limit": COMMENT_SELECTOR_PAGE_SIZE,
+                }
+                if cursor:
+                    list_payload["cursor"] = cursor
+                page, provider_error = await self._execute(
+                    request=request,
+                    operation=ACTION_LIST_COMMENTS,
+                    claim=DOCS_READ_CLAIM,
+                    payload=list_payload,
+                    account_id=_text(parsed.get("account_id")),
+                )
+                if provider_error is not None:
+                    return None, None, provider_error
+                scanned_pages += 1
+                comments.extend(
+                    dict(row)
+                    for row in (page or {}).get("comments") or []
+                    if isinstance(row, Mapping)
+                )
+                matches = matching_comments(comments, selector)
+                if len(matches) > 1:
+                    resolve_comment_selector(comments, selector)
+                cursor = _text((page or {}).get("next_cursor"))
+                if not cursor:
+                    match = resolve_comment_selector(comments, selector)
+                    resolved_payload.pop("comment_selector", None)
+                    resolved_payload["comment_id"] = _text(match.get("comment_id"))
+                    return (
+                        resolved_payload,
+                        {
+                            "kind": "comment",
+                            "selector": selector,
+                            "match": match,
+                            "scanned_pages": scanned_pages,
+                            "scanned_comments": len(comments),
+                        },
+                        None,
+                    )
+                if cursor in scanned_cursors:
+                    break
+                scanned_cursors.add(cursor)
+        except DocsSelectorError as error:
+            return None, None, self._selector_error_response(request, error)
+
+        matches = matching_comments(comments, selector)
+        candidates = matches or comment_candidates(comments)
+        error = DocsSelectorError(
+            "docs_comment_selector_incomplete",
+            "The bounded comment scan ended while more provider results remained.",
+            status=409,
+            details={
+                "selector": selector,
+                "scanned_pages": scanned_pages,
+                "scanned_comments": len(comments),
+                "candidate_count": len(candidates),
+                "candidates": candidates[:SELECTOR_CANDIDATE_LIMIT],
+                "candidates_truncated": len(candidates) > SELECTOR_CANDIDATE_LIMIT,
+                "next_cursor": cursor,
+                "next_action": "Narrow the comment selector and retry.",
+            },
+        )
+        return None, None, self._selector_error_response(request, error)
 
     async def _export_reference_response(
         self,
@@ -1113,6 +1569,10 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                     ),
                     "Call object.get with its ref to read metadata and body text.",
                     (
+                        "For multi-tab documents, address a tab naturally by exact "
+                        "title, title fragment, 1-based position, or hierarchy."
+                    ),
+                    (
                         "To clone a document, search for the target title first, "
                         "then call object.action copy on the source ref."
                     ),
@@ -1121,7 +1581,10 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                         "When the user needs a file, call object.action export; "
                         "the returned export ref is delivered or streamed out of band."
                     ),
-                    "Use the comment actions to read or manage comment threads.",
+                    (
+                        "Use document-level comment actions with comment_id or a "
+                        "selector over text, author, resolved state, or position."
+                    ),
                 ],
                 "providers": DOCS_PROVIDER_CATALOG,
                 "schema": DOCS_SCHEMA,
@@ -1144,9 +1607,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                 "actions": list(DOCS_ACTIONS),
                 "providers": DOCS_PROVIDER_CATALOG,
                 "grant_hints": DOCS_GRANT_HINTS,
-                "connected_account_claims": DOCS_SCHEMA[
-                    "connected_account_claims"
-                ],
+                "connected_account_claims": DOCS_SCHEMA["connected_account_claims"],
             },
         )
 
@@ -1171,7 +1632,11 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         unsupported = self._provider_not_supported(request, parsed)
         if unsupported is not None:
             return unsupported
-        canonical_ref = document_ref(parsed["account_id"], parsed["document_id"])
+        canonical_ref = (
+            document_source_ref(parsed["account_id"], parsed["document_id"])
+            if parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND
+            else document_ref(parsed["account_id"], parsed["document_id"])
+        )
         return NamedServiceResponse.ok_response(
             provider=self._provider_identity(),
             namespace=request.namespace or DOCS_NAMESPACE,
@@ -1189,9 +1654,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         target_value = request.payload.get("target")
         target = dict(target_value) if isinstance(target_value, Mapping) else {}
         object_ref = _text(
-            request.object_ref
-            or target.get("object_ref")
-            or target.get("ref")
+            request.object_ref or target.get("object_ref") or target.get("ref")
         )
         try:
             parsed = parse_docs_ref(object_ref)
@@ -1203,9 +1666,10 @@ class DocsNamedServiceProvider(NamedServiceProvider):
 
         snapshot = _snapshot_from_block_target(target)
         if not snapshot:
+            source_object = parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND
             metadata, error = await self._execute(
                 request=request,
-                operation="get",
+                operation="get_source" if source_object else "get",
                 claim=DOCS_READ_CLAIM,
                 payload={"document_ref": parsed["document_id"], "include_text": True},
                 account_id=parsed["account_id"],
@@ -1236,12 +1700,12 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             snapshot = {
                 "schema": DOCS_SNAPSHOT_SCHEMA,
                 "object_ref": object_ref,
-                "object_kind": DOCS_DOCUMENT_KIND,
+                "object_kind": obj["object_kind"],
                 "object": obj,
                 "comments": [],
                 "materialization": {
                     "text_materialized": bool(obj.get("text")),
-                    "complete_text": None,
+                    "complete_text": False if source_object else None,
                     "inventory_source": "provider_metadata_fallback",
                 },
             }
@@ -1341,7 +1805,9 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         return await self._search(
             request=request,
             query="",
-            account_id=_text(filters.get("account_id") or request.payload.get("account_id")),
+            account_id=_text(
+                filters.get("account_id") or request.payload.get("account_id")
+            ),
         )
 
     async def object_search(
@@ -1352,7 +1818,9 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         return await self._search(
             request=request,
             query=_text(request.query),
-            account_id=_text(filters.get("account_id") or request.payload.get("account_id")),
+            account_id=_text(
+                filters.get("account_id") or request.payload.get("account_id")
+            ),
         )
 
     async def _search(
@@ -1426,6 +1894,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         unsupported = self._provider_not_supported(request, parsed)
         if unsupported is not None:
             return unsupported
+        import_source = parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND
         if _is_materialization_request(request):
             return await self._materialize_snapshot(request=request, parsed=parsed)
         filters = dict(request.filters or {})
@@ -1437,7 +1906,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             payload["include_text"] = bool(include_text)
         ret, error = await self._execute(
             request=request,
-            operation="get",
+            operation="get_source" if import_source else "get",
             claim=DOCS_READ_CLAIM,
             payload=payload,
             account_id=parsed["account_id"],
@@ -1449,7 +1918,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             account_id=parsed["account_id"],
             provider=parsed["provider"],
         )
-        if not ctx.turn_id:
+        if not ctx.turn_id and not import_source:
             url_info = await self._download_url(ctx, ref=obj["ref"])
             if url_info is not None:
                 snapshot_download = {
@@ -1475,9 +1944,10 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         parsed: Mapping[str, Any],
     ) -> NamedServiceResponse | NamedServiceStreamResult:
         document_id = _text(parsed.get("document_id"))
+        import_source = parsed.get("object_kind") == DOCS_IMPORT_SOURCE_KIND
         metadata, error = await self._execute(
             request=request,
-            operation="get",
+            operation="get_source" if import_source else "get",
             claim=DOCS_READ_CLAIM,
             payload={"document_ref": document_id, "include_text": True},
             account_id=_text(parsed.get("account_id")),
@@ -1493,40 +1963,44 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         )
 
         comments: list[dict[str, Any]] = []
-        comments_complete = True
-        comment_result, comment_error = await self._execute(
-            request=request,
-            operation="list_comments",
-            claim=DOCS_READ_CLAIM,
-            payload={"document_ref": document_id, "include_resolved": False},
-            account_id=account_id,
-        )
-        if comment_error is not None:
-            comments_complete = False
-        else:
-            comments = [
-                dict(row)
-                for row in (comment_result or {}).get("comments") or []
-                if isinstance(row, Mapping)
-            ]
+        comments_complete = not import_source
+        if not import_source:
+            comment_result, comment_error = await self._execute(
+                request=request,
+                operation="list_comments",
+                claim=DOCS_READ_CLAIM,
+                payload={"document_ref": document_id, "include_resolved": False},
+                account_id=account_id,
+            )
+            if comment_error is not None:
+                comments_complete = False
+            else:
+                comments = [
+                    dict(row)
+                    for row in (comment_result or {}).get("comments") or []
+                    if isinstance(row, Mapping)
+                ]
 
         object_ref = _text(obj.get("ref") or request.object_ref)
         body_text = obj.get("text") if isinstance(obj.get("text"), str) else ""
         snapshot = {
             "schema": DOCS_SNAPSHOT_SCHEMA,
             "object_ref": object_ref,
-            "object_kind": DOCS_DOCUMENT_KIND,
+            "object_kind": obj["object_kind"],
             "object": obj,
             "comments": comments,
             "materialization": {
                 "text_materialized": bool(body_text),
-                "complete_text": True,
+                "complete_text": not import_source,
                 "comments_materialized": comments_complete,
                 "comment_count": len(comments),
                 "word_count": _word_count(body_text),
                 "char_count": len(body_text),
                 "delivery": (
-                    "The complete document body text is included. The comment "
+                    "This import source carries file metadata. Copy it to a native "
+                    "document before reading or editing body text."
+                    if import_source
+                    else "The complete document body text is included. The comment "
                     "actions remain available for full comment-thread reads."
                 ),
             },
@@ -1542,7 +2016,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                     "word_count": _word_count(body_text),
                     "char_count": len(body_text),
                     "comment_count": len(comments),
-                    "complete_text": True,
+                    "complete_text": not import_source,
                 }
             },
         )
@@ -1558,6 +2032,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
     ) -> NamedServiceResponse:
         del ctx
         body = {**dict(request.payload or {}), **dict(request.object or {})}
+        selector_resolution: dict[str, Any] | None = None
         if not request.object_ref:
             operation = "create"
             payload = {
@@ -1577,12 +2052,28 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             unsupported = self._provider_not_supported(request, parsed)
             if unsupported is not None:
                 return unsupported
+            if parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND:
+                return NamedServiceResponse.error_response(
+                    code="docs_import_source_requires_copy",
+                    message=(
+                        "This object is an import source. Copy it to a native "
+                        "document, then edit the returned document ref."
+                    ),
+                    status=409,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or DOCS_NAMESPACE,
+                    object_ref=request.object_ref,
+                )
             account_id = parsed["account_id"]
             if body.get("replacements") is not None:
                 operation = "replace_text"
                 payload = {
                     "document_ref": parsed["document_id"],
                     "replacements": body.get("replacements"),
+                    "tab_ids": body.get("tab_ids"),
+                    "tab_selector": body.get("tab_selector"),
+                    "tab_selectors": body.get("tab_selectors"),
+                    "all_tabs": body.get("all_tabs"),
                 }
             elif body.get("index") is not None:
                 operation = "insert_text"
@@ -1590,15 +2081,30 @@ class DocsNamedServiceProvider(NamedServiceProvider):
                     "document_ref": parsed["document_id"],
                     "text": body.get("text"),
                     "index": body.get("index"),
+                    "tab_id": body.get("tab_id"),
+                    "tab_selector": body.get("tab_selector"),
                 }
             else:
                 operation = "append_text"
                 payload = {
                     "document_ref": parsed["document_id"],
                     "text": body.get("text"),
+                    "tab_id": body.get("tab_id"),
+                    "tab_selector": body.get("tab_selector"),
                 }
             if request.idempotency_key:
                 payload["idempotency_key"] = request.idempotency_key
+            payload, selector_resolution, selector_error = (
+                await self._resolve_tab_payload(
+                    request=request,
+                    parsed=parsed,
+                    payload=payload,
+                    plural=operation == ACTION_REPLACE_TEXT,
+                )
+            )
+            if selector_error is not None:
+                return selector_error
+            assert payload is not None
         ret, error = await self._execute(
             request=request,
             operation=operation,
@@ -1608,7 +2114,12 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         )
         if error is not None:
             return error
-        return self._mutation_response(request=request, ret=ret or {}, parsed=parsed)
+        return self._mutation_response(
+            request=request,
+            ret=ret or {},
+            parsed=parsed,
+            selector_resolution=selector_resolution,
+        )
 
     async def object_action(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
@@ -1651,6 +2162,18 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         unsupported = self._provider_not_supported(request, parsed)
         if unsupported is not None:
             return unsupported
+        if parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND and action != ACTION_COPY:
+            return NamedServiceResponse.error_response(
+                code="docs_import_source_requires_copy",
+                message=(
+                    "This object is an import source. Its only document action is "
+                    "copy, which creates and returns an editable native document."
+                ),
+                status=409,
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
         if action == ACTION_EXPORT:
             try:
                 ref = document_export_ref(
@@ -1677,6 +2200,45 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         payload["document_ref"] = parsed["document_id"]
         if request.idempotency_key:
             payload["idempotency_key"] = request.idempotency_key
+        selector_resolution: dict[str, Any] | None = None
+        if (
+            action in DOCS_DOCUMENT_COMMENT_ACTIONS
+            and self._requests_tab_scoped_comment(payload)
+        ):
+            return self._tab_comment_scope_error(request)
+        if action in DOCS_SINGLE_TAB_ACTIONS:
+            payload, selector_resolution, selector_error = (
+                await self._resolve_tab_payload(
+                    request=request,
+                    parsed=parsed,
+                    payload=payload,
+                    plural=False,
+                )
+            )
+            if selector_error is not None:
+                return selector_error
+        elif action == ACTION_REPLACE_TEXT:
+            payload, selector_resolution, selector_error = (
+                await self._resolve_tab_payload(
+                    request=request,
+                    parsed=parsed,
+                    payload=payload,
+                    plural=True,
+                )
+            )
+            if selector_error is not None:
+                return selector_error
+        elif action in DOCS_COMMENT_REFERENCE_ACTIONS:
+            payload, selector_resolution, selector_error = (
+                await self._resolve_comment_payload(
+                    request=request,
+                    parsed=parsed,
+                    payload=payload,
+                )
+            )
+            if selector_error is not None:
+                return selector_error
+        assert payload is not None
         ret, error = await self._execute(
             request=request,
             operation=action,
@@ -1686,7 +2248,12 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         )
         if error is not None:
             return error
-        return self._mutation_response(request=request, ret=ret or {}, parsed=parsed)
+        return self._mutation_response(
+            request=request,
+            ret=ret or {},
+            parsed=parsed,
+            selector_resolution=selector_resolution,
+        )
 
     async def object_delete(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
@@ -1699,15 +2266,39 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         unsupported = self._provider_not_supported(request, parsed)
         if unsupported is not None:
             return unsupported
-        comment_id = _text(
-            request.payload.get("comment_id") or (request.object or {}).get("comment_id")
+        if parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND:
+            return NamedServiceResponse.error_response(
+                code="docs_import_source_requires_copy",
+                message=(
+                    "This object is an import source. Copy it to a native document "
+                    "before using document or comment mutations."
+                ),
+                status=409,
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        payload = {**dict(request.payload or {}), **dict(request.object or {})}
+        payload["document_ref"] = parsed["document_id"]
+        if self._requests_tab_scoped_comment(payload):
+            return self._tab_comment_scope_error(request)
+        payload, selector_resolution, selector_error = (
+            await self._resolve_comment_payload(
+                request=request,
+                parsed=parsed,
+                payload=payload,
+            )
         )
-        if not comment_id:
+        if selector_error is not None:
+            return selector_error
+        assert payload is not None
+        if not _text(payload.get("comment_id")):
             return NamedServiceResponse.error_response(
                 code="docs_document_delete_not_supported",
                 message=(
-                    "Document-file deletion is not exposed. object.delete removes "
-                    "one comment; pass payload.comment_id."
+                    "object.delete removes one document comment. Pass "
+                    "payload.comment_id or comment_selector; manage the document "
+                    "file through its provider."
                 ),
                 status=400,
                 provider=self._provider_identity(),
@@ -1718,15 +2309,17 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             request=request,
             operation=ACTION_DELETE_COMMENT,
             claim=(DOCS_READ_CLAIM, DOCS_COMMENT_CLAIM),
-            payload={
-                "document_ref": parsed["document_id"],
-                "comment_id": comment_id,
-            },
+            payload=payload,
             account_id=parsed["account_id"],
         )
         if error is not None:
             return error
-        return self._mutation_response(request=request, ret=ret or {}, parsed=parsed)
+        return self._mutation_response(
+            request=request,
+            ret=ret or {},
+            parsed=parsed,
+            selector_resolution=selector_resolution,
+        )
 
     def _mutation_response(
         self,
@@ -1734,6 +2327,7 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         request: NamedServiceRequest,
         ret: Mapping[str, Any],
         parsed: Mapping[str, Any] | None,
+        selector_resolution: Mapping[str, Any] | None = None,
     ) -> NamedServiceResponse:
         result = dict(ret or {})
         account_id = _text(result.get("account_id")) or _text(
@@ -1741,12 +2335,15 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         )
         provider = _text((parsed or {}).get("provider")) or GOOGLE_PROVIDER_KEY
         obj = _document_object(result, account_id=account_id, provider=provider)
+        extra = {"action": request.action or request.operation, "result": result}
+        if selector_resolution:
+            extra["selector_resolution"] = dict(selector_resolution)
         return NamedServiceResponse.ok_response(
             provider=self._provider_identity(),
             namespace=request.namespace or DOCS_NAMESPACE,
             object_ref=obj["ref"],
             object=obj,
-            extra={"action": request.action or request.operation, "result": result},
+            extra=extra,
         )
 
 
@@ -1786,6 +2383,7 @@ __all__ = [
     "DOCS_EXPORT_FORMATS",
     "DOCS_EXPORT_KIND",
     "DOCS_GRANT_HINTS",
+    "DOCS_IMPORT_SOURCE_KIND",
     "DOCS_NAMESPACE",
     "DOCS_READ_CLAIM",
     "DOCS_SCHEMA",
@@ -1797,6 +2395,7 @@ __all__ = [
     "document_export_filename",
     "document_export_ref",
     "document_ref",
+    "document_source_ref",
     "docs_named_service_spec",
     "make_docs_named_service_provider",
     "parse_docs_export_ref",

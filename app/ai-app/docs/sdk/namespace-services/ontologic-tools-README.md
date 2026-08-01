@@ -4,7 +4,7 @@ title: "Namespace Services: Ontologic Tools"
 summary: "The named-service ontologic tools as one coherent model-facing surface for operating any realm by satisfying schemas."
 status: design
 tags: ["sdk", "namespace-services", "ontologic-tools", "agents", "schema", "affordance"]
-updated_at: 2026-07-27
+updated_at: 2026-08-01
 keywords:
   [
     "ontologic tools",
@@ -12,6 +12,9 @@ keywords:
     "affordance",
     "object schema",
     "provider about",
+    "domain selector",
+    "provider-bounded search",
+    "provider translation",
     "upsert_object",
     "object_action",
     "update strategy",
@@ -25,6 +28,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/ecosystem-component-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/object-ref-presentation-and-actions-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/google-service-README.md
 ---
 # Namespace Services: Ontologic Tools
 
@@ -82,6 +86,95 @@ Nothing else is callable. If it is not a kind, a link, or a declared op on a
 kind, it is not part of the realm's surface. This keeps the model's world small:
 it only ever inspects schemas and satisfies them.
 
+### A Schema Is the Realm's Language
+
+An object schema is not a copy of the provider's endpoint catalog. It is the
+small language an agent uses to understand and operate the realm:
+
+- **object kinds** name things a user recognizes;
+- **relations and selectors** explain how to find the intended thing;
+- **actions** say what can happen to it;
+- **fields and claims** define the exact bounded request;
+- **results and errors** make the outcome and the next valid step visible.
+
+Here, meaning is **domain meaning**, not a promise of semantic search. A realm
+can expose semantic search when its provider supplies it. Otherwise it exposes
+only the provider-backed search and explicit predicates it can evaluate over a
+bounded provider response. KDCube does not build an index over the provider's
+object space.
+
+Provider endpoint names, raw request bodies, and call ordering stay behind the
+provider. Opaque provider ids can be returned as handles, but the user should
+not have to supply one. The adapter resolves a request such as "the second tab"
+from document structure. It can resolve "my comment containing payment terms"
+from provider-returned comment fields. A broader meaning-based match is
+available only when the provider declares semantic search.
+
+A complete document realm can therefore present this ontology:
+
+```text
+docs
+  documents
+  tabs
+  comment threads
+  replies
+  exports
+
+operations
+  find / read / copy / export a document
+  add / rename / delete / read a tab
+  edit a selected tab
+  list / create / reply / edit / delete comments
+  resolve / reopen a comment thread
+```
+
+That does not imply one generic provider call per line. A request such as
+"reply to my unresolved comment about payment terms" may require the adapter
+to page through the selected document's comments, resolve the matching thread,
+perform the provider mutation, and return the updated thread. A separate
+request such as "append this to the second tab" resolves that tab from the
+document structure. The agent sees one bounded domain action; the provider
+owns the call sequence.
+
+```text
+user language
+  "my unresolved comment about payment terms"
+        |
+        v
+schema-declared selector + action
+  docs.comment_thread + author=me + resolved=false + text_contains + reply
+        |
+        v
+provider adapter
+  resolve provider ids -> perform supported calls -> normalize result
+        |
+        v
+provider API
+```
+
+The `selector` shape in this example is conceptual. A provider can declare
+supported selection through search filters, an action payload, or another
+schema-owned field. Named services do not impose one universal selector JSON
+envelope; they require the provider to describe the supported shape and its
+ambiguity behavior.
+
+The schema is also a capability boundary. It advertises only behavior the
+configured provider can perform. A preview-only or unavailable provider
+feature is omitted or marked unavailable, and an attempted unsupported action
+returns a precise capability error. The adapter must not silently replace a
+more specific operation with a weaker one.
+
+**Google Docs status:** the current named-service adapter resolves tabs by
+title, literal title fragment, 1-based position, or hierarchy. It resolves one
+document-level Drive comment by literal text, quoted text, author (`me` is
+supported), resolved state, or position. Exact provider ids remain available
+for callers that already hold them. Ambiguous selectors return bounded
+candidates, and a tab-scoped comment request returns
+`tab_anchored_comments_unavailable`. Native tab anchors remain a preview-only
+provider capability. Provider-side translation and capability reporting are
+specified in
+[Providers](providers-README.md#domain-operations-and-provider-translation).
+
 ## The Tool Surface
 
 The shipped ontologic tools are nine generic operations. They are domain-free;
@@ -114,7 +207,10 @@ and use its own file facilities. Mail, Slack, and Sheets follow this boundary.
 ### How They Compose
 
 The tools form one navigation path from "I know nothing about this realm" to "I
-mutated it correctly":
+mutated it correctly". Some client surfaces also expose
+`provider_capabilities` between `provider_about` and `object_schema`; it reports
+the provider-declared operations available in that deployment without changing
+the three-level intro/about/schema model:
 
 ```text
 provider_about            discover the realm: kinds, scopes, action vocabulary
