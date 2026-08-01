@@ -4,7 +4,7 @@ title: "Delegate A KDCube Service To An External Client"
 summary: "User-facing recipe for connecting Claude or another external client to a KDCube service through Connection Hub delegated credentials."
 status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "oauth", "claude", "mcp", "consent"]
-updated_at: 2026-07-18
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
@@ -288,6 +288,34 @@ Claude will not be allowed to:
 Avoid generic text like "approve OAuth access". The user needs to understand the
 service, tools, and identity scope.
 
+## What Remains Live After Approval
+
+Approval does not freeze authority into the external client's token. For a
+pointer-backed delegated credential, every managed call and refresh resolves
+the current Connection Hub card again. Narrowing or revoking that card applies
+on the next request. An absent or expired card is revoked authority; a card that
+cannot be read, decoded, validated, or bound to this credential makes a managed
+MCP/REST call return a logged `503 temporarily_unavailable`. Refresh refuses to
+rotate it and returns `temporarily_unavailable` for a store failure or
+`invalid_grant` for invalid authority state. KDCube does not continue from the
+older authority snapshot or call the application.
+
+The short-lived OAuth transitions have one winner across workers:
+
+- authorization-code exchange and OAuth consent-CSRF validation consume their
+  records atomically;
+- refresh checks the current card, then atomically replaces the exact old
+  refresh record with one successor;
+- a concurrent or stale consumer receives a denial instead of minting another
+  credential.
+
+The browser request that edits or revokes a Connection Hub card uses a separate
+operation-CSRF proof. That proof is bound to the signed-in user and exact app
+operation and is consumed once. It is not the OAuth consent-CSRF value, it adds
+no grant, and the external client's bearer call does not perform this browser
+exchange. The protocol details and failure matrix live in
+[OAuth Delegated Credential Protocol Adapter](../../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md).
+
 ## Minimal Test
 
 ```text
@@ -304,6 +332,13 @@ service, tools, and identity scope.
 10. For a provider-backed namespace, revoke the user's connected-account claim
     while leaving the MCP grant active; confirm the provider call fails without
     exposing the upstream credential.
+11. Narrow or revoke the external client's Connection Hub card, then confirm
+    its next call sees the new authority without reconnecting or restarting the
+    application.
+12. In a platform regression environment, make the shared authority store
+    unavailable and confirm the managed call returns a logged
+    `503 temporarily_unavailable`; application code must not run from stale
+    authority.
 ```
 
 ## What Not To Do

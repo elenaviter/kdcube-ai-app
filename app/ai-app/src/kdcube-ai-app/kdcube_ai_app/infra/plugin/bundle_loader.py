@@ -460,6 +460,27 @@ def provider_surface_auth(
     return dict(raw) if isinstance(raw, Mapping) else None
 
 
+def provider_surface_csrf(
+        props: Mapping[str, Any] | None,
+        *,
+        alias: str,
+        http_method: str,
+        route: str,
+) -> bool | None:
+    """Return an explicit API CSRF override, preserving a missing value."""
+
+    node = _provider_surface_node(
+        props,
+        "api",
+        alias=alias,
+        http_method=http_method,
+        route=route,
+    )
+    return _coerce_bool_override(
+        node.get("csrf") if isinstance(node, Mapping) else None
+    )
+
+
 def _resolve_override_value(config_path: str | None, props: dict[str, Any]) -> Any:
     """Resolve a ``*_config`` dot-path against bundle props, with descriptor-file
     fallback (mirrors ``resolve_effective_cron``).
@@ -530,15 +551,11 @@ def apply_api_overrides(spec: APIEndpointSpec, props: dict[str, Any]) -> APIEndp
         http_method=spec.http_method,
         route=spec.route,
     )
-    surface_node = _provider_surface_node(
+    csrf = provider_surface_csrf(
         props,
-        "api",
         alias=spec.alias,
         http_method=spec.http_method,
         route=spec.route,
-    )
-    csrf = _coerce_bool_override(
-        surface_node.get("csrf") if surface_node is not None else None
     )
     if visibility is not None:
         user_types = _coerce_string_list_override(visibility.get("user_types"))

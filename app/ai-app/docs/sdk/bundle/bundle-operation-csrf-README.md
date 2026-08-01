@@ -108,3 +108,11 @@ client. Unprotected operations do not need a token request.
 Connection Hub uses this capability for its selected browser mutations. The
 capability is part of the general bundle API contract and is available to any
 application surface that opts in.
+
+The Apps dashboard exposes the effective value for each eligible API
+operation and can write the same method-specific descriptor override. **Reset
+to default** writes a `null` reset marker at that path, which makes the method
+follow its decorator default even when an alias-level fallback exists. The
+control is shown only for `POST` operations on the `operations` route. MCP
+surfaces do not expose this field because their explicit protocol credentials
+are not ambient browser-cookie authentication.

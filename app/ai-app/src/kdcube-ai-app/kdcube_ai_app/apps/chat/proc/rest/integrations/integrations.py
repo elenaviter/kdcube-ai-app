@@ -105,6 +105,7 @@ from kdcube_ai_app.infra.plugin.bundle_loader import (
     load_bundle_manifest,
     peek_cached_singleton_for_spec,
     provider_surface_auth,
+    provider_surface_csrf,
     resolve_bundle_api_endpoint,
     resolve_bundle_mcp_endpoint,
     run_static_bundle_entrypoint_load_once,
@@ -1522,6 +1523,12 @@ async def _get_bundle_manifest(
 
 def _api_spec_descriptor(spec: APIEndpointSpec, props: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     effective = apply_api_overrides(spec, props or {})
+    csrf_override = provider_surface_csrf(
+        props,
+        alias=spec.alias,
+        http_method=spec.http_method,
+        route=spec.route,
+    )
     auth = provider_surface_auth(
         props,
         "api",
@@ -1547,6 +1554,10 @@ def _api_spec_descriptor(spec: APIEndpointSpec, props: Optional[Dict[str, Any]])
         "roles_default": list(spec.roles),
         "roles_path": f"{policy_path}.visibility.roles",
         "roles_overridden": tuple(effective.roles) != tuple(spec.roles),
+        "csrf": bool(effective.csrf),
+        "csrf_default": bool(spec.csrf),
+        "csrf_path": f"{policy_path}.csrf",
+        "csrf_overridden": csrf_override is not None,
         "auth": auth,
         "auth_path": f"{policy_path}.auth",
         "authority_id": str(auth.get("authority_id") or auth.get("authority") or ""),

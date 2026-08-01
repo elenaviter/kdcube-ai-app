@@ -123,6 +123,13 @@ demo descriptors were inspected. None declares a Connection Hub API-surface
 override, so they retain the built-in app's explicit defaults. No blanket
 descriptor policy was added.
 
+The Apps dashboard now receives the effective CSRF value, decorator default,
+override path, and explicit-override state for each API endpoint. For eligible
+operation POSTs it can write `csrf: true` or `csrf: false`, or clear the value
+to restore the decorator default. The MCP editor intentionally has no CSRF
+control because MCP uses explicit protocol credentials rather than ambient
+browser cookies.
+
 ## MCP 2026-07-28 Relationship
 
 This hardening protects the OAuth and delegated-authority state used by MCP;
@@ -133,6 +140,28 @@ hints, while retaining a legacy initialize test. The focused wire and OAuth
 suites establish support for KDCube's exposed core capabilities. The official
 full conformance runner and live external DCR/CIMD journeys remain the evidence
 gate for an unqualified MCP 2026-07-28 conformance claim.
+
+## Documentation Ownership
+
+The contracts are intentionally split by reader task:
+
+- [Bundle Operation CSRF](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md)
+  owns the browser token exchange, opt-in rules, distributed consumption, and
+  failure behavior.
+- [Govern App API, MCP, and Widget Surfaces](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/apps/govern-provider-surfaces-README.md)
+  owns the builder workflow through decorators, descriptors, and the Apps
+  dashboard.
+- [Delegate A KDCube Service To An External Client](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/delegate-kdcube-service-to-external-client-README.md)
+  owns the external-client journey and its post-consent live-authority checks.
+- [Protect Bundle MCP With Managed Credentials](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md)
+  owns the app-builder journey for a managed MCP door.
+- [OAuth Delegated Credential Protocol Adapter](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md)
+  owns atomic OAuth transitions, live-card validation, structured availability
+  responses, and the complete regression matrix.
+
+The recipes state the guarantees a builder can rely on and link to the adapter
+for protocol depth. They do not require an app to know that Redis or Lua is the
+current implementation behind those guarantees.
 
 ## Verification
 

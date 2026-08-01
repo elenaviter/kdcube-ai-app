@@ -4,7 +4,7 @@ title: "What I Should Know Before Writing a KDCube App"
 summary: "A builder's mind map for KDCube apps: async runtime rules, provider and consumer surfaces, identity and delegation, configuration, storage, concurrency, eventing, conversations, economics, UI, telemetry, isolated execution, and operational checks."
 status: current
 tags: ["recipe", "app", "bundle", "builder", "runtime", "async", "surfaces", "storage", "eventing", "economics"]
-updated_at: 2026-07-16
+updated_at: 2026-08-01
 keywords:
   [
     "KDCube app ingredients",
@@ -27,6 +27,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-avoid-common-bundle-integration-failures-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-release-bundle-content-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-developer-guide-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/govern-provider-surfaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/bus-routing-and-partitioning-README.md
@@ -124,7 +125,7 @@ surfaces. Chat, ReAct, UI, and a database are optional.
 
 | Product capability | App declaration | Important policy |
 | --- | --- | --- |
-| Request/response operation | `@api(route="operations", ...)` | user type, raw/custom roles, optional authority and grants |
+| Request/response operation | `@api(route="operations", ...)` | user type, raw/custom roles, optional authority and grants, and opt-in cookie-request CSRF for POST mutations |
 | Public callback/webhook | `@api(route="public", ...)` | app verifies the caller's proof or uses a configured managed guard |
 | MCP endpoint | `@mcp(...)` | public, app-owned, or platform-managed auth; tool grants when managed |
 | Embeddable UI | `@ui_widget(...)` plus `ui.widgets.<alias>` when built from source | visibility/auth and runtime-config handshake |
@@ -157,6 +158,9 @@ policy belongs under `surfaces.as_consumer.agents.<agent_id>`.
 Read: [Bundle Platform Integration](../sdk/bundle/bundle-platform-integration-README.md),
 [Bundle Descriptor](../configuration/bundles-descriptor-README.md), and
 [Bundle Entrypoint Classes](../sdk/bundle/bundle-entrypoint-classes-README.md).
+For the operational code-default, descriptor-override, Apps-dashboard, and
+API-CSRF workflow, use
+[Govern App API, MCP, and Widget Surfaces](./apps/govern-provider-surfaces-README.md).
 
 ## 2. The Proc Event Loop Is Shared
 

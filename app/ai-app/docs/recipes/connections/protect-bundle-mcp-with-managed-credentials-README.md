@@ -582,6 +582,26 @@ Use this when the bundle intentionally owns a private auth contract. Use
 `mode: managed` when the surface should participate in Connection Hub delegated
 credentials and user consent.
 
+## What Managed Protection Keeps Live
+
+The issued bearer is a handle to server-side authority, not a frozen copy of a
+Connection Hub decision. Pointer-backed credentials reload and validate their
+current card on every managed call and refresh, so an edit or revocation applies
+to the next request. Missing or expired authority is revoked. Unreadable or
+invalid live authority makes a managed MCP/REST call return a logged
+`503 temporarily_unavailable`; refresh refuses rotation and returns
+`temporarily_unavailable` for a store failure or `invalid_grant` for invalid
+authority state. Neither path falls back to the older token snapshot, and a
+denied managed call does not enter bundle code.
+
+Authorization-code exchange, OAuth consent-CSRF consumption, and refresh-token
+rotation are atomic shared-state transitions. Concurrent consumers therefore
+produce one winner even when requests land on different workers. Browser POSTs
+that mutate Connection Hub cards use the app API's separate opt-in operation
+CSRF contract; this does not change the bearer contract used by MCP callers.
+The detailed state and error matrix is in
+[OAuth Delegated Credential Protocol Adapter](../../sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md).
+
 ## Minimal Test
 
 ```text
@@ -601,6 +621,12 @@ credentials and user consent.
     declared grant; confirm creation fails.
 12. For a provider-backed namespace, revoke the provider claim while retaining
     the KDCube automation grant; confirm the upstream call fails closed.
+13. Edit or revoke the external client's Connection Hub card and confirm its
+    next call uses the new authority without reconnecting or restarting the
+    bundle.
+14. In the platform failure-injection suite, make shared authority state
+    unavailable and confirm the managed door returns a logged
+    `503 temporarily_unavailable` before bundle code runs.
 ```
 
 ### Platform regression after a source change

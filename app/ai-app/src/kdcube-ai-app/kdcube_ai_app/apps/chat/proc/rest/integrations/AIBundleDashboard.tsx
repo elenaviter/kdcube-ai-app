@@ -41,6 +41,10 @@ interface BundleAPIEndpoint {
     roles_default?: string[];
     roles_path?: string | null;
     roles_overridden?: boolean;
+    csrf?: boolean;
+    csrf_default?: boolean;
+    csrf_path?: string | null;
+    csrf_overridden?: boolean;
     auth?: Record<string, any> | null;
     auth_path?: string | null;
     authority_id?: string | null;
@@ -677,6 +681,27 @@ function buildProviderVisibilityFieldPatch(
     return buildProviderSurfaceSectionPatch(kind, spec, 'visibility', { [field]: value });
 }
 
+function buildProviderApiCsrfPatch(
+    spec: { route?: string | null; alias: string; http_method?: string | null },
+    value: unknown,
+): Record<string, any> {
+    const route = String(spec.route || 'operations').trim().toLowerCase() || 'operations';
+    const method = String(spec.http_method || '').trim().toUpperCase();
+    return {
+        surfaces: {
+            as_provider: {
+                api: {
+                    [route]: {
+                        [spec.alias]: {
+                            [method]: { csrf: value },
+                        },
+                    },
+                },
+            },
+        },
+    };
+}
+
 function buildBundleAllowedRolesPatch(value: unknown): Record<string, any> {
     return {
         surfaces: {
@@ -1109,6 +1134,7 @@ const ResourceEditorCard: React.FC<ResourceEditorCardProps> = ({
     const [formEnabled, setFormEnabled] = useState<boolean>(true);
     const [formUserTypes, setFormUserTypes] = useState<string[]>([]);
     const [formRoles, setFormRoles] = useState<string>('');
+    const [formCsrf, setFormCsrf] = useState<boolean>(false);
     const [formAuthorityId, setFormAuthorityId] = useState<string>('');
     const [formGrants, setFormGrants] = useState<string>('');
     const [formTransport, setFormTransport] = useState<string>('streamable-http');
@@ -1123,6 +1149,9 @@ const ResourceEditorCard: React.FC<ResourceEditorCardProps> = ({
         if (kind === 'api' || kind === 'widget') {
             setFormUserTypes(Array.isArray(selectedSpec.user_types) ? [...selectedSpec.user_types] : []);
             setFormRoles(Array.isArray(selectedSpec.roles) ? selectedSpec.roles.join(', ') : '');
+        }
+        if (kind === 'api') {
+            setFormCsrf(Boolean(selectedSpec.csrf));
         }
         if (kind === 'api' || kind === 'widget' || kind === 'mcp') {
             const auth = (selectedSpec as any).auth || {};
@@ -1198,6 +1227,17 @@ const ResourceEditorCard: React.FC<ResourceEditorCardProps> = ({
                         buildProviderVisibilityFieldPatch(kind, selectedSpec, 'roles', parseChips(formRoles)),
                     );
                 }
+            }
+            if (
+                kind === 'api'
+                && selectedSpec.route === 'operations'
+                && selectedSpec.http_method === 'POST'
+                && formCsrf !== Boolean(selectedSpec.csrf)
+            ) {
+                patch = deepMergeMaps(
+                    patch,
+                    buildProviderApiCsrfPatch(selectedSpec, formCsrf),
+                );
             }
             if (kind === 'api' || kind === 'widget' || kind === 'mcp') {
                 const currentAuth = { ...((selectedSpec as any).auth || {}) };
@@ -1300,6 +1340,21 @@ const ResourceEditorCard: React.FC<ResourceEditorCardProps> = ({
         }
     };
 
+    const resetApiCsrf = async () => {
+        if (kind !== 'api' || !selectedSpec) return;
+        setError(null);
+        try {
+            setSaving(true);
+            await onSave(buildProviderApiCsrfPatch(selectedSpec, null));
+            setFlash('Reset ✓');
+            window.setTimeout(() => setFlash(null), 1800);
+        } catch (e: any) {
+            setError(e?.message || 'Reset failed');
+        } finally {
+            setSaving(false);
+        }
+    };
+
     if (resources.length === 0) {
         return null;
     }
@@ -1360,6 +1415,34 @@ const ResourceEditorCard: React.FC<ResourceEditorCardProps> = ({
                                 Maps to <code>{selectedSpec.enabled_path}</code>. Missing value means enabled; disabling writes <code>false</code>.
                             </FieldHint>
                         </FieldRow>
+
+                        {kind === 'api'
+                            && selectedSpec.route === 'operations'
+                            && selectedSpec.http_method === 'POST' && (
+                            <FieldRow
+                                label="Cookie request CSRF"
+                                overridden={Boolean(selectedSpec.csrf_overridden)}
+                                configurable
+                                onResetToDefault={selectedSpec.csrf_overridden ? resetApiCsrf : undefined}
+                            >
+                                <label className="inline-flex items-center gap-2 cursor-pointer">
+                                    <input
+                                        type="checkbox"
+                                        className="accent-[#01BEB2]"
+                                        checked={formCsrf}
+                                        onChange={e => setFormCsrf(e.target.checked)}
+                                    />
+                                    <span className={formCsrf ? 'text-[#15803D] font-semibold text-sm' : 'text-[#7A99B0] font-semibold text-sm'}>
+                                        {formCsrf ? 'required' : 'not required'}
+                                    </span>
+                                </label>
+                                <FieldHint>
+                                    Descriptor path: <code>{selectedSpec.csrf_path}</code>.
+                                    {' '}Decorator default: <code>{selectedSpec.csrf_default ? 'true' : 'false'}</code>.
+                                    {' '}Reset writes <code>null</code> at this method path and resumes the decorator default.
+                                </FieldHint>
+                            </FieldRow>
+                        )}
 
                         {(kind === 'api' || kind === 'widget') && (
                             <>

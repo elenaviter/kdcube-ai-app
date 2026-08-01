@@ -4,7 +4,7 @@ title: "Connection Hub Solution"
 summary: "Canonical map of Connection Hub roles: connection edges, identity-family resolution, request authenticators, authority projection, delegated connections, link flows, and widget auth-context transport."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
-updated_at: 2026-07-30
+updated_at: 2026-08-01
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-edges/connection-edges-README.md
@@ -22,6 +22,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/widget-auth-context/widget-auth-context-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-token-storage-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/storage-model/storage-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-operation-csrf-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-selector-README.md
 ---
 # Connection Hub Solution
@@ -699,3 +701,20 @@ credential. That belongs to Connection Hub request authenticators. Do not put
 OAuth-code issuance, refresh-token rotation, or selected-tool grant state into
 the generic edge store. That belongs to delegated connection protocol adapters
 such as [OAuth delegated credential Protocol Adapter](delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md).
+
+For pointer-backed delegated credentials, that adapter treats the current
+Connection Hub card as live authority on every managed call and refresh. Card
+edits and revocations therefore apply to the next request; unavailable or
+invalid current state makes a managed MCP/REST call return a logged
+`503 temporarily_unavailable` rather than falling back to an older token
+snapshot. Refresh does not rotate untrusted state: store failure returns
+`temporarily_unavailable`, while invalid authority returns `invalid_grant`.
+Authorization-code exchange, OAuth consent-CSRF consumption, and refresh
+rotation are atomic shared-state transitions, so overlapping workers admit one
+winner.
+
+Cookie-authenticated browser operations that mutate Connection Hub state use
+the API surface's separate opt-in
+[Bundle Operation CSRF](../../bundle/bundle-operation-csrf-README.md)
+contract. That proof protects one request; it is not delegated authority and
+does not alter the MCP bearer path.

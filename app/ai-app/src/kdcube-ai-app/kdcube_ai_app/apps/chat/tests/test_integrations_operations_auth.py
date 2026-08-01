@@ -24,7 +24,7 @@ from starlette.datastructures import Headers
 from kdcube_ai_app.apps.chat.proc.rest.integrations import integrations
 from kdcube_ai_app.apps.chat.proc.rest.integrations import operation_csrf
 from kdcube_ai_app.auth.AuthManager import RequirementBase, RequireRoles
-from kdcube_ai_app.infra.plugin.bundle_loader import api
+from kdcube_ai_app.infra.plugin.bundle_loader import APIEndpointSpec, api
 
 SUPER_ADMIN_ROLE = "kdcube:role:super-admin"
 
@@ -101,6 +101,97 @@ def test_bundle_admin_endpoints_stay_super_admin_gated(endpoint):
 
     member = _user(["kdcube:role:member"])
     assert any(req.validate_requirement(member) is not None for req in reqs)
+
+
+def test_api_dashboard_descriptor_exposes_effective_csrf_override():
+    spec = APIEndpointSpec(
+        method_name="account_disconnect",
+        alias="account_disconnect",
+        http_method="POST",
+        route="operations",
+        csrf=True,
+    )
+    props = {
+        "surfaces": {
+            "as_provider": {
+                "api": {
+                    "operations": {
+                        "account_disconnect": {
+                            "POST": {"csrf": False},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    descriptor = integrations._api_spec_descriptor(spec, props)
+
+    assert descriptor["csrf"] is False
+    assert descriptor["csrf_default"] is True
+    assert descriptor["csrf_overridden"] is True
+    assert descriptor["csrf_path"] == (
+        "surfaces.as_provider.api.operations.account_disconnect.POST.csrf"
+    )
+
+
+def test_api_dashboard_descriptor_reports_explicit_default_value_as_override():
+    spec = APIEndpointSpec(
+        method_name="account_disconnect",
+        alias="account_disconnect",
+        http_method="POST",
+        route="operations",
+        csrf=True,
+    )
+    props = {
+        "surfaces": {
+            "as_provider": {
+                "api": {
+                    "operations": {
+                        "account_disconnect": {
+                            "POST": {"csrf": True},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    descriptor = integrations._api_spec_descriptor(spec, props)
+
+    assert descriptor["csrf"] is True
+    assert descriptor["csrf_default"] is True
+    assert descriptor["csrf_overridden"] is True
+
+
+def test_api_dashboard_csrf_reset_marker_restores_decorator_default():
+    spec = APIEndpointSpec(
+        method_name="account_disconnect",
+        alias="account_disconnect",
+        http_method="POST",
+        route="operations",
+        csrf=False,
+    )
+    props = {
+        "surfaces": {
+            "as_provider": {
+                "api": {
+                    "operations": {
+                        "account_disconnect": {
+                            "csrf": True,
+                            "POST": {"csrf": None},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    descriptor = integrations._api_spec_descriptor(spec, props)
+
+    assert descriptor["csrf"] is False
+    assert descriptor["csrf_default"] is False
+    assert descriptor["csrf_overridden"] is False
 
 
 # ---------------------------------------------------------------------------
