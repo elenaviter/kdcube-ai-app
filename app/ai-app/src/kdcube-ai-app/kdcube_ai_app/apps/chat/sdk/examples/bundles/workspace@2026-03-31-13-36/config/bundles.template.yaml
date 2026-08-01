@@ -638,6 +638,22 @@ bundles:
                     allowed:
                       - object.resolve
                       - object.action
+                  - kind: named_service
+                    namespace: sheets
+                    enabled: true
+                    discovery:
+                      mode: service_discovery
+                    allowed:
+                      - object.resolve
+                      - object.action
+                  - kind: named_service
+                    namespace: docs
+                    enabled: true
+                    discovery:
+                      mode: service_discovery
+                    allowed:
+                      - object.resolve
+                      - object.action
               scene:
                 # Scene composition is server-configured. The browser scene
                 # receives this through scene_surface_config and registers each

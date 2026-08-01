@@ -19,7 +19,12 @@ export type {
   FeedbackReaction,
   CreateChatEngine,
 } from './types.ts'
-export { activateContextPin, contextPinActionNotice, ContextPinActionError } from './contextPinActions.ts'
+export {
+  activateContextPin,
+  contextPinActionNotice,
+  ContextPinActionError,
+  objectActionExternalUrl,
+} from './contextPinActions.ts'
 export type { ActionableContext } from './contextPinActions.ts'
 export { buildExternalEventBatch, contextRef, isCanvasContext } from './eventBatch.ts'
 export { projectServiceEventToChatStep } from './serviceSteps.ts'

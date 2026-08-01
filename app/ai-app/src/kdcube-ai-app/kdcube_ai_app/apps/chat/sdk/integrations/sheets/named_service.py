@@ -40,6 +40,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     OBJECT_DELETE,
     OBJECT_GET,
     OBJECT_LIST,
+    OBJECT_RESOLVE,
     OBJECT_SCHEMA,
     OBJECT_SEARCH,
     OBJECT_UPSERT,
@@ -72,6 +73,7 @@ ACTION_ADD_TAB = "add_tab"
 ACTION_UPDATE_TAB = "update_tab"
 ACTION_DELETE_TAB = "delete_tab"
 ACTION_FORMAT_RANGE = "format_range"
+UI_ACTION_OPEN = "open"
 
 SHEETS_ACTIONS = (
     ACTION_UPDATE_VALUES,
@@ -398,6 +400,7 @@ def _operations() -> dict[str, Any]:
         OBJECT_UPSERT: {"transports": SHEETS_TRANSPORTS},
         OBJECT_DELETE: {"transports": SHEETS_TRANSPORTS},
         OBJECT_ACTION: {"transports": SHEETS_TRANSPORTS},
+        OBJECT_RESOLVE: {"transports": SHEETS_TRANSPORTS},
         EVENT_RESOLVE: {"transports": SHEETS_TRANSPORTS},
         BLOCK_PRODUCE: {"transports": SHEETS_TRANSPORTS},
     }
@@ -1597,11 +1600,148 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
             return error
         return self._mutation_response(request=request, ret=ret or {}, parsed=parsed)
 
+    async def object_resolve(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        del ctx
+        action = _text(request.action or "capabilities").lower()
+        if action not in {"capabilities", "describe"}:
+            return NamedServiceResponse.error_response(
+                code="sheets_resolve_action_not_supported",
+                message=f"Unsupported spreadsheet resolve action: {action}.",
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or SHEETS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        try:
+            parsed = parse_sheets_ref(request.object_ref)
+        except ValueError as exc:
+            return self._invalid_ref(request, exc)
+        unsupported = self._provider_not_supported(request, parsed)
+        if unsupported is not None:
+            return unsupported
+        object_kind = (
+            SHEETS_TAB_KIND
+            if parsed["kind"] == "tab"
+            else SHEETS_SPREADSHEET_KIND
+        )
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or SHEETS_NAMESPACE,
+            object_ref=request.object_ref,
+            capabilities={
+                "preview": False,
+                "open": True,
+                "download": False,
+                "rehost": False,
+            },
+            extra={
+                "object_kind": object_kind,
+                "default_open_effect_action": UI_ACTION_OPEN,
+            },
+        )
+
+    async def _open_spreadsheet(
+        self, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        try:
+            parsed = parse_sheets_ref(request.object_ref)
+        except ValueError as exc:
+            return self._invalid_ref(request, exc)
+        unsupported = self._provider_not_supported(request, parsed)
+        if unsupported is not None:
+            return unsupported
+        ret, error = await self._execute(
+            request=request,
+            operation="describe",
+            claim=SHEETS_READ_CLAIM,
+            payload={"spreadsheet_ref": parsed["spreadsheet_id"]},
+            account_id=parsed["account_id"],
+        )
+        if error is not None:
+            return error
+        spreadsheet = _spreadsheet_object(
+            ret or {},
+            account_id=parsed["account_id"],
+            provider=parsed["provider"],
+        )
+        obj: dict[str, Any] = spreadsheet
+        external_url = _text(spreadsheet.get("web_url"))
+        if parsed["kind"] == "tab":
+            tab = next(
+                (
+                    row
+                    for row in spreadsheet.get("tabs") or []
+                    if isinstance(row, Mapping)
+                    and _int(row.get("sheet_id")) == parsed["sheet_id"]
+                ),
+                None,
+            )
+            if tab is None:
+                return NamedServiceResponse.error_response(
+                    code="sheets_tab_not_found",
+                    message="The spreadsheet tab was not found.",
+                    status=404,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or SHEETS_NAMESPACE,
+                    object_ref=request.object_ref,
+                )
+            obj = dict(tab)
+            if external_url:
+                external_url = (
+                    f"{external_url.split('#', 1)[0]}#gid={parsed['sheet_id']}"
+                )
+        if not external_url:
+            return NamedServiceResponse.error_response(
+                code="sheets_open_url_unavailable",
+                message="The spreadsheet provider did not return a browser URL.",
+                status=409,
+                provider=self._provider_identity(),
+                namespace=request.namespace or SHEETS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        object_kind = _text(obj.get("object_kind")) or (
+            SHEETS_TAB_KIND
+            if parsed["kind"] == "tab"
+            else SHEETS_SPREADSHEET_KIND
+        )
+        title = _text(obj.get("title") or spreadsheet.get("title"))
+        capabilities = {
+            "preview": False,
+            "open": True,
+            "download": False,
+            "rehost": False,
+        }
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or SHEETS_NAMESPACE,
+            object_ref=request.object_ref,
+            object=obj,
+            capabilities=capabilities,
+            ui_event={
+                "type": "kdcube.ui.object.open.requested",
+                "action": UI_ACTION_OPEN,
+                "object_ref": request.object_ref,
+                "external_url": external_url,
+                "title": title,
+            },
+            extra={
+                "action": UI_ACTION_OPEN,
+                "object_kind": object_kind,
+                "default_open_effect_action": UI_ACTION_OPEN,
+                "external_url": external_url,
+                "title": title,
+            },
+        )
+
     async def object_action(
         self, ctx: NamedServiceContext, request: NamedServiceRequest
     ) -> NamedServiceResponse:
         del ctx
         action = _text(request.action)
+        if action == UI_ACTION_OPEN:
+            return await self._open_spreadsheet(request)
         if action not in SHEETS_ACTIONS:
             return NamedServiceResponse.error_response(
                 code="sheets_action_not_supported",

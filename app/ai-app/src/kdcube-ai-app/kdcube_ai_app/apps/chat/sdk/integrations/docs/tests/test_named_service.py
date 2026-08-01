@@ -44,6 +44,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     OBJECT_ACTION,
     OBJECT_DELETE,
     OBJECT_GET,
+    OBJECT_RESOLVE,
     OBJECT_SCHEMA,
     OBJECT_SEARCH,
     OBJECT_UPSERT,
@@ -59,12 +60,14 @@ def _ctx() -> NamedServiceContext:
 
 
 def test_spec_publishes_discoverable_ref_and_object_metadata() -> None:
-    metadata = docs_named_service_spec().metadata
+    spec = docs_named_service_spec()
+    metadata = spec.metadata
 
     assert metadata["canonical_refs"]["document"].startswith("docs:<provider>")
     assert metadata["canonical_refs"]["document"].endswith(":document:<document_id>")
     assert metadata["object_kinds"][DOCS_DOCUMENT_KIND]
     assert metadata["actions"][ACTION_APPEND_TEXT]
+    assert OBJECT_RESOLVE in spec.operations
 
 
 class _FakeDocs:
@@ -158,6 +161,7 @@ class _FakeDocs:
                     "native_document": False,
                     "conversion_required": True,
                     "copyable": True,
+                    "web_url": "https://drive.google.com/file/d/source-docx/view",
                     "next_action": "Copy this import source.",
                 },
             }
@@ -394,6 +398,79 @@ async def test_search_returns_named_service_objects() -> None:
             "account_id": "account-1",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_object_resolve_declares_open_without_reading_provider() -> None:
+    fake = _FakeDocs()
+    ref = "docs:google:account-1:document:doc-1"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_RESOLVE,
+            namespace="docs",
+            object_ref=ref,
+            action="capabilities",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.capabilities["preview"] is False
+    assert response.capabilities["open"] is True
+    assert response.extra["default_open_effect_action"] == "open"
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_open_rechecks_read_access_and_returns_explicit_browser_url() -> None:
+    fake = _FakeDocs()
+    ref = "docs:google:account-1:document:doc-1"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref=ref,
+            action="open",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.capabilities["preview"] is False
+    assert response.ui_event == {
+        "type": "kdcube.ui.object.open.requested",
+        "action": "open",
+        "object_ref": ref,
+        "external_url": "https://docs.google.com/document/d/doc-1/edit",
+        "title": "Launch plan",
+    }
+    assert response.extra["external_url"] == response.ui_event["external_url"]
+    assert fake.calls[-1]["operation"] == "get"
+    assert fake.calls[-1]["claim"] == DOCS_READ_CLAIM
+
+
+@pytest.mark.anyio
+async def test_open_import_source_uses_drive_metadata_url() -> None:
+    fake = _FakeDocs()
+    ref = "docs:google:account-1:source:source-docx"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="docs",
+            object_ref=ref,
+            action="open",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.ui_event["external_url"] == (
+        "https://drive.google.com/file/d/source-docx/view"
+    )
+    assert fake.calls[-1]["operation"] == "get_source"
 
 
 @pytest.mark.anyio

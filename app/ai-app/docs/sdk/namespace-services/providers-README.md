@@ -4,7 +4,7 @@ title: "Namespace Services: Providers"
 summary: "Transport-neutral SDK concept for apps (bundles) and platform subsystems that publish namespace service provider surfaces: namespace ownership, object operations, resolvers, capabilities, relations, and integrations over API, MCP, Data Bus, or local adapters."
 status: current
 tags: ["sdk", "namespace-services", "named-service-provider", "services", "namespaces", "objects", "resolvers", "mcp", "api", "data-bus", "apps", "bundles"]
-updated_at: 2026-08-01
+updated_at: 2026-08-02
 keywords:
   [
     "named service provider",
@@ -1172,6 +1172,12 @@ object handle?" It is not inferred by the host surface and it is not a single
 namespace-wide value. For example, the same `task` namespace can return `open`
 for `task:issue:<id>` and `download` for
 `task:issue:attachment:<id>/attachments/...`.
+
+The corresponding `object.action(open)` re-checks current authority and returns
+either a scene `target_surface` or an explicit HTTP(S) `external_url`. Generic
+clients use that action result for navigation; list/search display metadata is
+not the open authorization result. The complete boundary is defined in
+[Object Refs, Presentation, And Actions](object-ref-presentation-and-actions-README.md).
 
 For `download`, the provider should return a `download_url` plus file metadata.
 An interactive browser URL may re-check the user's cookie/session. A turnless

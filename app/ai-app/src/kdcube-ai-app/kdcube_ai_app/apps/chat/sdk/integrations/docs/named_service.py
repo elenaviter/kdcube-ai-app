@@ -52,6 +52,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     OBJECT_DELETE,
     OBJECT_GET,
     OBJECT_LIST,
+    OBJECT_RESOLVE,
     OBJECT_SCHEMA,
     OBJECT_SEARCH,
     OBJECT_UPSERT,
@@ -109,6 +110,11 @@ ACTION_CREATE_COMMENT = "create_comment"
 ACTION_REPLY_COMMENT = "reply_comment"
 ACTION_RESOLVE_COMMENT = "resolve_comment"
 ACTION_DELETE_COMMENT = "delete_comment"
+
+# Generic UI actions are resolved by the provider but are not advertised as
+# model-callable document mutations.
+UI_ACTION_OPEN = "open"
+UI_ACTION_DOWNLOAD = "download"
 
 # Read-only actions gate on docs:read alone.
 DOCS_READ_ACTIONS = frozenset({ACTION_EXPORT, ACTION_LIST_COMMENTS, ACTION_GET_COMMENT})
@@ -680,6 +686,7 @@ def _operations() -> dict[str, Any]:
         OBJECT_UPSERT: {"transports": DOCS_TRANSPORTS},
         OBJECT_DELETE: {"transports": DOCS_TRANSPORTS},
         OBJECT_ACTION: {"transports": DOCS_TRANSPORTS},
+        OBJECT_RESOLVE: {"transports": DOCS_TRANSPORTS},
         EVENT_RESOLVE: {"transports": DOCS_TRANSPORTS},
         BLOCK_PRODUCE: {"transports": DOCS_TRANSPORTS},
     }
@@ -1937,6 +1944,175 @@ class DocsNamedServiceProvider(NamedServiceProvider):
             object=obj,
         )
 
+    async def object_resolve(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        del ctx
+        action = _text(request.action or "capabilities").lower()
+        if action not in {"capabilities", "describe"}:
+            return NamedServiceResponse.error_response(
+                code="docs_resolve_action_not_supported",
+                message=f"Unsupported document resolve action: {action}.",
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        try:
+            parsed = parse_docs_ref(request.object_ref)
+        except ValueError:
+            try:
+                export_parsed = parse_docs_export_ref(request.object_ref)
+            except ValueError as exc:
+                return self._invalid_ref(request, exc)
+            unsupported = self._provider_not_supported(request, export_parsed)
+            if unsupported is not None:
+                return unsupported
+            can_download = self._file_url_factory is not None
+            return NamedServiceResponse.ok_response(
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+                capabilities={
+                    "preview": False,
+                    "open": False,
+                    "download": can_download,
+                    "rehost": False,
+                },
+                extra={
+                    "object_kind": DOCS_EXPORT_KIND,
+                    **(
+                        {"default_open_effect_action": UI_ACTION_DOWNLOAD}
+                        if can_download
+                        else {}
+                    ),
+                },
+            )
+        unsupported = self._provider_not_supported(request, parsed)
+        if unsupported is not None:
+            return unsupported
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=request.object_ref,
+            capabilities={
+                "preview": False,
+                "open": True,
+                "download": False,
+                "rehost": False,
+            },
+            extra={
+                "object_kind": parsed["object_kind"],
+                "default_open_effect_action": UI_ACTION_OPEN,
+            },
+        )
+
+    async def _open_document(
+        self, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        try:
+            parsed = parse_docs_ref(request.object_ref)
+        except ValueError as exc:
+            return self._invalid_ref(request, exc)
+        unsupported = self._provider_not_supported(request, parsed)
+        if unsupported is not None:
+            return unsupported
+        import_source = parsed["object_kind"] == DOCS_IMPORT_SOURCE_KIND
+        ret, error = await self._execute(
+            request=request,
+            operation="get_source" if import_source else "get",
+            claim=DOCS_READ_CLAIM,
+            payload={"document_ref": parsed["document_id"], "include_text": False},
+            account_id=parsed["account_id"],
+        )
+        if error is not None:
+            return error
+        obj = _document_object(
+            ret or {},
+            account_id=parsed["account_id"],
+            provider=parsed["provider"],
+        )
+        external_url = _text(obj.get("web_url"))
+        if not external_url:
+            return NamedServiceResponse.error_response(
+                code="docs_open_url_unavailable",
+                message="The document provider did not return a browser URL.",
+                status=409,
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        capabilities = {
+            "preview": False,
+            "open": True,
+            "download": False,
+            "rehost": False,
+        }
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=obj["ref"],
+            object=obj,
+            capabilities=capabilities,
+            ui_event={
+                "type": "kdcube.ui.object.open.requested",
+                "action": UI_ACTION_OPEN,
+                "object_ref": obj["ref"],
+                "external_url": external_url,
+                "title": _text(obj.get("title")),
+            },
+            extra={
+                "action": UI_ACTION_OPEN,
+                "object_kind": obj["object_kind"],
+                "default_open_effect_action": UI_ACTION_OPEN,
+                "external_url": external_url,
+                "title": _text(obj.get("title")),
+            },
+        )
+
+    async def _download_export(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest
+    ) -> NamedServiceResponse:
+        try:
+            parsed = parse_docs_export_ref(request.object_ref)
+        except ValueError as exc:
+            return self._invalid_ref(request, exc)
+        response = await self._export_reference_response(ctx, request, parsed=parsed)
+        if not response.ok:
+            return response
+        obj = response.object
+        download = obj.get("download") if isinstance(obj.get("download"), Mapping) else {}
+        download_url = _text(download.get("url"))
+        if not download_url:
+            return NamedServiceResponse.error_response(
+                code="docs_download_url_unavailable",
+                message="This client must stream the export ref to download it.",
+                status=409,
+                provider=self._provider_identity(),
+                namespace=request.namespace or DOCS_NAMESPACE,
+                object_ref=request.object_ref,
+            )
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or DOCS_NAMESPACE,
+            object_ref=request.object_ref,
+            object=obj,
+            capabilities={
+                "preview": False,
+                "open": False,
+                "download": True,
+                "rehost": False,
+            },
+            extra={
+                "action": UI_ACTION_DOWNLOAD,
+                "object_kind": DOCS_EXPORT_KIND,
+                "default_open_effect_action": UI_ACTION_DOWNLOAD,
+                "download_url": download_url,
+                "filename": _text(obj.get("filename")),
+                "mime": _text(obj.get("mime_type")),
+            },
+        )
+
     async def _materialize_snapshot(
         self,
         *,
@@ -2125,6 +2301,10 @@ class DocsNamedServiceProvider(NamedServiceProvider):
         self, ctx: NamedServiceContext, request: NamedServiceRequest
     ) -> NamedServiceResponse:
         action = _text(request.action)
+        if action == UI_ACTION_OPEN:
+            return await self._open_document(request)
+        if action == UI_ACTION_DOWNLOAD:
+            return await self._download_export(ctx, request)
         if action not in DOCS_ACTIONS:
             return NamedServiceResponse.error_response(
                 code="docs_action_not_supported",

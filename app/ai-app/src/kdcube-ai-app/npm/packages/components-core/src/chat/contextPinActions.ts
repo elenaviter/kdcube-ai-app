@@ -23,6 +23,8 @@ import type {
 import type { AttachedContext } from './state.ts'
 import type { ContextChip } from './contextChips.ts'
 
+export { objectActionExternalUrl } from '../shared/objectAction.ts'
+
 export type ActionableContext = AttachedContext | ContextChip
 
 export class ContextPinActionError extends Error {

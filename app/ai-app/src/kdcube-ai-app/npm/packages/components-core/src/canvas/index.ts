@@ -21,3 +21,4 @@ export {
   namespacePresentationCandidates,
   namespaceStyleForKey,
 } from '../shared/namespacePresentation.ts'
+export { objectActionExternalUrl } from '../shared/objectAction.ts'

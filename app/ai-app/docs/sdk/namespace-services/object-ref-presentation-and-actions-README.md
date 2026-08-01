@@ -4,7 +4,7 @@ title: "Object Refs, Presentation, And Actions"
 summary: "Canonical contract for ecosystem objects: object_ref is the universal handle, namespace presentation config owns visual identity, and provider resolvers own actions and subtype semantics."
 status: active
 tags: ["sdk", "namespace-services", "object-ref", "presentation", "resolvers", "scene", "canvas", "chat"]
-updated_at: 2026-07-18
+updated_at: 2026-08-02
 keywords:
   [
     "object_ref",
@@ -218,6 +218,28 @@ It does not infer that `task:*` can open, that `conv:fi:*` can download, or that
 
 The scene host routes by `target_surface`; it does not parse the object ref to
 choose a widget.
+
+When the provider owns the browser experience, `open` can instead return an
+explicit external URL:
+
+```json
+{
+  "ok": true,
+  "object_ref": "docs:google:account_1:document:doc_123",
+  "ui_event": {
+    "type": "kdcube.ui.object.open.requested",
+    "action": "open",
+    "object_ref": "docs:google:account_1:document:doc_123",
+    "external_url": "https://docs.google.com/document/d/doc_123/edit"
+  }
+}
+```
+
+The provider performs the current identity, account, claim, and consent checks
+for `object.action(open)` before returning this URL. A generic client opens only
+an explicit HTTP(S) `external_url` from that action result. Display metadata
+such as `object.web_url` from an earlier list or search result is not an
+authorization result and does not drive navigation.
 
 ## Surface Compatibility
 

@@ -31,7 +31,10 @@
  * widget picks up to open the stream — no reload.
  */
 
-import type { ConnectionsConsentOpen } from '@kdcube/components-core/chat'
+import {
+  objectActionExternalUrl,
+  type ConnectionsConsentOpen,
+} from '@kdcube/components-core/chat'
 import {
   CHAT_CONTEXT_ATTACH_MESSAGE,
   CHAT_CONTEXT_FOCUS_MESSAGE,
@@ -244,7 +247,7 @@ export interface HostObjectOpenPayload {
 
 export function requestHostObjectOpen(payload: HostObjectOpenPayload): boolean {
   try {
-    if (typeof window === 'undefined' || window.parent === window) return false
+    if (typeof window === 'undefined') return false
     const response = payload.response || {}
     const uiEvent = (response.ui_event && typeof response.ui_event === 'object' ? response.ui_event : {}) as Record<string, unknown>
     const source = payload.source || {}
@@ -257,17 +260,22 @@ export function requestHostObjectOpen(payload: HostObjectOpenPayload): boolean {
       source.ref ||
       '',
     ).trim()
-    if (!targetSurface) return false
-    window.parent.postMessage({
-      ...uiEvent,
-      type: 'kdcube.surface.command',
-      target_surface: targetSurface,
-      action: 'open',
-      object_ref: objectRef || undefined,
-      widget: CHAT_WIDGET_ID,
-      response: payload.response,
-      source: payload.source,
-    }, '*')
+    if (targetSurface && window.parent !== window) {
+      window.parent.postMessage({
+        ...uiEvent,
+        type: 'kdcube.surface.command',
+        target_surface: targetSurface,
+        action: 'open',
+        object_ref: objectRef || undefined,
+        widget: CHAT_WIDGET_ID,
+        response: payload.response,
+        source: payload.source,
+      }, '*')
+      return true
+    }
+    const externalUrl = objectActionExternalUrl(response, window.location.href)
+    if (!externalUrl) return false
+    window.open(externalUrl, '_blank', 'noopener,noreferrer')
     return true
   } catch {
     return false

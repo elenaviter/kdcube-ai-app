@@ -282,6 +282,7 @@ export interface ObjectActionUiEvent {
   source?: string
   object_ref?: string
   target_surface?: string
+  external_url?: string
   mode?: string
   title?: string
   [key: string]: unknown
@@ -303,6 +304,7 @@ export interface ObjectActionResponse {
   text?: string
   json?: unknown
   download_url?: string
+  external_url?: string
   content_base64?: string
   filename?: string
   size?: number

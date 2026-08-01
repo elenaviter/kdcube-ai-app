@@ -27,6 +27,7 @@ import {
   uploadAndPinFiles,
   emptyCanvasDefinition,
   normalizeCanvasPatchEvent,
+  objectActionExternalUrl,
   canvasFromPatchEvent,
   upsertCanvasDefinition,
   type CanvasCard,
@@ -434,6 +435,12 @@ export default function App() {
         const title = String(response.title || card.title || card.ref || 'this pin')
         setNotice(`No surface in this workspace accepted opening “${title}” (${targetSurface}). Summon the target widget and try again.`)
       })
+    } else if (action === 'open') {
+      const externalUrl = objectActionExternalUrl(
+        response as Record<string, unknown>,
+        window.location.href,
+      )
+      if (externalUrl) window.open(externalUrl, '_blank', 'noopener,noreferrer')
     }
     return response
   }, [host])

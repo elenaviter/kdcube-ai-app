@@ -327,7 +327,7 @@ surfaces:
         resolvers:
         - kind: named_service
           namespace: crm
-          allowed: [object.action]
+          allowed: [object.resolve, object.action]
 ```
 
 The configured resolver resolves the owner through Named Service Discovery and
@@ -335,6 +335,11 @@ then calls the owning app through the request-bound local bridge, so it
 preserves the current tenant/project/user session without making an HTTP
 callback. A concrete `providers` list may be added only when this bundle must
 pin one or more provider endpoints instead of using discovery.
+
+Provider objects that open in their own web application, such as a Google Doc
+or spreadsheet, still use this resolver path. The provider rechecks access on
+`object.action(open)` and returns the browser URL as the open result; chat does
+not navigate to a URL copied from the original search card.
 
 The `surfaces.as_consumer.agents.<agent>.tools` list controls model-callable
 named-service tools. The `surfaces.as_consumer.agents.<agent>.event_sources`

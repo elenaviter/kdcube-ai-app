@@ -4,7 +4,7 @@ title: "Namespace Services: Clients"
 summary: "How apps (bundles), agents, widgets, jobs, and external clients consume configured namespace service providers."
 status: design
 tags: ["sdk", "namespace-services", "clients", "tools", "resolvers", "apps", "bundles"]
-updated_at: 2026-07-27
+updated_at: 2026-08-02
 keywords:
   [
     "namespace service client",
@@ -189,7 +189,7 @@ Consumer finds namespace = task
         v
 Consumer calls provider operation allowed for that surface:
   object.resolve       -> cheap metadata, actions, default_open_effect_action
-  object.action(open)  -> provider ui_event, scene routes target_surface
+  object.action(open)  -> provider ui_event; host routes target_surface or opens explicit external_url
   object.action(download) -> provider download_url, browser streams bytes
   object.get(stream)   -> ReAct/materializer writes bytes to conv:fi:
   block.produce        -> model-visible blocks
@@ -213,6 +213,7 @@ The provider owns:
 | --- | --- |
 | `object_kind`, `actions`, `capabilities` | Semantics for the concrete ref. |
 | `default_open_effect_action` | What a generic click/open should run for this concrete object. |
+| `target_surface` or explicit `external_url` | Where an authorized `open` action routes. |
 | `download_url` and file metadata | How the browser downloads provider-owned bytes. |
 | streamed `object.get` representation | How ReAct or other materializers pull the object into a workspace. |
 | `block.produce` output | How the object becomes model-visible context. |

@@ -680,8 +680,9 @@ disposable data:
 11. Create a document with two tabs and read it. Verify `tab_count` and the tab
     inventory are present. Append by `tab_selector.title`, replace another tab
     by `tab_selector.position`, and select a nested tab by full hierarchy. Create
-    duplicate tab titles and verify the adapter returns candidates instead of
-    writing. Then explicitly replace across all tabs and verify both scopes.
+    `Internal Notes` and `Invoice Notes`, select by the shared `Notes` title
+    fragment, and verify the adapter returns both candidates instead of writing.
+    Then explicitly replace across all tabs and verify both scopes.
 12. Create two document-level comments with overlapping text. Reply using a
     selector that adds author or resolved state, and verify
     `selector_resolution` names the chosen thread. Retry with only the shared

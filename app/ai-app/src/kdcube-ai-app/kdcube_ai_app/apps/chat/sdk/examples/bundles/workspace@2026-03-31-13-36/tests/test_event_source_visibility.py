@@ -35,14 +35,14 @@ def test_canvas_event_source_visibility_is_separate_from_named_service_actions()
         ).tool_specs
         if isinstance(spec, dict)
     }
-    assert "canvas" in tool_aliases
+    assert "canvas" not in tool_aliases
 
     tool_config = agent_tool_config_from_bundle_props(
         props,
-        "default_agent",
+        "main",
         bundle_root=_bundle_root(),
     )
-    assert "object_action" not in (tool_config.allowed_tool_names_by_alias.get("named_services") or [])
+    assert "object_action" in (tool_config.allowed_tool_names_by_alias.get("named_services") or [])
 
     event_sources = EventSourceSubsystem(
         event_specs=default_canvas_event_source_specs(),
@@ -67,6 +67,16 @@ def test_reference_template_tool_config_uses_as_consumer_surface():
     assert main["event_sources"] == [
         {
             "kind": "named_service",
+            "namespace": "task",
+            "enabled": True,
+            "discovery": {"mode": "service_discovery"},
+            "policies": {
+                "block_production": {"mode": "provider", "operation": "block.produce"},
+                "pull": {"mode": "provider", "operation": "object.get"},
+            },
+        },
+        {
+            "kind": "named_service",
             "namespace": "mem",
             "enabled": True,
             "discovery": {"mode": "service_discovery"},
@@ -83,12 +93,33 @@ def test_reference_template_tool_config_uses_as_consumer_surface():
             "enabled": True,
             "discovery": {"mode": "service_discovery"},
             "allowed": ["object.resolve", "object.action"],
-        }
+        },
+        {
+            "kind": "named_service",
+            "namespace": "task",
+            "enabled": True,
+            "discovery": {"mode": "service_discovery"},
+            "allowed": ["object.resolve", "object.action"],
+        },
+        {
+            "kind": "named_service",
+            "namespace": "sheets",
+            "enabled": True,
+            "discovery": {"mode": "service_discovery"},
+            "allowed": ["object.resolve", "object.action"],
+        },
+        {
+            "kind": "named_service",
+            "namespace": "docs",
+            "enabled": True,
+            "discovery": {"mode": "service_discovery"},
+            "allowed": ["object.resolve", "object.action"],
+        },
     ]
 
     tool_config = agent_tool_config_from_bundle_props(props, "main", bundle_root=_bundle_root())
-    assert "canvas" in tool_config.allowed_plugins
-    assert tool_config.allowed_tool_names_by_alias["canvas"] == ["patch"]
+    assert "canvas" not in tool_config.allowed_plugins
+    assert tool_config.allowed_tool_names_by_alias.get("canvas") is None
     assert tool_config.allowed_tool_names_by_alias["knowledge"] is None
 
     skill_config = agent_skill_config_from_bundle_props(props, "main", bundle_root=_bundle_root())

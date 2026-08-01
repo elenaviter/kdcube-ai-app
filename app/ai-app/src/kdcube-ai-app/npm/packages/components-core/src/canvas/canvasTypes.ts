@@ -263,6 +263,7 @@ export interface CanvasObjectActionResponse {
   text?: string
   json?: unknown
   download_url?: string
+  external_url?: string
   content_base64?: string
   filename?: string
   size?: number
@@ -275,6 +276,7 @@ export interface CanvasObjectActionResponse {
     source?: string
     object_ref?: string
     target_surface?: string
+    external_url?: string
     mode?: string
     memory_id?: string
     conversation_id?: string

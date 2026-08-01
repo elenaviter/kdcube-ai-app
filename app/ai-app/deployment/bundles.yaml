@@ -3063,6 +3063,22 @@ bundles:
                 allowed:
                 - object.resolve
                 - object.action
+              - kind: named_service
+                namespace: sheets
+                enabled: true
+                discovery:
+                  mode: service_discovery
+                allowed:
+                - object.resolve
+                - object.action
+              - kind: named_service
+                namespace: docs
+                enabled: true
+                discovery:
+                  mode: service_discovery
+                allowed:
+                - object.resolve
+                - object.action
       connections:
         connection_hub:
           bundle_id: connection-hub@1-0

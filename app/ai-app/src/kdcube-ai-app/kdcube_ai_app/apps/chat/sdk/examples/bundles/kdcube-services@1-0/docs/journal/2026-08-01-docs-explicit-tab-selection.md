@@ -63,10 +63,11 @@ The agent therefore sees what happened. It can select a tab whose title matches
 the user's request, or ask the user when no intended tab is clear. The harness
 does not silently pick the first tab or expand the write to every tab.
 
-Named-service ambiguity is also explicit. Duplicate titles return
-`docs_tab_selector_ambiguous` with bounded position and hierarchy candidates;
-no mutation follows. A successful natural selection records its resolved tab
-in `selector_resolution`.
+Named-service ambiguity is also explicit. For example, a `Notes` title fragment
+can match distinct tabs named `Internal Notes` and `Invoice Notes`. The provider
+returns `docs_tab_selector_ambiguous` with bounded position and hierarchy
+candidates; no mutation follows. A successful natural selection records its
+resolved tab in `selector_resolution`.
 
 ## Regression Coverage
 
@@ -76,4 +77,4 @@ unknown tabs, conflicting scopes, flexible batch stamping, named-service error
 propagation, and typed MCP parameter descriptions. They also assert that an
 ambiguous mutation performs only the preflight read and sends no provider
 write. Named-service tests additionally cover title fragments, hierarchy,
-multiple selectors, duplicate-title ambiguity, and exact-id compatibility.
+multiple selectors, overlapping-fragment ambiguity, and exact-id compatibility.

@@ -287,6 +287,18 @@ surfaces:
             allowed:
               - object.resolve
               - object.action
+          - kind: named_service
+            namespace: sheets
+            enabled: true
+            allowed:
+              - object.resolve
+              - object.action
+          - kind: named_service
+            namespace: docs
+            enabled: true
+            allowed:
+              - object.resolve
+              - object.action
 ```
 
 The agent tool surface is model-facing. The `event_sources` pull policy is the

@@ -25,14 +25,14 @@ def test_tab_selector_supports_position_and_hierarchy() -> None:
     assert by_hierarchy["hierarchy"] == ["Invoices", "July"]
 
 
-def test_tab_selector_never_guesses_between_duplicate_titles() -> None:
+def test_tab_selector_never_guesses_between_overlapping_title_fragments() -> None:
     tabs = [
-        {"tab_id": "one", "title": "Notes", "parent_tab_id": ""},
-        {"tab_id": "two", "title": "Notes", "parent_tab_id": ""},
+        {"tab_id": "one", "title": "Internal Notes", "parent_tab_id": ""},
+        {"tab_id": "two", "title": "Invoice Notes", "parent_tab_id": ""},
     ]
 
     with pytest.raises(DocsSelectorError) as exc_info:
-        resolve_tab_selector(tabs, {"title": "notes"})
+        resolve_tab_selector(tabs, {"title_contains": "notes"})
 
     assert exc_info.value.code == "docs_tab_selector_ambiguous"
     assert len(exc_info.value.details["candidates"]) == 2

@@ -32,6 +32,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import
     OBJECT_ACTION,
     OBJECT_DELETE,
     OBJECT_GET,
+    OBJECT_RESOLVE,
     OBJECT_SEARCH,
     OBJECT_UPSERT,
 )
@@ -42,7 +43,8 @@ def _ctx() -> NamedServiceContext:
 
 
 def test_spec_publishes_discoverable_ref_and_object_metadata() -> None:
-    metadata = sheets_named_service_spec().metadata
+    spec = sheets_named_service_spec()
+    metadata = spec.metadata
 
     assert metadata["canonical_refs"]["spreadsheet"].startswith(
         "sheets:<provider>"
@@ -50,6 +52,7 @@ def test_spec_publishes_discoverable_ref_and_object_metadata() -> None:
     assert metadata["canonical_refs"]["tab"].endswith(":tab:<sheet_id>")
     assert metadata["object_kinds"][SHEETS_SPREADSHEET_KIND]
     assert metadata["actions"][ACTION_APPEND_ROWS]
+    assert OBJECT_RESOLVE in spec.operations
 
 
 class _FakeSheets:
@@ -85,6 +88,7 @@ class _FakeSheets:
                     "account_id": account_id,
                     "spreadsheet_id": "sheet-1",
                     "title": "Quarterly plan",
+                    "web_url": "https://docs.google.com/spreadsheets/d/sheet-1/edit",
                     "tabs": [
                         {
                             "sheet_id": 7,
@@ -221,6 +225,73 @@ async def test_search_returns_named_service_objects() -> None:
             "account_id": "account-1",
         }
     ]
+
+
+@pytest.mark.anyio
+async def test_object_resolve_declares_spreadsheet_open_without_provider_call() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_RESOLVE,
+            namespace="sheets",
+            object_ref=ref,
+            action="capabilities",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.capabilities["preview"] is False
+    assert response.capabilities["open"] is True
+    assert response.extra["default_open_effect_action"] == "open"
+    assert fake.calls == []
+
+
+@pytest.mark.anyio
+async def test_open_spreadsheet_rechecks_read_access_and_returns_browser_url() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="sheets",
+            object_ref=ref,
+            action="open",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.capabilities["preview"] is False
+    assert response.ui_event["external_url"] == (
+        "https://docs.google.com/spreadsheets/d/sheet-1/edit"
+    )
+    assert fake.calls[-1]["operation"] == "describe"
+    assert fake.calls[-1]["claim"] == SHEETS_READ_CLAIM
+
+
+@pytest.mark.anyio
+async def test_open_tab_targets_its_google_sheet_gid() -> None:
+    fake = _FakeSheets()
+    ref = "sheets:google:account-1:spreadsheet:sheet-1:tab:7"
+
+    response = await _provider(fake).dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_ACTION,
+            namespace="sheets",
+            object_ref=ref,
+            action="open",
+        ),
+    )
+
+    assert response.ok is True
+    assert response.object_ref == ref
+    assert response.ui_event["external_url"].endswith("#gid=7")
+    assert response.object["title"] == "Plan"
 
 
 @pytest.mark.anyio
