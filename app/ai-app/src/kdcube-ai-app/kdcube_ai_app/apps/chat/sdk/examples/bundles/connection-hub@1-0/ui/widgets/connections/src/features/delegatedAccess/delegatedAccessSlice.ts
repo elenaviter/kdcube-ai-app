@@ -138,6 +138,41 @@ export const grantAgentAccess = createAsyncThunk<
   },
 );
 
+export interface UpdateDelegatedAccessArgs {
+  accessId: string;
+  label: string;
+  resourceGrants: Record<string, string[]>;
+  operations?: string[];
+  namedServiceOperations: DelegatedAccessNamedServiceOperations;
+}
+
+/** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
+ *  so the token the operator already copied stays valid; only the granted scope
+ *  (and label) changes. The guard resolves the card live, so the new scope
+ *  applies on the bearer's next call. No token is re-issued. */
+export const updateDelegatedAccess = createAsyncThunk<
+  DelegatedAccessCreateResult,
+  UpdateDelegatedAccessArgs,
+  { rejectValue: string }
+>(
+  'delegatedAccess/update',
+  async ({ accessId, label, resourceGrants, operations, namedServiceOperations }, { rejectWithValue }) => {
+    try {
+      const res = await postOp<DelegatedAccessCreateResult>('delegated_access_update', {
+        access_id: accessId,
+        label,
+        resource_grants: resourceGrants || {},
+        operations: operations || [],
+        named_service_operations: namedServiceOperations || {},
+      });
+      if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to update delegated access'));
+      return res || {};
+    } catch (e) {
+      return rejectWithValue(message(e));
+    }
+  },
+);
+
 export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
   { accessId: string },
@@ -216,6 +251,24 @@ const delegatedAccessSlice = createSlice({
       .addCase(grantAgentAccess.rejected, (state, action) => {
         state.busy = false;
         state.error = action.payload ?? 'Failed to grant agent access';
+      })
+      .addCase(updateDelegatedAccess.pending, (state) => {
+        state.busy = true;
+        state.error = '';
+      })
+      .addCase(updateDelegatedAccess.fulfilled, (state, action: PayloadAction<DelegatedAccessCreateResult>) => {
+        state.busy = false;
+        if (action.payload.access) {
+          const updated = action.payload.access;
+          state.items = state.items.map((item) => (item.access_id === updated.access_id ? updated : item));
+          if (state.issuedAccess?.access_id === updated.access_id) {
+            state.issuedAccess = updated;
+          }
+        }
+      })
+      .addCase(updateDelegatedAccess.rejected, (state, action) => {
+        state.busy = false;
+        state.error = action.payload ?? 'Failed to update delegated access';
       })
       .addCase(revokeDelegatedAccess.pending, (state) => {
         state.busy = true;

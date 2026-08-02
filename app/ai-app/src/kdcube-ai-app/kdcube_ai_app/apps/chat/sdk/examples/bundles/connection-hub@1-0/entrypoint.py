@@ -1868,6 +1868,49 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
     @api(
         method="POST",
+        alias="delegated_access_update",
+        route="operations",
+        csrf=True,
+        **_api_visibility("delegated_access_update"),
+    )
+    async def delegated_access_update(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Edit an existing manual automation access IN PLACE: the submitted grants
+        REPLACE the record, the token is kept, and the change applies on the
+        credential's next call (the card is the guard's live authority)."""
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        try:
+            return await _automation_access_service(self, request).update_access(
+                user,
+                access_id=str(payload.get("access_id") or "").strip(),
+                resource_grants=dict(payload.get("resource_grants") or {}),
+                named_service_operations=(
+                    dict(payload.get("named_service_operations") or {})
+                    if "named_service_operations" in payload
+                    else None
+                ),
+                account_scope=(
+                    dict(payload.get("account_scope") or {})
+                    if "account_scope" in payload
+                    else None
+                ),
+                label=str(payload.get("label") or "").strip() or None,
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+
+    @api(
+        method="POST",
         alias="delegated_agent_grant_create",
         route="operations",
         csrf=True,

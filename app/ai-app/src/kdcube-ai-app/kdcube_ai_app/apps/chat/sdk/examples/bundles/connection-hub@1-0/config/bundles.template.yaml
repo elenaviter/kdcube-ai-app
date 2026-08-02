@@ -47,6 +47,8 @@ bundles:
                 visibility: *default_visibility
               delegated_access_create:
                 visibility: *default_visibility
+              delegated_access_update:
+                visibility: *default_visibility
               delegated_access_revoke:
                 visibility: *default_visibility
               delegated_to_kdcube_catalog:

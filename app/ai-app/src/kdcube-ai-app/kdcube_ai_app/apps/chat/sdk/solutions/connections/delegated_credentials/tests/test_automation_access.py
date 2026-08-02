@@ -1290,3 +1290,80 @@ async def test_disconnecting_an_account_clears_its_agent_bindings():
         grantor_subject="platform-user-1", provider_id="google", account_id="google_never",
     )
     assert noop["pruned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_automation_access_update_replaces_grants_in_place_and_keeps_identity():
+    """Edit a manual automation IN PLACE: the grant set is replaced, the card
+    (access_id/client_id) and its client-side token are kept, and no re-mint or
+    re-bind happens — the guard resolves the card live, so the new scope applies
+    to the existing bearer on its next call."""
+    redis = _Redis()
+    store = _Store()
+    authority = _Authority()
+    service = AutomationAccessService(
+        redis=redis, tenant="demo-tenant", project="demo-project",
+        config=_config(), grant_store=store, authority=authority, minter=_minter,
+    )
+    user = {
+        "user_id": "platform-user-1",
+        "roles": ["kdcube:role:super-admin"],
+        "permissions": ["records:read", "records:write"],
+    }
+    created = await service.create_access(
+        user, label="Nightly", resource_grants={"https://example.test/mcp": ["records:read"]},
+        ttl_seconds=3600,
+    )
+    assert created["ok"] is True
+    access_id = created["access"]["access_id"]
+    client_id = created["access"]["client_id"]
+    created_at = created["access"]["created_at"]
+    bound_before = len(store.bound)
+
+    updated = await service.update_access(
+        user, access_id=access_id,
+        resource_grants={"https://example.test/mcp": ["records:write"]},
+        label="Renamed",
+    )
+    assert updated["ok"] is True
+    assert updated["access"]["access_id"] == access_id      # same card
+    assert updated["access"]["client_id"] == client_id      # same client => same token
+    assert updated["access"]["created_at"] == created_at    # not re-created
+    assert updated["access"]["label"] == "Renamed"
+    assert updated["access"]["resource_grants"] == {"https://example.test/mcp": ["records:write"]}
+    assert "access_token" not in updated                    # manual token never re-issued
+    assert len(store.bound) == bound_before                 # NO re-mint / re-bind
+
+    # The live card the guard resolves now carries the new grant.
+    raw_record = next(iter(redis.values.values()))
+    assert json.loads(raw_record)["resource_grants"] == {"https://example.test/mcp": ["records:write"]}
+
+
+@pytest.mark.asyncio
+async def test_automation_access_update_guards_ownership_existence_and_empty():
+    redis = _Redis()
+    store = _Store()
+    authority = _Authority()
+    service = AutomationAccessService(
+        redis=redis, tenant="demo-tenant", project="demo-project",
+        config=_config(), grant_store=store, authority=authority, minter=_minter,
+    )
+    owner = {"user_id": "owner", "roles": ["kdcube:role:registered"], "permissions": []}
+    created = await service.create_access(
+        owner, label="x", resource_grants={"https://example.test/mcp": ["records:read"]}, ttl_seconds=3600,
+    )
+    access_id = created["access"]["access_id"]
+
+    missing = await service.update_access(
+        owner, access_id="aut_missing", resource_grants={"https://example.test/mcp": ["records:read"]},
+    )
+    assert missing["ok"] is False and missing["error"] == "delegated_access_not_found"
+
+    intruder = {"user_id": "intruder", "roles": ["kdcube:role:registered"], "permissions": []}
+    not_owned = await service.update_access(
+        intruder, access_id=access_id, resource_grants={"https://example.test/mcp": ["records:read"]},
+    )
+    assert not_owned["ok"] is False and not_owned["error"] == "delegated_access_not_owned"
+
+    empty = await service.update_access(owner, access_id=access_id, resource_grants={})
+    assert empty["ok"] is False and empty["error"] == "delegated_access_requires_resource_grants"

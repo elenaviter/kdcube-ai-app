@@ -16,6 +16,7 @@ import {
   grantAgentAccess,
   loadDelegatedAccess,
   revokeDelegatedAccess,
+  updateDelegatedAccess,
 } from './delegatedAccessSlice';
 
 /** Whether a resource card matches a catalog search: its label/id, its grants
@@ -204,12 +205,14 @@ function ScriptBlock({ title, script, note }: { title: string; script: string; n
 }
 
 /** What this card's caller can be done TO from a script, with its identifiers
- *  already inlined. A grant can always be revoked by access id; a caller with a
- *  stable client identity (a connected app, a hosted agent) can additionally be
- *  NARROWED in place - the card is the authority the guard resolves live, so a
- *  smaller claim set takes effect on that caller's very next call, on the bearer
- *  it already holds. An automation has no such identity: it presents its token,
- *  so revoking is the whole vocabulary. */
+ *  already inlined. A grant can always be revoked by access id; it can also be
+ *  NARROWED in place — the card is the authority the guard resolves live, so a
+ *  smaller claim set takes effect on that caller's very next call, on the
+ *  credential it already holds. A caller with a stable client identity (a
+ *  connected app, a hosted agent) narrows through the agent-grant op keyed on
+ *  its client id; a manual automation narrows through the automation-update op
+ *  keyed on its access id — same card-is-authority idea, and the token the
+ *  operator copied stays valid either way. */
 function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -219,8 +222,9 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
   const accessId = item.access_id;
+  const isManual = item.source === 'manual';
   const [resource, claims] = Object.entries(item.resource_grants || {})[0] || ['', []];
-  const canNarrow = Boolean(item.client_id) && item.source !== 'manual' && Boolean(resource);
+  const canNarrow = Boolean(resource) && (isManual || Boolean(item.client_id));
   const revoke = [
     `curl -s -X POST \\`,
     `  "${operationUrl('delegated_access_revoke')}" \\`,
@@ -228,7 +232,22 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
     `  -H 'Content-Type: application/json' \\`,
     `  -d '{"access_id": "${accessId}"}'`,
   ].join('\n');
-  const narrow = canNarrow ? [
+  // A manual automation is narrowed by rewriting its CARD (keyed on access id):
+  // the whole grant map is replaced, so the token it already holds keeps working
+  // with the smaller scope. A client-identified caller narrows through the
+  // agent-grant op instead. Both are the same "the card is what the guard reads
+  // live" idea.
+  const narrowManual = [
+    `curl -s -X POST \\`,
+    `  "${operationUrl('delegated_access_update')}" \\`,
+    `  -H "Authorization: Bearer $TOKEN" \\`,
+    `  -H 'Content-Type: application/json' \\`,
+    `  -d '{`,
+    `    "access_id": "${accessId}",`,
+    `    "resource_grants": {"${resource}": ${JSON.stringify(claims)}}`,
+    `  }'`,
+  ].join('\n');
+  const narrowAgent = [
     `curl -s -X POST \\`,
     `  "${operationUrl('delegated_agent_grant_create')}" \\`,
     `  -H "Authorization: Bearer $TOKEN" \\`,
@@ -239,7 +258,8 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
     `    "claims": ${JSON.stringify(claims)},`,
     `    "replace": true`,
     `  }'`,
-  ].join('\n') : '';
+  ].join('\n');
+  const narrow = !canNarrow ? '' : isManual ? narrowManual : narrowAgent;
   const script = revoke;
   return (
     <>
@@ -782,7 +802,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
-    if (!item.client_id) return;
     const entries = Object.entries(item.resource_grants || {});
     const kept: Record<string, string[]> = {};
     entries.forEach(([resource, grants]) => {
@@ -792,7 +811,43 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!anyKept) {
       // Removing everything is a revoke, not an edit.
       await dispatch(revokeDelegatedAccess({ accessId: item.access_id })).unwrap().catch(() => undefined);
-    } else {
+      setEditingAccessId(null);
+      setEditPicks({});
+      setEditAccountScope({});
+      setEditLabel('');
+      void dispatch(loadDelegatedAccess());
+      return;
+    }
+    // A manual automation has no live client identity the guard narrows; its
+    // CARD is the authority, keyed by access_id. Editing rewrites that card in
+    // place — the token the operator already copied stays valid, only the scope
+    // (and label) changes — so it saves through the automation-update op, not
+    // the agent-grant path.
+    if (item.source === 'manual') {
+      const prunedKept = Object.fromEntries(
+        Object.entries(kept).filter(([, claims]) => claims.length > 0),
+      );
+      // Keep each surviving resource's named-service narrowing; drop entries for
+      // resources fully unchecked above.
+      const keptNamedServiceOperations = Object.fromEntries(
+        Object.entries(item.named_service_operations || {})
+          .filter(([resource]) => prunedKept[resource]),
+      );
+      await dispatch(updateDelegatedAccess({
+        accessId: item.access_id,
+        label: editLabel.trim() || item.label || 'Automation access',
+        resourceGrants: prunedKept,
+        namedServiceOperations: keptNamedServiceOperations,
+      })).unwrap().catch(() => undefined);
+      setEditingAccessId(null);
+      setEditPicks({});
+      setEditAccountScope({});
+      setEditLabel('');
+      void dispatch(loadDelegatedAccess());
+      return;
+    }
+    if (!item.client_id) return;
+    {
       // The account binding is a per-client (not per-resource) edit, so send it
       // once with the first resource; `replace` makes the submitted scope
       // authoritative (an unchecked provider clears its binding -> nothing
@@ -1244,12 +1299,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {otherItems.length ? (
         <ul className="accounts">
           {otherItems.map((item) => {
-            // A connected external client (an OAuth app — Claude Code) is
-            // editable in place: its card is the authority the guard resolves
-            // live, so ticking/unticking claims narrows or extends what the
-            // client may do on the bearer it already holds. Manual tokens keep
-            // their own credential flow (only revoke).
-            const editable = item.source === 'oauth' && Boolean(item.client_id);
+            // Both callers here are editable in place: the card is the authority
+            // the guard resolves live, so ticking/unticking claims narrows or
+            // extends what the caller may do on the credential it already holds —
+            // an OAuth app (Claude Code) on the bearer it connected with, a
+            // manual automation on the token the operator already copied. Neither
+            // re-issues a credential; only the scope (and label) change.
+            const editable = (item.source === 'oauth' && Boolean(item.client_id))
+              || item.source === 'manual';
             const editing = editable && editingAccessId === item.access_id;
             const door = Array.from(new Set(
               Object.keys(item.resource_grants || {}).map(doorAlias).filter(Boolean),
@@ -1373,7 +1430,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </Field>
                     </div>
                   ) : null}
-                  {editing ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this app') : null}
+                  {editing && item.source === 'oauth'
+                    ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this app')
+                    : null}
                 </div>
                 <div className="account-actions">
                   {editing ? (

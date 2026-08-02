@@ -1164,6 +1164,163 @@ class AutomationAccessService:
             "authorization_header": f"Bearer {access_token}" if access_token else "",
         }
 
+    async def update_access(
+        self,
+        user: Mapping[str, Any],
+        *,
+        access_id: str,
+        resource_grants: Mapping[str, Any],
+        named_service_operations: Mapping[str, Any] | None = None,
+        account_scope: Mapping[str, Any] | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit a MANUAL automation access IN PLACE: replace its grants while
+        keeping the same access_id and token. The card is the guard's authority
+        (resolved live via resolve_live_grant_card), so the change applies to the
+        client's existing bearer on its very next call — no re-mint. A manual
+        token is client-side only, so it is never touched; only the card record
+        is rewritten. The submitted selection REPLACES the record exactly."""
+        grantor_subject = _subject_from_user(user)
+        if not grantor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        access_id = _clean(access_id)
+        if not access_id:
+            return {"ok": False, "error": "delegated_access_requires_access_id"}
+        raw = await self._redis.get(self._record_key(access_id))
+        if raw is None:
+            return {"ok": False, "error": "delegated_access_not_found"}
+        try:
+            existing = AutomationAccessRecord.from_mapping(json.loads(raw))
+        except Exception:
+            return {"ok": False, "error": "delegated_access_record_invalid"}
+        if existing.grantor_subject != grantor_subject:
+            return {"ok": False, "error": "delegated_access_not_owned"}
+        # Only a manual automation card is edited here. Agent/OAuth cards edit
+        # through their own consent flows (delegated_agent_grant_create).
+        if existing.source != ACCESS_SOURCE_MANUAL:
+            return {"ok": False, "error": "delegated_access_not_editable"}
+
+        # Validate the new grants with the SAME rules as create_access.
+        selected_resource_grants = self._resource_grants(resource_grants)
+        try:
+            selected_named_service_operations = self._named_service_operation_selection(
+                named_service_operations
+            )
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_named_service_operation_selection", "message": str(exc)}
+        selected_resources = list(selected_resource_grants)
+        if self._config.resources and not selected_resources:
+            return {"ok": False, "error": "delegated_access_requires_resource_grants"}
+        selected_grants = _as_list([
+            grant
+            for grants_for_resource in selected_resource_grants.values()
+            for grant in grants_for_resource
+        ])
+        if not selected_grants:
+            # Removing everything is a revoke, not an edit.
+            return {"ok": False, "error": "delegated_access_requires_resource_grants"}
+        inventory = await self._available_inventory(user, requested_grants=selected_grants)
+        denied = [grant for grant in selected_grants if grant not in set(inventory.grant_names())]
+        if denied:
+            return {"ok": False, "error": "delegated_access_grants_not_delegable", "grants": denied}
+        try:
+            resource_configs = self._configured_resources(selected_resources) if self._config.resources else ()
+        except ValueError:
+            return {"ok": False, "error": "delegated_access_unknown_resources", "resources": selected_resources}
+        admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
+        if admin_required and not _is_platform_admin(user):
+            return {"ok": False, "error": "delegated_access_resource_requires_admin", "resources": admin_required}
+        cfg_by_resource = {cfg.resource: cfg for cfg in resource_configs}
+        if selected_named_service_operations is not None:
+            unknown = sorted(set(selected_named_service_operations) - set(selected_resources))
+            if unknown:
+                return {"ok": False, "error": "delegated_access_unknown_named_service_resources", "resources": unknown}
+        for resource_value, grants_for_resource in selected_resource_grants.items():
+            cfg = cfg_by_resource.get(resource_value)
+            if cfg is None:
+                continue
+            allowed_for_resource = set(self._config.supported_scopes(resource_value))
+            disallowed = [grant for grant in grants_for_resource if grant not in allowed_for_resource]
+            if disallowed:
+                return {
+                    "ok": False,
+                    "error": "delegated_access_grants_not_allowed_for_resources",
+                    "grants": disallowed,
+                    "resource": resource_value,
+                }
+        identity_scopes = {
+            _clean(getattr(cfg, "identity_scope", "") or "grantor") for cfg in resource_configs
+        }
+        if len(identity_scopes) > 1:
+            return {
+                "ok": False,
+                "error": "delegated_access_resources_have_conflicting_identity_scopes",
+                "resources": selected_resources,
+            }
+        # Validate the named-service narrowing against each resource's policy.
+        if selected_named_service_operations is not None:
+            for cfg in resource_configs:
+                if not isinstance(cfg.named_services, Mapping):
+                    continue
+                try:
+                    self._narrow_named_service_config(
+                        config=cfg.named_services,
+                        selected=selected_named_service_operations.get(cfg.resource, {}),
+                        grants=selected_resource_grants.get(cfg.resource, []),
+                        resource=cfg.resource,
+                    )
+                except ValueError as exc:
+                    return {"ok": False, "error": "invalid_named_service_operation_selection", "message": str(exc)}
+        selected_operations = self._resolve_operations(
+            grants=selected_grants, operations=(), resources=selected_resources,
+        )
+        if account_scope is None:
+            selected_account_scope = {
+                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in existing.account_scope.items()
+            }
+        else:
+            selected_account_scope = {
+                provider: {account_id: list(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in normalize_account_scope(account_scope).items()
+            }
+
+        now = int(time.time())
+        if existing.expires_at <= now:
+            return {"ok": False, "error": "delegated_access_expired"}
+        remaining = max(1, int(existing.expires_at) - now)
+        updated = AutomationAccessRecord(
+            access_id=existing.access_id,
+            label=_clean(label) if label else existing.label,
+            client_id=existing.client_id,
+            grantor_subject=existing.grantor_subject,
+            delegate_subject=existing.delegate_subject,
+            operations=tuple(selected_operations),
+            resource_grants={key: tuple(value) for key, value in selected_resource_grants.items()},
+            named_service_operations={
+                resource: {
+                    namespace: tuple(ops)
+                    for namespace, ops in namespaces.items()
+                }
+                for resource, namespaces in (selected_named_service_operations or {}).items()
+            },
+            account_scope={
+                provider: {account_id: tuple(claims) for account_id, claims in accounts.items()}
+                for provider, accounts in selected_account_scope.items()
+            },
+            identity_scope=next(iter(identity_scopes), existing.identity_scope or "grantor"),
+            session_id=existing.session_id,
+            created_at=existing.created_at,
+            expires_at=existing.expires_at,
+            last_four=existing.last_four,
+            source=existing.source,
+            # Manual token stays client-side only; the record never holds it.
+            access_token="",
+        )
+        await self._redis.setex(self._record_key(access_id), remaining, json.dumps(updated.to_dict()))
+        await self.notify_change(grantor_subject, action="updated", access=updated.to_public_dict())
+        return {"ok": True, "access": updated.to_public_dict()}
+
     async def agent_access_token(
         self,
         *,
