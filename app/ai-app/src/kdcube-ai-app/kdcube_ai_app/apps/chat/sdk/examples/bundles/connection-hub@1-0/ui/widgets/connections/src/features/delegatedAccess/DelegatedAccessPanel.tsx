@@ -1428,28 +1428,33 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     </section>
   );
 
+  // The minted token is a one-time secret and must be visible REGARDLESS of the
+  // create form's open/closed state — folding the form on submit must never hide
+  // it. So it renders at the top level (below), not inside `createPane`.
+  const issuedTokenPanel = issuedToken ? (
+    <section className="card">
+      <div className="issued-token">
+        <div className="issued-token-head">
+          <div>
+            <div className="form-title">New automation credential</div>
+            <p className="muted">Copy this token now. It will not be shown again.</p>
+          </div>
+          <button className="btn btn-ghost" type="button" onClick={() => dispatch(clearIssuedDelegatedAccess())}>
+            Dismiss
+          </button>
+        </div>
+        {issuedAccess ? (
+          <div className="account-sub">
+            {issuedAccess.label || issuedAccess.access_id} · expires {formatDate(issuedAccess.expires_at)}
+          </div>
+        ) : null}
+        <textarea className="token-output" readOnly value={issuedHeader || `Bearer ${issuedToken}`} />
+      </div>
+    </section>
+  ) : null;
+
   const createPane = (
     <section className="card">
-      {issuedToken ? (
-        <div className="issued-token">
-          <div className="issued-token-head">
-            <div>
-              <div className="form-title">New automation credential</div>
-              <p className="muted">Copy this token now. It will not be shown again.</p>
-            </div>
-            <button className="btn btn-ghost" type="button" onClick={() => dispatch(clearIssuedDelegatedAccess())}>
-              Dismiss
-            </button>
-          </div>
-          {issuedAccess ? (
-            <div className="account-sub">
-              {issuedAccess.label || issuedAccess.access_id} · expires {formatDate(issuedAccess.expires_at)}
-            </div>
-          ) : null}
-          <textarea className="token-output" readOnly value={issuedHeader || `Bearer ${issuedToken}`} />
-        </div>
-      ) : null}
-
       <form className="form form-flush" onSubmit={submit}>
         <input
           className="input"
@@ -1494,6 +1499,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // spans the full width the rest of the time.
   return (
     <>
+      {issuedTokenPanel}
       {!createOpen ? (
         <div className="tab-actions">
           <button className="btn" type="button" onClick={() => setCreateOpen(true)}>
