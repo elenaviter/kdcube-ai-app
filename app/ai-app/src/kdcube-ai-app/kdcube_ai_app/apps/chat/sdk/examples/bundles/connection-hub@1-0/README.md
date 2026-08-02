@@ -177,7 +177,8 @@ The OAuth callback is a single hub-level route shared by all providers/apps:
 
 ## Email integration
 
-**Gmail, Slack, and Google Sheets ride delegated to KDCube** (OAuth) through
+**Gmail, Slack, Google Sheets, and Google Docs ride delegated to KDCube**
+(OAuth) through
 `delegated_to_kdcube_start_oauth` + the shared
 `delegated_to_kdcube_oauth_callback`. **iCloud** uses the same delegated-to-KDCube
 broker through `delegated_to_kdcube_connect_credential`, because

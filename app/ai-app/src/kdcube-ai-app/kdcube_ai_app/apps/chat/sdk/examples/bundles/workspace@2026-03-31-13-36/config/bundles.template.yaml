@@ -185,56 +185,56 @@ bundles:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:search]
                       list_slack_channels:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:channels]
                       read_slack_channel_history:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:history]
                       download_slack_file:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:files:read]
                       upload_slack_file:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:files:write]
                       slack_assistant_search_info:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:assistant:search]
                       slack_assistant_search:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:assistant:search]
                       post_slack_message:
                         connections:
                           delegated_to_kdcube:
                             connected_accounts:
                               - provider_id: slack
-                                connector_app_id: demo
+                                connector_app_id: slack-demo
                                 claims: [slack:post]
                   - name: rendering
                     kind: python

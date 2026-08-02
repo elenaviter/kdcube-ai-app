@@ -2762,7 +2762,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:search
                   list_slack_channels:
@@ -2770,7 +2770,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:channels
                   read_slack_channel_history:
@@ -2778,7 +2778,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:history
                   download_slack_file:
@@ -2786,7 +2786,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:files:read
                   upload_slack_file:
@@ -2794,7 +2794,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:files:write
                   slack_assistant_search_info:
@@ -2802,7 +2802,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:assistant:search
                   slack_assistant_search:
@@ -2810,7 +2810,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:assistant:search
                   post_slack_message:
@@ -2818,7 +2818,7 @@ bundles:
                       delegated_to_kdcube:
                         connected_accounts:
                         - provider_id: slack
-                          connector_app_id: demo
+                          connector_app_id: slack-demo
                           claims:
                           - slack:post
               - kind: python

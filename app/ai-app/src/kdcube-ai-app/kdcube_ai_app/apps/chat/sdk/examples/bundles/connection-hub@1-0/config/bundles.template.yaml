@@ -203,6 +203,21 @@ bundles:
               description: "Create and edit spreadsheets, tabs, values, and formatting through a connected Google account."
               delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
               delegable_permissions: ["sheets:write"]
+            - grant: "docs:read"
+              label: "Read Google Docs"
+              description: "Find documents and read or export their content through a connected Google account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["docs:read"]
+            - grant: "docs:write"
+              label: "Edit Google Docs"
+              description: "Create, copy, edit, embed images into, and import Google documents through a connected Google account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["docs:write"]
+            - grant: "docs:comment"
+              label: "Comment on Google Docs"
+              description: "Read and write comments and replies on Google documents through a connected Google account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["docs:comment"]
             # Slack is a single provider, so it uses its OWN real claims (the
             # exact capabilities the Slack API needs) — not an invented
             # namespace claim. These match SLACK_CONNECTED_ACCOUNT_CLAIMS.
@@ -317,9 +332,24 @@ bundles:
                   description: "Read one object from a configured namespace."
                   grants:
                   - "named_services:use"
+                named_services_upsert:
+                  label: "Named service upsert"
+                  description: "Create or update one object in a configured namespace."
+                  grants:
+                  - "named_services:use"
+                named_services_host_file:
+                  label: "Named service host file"
+                  description: "Host or register a file/ref in a configured namespace."
+                  grants:
+                  - "named_services:use"
                 named_services_action:
                   label: "Named service action"
                   description: "Run a bounded provider action on one object."
+                  grants:
+                  - "named_services:use"
+                named_services_delete:
+                  label: "Named service delete"
+                  description: "Delete or archive one object in a configured namespace."
                   grants:
                   - "named_services:use"
                 named_services_call:
@@ -328,6 +358,9 @@ bundles:
                   grants:
                   - "named_services:use"
               named_services:
+                connector_apps:
+                  slack: "slack-demo"
+                  google: "gmail"
                 namespaces:
                   mail:
                     label: "Mail"
@@ -630,6 +663,298 @@ bundles:
                             label: "Delete spreadsheet tab"
                             description: "Delete one tab by stable tab ref."
                             grants: ["named_services:use", "sheets:write"]
+                  docs:
+                    label: Documents
+                    description: Find, inspect, read, create, and edit documents through connected accounts.
+                    authority_id: delegated_client
+                    tools:
+                      about:
+                        operation: provider.about
+                        label: About documents
+                        description: Explain the docs namespace, object refs, and connected-account model.
+                        grants:
+                        - named_services:use
+                      capabilities:
+                        operation: provider.capabilities
+                        label: Document capabilities
+                        description: Read the bounded operations available for connected documents.
+                        grants:
+                        - named_services:use
+                      list:
+                        operation: object.list
+                        label: List recent documents
+                        description: List recently modified documents visible to the connected account.
+                        grants:
+                        - named_services:use
+                        - docs:read
+                      schema:
+                        operation: object.schema
+                        label: Document schema
+                        description: Read document refs, fields, ranges, and mutation payloads.
+                        grants:
+                        - named_services:use
+                      search:
+                        operation: object.search
+                        label: Search documents
+                        description: Find exact document titles first, followed by title-prefix matches.
+                        grants:
+                        - named_services:use
+                        - docs:read
+                      get:
+                        operation: object.get
+                        label: Read document
+                        description: Inspect document metadata or read or export its content by ref.
+                        grants:
+                        - named_services:use
+                        - docs:read
+                      upsert:
+                        operation: object.upsert
+                        label: Create or update document
+                        description: Create a document, insert or replace text, or import content.
+                        grants:
+                        - named_services:use
+                        - docs:write
+                      action:
+                        operation: object.action
+                        label: Document action
+                        description: Copy or export documents, apply bounded edits, and manage comments.
+                        operations:
+                          object.action.copy:
+                            label: Copy document
+                            description: Copy a source document under a new title while preserving its structure.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_text:
+                            label: Insert document text
+                            description: Insert text at one explicit document location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.append_text:
+                            label: Append document text
+                            description: Append text to the end of a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.replace_text:
+                            label: Replace document text
+                            description: Replace matching text throughout a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.apply_text_style:
+                            label: Style document text
+                            description: Apply bounded text styling to one explicit range.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_page_break:
+                            label: Insert document page break
+                            description: Insert a page break at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.embed_image:
+                            label: Embed document image
+                            description: Embed an image at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.export:
+                            label: Export document
+                            description: Deliver a portable document file without placing file bytes in model context.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.import:
+                            label: Import document content
+                            description: Import external content into a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.list_comments:
+                            label: List document comments
+                            description: Read comment threads on a document.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.get_comment:
+                            label: Read document comment
+                            description: Read one comment thread by id.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.create_comment:
+                            label: Create document comment
+                            description: Add a comment to a document.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.reply_comment:
+                            label: Reply to document comment
+                            description: Reply to one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.resolve_comment:
+                            label: Resolve document comment
+                            description: Resolve one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.delete_comment:
+                            label: Delete document comment
+                            description: Delete one document comment.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                      delete:
+                        operation: object.delete
+                        label: Delete document comment
+                        description: Delete one comment identified in the payload; document deletion is not exposed.
+                        grants:
+                        - named_services:use
+                        - docs:comment
+                      call:
+                        label: Generic document call
+                        description: Generic docs namespace call with per-operation grants.
+                        operations:
+                          provider.about:
+                            label: About documents
+                            description: Explain the docs namespace and connected-account model.
+                            grants:
+                            - named_services:use
+                          provider.capabilities:
+                            label: Document capabilities
+                            description: Read the operations available for connected documents.
+                            grants:
+                            - named_services:use
+                          object.list:
+                            label: List recent documents
+                            description: List recently modified documents.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.schema:
+                            label: Document schema
+                            description: Read document refs, fields, ranges, and mutation payloads.
+                            grants:
+                            - named_services:use
+                          object.search:
+                            label: Search documents
+                            description: Find exact document titles first, followed by title-prefix matches.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.get:
+                            label: Read document
+                            description: Inspect metadata or read or export document content.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.upsert:
+                            label: Create or update document
+                            description: Create a document, insert or replace text, or import content.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.copy:
+                            label: Copy document
+                            description: Copy a source document under a new title while preserving its structure.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_text:
+                            label: Insert document text
+                            description: Insert text at one explicit document location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.append_text:
+                            label: Append document text
+                            description: Append text to the end of a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.replace_text:
+                            label: Replace document text
+                            description: Replace matching text throughout a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.apply_text_style:
+                            label: Style document text
+                            description: Apply bounded text styling to one explicit range.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.insert_page_break:
+                            label: Insert document page break
+                            description: Insert a page break at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.embed_image:
+                            label: Embed document image
+                            description: Embed an image at one explicit location.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.export:
+                            label: Export document
+                            description: Deliver a portable document file without placing file bytes in model context.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.import:
+                            label: Import document content
+                            description: Import external content into a document.
+                            grants:
+                            - named_services:use
+                            - docs:write
+                          object.action.list_comments:
+                            label: List document comments
+                            description: Read comment threads on a document.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.get_comment:
+                            label: Read document comment
+                            description: Read one comment thread by id.
+                            grants:
+                            - named_services:use
+                            - docs:read
+                          object.action.create_comment:
+                            label: Create document comment
+                            description: Add a comment to a document.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.reply_comment:
+                            label: Reply to document comment
+                            description: Reply to one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.resolve_comment:
+                            label: Resolve document comment
+                            description: Resolve one document comment thread.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.action.delete_comment:
+                            label: Delete document comment
+                            description: Delete one document comment.
+                            grants:
+                            - named_services:use
+                            - docs:comment
+                          object.delete:
+                            label: Delete document comment
+                            description: Delete one comment identified in the payload; document deletion is not exposed.
+                            grants:
+                            - named_services:use
+                            - docs:comment
                   slack:
                     label: "Slack"
                     description: "List Slack workspaces/channels, search messages/files, read channel history, download files, post messages, and upload files through connected Slack accounts."
@@ -796,188 +1121,218 @@ bundles:
           # external credentials live under delegated_to_kdcube below.
         providers: {}
 
-      delegated_to_kdcube:
-        enabled: false
-        oauth:
-            # Public base for the delegated_to_kdcube_oauth_callback route.
-            # Empty -> derived from the request host at runtime.
-          public_base_url: "https://<PUBLIC_HOST>"
-        providers:
-          google:
-            label: "Google"
-            adapter: "google.oauth"
-            enabled: true
-            connector_apps:
-              gmail:
-                label: "Gmail"
-                enabled: true
-                client_id: "<GOOGLE_OAUTH_CLIENT_ID>"
-                client_secret_ref: "connections.delegated_to_kdcube.providers.google.connector_apps.gmail.client_secret"
-                allowed_claims:
-                - "gmail:read"
-                - "gmail:send"
-                - "sheets:read"
-                - "sheets:write"
-            claims:
-              gmail:read:
-                label: "Read Gmail"
-                description: "Search and read Gmail messages for the approving user."
-                provider_scopes:
+        delegated_to_kdcube:
+          enabled: false
+          oauth:
+              # Public base for the delegated_to_kdcube_oauth_callback route.
+              # Empty -> derived from the request host at runtime.
+            public_base_url: "https://<PUBLIC_HOST>"
+          providers:
+            google:
+              label: "Google"
+              adapter: "google.oauth"
+              enabled: true
+              connector_apps:
+                gmail:
+                  label: "Gmail"
+                  enabled: true
+                  client_id: "<GOOGLE_OAUTH_CLIENT_ID>"
+                  client_secret_ref: "connections.delegated_to_kdcube.providers.google.connector_apps.gmail.client_secret"
+                  allowed_claims:
+                  - "gmail:read"
+                  - "gmail:send"
+                  - "sheets:read"
+                  - "sheets:write"
+                  - "docs:read"
+                  - "docs:write"
+                  - "docs:comment"
+              claims:
+                gmail:read:
+                  label: "Read Gmail"
+                  description: "Search and read Gmail messages for the approving user."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/gmail.readonly"
+                gmail:send:
+                  label: "Send Gmail"
+                  description: "Send email through the approving user's Gmail account."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/gmail.send"
+                sheets:read:
+                  label: "Read Google Sheets"
+                  description: "Find spreadsheets and read their metadata and values."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/spreadsheets.readonly"
+                  - "https://www.googleapis.com/auth/drive.metadata.readonly"
+                sheets:write:
+                  label: "Edit Google Sheets"
+                  description: "Create and edit spreadsheets, tabs, values, and formatting."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/spreadsheets"
+                  - "https://www.googleapis.com/auth/drive.metadata.readonly"
+                  - "https://www.googleapis.com/auth/drive.file"
+                docs:read:
+                  label: "Read Google Docs"
+                  description: "Find documents and read or export their content."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/documents.readonly"
+                  - "https://www.googleapis.com/auth/drive.readonly"
+                docs:write:
+                  label: "Edit Google Docs"
+                  description: "Create, copy, edit, embed images into, and import Google documents."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/documents"
+                  - "https://www.googleapis.com/auth/drive.file"
+                docs:comment:
+                  label: "Comment on Google Docs"
+                  description: "Read and write comments and replies on Google documents."
+                  provider_scopes:
+                  - "openid"
+                  - "email"
+                  - "profile"
+                  - "https://www.googleapis.com/auth/drive"
+            slack:
+              label: "Slack"
+              adapter: "slack.oauth_user_token"
+              enabled: true
+              connector_apps:
+                slack-demo:
+                  label: "KDCube Slack"
+                  enabled: true
+                  client_id: "<SLACK_OAUTH_CLIENT_ID>"
+                  client_secret_ref: "connections.delegated_to_kdcube.providers.slack.connector_apps.slack-demo.client_secret"
+                  allowed_claims:
+                  - "slack:search"
+                  - "slack:post"
+                  - "slack:channels"
+                  - "slack:history"
+                  - "slack:files:read"
+                  - "slack:files:write"
+                  - "slack:assistant:search"
+              claims:
+                slack:search:
+                  label: "Search Slack"
+                  description: "Search Slack content visible to the approving user."
+                  provider_scopes:
+                    - "search:read"
+                slack:post:
+                  label: "Post to Slack"
+                  description: "Post messages into Slack destinations allowed by the approving user."
+                  provider_scopes:
+                  - "chat:write"
+                  - "im:write"
+                slack:channels:
+                  label: "List Slack channels"
+                  description: "List Slack conversations visible to the approving user."
+                  provider_scopes:
+                  - "channels:read"
+                  - "groups:read"
+                  - "im:read"
+                  - "mpim:read"
+                slack:history:
+                  label: "Read Slack history"
+                  description: "Read Slack conversation history visible to the approving user."
+                  provider_scopes:
+                  - "channels:history"
+                  - "groups:history"
+                  - "im:history"
+                  - "mpim:history"
+                slack:files:read:
+                  label: "Read Slack files"
+                  description: "Read and download Slack files visible to the approving user."
+                  provider_scopes:
+                  - "files:read"
+                slack:files:write:
+                  label: "Upload Slack files"
+                  description: "Upload files to Slack destinations allowed by the approving user."
+                  provider_scopes:
+                  - "files:write"
+                  - "im:write"
+                slack:assistant:search:
+                  label: "Use Slack assistant search"
+                  description: "Use Slack AI semantic search across messages, files, channels, and users where available."
+                  provider_scopes:
+                  - "search:read.public"
+                  - "search:read.private"
+                  - "search:read.im"
+                  - "search:read.mpim"
+                  - "search:read.files"
+                  - "search:read.users"
+            s1:
+              label: "S1"
+              adapter: "oidc.generic"
+              enabled: false
+              oauth:
+                authorize_url: "https://s1.example.com/oauth2/authorize"
+                token_url: "https://s1.example.com/oauth2/token"
+                userinfo_url: "https://s1.example.com/oauth2/userInfo"
+                default_scopes:
                 - "openid"
                 - "email"
                 - "profile"
-                - "https://www.googleapis.com/auth/gmail.readonly"
-              gmail:send:
-                label: "Send Gmail"
-                description: "Send email through the approving user's Gmail account."
-                provider_scopes:
-                - "openid"
-                - "email"
-                - "profile"
-                - "https://www.googleapis.com/auth/gmail.send"
-              sheets:read:
-                label: "Read Google Sheets"
-                description: "Find spreadsheets and read their metadata and values."
-                provider_scopes:
-                - "openid"
-                - "email"
-                - "profile"
-                - "https://www.googleapis.com/auth/spreadsheets.readonly"
-                - "https://www.googleapis.com/auth/drive.metadata.readonly"
-              sheets:write:
-                label: "Edit Google Sheets"
-                description: "Create and edit spreadsheets, tabs, values, and formatting."
-                provider_scopes:
-                - "openid"
-                - "email"
-                - "profile"
-                - "https://www.googleapis.com/auth/spreadsheets"
-                - "https://www.googleapis.com/auth/drive.metadata.readonly"
-          slack:
-            label: "Slack"
-            adapter: "slack.oauth_user_token"
-            enabled: true
-            connector_apps:
-              demo:
-                label: "KDCube Slack"
-                enabled: true
-                client_id: "<SLACK_OAUTH_CLIENT_ID>"
-                client_secret_ref: "connections.delegated_to_kdcube.providers.slack.connector_apps.demo.client_secret"
-                allowed_claims:
-                - "slack:search"
-                - "slack:post"
-                - "slack:channels"
-                - "slack:history"
-                - "slack:files:read"
-                - "slack:files:write"
-                - "slack:assistant:search"
-            claims:
-              slack:search:
-                label: "Search Slack"
-                description: "Search Slack content visible to the approving user."
-                provider_scopes:
-                  - "search:read"
-              slack:post:
-                label: "Post to Slack"
-                description: "Post messages into Slack destinations allowed by the approving user."
-                provider_scopes:
-                - "chat:write"
-                - "im:write"
-              slack:channels:
-                label: "List Slack channels"
-                description: "List Slack conversations visible to the approving user."
-                provider_scopes:
-                - "channels:read"
-                - "groups:read"
-                - "im:read"
-                - "mpim:read"
-              slack:history:
-                label: "Read Slack history"
-                description: "Read Slack conversation history visible to the approving user."
-                provider_scopes:
-                - "channels:history"
-                - "groups:history"
-                - "im:history"
-                - "mpim:history"
-              slack:files:read:
-                label: "Read Slack files"
-                description: "Read and download Slack files visible to the approving user."
-                provider_scopes:
-                - "files:read"
-              slack:files:write:
-                label: "Upload Slack files"
-                description: "Upload files to Slack destinations allowed by the approving user."
-                provider_scopes:
-                - "files:write"
-                - "im:write"
-              slack:assistant:search:
-                label: "Use Slack assistant search"
-                description: "Use Slack AI semantic search across messages, files, channels, and users where available."
-                provider_scopes:
-                - "search:read.public"
-                - "search:read.private"
-                - "search:read.im"
-                - "search:read.mpim"
-                - "search:read.files"
-                - "search:read.users"
-          s1:
-            label: "S1"
-            adapter: "oidc.generic"
-            enabled: false
-            oauth:
-              authorize_url: "https://s1.example.com/oauth2/authorize"
-              token_url: "https://s1.example.com/oauth2/token"
-              userinfo_url: "https://s1.example.com/oauth2/userInfo"
-              default_scopes:
-              - "openid"
-              - "email"
-              - "profile"
-              authorize_params:
-                audience: "s1-api"
-              profile:
-                subject: "sub"
-                email: "email"
-                display_name: "name"
-                workspace: "custom.tenant"
-            connector_apps:
-              default:
-                label: "S1 connector"
-                enabled: true
-                client_id: "<S1_OIDC_CLIENT_ID>"
-                client_secret_ref: "connections.delegated_to_kdcube.providers.s1.connector_apps.default.client_secret"
-                allowed_claims:
-                - "s1:read"
-                - "s1:write"
-            claims:
-              s1:read:
-                label: "Read S1"
-                description: "Read S1 data for the approving user."
-                provider_scopes:
-                - "s1.read"
-              s1:write:
-                label: "Write S1"
-                description: "Write S1 data for the approving user."
-                provider_scopes:
-                - "s1.write"
-          icloud_mail:
-            label: "iCloud Mail"
-            adapter: "email.imap_smtp_app_password"
-            enabled: true
-            connector_apps:
-              app_password:
-                label: "iCloud app-specific password"
-                enabled: true
-                allowed_claims:
-                - "email:read"
-                - "email:send"
+                authorize_params:
+                  audience: "s1-api"
+                profile:
+                  subject: "sub"
+                  email: "email"
+                  display_name: "name"
+                  workspace: "custom.tenant"
+              connector_apps:
+                default:
+                  label: "S1 connector"
+                  enabled: true
+                  client_id: "<S1_OIDC_CLIENT_ID>"
+                  client_secret_ref: "connections.delegated_to_kdcube.providers.s1.connector_apps.default.client_secret"
+                  allowed_claims:
+                  - "s1:read"
+                  - "s1:write"
+              claims:
+                s1:read:
+                  label: "Read S1"
+                  description: "Read S1 data for the approving user."
+                  provider_scopes:
+                  - "s1.read"
+                s1:write:
+                  label: "Write S1"
+                  description: "Write S1 data for the approving user."
+                  provider_scopes:
+                  - "s1.write"
+            icloud_mail:
+              label: "iCloud Mail"
+              adapter: "email.imap_smtp_app_password"
+              enabled: true
+              connector_apps:
+                app_password:
+                  label: "iCloud app-specific password"
+                  enabled: true
+                  allowed_claims:
+                  - "email:read"
+                  - "email:send"
 
-            claims:
-              email:read:
-                label: "Read mail"
-                description: "Read mail through IMAP for the connected mailbox."
-              email:send:
-                label: "Send mail"
-                description: "Send mail through SMTP for the connected mailbox."
+              claims:
+                email:read:
+                  label: "Read mail"
+                  description: "Read mail through IMAP for the connected mailbox."
+                email:send:
+                  label: "Send mail"
+                  description: "Send mail through SMTP for the connected mailbox."
       identity:
         enabled: true
         authenticator_selector_cache:

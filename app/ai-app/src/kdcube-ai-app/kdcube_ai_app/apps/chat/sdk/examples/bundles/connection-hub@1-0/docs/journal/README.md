@@ -14,6 +14,8 @@ configuration.
 
 ## Entries
 
+- [2026-08-02 - Descriptor reference alignment](2026-08-02-descriptor-reference-alignment.md)
+- [2026-07-31 - Live grant authority and operation CSRF](2026-07-31-live-grant-authority-and-operation-csrf.md)
 - [2026-07-27 - Exact named-service actions and Sheets](2026-07-27-exact-named-service-actions-and-sheets.md)
 - [2026-07-17 - Automation access catalog parity](2026-07-17-automation-access-catalog-parity.md)
 - [2026-07-05 - Managed REST guard](2026-07-05-managed-rest-guard.md)
