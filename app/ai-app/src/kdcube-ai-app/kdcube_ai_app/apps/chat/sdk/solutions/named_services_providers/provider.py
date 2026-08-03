@@ -16,7 +16,6 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.schema_searc
     DEFAULT_SCHEMA_VECTOR_BACKEND,
     SchemaCatalogSearchIndex,
     normalize_schema_vector_backend,
-    schema_search_embedding_profile,
     schema_search_index_path,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
@@ -248,34 +247,24 @@ class NamedServiceProvider:
             return None
         if self._schema_search_model_service is None:
             return None
-        namespace_key = str(
-            namespace or self.spec.namespace or "default"
-        ).strip().lower()
-        embedding_profile = schema_search_embedding_profile(
-            self._schema_search_model_service,
-            dim=self._schema_search_dim,
-            vector_backend=self._schema_search_vector_backend,
+        namespace_key = (
+            str(namespace or self.spec.namespace or "default").strip().lower()
         )
         identity = f"{self.spec.provider_id}.{namespace_key}"
+        key = identity
+        if key in self._schema_search_indexes:
+            return self._schema_search_indexes[key]
         db_path = schema_search_index_path(
             self._schema_search_storage_root,
             identity,
-            embedding_profile=embedding_profile,
         )
-        key = str(db_path)
-        if key not in self._schema_search_indexes:
-            namespace_dir = str(db_path.parent) + "/"
-            self._schema_search_indexes = {
-                cached_path: cached_index
-                for cached_path, cached_index in self._schema_search_indexes.items()
-                if not cached_path.startswith(namespace_dir)
-            }
-            self._schema_search_indexes[key] = SchemaCatalogSearchIndex(
-                db_path=db_path,
-                model_service=self._schema_search_model_service,
-                dim=self._schema_search_dim,
-                vector_backend=self._schema_search_vector_backend,
-            )
+        self._schema_search_indexes[key] = SchemaCatalogSearchIndex(
+            db_path=db_path,
+            model_service=self._schema_search_model_service,
+            dim=self._schema_search_dim,
+            vector_backend=self._schema_search_vector_backend,
+            managed_generations=True,
+        )
         return self._schema_search_indexes[key]
 
     async def ensure_schema_catalog_index(
@@ -317,9 +306,11 @@ class NamedServiceProvider:
                 continue
             tree = build_schema_tree(schema, self.schema_projection_index)
             result = await search_index.ensure(tree)
+            generation_cleanup = await search_index.prune_stale_generations_once()
             results.append(
                 {
                     **result,
+                    "generation_cleanup": generation_cleanup,
                     "namespace": selected_namespace,
                     "provider_id": self.spec.provider_id,
                 }

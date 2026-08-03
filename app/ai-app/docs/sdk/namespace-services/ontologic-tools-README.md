@@ -208,11 +208,15 @@ full-schema behavior.
 
 The provider-owning bundle prepares its projected capability catalog during
 bundle load. With a bound embedding service it persists a compact shared
-hybrid index and checks the deterministic declaration signature on use. Its
+hybrid index in a timestamped generation whose hash covers the declaration and
+embedding profile. Concurrent loaders resolve one shared generation. Its
 default file-backed FAISS view is derived from declarations, FTS rows, and
 cached vectors held in SQLite; the publishing bundle can explicitly select the
-in-memory brute-force fallback. Without an embedding service, lexical matching
-runs directly over the projection. Consumer agents query this provider-owned
+in-memory brute-force fallback. A successful newest-generation load retains
+that generation and its immediate predecessor and removes older file families.
+The first capability search heals retention once when bundle preload was
+already marked complete. Without an embedding service, lexical matching runs
+directly over the projection. Consumer agents query this provider-owned
 surface; they do not build the index. The catalog contains only
 provider-declared capabilities and never mirrors provider objects. The storage
 and descriptor contract is owned by
