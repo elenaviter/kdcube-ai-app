@@ -4,7 +4,7 @@ title: "Namespace Services: Providers"
 summary: "Transport-neutral SDK concept for apps (bundles) and platform subsystems that publish namespace service provider surfaces: namespace ownership, object operations, resolvers, capabilities, relations, and integrations over API, MCP, Data Bus, or local adapters."
 status: current
 tags: ["sdk", "namespace-services", "named-service-provider", "services", "namespaces", "objects", "resolvers", "mcp", "api", "data-bus", "apps", "bundles"]
-updated_at: 2026-08-02
+updated_at: 2026-08-03
 keywords:
   [
     "named service provider",
@@ -31,6 +31,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-policy-bridge-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/index/hybrid-index-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/events/namespaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/scene/scene-surface-registry-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/event-hub/resolver-and-policy-registration-README.md
@@ -213,8 +214,163 @@ Model and flow: [Agents Acting On Behalf Of The User](../solutions/connections/a
 ## Provider Schemas
 
 `object.schema` is the provider-owned contract for object body fields,
-filters, actions, and returned object shapes. Use it to describe both strict
-validation and softer semantic guidance.
+filters, actions, and returned object shapes. Projection-enabled providers
+declare one complete schema and a projection index; the shared dispatcher then
+returns a recursive catalog node, ranked capability matches, one kind, one
+exact operation, or an explicit full view.
+Use the schema to describe both strict validation and softer semantic guidance.
+
+### Progressive Schema Projection
+
+Set `schema_projection_index` on the provider class when the complete schema
+is too broad to place in every agent round:
+
+```python
+RECORDS_SCHEMA_PROJECTION = {
+    "catalog": {
+        "id": "records",
+        "label": "Records",
+        "children": [
+            {
+                "id": "browse",
+                "label": "Find and inspect records",
+                "children": {
+                    "collections": {
+                        "object_kind": "records.collection",
+                        "operations": ["object.list", "object.get"],
+                    },
+                    "items": {
+                        "object_kind": "records.item",
+                        "operations": ["object.search", "object.get"],
+                    },
+                },
+            },
+            {
+                "id": "lifecycle",
+                "label": "Create and manage records",
+                "keywords": ["publish", "archive"],
+                "object_kind": "records.item",
+                "operations": [
+                    "object.upsert",
+                    "object.action:publish",
+                    "object.action:archive",
+                ],
+            },
+        ],
+    },
+    "kinds": {
+        "records.collection": {
+            "refs": ["collection"],
+            "operations": {
+                "object.list": {},
+                "object.get": {"sections": ["get"]},
+            },
+        },
+        "records.item": {
+            "refs": ["item"],
+            "selectors": ["item_selector"],
+            "related_kinds": ["records.collection"],
+            "operations": {
+                "object.search": {"sections": ["search"]},
+                "object.get": {"sections": ["get", "materialization"]},
+                "object.upsert": {
+                    "sections": ["upsert"],
+                    "section_keys": {"upsert": ["item"]},
+                },
+            },
+            "actions": ["publish", "archive"],
+        },
+    },
+}
+
+
+class RecordsNamedServiceProvider(NamedServiceProvider):
+    schema_projection_index = RECORDS_SCHEMA_PROJECTION
+
+    def schema_object_kind_from_ref(self, object_ref: str) -> str | None:
+        return "records.item" if object_ref.startswith("records:item:") else None
+```
+
+The `kinds` index is an ownership map over the provider's declared schema.
+Every schema object kind and action must be assigned; referenced refs,
+selectors, sections, and operation ids must exist. The optional `catalog`
+arranges those operations under stable nodes of arbitrary depth. Every
+projected operation must appear in that tree. Invalid declarations fail with
+`named_service_schema_projection_invalid` instead of leaking an accidental
+full schema.
+
+The request views are:
+
+| Request | Returned schema |
+| --- | --- |
+| `object.schema(namespace=...)` | Root catalog node with direct operations and child summaries. |
+| `object.schema(..., schema_path="/browse")` | One recursive catalog node, addressed by stable path. |
+| `object.schema(..., query="publish a record", search_mode="hybrid")` | Ranked capability declarations with `catalog_path`, `object_kind`, and `schema_operation`. |
+| `object.schema(..., object_kind=...)` | One kind, its refs/selectors, and operation summaries. |
+| `object.schema(..., object_ref=...)` | Same kind view, inferred by the provider's ref parser. |
+| `object.schema(..., schema_operation="object.search")` | Exact generic-operation contract. A unique operation can infer its kind. |
+| `object.schema(..., schema_operation="object.action:publish")` | Only that action's payload/result contract. |
+| `object.schema(..., schema_view="full")` | Complete provider schema, explicitly requested. |
+
+The same root projection is applied to the schema embedded in
+`provider.about`. Providers with no projection index preserve their existing
+response unchanged.
+
+Capability search operates on the provider declaration, not provider-owned
+objects:
+
+```text
+object.schema(query=...)  -> discover an operation the realm supports
+object.search(query=...)  -> discover an object inside the realm
+```
+
+Index preparation belongs to the bundle that publishes the provider. During
+that bundle's `on_bundle_load`, the base entrypoint constructs its provider
+registry, binds the bundle's shared storage and embedding service, and prepares
+only providers that declare `schema_projection_index`. A consumer bundle or
+agent queries the owning provider; it never builds or writes the provider's
+index. Providers without a projection preserve their existing schema response.
+
+With a bound embedding service, the provider persists a compact shared hybrid
+capability index. SQLite is the source of truth for capability documents, FTS
+rows, and cached vectors. The default `faiss-local` backend writes a derived
+`.faiss` sibling in the same shared bundle-storage directory; another worker
+loads that file instead of reconstructing an in-memory vector view. If the
+derived file is missing, the provider rebuilds it from the SQLite vector cache.
+The explicit `bruteforce` backend keeps the vector view in process memory and
+is intended for dependency-free development and tests.
+
+The publishing bundle selects the backend in its descriptor:
+
+```yaml
+config:
+  named_services:
+    schema_search:
+      vector_backend: faiss-local  # faiss-local | bruteforce
+```
+
+Its deterministic declaration signature permits reuse across workers and
+triggers refresh after a schema/catalog change. Without an embedding service,
+capability queries use the same projection through in-memory lexical matching
+and do not require a persistent index. Responses report
+`requested_search_mode`, `effective_search_mode`, match sources, backend,
+`vector_backend`, the vector path when persistent, and any fallback reason.
+
+No provider object or user content is copied into this index. The configured
+embedding provider, model, vector dimension, and vector backend participate in
+index identity, so changing that profile replaces the derived index even when
+the capability declaration itself is unchanged. Profile-specific shared paths
+let old and new workers coexist during a rolling deployment without rewriting
+one another's index. A provider app does not declare an LLM role merely to
+publish this catalog; without a bound embedding service, capability discovery
+stays lexical.
+
+Projection does not design the realm automatically. The adapter author still
+maps third-party endpoints into user-meaningful object kinds and bounded
+actions and chooses the catalog hierarchy, labels, descriptions, and keywords.
+The shared layer validates, slices, indexes, and searches that declared model;
+it does not cluster endpoints, infer a domain model, or build an index over
+provider objects.
 
 For closed values, use normal schema `enum` semantics. A caller should assume
 unknown values are rejected.
@@ -268,13 +424,16 @@ resolves a `tabId` or `commentId`, and then performs the requested action. Those
 ids are provider handles. They may be returned for diagnostics or later exact
 operations, but they are not the user's required vocabulary.
 
-Here, **domain meaning** does not imply semantic search. Search and selector
-quality cannot exceed what the provider can execute. An adapter may use the
-provider's own search/filter operation or evaluate explicit predicates over a
-bounded response it has already read, such as one document's tabs or comments.
-KDCube does not build a secondary index over the provider's object space. A
-provider-backed semantic-search selector is declared only when the provider
-supplies that capability.
+Here, **domain meaning** does not imply semantic search over provider objects.
+Object search and selector quality cannot exceed what the provider can
+execute. An adapter may use the provider's own search/filter operation or
+evaluate explicit predicates over a bounded response it has already read,
+such as one document's tabs or comments. KDCube does not build a secondary
+index over the provider's object space. A provider-backed semantic-search
+selector is declared only when the provider supplies that capability.
+
+This is independent from `object.schema(query=...)`, whose search corpus is
+the provider's static capability declaration.
 
 Provider implementations follow these rules:
 
@@ -311,8 +470,8 @@ provider pages of 100 comments while resolving one selector. If more results
 remain, it returns `docs_comment_selector_incomplete`; if several candidates
 match, it returns them rather than choosing one.
 
-The agent-facing ontology and discovery sequence are owned by
-[Ontologic Tools](ontologic-tools-README.md#a-schema-is-the-realms-language).
+The agent-facing operational ontology and discovery sequence are owned by
+[Ontology-Guided Tools](ontologic-tools-README.md#a-schema-is-the-realms-language).
 
 ## Provider Execution Surfaces
 
@@ -409,16 +568,14 @@ purpose, base object summaries, and a short hint to call `object.schema` for
 concrete payload fields. Full object schemas, capability maps, and the complete
 provider spec belong to `object.schema` and `provider.capabilities`.
 
-For a large realm, a **recommended convention** for the realm-contributed
-`about` content is to make it a navigable **top-level catalog** (namespaces, a
-shallow list of kinds/scopes, the action vocabulary) plus a **query playbook**
+For a large realm, keep the realm-contributed non-schema `about` content a
+short **query playbook**
 (per common intent: scope + filter template + example query, and a short
-"how to query this realm" note). The kinds/scopes that `about` lists are the
-selectors the agent passes to a focused `object.schema`. This is content
-guidance for `about`, not a new operation. For a big schema the agent should
-fetch by part rather than reading the whole thing; per-part projection
-selectors (kind/scope/field-subset/depth) on `object.schema` are a proposed
-extension, not current params.
+"how to query this realm" note). Its embedded schema is projected to the
+top-level catalog automatically when the provider declares a projection index.
+The catalog's child paths and operation entries are the selectors the agent
+passes to focused `object.schema` calls; capability queries provide the same
+exact kind/operation selectors when the path is not known.
 
 Providers that expose more than one searchable object space should declare
 bounded `search_scopes` on the provider spec. Search scopes are registration
@@ -725,7 +882,7 @@ is not the public agent interface.
 | `object.list` | Browse objects in a collection with pagination. |
 | `object.search` | Search objects; default mode is hybrid when the provider supports it. Providers may accept the configured base namespace or provider-declared scoped namespaces. |
 | `object.get` | Fetch one object by `object_ref` or owner-local id. Batch form: `filters.refs` (a list of refs) fans out to the provider's single `object.get` and returns the objects as `ret.items` — handled once in the base dispatch, so every provider that implements single `object.get` supports batch identically (no per-provider code). With `response_mode: stream`, fetch the object's byte representation while still returning structured response metadata. |
-| `object.schema` | Return provider-defined object schemas, search/filter contracts, and tool payload guidance for one object kind or ref. |
+| `object.schema` | Browse/search the provider capability catalog, return one kind, expand one exact operation contract, or explicitly return the full schema. |
 | `object.host_file` | Host a caller-owned runtime file/ref into provider-owned storage and return the provider-owned file object/ref. |
 | `object.upsert` | Create or update one object with idempotency and revision checks. |
 | `object.delete` | Delete or archive one object with revision checks. |
@@ -810,6 +967,9 @@ Object-oriented operations use these common request fields:
   "provider": "task.issue",
   "namespace": "task",
   "object_ref": "task:issue:BUG-123",
+  "object_kind": "task.issue",
+  "schema_view": "operation",
+  "schema_operation": "object.action:open",
   "object_id": "BUG-123",
   "collection": "issues",
   "cursor": null,
@@ -1831,8 +1991,10 @@ When introducing a named service provider:
 - define provider id, labels, and purpose;
 - define canonical ref grammar and object kinds when the provider owns refs;
 - define `provider.about` and `provider.capabilities`;
-- define `object.schema` for each object kind that agents may create, update,
-  delete, render, or pull from;
+- define one complete `object.schema` and a `schema_projection_index` for a
+  provider whose schema contains several kinds or many actions;
+- assign every schema object kind/action in that index and implement
+  `schema_object_kind_from_ref` when concrete refs should select a kind;
 - define object operations and action names;
 - define `object.resolve` as lightweight URI resolution. It should parse the
   provider-owned ref and return canonical `object_ref`, `object_kind`, parent

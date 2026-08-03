@@ -4,7 +4,7 @@ title: "Namespace Services: ReAct Object Materialization"
 summary: "ReAct adapter diagram over the shared runtime harness for pulling, reading, owner-projecting, and rendering named-service objects."
 status: current
 tags: ["sdk", "namespace-services", "react", "pull", "read", "block-production", "events"]
-updated_at: 2026-07-27
+updated_at: 2026-08-03
 keywords:
   [
     "react.pull",
@@ -316,8 +316,9 @@ For an object namespace that supports ReAct materialization:
 
 ## Owner-Projected Snapshot Pattern
 
-Google Sheets is a concrete snapshot provider. Discovery and ontologic tools
-return canonical spreadsheet or tab refs, for example:
+Google Sheets is a concrete snapshot provider. Discovery and the
+ontology-guided tool surface return canonical spreadsheet or tab refs, for
+example:
 
 ```text
 sheets:google:<account_id>:spreadsheet:<spreadsheet_id>

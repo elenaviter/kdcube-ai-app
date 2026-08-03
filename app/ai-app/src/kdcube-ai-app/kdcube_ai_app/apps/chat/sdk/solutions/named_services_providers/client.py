@@ -183,10 +183,21 @@ class NamedServiceClient:
         return await self.call(self._request(OBJECT_HOST_FILE, **kwargs))
 
     async def schema(self, **kwargs: Any) -> NamedServiceResponse:
-        object_kind = kwargs.pop("object_kind", None)
-        if object_kind:
-            payload = dict(kwargs.get("payload") or {})
-            payload.setdefault("object_kind", object_kind)
+        payload = dict(kwargs.get("payload") or {})
+        for key in (
+            "object_kind",
+            "schema_path",
+            "schema_view",
+            "schema_operation",
+            "query",
+            "search_mode",
+        ):
+            value = kwargs.get(key)
+            if value:
+                payload.setdefault(key, value)
+        if kwargs.get("query"):
+            kwargs.setdefault("search_mode", "hybrid")
+        if payload:
             kwargs["payload"] = payload
         return await self.call(self._request(OBJECT_SCHEMA, **kwargs))
 

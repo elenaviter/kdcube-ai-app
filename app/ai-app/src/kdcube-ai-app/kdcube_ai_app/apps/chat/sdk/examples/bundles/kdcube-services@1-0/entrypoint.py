@@ -140,6 +140,11 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
 
     def configuration_defaults(self) -> Dict[str, Any]:
         return {
+            "named_services": {
+                "schema_search": {
+                    "vector_backend": "faiss-local",
+                },
+            },
             "surfaces": {
                 "as_provider": {
                     "bundle": {"visibility": {"allowed_roles": []}},

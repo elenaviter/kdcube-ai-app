@@ -347,22 +347,60 @@ async def test_about_and_schema_return_expected_shape() -> None:
     )
     assert about.ok is True
     assert about.extra["schema"]["namespace"] == "docs"
+    assert about.extra["schema"]["schema_projection"]["view"] == "catalog"
     assert "google" in about.extra["providers"]
 
-    schema = await provider.dispatch(
+    catalog = await provider.dispatch(
         _ctx(),
         NamedServiceRequest(operation=OBJECT_SCHEMA, namespace="docs"),
     )
-    assert schema.ok is True
-    assert schema.extra["schema"]["refs"]["document"].startswith("docs:<provider>")
-    assert DOCS_DOCUMENT_KIND in schema.extra["schema"]["object_kinds"]
-    assert DOCS_IMPORT_SOURCE_KIND in schema.extra["schema"]["object_kinds"]
-    assert schema.extra["schema"]["actions"][ACTION_COPY]["payload"] == [
+    assert catalog.ok is True
+    assert catalog.extra["schema"]["schema_projection"]["view"] == "catalog"
+    assert DOCS_DOCUMENT_KIND in catalog.extra["schema"]["object_kinds"]
+    assert DOCS_IMPORT_SOURCE_KIND in catalog.extra["schema"]["object_kinds"]
+    assert "actions" not in catalog.extra["schema"]
+
+    kind = await provider.dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_SCHEMA,
+            namespace="docs",
+            object_kind=DOCS_DOCUMENT_KIND,
+        ),
+    )
+    assert kind.ok is True
+    assert kind.extra["schema"]["schema_projection"]["view"] == "kind"
+    assert kind.extra["schema"]["refs"]["document"].startswith("docs:<provider>")
+    assert "object.action:copy" in kind.extra["schema"]["operations"]
+    assert "actions" not in kind.extra["schema"]
+
+    operation = await provider.dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_SCHEMA,
+            namespace="docs",
+            object_kind=DOCS_DOCUMENT_KIND,
+            schema_operation="object.action:copy",
+        ),
+    )
+    assert operation.ok is True
+    assert operation.extra["schema"]["schema_projection"]["view"] == "operation"
+    assert operation.extra["schema"]["actions"][ACTION_COPY]["payload"] == [
         "title",
         "parent_id",
     ]
-    assert "hierarchy" in schema.extra["schema"]["selectors"]["tab_selector"]["fields"]
-    assert schema.extra["schema"]["delete"]["payload"] == [
+
+    full = await provider.dispatch(
+        _ctx(),
+        NamedServiceRequest(
+            operation=OBJECT_SCHEMA,
+            namespace="docs",
+            schema_view="full",
+        ),
+    )
+    assert full.ok is True
+    assert "hierarchy" in full.extra["schema"]["selectors"]["tab_selector"]["fields"]
+    assert full.extra["schema"]["delete"]["payload"] == [
         "comment_id",
         "comment_selector",
     ]

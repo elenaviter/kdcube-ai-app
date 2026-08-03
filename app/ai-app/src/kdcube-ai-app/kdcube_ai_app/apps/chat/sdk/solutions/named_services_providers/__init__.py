@@ -73,6 +73,21 @@ from .client import NamedServiceClient
 from .instructions import NAMED_SERVICES_REACT_ADDITIONAL_INSTRUCTIONS
 from .provider import NamedServiceProvider, named_service_provider
 from .registry import NamedServiceRegistry
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.schema_projection import (
+    SCHEMA_PROJECTION_CONTRACT,
+    SCHEMA_VIEW_CATALOG,
+    SCHEMA_VIEW_FULL,
+    SCHEMA_VIEW_KIND,
+    SCHEMA_VIEW_OPERATION,
+    SCHEMA_VIEW_SEARCH,
+    SchemaProjectionError,
+    build_schema_catalog,
+    build_schema_search,
+    build_schema_tree,
+    project_schema,
+    project_schema_response,
+    project_schema_response_async,
+)
 from .transports.api_client import (
     ENDPOINT_TRANSPORT_BUNDLE_OPERATION,
     ENDPOINT_TRANSPORT_BUNDLE_REGISTRY,
@@ -135,6 +150,12 @@ __all__ = [
     "EVENT_RESOLVE",
     "OBJECT_HOST_FILE",
     "OBJECT_SCHEMA",
+    "SCHEMA_PROJECTION_CONTRACT",
+    "SCHEMA_VIEW_CATALOG",
+    "SCHEMA_VIEW_FULL",
+    "SCHEMA_VIEW_KIND",
+    "SCHEMA_VIEW_OPERATION",
+    "SCHEMA_VIEW_SEARCH",
     "AuthContext",
     "NamedServiceApiTransport",
     "NamedServiceBoundaryCatalog",
@@ -155,6 +176,10 @@ __all__ = [
     "NamedServiceSearchScope",
     "NamedServiceStreamResult",
     "NamespaceBoundaryPolicy",
+    "SchemaProjectionError",
+    "build_schema_catalog",
+    "build_schema_search",
+    "build_schema_tree",
     "build_default_operations",
     "as_list",
     "as_mapping",
@@ -191,6 +216,9 @@ __all__ = [
     "register_configured_named_service_event_sources",
     "RedisNamedServiceDiscovery",
     "publish_registry_discovery",
+    "project_schema",
+    "project_schema_response",
+    "project_schema_response_async",
     "bind_named_service_discovery",
     "get_current_named_service_discovery",
 ]

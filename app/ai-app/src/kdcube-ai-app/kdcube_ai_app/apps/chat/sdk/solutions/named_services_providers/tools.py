@@ -723,6 +723,10 @@ async def _call(
     tool_name: str,
     operation: str,
     object_ref: str | None = None,
+    object_kind: str | None = None,
+    schema_path: str | None = None,
+    schema_view: str | None = None,
+    schema_operation: str | None = None,
     object_id: str | None = None,
     query: str | None = None,
     action: str | None = None,
@@ -736,6 +740,7 @@ async def _call(
     base_revision: str | None = None,
     idempotency_key: str | None = None,
     payload: Mapping[str, Any] | None = None,
+    search_mode: str | None = None,
 ) -> Dict[str, Any]:
     ns = _normalize_namespace(namespace)
     base_ns = _base_namespace(ns)
@@ -832,12 +837,23 @@ async def _call(
         provider=endpoint.provider,
         namespace=ns,
         object_ref=str(object_ref or "").strip() or None,
+        object_kind=str(object_kind or "").strip() or None,
+        schema_path=str(schema_path or "").strip() or None,
+        schema_view=str(schema_view or "").strip() or None,
+        schema_operation=str(schema_operation or "").strip() or None,
         object_id=str(object_id or "").strip() or None,
         collection=str(collection or "").strip() or None,
         cursor=str(cursor or "").strip() or None,
         limit=limit,
         query=str(query or "").strip() or None,
-        search_mode="hybrid" if operation == OBJECT_SEARCH else None,
+        search_mode=(
+            str(search_mode or "").strip().lower()
+            or (
+                "hybrid"
+                if operation == OBJECT_SEARCH or (operation == OBJECT_SCHEMA and query)
+                else None
+            )
+        ),
         filters=dict(filters or {}),
         sort=list(sort or []),
         include=list(include or []),
@@ -1033,11 +1049,47 @@ async def host_file(
 
 
 async def object_schema(
-    namespace: Annotated[str, "Configured named-service namespace or provider-declared scoped namespace, for example 'sensor' or 'sensor:humidity:aggr'."],
-    object_kind: Annotated[str, "Namespace object kind, for example 'sensor.temperature' or 'sensor.humidity.aggr'."] = "",
-    object_ref: Annotated[str, "Canonical object ref when asking for the schema of a concrete ref."] = "",
-) -> Annotated[Dict[str, Any], "Named service response envelope with object fields, search filter contract, and usage guidance."]:
-    """Return provider-defined object fields, search filter contract, and tool payload guidance.
+    namespace: Annotated[
+        str,
+        "Configured named-service namespace or provider-declared scoped namespace.",
+    ],
+    object_kind: Annotated[
+        str,
+        "Object kind returned by the catalog, for example 'sensor.temperature'.",
+    ] = "",
+    object_ref: Annotated[
+        str,
+        "Canonical object ref whose provider-owned kind should select the schema.",
+    ] = "",
+    schema_path: Annotated[
+        str,
+        "Catalog path returned by an earlier catalog view, for example '/documents/comments'.",
+    ] = "",
+    schema_view: Annotated[
+        str,
+        "Detail level: catalog, search, kind, operation, or full. Omit to infer it.",
+    ] = "",
+    schema_operation: Annotated[
+        str,
+        "Exact operation id from the catalog/kind view, such as object.search or object.action:reply.",
+    ] = "",
+    query: Annotated[
+        str,
+        "Natural-language or lexical query over provider capabilities, not provider objects.",
+    ] = "",
+    search_mode: Annotated[
+        str,
+        "Capability search mode: hybrid, lexical, or semantic.",
+    ] = "hybrid",
+    limit: Annotated[
+        int,
+        "Maximum matching capability operations to return (1-50).",
+    ] = 10,
+) -> Annotated[
+    Dict[str, Any],
+    "Named service response envelope with a catalog node, capability matches, kind, operation, or full schema.",
+]:
+    """Explore or search a provider capability schema, then expand one contract.
 
     When upserting, honor each collection field's declared `update_strategy`: for `replace` send the
     full intended value, for `append`/`patch` send only the delta; scalar fields are set-if-provided.
@@ -1048,11 +1100,27 @@ async def object_schema(
         payload["object_kind"] = object_kind
     if object_ref:
         payload["object_ref"] = object_ref
+    if schema_path:
+        payload["schema_path"] = schema_path
+    if schema_view:
+        payload["schema_view"] = schema_view
+    if schema_operation:
+        payload["schema_operation"] = schema_operation
+    if query:
+        payload["query"] = query
+        payload["search_mode"] = search_mode or "hybrid"
     return await _call(
         namespace=namespace,
         tool_name="object_schema",
         operation=OBJECT_SCHEMA,
         object_ref=object_ref,
+        object_kind=object_kind,
+        schema_path=schema_path,
+        schema_view=schema_view,
+        schema_operation=schema_operation,
+        query=query,
+        search_mode=search_mode,
+        limit=max(1, min(int(limit or 10), 50)),
         payload=payload,
     )
 
@@ -1155,7 +1223,10 @@ def list_tools() -> Dict[str, Dict[str, Any]]:
         },
         "object_schema": {
             "callable": object_schema,
-            "description": "Return provider-defined object fields, search filter contract, and named-service tool payload guidance.",
+            "description": (
+                "Browse or search a provider capability catalog, then return "
+                "one kind, one exact operation contract, or an explicit full schema."
+            ),
         },
         "object_action": {
             "callable": object_action,

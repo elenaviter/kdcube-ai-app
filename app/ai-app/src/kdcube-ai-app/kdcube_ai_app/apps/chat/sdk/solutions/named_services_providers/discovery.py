@@ -125,6 +125,9 @@ def _discovery_from_request_context() -> Any:
 
 
 def _object_kind_from_request(request: NamedServiceRequest) -> str:
+    direct = str(request.object_kind or "").strip()
+    if direct:
+        return direct
     for source in (request.payload, request.object, request.filters):
         if not isinstance(source, Mapping):
             continue

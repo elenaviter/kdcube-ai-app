@@ -504,6 +504,10 @@ class NamedServiceRequest:
     provider: str | None = None
     namespace: str | None = None
     object_ref: str | None = None
+    object_kind: str | None = None
+    schema_path: str | None = None
+    schema_view: str | None = None
+    schema_operation: str | None = None
     object_id: str | None = None
     collection: str | None = None
     cursor: str | None = None
@@ -541,18 +545,33 @@ class NamedServiceRequest:
         data = dict(value or {})
         operation = normalize_required_string(data.get("operation"), field_name="operation")
         limit = data.get("limit")
+        payload = ensure_json_object(data.get("payload"), field_name="payload")
         return cls(
             schema=str(data.get("schema") or NAMED_SERVICE_REQUEST_SCHEMA),
             operation=operation,
             provider=normalize_optional_string(data.get("provider") or data.get("provider_id")),
             namespace=normalize_optional_string(data.get("namespace")),
             object_ref=normalize_optional_string(data.get("object_ref")),
+            object_kind=normalize_optional_string(
+                data.get("object_kind") or payload.get("object_kind")
+            ),
+            schema_path=normalize_optional_string(
+                data.get("schema_path") or payload.get("schema_path")
+            ),
+            schema_view=normalize_optional_string(
+                data.get("schema_view") or payload.get("schema_view") or payload.get("view")
+            ),
+            schema_operation=normalize_optional_string(
+                data.get("schema_operation") or payload.get("schema_operation")
+            ),
             object_id=normalize_optional_string(data.get("object_id")),
             collection=normalize_optional_string(data.get("collection")),
             cursor=normalize_optional_string(data.get("cursor")),
             limit=int(limit) if limit is not None else None,
-            query=normalize_optional_string(data.get("query")),
-            search_mode=normalize_optional_string(data.get("search_mode")),
+            query=normalize_optional_string(data.get("query") or payload.get("query")),
+            search_mode=normalize_optional_string(
+                data.get("search_mode") or payload.get("search_mode")
+            ),
             filters=ensure_json_object(data.get("filters"), field_name="filters"),
             sort=ensure_json_list(data.get("sort"), field_name="sort"),
             include=ensure_json_list(data.get("include"), field_name="include"),
@@ -562,7 +581,7 @@ class NamedServiceRequest:
             idempotency_key=normalize_optional_string(data.get("idempotency_key")),
             response_mode=normalize_optional_string(data.get("response_mode")),
             context=ensure_json_object(data.get("context"), field_name="context"),
-            payload=ensure_json_object(data.get("payload"), field_name="payload"),
+            payload=payload,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -572,6 +591,10 @@ class NamedServiceRequest:
             "provider": self.provider,
             "namespace": self.namespace,
             "object_ref": self.object_ref,
+            "object_kind": self.object_kind,
+            "schema_path": self.schema_path,
+            "schema_view": self.schema_view,
+            "schema_operation": self.schema_operation,
             "object_id": self.object_id,
             "collection": self.collection,
             "cursor": self.cursor,

@@ -4,7 +4,7 @@ title: "Namespace Services"
 summary: "Index and mental model for namespace-owning service providers, clients, object resolution, and app-to-app integration."
 status: current
 tags: ["sdk", "namespace-services", "providers", "clients", "resolvers", "apps"]
-updated_at: 2026-08-01
+updated_at: 2026-08-03
 keywords:
   [
     "namespace services",
@@ -139,9 +139,9 @@ and provider-backed refs gain a live cross-app/object-owner bridge.
 
 | Document | Purpose |
 | --- | --- |
-| [Build A Complete Named Service](../../recipes/components/named-service-README.md) | End-to-end builder recipe: provider shape, progressive discovery, complete retrieval, exact action grants, connected credentials, external MCP clients, and harness materialization. |
+| [Build A Complete Named Service](../../recipes/components/named-service-README.md) | End-to-end builder recipe: provider shape, recursive capability catalogs and search, complete retrieval, exact action grants, connected credentials, external MCP clients, and harness materialization. |
 | [Components Ecosystem Architecture](../solutions/ecosystem-component/components-ecosystem-README.md) | End-to-end architecture map for provider apps, consumer apps, scene, ReAct, Pinboard, chat, events, data bus, and config. |
-| [Ontologic Tools](ontologic-tools-README.md) | The model-facing tool surface for operating any realm by satisfying schemas: the realm's semantic language, progressive discovery, tool composition, affordances, and update strategy. |
+| [Ontology-Guided Tools](ontologic-tools-README.md) | How a lightweight operational ontology, recursive capability discovery, schema-declared affordances, and nine generic operators let an agent operate a provider realm progressively. |
 | [Providers](providers-README.md) | Provider contract, semantic-to-provider translation, capability honesty, operation vocabulary, auth context, transport adapters, presentation, and connected-account requirements. |
 | [Clients](clients-README.md) | Client config, tool exposure, current resolver behavior, and client ids. |
 | [Integration](integration-README.md) | Visual provider-host/client-app flow using task-tracker and workspace. |
@@ -162,6 +162,9 @@ through Named Service Discovery:
   complete current registry into Redis-backed Named Service Discovery after
   local prerequisites are ready, including provider `search_scopes` when it
   exposes multiple searchable object spaces;
+- projection-enabled providers expose a recursive capability catalog through
+  `object.schema`; callers browse it by `schema_path`, search its declarations
+  with `query`, and expand one exact `schema_operation` before invocation;
 - a client app configures `surfaces.as_consumer` for the model tools,
   event-source/pull policies, and resolver surfaces allowed to use that
   namespace;

@@ -2087,6 +2087,9 @@ bundles:
     name: KDCube Services
     singleton: false
     config:
+      named_services:
+        schema_search:
+          vector_backend: faiss-local
       surfaces:
         as_provider:
           bundle:

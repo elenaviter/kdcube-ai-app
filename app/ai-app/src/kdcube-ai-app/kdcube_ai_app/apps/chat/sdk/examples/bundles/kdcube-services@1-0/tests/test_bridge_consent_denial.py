@@ -174,6 +174,30 @@ async def test_search_forwards_provider_cursor() -> None:
     assert captured["cursor"] == "gmail-page-2"
 
 
+async def test_schema_forwards_recursive_capability_search() -> None:
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+    captured = {}
+
+    async def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    bridge.call = fake_call
+    result = await bridge.schema(
+        namespace="docs",
+        query="reply to a comment",
+        search_mode="hybrid",
+        limit=8,
+    )
+
+    assert result == {"ok": True}
+    assert captured["operation"] == "object.schema"
+    assert captured["query"] == "reply to a comment"
+    assert captured["search_mode"] == "hybrid"
+    assert captured["limit"] == 8
+
+
 async def test_bounded_action_authorizes_the_exact_action_key(monkeypatch) -> None:
     m = _bridge_module()
     config = {

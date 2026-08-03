@@ -39,6 +39,17 @@ async def test_named_services_get_exposes_provider_filters() -> None:
     assert "filters_json" in get_schema["properties"]
     assert "ranges" in get_schema["properties"]["filters_json"]["description"]
 
+    schema = schemas["named_services_schema"]
+    assert {
+        "namespace",
+        "object_kind",
+        "object_ref",
+        "schema_view",
+        "schema_operation",
+        "provider",
+    } <= set(schema["properties"])
+    assert "catalog" in schema["properties"]["schema_view"]["description"]
+
 
 @pytest.mark.asyncio
 async def test_search_and_generic_call_expose_pagination_cursor() -> None:

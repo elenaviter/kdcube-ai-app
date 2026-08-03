@@ -331,6 +331,114 @@ SLACK_SCHEMA = {
     "connected_account_claims": SLACK_CONNECTED_ACCOUNT_CLAIMS,
 }
 
+SLACK_SCHEMA_PROJECTION = {
+    "catalog": {
+        "id": "slack",
+        "label": "Slack",
+        "description": "Explore workspaces, channels, messages, search, and files.",
+        "children": [
+            {
+                "id": "workspaces",
+                "label": "Workspaces and uploads",
+                "object_kind": SLACK_ACCOUNT_KIND,
+                "operations": [
+                    "object.list",
+                    "object.get",
+                    f"object.action:{ACTION_ASSISTANT_SEARCH_INFO}",
+                    f"object.action:{ACTION_REQUEST_UPLOAD}",
+                    f"object.action:{ACTION_DISCARD_UPLOAD}",
+                ],
+            },
+            {
+                "id": "conversations",
+                "label": "Channels and conversations",
+                "object_kind": SLACK_CHANNEL_KIND,
+                "children": [
+                    {
+                        "id": "browse",
+                        "label": "List and inspect channels",
+                        "operations": ["object.list", "object.get"],
+                    },
+                    {
+                        "id": "publish",
+                        "label": "Post messages and files",
+                        "keywords": ["send", "message", "upload", "channel"],
+                        "operations": [
+                            f"object.action:{ACTION_POST_MESSAGE}",
+                            f"object.action:{ACTION_UPLOAD_FILE}",
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "messages",
+                "label": "Messages",
+                "object_kind": SLACK_MESSAGE_KIND,
+                "operations": ["object.get"],
+            },
+            {
+                "id": "search",
+                "label": "Search workspace content",
+                "object_kind": SLACK_SEARCH_RESULT_KIND,
+                "keywords": ["find", "history", "messages", "files"],
+                "operations": ["object.search"],
+            },
+            {
+                "id": "files",
+                "label": "Files",
+                "object_kind": SLACK_FILE_KIND,
+                "operations": [
+                    "object.get",
+                    f"object.action:{ACTION_DOWNLOAD_FILE}",
+                ],
+            },
+        ],
+    },
+    "kinds": {
+        SLACK_ACCOUNT_KIND: {
+            "refs": ["account"],
+            "related_kinds": [SLACK_CHANNEL_KIND],
+            "operations": {
+                "object.list": {},
+                "object.get": {},
+            },
+            "actions": [
+                ACTION_ASSISTANT_SEARCH_INFO,
+                ACTION_REQUEST_UPLOAD,
+                ACTION_DISCARD_UPLOAD,
+            ],
+        },
+        SLACK_CHANNEL_KIND: {
+            "refs": ["channel"],
+            "related_kinds": [SLACK_MESSAGE_KIND, SLACK_FILE_KIND],
+            "operations": {
+                "object.list": {},
+                "object.get": {},
+            },
+            "actions": [ACTION_POST_MESSAGE, ACTION_UPLOAD_FILE],
+        },
+        SLACK_MESSAGE_KIND: {
+            "refs": ["message"],
+            "related_kinds": [SLACK_CHANNEL_KIND, SLACK_FILE_KIND],
+            "operations": {"object.get": {}},
+        },
+        SLACK_FILE_KIND: {
+            "refs": ["file"],
+            "related_kinds": [SLACK_MESSAGE_KIND],
+            "operations": {
+                "object.get": {"sections": ["files"]},
+            },
+            "actions": [ACTION_DOWNLOAD_FILE],
+        },
+        SLACK_SEARCH_RESULT_KIND: {
+            "related_kinds": [SLACK_MESSAGE_KIND, SLACK_FILE_KIND],
+            "operations": {
+                "object.search": {"sections": ["search"]},
+            },
+        },
+    },
+}
+
 
 # Agent-facing (in-chat) action contracts: files travel by workspace path/ref
 # and the service reads the bytes itself. Encoded inline entries stay in the
@@ -666,6 +774,8 @@ def _error_from_tool(
     },
 )
 class SlackNamedServiceProvider(NamedServiceProvider):
+    schema_projection_index = SLACK_SCHEMA_PROJECTION
+
     def __init__(
         self,
         *,
@@ -687,6 +797,15 @@ class SlackNamedServiceProvider(NamedServiceProvider):
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
+
+    def schema_object_kind_from_ref(self, object_ref: str) -> str | None:
+        kind = parse_slack_ref(object_ref).get("kind")
+        return {
+            "account": SLACK_ACCOUNT_KIND,
+            "channel": SLACK_CHANNEL_KIND,
+            "message": SLACK_MESSAGE_KIND,
+            "file": SLACK_FILE_KIND,
+        }.get(kind)
 
     async def _download_url(self, ctx: NamedServiceContext, *, ref: str) -> dict[str, Any] | None:
         """Short-lived signed download URL for one file ref, or None when the

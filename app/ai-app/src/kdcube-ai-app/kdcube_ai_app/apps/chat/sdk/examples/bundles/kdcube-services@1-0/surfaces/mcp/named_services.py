@@ -31,15 +31,15 @@ Use this workflow:
 1. Call named_services_list first, unless the user explicitly named a namespace
    and operation.
 2. Use namespaces exactly as returned by named_services_list.
-3. CONTRACT FIRST: a namespace's schema is your working map of it — the
-   search filters and what query text matches, object kinds, action
-   payloads. Before an operation on a namespace (search, get, list, action,
-   upsert, delete, host), have its schema visible — the result of an
-   earlier named_services_schema call in your context is exactly that; when
-   none is visible, call named_services_schema once. A namespace that serves
-   no schema says so in that result; such a provider documents its usage in
-   provider.about instead. When the contract cannot express the user's
-   request, say so and ask.
+3. CONTRACT FIRST: read schemas progressively. named_services_schema with only
+   namespace returns the root catalog. Browse a returned schema_path or pass a
+   query to search capability declarations; query here does not search user
+   objects. Expand a result with object_kind and schema_operation for the exact
+   executable contract; object_ref can select its kind directly. Before
+   search, get, list, action, upsert, delete, or host, keep that exact operation
+   view (or an explicit full schema) in context. A provider without projections
+   may return its full schema directly. When the visible contract cannot express
+   the user's request, say so and ask.
 4. Use named_services_search to find objects before named_services_get when the
    exact object ref is not known, with the filters the schema names.
 5. Only use write, action, host-file, delete, or generic call tools when the
@@ -164,8 +164,8 @@ def build_named_services_mcp_app(
         name="named_services_schema",
         title="Named service schema",
         description=(
-            "Read the object schema for a configured named-service namespace. "
-            "For mail account/message refs use namespace='mail'."
+            "Browse or search a progressive named-service capability schema, "
+            "then read one object kind, one exact operation, or the explicit full schema."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Named service schema"),
         structured_output=False,
@@ -179,21 +179,60 @@ def build_named_services_mcp_app(
             str,
             Field(description="Optional provider object kind when the namespace exposes several object shapes."),
         ] = "",
+        object_ref: Annotated[
+            str,
+            Field(description="Optional canonical object ref; the provider resolves its object kind."),
+        ] = "",
+        schema_path: Annotated[
+            str,
+            Field(description="Optional recursive catalog path returned by an earlier schema call."),
+        ] = "",
+        schema_view: Annotated[
+            str,
+            Field(description="Optional detail level: catalog, search, kind, operation, or full."),
+        ] = "",
+        schema_operation: Annotated[
+            str,
+            Field(description="Exact operation id returned by catalog/kind, such as object.search or object.action:reply."),
+        ] = "",
+        query: Annotated[
+            str,
+            Field(description="Optional query over capability declarations, not provider objects."),
+        ] = "",
+        search_mode: Annotated[
+            str,
+            Field(description="Capability search mode: hybrid, lexical, or semantic."),
+        ] = "hybrid",
+        limit: Annotated[
+            int,
+            Field(ge=1, le=50, description="Maximum capability matches to return."),
+        ] = 10,
         provider: Annotated[
             str,
             Field(description="Optional provider id when a namespace has more than one provider."),
         ] = "",
     ) -> dict[str, Any]:
-        return await _bridge().schema(namespace=namespace, object_kind=object_kind, provider=provider)
+        return await _bridge().schema(
+            namespace=namespace,
+            object_kind=object_kind,
+            object_ref=object_ref,
+            schema_path=schema_path,
+            schema_view=schema_view,
+            schema_operation=schema_operation,
+            query=query,
+            search_mode=search_mode,
+            limit=limit,
+            provider=provider,
+        )
 
     @mcp.tool(
         name="named_services_search",
         title="Search named service",
         description=(
             "Search objects in a configured named-service namespace. Each namespace declares "
-            "its OWN search filters and semantics — before searching, call named_services_call "
-            "with operation='object.schema' (or 'provider.about') for the namespace to read its "
-            "filter contract (ret.extra.schema.search.filters) and how to search it efficiently. "
+            "its OWN search filters and semantics — before searching, call named_services_schema "
+            "with schema_operation='object.search' for the selected object kind to read its exact "
+            "filter contract (ret.extra.schema.search.filters). "
             "filters_json must be a JSON object string; use '{}' when no filters are needed."
         ),
         annotations=read_only_annotations(ToolAnnotations, title="Search named service"),
@@ -220,8 +259,8 @@ def build_named_services_mcp_app(
             str,
             Field(description=(
                 "JSON object string with provider-specific filters. The available filters are "
-                "namespace-specific: read them from object.schema (ret.extra.schema.search.filters) "
-                "or provider.about for the namespace. Use '{}' when no filters are needed."
+                "namespace-specific: read them from the object.search operation view returned by "
+                "named_services_schema. Use '{}' when no filters are needed."
             )),
         ] = "{}",
         provider: Annotated[

@@ -624,6 +624,134 @@ DOCS_SCHEMA = {
     },
 }
 
+DOCS_SCHEMA_PROJECTION = {
+    "catalog": {
+        "id": "docs",
+        "label": "Documents",
+        "description": "Explore document discovery, editing, transfer, and discussion capabilities.",
+        "children": [
+            {
+                "id": "discover",
+                "label": "Find documents",
+                "description": "List and search native documents and importable files.",
+                "operations": [
+                    {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": "object.list"},
+                    {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": "object.search"},
+                    {"object_kind": DOCS_IMPORT_SOURCE_KIND, "schema_operation": "object.list"},
+                    {"object_kind": DOCS_IMPORT_SOURCE_KIND, "schema_operation": "object.search"},
+                ],
+            },
+            {
+                "id": "work",
+                "label": "Work with documents",
+                "children": [
+                    {
+                        "id": "read",
+                        "label": "Read and inspect",
+                        "object_kind": DOCS_DOCUMENT_KIND,
+                        "operations": ["object.get"],
+                    },
+                    {
+                        "id": "edit",
+                        "label": "Create and edit",
+                        "object_kind": DOCS_DOCUMENT_KIND,
+                        "keywords": ["write", "modify", "format", "image", "page"],
+                        "operations": [
+                            "object.upsert",
+                            "object.delete",
+                            f"object.action:{ACTION_INSERT_TEXT}",
+                            f"object.action:{ACTION_APPEND_TEXT}",
+                            f"object.action:{ACTION_REPLACE_TEXT}",
+                            f"object.action:{ACTION_APPLY_TEXT_STYLE}",
+                            f"object.action:{ACTION_INSERT_PAGE_BREAK}",
+                            f"object.action:{ACTION_EMBED_IMAGE}",
+                        ],
+                    },
+                    {
+                        "id": "transfer",
+                        "label": "Copy, import, and export",
+                        "keywords": ["download", "docx", "pdf", "portable file"],
+                        "operations": [
+                            {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": f"object.action:{ACTION_COPY}"},
+                            {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": f"object.action:{ACTION_EXPORT}"},
+                            {"object_kind": DOCS_DOCUMENT_KIND, "schema_operation": f"object.action:{ACTION_IMPORT}"},
+                            {"object_kind": DOCS_IMPORT_SOURCE_KIND, "schema_operation": "object.get"},
+                            {"object_kind": DOCS_IMPORT_SOURCE_KIND, "schema_operation": f"object.action:{ACTION_COPY}"},
+                            {"object_kind": DOCS_EXPORT_KIND, "schema_operation": "object.get"},
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "discussion",
+                "label": "Comments and replies",
+                "description": "Inspect and manage document comment threads.",
+                "object_kind": DOCS_DOCUMENT_KIND,
+                "keywords": ["comment", "reply", "resolve", "discussion", "tab"],
+                "operations": [
+                    f"object.action:{ACTION_LIST_COMMENTS}",
+                    f"object.action:{ACTION_GET_COMMENT}",
+                    f"object.action:{ACTION_CREATE_COMMENT}",
+                    f"object.action:{ACTION_REPLY_COMMENT}",
+                    f"object.action:{ACTION_RESOLVE_COMMENT}",
+                    f"object.action:{ACTION_DELETE_COMMENT}",
+                ],
+            },
+        ],
+    },
+    "kinds": {
+        DOCS_DOCUMENT_KIND: {
+            "refs": ["document"],
+            "selectors": ["tab_selector", "comment_selector"],
+            "related_kinds": [DOCS_IMPORT_SOURCE_KIND, DOCS_EXPORT_KIND],
+            "operations": {
+                "object.list": {},
+                "object.search": {"sections": ["search"]},
+                "object.get": {"sections": ["get", "materialization"]},
+                "object.upsert": {
+                    "sections": ["upsert"],
+                    "section_keys": {"upsert": ["create", "document"]},
+                },
+                "object.delete": {"sections": ["delete"]},
+            },
+            "actions": [
+                ACTION_COPY,
+                ACTION_INSERT_TEXT,
+                ACTION_APPEND_TEXT,
+                ACTION_REPLACE_TEXT,
+                ACTION_APPLY_TEXT_STYLE,
+                ACTION_INSERT_PAGE_BREAK,
+                ACTION_EMBED_IMAGE,
+                ACTION_EXPORT,
+                ACTION_IMPORT,
+                ACTION_LIST_COMMENTS,
+                ACTION_GET_COMMENT,
+                ACTION_CREATE_COMMENT,
+                ACTION_REPLY_COMMENT,
+                ACTION_RESOLVE_COMMENT,
+                ACTION_DELETE_COMMENT,
+            ],
+        },
+        DOCS_IMPORT_SOURCE_KIND: {
+            "refs": ["import_source"],
+            "related_kinds": [DOCS_DOCUMENT_KIND],
+            "operations": {
+                "object.list": {},
+                "object.search": {"sections": ["search"]},
+                "object.get": {"sections": ["get"]},
+            },
+            "actions": [ACTION_COPY],
+        },
+        DOCS_EXPORT_KIND: {
+            "refs": ["export"],
+            "related_kinds": [DOCS_DOCUMENT_KIND],
+            "operations": {
+                "object.get": {"sections": ["materialization"]},
+            },
+        },
+    },
+}
+
 DOCS_INTRO = (
     "Use namespace `docs` for user-connected documents. Search by title; native "
     "documents can be read and edited directly, while a DOCX, ODT, or RTF import "
@@ -1087,6 +1215,8 @@ async def _bytes_chunks(
     metadata=_spec_metadata(),
 )
 class DocsNamedServiceProvider(NamedServiceProvider):
+    schema_projection_index = DOCS_SCHEMA_PROJECTION
+
     def __init__(
         self,
         *,
@@ -1100,6 +1230,14 @@ class DocsNamedServiceProvider(NamedServiceProvider):
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
+
+    def schema_object_kind_from_ref(self, object_ref: str) -> str | None:
+        for parser in (parse_docs_ref, parse_docs_export_ref):
+            try:
+                return _text(parser(object_ref).get("object_kind")) or None
+            except ValueError:
+                continue
+        return None
 
     async def _download_url(
         self,

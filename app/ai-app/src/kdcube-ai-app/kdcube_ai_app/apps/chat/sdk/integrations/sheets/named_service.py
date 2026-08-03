@@ -339,6 +339,118 @@ SHEETS_SCHEMA = {
     },
 }
 
+SHEETS_SCHEMA_PROJECTION = {
+    "catalog": {
+        "id": "sheets",
+        "label": "Spreadsheets",
+        "description": "Explore spreadsheet discovery, values, tabs, and formatting.",
+        "children": [
+            {
+                "id": "discover",
+                "label": "Find spreadsheets",
+                "object_kind": SHEETS_SPREADSHEET_KIND,
+                "operations": ["object.list", "object.search"],
+            },
+            {
+                "id": "spreadsheets",
+                "label": "Spreadsheet data",
+                "object_kind": SHEETS_SPREADSHEET_KIND,
+                "children": [
+                    {
+                        "id": "read",
+                        "label": "Read metadata and ranges",
+                        "operations": ["object.get"],
+                    },
+                    {
+                        "id": "write",
+                        "label": "Create and change values",
+                        "keywords": ["cells", "rows", "clear", "append", "write"],
+                        "operations": [
+                            "object.upsert",
+                            f"object.action:{ACTION_UPDATE_VALUES}",
+                            f"object.action:{ACTION_APPEND_ROWS}",
+                            f"object.action:{ACTION_CLEAR_VALUES}",
+                        ],
+                    },
+                    {
+                        "id": "tabs",
+                        "label": "Add tabs",
+                        "operations": [f"object.action:{ACTION_ADD_TAB}"],
+                    },
+                ],
+            },
+            {
+                "id": "tabs",
+                "label": "Worksheet tabs",
+                "object_kind": SHEETS_TAB_KIND,
+                "children": [
+                    {
+                        "id": "inspect",
+                        "label": "Read a tab",
+                        "operations": ["object.get"],
+                    },
+                    {
+                        "id": "manage",
+                        "label": "Rename, resize, and delete tabs",
+                        "operations": [
+                            "object.upsert",
+                            "object.delete",
+                            f"object.action:{ACTION_UPDATE_TAB}",
+                            f"object.action:{ACTION_DELETE_TAB}",
+                        ],
+                    },
+                    {
+                        "id": "format",
+                        "label": "Format ranges",
+                        "keywords": ["bold", "header", "style", "color"],
+                        "operations": [f"object.action:{ACTION_FORMAT_RANGE}"],
+                    },
+                ],
+            },
+        ],
+    },
+    "kinds": {
+        SHEETS_SPREADSHEET_KIND: {
+            "refs": ["spreadsheet"],
+            "related_kinds": [SHEETS_TAB_KIND],
+            "operations": {
+                "object.list": {},
+                "object.search": {"sections": ["search"]},
+                "object.get": {"sections": ["get", "materialization"]},
+                "object.upsert": {
+                    "sections": ["upsert"],
+                    "section_keys": {"upsert": ["create", "spreadsheet"]},
+                },
+            },
+            "actions": [
+                ACTION_UPDATE_VALUES,
+                ACTION_APPEND_ROWS,
+                ACTION_CLEAR_VALUES,
+                ACTION_ADD_TAB,
+            ],
+        },
+        SHEETS_TAB_KIND: {
+            "refs": ["tab"],
+            "related_kinds": [SHEETS_SPREADSHEET_KIND],
+            "operations": {
+                "object.get": {"sections": ["get", "materialization"]},
+                "object.upsert": {
+                    "sections": ["upsert"],
+                    "section_keys": {"upsert": ["tab"]},
+                },
+                "object.delete": {
+                    "description": "Delete one tab by its canonical ref."
+                },
+            },
+            "actions": [
+                ACTION_UPDATE_TAB,
+                ACTION_DELETE_TAB,
+                ACTION_FORMAT_RANGE,
+            ],
+        },
+    },
+}
+
 SHEETS_INTRO = (
     "Use namespace `sheets` for user-connected spreadsheets. Search by title, "
     "get a spreadsheet ref to inspect metadata or selected ranges, then use "
@@ -860,6 +972,8 @@ def _tab_object(
     },
 )
 class SheetsNamedServiceProvider(NamedServiceProvider):
+    schema_projection_index = SHEETS_SCHEMA_PROJECTION
+
     def __init__(
         self,
         *,
@@ -873,6 +987,17 @@ class SheetsNamedServiceProvider(NamedServiceProvider):
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
+
+    def schema_object_kind_from_ref(self, object_ref: str) -> str | None:
+        try:
+            parsed = parse_sheets_ref(object_ref)
+        except ValueError:
+            return None
+        return (
+            SHEETS_TAB_KIND
+            if parsed.get("kind") == "tab"
+            else SHEETS_SPREADSHEET_KIND
+        )
 
     async def _download_url(
         self,

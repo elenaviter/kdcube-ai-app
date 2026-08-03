@@ -160,6 +160,11 @@ def test_named_service_request_coerce_accepts_equivalent_request_object():
                 "operation": "object.get",
                 "namespace": "task",
                 "object_ref": "task:issue:BUG-123",
+                "payload": {
+                    "object_kind": "task.issue",
+                    "schema_view": "operation",
+                    "schema_operation": "object.get",
+                },
             }
 
     request = NamedServiceRequest.coerce(ForeignNamedServiceRequest())
@@ -167,6 +172,9 @@ def test_named_service_request_coerce_accepts_equivalent_request_object():
     assert request.operation == "object.get"
     assert request.namespace == "task"
     assert request.object_ref == "task:issue:BUG-123"
+    assert request.object_kind == "task.issue"
+    assert request.schema_view == "operation"
+    assert request.schema_operation == "object.get"
 
 
 def test_named_service_response_coerce_accepts_equivalent_response_object():
@@ -2762,6 +2770,11 @@ async def test_named_service_client_tool_reads_object_schema():
         calls.append(call)
         assert call.data["operation"] == "object.schema"
         assert call.data["payload"]["object_kind"] == "task.issue"
+        assert call.data["payload"]["schema_view"] == "operation"
+        assert call.data["payload"]["schema_operation"] == "object.search"
+        assert call.data["object_kind"] == "task.issue"
+        assert call.data["schema_view"] == "operation"
+        assert call.data["schema_operation"] == "object.search"
         return {
             "named_service": {
                 "ok": True,
@@ -2782,10 +2795,71 @@ async def test_named_service_client_tool_reads_object_schema():
         result = await named_service_client_tools.object_schema(
             namespace="task",
             object_kind="task.issue",
+            schema_view="operation",
+            schema_operation="object.search",
         )
 
     assert result["ok"] is True
     assert result["ret"]["extra"]["schema"]["object_kind"] == "task.issue"
+    assert calls
+
+
+@pytest.mark.asyncio
+async def test_named_service_client_tool_searches_capability_schema():
+    props = {
+        "named_services": {
+            "namespaces": {
+                "docs": {
+                    "providers": [
+                        {
+                            "transport": "bundle_operation",
+                            "bundle_id": "kdcube-services@1-0",
+                            "provider": "sdk.integrations.docs",
+                            "operations": ["object.schema"],
+                        }
+                    ],
+                    "clients": {
+                        "main": {
+                            "tools": {
+                                "allowed_operations": ["object.schema"],
+                            },
+                        },
+                    },
+                }
+            },
+        }
+    }
+    calls = []
+
+    async def _caller(call):
+        calls.append(call)
+        assert call.data["operation"] == "object.schema"
+        assert call.data["query"] == "reply to a comment"
+        assert call.data["search_mode"] == "hybrid"
+        assert call.data["limit"] == 7
+        assert call.data["payload"]["query"] == "reply to a comment"
+        return {
+            "named_service": {
+                "ok": True,
+                "ret": {
+                    "attrs": {"namespace": "docs"},
+                    "extra": {"schema": {"catalog_search": {"matches": []}}},
+                },
+            }
+        }
+
+    named_service_client_tools.bind_registry(
+        {"bundle_props": props, "client_id": "main"}
+    )
+    with bind_bundle_operation_caller(_caller):
+        result = await named_service_client_tools.object_schema(
+            namespace="docs",
+            query="reply to a comment",
+            search_mode="hybrid",
+            limit=7,
+        )
+
+    assert result["ok"] is True
     assert calls
 
 

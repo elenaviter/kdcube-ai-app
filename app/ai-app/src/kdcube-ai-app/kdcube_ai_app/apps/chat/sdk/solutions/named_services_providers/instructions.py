@@ -7,7 +7,7 @@ Named services expose bridges to external namespace refs. A namespace service ex
 
 The tool catalog is authoritative. A `named_services.*` tool may be used for the namespaces listed in that tool's `namespaces applicable` scope. For search, prefer provider search scopes rendered under that tool when present; the namespace argument is the search scope, so a scoped namespace searches objects in that provider-declared object space. If the rendered scope list or semantics are not enough, call `provider_about`.
 
-CONTRACT FIRST. A namespace's schema is your working map of it: the object kinds, the search filters and what query text matches, account targeting, and each action's payload keys. Before an operation on a namespace — `search_objects`, `list_objects`, `get_object`, `object_action`, `upsert_object`, `delete_object`, `host_file` — have that schema visible: the rendered result of an earlier `named_services.object_schema(namespace=...)` call in your timeline is exactly that; when none is visible, read it once. A namespace that serves no schema says so in that result; such a provider documents its usage in `provider_about` instead. Plan each call from what the visible contract names; when it cannot express the user's request (say, no sender/recipient filter), say so and ask.
+CONTRACT FIRST. A namespace's schema is your working map of it: object kinds, search semantics, account targeting, and exact operation payloads. Projection-enabled providers disclose it progressively. `object_schema(namespace=...)` returns the root catalog. For a large realm, search its CAPABILITIES with `object_schema(namespace=..., query=...)` or browse one returned `schema_path`; this does not search the realm's user objects. Then pass the returned `object_kind` and `schema_operation` for the exact executable contract. A concrete `object_ref` can select its kind directly. Before `search_objects`, `list_objects`, `get_object`, `object_action`, `upsert_object`, `delete_object`, or `host_file`, have either that exact operation view or an explicit full schema visible in your timeline. A provider without projections may return its full schema directly. Plan each call only from the visible contract; when it cannot express the user's request, say so and ask.
 
 ReAct starts each turn with a sparse local workspace. It can directly use only current-turn `conv:su:`, `conv:so:`, `conv:fi:`, and `conv:ar:` refs that were produced in this turn or explicitly materialized in this turn. Any other namespace ref is only a handle until it is materialized.
 
@@ -17,9 +17,9 @@ When a namespace ref or request appears, pick the visible path that fits the goa
    - A plain pull is for YOUR use; the user receives no file from it. When the user should get the pulled file itself as a download, pull that ONE exact file ref with `share=true`. When the file goes onward to a service (mail/slack attachment, `host_file`), keep the plain pull and pass the returned `logical_path`/`physical_path` to that action's file field.
    - If `react.pull` fails (namespace not configured, access denied, or the resolver returns an error), surface that error and work only from what is visible in the event payload / tool results.
 
-2. Understand an unfamiliar namespace -> `named_services.provider_about(namespace=...)`. It gives purpose, searchable ref scopes, refs/stories/attachments, and domain language.
+2. Understand an unfamiliar namespace -> `named_services.provider_about(namespace=...)`. It gives purpose, a shallow kind/operation catalog, searchable scopes, and domain language.
 
-3. The schema read itself -> `named_services.object_schema(namespace=..., object_kind=... or object_ref=...)`; `object_kind`/`object_ref` narrow it to one object shape when the namespace serves several. Its result carries the object body shape, the search filter contract (rendered under `ret.extra.schema.search.filters`), each action's payload contract, and concrete tool recipes when available — everything the CONTRACT FIRST rule keeps visible for 4, 5, and 6.
+3. Read the schema progressively -> call `named_services.object_schema(namespace=...)` for the root catalog. Browse a returned branch with `schema_path=...`, or find likely capabilities with `query=...` (`search_mode="hybrid"` by default). Capability search returns catalog paths plus `object_kind`/`schema_operation`; it searches the provider's declared functionality, not documents, messages, or other user objects. Expand the chosen result with `object_kind=...` and `schema_operation=...` for the exact search, read, mutation, or action contract. A concrete `object_ref` can select its kind. Use ids exactly as returned, for example `object.search` or `object.action:reply`. An explicit `schema_view="full"` returns the complete provider schema when broad inspection is actually needed.
 
 4. Discover objects when no exact ref is in hand -> `named_services.search_objects(namespace=..., query=...)` for text/semantic lookup, or `named_services.list_objects(namespace=..., ...)` for bounded browsing/pagination. The visible schema is the search vocabulary here: the filters that exist and what the query matches are the ones it names. Respect cursor/limit; broad scans are for when the user asks for breadth.
    Accounts: a namespace whose `object_schema` shows an `account_id` field (in the object body or among its search filters) serves several connected accounts at once. Working with a particular account is two steps: LIST the namespace's connected accounts — each row pairs the machine half (`account_id`, `ref`) with the human half (`label`, plus the raw address / workspace / display name) — then TARGET the chosen account by passing that row's `account_id` (or `ref`) in the filter or payload key the schema names. Speak to the user only in the human name; when the request is about one particular account and the user has not named it, ask, listing the candidates by their human labels. Pass ids only from list rows — an id is opaque and comes from the table, never from memory or construction. A request that spans accounts ("search all my mail") may stay un-targeted; the platform fans out across the eligible accounts. A result that asks for an account choice carries the same candidate rows — resolve by the human label and resend with that `account_id`.
@@ -138,14 +138,16 @@ def named_services_bridge_instructions(
     )
     n = 3 if services_list else 2
     steps.append(
-        f"{n}. The schema read -> `{schema}(namespace=..., object_kind=...)`; `object_kind` narrows it to one "
-        "object shape when the namespace serves several. Its result carries the object body shape, the search "
-        "filter contract (rendered under `ret.extra.schema.search.filters`), and each action's payload contract. "
-        "CONTRACT FIRST: before an operation on a namespace (search, list, get, action, upsert, delete, host), "
-        "have its schema visible — the result of an earlier schema call in your context is exactly that; when "
-        "none is visible, read it once. A namespace that serves no schema says so in that result; such a provider "
-        f"documents its usage in `{about}` instead. Plan each call from what the visible contract names; when it "
-        "cannot express the user's request, say so and ask."
+        f"{n}. Read the schema progressively -> `{schema}(namespace=...)` returns the root catalog. Browse "
+        "a returned branch with `schema_path=...`, or search declared CAPABILITIES with `query=...`; this "
+        "does not search user objects. A capability result carries its catalog path, `object_kind`, and "
+        "`schema_operation`. Expand the chosen result with `object_kind` plus `schema_operation` for the "
+        "exact executable contract; a concrete `object_ref` can select its kind. Use operation ids exactly as returned, for "
+        "example `object.search` or `object.action:reply`. An explicit `schema_view=\"full\"` asks for the "
+        "complete schema. CONTRACT FIRST: before search, list, get, action, upsert, delete, or host, have "
+        "either the exact operation view or an explicit full schema visible in your context. A provider "
+        f"without projections may return its full schema directly. Plan each call from what `{schema}` names; "
+        "when it cannot express the user's request, say so and ask."
     )
     find_tail = f", or `{list_objects}(namespace=..., ...)` for bounded browsing/pagination" if list_objects else ""
     get_tail = f" `{get}` reads one object when its exact ref is in hand." if get else ""

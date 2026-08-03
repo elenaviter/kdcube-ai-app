@@ -325,6 +325,86 @@ MAIL_SCHEMA = {
     },
 }
 
+MAIL_SCHEMA_PROJECTION = {
+    "catalog": {
+        "id": "mail",
+        "label": "Mail",
+        "description": "Explore accounts, messages, attachments, and outbound mail.",
+        "children": [
+            {
+                "id": "accounts",
+                "label": "Accounts and sending",
+                "object_kind": MAIL_ACCOUNT_KIND,
+                "children": [
+                    {
+                        "id": "inspect",
+                        "label": "List and inspect accounts",
+                        "operations": ["object.list", "object.get"],
+                    },
+                    {
+                        "id": "compose",
+                        "label": "Compose and attach",
+                        "keywords": ["send", "email", "upload", "attachment"],
+                        "operations": [
+                            f"object.action:{ACTION_SEND}",
+                            f"object.action:{ACTION_REQUEST_UPLOAD}",
+                            f"object.action:{ACTION_DISCARD_UPLOAD}",
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "messages",
+                "label": "Messages",
+                "object_kind": MAIL_MESSAGE_KIND,
+                "operations": [
+                    "object.search",
+                    "object.get",
+                    f"object.action:{ACTION_DOWNLOAD_ATTACHMENTS}",
+                    f"object.action:{ACTION_FORWARD}",
+                ],
+            },
+            {
+                "id": "attachments",
+                "label": "Attachments",
+                "object_kind": MAIL_ATTACHMENT_KIND,
+                "operations": ["object.get"],
+            },
+        ],
+    },
+    "kinds": {
+        MAIL_ACCOUNT_KIND: {
+            "refs": ["account"],
+            "related_kinds": [MAIL_MESSAGE_KIND],
+            "operations": {
+                "object.list": {},
+                "object.get": {},
+            },
+            "actions": [
+                ACTION_SEND,
+                ACTION_REQUEST_UPLOAD,
+                ACTION_DISCARD_UPLOAD,
+            ],
+        },
+        MAIL_MESSAGE_KIND: {
+            "refs": ["message"],
+            "related_kinds": [MAIL_ACCOUNT_KIND, MAIL_ATTACHMENT_KIND],
+            "operations": {
+                "object.search": {"sections": ["search"]},
+                "object.get": {},
+            },
+            "actions": [ACTION_DOWNLOAD_ATTACHMENTS, ACTION_FORWARD],
+        },
+        MAIL_ATTACHMENT_KIND: {
+            "refs": ["attachment"],
+            "related_kinds": [MAIL_MESSAGE_KIND],
+            "operations": {
+                "object.get": {"sections": ["files"]},
+            },
+        },
+    },
+}
+
 
 # Agent-facing (in-chat) action contracts. Inside a chat turn files travel by
 # workspace path/ref and the service reads the bytes itself; the schema an
@@ -583,6 +663,8 @@ def _error_from_tool(result: Mapping[str, Any], *, request: NamedServiceRequest,
     },
 )
 class MailNamedServiceProvider(NamedServiceProvider):
+    schema_projection_index = MAIL_SCHEMA_PROJECTION
+
     def __init__(
         self,
         *,
@@ -604,6 +686,14 @@ class MailNamedServiceProvider(NamedServiceProvider):
 
     def _provider_identity(self) -> dict[str, Any]:
         return {"provider_id": PROVIDER_ID, "bundle_id": self.spec.bundle_id}
+
+    def schema_object_kind_from_ref(self, object_ref: str) -> str | None:
+        kind = parse_mail_ref(object_ref).get("kind")
+        return {
+            "account": MAIL_ACCOUNT_KIND,
+            "message": MAIL_MESSAGE_KIND,
+            "attachment": MAIL_ATTACHMENT_KIND,
+        }.get(kind)
 
     async def _download_url(self, ctx: NamedServiceContext, *, ref: str) -> dict[str, Any] | None:
         """Short-lived signed download URL for one attachment ref, or None when

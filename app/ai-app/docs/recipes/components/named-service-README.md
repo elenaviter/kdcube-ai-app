@@ -4,10 +4,11 @@ title: "Build A Complete Named Service"
 summary: "End-to-end recipe for publishing an app-owned domain as a discoverable, governed named service that external MCP clients, hosted agents, UI surfaces, and harness materializers can use progressively."
 status: active
 tags: ["recipes", "apps", "bundles", "named-services", "agents", "mcp", "react", "connections", "consent"]
-updated_at: 2026-07-27
+updated_at: 2026-08-03
 keywords:
   - named service provider
-  - ontologic agent interface
+  - ontology-guided agent interface
+  - progressive schema projection
   - provider discovery
   - object refs
   - complete object retrieval
@@ -20,6 +21,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/clients-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/discovery-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/react-object-materialization-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/index/hybrid-index-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/create-delegated-automation-access-README.md
@@ -32,12 +34,12 @@ refs, schemas, actions, authorization requirements, and complete-data path.
 Consumers use that contract without importing the provider's storage or
 provider-specific SDK.
 
-This is KDCube's ontology-shaped interface for connected domains:
+This is KDCube's ontology-guided interface for connected domains:
 
 ```text
 provider.about          what this domain is for
 provider.capabilities   what this deployment can do now
-object.schema           refs, object kinds, filters, actions, limits
+object.schema           browse/search catalog -> exact operation contract
 object.list/search      discover objects and receive stable refs
 object.get              inspect or retrieve an object by ref
 object.action           run one named, bounded effect
@@ -57,7 +59,8 @@ An unfamiliar agent should be able to follow this sequence without prior
 KDCube or provider knowledge:
 
 ```text
-about -> capabilities + schema -> list/search -> get -> bounded action
+about -> schema root -> browse/search capabilities -> exact contract
+      -> list/search objects -> get -> bounded action
 ```
 
 The provider must answer five questions:
@@ -227,6 +230,148 @@ metadata.grant_hints.<operation or exact action>
 Do not advertise an operation that will return "not implemented." The schema
 should explain filters, defaults, ref shapes, action payloads, pagination,
 revision/idempotency behavior, and the complete retrieval path.
+
+### Project A Large Schema Before It Reaches The Agent
+
+Keep one complete provider schema as the source of truth, then assign its
+parts to kinds in `schema_projection_index`:
+
+```python
+RECORDS_SCHEMA_PROJECTION = {
+    "catalog": {
+        "id": "records",
+        "label": "Records",
+        "children": [
+            {
+                "id": "browse",
+                "label": "Find and inspect records",
+                "children": [
+                    {
+                        "id": "collections",
+                        "label": "Collections",
+                        "object_kind": "records.collection",
+                        "operations": ["object.list", "object.get"],
+                    },
+                    {
+                        "id": "items",
+                        "label": "Items",
+                        "object_kind": "records.item",
+                        "operations": ["object.search", "object.get"],
+                    },
+                ],
+            },
+            {
+                "id": "lifecycle",
+                "label": "Create and manage records",
+                "keywords": ["publish", "archive"],
+                "object_kind": "records.item",
+                "operations": [
+                    "object.upsert",
+                    "object.action:publish",
+                    "object.action:archive",
+                ],
+            },
+        ],
+    },
+    "kinds": {
+        "records.collection": {
+            "refs": ["collection"],
+            "operations": {
+                "object.list": {},
+                "object.get": {"sections": ["get"]},
+            },
+        },
+        "records.item": {
+            "refs": ["item"],
+            "selectors": ["item_selector"],
+            "related_kinds": ["records.collection"],
+            "operations": {
+                "object.search": {"sections": ["search"]},
+                "object.get": {"sections": ["get", "materialization"]},
+                "object.upsert": {
+                    "sections": ["upsert"],
+                    "section_keys": {"upsert": ["item"]},
+                },
+            },
+            "actions": ["publish", "archive"],
+        },
+    },
+}
+
+
+class RecordsNamedServiceProvider(NamedServiceProvider):
+    schema_projection_index = RECORDS_SCHEMA_PROJECTION
+```
+
+Implement `schema_object_kind_from_ref()` with the provider's canonical ref
+parser. The shared dispatcher then validates the index and applies these views
+to both `provider.about` and `object.schema`:
+
+```text
+namespace only                  -> root catalog node
+schema_path="/browse"           -> one recursive catalog node
+query="publish a record"        -> matching capability declarations
+object_kind or object_ref       -> one kind and operation summaries
+schema_operation               -> one exact executable contract
+schema_view="full"              -> complete schema, explicitly requested
+```
+
+This projection reduces model context; it does not invent the domain model.
+Map the backing provider's endpoint inventory into user-meaningful objects and
+bounded actions first. Several API calls may implement one action. Distinct
+effects that need separate policy remain distinct actions.
+
+The `catalog` tree is provider-owned and may be nested to any useful depth.
+Node ids form stable `schema_path` values. Labels, descriptions, and keywords
+make capability search useful without placing every payload contract in the
+model context. A query such as
+`object.schema(namespace="records", query="publish a record")` searches those
+capability declarations and returns `catalog_path`, `object_kind`, and
+`schema_operation` selectors. The caller then requests the exact operation
+contract before invoking it.
+
+Capability search and object search are separate:
+
+```text
+object.schema(query=...)   find what this provider knows how to do
+object.search(query=...)   find the provider-owned objects to operate on
+```
+
+The bundle that publishes the provider owns index preparation. Its base
+entrypoint sees only the providers contributed by that bundle, binds the
+bundle's shared storage and embedding service, and prepares projection-enabled
+catalogs during `on_bundle_load`. Consumer bundles and agents query the
+provider; they do not build or write its index. Providers without
+`schema_projection_index` keep their existing full-schema behavior.
+
+When an embedding service is bound, the provider persists a compact hybrid
+capability index in its bundle storage. Use the persistent production backend
+in the publishing bundle's descriptor:
+
+```yaml
+config:
+  named_services:
+    schema_search:
+      vector_backend: faiss-local
+```
+
+This produces a profile-specific SQLite file containing declarations, FTS,
+and cached vectors, plus a derived `.faiss` sibling shared by workers. Set
+`vector_backend: bruteforce` explicitly only for a dependency-free development
+or test runtime; it reconstructs the vector view in each process and does not
+write a `.faiss` file. A deterministic catalog signature lets other workers
+reuse the index and refreshes it when the provider declaration changes.
+Without an embedding service, no persistent hybrid index is required: lexical
+matching runs directly over the declared projection. The response reports the
+requested and effective mode, selected vector backend, and any fallback reason.
+
+Only capability declarations enter this index. Provider objects remain in the
+provider realm. Embedding provider, model, vector-dimension, and vector-backend
+changes also change the cached capability-index identity without changing the
+provider's object-search path. Profile-specific shared paths keep
+rolling-deployment workers from rewriting one another's vectors. Do not add an
+LLM role to a provider app solely for schema discovery: the lexical path
+remains available when no embedding service is bound.
 
 ## 6. Keep Normal Results Compact And Data Reachable
 
@@ -476,6 +621,11 @@ enter the harness timeline with provider-owned rendering.
 - search/list pagination returns and accepts `next_cursor`;
 - multiple accounts produce an explicit account choice;
 - exact actions are schema-declared and independently authorized;
+- projection indexes cover every declared object kind/action; recursive
+  catalog paths, capability queries, kind, exact-operation, ref-inferred,
+  full, and invalid-selector cases are tested;
+- capability search results identify `catalog_path`, `object_kind`, and
+  `schema_operation`; lexical fallback reports its effective mode;
 - normal reads stay bounded, while complete authorized data remains
   retrievable by continuation, signed delivery, or stream materialization.
 

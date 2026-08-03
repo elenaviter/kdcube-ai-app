@@ -4,7 +4,7 @@ title: "Namespace Services: Clients"
 summary: "How apps (bundles), agents, widgets, jobs, and external clients consume configured namespace service providers."
 status: design
 tags: ["sdk", "namespace-services", "clients", "tools", "resolvers", "apps", "bundles"]
-updated_at: 2026-08-02
+updated_at: 2026-08-03
 keywords:
   [
     "namespace service client",
@@ -520,11 +520,20 @@ response. A scope's filters may include provider-owned `factor_weights`,
 For a large realm, the recommended convention is that the realm-contributed
 `named_services.provider_about` response is a navigable top-level catalog
 (kinds · scopes · action vocabulary) plus a query playbook, and that the
-scopes/kinds it lists are the selectors the agent passes to a focused
-`named_services.object_schema`. For a big schema the agent should fetch by
-part rather than reading the whole thing; **projection selectors
-(kind/scope/field-subset/depth) on `object_schema` are a proposed extension,
-not current params.**
+catalog nodes and capabilities it lists are selectors for focused
+`named_services.object_schema` calls. Projection-enabled providers enforce
+this drill-down: namespace only returns the root node; `schema_path` browses
+one nested node; `query` searches capability declarations; `object_kind` or
+`object_ref` returns one kind; and `schema_operation` returns the exact
+executable contract. Capability-query matches return the path, kind, and
+operation selectors required for that expansion. Use `schema_view="full"`
+only when the task genuinely needs the whole provider schema. Providers
+without a projection index continue to return their existing full schema.
+
+The query on `object_schema` is not an object query. It searches app-owned
+capability declarations and may use lexical, semantic, or hybrid matching.
+`search_objects` remains the separate provider-backed operation for finding
+realm objects.
 
 For ReAct specifically, fully reading a provider-owned namespace ref means
 `react.pull(<provider_ref>)` first, then `react.read(<materialized conv:fi:...>)`.

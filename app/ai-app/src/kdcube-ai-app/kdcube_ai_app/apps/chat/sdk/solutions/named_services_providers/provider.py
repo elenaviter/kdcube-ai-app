@@ -5,9 +5,22 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .types import (
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.schema_projection import (
+    build_schema_tree,
+    project_schema_response_async,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.schema_search import (
+    DEFAULT_SCHEMA_VECTOR_BACKEND,
+    SchemaCatalogSearchIndex,
+    normalize_schema_vector_backend,
+    schema_search_embedding_profile,
+    schema_search_index_path,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
+    OBJECT_SCHEMA,
     NamedServiceContext,
     NamedServiceProviderSpec,
     NamedServiceRequest,
@@ -102,6 +115,7 @@ class NamedServiceProvider:
     """
 
     spec: NamedServiceProviderSpec
+    schema_projection_index: Mapping[str, Any] | None = None
 
     def __init__(self, spec: NamedServiceProviderSpec | None = None) -> None:
         inferred = spec or getattr(self, "__kdcube_named_service_provider__", None)
@@ -111,6 +125,11 @@ class NamedServiceProvider:
                 operations=build_default_operations(),
             )
         self.spec = inferred
+        self._schema_search_storage_root: Path | None = None
+        self._schema_search_model_service: Any = None
+        self._schema_search_dim = 1536
+        self._schema_search_vector_backend = DEFAULT_SCHEMA_VECTOR_BACKEND
+        self._schema_search_indexes: dict[str, SchemaCatalogSearchIndex] = {}
 
     async def dispatch(
         self,
@@ -153,7 +172,25 @@ class NamedServiceProvider:
         if not hasattr(result, "__await__"):
             raise TypeError(f"Named service provider method {method_name} must be async")
         response = await result
-        ok = response.ok if isinstance(response, NamedServiceResponse) else bool(response.get("ok")) if isinstance(response, Mapping) else True
+        if (
+            request.operation in {"provider.about", "object.schema"}
+            and self.schema_projection_index
+        ):
+            response = await project_schema_response_async(
+                response=response,
+                request=request,
+                index=self.schema_projection_index,
+                object_kind_from_ref=self.schema_object_kind_from_ref,
+                search_index=self._schema_search_index_for(
+                    request.namespace or self.spec.namespace or "default"
+                ),
+            )
+        if isinstance(response, NamedServiceResponse):
+            ok = response.ok
+        elif isinstance(response, Mapping):
+            ok = bool(response.get("ok"))
+        else:
+            ok = True
         LOGGER.info(
             "Named-service provider dispatch complete: provider=%s namespace=%s operation=%s object_ref=%s ok=%s",
             self.spec.provider_id,
@@ -163,6 +200,131 @@ class NamedServiceProvider:
             ok,
         )
         return response
+
+    def schema_object_kind_from_ref(self, object_ref: str) -> str | None:
+        """Return the provider-owned object kind for one opaque ref, when known."""
+
+        del object_ref
+        return None
+
+    def configure_schema_catalog_search(
+        self,
+        *,
+        storage_root: str | Path | None,
+        model_service: Any,
+        dim: int = 1536,
+        vector_backend: str = DEFAULT_SCHEMA_VECTOR_BACKEND,
+    ) -> None:
+        """Bind optional shared hybrid search for this provider's capabilities."""
+
+        if not self.schema_projection_index:
+            return
+        if not storage_root or not callable(getattr(model_service, "embed_texts", None)):
+            self._schema_search_storage_root = None
+            self._schema_search_model_service = None
+            self._schema_search_indexes.clear()
+            return
+        next_storage_root = Path(storage_root)
+        next_dim = max(1, int(dim or 1536))
+        next_vector_backend = normalize_schema_vector_backend(vector_backend)
+        changed = (
+            self._schema_search_storage_root != next_storage_root
+            or self._schema_search_model_service is not model_service
+            or self._schema_search_dim != next_dim
+            or self._schema_search_vector_backend != next_vector_backend
+        )
+        self._schema_search_storage_root = next_storage_root
+        self._schema_search_model_service = model_service
+        self._schema_search_dim = next_dim
+        self._schema_search_vector_backend = next_vector_backend
+        if changed:
+            self._schema_search_indexes.clear()
+
+    def _schema_search_index_for(
+        self,
+        namespace: str,
+    ) -> SchemaCatalogSearchIndex | None:
+        if self._schema_search_storage_root is None:
+            return None
+        if self._schema_search_model_service is None:
+            return None
+        namespace_key = str(
+            namespace or self.spec.namespace or "default"
+        ).strip().lower()
+        embedding_profile = schema_search_embedding_profile(
+            self._schema_search_model_service,
+            dim=self._schema_search_dim,
+            vector_backend=self._schema_search_vector_backend,
+        )
+        identity = f"{self.spec.provider_id}.{namespace_key}"
+        db_path = schema_search_index_path(
+            self._schema_search_storage_root,
+            identity,
+            embedding_profile=embedding_profile,
+        )
+        key = str(db_path)
+        if key not in self._schema_search_indexes:
+            namespace_dir = str(db_path.parent) + "/"
+            self._schema_search_indexes = {
+                cached_path: cached_index
+                for cached_path, cached_index in self._schema_search_indexes.items()
+                if not cached_path.startswith(namespace_dir)
+            }
+            self._schema_search_indexes[key] = SchemaCatalogSearchIndex(
+                db_path=db_path,
+                model_service=self._schema_search_model_service,
+                dim=self._schema_search_dim,
+                vector_backend=self._schema_search_vector_backend,
+            )
+        return self._schema_search_indexes[key]
+
+    async def ensure_schema_catalog_index(
+        self,
+        *,
+        context: NamedServiceContext | None = None,
+        namespace: str = "",
+    ) -> list[dict[str, Any]]:
+        """Prepare shared capability indexes; request-time search also heals lazily."""
+
+        if not self.schema_projection_index:
+            return []
+        method = getattr(self, "object_schema", None)
+        if method is None:
+            return []
+        namespaces = [str(namespace or "").strip()] if namespace else list(
+            self.spec.namespaces or ((self.spec.namespace,) if self.spec.namespace else ())
+        )
+        if not namespaces:
+            namespaces = ["default"]
+        results: list[dict[str, Any]] = []
+        for selected_namespace in namespaces:
+            search_index = self._schema_search_index_for(selected_namespace)
+            if search_index is None:
+                continue
+            request = NamedServiceRequest(
+                operation=OBJECT_SCHEMA,
+                namespace=(
+                    selected_namespace if selected_namespace != "default" else None
+                ),
+                schema_view="full",
+            )
+            raw = method(context or NamedServiceContext(), request)
+            if not hasattr(raw, "__await__"):
+                raise TypeError("Named service provider object_schema must be async")
+            response = NamedServiceResponse.coerce(await raw)
+            schema = response.extra.get("schema") if response.ok else None
+            if not isinstance(schema, Mapping):
+                continue
+            tree = build_schema_tree(schema, self.schema_projection_index)
+            result = await search_index.ensure(tree)
+            results.append(
+                {
+                    **result,
+                    "namespace": selected_namespace,
+                    "provider_id": self.spec.provider_id,
+                }
+            )
+        return results
 
     async def _dispatch_batch_get(
         self,

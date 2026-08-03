@@ -118,9 +118,13 @@ def test_bridge_surface_binds_the_door_tool_names_when_given():
     # and covers EVERY operation (search included), not only mutations
     assert "source of truth for the namespaces" in block
     assert "CONTRACT FIRST" in block
-    assert "`named_services_schema(namespace=..., object_kind=...)`" in block
+    assert "`named_services_schema(namespace=...)` returns the root catalog" in block
+    assert "`schema_path=...`" in block
+    assert "`query=...`" in block
+    assert "does not search user objects" in block
+    assert "`object_kind` plus `schema_operation`" in block
     # anchored to what the model can inspect: an earlier schema result IS the contract
-    assert "in your context is exactly that" in block
+    assert "exact operation view or an explicit full schema visible in your context" in block
 
 
 def test_bridge_surface_without_read_tool_drops_read_hint():
@@ -208,4 +212,4 @@ def test_contract_first_covers_reads_not_only_mutations():
     # capability honesty: when the contract cannot express the request, ask
     assert "say so and ask" in block
     # visible-context anchored: the model can recognize the schema in its timeline
-    assert "in your timeline is exactly that" in block
+    assert "exact operation view or an explicit full schema visible in your timeline" in block

@@ -933,6 +933,7 @@ class BaseEntrypoint:
                 reason="bundle.on_load",
             )
         await self._ensure_ui_build()
+        await self._ensure_named_services_schema_indexes()
         await self._publish_named_services_discovery()
         await self._ensure_public_content_indexes()
         return None
@@ -1001,8 +1002,85 @@ class BaseEntrypoint:
         registry = NamedServiceRegistry()
         for provider in self._named_service_providers():
             if provider is not None:
+                self._configure_named_service_schema_search(provider)
                 registry.register(provider)
         return registry
+
+    def _configure_named_service_schema_search(self, provider) -> None:
+        configure = getattr(provider, "configure_schema_catalog_search", None)
+        if not callable(configure):
+            return
+        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.schema_search import (
+            DEFAULT_SCHEMA_VECTOR_BACKEND,
+        )
+
+        storage_root = self.bundle_storage_root()
+        model_service = getattr(self, "models_service", None)
+        vector_backend = str(
+            self.bundle_prop(
+                "named_services.schema_search.vector_backend",
+                DEFAULT_SCHEMA_VECTOR_BACKEND,
+            )
+            or DEFAULT_SCHEMA_VECTOR_BACKEND
+        )
+        configure(
+            storage_root=storage_root,
+            model_service=model_service,
+            vector_backend=vector_backend,
+        )
+
+    async def _ensure_named_services_schema_indexes(self) -> None:
+        """Prepare provider capability indexes in shared bundle storage."""
+
+        try:
+            registry = self.named_services()
+        except Exception:
+            self.logger.log(
+                "[named-services.schema] registry construction failed (non-fatal)",
+                "WARNING",
+            )
+            return
+        try:
+            identity = self.runtime_identity() or {}
+        except Exception:
+            identity = {}
+        from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
+            NamedServiceContext,
+        )
+
+        context = NamedServiceContext(
+            tenant=str(identity.get("tenant") or ""),
+            project=str(identity.get("project") or ""),
+            bundle_id=self._named_services_bundle_id() or None,
+        )
+        for entry in registry.providers():
+            provider = entry.provider
+            self._configure_named_service_schema_search(provider)
+            ensure = getattr(provider, "ensure_schema_catalog_index", None)
+            if not callable(ensure):
+                continue
+            try:
+                results = await ensure(context=context)
+                if results:
+                    vector_backends = sorted(
+                        {
+                            str(result.get("vector_backend") or "")
+                            for result in results
+                            if result.get("vector_backend")
+                        }
+                    )
+                    self.logger.log(
+                        "[named-services.schema] capability index ready "
+                        f"provider={entry.spec.provider_id} indexes={len(results)} "
+                        f"vector_backends={','.join(vector_backends) or 'none'}",
+                        "INFO",
+                    )
+            except Exception:
+                self.logger.log(
+                    "[named-services.schema] capability index preparation failed "
+                    f"provider={entry.spec.provider_id} (non-fatal)",
+                    "WARNING",
+                )
 
     async def _publish_named_services_discovery(self) -> None:
         # Discovery orchestration lives in the SDK named-services module; the base

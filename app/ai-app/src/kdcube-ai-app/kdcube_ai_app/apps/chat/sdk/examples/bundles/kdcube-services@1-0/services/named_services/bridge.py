@@ -340,8 +340,13 @@ class NamedServicesMcpBridge:
         namespace: str,
         provider: str = "",
         object_ref: str = "",
+        object_kind: str = "",
+        schema_path: str = "",
+        schema_view: str = "",
+        schema_operation: str = "",
         object_id: str = "",
         query: str = "",
+        search_mode: str = "",
         limit: int | None = None,
         filters: Mapping[str, Any] | None = None,
         include: Sequence[Any] | None = None,
@@ -441,8 +446,13 @@ class NamedServicesMcpBridge:
             provider=str(provider or "").strip() or None,
             namespace=ns,
             object_ref=str(object_ref or "").strip() or None,
+            object_kind=str(object_kind or "").strip() or None,
+            schema_path=str(schema_path or "").strip() or None,
+            schema_view=str(schema_view or "").strip() or None,
+            schema_operation=str(schema_operation or "").strip() or None,
             object_id=str(object_id or "").strip() or None,
             query=str(query or "").strip() or None,
+            search_mode=str(search_mode or "").strip().lower() or None,
             cursor=str(cursor or "").strip() or None,
             limit=int(limit) if limit not in (None, "") else None,
             filters=dict(filters or {}),
@@ -497,13 +507,41 @@ class NamedServicesMcpBridge:
         namespace: str,
         provider: str = "",
         object_kind: str = "",
+        object_ref: str = "",
+        schema_path: str = "",
+        schema_view: str = "",
+        schema_operation: str = "",
+        query: str = "",
+        search_mode: str = "hybrid",
+        limit: int = 10,
     ) -> dict[str, Any]:
-        payload = {"object_kind": str(object_kind or "").strip()} if object_kind else {}
+        payload = {
+            key: value
+            for key, value in {
+                "object_kind": str(object_kind or "").strip(),
+                "schema_path": str(schema_path or "").strip(),
+                "schema_view": str(schema_view or "").strip(),
+                "schema_operation": str(schema_operation or "").strip(),
+                "query": str(query or "").strip(),
+                "search_mode": (
+                    str(search_mode or "hybrid").strip().lower() if query else ""
+                ),
+            }.items()
+            if value
+        }
         return await self.call(
             tool_name="schema",
             operation=OBJECT_SCHEMA,
             namespace=namespace,
             provider=provider,
+            object_ref=object_ref,
+            object_kind=object_kind,
+            schema_path=schema_path,
+            schema_view=schema_view,
+            schema_operation=schema_operation,
+            query=query,
+            search_mode=(search_mode if query else ""),
+            limit=max(1, min(int(limit or 10), 50)),
             payload=payload,
         )
 

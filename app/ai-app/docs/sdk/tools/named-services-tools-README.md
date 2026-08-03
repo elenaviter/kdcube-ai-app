@@ -2,7 +2,9 @@
 id: repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/named-services-tools-README.md
 title: "Named Service Tools"
 summary: "How named-service namespace operations become model-callable tools, how per-agent namespace allow-lists scope those tools, and how ReAct sees the namespace scope in its catalog."
+status: current
 tags: ["sdk", "tools", "named-services", "namespaces", "react", "configuration"]
+updated_at: 2026-08-03
 keywords: ["named_service", "named_services", "surfaces.as_consumer", "namespaces_applicable", "provider search scopes", "search_scopes_by_namespace", "named_service.search_results", "object.get", "object.host_file", "object.upsert", "react.pull"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/ontologic-tools-README.md
@@ -166,9 +168,9 @@ Concrete example when a bundle configures task, memory, and canvas card search:
    📞 Usage: named_services.search_objects(...)
 ```
 
-The concise `filters: ...` list is only a hint. The authoritative contract for
-one namespace/scope is returned by `named_services.object_schema`; read
-`ret.extra.schema.search.filters` for filter fields and
+The concise `filters: ...` list is only a hint. The authoritative search
+contract is returned by `named_services.object_schema` with
+`schema_operation="object.search"`; read `ret.extra.schema.search.filters` for filter fields and
 `ret.extra.search_scopes` for all search scopes the provider exposes in that
 schema response.
 
@@ -202,8 +204,13 @@ once, instead of repeating it in every named-service tool description:
   into this turn's local `conv:fi:` workspace before reading concrete content.
 - In `search_objects`, the `namespace` argument is the search scope. A scoped
   namespace searches that provider-declared object space.
-- Use `object_schema` when exact body fields, search filter contracts, or
-  tool payload recipes are needed. Search filters live under
+- Read `object_schema` progressively: namespace only for the root catalog;
+  `schema_path` for one nested catalog node; `query` for ranked capability
+  declarations; `object_kind` or `object_ref` for one kind; and
+  `schema_operation` for one exact search/read/mutation/action contract.
+  `schema_view="full"` is the explicit broad view. Capability-search matches
+  return `catalog_path`, `object_kind`, and `schema_operation`. Object-search
+  filters live under
   `ret.extra.schema.search.filters`; providers may also include
   `ret.extra.search_scopes` so the agent can inspect all searchable scopes.
 - If the agent passes the base namespace to `search_objects`, the namespace
@@ -286,15 +293,38 @@ with normal ReAct provenance.
 
 ## Provider About And Schema
 
-`provider.about` is for a concise description of the namespace and base object
-kinds. `object.schema` is for the exact object body fields and tool payload
-guidance. Keep those responses bounded and operational:
+`provider.about` is for a concise description of the namespace. For a
+projection-enabled provider, its embedded schema and a selector-free
+`object.schema` call contain the root catalog node. Browse with `schema_path`
+or search capabilities with `query`, then request the returned
+`schema_operation` before calling it. A known `object_kind` or concrete
+`object_ref` can enter directly at the kind view.
+Keep those responses bounded and operational:
 
 - tell the agent what object kinds exist;
 - list canonical ref patterns;
 - describe fields that go inside `object_json`;
 - state whether attachments or refs are supplied through `object.upsert`;
 - avoid duplicating full provider capabilities in every object result.
+
+The schema selector parameters are:
+
+| Parameter | Meaning |
+| --- | --- |
+| `schema_path` | Browse one stable node in the provider-owned recursive capability catalog. |
+| `query` | Search capability declarations rather than provider objects. |
+| `search_mode` | Request `lexical`, `semantic`, or `hybrid` capability matching; inspect the response for the effective mode. |
+| `limit` | Bound capability matches; the shared maximum is 50. |
+| `object_kind` | Focus the response on one catalog kind. |
+| `object_ref` | Let the provider infer the kind from one canonical ref. |
+| `schema_operation` | Return one exact operation, such as `object.search` or `object.action:reply`. |
+| `schema_view` | Explicitly choose `catalog`, `search`, `kind`, `operation`, or `full`; otherwise the other selectors infer it. |
+
+`object_schema(query=...)` searches the compact capability index prepared from
+the provider declaration. `search_objects(query=...)` searches objects in the
+provider realm. The capability result reports its backend, match sources,
+requested/effective search mode, selected vector backend, persistent vector
+path when applicable, and any lexical fallback reason.
 
 The object body returned by provider operations should match the schema
 advertised for that object kind.
