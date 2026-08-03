@@ -406,7 +406,7 @@ The important integration rule is:
 
 Reference examples:
 - `src/kdcube-ai-app/kdcube_ai_app/apps/chat/proc/rest/integrations/AIBundleDashboard.tsx`
-- `src/kdcube-ai-app/kdcube_ai_app/journal/26/03/widgets/App.tsx`
+- `repo:applications/kdcube-docs/journal/26/03/widgets/App.tsx`
 - `src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/examples/bundles/workspace@2026-03-31-13-36/ui/PreferencesBrowser.tsx`
 
 This is not bundle-specific magic. Widget/frontend code is regular platform
@@ -635,7 +635,7 @@ and each declared endpoint includes its `route` (`operations` or `public`).
 
 Concrete example:
 - runtime config handshake:
-  `src/kdcube-ai-app/kdcube_ai_app/journal/26/03/widgets/App.tsx`
+  `repo:applications/kdcube-docs/journal/26/03/widgets/App.tsx`
 - platform widget with the same auth/config pattern:
   `src/kdcube-ai-app/kdcube_ai_app/apps/chat/proc/rest/integrations/AIBundleDashboard.tsx`
 - bundle-operation backend:
