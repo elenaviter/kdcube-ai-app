@@ -15,7 +15,8 @@ KDCube-facing wrap, not either vendored agent's own behavior.
 
 The narrative of how the standalone agents were ported (the executable recipe and
 its worked instances) is maintained separately in the feature journal under
-`kdcube_ai_app/journal/26/07/port-your-solution-to-kdcube/`. This journal does not
+`repo:applications/kdcube-docs/journal/26/07/port-your-solution-to-kdcube/`.
+This journal does not
 duplicate it.
 
 ## Entries

@@ -57,7 +57,7 @@ The implementation must continue moving in this direction:
 The detailed migration plan is tracked in the platform journal:
 
 ```text
-repo:kdcube-ai-app:app/ai-app/src/kdcube-ai-app/kdcube_ai_app/journal/26/06/connection-hub/custom-authority/plan.md
+repo:applications/kdcube-docs/journal/26/06/connection-hub/custom-authority-and-yay/plan.md
 ```
 
 Use that plan before changing the custom integration or removing the temporary

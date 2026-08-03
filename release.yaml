@@ -1,38 +1,40 @@
 platform:
   repo: "kdcube-ai-app"
-  ref: "2026.07.30.1642"
+  ref: "2026.08.03.1350"
   description: |
-    This release follows 2026.07.29.1625.
+    This release follows 2026.07.30.1642.
 
-    Google Docs joins the productivity integration and named-service surfaces.
-    Agents can discover, read, create, edit, format, import, export, comment on,
-    and embed images in documents through bounded typed operations or governed
-    flexible edits. Access follows the existing two-gate model: the caller
-    needs a delegated grant and the user needs the matching connected Google
-    account claim; the Google credential remains on the trusted server side.
+    Google Docs workflows now cover native documents and imported sources from
+    discovery through delivery. Agents can copy or convert a source, select
+    tabs explicitly, inspect and act on comments, edit and format content, and
+    export portable files through the governed productivity and named-service
+    surfaces.
 
-    MCP clients and servers now support Client ID Metadata Documents from the
-    2026-07-28 protocol revision alongside legacy Dynamic Client Registration.
-    Registration mode is explicit, existing DCR integrations remain available,
-    and the runtime MCP adapters share one compatibility-aware client path.
+    Named-service providers can publish recursive capability catalogs organized
+    around domain use cases. Agents can browse a catalog by path, search it by
+    intent, and request the exact contract for one object kind or operation
+    instead of loading every provider API into the tool catalog. Docs, Sheets,
+    Mail, and Slack expose these provider-authored projections.
 
-    OAuth discovery and token revocation now preserve mounted application
-    routes. Discovery metadata advertises the served endpoints, and Connection
-    Hub exposes the matching revocation route instead of assuming a root mount.
+    Capability lookup supports lexical, semantic, and hybrid search over the
+    provider's declarations without indexing user objects. Shared indexes use
+    immutable timestamp-and-hash generations derived from the catalog and
+    embedding profile. Concurrent loaders converge on one generation, rolling
+    deployments retain the current and previous generations, and stale loaders
+    cannot prune newer state.
 
-    Browser logout now comes from the same selected Cognito authority provider
-    as login. The public frontend configuration returns the matching
-    end-session endpoint, preventing a scene configured for one authority from
-    attempting logout against another Cognito domain.
+    Delegated operations now re-check current authority at execution time.
+    Manual automation access can be created and edited, and newly minted
+    credentials are returned reliably on creation. Protected bundle operations
+    also receive explicit CSRF validation and provider-surface policy checks.
 
-    Connection Hub grant recovery now reads nested consent details and served
-    recovery URLs. Agent-grant banners retain the requested account and claims,
-    then open the precise delegated-access card instead of losing the
-    account-specific context.
+    Scene hosts can open authorized named-service documents through the
+    existing object-action route, preserving provider authorization without
+    exposing credentials or introducing an ungoverned download path.
 
-    Canvas user-text pins now show the full markdown note on the card face and
-    support in-place editing. Resizing reveals more of the scrollable note while
-    the namespace color remains a compact frame around a neutral reading area.
+    Descriptor and reference documentation now identifies economics.yaml as
+    the sixth default descriptor and points maintenance journals at their
+    shared, versioned repository location.
 
 config:
-  version: "2026.07.30.1642"
+  version: "2026.08.03.1350"

@@ -364,7 +364,7 @@ platform integration pattern:
 This integration shape matters. If a bundle widget talks to bundle or platform REST APIs, keep the config/auth wiring aligned with the platform examples instead of inventing a different handshake.
 
 Reference frontend patterns:
-- `src/kdcube-ai-app/kdcube_ai_app/journal/26/03/widgets/App.tsx`
+- `repo:applications/kdcube-docs/journal/26/03/widgets/App.tsx`
 - `src/kdcube-ai-app/kdcube_ai_app/apps/chat/proc/rest/integrations/AIBundleDashboard.tsx`
 
 Reference backend endpoint:

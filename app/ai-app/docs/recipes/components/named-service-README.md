@@ -355,8 +355,12 @@ config:
       vector_backend: faiss-local
 ```
 
-This produces a profile-specific SQLite file containing declarations, FTS,
-and cached vectors, plus a derived `.faiss` sibling shared by workers. Set
+This produces a timestamp-and-generation-hash SQLite file containing
+declarations, FTS, and cached vectors, plus a derived `.faiss` sibling shared
+by workers. The hash covers the catalog declaration and embedding profile;
+the timestamp records when that generation was allocated. Concurrent bundle
+loaders resolve the same generation rather than creating one set per worker.
+Set
 `vector_backend: bruteforce` explicitly only for a dependency-free development
 or test runtime; it reconstructs the vector view in each process and does not
 write a `.faiss` file. A deterministic catalog signature lets other workers
@@ -366,12 +370,16 @@ matching runs directly over the declared projection. The response reports the
 requested and effective mode, selected vector backend, and any fallback reason.
 
 Only capability declarations enter this index. Provider objects remain in the
-provider realm. Embedding provider, model, vector-dimension, and vector-backend
-changes also change the cached capability-index identity without changing the
-provider's object-search path. Profile-specific shared paths keep
-rolling-deployment workers from rewriting one another's vectors. Do not add an
-LLM role to a provider app solely for schema discovery: the lexical path
-remains available when no embedding service is bound.
+provider realm. Embedding provider, model, vector-dimension, vector-backend, or
+catalog changes also change the cached capability-index identity without
+changing the provider's object-search path. Timestamped shared generations
+keep rolling-deployment workers from rewriting one another's vectors. After a
+successful bundle-load build, the owner keeps the current and immediately
+previous file families and removes older generations; an older loader never
+prunes a newer generation. The first capability query provides a one-time lazy
+cleanup path when the deployment has already marked that bundle preload as
+complete. Do not add an LLM role to a provider app solely for schema discovery:
+the lexical path remains available when no embedding service is bound.
 
 ## 6. Keep Normal Results Compact And Data Reachable
 

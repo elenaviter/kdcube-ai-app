@@ -349,8 +349,13 @@ config:
       vector_backend: faiss-local  # faiss-local | bruteforce
 ```
 
-Its deterministic declaration signature permits reuse across workers and
-triggers refresh after a schema/catalog change. Without an embedding service,
+Its deterministic generation identity combines the declaration signature with
+the embedding profile. The first worker allocates one timestamped family such
+as
+`capabilities.20260803T024812123456Z.5d1a6e83f01a004d.sqlite`;
+concurrent workers resolve the same family through a shared generation lock.
+The SQLite source, `.signature`, `.faiss`, and lock files all share that
+timestamp-and-hash prefix. Without an embedding service,
 capability queries use the same projection through in-memory lexical matching
 and do not require a persistent index. Responses report
 `requested_search_mode`, `effective_search_mode`, match sources, backend,
@@ -358,12 +363,17 @@ and do not require a persistent index. Responses report
 
 No provider object or user content is copied into this index. The configured
 embedding provider, model, vector dimension, and vector backend participate in
-index identity, so changing that profile replaces the derived index even when
-the capability declaration itself is unchanged. Profile-specific shared paths
-let old and new workers coexist during a rolling deployment without rewriting
-one another's index. A provider app does not declare an LLM role merely to
-publish this catalog; without a bound embedding service, capability discovery
-stays lexical.
+index identity, so either a catalog change or an embedding-profile change
+creates a new immutable generation. Timestamped shared paths let old and new
+workers coexist during a rolling deployment without rewriting one another's
+index. After successful bundle-load preparation, the newest loader retains its
+active generation and the immediately preceding generation, then removes every
+older file family under the namespace generation lock. A loader bound to an
+older generation does not prune. If deployment state skips an already-complete
+bundle preload, the first capability search performs the same cleanup once for
+that generation in its provider process. A provider app does not declare an
+LLM role merely to publish this catalog; without a bound embedding service,
+capability discovery stays lexical.
 
 Projection does not design the realm automatically. The adapter author still
 maps third-party endpoints into user-meaningful object kinds and bounded

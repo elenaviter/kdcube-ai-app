@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -620,6 +621,173 @@ def test_capability_index_path_isolated_by_vector_backend(tmp_path) -> None:
     assert faiss_path.parent == brute_path.parent
 
 
+def _schema_tree_with_action_description(suffix: str) -> dict[str, Any]:
+    schema = _large_schema()
+    schema["actions"]["action_000"]["description"] += suffix
+    return build_schema_tree(schema, _large_projection())
+
+
+@pytest.mark.asyncio
+async def test_managed_capability_generations_are_timestamped_and_bounded(
+    tmp_path,
+) -> None:
+    index = SchemaCatalogSearchIndex(
+        db_path=schema_search_index_path(tmp_path, "provider.docs"),
+        model_service=_EmbeddingModel(),
+        dim=4,
+        vector_backend="bruteforce",
+        managed_generations=True,
+    )
+
+    first = await index.ensure(_schema_tree_with_action_description(" first"))
+    first_path = Path(first["db_path"])
+    first_parts = first_path.name.split(".")
+    assert first_parts[0] == "capabilities"
+    assert len(first_parts[1]) == 22
+    assert first_parts[1].endswith("Z")
+    assert len(first_parts[2]) == 16
+    assert first_parts[2] == first["generation_hash"]
+    assert first_parts[1] == first["generation_timestamp"]
+
+    reused = await index.ensure(_schema_tree_with_action_description(" first"))
+    assert reused["updated"] is False
+    assert reused["db_path"] == first["db_path"]
+
+    first_vector = first_path.with_suffix(".faiss")
+    first_sidecar = first_path.with_name(first_path.name + "-test-sidecar")
+    first_vector.write_text("derived", encoding="utf-8")
+    first_sidecar.write_text("derived", encoding="utf-8")
+
+    second = await index.ensure(_schema_tree_with_action_description(" second"))
+    second_cleanup = await index.prune_stale_generations()
+    assert second_cleanup["removed"] == []
+
+    third = await index.ensure(_schema_tree_with_action_description(" third"))
+    third_cleanup = await index.prune_stale_generations()
+    assert third_cleanup["pruned"] is True
+    assert third_cleanup["active"] in third_cleanup["retained"]
+    assert len(third_cleanup["retained"]) == 2
+    assert Path(third["db_path"]).exists()
+    assert Path(second["db_path"]).exists()
+    assert not first_path.exists()
+    assert not first_path.with_suffix(".generation").exists()
+    assert not first_vector.exists()
+    assert not first_sidecar.exists()
+
+
+@pytest.mark.asyncio
+async def test_managed_generation_cleanup_handles_legacy_fixed_family_only(
+    tmp_path,
+) -> None:
+    base_path = schema_search_index_path(tmp_path, "provider.docs")
+    base_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_family = (
+        base_path,
+        base_path.with_suffix(".signature"),
+        base_path.with_suffix(".faiss"),
+        base_path.with_name(base_path.name + ".lock"),
+    )
+    for path in legacy_family:
+        path.write_text("legacy", encoding="utf-8")
+
+    index = SchemaCatalogSearchIndex(
+        db_path=base_path,
+        model_service=_EmbeddingModel(),
+        dim=4,
+        vector_backend="bruteforce",
+        managed_generations=True,
+    )
+    second = await index.ensure(_schema_tree_with_action_description(" second"))
+    second_path = Path(second["db_path"])
+    third = await index.ensure(_schema_tree_with_action_description(" third"))
+    third_path = Path(third["db_path"])
+
+    cleanup = await index.prune_stale_generations()
+
+    assert cleanup["pruned"] is True
+    assert third_path.exists()
+    assert second_path.exists()
+    assert all(not path.exists() for path in legacy_family)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_loaders_share_one_capability_generation(tmp_path) -> None:
+    base_path = schema_search_index_path(tmp_path, "provider.docs")
+    indexes = [
+        SchemaCatalogSearchIndex(
+            db_path=base_path,
+            model_service=_EmbeddingModel(),
+            dim=4,
+            vector_backend="bruteforce",
+            managed_generations=True,
+        )
+        for _ in range(3)
+    ]
+    tree = _schema_tree_with_action_description(" concurrent")
+
+    results = await asyncio.gather(*(index.ensure(tree) for index in indexes))
+
+    assert len({result["db_path"] for result in results}) == 1
+    assert len(list(base_path.parent.glob("capabilities.*.generation"))) == 1
+
+
+@pytest.mark.asyncio
+async def test_first_capability_search_lazily_prunes_old_generations(
+    tmp_path,
+) -> None:
+    index = SchemaCatalogSearchIndex(
+        db_path=schema_search_index_path(tmp_path, "provider.docs"),
+        model_service=_EmbeddingModel(),
+        dim=4,
+        vector_backend="bruteforce",
+        managed_generations=True,
+    )
+    first = await index.ensure(_schema_tree_with_action_description(" first"))
+    await index.ensure(_schema_tree_with_action_description(" second"))
+    third_tree = _schema_tree_with_action_description(" third")
+    await index.ensure(third_tree)
+
+    await index.search(
+        third_tree,
+        query="action 042",
+        mode="lexical",
+        limit=5,
+    )
+
+    assert not Path(first["db_path"]).exists()
+    assert len(list(index.base_db_path.parent.glob("capabilities.*.generation"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_capability_generation_does_not_prune_newer_files(
+    tmp_path,
+) -> None:
+    base_path = schema_search_index_path(tmp_path, "provider.docs")
+    stale_index = SchemaCatalogSearchIndex(
+        db_path=base_path,
+        model_service=_EmbeddingModel(),
+        dim=4,
+        vector_backend="bruteforce",
+        managed_generations=True,
+    )
+    newest_index = SchemaCatalogSearchIndex(
+        db_path=base_path,
+        model_service=_EmbeddingModel(),
+        dim=4,
+        vector_backend="bruteforce",
+        managed_generations=True,
+    )
+
+    stale = await stale_index.ensure(_schema_tree_with_action_description(" stale"))
+    newest = await newest_index.ensure(_schema_tree_with_action_description(" newest"))
+    cleanup = await stale_index.prune_stale_generations()
+
+    assert cleanup["pruned"] is False
+    assert cleanup["reason"] == "active_generation_is_not_newest"
+    assert Path(stale["db_path"]).exists()
+    assert Path(newest["db_path"]).exists()
+
+
 @pytest.mark.asyncio
 async def test_invalid_search_selectors_do_not_touch_shared_index() -> None:
     class _SearchIndex:
@@ -664,6 +832,11 @@ async def test_provider_prepares_and_uses_bound_capability_index(tmp_path) -> No
     assert prepared[0]["indexed"] == 103
     assert prepared[0]["vector_backend"] == "bruteforce"
     assert prepared[0]["vector_path"] == ""
+    assert prepared[0]["generation_timestamp"]
+    assert prepared[0]["generation_hash"]
+    assert prepared[0]["generation_cleanup"]["retained"] == [
+        Path(prepared[0]["db_path"]).stem
+    ]
 
     response = await provider.dispatch(
         NamedServiceContext(),
