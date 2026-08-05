@@ -206,3 +206,34 @@ async def test_requirement_without_matching_operation_claims_is_skipped(monkeypa
     )
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_account_required_defers_to_the_tool_body(monkeypatch):
+    """This resolution carries no account, so it cannot answer "which one".
+
+    The tool's own account_id reaches its body, which resolves the same claim
+    with it. Denying here would block every call once a caller is bound to two
+    accounts, and the advertised fix — resend with account_id — could never
+    reach the check that rejected it.
+    """
+    _view(monkeypatch)
+    _identity(monkeypatch)
+    _resolver(
+        monkeypatch,
+        {"slack:search": _failed_credential("slack:search", reason="account_required")},
+    )
+
+    async def _no_connect_first(**kwargs):  # pragma: no cover - must not be hit
+        raise AssertionError("connect-first must not be consulted on ambiguity")
+
+    monkeypatch.setattr(enforcement_mod, "connect_first_denial_for_identity", _no_connect_first)
+
+    result = await enforce_tool_requirements(
+        object(),
+        tool_name="productivity_slack_search",
+        operation="search",
+        requirements=[_SLACK_REQUIREMENT],
+    )
+
+    assert result is None

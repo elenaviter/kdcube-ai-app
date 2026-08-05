@@ -78,6 +78,41 @@ def test_external_client_gets_focused_link_and_instructions():
     assert "sign in" in denial["next_step"]
 
 
+def test_manual_automation_is_not_sent_to_the_pending_pane():
+    """The pending pane's only save is delegated_agent_grant_create, which
+    cannot serve a record keyed by a random access_id. Sending an automation
+    client there produces a link whose save always fails, so it gets the
+    open-the-hub guidance instead; its card is edited by hand."""
+    denial = _denial("automation:aut_9xK2:google:1234")
+    consent = denial["consent"]
+    # The caller and its missing claims are still named, and the link still
+    # lands on the right tab — only the pending pane is withheld.
+    assert consent["agent_client_id"] == "automation:aut_9xK2:google:1234"
+    assert consent["claims"] == ["slack:read"]
+    assert "grant" not in consent
+    assert consent["connection_hub_url"].endswith("?tab=delegated_by_kdcube")
+    assert "pending_agent_grant" not in str(denial)
+
+
+def test_the_per_account_binding_link_also_skips_the_pending_pane():
+    """The binding denial builds its own URL, so the rule lives in the builder.
+
+    This is the link that actually reaches an automation caller in practice.
+    """
+    url = connection_hub_grant_url(
+        tenant="t",
+        project="p",
+        client_id="automation:aut_9xK2",
+        resource=RESOURCE,
+        claims=[],
+        account_id="acc_1",
+        account_claim="linkedin:post",
+    )
+    assert url.endswith("?tab=delegated_by_kdcube")
+    assert "pending_agent_grant" not in url
+    assert "account_id" not in url
+
+
 def test_no_public_base_keeps_reconnect_guidance():
     set_connection_hub_public_base_url("")
     denial = _denial("claude")

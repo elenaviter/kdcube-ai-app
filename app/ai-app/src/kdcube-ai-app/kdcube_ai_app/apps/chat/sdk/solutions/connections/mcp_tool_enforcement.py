@@ -76,12 +76,22 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.con
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
     delegated_credential_view,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
+    REASON_ACCOUNT_REQUIRED,
+)
 
 logger = logging.getLogger(__name__)
 
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _denial_reason(credential: ConnectedAccountCredential) -> str:
+    """The broker's reason for an unusable credential, or "" when unshaped."""
+    payload = credential.error_payload if isinstance(credential.error_payload, Mapping) else {}
+    consent = payload.get("consent")
+    return _clean(consent.get("reason")) if isinstance(consent, Mapping) else ""
 
 
 def bind_service_connector_apps_from_config(config: Mapping[str, Any] | None) -> None:
@@ -213,6 +223,15 @@ async def enforce_tool_requirements(
                 failed = credential
                 break
         if failed is None:
+            continue
+        # account_required is not a preflight verdict. This resolution carries
+        # no account — the tool's own account_id reaches its body, not here —
+        # so "several accounts match" only means THIS check could not choose.
+        # The body resolves the same claim WITH the account and raises the
+        # demand itself when it is genuinely ambiguous. Answering here would
+        # deny every call the moment a caller is bound to two accounts, and the
+        # advertised fix (resend with account_id) could never take effect.
+        if _denial_reason(failed) == REASON_ACCOUNT_REQUIRED:
             continue
 
         # Demand ordering, identical to the named-services door: with ZERO

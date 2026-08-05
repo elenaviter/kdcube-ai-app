@@ -507,9 +507,8 @@ connections. Open the caller's own grant card in Connection Hub → Delegated by
 KDCube, tick the claim on that account, and save — the change applies to the
 bearer the client already holds, with no re-issue.
 
-The response's top-level `message` says this correctly. Its `instructions`
-field currently does not: it renders the connect-first wording instead. Read
-`message` and `consent.reason`.
+`consent.reason` is `agent_account_binding_required`, distinct from
+`connect_required`: the connection needs no change.
 
 ### The account keeps asking to reconnect
 
