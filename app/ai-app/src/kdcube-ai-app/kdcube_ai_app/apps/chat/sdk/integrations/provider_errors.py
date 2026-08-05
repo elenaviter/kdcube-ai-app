@@ -27,6 +27,8 @@ _SCOPE_REASONS = {
     "INSUFFICIENTPERMISSIONS",
     "INSUFFICIENTSCOPE",
     "MISSINGSCOPE",
+    # LinkedIn's wording for a token that lacks the required OAuth scope.
+    "NOTENOUGHPERMISSIONS",
 }
 _CONFIG_REASONS = {
     "ACCESSNOTCONFIGURED",

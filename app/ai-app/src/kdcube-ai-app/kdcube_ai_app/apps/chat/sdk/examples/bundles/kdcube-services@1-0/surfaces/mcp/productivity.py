@@ -49,6 +49,10 @@ from .productivity_docs import (
     DOCS_PRODUCTIVITY_TOOLS,
     register_google_docs_tools,
 )
+from .productivity_linkedin import (
+    LINKEDIN_PRODUCTIVITY_TOOLS,
+    register_linkedin_tools,
+)
 from .productivity_sheets import (
     SHEETS_PRODUCTIVITY_TOOLS,
     register_google_sheets_tools,
@@ -58,12 +62,14 @@ ConfigFactory = Callable[[], Mapping[str, Any]]
 
 PRODUCTIVITY_MCP_INSTRUCTIONS = """\
 This MCP server exposes productivity tools that run on the approving user's
-connected accounts (Slack, mail, Google Sheets, Google Docs). For Sheets, use
-search when the spreadsheet id is unknown, describe before structural changes,
-and pass the returned stable ids to read or write tools. For Docs, use search
-when the document id is unknown, get before editing, and pass the returned
-document id and text indices to the edit and comment tools. Each tool names the
-account access it needs. When a call reports a consent requirement, relay the reason
+connected accounts (Slack, mail, Google Sheets, Google Docs, LinkedIn). For
+Sheets, use search when the spreadsheet id is unknown, describe before
+structural changes, and pass the returned stable ids to read or write tools. For
+Docs, use search when the document id is unknown, get before editing, and pass
+the returned document id and text indices to the edit and comment tools. For
+LinkedIn, list accounts first when several may be connected, then publish; pass
+the returned post_urn to the comment tool. LinkedIn exposes no feed, message or
+post-content reads here. Each tool names the account access it needs. When a call reports a consent requirement, relay the reason
 and connection_hub_url to the user instead of retrying blindly:
 connect_required, claim_upgrade_required, and reconnect_required are fixed by
 the user at connection_hub_url; account_required is fixed by resending the
@@ -110,19 +116,7 @@ PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
     },
     **SHEETS_PRODUCTIVITY_TOOLS,
     **DOCS_PRODUCTIVITY_TOOLS,
-    # TODO(productivity): LinkedIn - same declaration shape once the linkedin
-    # integration ships:
-    # "productivity_linkedin_search": {
-    #     "label": "Search LinkedIn",
-    #     "description": "Search through the user's connected LinkedIn account.",
-    #     "connections": {
-    #         "delegated_to_kdcube": {
-    #             "connected_accounts": [
-    #                 {"provider_id": "linkedin", "claims": ["linkedin:search"]},
-    #             ],
-    #         },
-    #     },
-    # },
+    **LINKEDIN_PRODUCTIVITY_TOOLS,
 }
 
 
@@ -321,6 +315,12 @@ def build_productivity_mcp_app(
         mcp,
         service=GoogleDocsService(),
         enforce_tool=_enforce,
+    )
+
+    register_linkedin_tools(
+        mcp=mcp,
+        tool_annotations_type=ToolAnnotations,
+        enforce=_enforce,
     )
 
     return mcp

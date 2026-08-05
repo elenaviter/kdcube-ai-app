@@ -420,6 +420,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Default-closed: a provider with nothing ticked grants NO account to this
   // client; only the ticked accounts+claims are allowed.
   const [editAccountScope, setEditAccountScope] = useState<Record<string, Record<string, string[]>>>({});
+  // The same binding for the card being created.
+  const [createAccountScope, setCreateAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   // Catalog search: narrows the delegable-resource cards (labels, grants,
   // named-service rows) wherever the shared list renders.
   const [resourceQuery, setResourceQuery] = useState('');
@@ -537,11 +539,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       label: label.trim() || 'Automation access',
       resourceGrants,
       namedServiceOperations: selectedNamedServiceOperations,
+      accountScope: createAccountScope,
       ttlSeconds,
     })).unwrap().catch(() => undefined);
     // Fold the form back once the credential exists — the issued token renders
     // above it, which is what the user needs to see next.
     setCreateOpen(false);
+    setCreateAccountScope({});
     void dispatch(loadDelegatedAccess());
   };
 
@@ -697,6 +701,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const togglePendingAccount = makeToggleAccountClaim(setPendingAccountScope);
+  const toggleCreateAccount = makeToggleAccountClaim(setCreateAccountScope);
   // Seed the pending consent card's per-account picker ONCE (per client) from
   // the agent's existing grant, after the account list + grant registry load.
   // Without this, re-consent for a newly-demanded door claim (e.g. mail:send)
@@ -838,6 +843,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         label: editLabel.trim() || item.label || 'Automation access',
         resourceGrants: prunedKept,
         namedServiceOperations: keptNamedServiceOperations,
+        accountScope: editAccountScope,
       })).unwrap().catch(() => undefined);
       setEditingAccessId(null);
       setEditPicks({});
@@ -1430,8 +1436,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </Field>
                     </div>
                   ) : null}
-                  {editing && item.source === 'oauth'
-                    ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this app')
+                  {editing
+                    ? renderAccountScopePicker(
+                        editAccountScope,
+                        toggleEditAccount,
+                        item.source === 'manual' ? 'this automation' : 'this app',
+                      )
                     : null}
                 </div>
                 <div className="account-actions">
@@ -1530,6 +1540,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             {renderResourceList()}
           </div>
         ) : null}
+        {renderAccountScopePicker(createAccountScope, toggleCreateAccount, 'this credential')}
         <select className="input" value={ttlSeconds} onChange={(event) => setTtlSeconds(Number(event.target.value))}>
           {ttlOptions.map((item) => (
             <option key={item.value} value={item.value}>{item.label}</option>

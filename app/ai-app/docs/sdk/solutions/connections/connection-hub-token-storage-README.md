@@ -249,6 +249,34 @@ Manual listing rows do not store the raw access token for later display.
 Revocation uses the stored `session_id` and grant metadata to remove the active
 bundle-session record and access-grant binding.
 
+### Editing a manual token in place
+
+`delegated_access_update` rewrites the card by `access_id`. The token is a
+pointer — the guard resolves the card live on every call — so the scope changes
+and the bearer the operator already copied keeps working with the new
+permissions. Nothing is re-minted.
+
+```text
+POST delegated_access_update
+  access_id                  which card to rewrite
+  resource_grants            REPLACES the record exactly
+  named_service_operations   optional per-resource namespace narrowing
+  account_scope              optional {provider_id: {account_id: [claims]}}
+  label                      optional rename
+```
+
+The submitted selection replaces the record and is re-validated with the same
+rules as create, so widening is allowed up to what the grantor may delegate.
+Submitting no grants at all is a revoke, not an edit, and is refused —
+`delegated_access_revoke` is the operation for that.
+
+Only manual cards are editable here: an agent or OAuth card answers
+`delegated_access_not_editable` and edits through its own consent flow.
+
+`account_scope` distinguishes absent from empty. Omit the key to leave the
+binding untouched; send an empty mapping to bind nothing, which is
+default-closed and refuses every account for that caller.
+
 ## Connected Provider Account Tokens
 
 This is the `ConnectionStore` path. It is used for accounts that KDCube acts

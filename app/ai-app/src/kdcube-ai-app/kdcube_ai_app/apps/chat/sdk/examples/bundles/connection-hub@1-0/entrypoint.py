@@ -116,6 +116,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "dcr_allowlist_set",
     "delegated_access_create",
     "delegated_access_revoke",
+    "delegated_access_update",
     "delegated_agent_grant_create",
     "delegated_to_kdcube_connect_credential",
     "delegated_to_kdcube_disconnect",
@@ -1856,9 +1857,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 label=str(payload.get("label") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
                 operations=_safe_list(payload.get("operations")),
+                # Both preserve absent vs empty: None leaves the dimension
+                # unrestricted, an empty mapping restricts to nothing.
+                # broker.py keys on `is not None`.
                 named_service_operations=(
                     dict(payload.get("named_service_operations") or {})
                     if "named_service_operations" in payload
+                    else None
+                ),
+                account_scope=(
+                    dict(payload.get("account_scope") or {})
+                    if "account_scope" in payload
                     else None
                 ),
                 ttl_seconds=payload.get("ttl_seconds"),
