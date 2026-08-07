@@ -45,10 +45,15 @@ Claude may not call tools that were not consented.
 
 3. External client probes the service
    KDCube replies that the service requires delegated credentials.
-   A client not pre-listed in public_clients registers itself via dynamic
-   client registration (DCR); registration is accepted only if the client's
-   redirect URI is on the DCR redirect allowlist
-   (dynamic_client_registration.allowed_redirect_uris).
+   A client not pre-listed in public_clients identifies itself one of two ways,
+   and it chooses which:
+     - Client ID Metadata Document (CIMD): its client_id is an HTTPS URL that
+       serves the document declaring its callbacks. No KDCube registration
+       happens and the DCR redirect allowlist is not consulted; the published
+       document is the authority. This is the path Claude Code takes.
+     - Dynamic client registration (DCR): the client registers itself, and
+       registration is accepted only if its redirect URI is on the DCR redirect
+       allowlist (dynamic_client_registration.allowed_redirect_uris).
 
 4. External client opens the KDCube consent URL
    User signs in to KDCube if needed.

@@ -1707,6 +1707,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     token_endpoint=f"{public_base}/token",
                     revocation_endpoint=f"{public_base}/revoke",
                     registration_endpoint=f"{public_base}/register",
+                    jwks_uri=f"{public_base}/jwks",
                     scopes_supported=parsed_cfg.supported_scopes(),
                     service_name=parsed_cfg.brand or "KDCube",
                     logo_uri=kdcube_icon_url(request=request, public_base_url=issuer),
@@ -1757,6 +1758,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             )
         if path == "authorize":
             return await oauth_authorize(request)
+        if path in {"jwks", ".well-known/jwks.json"}:
+            # Empty and permanent: kst1 tokens are opaque, so there is no
+            # public key to publish. The document exists because discovery
+            # advertises jwks_uri.
+            return JSONResponse({"keys": []})
 
         return JSONResponse(status_code=404, content={"error": "oauth_route_not_found", "path": path})
 

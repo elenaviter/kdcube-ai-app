@@ -295,12 +295,26 @@ registration endpoint:
 ```text
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/.well-known/oauth-authorization-server
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/.well-known/openid-configuration
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/.well-known/oauth-protected-resource?resource=<bundle-mcp-url>
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/authorize
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/authorize/consent
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/register
 /api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/token
+/api/integrations/bundles/{tenant}/{project}/connection-hub@1-0/public/oauth/jwks
 ```
+
+The authorization-server document is served at both well-known locations. MCP
+clients fetch the OIDC one and treat a 404 there as fatal, so it stays and the
+document carries the fields OIDC discovery requires:
+
+- `jwks_uri` points at `/oauth/jwks`, which returns `{"keys": []}` and always
+  will. Access tokens are opaque (`kst1`), so there is no public key and no
+  client verifies a signature — the resource validates the token.
+- `subject_types_supported` is `["public"]`.
+- `id_token_signing_alg_values_supported` is present because the schema
+  requires it. No `id_token` is ever issued: `openid` is absent from
+  `scopes_supported`, so no client can request one.
 
 Stable root aliases such as `/.well-known/...` or `/oauth/...` may be added by
 gateway routing later, but those aliases route to Connection Hub. They do not
@@ -512,11 +526,19 @@ Rules:
   an allowlisted entry exactly. All non-loopback redirects must match exactly,
   including the port. Implementation: `redirect_uri_allowed()` in
   `kdcube_ai_app/apps/chat/sdk/solutions/connections/delegated_credentials/oauth/clients.py`.
-- CIMD callback matching is exact for every redirect URI, including loopback
-  ports. The metadata document must publish the concrete callback the client
-  sends. Web-client callbacks must use HTTPS. Native-client callbacks may use
+- CIMD callback matching honours what the document states. A published entry
+  that **names a port** must be matched exactly, including that port — the
+  document asserted a concrete callback, so it is held to it. A **portless**
+  loopback entry admits any port, because a native client cannot publish the
+  port it will bind at runtime; scheme, host, and path are still matched
+  exactly. Web-client callbacks must use HTTPS. Native-client callbacks may use
   HTTPS or HTTP on `localhost`, `127.0.0.1`, or `::1`; other schemes and
   duplicate callback entries are rejected before consent.
+- A CIMD document that omits `application_type` is read as a native client when
+  **every** redirect it publishes is an HTTP loopback URI. The OIDC default of
+  `web` would refuse those entries outright, and published documents of real
+  native clients omit the field. A document carrying any non-loopback HTTP
+  redirect still resolves to `web` and is still refused.
 - Practical consequence for native MCP clients: an entry like
   `http://localhost/callback` admits `http://localhost:52791/callback`, but not
   `http://localhost:52791/auth/callback` — a client whose callback uses a
