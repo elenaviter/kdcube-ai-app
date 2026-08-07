@@ -4,7 +4,7 @@ title: "OAuth Delegated Credential Protocol Adapter"
 summary: "How the OAuth2 protocol adapter resolves pre-registered, Client ID Metadata Document, and DCR clients, then issues and verifies least-privilege Connection Hub credentials."
 tags: ["sdk", "solutions", "connections", "delegated-credentials", "oauth", "mcp", "descriptor"]
 keywords: ["OAuth2 authorization server", "MCP protected resource", "Claude Code", "PKCE", "Client ID Metadata Document", "CIMD", "dynamic client registration", "tool consent", "live grant lookup", "operation csrf protection", "descriptor configuration"]
-updated_at: 2026-08-01
+updated_at: 2026-08-07
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/auth-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/auth/bundle-session-auth-README.md
@@ -597,9 +597,19 @@ Enforcement is default-closed for delegated callers: an account left unticked
 is not usable by this client even though the connection ceiling names the
 claim. The semantics live in
 [Configure Agent → Service Access](../configuring-agent-service-access/configuring-agent-service-access-README.md);
-a call that needs more raises `agent_grant_required` deep-linking the
-client's own grant card (Delegated by KDCube) with the exact account and claim
-named — never the provider-connect tab, whose state is not the problem.
+a call that needs more raises `agent_grant_required` in the delegated-account
+broker. When the operation names a concrete account, the client-facing adapter
+can specialize that result to `agent_account_binding_required`, preserving the
+exact account and claim. Both reasons deep-link the client's own grant card
+(Delegated by KDCube), never the provider-connect tab whose state is not the
+problem. The URL is recovery data for the host or external client to present;
+returning it does not open Connection Hub or replay the failed operation.
+
+Grant-card updates distinguish omission from an explicit empty map:
+`account_scope` omitted preserves existing account bindings, while
+`account_scope: {}` intentionally clears them. This lets an unrelated resource
+or claim edit leave account authority unchanged and still gives the user an
+explicit revoke-all operation.
 
 ## Revocation And Card Lifecycle
 
@@ -642,6 +652,16 @@ named — never the provider-connect tab, whose state is not the problem.
   mismatch denies the request; the runtime never falls back to the access or
   refresh token's older grant snapshot. Legacy records without a card pointer
   retain their snapshot contract.
+
+## External URLs Behind A Proxy
+
+OAuth callback, consent, upload, and recovery links must reflect the scheme the
+client used at the trusted edge. The bundled OpenResty proxy accepts an incoming
+`X-Forwarded-Proto` only when its value is exactly `http` or `https`; any other
+value falls back to the scheme received by that proxy. A deployment's trusted
+edge must overwrite this header rather than append untrusted client input.
+Validation prevents malformed schemes from entering generated links; it is not
+trusted-proxy authentication by itself.
 
 ## Storage
 
@@ -696,6 +716,7 @@ deployment-specific store is required. The solution-level durability design note
 | Two workers rotate one refresh token concurrently | Current live authority is checked before rotation; one compare-and-rotate script wins and creates one replacement, while the stale request receives `invalid_grant`. |
 | OAuth shared state cannot be read or changed | OAuth routes and managed MCP/REST guards log the store operation and return `503 temporarily_unavailable`; they do not continue from guessed state. |
 | Refresh token is invalid or rotated | Token request fails with `invalid_grant`. |
+| Forwarded scheme is absent or not exactly `http`/`https` at the bundled proxy | Generated links use the scheme received by the proxy; arbitrary forwarded values are ignored. |
 
 ## What This Is Not
 
@@ -1071,3 +1092,16 @@ Use focused tests and one live connector test.
 26. The official MCP conformance runner is executed for the exact public
     surface before publishing an unqualified conformance claim; unsupported
     optional capabilities remain outside the claim.
+27. A provider tool's `account_id` reaches both requirement preflight and the
+    provider operation; two eligible accounts return `account_required`, and
+    resending with one candidate resolves that same account end to end.
+28. A named capable account outside the caller's binding returns
+    `agent_account_binding_required` with the account, claim, caller card, and
+    KDCube resource surface identified before provider I/O.
+29. Updating a grant without `account_scope` preserves existing bindings;
+    updating with `account_scope: {}` clears them.
+30. A manual automation recovery URL focuses the existing access card and the
+    affected resource/account/claim; it does not invoke a hosted-agent create
+    operation or change the grant automatically.
+31. Bundled proxy configuration accepts only `http` and `https` as forwarded
+    schemes and falls back to its received scheme for any other value.

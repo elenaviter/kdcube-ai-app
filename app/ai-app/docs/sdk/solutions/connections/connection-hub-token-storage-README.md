@@ -4,7 +4,8 @@ title: "Connection Hub Token Storage"
 summary: "One-page answer for where Connection Hub stores Claude Code delegated OAuth tokens, manual Delegated by KDCube tokens, connected-account provider tokens, and deployment secrets."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "tokens", "storage", "oauth", "delegated-credentials", "secrets", "redis"]
-updated_at: 2026-07-16
+updated_at: 2026-08-07
+keywords: ["Connection Hub token storage", "manual automation token", "live grant card", "named_service_operations", "account_scope", "credential isolation"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/storage-model/storage-model-README.md
@@ -269,6 +270,13 @@ The submitted selection replaces the record and is re-validated with the same
 rules as create, so widening is allowed up to what the grantor may delegate.
 Submitting no grants at all is a revoke, not an edit, and is refused —
 `delegated_access_revoke` is the operation for that.
+
+The update API can replace `named_service_operations` without minting a new
+token. The current Connection Hub edit form preserves the existing
+namespace-operation narrowing for each surviving resource; it does not yet
+render the namespace-operation picker while editing an existing manual card.
+Use the update operation directly when that inner selection must change in
+place.
 
 Only manual cards are editable here: an agent or OAuth card answers
 `delegated_access_not_editable` and edits through its own consent flow.

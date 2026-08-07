@@ -4,7 +4,8 @@ title: "Delegate A KDCube Service To An External Client"
 summary: "User-facing recipe for connecting Claude or another external client to a KDCube service through Connection Hub delegated credentials."
 status: active
 tags: ["recipes", "connections", "connection-hub", "delegated-credentials", "oauth", "claude", "mcp", "consent"]
-updated_at: 2026-08-01
+updated_at: 2026-08-07
+keywords: ["external MCP client", "delegated credential", "per-account binding", "account selection", "Connection Hub recovery", "resource grant"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
@@ -203,10 +204,21 @@ provider-account claims remain a second prerequisite under **Delegated to
 KDCube** — and the external client additionally needs a per-account binding
 (`account_scope`) on its own grant card. That binding is default-closed: the
 authorize screen offers the user's connected accounts with per-claim
-checkboxes (nothing pre-checked), and an account left unticked yields
-`agent_grant_required` at call time, deep-linking the client's card for the
-user to grant. The external MCP client gets a KDCube delegated credential,
-never the provider token.
+checkboxes (nothing pre-checked). With several eligible accounts and no
+selector, the call returns `account_required` with labeled candidates; the
+selected `account_id` is then used by both preflight and the provider
+operation. A missing caller binding returns `agent_grant_required`; when a
+concrete account is named, the connected-account adapter can specialize that
+condition to `agent_account_binding_required` so the exact account and claim
+are identified.
+
+Both binding denials return a Connection Hub URL for the caller's own card
+under **Delegated by KDCube**. In that URL, `resource` is the protected KDCube
+surface the client is calling, such as the productivity or named-services MCP
+surface; it is not a LinkedIn post, Slack channel, or other provider object.
+The client or host may present that URL to the user. KDCube does not open it or
+replay the failed operation automatically. The external MCP client gets a
+KDCube delegated credential, never the provider token.
 
 ## Identity Scope Choices
 

@@ -4,7 +4,8 @@ title: "LinkedIn Integration"
 summary: "Recipe for configuring a LinkedIn OAuth connector app in Connection Hub, letting KDCube users connect their own LinkedIn accounts, and wiring LinkedIn publishing through delegated-to-KDCube connected accounts, productivity MCP tools, and the linkedin named-service namespace."
 status: active
 tags: ["recipes", "connections", "connection-hub", "linkedin", "oauth", "connected-accounts", "delegated-to-kdcube", "named-services", "mcp", "capability-catalog", "account-selection"]
-updated_at: 2026-08-05
+updated_at: 2026-08-07
+keywords: ["LinkedIn OAuth", "publish LinkedIn post", "LinkedIn named service", "LinkedIn productivity MCP", "account_required", "agent_account_binding_required", "outcome_unknown"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/integrations/slack-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/named-service-README.md
@@ -424,6 +425,16 @@ user connected:
   `agent_account_binding_required`, even when that account itself holds the
   claim.
 
+The plain productivity MCP tools pass the same `account_id` into requirement
+preflight and into the LinkedIn operation. The selector therefore resolves one
+account before any LinkedIn request; preflight cannot approve one account and
+let the mutation use another.
+
+An account-binding denial carries a Connection Hub URL focused on this
+caller's grant card, the productivity or named-services MCP `resource`, and the
+requested LinkedIn account/claim. A hosted UI may render that URL and an
+external client may relay it. Nothing opens, grants, or retries automatically.
+
 ## User Experience
 
 1. The user signs into KDCube.
@@ -472,7 +483,9 @@ Expected behavior:
   `agent_account_binding_required` before LinkedIn is called;
 - a successful create response without a post/comment identifier is reported
   as `linkedin_response_incomplete` with `outcome_unknown: true`; inspect the
-  profile or post before retrying so a blind replay cannot duplicate content.
+  LinkedIn profile or target post before deciding whether to retry. KDCube does
+  not replay the mutation automatically, but this signal is not a provider-side
+  idempotency guarantee if a client ignores it.
 
 The chart case is the one worth running deliberately: inside a chat turn the
 image is a workspace artifact, so it publishes through `payload.files` as
@@ -523,10 +536,14 @@ tokens are refreshed automatically by the shared adapter with no code change.
 
 ### A post or comment reports `linkedin_response_incomplete`
 
-LinkedIn accepted the mutation but did not return the identifier KDCube needs
-to prove which object was created. The response preserves the real provider
-status and marks `outcome_unknown: true`. Inspect or search LinkedIn before
-retrying; do not replay the mutation blindly.
+LinkedIn returned a successful status but did not return the identifier KDCube
+needs to prove which object was created. The effect may or may not have landed.
+The response preserves the real provider status and marks
+`outcome_unknown: true`, so KDCube does not automatically replay the mutation.
+Inspect the LinkedIn profile for a post or the target post for a comment before
+deciding whether to retry. Standard LinkedIn access does not provide KDCube a
+content-search API, and an external client can still create a duplicate if it
+ignores this warning.
 
 ## Storage Boundary
 
