@@ -95,6 +95,43 @@ function pendingAgentGrantRequest(openParams?: Record<string, string>): PendingA
   }
 }
 
+type ManualAccessFocus = {
+  accessId: string;
+  resource?: string;
+  claims: string[];
+  accountId?: string;
+  accountClaim?: string;
+};
+
+function manualAccessFocusFromParams(get: (key: string) => string): ManualAccessFocus | null {
+  const accessId = get('manual_access_id').trim();
+  if (!accessId) return null;
+  const resource = get('resource').trim();
+  const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
+  const accountId = get('account_id').trim();
+  const accountClaim = get('account_claim').trim();
+  return {
+    accessId,
+    resource: resource || undefined,
+    claims,
+    accountId: accountId || undefined,
+    accountClaim: accountClaim || undefined,
+  };
+}
+
+function manualAccessFocusRequest(openParams?: Record<string, string>): ManualAccessFocus | null {
+  if (openParams) {
+    const fromProps = manualAccessFocusFromParams((key) => String(openParams[key] ?? ''));
+    if (fromProps) return fromProps;
+  }
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return manualAccessFocusFromParams((key) => params.get(key) ?? '');
+  } catch {
+    return null;
+  }
+}
+
 const ttlOptions = [
   { value: 3600, label: '1 hour' },
   { value: 12 * 3600, label: '12 hours' },
@@ -390,6 +427,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>({});
   const [ttlSeconds, setTtlSeconds] = useState(ttlOptions[0].value);
   const [pendingGrant, setPendingGrant] = useState(() => pendingAgentGrantRequest(openParams));
+  const manualFocus = useMemo(() => manualAccessFocusRequest(openParams), [openParams]);
   useEffect(() => {
     console.info(
       '[consent-route] pending pane state on mount:',
@@ -627,16 +665,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     void dispatch(loadDelegatedAccess());
   };
 
-  const startEdit = (item: DelegatedAccessRecord) => {
-    const picks: Record<string, boolean> = {};
-    Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
-      grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
-    });
-    setEditingAccessId(item.access_id);
-    setEditPicks(picks);
-    setEditAccountScope(seedAccountScopeFromRecord(item));
-    setEditLabel(item.label || '');
-  };
   // Toggle one claim on one account for a provider. An account with no claims
   // drops out; a provider with no bound accounts drops out (=> nothing granted
   // there — the runtime is default-closed for delegated callers).
@@ -688,6 +716,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     return scope;
   }, [providersWithAccounts]);
+  const startEdit = useCallback((item: DelegatedAccessRecord) => {
+    const picks: Record<string, boolean> = {};
+    Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
+      grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
+    });
+    setEditingAccessId(item.access_id);
+    setEditPicks(picks);
+    setEditAccountScope(seedAccountScopeFromRecord(item));
+    setEditLabel(item.label || '');
+  }, [seedAccountScopeFromRecord]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -698,6 +736,33 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [accounts]);
   // Which provider account-lists are expanded (the "+ choose" disclosure).
   const [expandedAccountProviders, setExpandedAccountProviders] = useState<Record<string, boolean>>({});
+  const focusedManualAccessId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!manualFocus) {
+      focusedManualAccessId.current = null;
+      return;
+    }
+    const item = items.find(
+      (candidate) => candidate.source === 'manual'
+        && candidate.access_id === manualFocus.accessId,
+    );
+    if (!item) return;
+    if (focusedManualAccessId.current !== manualFocus.accessId) {
+      focusedManualAccessId.current = manualFocus.accessId;
+      startEdit(item);
+    }
+    if (manualFocus.accountId) {
+      const account = accounts.find(
+        (candidate) => candidate.account_id === manualFocus.accountId,
+      );
+      if (account?.provider_id) {
+        setExpandedAccountProviders((current) => ({
+          ...current,
+          [account.provider_id]: true,
+        }));
+      }
+    }
+  }, [manualFocus, items, accounts, startEdit]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const togglePendingAccount = makeToggleAccountClaim(setPendingAccountScope);
@@ -1333,6 +1398,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ? <ClientIdRef value={item.access_id} kind="access" />
                     : (item.client_id && item.client_id !== item.label
                         ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
+                  {manualFocus?.accessId === item.access_id ? (
+                    <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
+                      <strong>Access update required</strong>
+                      {manualFocus.accountClaim ? (
+                        <div>
+                          Allow <code>{manualFocus.accountClaim}</code>
+                          {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
+                          then save and retry the operation.
+                        </div>
+                      ) : manualFocus.claims.length ? (
+                        <div>
+                          Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {editing ? (
                     <label className="rename-row">
                       <span className="card-field-label">Name</span>

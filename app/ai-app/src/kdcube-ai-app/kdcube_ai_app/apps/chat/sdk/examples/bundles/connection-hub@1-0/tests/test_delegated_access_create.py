@@ -37,6 +37,14 @@ class _RecordingService:
         self.calls.append({"user": user, **kwargs})
         return {"ok": True}
 
+    async def update_access(self, user, **kwargs):
+        self.calls.append({"method": "update", "user": user, **kwargs})
+        return {"ok": True}
+
+    async def extend_client_access(self, user, **kwargs):
+        self.calls.append({"method": "extend", "user": user, **kwargs})
+        return {"ok": True}
+
 
 @pytest.fixture()
 def entrypoint(monkeypatch):
@@ -77,6 +85,36 @@ async def test_absent_account_scope_stays_none(entrypoint):
         data={"label": "x", "resource_grants": {"res": ["named_services:use"]}},
     )
     assert entrypoint.service.calls[-1]["account_scope"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_forwards_explicit_empty_account_scope(entrypoint):
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={
+            "access_id": "aut_1",
+            "resource_grants": {"res": ["named_services:use"]},
+            "account_scope": {},
+        },
+    )
+    assert entrypoint.service.calls[-1]["method"] == "update"
+    assert entrypoint.service.calls[-1]["account_scope"] == {}
+
+
+@pytest.mark.asyncio
+async def test_external_client_grant_forwards_explicit_empty_account_scope(entrypoint):
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
+        entrypoint.instance,
+        data={
+            "client_id": "external-client",
+            "resource": "res",
+            "claims": ["named_services:use"],
+            "account_scope": {},
+            "replace": True,
+        },
+    )
+    assert entrypoint.service.calls[-1]["method"] == "extend"
+    assert entrypoint.service.calls[-1]["account_scope"] == {}
 
 
 @pytest.mark.asyncio

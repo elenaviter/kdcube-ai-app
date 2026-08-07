@@ -1950,8 +1950,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # legacy list form {provider_id: [account_ids]} is also accepted and
         # migrated). create_access/extend_client_access normalize it.
         raw_scope = payload.get("account_scope")
-        account_scope = dict(raw_scope) if isinstance(raw_scope, Mapping) and raw_scope else None
-        if not resource or (not claims and not account_scope):
+        account_scope = dict(raw_scope) if isinstance(raw_scope, Mapping) else None
+        if not resource or (not claims and account_scope is None):
             return {"ok": False, "error": "delegated_agent_grant_requires_resource_and_claims"}
         if client_id and not client_id.startswith("kdcube-agent:"):
             # An EXTERNAL delegated client (an OAuth app — Claude Code): the

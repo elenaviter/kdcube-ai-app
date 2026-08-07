@@ -182,13 +182,16 @@ def build_productivity_mcp_app(
             resource=view.resources[0] if view.resources else "",
         )
 
-    async def _enforce(tool_name: str, operation: str) -> dict[str, Any] | None:
+    async def _enforce(
+        tool_name: str, operation: str, account_id: str = ""
+    ) -> dict[str, Any] | None:
         _prepare()
         return await enforce_tool_requirements(
             request,
             tool_name=tool_name,
             operation=operation,
             requirements=tool_requirements(tool_name),
+            account_id=account_id,
             tenant=tenant_factory(),
             project=project_factory(),
         )
@@ -220,7 +223,7 @@ def build_productivity_mcp_app(
             ),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_slack_search", "search")
+        denial = await _enforce("productivity_slack_search", "search", account_id)
         if denial is not None:
             return denial
         return await slack.search_slack(query=query, count=count, account_id=account_id)
@@ -260,7 +263,7 @@ def build_productivity_mcp_app(
             ),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_mail_search", "search")
+        denial = await _enforce("productivity_mail_search", "search", account_id)
         if denial is not None:
             return denial
         return await gmail.search_gmail(
@@ -296,7 +299,7 @@ def build_productivity_mcp_app(
             ),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_mail_get", "get")
+        denial = await _enforce("productivity_mail_get", "get", account_id)
         if denial is not None:
             return denial
         return await gmail.read_gmail_message(

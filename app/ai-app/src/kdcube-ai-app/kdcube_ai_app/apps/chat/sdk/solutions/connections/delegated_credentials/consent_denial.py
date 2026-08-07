@@ -86,10 +86,20 @@ def connection_hub_grant_url(
     # The pending pane's only save is delegated_agent_grant_create, which serves
     # hosted agents and OAuth clients. A manual automation record is keyed by a
     # random access_id that path cannot reach, so opening the pane would hand
-    # the user a save that always fails. Land on the tab instead: the card is
-    # edited in place, which is how a manual access is issued.
+    # the user a save that always fails. Focus the existing card instead: the
+    # manual access is edited in place under its own update operation.
     if client_id.startswith(f"{AUTOMATION_CLIENT_PREFIX}:"):
-        query = {"tab": "delegated_by_kdcube"}
+        access_id = client_id.split(":", 2)[1]
+        query = {
+            "tab": "delegated_by_kdcube",
+            "manual_access_id": access_id,
+            "resource": resource,
+            "claims": ",".join(str(c) for c in claims if str(c or "").strip()),
+        }
+        if str(account_id or "").strip():
+            query["account_id"] = str(account_id).strip()
+        if str(account_claim or "").strip():
+            query["account_claim"] = str(account_claim).strip()
         return (
             f"{base}/api/integrations/bundles/"
             f"{quote(str(tenant), safe='')}/{quote(str(project), safe='')}/"

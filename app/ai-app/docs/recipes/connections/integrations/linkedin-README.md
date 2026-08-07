@@ -466,8 +466,13 @@ Expected behavior:
   reported as a scope problem that reconnecting fixes;
 - with two accounts bound and none named, the agent lists the accounts and
   asks which to use rather than choosing one;
+- resending that operation with one candidate `account_id` makes the preflight
+  and the LinkedIn call resolve the same account;
 - naming an account the caller is not bound to fails with
-  `agent_account_binding_required` before LinkedIn is called.
+  `agent_account_binding_required` before LinkedIn is called;
+- a successful create response without a post/comment identifier is reported
+  as `linkedin_response_incomplete` with `outcome_unknown: true`; inspect the
+  profile or post before retrying so a blind replay cannot duplicate content.
 
 The chart case is the one worth running deliberately: inside a chat turn the
 image is a workspace artifact, so it publishes through `payload.files` as
@@ -515,6 +520,13 @@ bearer the client already holds, with no re-issue.
 Standard LinkedIn apps receive 60-day access tokens and no refresh token, so
 expiry surfaces as `reconnect_required`. Approved apps that receive refresh
 tokens are refreshed automatically by the shared adapter with no code change.
+
+### A post or comment reports `linkedin_response_incomplete`
+
+LinkedIn accepted the mutation but did not return the identifier KDCube needs
+to prove which object was created. The response preserves the real provider
+status and marks `outcome_unknown: true`. Inspect or search LinkedIn before
+retrying; do not replay the mutation blindly.
 
 ## Storage Boundary
 

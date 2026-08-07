@@ -429,6 +429,10 @@ class LinkedInTools:
                     where=where,
                     stage="upload_bytes",
                 )
+                if failure.credential_failure:
+                    return None, connected_account_auth_failure(
+                        credential, _auth_failure_message(failure)
+                    )
                 return None, failure.error_result(where=where)
             alt = str(alt_texts[index]) if index < len(alt_texts) else ""
             uploaded.append({"image_urn": init["image_urn"], "alt_text": alt})
@@ -455,7 +459,7 @@ class LinkedInTools:
                     ret=error,
                 )
             files.append(file_obj)
-        return await self.publish(
+        return await self._publish(
             text=text,
             files=files,
             alt_texts=alt_texts,
@@ -465,6 +469,36 @@ class LinkedInTools:
         )
 
     async def publish(
+        self,
+        *,
+        text: str,
+        files: Sequence[dict[str, Any]] = (),
+        alt_texts: Sequence[str] = (),
+        account_id: str = "",
+        visibility: str = "PUBLIC",
+        where: str = "linkedin.publish",
+    ) -> dict[str, Any]:
+        """Publish loaded image bytes through credential recovery.
+
+        This is the safe programmatic entrypoint used by named services and
+        staged-upload MCP tools. Provider-auth markers are an internal retry
+        protocol and must never be serialized to either caller.
+        """
+        return await _run_provider_call(
+            where=where,
+            operation="posts.create",
+            mutating=True,
+            run=lambda: self._publish(
+                text=text,
+                files=files,
+                alt_texts=alt_texts,
+                account_id=account_id,
+                visibility=visibility,
+                where=where,
+            ),
+        )
+
+    async def _publish(
         self,
         *,
         text: str,
@@ -539,6 +573,21 @@ class LinkedInTools:
             return failure.error_result(where=where)
 
         post_urn = rest_api.created_urn_from_response(response)
+        if not post_urn:
+            return _error_result(
+                code="linkedin_response_incomplete",
+                message=(
+                    "LinkedIn accepted the post request but did not return its "
+                    "identifier. The outcome is unknown; search LinkedIn before retrying."
+                ),
+                where=where,
+                ret={
+                    "provider": LINKEDIN_PROVIDER_ID,
+                    "operation": "posts.create",
+                    "provider_status": int(response.status_code or 0),
+                    "outcome_unknown": True,
+                },
+            )
         return _ok_ret_result(
             {
                 "post_urn": post_urn,
@@ -801,6 +850,21 @@ class LinkedInTools:
         except Exception:
             body = {}
         comment_id = rest_api.created_urn_from_response(response)
+        if not comment_id:
+            return _error_result(
+                code="linkedin_response_incomplete",
+                message=(
+                    "LinkedIn accepted the comment request but did not return its "
+                    "identifier. The outcome is unknown; inspect the post before retrying."
+                ),
+                where=where,
+                ret={
+                    "provider": LINKEDIN_PROVIDER_ID,
+                    "operation": "socialActions.comments.create",
+                    "provider_status": int(response.status_code or 0),
+                    "outcome_unknown": True,
+                },
+            )
         return _ok_ret_result(
             {
                 "comment_id": comment_id,

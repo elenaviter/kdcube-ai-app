@@ -86,11 +86,14 @@ def test_manual_automation_is_not_sent_to_the_pending_pane():
     denial = _denial("automation:aut_9xK2:google:1234")
     consent = denial["consent"]
     # The caller and its missing claims are still named, and the link still
-    # lands on the right tab — only the pending pane is withheld.
+    # lands on the exact editable card — only the pending create pane is withheld.
     assert consent["agent_client_id"] == "automation:aut_9xK2:google:1234"
     assert consent["claims"] == ["slack:read"]
     assert "grant" not in consent
-    assert consent["connection_hub_url"].endswith("?tab=delegated_by_kdcube")
+    assert "tab=delegated_by_kdcube" in consent["connection_hub_url"]
+    assert "manual_access_id=aut_9xK2" in consent["connection_hub_url"]
+    assert "resource=" in consent["connection_hub_url"]
+    assert "claims=slack%3Aread" in consent["connection_hub_url"]
     assert "pending_agent_grant" not in str(denial)
 
 
@@ -108,9 +111,11 @@ def test_the_per_account_binding_link_also_skips_the_pending_pane():
         account_id="acc_1",
         account_claim="linkedin:post",
     )
-    assert url.endswith("?tab=delegated_by_kdcube")
+    assert "tab=delegated_by_kdcube" in url
+    assert "manual_access_id=aut_9xK2" in url
     assert "pending_agent_grant" not in url
-    assert "account_id" not in url
+    assert "account_id=acc_1" in url
+    assert "account_claim=linkedin%3Apost" in url
 
 
 def test_no_public_base_keeps_reconnect_guidance():

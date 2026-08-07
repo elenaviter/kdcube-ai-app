@@ -333,6 +333,35 @@ class _RejectingClient:
         return _Response(200, {"sub": "dE5aOhH-ap", "name": "Jane Smith"})
 
 
+class _UploadRejectingClient(_RejectingClient):
+    """Initialize succeeds, but the binary upload rejects the credential."""
+
+    async def post(self, url, **kwargs):
+        self._sent.append(("POST", url, kwargs))
+        if "/rest/images" in url:
+            return _Response(
+                200,
+                {"value": {"uploadUrl": "https://up", "image": "urn:li:image:IMG"}},
+            )
+        return _Response(201, {}, {"x-restli-id": "urn:li:share:7"})
+
+    async def put(self, url, **kwargs):
+        self._sent.append(("PUT", url, kwargs))
+        return _Response(
+            self._status,
+            self._body,
+            self._headers,
+        )
+
+
+class _MissingIdClient(_Client):
+    """Mutation succeeds at HTTP level but returns no created identifier."""
+
+    async def post(self, url, **kwargs):
+        self._sent.append(("POST", url, kwargs))
+        return _Response(201, {})
+
+
 def _envelope_text(result: Any) -> str:
     import json
 
@@ -408,3 +437,119 @@ async def test_a_provider_401_refreshes_once_then_asks_for_a_reconnect(granted, 
     assert result["error"]["code"] == "needs_connected_account_consent"
     assert result["error"]["consent"]["reason"] == "reconnect_required"
     assert "TOKEN" not in _envelope_text(result)
+
+
+@pytest.mark.asyncio
+async def test_staged_image_upload_consumes_auth_marker_before_returning(
+    granted, sent, monkeypatch, tmp_path
+):
+    """The signed-upload MCP path must never serialize the credential marker."""
+    from kdcube_ai_app.apps.chat.sdk.integrations import connected_accounts, file_staging
+
+    reconnect = ConnectedAccountCredential(
+        ok=False,
+        provider_id="linkedin",
+        claim="linkedin:post",
+        error_payload={
+            "error": {"code": "needs_connected_account_consent"},
+            "consent": {"reason": "reconnect_required"},
+        },
+    )
+
+    async def _refresh(_source, *, credential):
+        assert credential.access_token == "TOKEN"
+        return reconnect
+
+    root = tmp_path / "staging"
+    root.mkdir()
+    ref = file_staging.new_staged_ref("chart.png")
+    file_staging.save_staged(root, ref, b"\x89PNG-staged")
+    monkeypatch.setattr(linkedin_tools, "staging_root_for_service", lambda: root)
+    monkeypatch.setattr(connected_accounts, "refresh_connected_account_claim", _refresh)
+    monkeypatch.setattr(
+        linkedin_tools.httpx,
+        "AsyncClient",
+        lambda **kw: _UploadRejectingClient(
+            sent,
+            status=401,
+            body={"message": "Invalid access token", "status": 401},
+        ),
+    )
+
+    result = await linkedin_tools.LinkedInTools().publish_staged(
+        text="chart", staged_refs=[ref]
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "needs_connected_account_consent"
+    assert result["error"]["consent"]["reason"] == "reconnect_required"
+    assert "__connected_account_auth_failure__" not in _envelope_text(result)
+    assert "TOKEN" not in _envelope_text(result)
+
+
+@pytest.mark.asyncio
+async def test_linkedin_permission_phrase_uses_credential_recovery(granted, sent, monkeypatch):
+    from kdcube_ai_app.apps.chat.sdk.integrations import connected_accounts
+
+    reconnect = ConnectedAccountCredential(
+        ok=False,
+        provider_id="linkedin",
+        claim="linkedin:post",
+        error_payload={
+            "error": {"code": "needs_connected_account_consent"},
+            "consent": {"reason": "reconnect_required"},
+        },
+    )
+    refresh_calls: list[ConnectedAccountCredential] = []
+
+    async def _refresh(_source, *, credential):
+        refresh_calls.append(credential)
+        return reconnect
+
+    monkeypatch.setattr(connected_accounts, "refresh_connected_account_claim", _refresh)
+    monkeypatch.setattr(
+        linkedin_tools.httpx,
+        "AsyncClient",
+        lambda **kw: _RejectingClient(
+            sent,
+            status=403,
+            body={"message": "Not enough permissions to access this resource", "status": 403},
+        ),
+    )
+
+    result = await linkedin_tools.LinkedInTools().post_linkedin_update(text="Hello")
+
+    assert len(refresh_calls) == 1
+    assert result["error"]["consent"]["reason"] == "reconnect_required"
+
+
+@pytest.mark.asyncio
+async def test_successful_post_without_created_id_reports_unknown_outcome(
+    granted, sent, monkeypatch
+):
+    monkeypatch.setattr(
+        linkedin_tools.httpx, "AsyncClient", lambda **kw: _MissingIdClient(sent)
+    )
+
+    result = await linkedin_tools.LinkedInTools().post_linkedin_update(text="Hello")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "linkedin_response_incomplete"
+    assert result["ret"]["outcome_unknown"] is True
+
+
+@pytest.mark.asyncio
+async def test_successful_comment_without_created_id_reports_unknown_outcome(
+    granted, sent, monkeypatch
+):
+    monkeypatch.setattr(
+        linkedin_tools.httpx, "AsyncClient", lambda **kw: _MissingIdClient(sent)
+    )
+
+    result = await linkedin_tools.LinkedInTools().comment_on_linkedin_post(
+        post_urn="urn:li:share:7", text="Hello"
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "linkedin_response_incomplete"
+    assert result["ret"]["outcome_unknown"] is True

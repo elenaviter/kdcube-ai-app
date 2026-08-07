@@ -26,7 +26,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_metadata import (
     write_annotations,
 )
 
-EnforceTool = Callable[[str, str], Awaitable[dict[str, Any] | None]]
+EnforceTool = Callable[[str, str, str], Awaitable[dict[str, Any] | None]]
 
 
 LINKEDIN_PRODUCTIVITY_TOOLS: dict[str, dict[str, Any]] = {
@@ -110,7 +110,7 @@ def register_linkedin_tools(
         structured_output=False,
     )
     async def _productivity_linkedin_accounts() -> dict[str, Any]:
-        denial = await _enforce("productivity_linkedin_accounts", "list")
+        denial = await _enforce("productivity_linkedin_accounts", "list", "")
         if denial is not None:
             return denial
         return await linkedin.list_linkedin_accounts()
@@ -132,7 +132,7 @@ def register_linkedin_tools(
             Field(description="Optional connected account id when several are connected."),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_linkedin_profile", "get")
+        denial = await _enforce("productivity_linkedin_profile", "get", account_id)
         if denial is not None:
             return denial
         return await linkedin.get_linkedin_profile(account_id=account_id)
@@ -163,7 +163,7 @@ def register_linkedin_tools(
             Field(description="Optional connected account id when several are connected."),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_linkedin_post", "action")
+        denial = await _enforce("productivity_linkedin_post", "action", account_id)
         if denial is not None:
             return denial
         return await linkedin.post_linkedin_update(
@@ -205,7 +205,7 @@ def register_linkedin_tools(
             Field(description="Optional connected account id when several are connected."),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_linkedin_post_image", "action")
+        denial = await _enforce("productivity_linkedin_post_image", "action", account_id)
         if denial is not None:
             return denial
         return await linkedin.publish_staged(
@@ -238,7 +238,7 @@ def register_linkedin_tools(
             Field(description="Optional connected account id when several are connected."),
         ] = "",
     ) -> dict[str, Any]:
-        denial = await _enforce("productivity_linkedin_comment", "action")
+        denial = await _enforce("productivity_linkedin_comment", "action", account_id)
         if denial is not None:
             return denial
         return await linkedin.comment_on_linkedin_post(

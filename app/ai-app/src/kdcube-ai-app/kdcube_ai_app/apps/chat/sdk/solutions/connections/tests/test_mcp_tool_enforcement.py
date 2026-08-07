@@ -57,6 +57,7 @@ def _resolver(monkeypatch, credential_by_claim):
             "connector_app_id": connector_app_id,
             "claim": claim,
             "tool_name": tool_name,
+            "account_id": kwargs.get("account_id", ""),
         })
         return credential_by_claim[claim]
 
@@ -114,6 +115,7 @@ async def test_all_claims_resolvable_returns_none(monkeypatch):
         "connector_app_id": "",
         "claim": "slack:search",
         "tool_name": "productivity_slack_search",
+        "account_id": "",
     }]
 
 
@@ -209,14 +211,7 @@ async def test_requirement_without_matching_operation_claims_is_skipped(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_account_required_defers_to_the_tool_body(monkeypatch):
-    """This resolution carries no account, so it cannot answer "which one".
-
-    The tool's own account_id reaches its body, which resolves the same claim
-    with it. Denying here would block every call once a caller is bound to two
-    accounts, and the advertised fix — resend with account_id — could never
-    reach the check that rejected it.
-    """
+async def test_account_required_is_returned_when_tool_input_is_ambiguous(monkeypatch):
     _view(monkeypatch)
     _identity(monkeypatch)
     _resolver(
@@ -224,10 +219,10 @@ async def test_account_required_defers_to_the_tool_body(monkeypatch):
         {"slack:search": _failed_credential("slack:search", reason="account_required")},
     )
 
-    async def _no_connect_first(**kwargs):  # pragma: no cover - must not be hit
-        raise AssertionError("connect-first must not be consulted on ambiguity")
+    async def _accounts_exist(**kwargs):
+        return None
 
-    monkeypatch.setattr(enforcement_mod, "connect_first_denial_for_identity", _no_connect_first)
+    monkeypatch.setattr(enforcement_mod, "connect_first_denial_for_identity", _accounts_exist)
 
     result = await enforce_tool_requirements(
         object(),
@@ -236,4 +231,26 @@ async def test_account_required_defers_to_the_tool_body(monkeypatch):
         requirements=[_SLACK_REQUIREMENT],
     )
 
+    assert result is not None
+    assert result["consent"]["reason"] == "account_required"
+
+
+@pytest.mark.asyncio
+async def test_explicit_account_id_reaches_the_shared_resolver(monkeypatch):
+    _view(monkeypatch)
+    _identity(monkeypatch)
+    calls = _resolver(
+        monkeypatch,
+        {"slack:search": _ok_credential("slack:search")},
+    )
+
+    result = await enforce_tool_requirements(
+        object(),
+        tool_name="productivity_slack_search",
+        operation="search",
+        requirements=[_SLACK_REQUIREMENT],
+        account_id="slack-account-2",
+    )
+
     assert result is None
+    assert calls[0]["account_id"] == "slack-account-2"

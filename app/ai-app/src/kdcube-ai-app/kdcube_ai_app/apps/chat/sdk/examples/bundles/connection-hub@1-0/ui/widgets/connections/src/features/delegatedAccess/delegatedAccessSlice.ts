@@ -61,8 +61,8 @@ export interface CreateDelegatedAccessArgs {
   resourceGrants: Record<string, string[]>;
   operations?: string[];
   namedServiceOperations: DelegatedAccessNamedServiceOperations;
-  /** Per-account binding {provider:{account_id:[claims]}}. Omitted from the
-   *  request when empty: an empty mapping restricts to nothing. */
+  /** Per-account binding {provider:{account_id:[claims]}}. Undefined preserves
+   *  an existing binding; {} explicitly restricts the caller to no accounts. */
   accountScope?: Record<string, Record<string, string[]>>;
   ttlSeconds?: number;
 }
@@ -80,7 +80,7 @@ export const createDelegatedAccess = createAsyncThunk<
         resource_grants: resourceGrants || {},
         operations: operations || [],
         named_service_operations: namedServiceOperations || {},
-        ...(accountScope && Object.keys(accountScope).length
+        ...(accountScope !== undefined
           ? { account_scope: accountScope }
           : {}),
         ttl_seconds: ttlSeconds || undefined,
@@ -132,7 +132,7 @@ export const grantAgentAccess = createAsyncThunk<
         ...(namedServiceOperations && Object.keys(namedServiceOperations).length
           ? { named_service_operations: namedServiceOperations }
           : {}),
-        ...(accountScope && Object.keys(accountScope).length
+        ...(accountScope !== undefined
           ? { account_scope: accountScope }
           : {}),
       });
@@ -150,8 +150,8 @@ export interface UpdateDelegatedAccessArgs {
   resourceGrants: Record<string, string[]>;
   operations?: string[];
   namedServiceOperations: DelegatedAccessNamedServiceOperations;
-  /** Per-account binding {provider:{account_id:[claims]}}. Omitted from the
-   *  request when empty: an empty mapping restricts to nothing. */
+  /** Per-account binding {provider:{account_id:[claims]}}. Undefined preserves
+   *  an existing binding; {} explicitly restricts the caller to no accounts. */
   accountScope?: Record<string, Record<string, string[]>>;
 }
 
@@ -173,7 +173,7 @@ export const updateDelegatedAccess = createAsyncThunk<
         resource_grants: resourceGrants || {},
         operations: operations || [],
         named_service_operations: namedServiceOperations || {},
-        ...(accountScope && Object.keys(accountScope).length
+        ...(accountScope !== undefined
           ? { account_scope: accountScope }
           : {}),
       });

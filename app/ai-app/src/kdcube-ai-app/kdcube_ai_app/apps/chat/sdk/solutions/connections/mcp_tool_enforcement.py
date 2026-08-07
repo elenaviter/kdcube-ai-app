@@ -76,22 +76,12 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.con
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.credential_view import (
     delegated_credential_view,
 )
-from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.models import (
-    REASON_ACCOUNT_REQUIRED,
-)
 
 logger = logging.getLogger(__name__)
 
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _denial_reason(credential: ConnectedAccountCredential) -> str:
-    """The broker's reason for an unusable credential, or "" when unshaped."""
-    payload = credential.error_payload if isinstance(credential.error_payload, Mapping) else {}
-    consent = payload.get("consent")
-    return _clean(consent.get("reason")) if isinstance(consent, Mapping) else ""
 
 
 def bind_service_connector_apps_from_config(config: Mapping[str, Any] | None) -> None:
@@ -155,6 +145,7 @@ async def enforce_tool_requirements(
     tool_name: str,
     operation: str,
     requirements: Sequence[Mapping[str, Any]],
+    account_id: str = "",
     tenant: str = "",
     project: str = "",
     hub_bundle_id: str = "connection-hub@1-0",
@@ -168,7 +159,13 @@ async def enforce_tool_requirements(
     under the calling user's identity and the calling client's per-account
     binding (default-closed for delegated callers).
 
-    Returns ``None`` when every claim resolves - the tool body proceeds.
+    ``account_id`` is the account selector from the tool's own input. Passing
+    it here keeps preflight and the provider body on the same resolution: an
+    ambiguous call returns ``account_required``; resending that same call with
+    one candidate id resolves before provider work begins.
+
+    Returns ``None`` when every claim resolves for that account - the tool body
+    proceeds.
 
     On the FIRST unsatisfied provider the return value is a consent envelope
     (a dict the tool returns as its MCP result; the shared chat post-processor
@@ -217,6 +214,7 @@ async def enforce_tool_requirements(
                 connector_app_id=connector_app_id,
                 claim=claim,
                 tool_name=name,
+                account_id=_clean(account_id),
                 connection_hub_bundle_id=hub_bundle_id,
             )
             if not credential.ok:
@@ -224,16 +222,6 @@ async def enforce_tool_requirements(
                 break
         if failed is None:
             continue
-        # account_required is not a preflight verdict. This resolution carries
-        # no account — the tool's own account_id reaches its body, not here —
-        # so "several accounts match" only means THIS check could not choose.
-        # The body resolves the same claim WITH the account and raises the
-        # demand itself when it is genuinely ambiguous. Answering here would
-        # deny every call the moment a caller is bound to two accounts, and the
-        # advertised fix (resend with account_id) could never take effect.
-        if _denial_reason(failed) == REASON_ACCOUNT_REQUIRED:
-            continue
-
         # Demand ordering, identical to the named-services door: with ZERO
         # usable accounts on the backing provider the CONNECT demand leads
         # (the guided plan ends in the agent-grant hand-off). The requirement

@@ -87,6 +87,11 @@ CONSENT_ERROR_CONTRACT = {
             "on that account. Open connection_hub_url — the caller's own grant card — where the "
             "user ticks the claim for the account of their choice, then retry."
         ),
+        REASON_AGENT_ACCOUNT_BINDING_REQUIRED: (
+            "The named account holds the claim, but this caller is not bound to use it. "
+            "Open connection_hub_url on the caller's grant card, approve the account claim, "
+            "then retry."
+        ),
     },
     "fields": [
         "reason",
