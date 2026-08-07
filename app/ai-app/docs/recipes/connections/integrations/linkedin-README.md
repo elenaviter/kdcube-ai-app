@@ -537,7 +537,11 @@ tokens are refreshed automatically by the shared adapter with no code change.
 ### A post or comment reports `linkedin_response_incomplete`
 
 LinkedIn returned a successful status but did not return the identifier KDCube
-needs to prove which object was created. The effect may or may not have landed.
+needs to prove which object was created. A post carries that identifier only in
+the `x-restli-id` header, because `/rest/posts` answers with an empty body; a
+comment can carry it in the header or as a URN in the body, since comments use
+the unversioned `/v2/socialActions` endpoint, and the outcome counts as unknown
+only when neither source produced one. The effect may or may not have landed.
 The response preserves the real provider status and marks
 `outcome_unknown: true`, so KDCube does not automatically replay the mutation.
 Inspect the LinkedIn profile for a post or the target post for a comment before

@@ -362,6 +362,14 @@ class _MissingIdClient(_Client):
         return _Response(201, {})
 
 
+class _BodyUrnOnlyClient(_Client):
+    """Unversioned /v2 shape: the created URN is in the body, no restli header."""
+
+    async def post(self, url, **kwargs):
+        self._sent.append(("POST", url, kwargs))
+        return _Response(201, {"commentUrn": "urn:li:comment:(urn:li:activity:7,99)"})
+
+
 def _envelope_text(result: Any) -> str:
     import json
 
@@ -521,6 +529,10 @@ async def test_linkedin_permission_phrase_uses_credential_recovery(granted, sent
 
     assert len(refresh_calls) == 1
     assert result["error"]["consent"]["reason"] == "reconnect_required"
+    # One recovery decision, and neither the retry protocol nor the bearer
+    # crosses the boundary - the properties the live 403 run would have checked.
+    assert "__connected_account_auth_failure__" not in _envelope_text(result)
+    assert "TOKEN" not in _envelope_text(result)
 
 
 @pytest.mark.asyncio
@@ -553,3 +565,21 @@ async def test_successful_comment_without_created_id_reports_unknown_outcome(
     assert result["ok"] is False
     assert result["error"]["code"] == "linkedin_response_incomplete"
     assert result["ret"]["outcome_unknown"] is True
+
+
+@pytest.mark.asyncio
+async def test_comment_urn_in_the_body_alone_is_a_complete_outcome(
+    granted, sent, monkeypatch
+):
+    """The URN identifies the comment; comment_id is the weaker of the two."""
+    monkeypatch.setattr(
+        linkedin_tools.httpx, "AsyncClient", lambda **kw: _BodyUrnOnlyClient(sent)
+    )
+
+    result = await linkedin_tools.LinkedInTools().comment_on_linkedin_post(
+        post_urn="urn:li:share:7", text="Hello"
+    )
+
+    assert result["ok"] is True
+    assert result["ret"]["comment_urn"] == "urn:li:comment:(urn:li:activity:7,99)"
+    assert result["ret"]["comment_id"] == ""

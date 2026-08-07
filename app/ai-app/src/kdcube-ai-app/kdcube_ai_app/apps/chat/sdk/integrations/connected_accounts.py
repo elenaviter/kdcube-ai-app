@@ -288,6 +288,11 @@ async def _announce_agent_grant_demand(
     )
     consent.consent["kind"] = CONSENT_KIND_AGENT_GRANT
     consent.consent["agent_client_id"] = client_id
+    # The broker marks every user-fixable resolution retryable (`_user_action`).
+    # This block is rebuilt from a synthetic denial, so the flag is restated
+    # here; consent_details() reads it, and False would tell a caller that
+    # retrying after the grant is pointless.
+    consent.consent["retry_hint"] = True
     if hub_url:
         consent.consent["url"] = hub_url
     if account_label:

@@ -850,7 +850,13 @@ class LinkedInTools:
         except Exception:
             body = {}
         comment_id = rest_api.created_urn_from_response(response)
-        if not comment_id:
+        # Comments carry two independent identifier sources: the x-restli-id
+        # header and the URN in the body. /rest/posts has only the header, so
+        # its guard reads one field; this endpoint is unversioned /v2, where the
+        # body carries the created object. The outcome is unknown only when
+        # neither source produced anything.
+        comment_urn = rest_api.comment_urn_from_body(body, comment_id=comment_id)
+        if not comment_id and not comment_urn:
             return _error_result(
                 code="linkedin_response_incomplete",
                 message=(
@@ -868,7 +874,7 @@ class LinkedInTools:
         return _ok_ret_result(
             {
                 "comment_id": comment_id,
-                "comment_urn": rest_api.comment_urn_from_body(body, comment_id=comment_id),
+                "comment_urn": comment_urn,
                 "post_urn": target,
                 "account_id": credential.account_id,
             }

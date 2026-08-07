@@ -656,12 +656,28 @@ explicit revoke-all operation.
 ## External URLs Behind A Proxy
 
 OAuth callback, consent, upload, and recovery links must reflect the scheme the
-client used at the trusted edge. The bundled OpenResty proxy accepts an incoming
-`X-Forwarded-Proto` only when its value is exactly `http` or `https`; any other
-value falls back to the scheme received by that proxy. A deployment's trusted
-edge must overwrite this header rather than append untrusted client input.
-Validation prevents malformed schemes from entering generated links; it is not
-trusted-proxy authentication by itself.
+client used at the trusted edge.
+
+`X-Forwarded-Proto` is a trail rather than a single value: each proxy appends
+its own observation, and repeated headers arrive joined with `, `. The bundled
+OpenResty proxy therefore reads the **rightmost** element first — written by the
+proxy closest to it, the only one it can treat as trusted — and accepts that
+element only when it is exactly `http` or `https`. Anything else, including an
+empty or malformed list, falls back to the scheme that proxy received.
+
+An edge that appends rather than overwrites is handled by this rule, which
+matters because appending is the common behaviour: with a terminator in front,
+a client that sends `X-Forwarded-Proto` at all — even with the correct value —
+would otherwise produce a list that matches nothing, and generated links would
+silently drop to `http://`, signed upload URLs among them. Whatever the client
+writes lands to the left of the trusted proxy's value and is never read, so a
+client can neither inject a scheme nor raise one; the worst it can do is
+degrade its own links.
+
+Overwriting the header at the trusted edge remains the cleaner deployment, but
+it is no longer a precondition for correct links. Validation prevents malformed
+schemes from entering generated links; it is not trusted-proxy authentication by
+itself.
 
 ## Storage
 

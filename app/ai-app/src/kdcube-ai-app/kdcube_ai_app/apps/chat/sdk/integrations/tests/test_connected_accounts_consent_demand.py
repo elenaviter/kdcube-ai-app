@@ -219,6 +219,28 @@ async def test_agent_binding_miss_routes_to_agent_card_not_connect(monkeypatch):
     # The agent-facing result is explainable and NOT re-routed as a connect demand.
     envelope = credential.error_envelope(where="mail.send")
     assert envelope["error"]["code"] == "agent_account_binding_required"
+    # Retrying after the user ticks the claim is the whole point of this demand.
+    # The block is rebuilt from a synthetic denial, so nothing else carries the
+    # broker's verdict into it - assert the field an MCP client actually reads,
+    # at the end of the translation the named-service door performs.
+    assert credential.error_payload["consent"]["retry_hint"] is True
+
+    from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
+        tool_error_response,
+    )
+    from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.provider import (
+        NamedServiceRequest,
+    )
+
+    response = tool_error_response(
+        credential.error_envelope(where="mail.send"),
+        request=NamedServiceRequest(operation="object.action", namespace="mail"),
+        namespace="mail",
+        provider_identity={"provider_id": "mail", "namespace": "mail"},
+        default_code="mail_send_failed",
+        fallback_message="Mail could not be sent.",
+    )
+    assert response.error.details["retry_hint"] is True
 
 
 @pytest.mark.asyncio
