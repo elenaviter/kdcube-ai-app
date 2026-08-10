@@ -499,7 +499,7 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
         expected_delegate_subject=str(credential.get("subject") or ""),
     )
     if card is None:
-        logger.info("[connection-hub.oauth.guard] registry card %s gone — binding treated as revoked", access_id)
+        LOGGER.info("[connection-hub.oauth.guard] registry card %s gone — binding treated as revoked", access_id)
         return None
     resource_grants = card.resource_grants
     all_grants = sorted({str(g) for grants in resource_grants.values() for g in (grants or [])})
@@ -524,6 +524,10 @@ async def _live_grant_record(request: Any, grant_record: Optional[Dict[str, Any]
         provider: {account_id: list(claims) for account_id, claims in accounts.items()}
         for provider, accounts in card.account_scope.items()
     }
+    # The named-service boundary tree, narrowed from the descriptor when the
+    # card was written. Cards without it keep the bound snapshot.
+    if card.named_services:
+        resolved["named_services"] = dict(card.named_services)
     return resolved
 
 

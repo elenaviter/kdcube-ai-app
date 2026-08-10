@@ -131,6 +131,7 @@ def _client(
     auth=None,
     user=None,
     return_projection=False,
+    return_named_services=False,
     redis=None,
 ):
     async def fake_authenticate(token: str):
@@ -173,6 +174,11 @@ def _client(
         if return_projection:
             projection = surface_guard.delegated_mcp_runtime_projection(request)
             return denial or JSONResponse({"ok": True, "projection": projection})
+        if return_named_services:
+            # What the named-service bridge reads off the request.
+            delegated = getattr(request.state, "delegated_credential", None) or {}
+            record = delegated.get("grant_record") or {}
+            return denial or JSONResponse({"ok": True, "named_services": record.get("named_services")})
         return denial or JSONResponse({"ok": True})
 
     return TestClient(app)
@@ -243,6 +249,8 @@ def _live_card(
     access_id: str = "oauth-access-1",
     operations=("records_export",),
     resource_grants=None,
+    named_service_operations=None,
+    named_services=None,
 ) -> AutomationAccessRecord:
     return AutomationAccessRecord(
         access_id=access_id,
@@ -258,6 +266,8 @@ def _live_card(
             if resource_grants is not None
             else {GUARD_RESOURCE: ("records:read",)}
         ),
+        named_service_operations=named_service_operations or {},
+        named_services=named_services or {},
         expires_at=int(time.time()) + 3600,
         source=ACCESS_SOURCE_OAUTH,
     )
@@ -918,3 +928,51 @@ def test_oauth_challenge_uses_forwarded_public_origin():
     ) in challenge
     assert "resource=https%3A%2F%2Fbroodier-maxie-uninferrably.ngrok-free.dev" in challenge
     assert "http%3A%2F%2Fchat-proc%3A8020" not in challenge
+
+
+# ── the named-service boundary rides the card ─────────────────────────────────
+
+NAMED_SERVICES_POLICY = {
+    "namespaces": {
+        "records": {
+            "authority_id": "delegated_client",
+            "tools": {"search": {"operation": "object.search", "grants": ["records:read"]}},
+        },
+    },
+}
+
+
+def _boundary(monkeypatch, *, named_services):
+    redis = _Redis()
+    _store_live_card(redis, _live_card(named_services=named_services))
+    client = _client(
+        monkeypatch,
+        grant_record={**_pointer_grant(), "named_services": {"namespaces": {"stale": {}}}},
+        redis=redis,
+        return_named_services=True,
+    )
+    response = client.post(
+        "/guard", json=_rpc_tool_call(), headers={"Authorization": "Bearer reader"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["named_services"]
+
+
+def test_named_service_boundary_comes_from_the_card(monkeypatch):
+    boundary = _boundary(monkeypatch, named_services=NAMED_SERVICES_POLICY)
+
+    assert set(boundary["namespaces"]) == {"records"}
+
+
+def test_named_service_boundary_narrowed_to_nothing_reaches_the_bridge(monkeypatch):
+    """An empty namespace map is a real boundary, not a missing one."""
+    boundary = _boundary(monkeypatch, named_services={"namespaces": {}})
+
+    assert boundary == {"namespaces": {}}
+
+
+def test_named_service_boundary_falls_back_to_the_snapshot_on_a_legacy_card(monkeypatch):
+    """Cards written before the field keep the bound snapshot."""
+    boundary = _boundary(monkeypatch, named_services={})
+
+    assert set(boundary["namespaces"]) == {"stale"}

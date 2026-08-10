@@ -1448,3 +1448,188 @@ async def test_automation_access_update_guards_ownership_existence_and_empty():
 
     empty = await service.update_access(owner, access_id=access_id, resource_grants={})
     assert empty["ok"] is False and empty["error"] == "delegated_access_requires_resource_grants"
+
+
+@pytest.mark.asyncio
+async def test_automation_access_update_replaces_named_service_operations_without_rebinding():
+    """Editing the namespace selection rewrites the card only; no binding is
+    written."""
+    store = _Store()
+    service = AutomationAccessService(
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        config=_named_services_config(), grant_store=store, authority=_Authority(),
+        minter=_minter, named_service_discovery=_NamedServiceDiscovery({}),
+    )
+    user = {"user_id": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+    resource = "https://example.test/mcp/named-services"
+    grants = ["named_services:use", "slack:read", "slack:write"]
+
+    created = await service.create_access(
+        user, label="Slack search only", resource_grants={resource: grants},
+        named_service_operations={resource: {"slack": ["object.search"]}},
+    )
+    assert created["ok"] is True
+    bound_before = len(store.bound)
+
+    widened = await service.update_access(
+        user, access_id=created["access"]["access_id"],
+        resource_grants={resource: grants},
+        named_service_operations={resource: {"slack": ["object.search", "object.action"]}},
+    )
+
+    assert widened["ok"] is True
+    assert widened["access"]["named_service_operations"] == {
+        resource: {"slack": ["object.search", "object.action"]},
+    }
+    assert len(store.bound) == bound_before      # no re-mint, no re-bind
+
+    # The tree the guard copies onto the request is recomputed from the
+    # descriptor and now carries the added operation.
+    card = json.loads(next(
+        raw for key, raw in service._redis.values.items() if "automation" in key
+    ))
+    tools = card["named_services"]["namespaces"]["slack"]["tools"]
+    assert set(tools["call"]["operations"]) == {"object.search", "object.action"}
+
+    cleared = await service.update_access(
+        user, access_id=created["access"]["access_id"],
+        resource_grants={resource: grants},
+        named_service_operations={resource: {}},
+    )
+
+    assert cleared["access"]["named_service_operations"] == {resource: {}}
+    assert len(store.bound) == bound_before
+    card = json.loads(next(
+        raw for key, raw in service._redis.values.items() if "automation" in key
+    ))
+    assert card["named_services"]["namespaces"] == {}
+
+
+@pytest.mark.asyncio
+async def test_automation_access_update_rejects_an_operation_its_grants_do_not_cover():
+    """The selection is validated at save time."""
+    service = AutomationAccessService(
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        config=_named_services_config(), grant_store=_Store(), authority=_Authority(),
+        minter=_minter, named_service_discovery=_NamedServiceDiscovery({}),
+    )
+    user = {"user_id": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+    resource = "https://example.test/mcp/named-services"
+
+    created = await service.create_access(
+        user, label="Slack search only",
+        resource_grants={resource: ["named_services:use", "slack:read"]},
+        named_service_operations={resource: {"slack": ["object.search"]}},
+    )
+
+    denied = await service.update_access(
+        user, access_id=created["access"]["access_id"],
+        resource_grants={resource: ["named_services:use", "slack:read"]},
+        named_service_operations={resource: {"slack": ["object.action"]}},
+    )
+
+    assert denied["ok"] is False
+    assert denied["error"] == "invalid_named_service_operation_selection"
+
+
+@pytest.mark.asyncio
+async def test_automation_access_update_omitting_the_narrowing_keeps_it():
+    """Absent vs empty, same rule as account_scope: omitting the narrowing keeps
+    the record's, an explicit {} widens to the full policy."""
+    service = AutomationAccessService(
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        config=_named_services_config(), grant_store=_Store(), authority=_Authority(),
+        minter=_minter, named_service_discovery=_NamedServiceDiscovery({}),
+    )
+    user = {"user_id": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+    resource = "https://example.test/mcp/named-services"
+    grants = ["named_services:use", "slack:read", "slack:write"]
+    created = await service.create_access(
+        user, label="Slack search only", resource_grants={resource: grants},
+        named_service_operations={resource: {"slack": ["object.search"]}},
+    )
+    access_id = created["access"]["access_id"]
+
+    def _card():
+        raw = json.loads(service._redis.values[service._record_key(access_id)])
+        namespaces = raw["named_services"]["namespaces"]
+        return raw.get("named_service_operations"), sorted(
+            namespaces.get("slack", {}).get("tools", {}).get("call", {}).get("operations", {})
+        )
+
+    renamed = await service.update_access(
+        user, access_id=access_id, resource_grants={resource: grants}, label="Renamed",
+    )
+    assert renamed["ok"] is True
+    assert _card() == ({resource: {"slack": ["object.search"]}}, ["object.search"])
+
+    await service.update_access(
+        user, access_id=access_id, resource_grants={resource: grants},
+        named_service_operations={},
+    )
+    selection, operations = _card()
+    assert selection == {}
+    assert operations == []
+
+
+@pytest.mark.asyncio
+async def test_agent_grant_replace_without_the_narrowing_keeps_it():
+    """A replace edit that submits no narrowing (a rename) must not widen the
+    agent's boundary."""
+    service = AutomationAccessService(
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        config=_named_services_config(), grant_store=_Store(), authority=_Authority(),
+        minter=_minter, named_service_discovery=_NamedServiceDiscovery({}),
+    )
+    user = {"user_id": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+    resource = "https://example.test/mcp/named-services"
+    grants = ["named_services:use", "slack:read", "slack:write"]
+    await service.create_access(
+        user, label="agent", client_id="kdcube-agent:app:a1",
+        resource_grants={resource: grants},
+        named_service_operations={resource: {"slack": ["object.search"]}},
+    )
+
+    renamed = await service.create_access(
+        user, label="agent renamed", client_id="kdcube-agent:app:a1",
+        resource_grants={resource: grants}, merge_existing=False,
+    )
+
+    assert renamed["access"]["named_service_operations"] == {
+        resource: {"slack": ["object.search"]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_automation_access_update_empty_narrowing_clears_every_resource():
+    """An explicit {} is the clear, and it reaches resources the caller did not
+    name — the widget therefore omits the field when it has no selection."""
+    service = AutomationAccessService(
+        redis=_Redis(), tenant="demo-tenant", project="demo-project",
+        config=_named_services_config(), grant_store=_Store(), authority=_Authority(),
+        minter=_minter, named_service_discovery=_NamedServiceDiscovery({}),
+    )
+    user = {"user_id": "platform-user-1", "roles": ["kdcube:role:registered"], "permissions": []}
+    resource = "https://example.test/mcp/named-services"
+    grants = ["named_services:use", "slack:read"]
+    created = await service.create_access(user, label="all ops", resource_grants={resource: grants})
+    access_id = created["access"]["access_id"]
+
+    def _namespaces():
+        raw = json.loads(service._redis.values[service._record_key(access_id)])
+        return sorted(raw["named_services"]["namespaces"])
+
+    # No narrowing asked for: the full descriptor policy, which the bridge
+    # still gates per operation against the card's grants.
+    assert _namespaces() == ["mail", "slack"]
+
+    await service.update_access(
+        user, access_id=access_id, resource_grants={resource: grants}, label="Renamed",
+    )
+    assert _namespaces() == ["mail", "slack"]        # omitted -> preserved
+
+    await service.update_access(
+        user, access_id=access_id, resource_grants={resource: grants},
+        named_service_operations={},
+    )
+    assert _namespaces() == []               # explicit {} -> cleared

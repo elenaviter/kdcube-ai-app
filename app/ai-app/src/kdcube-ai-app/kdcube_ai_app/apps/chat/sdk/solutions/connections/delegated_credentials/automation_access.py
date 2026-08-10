@@ -51,6 +51,14 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oau
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.store import (
     GrantStore,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.named_service_policy import (
+    as_string_list,
+    clean_text,
+    merge_named_service_configs,
+    named_service_policy_for_resource,
+    narrow_named_service_config,
+    operation_grants as _named_service_operation_grants,
+)
 from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.boundary_policy import (
     NamedServiceBoundaryCatalog,
 )
@@ -176,27 +184,10 @@ async def notify_delegated_access_changed(
         )
 
 
-def _clean(value: Any) -> str:
-    return str(value or "").strip()
-
-
-def _as_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        values = value.replace(",", " ").split()
-    elif isinstance(value, (list, tuple, set)):
-        values = value
-    else:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for item in values:
-        text = _clean(item)
-        if text and text not in seen:
-            seen.add(text)
-            out.append(text)
-    return out
+# Shared with the managed guard, which re-derives the same narrowing from the
+# live card on every call.
+_clean = clean_text
+_as_list = as_string_list
 
 
 def normalize_account_scope(value: Any) -> dict[str, dict[str, tuple[str, ...]]]:
@@ -370,6 +361,10 @@ class AutomationAccessRecord:
     named_service_operations: Mapping[str, Mapping[str, tuple[str, ...]]] = field(
         default_factory=dict
     )
+    # Boundary tree for the named-service bridge, narrowed from the descriptor
+    # by `named_service_operations`. Empty on cards written before this field;
+    # the guard then keeps the bound snapshot.
+    named_services: Mapping[str, Any] = field(default_factory=dict)
     # Per-agent, per-account claim binding:
     # {provider_id: {account_id: (claims...)}}. For a provider, which connected
     # account(s) this client may use AND, per account, the exact claims it may
@@ -418,6 +413,11 @@ class AutomationAccessRecord:
                 ).items()
                 if _clean(resource) and isinstance(namespaces, Mapping)
             },
+            named_services=(
+                dict(value.get("named_services"))
+                if isinstance(value.get("named_services"), Mapping)
+                else {}
+            ),
             account_scope=normalize_account_scope(value.get("account_scope")),
             identity_scope=_clean(value.get("identity_scope")),
             session_id=_clean(value.get("session_id")),
@@ -447,6 +447,7 @@ class AutomationAccessRecord:
                 }
                 for resource, namespaces in self.named_service_operations.items()
             },
+            "named_services": dict(self.named_services or {}),
             "account_scope": {
                 provider: {account_id: list(claims) for account_id, claims in accounts.items()}
                 for provider, accounts in self.account_scope.items()
@@ -467,6 +468,9 @@ class AutomationAccessRecord:
         payload.pop("session_id", None)
         payload.pop("refresh_token", None)
         payload.pop("access_token", None)
+        # Derived from the descriptor and only consumed by the guard; the
+        # selection (`named_service_operations`) is what surfaces render.
+        payload.pop("named_services", None)
         return {key: value for key, value in payload.items() if value not in ("", [], {})}
 
 
@@ -672,16 +676,10 @@ class AutomationAccessService:
             out[resource_value] = namespaces
         return out
 
+    # Delegators; the managed guard calls the same functions per request.
     @staticmethod
     def _operation_grants(policy: Mapping[str, Any], fallback: Mapping[str, Any]) -> set[str]:
-        return set(
-            _as_list(
-                policy.get("grants")
-                or policy.get("scopes")
-                or fallback.get("grants")
-                or fallback.get("scopes")
-            )
-        )
+        return _named_service_operation_grants(policy, fallback)
 
     def _narrow_named_service_config(
         self,
@@ -691,121 +689,16 @@ class AutomationAccessService:
         grants: Iterable[str],
         resource: str,
     ) -> dict[str, Any]:
-        """Keep only explicitly selected, grant-authorized namespace operations.
-
-        The returned object retains the existing descriptor schema. The named-
-        service bridge therefore enforces this selection through its normal
-        ``NamedServiceBoundaryCatalog`` path.
-        """
-
-        raw_namespaces = config.get("namespaces")
-        if not isinstance(raw_namespaces, Mapping):
-            if any(selected.values()):
-                raise ValueError(
-                    f"resource {resource!r} does not configure named-service namespaces"
-                )
-            narrowed = copy.deepcopy(dict(config))
-            narrowed["namespaces"] = {}
-            return narrowed
-
-        configured_by_name = {
-            _clean(namespace).lower().rstrip(":"): (namespace, raw_policy)
-            for namespace, raw_policy in raw_namespaces.items()
-            if _clean(namespace) and isinstance(raw_policy, Mapping)
-        }
-        unknown_namespaces = sorted(set(selected) - set(configured_by_name))
-        if unknown_namespaces:
-            raise ValueError(
-                f"unknown named-service namespace(s) for {resource!r}: "
-                + ", ".join(unknown_namespaces)
-            )
-
-        available_grants = set(_as_list(list(grants)))
-        narrowed_namespaces: dict[str, Any] = {}
-        for namespace, requested_operations in selected.items():
-            requested = set(_as_list(requested_operations))
-            if not requested:
-                continue
-            raw_namespace, raw_policy = configured_by_name[namespace]
-            raw_tools = raw_policy.get("tools")
-            raw_tools = dict(raw_tools or {}) if isinstance(raw_tools, Mapping) else {}
-            configured_operations: set[str] = set()
-            authorized_operations: set[str] = set()
-            narrowed_tools: dict[str, Any] = {}
-
-            for tool_name, raw_tool_policy in raw_tools.items():
-                if not isinstance(raw_tool_policy, Mapping):
-                    continue
-                tool_policy = dict(raw_tool_policy)
-                operation_policies = tool_policy.get("operations")
-                if isinstance(operation_policies, Mapping) and operation_policies:
-                    narrowed_operations: dict[str, Any] = {}
-                    for operation, raw_operation_policy in operation_policies.items():
-                        operation_value = _clean(operation)
-                        if not operation_value:
-                            continue
-                        configured_operations.add(operation_value)
-                        operation_policy = (
-                            dict(raw_operation_policy)
-                            if isinstance(raw_operation_policy, Mapping)
-                            else {}
-                        )
-                        required = self._operation_grants(operation_policy, tool_policy)
-                        if operation_value in requested and required.issubset(available_grants):
-                            narrowed_operations[operation] = copy.deepcopy(raw_operation_policy)
-                            authorized_operations.add(operation_value)
-                    if narrowed_operations:
-                        narrowed_tool = copy.deepcopy(tool_policy)
-                        narrowed_tool["operations"] = narrowed_operations
-                        narrowed_tools[tool_name] = narrowed_tool
-                    continue
-
-                operation_value = _clean(tool_policy.get("operation") or tool_name)
-                if not operation_value:
-                    continue
-                configured_operations.add(operation_value)
-                required = self._operation_grants(tool_policy, {})
-                if operation_value in requested and required.issubset(available_grants):
-                    narrowed_tools[tool_name] = copy.deepcopy(raw_tool_policy)
-                    authorized_operations.add(operation_value)
-
-            unknown_operations = sorted(requested - configured_operations)
-            if unknown_operations:
-                raise ValueError(
-                    f"unknown named-service operation(s) for {resource!r}/{namespace}: "
-                    + ", ".join(unknown_operations)
-                )
-            unauthorized_operations = sorted(requested - authorized_operations)
-            if unauthorized_operations:
-                raise ValueError(
-                    f"named-service operation(s) lack selected grants for "
-                    f"{resource!r}/{namespace}: " + ", ".join(unauthorized_operations)
-                )
-            if narrowed_tools:
-                narrowed_policy = copy.deepcopy(dict(raw_policy))
-                narrowed_policy["tools"] = narrowed_tools
-                narrowed_namespaces[raw_namespace] = narrowed_policy
-
-        narrowed = copy.deepcopy(dict(config))
-        narrowed["namespaces"] = narrowed_namespaces
-        return narrowed
+        return narrow_named_service_config(
+            config=config, selected=selected, grants=grants, resource=resource,
+        )
 
     @staticmethod
     def _merge_named_service_configs(
         target: dict[str, Any],
         source: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if not target:
-            return copy.deepcopy(dict(source))
-        merged = copy.deepcopy(target)
-        for key, value in source.items():
-            if key == "namespaces" and isinstance(value, Mapping):
-                namespaces = merged.setdefault("namespaces", {})
-                if isinstance(namespaces, dict):
-                    namespaces.update(copy.deepcopy(dict(value)))
-                continue
-            merged.setdefault(key, copy.deepcopy(value))
-        return merged
+        return merge_named_service_configs(target, source)
 
     async def list_access(self, user: Mapping[str, Any]) -> dict[str, Any]:
         grantor_subject = _subject_from_user(user)
@@ -1007,6 +900,17 @@ class AutomationAccessService:
                         }
                         for provider, accounts in existing.account_scope.items()
                     }
+                if (
+                    not merge_existing
+                    and selected_named_service_operations is None
+                    and existing.named_service_operations
+                ):
+                    # Same rule for the namespace narrowing: omitting it keeps
+                    # the record's, an explicit {} clears it.
+                    selected_named_service_operations = {
+                        resource: {ns: list(ops) for ns, ops in namespaces.items()}
+                        for resource, namespaces in existing.named_service_operations.items()
+                    }
             if existing is not None and merge_existing:
                 for resource_key, held in existing.resource_grants.items():
                     merged = list(selected_resource_grants.get(resource_key, []))
@@ -1056,22 +960,19 @@ class AutomationAccessService:
         named_services: dict[str, Any] = {}
         for cfg in resource_configs:
             if isinstance(cfg.named_services, Mapping):
-                if selected_named_service_operations is None:
-                    selected_policy = copy.deepcopy(dict(cfg.named_services))
-                else:
-                    try:
-                        selected_policy = self._narrow_named_service_config(
-                            config=cfg.named_services,
-                            selected=selected_named_service_operations.get(cfg.resource, {}),
-                            grants=selected_resource_grants.get(cfg.resource, []),
-                            resource=cfg.resource,
-                        )
-                    except ValueError as exc:
-                        return {
-                            "ok": False,
-                            "error": "invalid_named_service_operation_selection",
-                            "message": str(exc),
-                        }
+                try:
+                    selected_policy = named_service_policy_for_resource(
+                        named_services=cfg.named_services,
+                        resource=cfg.resource,
+                        selection=selected_named_service_operations,
+                        grants=selected_resource_grants.get(cfg.resource, []),
+                    )
+                except ValueError as exc:
+                    return {
+                        "ok": False,
+                        "error": "invalid_named_service_operation_selection",
+                        "message": str(exc),
+                    }
                 named_services = self._merge_named_service_configs(
                     named_services,
                     selected_policy,
@@ -1153,6 +1054,7 @@ class AutomationAccessService:
                     selected_named_service_operations or {}
                 ).items()
             },
+            named_services=copy.deepcopy(named_services),
             account_scope={
                 provider: {account_id: tuple(claims) for account_id, claims in accounts.items()}
                 for provider, accounts in selected_account_scope.items()
@@ -1273,20 +1175,32 @@ class AutomationAccessService:
                 "error": "delegated_access_resources_have_conflicting_identity_scopes",
                 "resources": selected_resources,
             }
-        # Validate the named-service narrowing against each resource's policy.
-        if selected_named_service_operations is not None:
-            for cfg in resource_configs:
-                if not isinstance(cfg.named_services, Mapping):
-                    continue
-                try:
-                    self._narrow_named_service_config(
-                        config=cfg.named_services,
-                        selected=selected_named_service_operations.get(cfg.resource, {}),
-                        grants=selected_resource_grants.get(cfg.resource, []),
-                        resource=cfg.resource,
-                    )
-                except ValueError as exc:
-                    return {"ok": False, "error": "invalid_named_service_operation_selection", "message": str(exc)}
+        # Same absent-vs-empty rule as account_scope below: an omitted narrowing
+        # keeps the record's, an explicit {} clears it. A record storing no
+        # narrowing keeps None — the shape that means "unrestricted".
+        if selected_named_service_operations is None and existing.named_service_operations:
+            selected_named_service_operations = {
+                resource: {ns: list(ops) for ns, ops in namespaces.items()}
+                for resource, namespaces in existing.named_service_operations.items()
+            }
+        # Recompute the boundary tree here: the descriptor is available in this
+        # process, the guard's is not.
+        named_services: dict[str, Any] = {}
+        for cfg in resource_configs:
+            if not isinstance(cfg.named_services, Mapping):
+                continue
+            try:
+                selected_policy = named_service_policy_for_resource(
+                    named_services=cfg.named_services,
+                    resource=cfg.resource,
+                    # Same value the record stores below, so the tree and the
+                    # selection it was derived from cannot disagree.
+                    selection=selected_named_service_operations,
+                    grants=selected_resource_grants.get(cfg.resource, []),
+                )
+            except ValueError as exc:
+                return {"ok": False, "error": "invalid_named_service_operation_selection", "message": str(exc)}
+            named_services = self._merge_named_service_configs(named_services, selected_policy)
         selected_operations = self._resolve_operations(
             grants=selected_grants, operations=(), resources=selected_resources,
         )
@@ -1320,6 +1234,7 @@ class AutomationAccessService:
                 }
                 for resource, namespaces in (selected_named_service_operations or {}).items()
             },
+            named_services=copy.deepcopy(named_services),
             account_scope={
                 provider: {account_id: tuple(claims) for account_id, claims in accounts.items()}
                 for provider, accounts in selected_account_scope.items()

@@ -72,7 +72,7 @@ async def resolve_live_grant_card(
         raise LiveGrantCardError("resource_grants_invalid")
     if not isinstance(payload.get("operations"), list):
         raise LiveGrantCardError("operations_invalid")
-    for field_name in ("account_scope", "named_service_operations"):
+    for field_name in ("account_scope", "named_service_operations", "named_services"):
         value = payload.get(field_name)
         if value is not None and not isinstance(value, Mapping):
             raise LiveGrantCardError(f"{field_name}_invalid")

@@ -149,7 +149,9 @@ export interface UpdateDelegatedAccessArgs {
   label: string;
   resourceGrants: Record<string, string[]>;
   operations?: string[];
-  namedServiceOperations: DelegatedAccessNamedServiceOperations;
+  /** Namespace narrowing {resource:{namespace:[operation]}}. Undefined preserves
+   *  the record's; {} narrows every resource to nothing. */
+  namedServiceOperations?: DelegatedAccessNamedServiceOperations;
   /** Per-account binding {provider:{account_id:[claims]}}. Undefined preserves
    *  an existing binding; {} explicitly restricts the caller to no accounts. */
   accountScope?: Record<string, Record<string, string[]>>;
@@ -172,7 +174,9 @@ export const updateDelegatedAccess = createAsyncThunk<
         label,
         resource_grants: resourceGrants || {},
         operations: operations || [],
-        named_service_operations: namedServiceOperations || {},
+        ...(namedServiceOperations !== undefined
+          ? { named_service_operations: namedServiceOperations }
+          : {}),
         ...(accountScope !== undefined
           ? { account_scope: accountScope }
           : {}),

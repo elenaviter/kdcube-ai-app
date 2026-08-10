@@ -4,7 +4,7 @@ title: "Create Delegated Automation Access"
 summary: "Configure and use Connection Hub delegated access tokens for scripts, agents, and DevOps automation that represent a KDCube platform user."
 status: active
 tags: ["connection-hub", "delegated-credentials", "automation", "resources", "roles", "mcp", "named-services", "least-privilege"]
-updated_at: 2026-07-18
+updated_at: 2026-08-10
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/protect-bundle-rest-with-managed-credentials-README.md
@@ -173,11 +173,19 @@ identifiers:
 ```
 
 The backend validates the resource, namespace, operation, and required grants
-against the live Connection Hub descriptor. It then stores a narrowed copy of
-that resource's existing `named_services` policy in `GrantStore`. The KDCube
-Services named-service bridge reads that stored policy, so `mem.object.upsert`,
-`slack.object.action`, and every unselected namespace fail through the ordinary
-runtime boundary.
+against the live Connection Hub descriptor, then narrows that resource's
+existing `named_services` policy to the selection and stores the result on the
+access record. Only Connection Hub carries the descriptor, so the boundary is
+computed there; the managed guard copies it from the card onto each request,
+and the KDCube Services named-service bridge reads it from there. So
+`mem.object.upsert`, `slack.object.action`, and every unselected namespace fail
+through the ordinary runtime boundary.
+
+Because the card carries the boundary, editing the selection later applies to
+the token already issued — see
+[Editing a manual token in place](../../sdk/solutions/connections/connection-hub-token-storage-README.md#editing-a-manual-token-in-place).
+A descriptor change does not reach a card written earlier; the card is
+recomputed on its next save.
 
 Do not invent action-specific grant ids such as
 `object.action.post_message`. If a provider publishes nested operations, those
@@ -283,8 +291,8 @@ entries, so this token can use admin authority on any matching request:
 ```
 
 Issued records store selected top-level `operations`. Named-service resources
-also expose `named_service_operations` and persist the matching narrowed
-`named_services` boundary. MCP surfaces may present operations as tools at the
+also expose `named_service_operations` — the selection — and persist the
+matching narrowed `named_services` boundary the guard carries to the bridge. MCP surfaces may present operations as tools at the
 protocol edge, but the delegated access model remains resource/operation based.
 
 For the all-resource admin scope, the shared Connection Hub authentication
@@ -314,6 +322,11 @@ grantor, with delegated provenance in `identity_authority`.
    delete, and every unselected namespace fail closed.
 7. Attempt to submit an operation without its declared grant. Confirm creation
    fails instead of widening the token.
+7a. Edit that card: swap the selected operation for another one in the same
+   namespace and save. Confirm the SAME bearer now reaches the new operation
+   and is refused on the old one, with no token re-issue. Rename the card
+   without touching the picker and confirm the narrowing survives; clear every
+   operation in a namespace and confirm the namespace fails closed.
 8. For a provider-backed namespace, leave the provider account unconnected and
    confirm the UI shows the existing provider/connector/claim prerequisite.
    Complete it through Delegated to KDCube, retry, and confirm the provider
