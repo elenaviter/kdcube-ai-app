@@ -4,7 +4,8 @@ title: "Delegated Connections"
 summary: "Connection Hub role for consented connections where a credential/proof is verified by an authenticator, linked to a principal or grant, and constrained by allowed actions."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-connections", "oauth", "mcp", "consent", "grants"]
-updated_at: 2026-07-17
+keywords: ["delegated connections", "Delegated by KDCube", "delegated access cards", "OAuth client grant", "manual automation token", "registry_access_id", "grant revocation"]
+updated_at: 2026-08-11
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authority-providers/authority-provider-runtime-README.md
@@ -13,6 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-consent-branding-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/delegated-credential-protocol-adapters-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/design/grant-storage-durability-README.md
 ---
 # Delegated Connections
@@ -353,6 +355,11 @@ connectors:
 
 ## User-Visible Grant Registry And Revocation
 
+The record-level source of truth for all three card families, including exact
+storage fields, list/render sources, edit semantics, live enforcement, and
+descriptor drift, is [Delegated Access Cards](../delegated-cards/delegated-cards-README.md).
+This section keeps the protocol-level summary.
+
 Every delegated credential a user hands out is registered per user
 (`AutomationAccessService`), so the Connection Hub **Delegated by KDCube**
 tab can show it and revoke it. Two sources land in one registry:
@@ -523,6 +530,7 @@ The connector icon and read/write grouping are MCP metadata:
 | Need | Read |
 | --- | --- |
 | Understand delegated connection object model | This document |
+| Understand the complete Delegated by KDCube card lifecycle | [Delegated Access Cards](../delegated-cards/delegated-cards-README.md) |
 | Understand authority provider and custom-authority registration | [Authority Provider Runtime](../authority-providers/authority-provider-runtime-README.md) |
 | Understand credential routing fields | [Authority Credential Envelope](../authority-providers/credential-envelope-README.md) |
 | Understand KDCube using external provider accounts | [Delegated Accounts](../delegated-accounts/delegated-accounts-README.md) |

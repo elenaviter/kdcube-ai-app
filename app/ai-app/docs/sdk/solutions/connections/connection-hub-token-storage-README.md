@@ -4,10 +4,11 @@ title: "Connection Hub Token Storage"
 summary: "One-page answer for where Connection Hub stores Claude Code delegated OAuth tokens, manual Delegated by KDCube tokens, connected-account provider tokens, and deployment secrets."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "tokens", "storage", "oauth", "delegated-credentials", "secrets", "redis"]
-updated_at: 2026-08-10
+updated_at: 2026-08-11
 keywords: ["Connection Hub token storage", "manual automation token", "live grant card", "named_service_operations", "account_scope", "credential isolation"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/storage-model/storage-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/design/grant-storage-durability-README.md
@@ -18,6 +19,10 @@ see_also:
 
 This page is the single operational answer for "where did Connection Hub put
 the token?" The answer depends on which token family is involved.
+
+For the authority record behind every **Delegated by KDCube** card, including
+which fields are stored versus read from live catalogs and how the card reaches
+runtime enforcement, read [Delegated Access Cards](delegated-cards/delegated-cards-README.md).
 
 ## At A Glance
 
@@ -238,6 +243,9 @@ grantor_subject
 delegate_subject
 resource_grants
 operations
+named_service_operations
+named_services (internal materialized boundary; not public)
+account_scope
 identity_scope
 session_id
 created_at

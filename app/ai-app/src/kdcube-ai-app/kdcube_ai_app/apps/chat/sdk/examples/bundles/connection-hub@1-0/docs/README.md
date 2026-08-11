@@ -5,9 +5,10 @@ summary: "Design overview of connection-hub@1-0: connection edges, connected pro
 status: active
 tags: ["app", "connection-hub", "identity", "connections", "named-services", "mcp", "oauth", "delegated-credentials", "email", "design"]
 keywords: ["connection hub app", "delegated access", "connected accounts", "grant mutation csrf", "live grant authority"]
-updated_at: 2026-08-01
+updated_at: 2026-08-11
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-platform-integration-README.md
 ---
 
@@ -16,6 +17,11 @@ see_also:
 `connection-hub@1-0` is the platform example app (bundle) for connecting
 external identities and provider accounts to KDCube, and for delegating bounded
 KDCube access back out to external clients.
+
+The canonical lifecycle for the **Delegated by KDCube** cards this app renders
+is `repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md`.
+It owns the storage, rendering-source, edit, enforcement, revocation, and
+descriptor-drift contracts; this page owns the app composition.
 
 It has three responsibilities that must stay separate:
 

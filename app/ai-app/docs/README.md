@@ -4,7 +4,7 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-07-18
+updated_at: 2026-08-11
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
@@ -98,6 +98,7 @@ Curated index of platform, service, and SDK documentation.
 
 * App Storage And Cache: [bundle-storage-and-cache-README.md](sdk/bundle/bundle-storage-and-cache-README.md)
 * Connection Hub Token Storage: [connection-hub-token-storage-README.md](sdk/solutions/connections/connection-hub-token-storage-README.md)
+* Delegated Access Card Lifecycle: [delegated-cards-README.md](sdk/solutions/connections/delegated-cards/delegated-cards-README.md)
 * File Storage And Hosting: [files-storage-system-README.md](hosting/files-storage-system-README.md)
 * Artifacts Limits: [artifacts-limits-README.md](hosting/artifacts-limits-README.md)
 * ISO Runtime: [README-iso-runtime.md](exec/README-iso-runtime.md)
