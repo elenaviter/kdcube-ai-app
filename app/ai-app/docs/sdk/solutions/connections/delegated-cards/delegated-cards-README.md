@@ -78,6 +78,8 @@ different authorization model.
 
 ## Stored Record
 
+### Current Redis-only implementation
+
 The current implementation stores each record in Redis:
 
 ```text
@@ -88,7 +90,97 @@ The current implementation stores each record in Redis:
 The first key holds the record with a TTL. The second is the grantor's set of
 card ids. Expired or missing ids are pruned from the set during list.
 
-### Persisted fields
+This is not sufficient as the durable card model. The record key is written
+with `SETEX`, so expiry erases the only copy of the authorization decision.
+Manual and hosted-agent cards default to one hour and are bounded to seven
+days. OAuth cards use the refresh-token lifetime, currently 180 days, and renew
+on token issuance. Runtime safely denies a missing or expired record, but no
+card provenance remains.
+
+The grantor index is also assigned a fixed seven-day TTL. An idle OAuth card can
+therefore disappear from Connection Hub's list while its card record and
+refresh authority remain live. Later OAuth issuance adds it to the index again,
+but the user may lose the visible revocation path in the meantime.
+
+### Required durable record and live cache
+
+Connection Hub bundle storage is the durable source of truth. Redis is the
+TTL-managed live projection of the latest committed card revision:
+
+```text
+delegated-cards/v1/
+  grantors/<subject_hash>/
+    cards/<access_id>/
+      revisions/card_revision_2026-08-11-14-32-07-123_00000001_8f21c47a93bd.json
+      revisions/card_revision_2026-08-11-15-04-19-881_00000002_b9d06ee7124a.json
+      current.json
+
+Redis delegated-access:automation:<access_id>
+  latest committed live projection, or a short-lived updating/revoked marker
+
+Redis delegated-access:automation-by-grantor:<subject_hash>
+  sorted set of access_id -> expires_at for the active-card list
+```
+
+Each immutable revision contains the complete authorization decision,
+`card_revision`, `catalog_version`, lifecycle state, timestamps, and non-secret
+fingerprints. It never contains raw access tokens, refresh tokens, provider
+credentials, or reusable session secrets. Those remain only in their bounded
+live stores. The reconstructable Redis card projection likewise contains the
+non-secret authority and lifecycle fields. A durable cache restore does not
+reconstruct a credential handle; the OAuth, grant, or session owner resolves
+that bounded state separately and returns its normal reconnect/reissue denial
+when it is gone. `current.json` points to the latest committed revision and
+carries its filename, integer `card_revision`, and full content hash.
+
+Revision filenames follow the same timestamped, content-addressed convention
+as catalog versions:
+
+```text
+card_revision_<UTC timestamp with milliseconds>_<8-digit card_revision>_<first 12 hash chars>.json
+```
+
+The timestamp and hash are mandatory. The zero-padded integer mirrors the
+record field used for optimistic concurrency; it supplements rather than
+replaces the common versioned-resource naming convention.
+
+Create, edit, and revoke use a per-card shared critical section. Before writing
+a new durable revision, the writer replaces the Redis live value with an
+updating marker so requests cannot continue under the previous authority. It
+then writes and validates the immutable revision, advances `current.json`, and
+installs the new Redis projection. A cache miss loads the durable current
+revision and repopulates Redis only when the card is active and unexpired. The
+conditional Redis installer compares `card_revision`: delayed recovery cannot
+overwrite a newer revision, an updating marker, or a revoked tombstone. The
+mutation finalizer may replace only the marker carrying its own mutation id.
+
+Expiration deletes only the Redis projection. The durable revision remains and
+`expires_at` prevents cache restoration or use. Revocation commits a new
+durable `revoked` revision before live credential cleanup; it does not delete
+history. Normal active list/open is Redis-first: it reads the expiry-scored
+grantor index and current live-card projections, then computes drift against
+Redis-cached `active.json`. The grantor index has no fixed seven-day expiry;
+expired members are pruned by score. If the index or a projection is missing,
+Connection Hub rebuilds it from durable `current.json` and the referenced
+timestamped revision, repopulating only active, unexpired cards. Retention of
+card history is an explicit administrative policy separate from authorization
+TTL.
+
+The relevant cache lifetimes have different meanings:
+
+| Projection | Lifetime | Cache hit | Expiry or eviction |
+| --- | --- | --- | --- |
+| Live card | Remaining authorization lifetime, `expires_at - now`. | Does not extend authorization. | Read durable current revision; re-cache only when active and unexpired. |
+| Grantor card index | No fixed whole-key TTL; each sorted-set member is scored by `expires_at`. | Prune expired members. | Rebuild active members from durable current revisions. |
+| Updating/revoked marker | Short descriptor-owned safety or negative-cache TTL. | Deny or return temporary unavailability as appropriate. | Resolve durable current state; never infer authority from marker expiry. |
+
+Redis outage is not a reason to bypass this serving and coordination layer with
+process memory. Requests return structured unavailability. Durable-storage
+outage blocks cache-miss recovery and every mutation; a governed request whose
+validated card and active catalog are already hot in Redis does not perform a
+durable read.
+
+### Current record fields
 
 | Field | Meaning | Public list response |
 | --- | --- | --- |
@@ -104,6 +196,11 @@ card ids. Expired or missing ids are pruned from the set during list.
 | `created_at`, `expires_at`, `last_issued_at` | Lifecycle timestamps. | yes when present |
 | `last_four`, `source` | Token fingerprint and card family. | yes |
 | `session_id`, `access_token`, `refresh_token` | Internal credential/revocation handles, according to source. | no |
+
+In the target split, every authority and lifecycle field above is copied into
+the immutable durable revision except `session_id`, `access_token`, and
+`refresh_token`. Those three fields may exist only in dedicated TTL-managed
+live stores, separate from the reconstructable card-authority projection.
 
 `to_public_dict()` removes all token material, `session_id`, and the internal
 `named_services` boundary. A public card exposes the selection, never the
@@ -384,6 +481,7 @@ this contract:
 | `resource_grants` | Required full replacement. No remaining grant means revoke, not update. |
 | `named_service_operations` omitted | Preserve the stored narrowing. |
 | `named_service_operations: {}` | Disable all named-service operations for the selected resources. |
+| `named_service_operations: "*"` | Select every named-service operation in the current catalog; the stored wildcard is bound to the catalog version saved with the card. |
 | `named_service_operations` with content | Replace with that exact resource -> namespace -> operation selection. |
 | `account_scope` omitted | Preserve the current account binding. |
 | `account_scope: {}` | Bind no provider account; provider-backed use is default-closed. |
@@ -391,7 +489,10 @@ this contract:
 | `label` | Rename without changing omitted dimensions. |
 
 The update recomputes outer operations and the materialized `named_services`
-tree from the descriptor available to Connection Hub.
+tree from the active catalog available to Connection Hub. For a stored `"*"`,
+that materialized tree contains the exact operation set present at Save time;
+governed execution can therefore intersect the card with current
+`active.json.connections` without loading catalog history.
 
 At the current PR head, non-empty preservation and an immediate explicit clear
 work, but the clear state is not represented durably. After
@@ -399,22 +500,32 @@ work, but the clear state is not represented durably. After
 omits the field can interpret that empty value as "no narrowing" and rebuild
 the full descriptor policy.
 
-The durable model adds `named_service_selection_mode` with three explicit
-values:
+The persisted `named_service_operations` field carries the complete policy:
 
-| Mode | Meaning |
+| Stored value | Meaning |
 | --- | --- |
-| `full` | Use the complete currently configured named-service boundary permitted by the selected grants. |
-| `none` | Permit no named-service operation. |
-| `selected` | Permit exactly the entries in `named_service_operations`. |
+| `"*"` | Permit every named-service operation reachable through the card's selected resources in its referenced `catalog_version`. Later additions are not included. |
+| `{}` | Permit no named-service operation. |
+| Resource/namespace/operation map | Permit exactly the named entries. |
 
-The list response must retain the mode so the editor can render "all allowed
-by grants" and "no named-service operation" differently. Existing rows cannot
-be migrated from an empty `named_service_operations` map alone because older
-full-policy rows serialized the same value. Lazy migration must inspect raw
-field presence and the persisted materialized `named_services` boundary. If
-those facts conflict, GET preserves the effective narrowed selection and asks
-for an explicit choice on Save; it does not guess or mutate the row.
+The list response must retain both `"*"` and `{}`. New records always persist
+one of the three forms; field omission remains an update-request instruction,
+not stored policy. A **pre-migration card record** is an ordinary card written
+before `catalog_version`, `card_revision`, and this unambiguous encoding were
+introduced. Such a record cannot be interpreted from an empty
+`named_service_operations` map alone because older full-boundary records
+serialized the same value. Lazy migration inspects raw field presence and the
+persisted materialized `named_services` boundary, derives the prior exact
+operation set, and does not mutate on GET. If those facts conflict, GET
+preserves the effective narrowed selection and asks for an explicit choice on
+Save; it does not guess. The next successful Save writes the explicit new
+representation.
+
+When an existing `"*"` card is saved after catalog drift without an explicit
+new wildcard choice, the backend expands the wildcard against the saved
+catalog version and persists the surviving exact set before advancing
+`catalog_version`. An explicitly submitted `"*"` selects all operations shown
+from the current catalog and binds that wildcard to the new version.
 
 ### Agent card
 
@@ -427,7 +538,8 @@ preserve their stored values. Explicit empty maps clear those dimensions.
 The current ordinary agent-card editor exposes resource claims and account
 scope. Pending consent can submit exact named-service operations. The backend
 supports the same absent/empty/content contract when that field is supplied.
-It shares the same current empty-versus-absent persistence ambiguity.
+The same wildcard/empty/exact persisted contract resolves the current
+empty-versus-absent ambiguity.
 
 ### OAuth card
 
@@ -503,8 +615,13 @@ The fix has two independent parts and both are required:
 1. **Enforcement clamps immediately.** A descriptor removal must reduce
    effective authority before the user opens or saves the card. The enforcing
    path needs an authoritative current ceiling without coupling a generic
-   surface guard to Connection Hub's storage or transport details. If that
-   authority cannot be resolved, the governed call fails closed.
+   surface guard to Connection Hub's storage or transport details. A governed
+   call reads complete cached `active.json` from Redis and intersects its
+   embedded `connections` mapping with the card. A Redis TTL miss may read
+   through to complete committed durable `active.json` and repopulate Redis
+   with the configured fixed TTL. It returns `503 temporarily_unavailable` if
+   that document cannot be obtained or its `content_hash` does not match its
+   embedded mapping.
 2. **The editor explains and repairs stored drift.** List/edit should return a
    server-computed drift projection. The UI shows a visible warning such as
    **Service access changed since this grant was last saved**, with details:
@@ -520,7 +637,7 @@ stored selection
   -> validate every remaining selection strictly
   -> persist the reconciled explicit selection
   -> rebuild the materialized boundary
-  -> stamp the active catalog_version_id
+  -> stamp the active catalog_version
   -> clear the warning
 ```
 
@@ -531,50 +648,150 @@ the user saves or revokes.
 ### Catalog ownership and versioning
 
 Connection Hub owns one central history of the delegable catalog. A card never
-stores a catalog copy. It stores only `catalog_version_id`, referring to the
-immutable snapshot active when that card was created or last saved.
+stores a catalog copy. It stores only `catalog_version`, referring to the
+immutable catalog version active when that card was created or last saved.
 
-The normalized snapshot fuses only authority-relevant deployment facts:
+The catalog source is the existing effective, non-secret `connections` mapping
+from Connection Hub bundle props:
 
-```text
-capability grant vocabulary and delegation rules
-+ resource doors, claim ceilings, and outer operations
-+ descriptor named-service namespaces and operations
-+ provider-owned account requirements for those declared operations
+```python
+connections = copy.deepcopy(entrypoint.bundle_props.get("connections") or {})
 ```
 
-Current user accounts, roles, and held provider claims remain live inputs and
-are not copied into the shared snapshot. Display labels and ordering likewise
-do not create an authority version.
+Each immutable version document stores that parsed mapping under its
+`connections` field in the existing shape. The surrounding object adds only
+`version`, `content_hash`, and `created_at`. It is not normalized, flattened,
+or enriched. Existing configuration readers remain responsible for
+interpreting OAuth capabilities and resources, outer operations, named-service
+boundaries, and delegated-to-KDCube configuration. Current provider discovery,
+user accounts, roles, held provider claims, and connection status remain live
+rendering and enforcement inputs; they are not copied into catalog history.
 
-Publication uses a shared critical section and an inside-section recheck:
+The shared store contains immutable versions and one self-contained active
+document:
 
 ```text
-normalize current inputs
--> compute input fingerprint and authority hash
--> mark the demanded input pending when it differs from the active input
--> write one immutable snapshot and one versioned runtime projection
--> commit the active version only if no newer demanded input appeared
--> publish ready
+delegated-catalog/v1/
+  versions/<version>.json   immutable catalog document
+  active.json               complete active catalog document
 ```
 
-The serving state records the expected input fingerprint, active input
-fingerprint, active version, and `pending | ready | failed` status. A governed
-call accepts the active projection only while status is `ready`, both
-fingerprints match, and the versioned projection exists. If configuration has
-changed but publication has not completed, the old snapshot remains available
-for history while authorization returns structured `503 temporarily_unavailable`.
-It never treats stale deployment authority as a fallback.
+Both document forms contain:
 
-Generic app deployment after a source or effective-props change is the primary
-publication trigger. Connection Hub's `on_bundle_load` performs idempotent
-first-run initialization and repair. A future Access Map mutation persists the
-authoritative props and invokes the same publisher before reporting success.
-These are generic lifecycle contracts; the platform does not hardcode
-Connection Hub into bundle loading or request routing.
+```json
+{
+  "version": "delegated_catalog_2026-08-11-10-30-00-123_d4e5f6a7b8c9",
+  "content_hash": "<full lowercase SHA-256>",
+  "created_at": "2026-08-11T10:30:00.123Z",
+  "connections": {"...": "exact effective props mapping"}
+}
+```
+
+Canonical JSON is used only to calculate `content_hash` from `connections` for
+change detection, deduplication, and integrity validation. It does not create a
+second catalog shape. Publication copies current `connections`, enters a shared
+critical section, rereads and rehashes the mapping inside that section, writes
+the immutable version, and atomically replaces complete `active.json`. The
+version name combines a sortable UTC timestamp with a content-hash suffix.
+
+Durable storage and request serving have one clear boundary:
+
+```text
+durable Connection Hub bundle storage
+  versions/<version>.json + complete active.json
+  authoritative history and recovery source
+                         |
+                         v
+Redis serving projection
+  delegated card:<access_id>             card + catalog_version
+  delegated catalog:active               complete active.json, with TTL
+  delegated catalog:version:<version>    one key per historical version, with TTL
+```
+
+There is no process catalog cache. `on_app_deploy` already owns the effective
+`connections` object in memory. It writes the durable version and complete
+`active.json`, caches the immutable version in Redis, and atomically caches the
+complete active document. A matching durable version is not enough to declare
+deployment ready: the Redis active document must also be present. If a cache
+entry later expires, the relevant request uses the validated durable
+read-through and stores it again with the configured TTL.
+
+Many immutable `catalog:version:<version>` keys can coexist. Every write or
+read-through restoration assigns the configured historical-catalog cache TTL;
+a cache hit does not extend it. When an entry expires, the next list/open that
+needs that exact version validates its durable version document and caches it
+again. Catalog-cache lifetime is independent of card lifetime.
+
+The active catalog uses the same fixed-residency rule: publication or validated
+read-through assigns its descriptor-owned TTL, while ordinary request hits do
+not extend it. Catalog TTL expiry is cache eviction, not a catalog change. A
+new `on_app_deploy` publication atomically replaces `catalog:active` and leaves
+all immutable historical keys untouched.
+
+Connection Hub publishes through the fleet-coordinated `on_app_deploy`
+readiness barrier. That barrier reconciles every deployment-scoped resource for
+the current source/effective-props generation, including app-owned catalog and
+index builders plus the platform-owned deployed UI inventory and artifacts. It
+commits the app generation only after every required resource is ready. Each
+resource family has its own signature, so repeated deployment reuses unchanged
+artifacts while props can still attach, remove, or reconfigure UI components.
+There is one deployed widget-delivery contract and no delivery-mode branch.
+
+The lifecycle rule is independent of resource type: `on_app_deploy` ensures
+that all resources of the app generation are ready. App hooks and platform
+reconcilers are implementation participants beneath that single contract.
+
+A props-update event may separately call `on_props_changed` on a cached
+instance for process-local reconciliation; `on_bundle_load` remains
+per-process initialization and does not publish catalog state. The same event
+also invokes coordinated `on_app_deploy` regardless of singleton mode.
+
+A future Access Map mutation persists the authoritative props and awaits the
+generic app-deployment coordinator before reporting success. Card list/create/
+update and governed-operation paths never publish or modify durable catalog
+history. They may restore an expired Redis cache entry from an already
+committed document. They consume the registered active catalog represented by
+cached `active.json`.
+Effective props participate only in `on_app_deploy` alignment; they are not a
+request-time authorization or drift input.
+
+Every card and governed request reads the live card and TTL-cached
+complete `active.json` from Redis. Governed execution validates
+`content_hash == hash(connections)` and computes
+`intersect(active.json.connections, card)`. It does not load another active
+body, inspect effective props, or consult catalog history.
+
+If cached `active.json` expired, the request may read complete committed
+durable `active.json`, validate it, and atomically cache that complete document
+with a TTL. This restores the Redis serving projection; it does not create a
+version or change durable catalog history. The Redis update refuses to replace
+a newer sortable catalog version with an older delayed restoration.
+
+That no-downgrade comparison protects only the single Redis `catalog:active`
+key. It does not compare a card's saved version with the active version.
+Governed execution never loads the card's historical catalog; list/open uses
+the separate `catalog:version:<card.catalog_version>` key only for drift.
+
+List/open computes `diff(active.json, card)`. When it must distinguish a newly
+added option from one that already existed but was left unselected, it reads
+the historical Redis document named by `card.catalog_version`. If that cache
+entry expired, it reads exactly the corresponding durable
+`versions/<card.catalog_version>.json` and repopulates Redis. This historical
+read is only for drift explanation; governed execution uses the exact
+materialized authority already stored in the card.
+
+The historical key is shared by every card on that version and its TTL is
+fixed when the key is populated. A miss performs the durable read-through and
+repopulates the key with a fresh configured TTL; requests after repopulation
+reuse it until the next expiry. Multiple historical versions remain cached
+under distinct keys.
+
+Failure to obtain or validate a required active or historical document returns
+structured unavailability. No coroutine or lock exists per catalog entry; the
+async request simply awaits Redis and, on TTL miss, durable storage.
 
 To say that an operation is **new since the last grant**, list compares the
-card's referenced immutable snapshot with the active snapshot. Comparing only
+card's referenced immutable version with complete `active.json`. Comparing only
 the current catalog with selected operations can find removed selected values,
 but cannot distinguish a newly added operation from one that was already
 available and deliberately left unchecked.
@@ -587,22 +804,23 @@ card:
 | Status | Meaning |
 | --- | --- |
 | `current` | The card references the active catalog version. |
-| `changed` | A relevant resource, claim, outer operation, named operation, or account requirement changed. |
+| `changed` | A relevant resource, claim, outer operation, or named operation changed. |
 | `no_relevant_change` | The global catalog advanced without changing anything represented by this card. |
-| `baseline_missing` | The card is legacy or its referenced snapshot is unavailable, so exact additions cannot be claimed. |
-| `unavailable` | Current catalog authority cannot be resolved; editing authority is disabled and governed calls fail closed. |
+| `baseline_missing` | The card predates `catalog_version`, or its referenced durable version document is confirmed absent, so exact additions since the previous Save cannot be identified. |
+| `unavailable` | Complete cached `active.json`, or a historical version required for drift, cannot be obtained from Redis or restored from committed durable state; or a catalog document fails content-hash validation. Editing authority is disabled; create/update and governed calls return `503 temporarily_unavailable` when the unavailable document is required for their decision. |
 
-The drift object contains ready-to-render `removed`, `added`, and
-`account_requirement_changes` entries. Removed selected entries stay visible
-as disabled/stale rows and are already ineffective. Added entries are current
-options but remain unchecked.
+The drift object contains ready-to-render `removed` and `added` entries.
+Removed selected entries stay visible as disabled/stale rows and are already
+ineffective. Added entries are current options but remain unchecked. Current
+provider/account requirements are rendered from live discovery instead of
+catalog history.
 
-An edit submits `expected_record_revision` and
-`expected_catalog_version_id`. Save returns `409` with a refreshed projection
+An edit submits `expected_card_revision` and
+`expected_catalog_version`. Save returns `409` with a refreshed projection
 if either the card or catalog changed after the editor loaded. Otherwise the
 server prunes stale selections, validates every survivor against the active
 catalog, rebuilds `operations` and `named_services`, increments
-`record_revision`, and stamps the active `catalog_version_id` atomically.
+`card_revision`, and stamps the active `catalog_version` atomically.
 
 Runtime applies the same ceiling before Save:
 
@@ -613,26 +831,93 @@ effective named operations      = stored selections intersect active namespace o
 effective account-backed access = stored account_scope checked against current requirements
 ```
 
-The clamp applies to pointer-backed cards and legacy managed bindings. The
-generic guard consumes a catalog-resolver interface and does not know which
-storage technology or bundle produced the current projection.
+A governed request returns different structured outcomes for policy change and
+catalog failure:
+
+| Condition | Response |
+| --- | --- |
+| Current `active.json` cannot be obtained or validated. | HTTP `503`, `temporarily_unavailable`, retryable after shared-state recovery. |
+| The requested capability is present in the card's exact stored authority but absent from current `active.json.connections`. | HTTP `403`, `delegated_capability_no_longer_available`, non-retryable until discovery, card, or service configuration changes. |
+| The capability is current but absent from the card. | HTTP `403` using the existing missing-grant/consent denial. |
+
+The removed-capability response names the failed dimension, resource,
+namespace/operation where applicable, `card_catalog_version`,
+`active_catalog_version`, and a recovery action to refresh discovery or review
+delegated access. It does not emit a consent action because additional user
+consent cannot restore a capability removed by current service configuration.
+
+Its structured `requested_capability` object contains the complete path:
+
+| `kind` | Required fields |
+| --- | --- |
+| `resource` | Configured `resource`; concrete `request_resource` when available. |
+| `resource_claim` | `resource`, `claim`; `request_resource` when available. |
+| `outer_operation` | `resource`, `surface`, `outer_operation`; `request_resource` when available. |
+| `named_service_namespace` | `resource`, `surface`, `namespace`; outer/request fields when applicable. |
+| `named_service_operation` | `resource`, `surface`, `namespace`, `operation`; outer/request fields when applicable. |
+
+`resource` is the matched card/catalog selector. `request_resource` is the
+concrete URL or resource identifier supplied by the transport. Both are
+returned when wildcard matching was involved.
+
+The response also carries `reason`, opaque `access_id`, `card_revision`, both
+catalog version ids, and structured recovery with `retry_same_request: false`.
+An operation name alone is insufficient because the same operation can exist
+under multiple resources or namespaces.
+
+Those fields come from three request-time inputs:
+
+| Field | Source |
+| --- | --- |
+| Card ids/revision/saved catalog version | The resolved live card. |
+| Active catalog version and current resource policy | Complete validated `active.json`. |
+| Configured resource selector | Canonical matching across card and active catalog. |
+| Concrete request resource and outer operation | REST/MCP request target and operation dispatch. |
+| Named-service namespace and inner operation | Parsed `NamedServiceRequest`, before provider invocation. |
+| Claim | The exact current resource/operation policy check that failed. |
+
+The managed REST/MCP guard checks resource, claims, and outer operation. The
+common named-service dispatcher performs the inner resource/namespace/
+operation check after request decoding and before provider selection or call.
+This placement supplies the same complete path for MCP, direct API, and native
+agent named-service calls.
+
+The current outer MCP helper extracts only RPC id and tool name and discards
+tool arguments. Therefore implementation must carry the validated card context
+into common named-service dispatch and check the parsed `NamedServiceRequest`.
+It must not infer namespace or inner operation by parsing a tool name.
+
+No historical catalog body is required on this request path. Exact membership
+in the card proves the capability belonged to its stored selection; absence
+from complete current `active.json.connections` proves it is no longer exposed.
+The version ids provide provenance. Historical catalog content is loaded only
+for list/open drift details.
+
+The clamp applies to pointer-backed card records and to older managed grant
+bindings still accepted by compatibility paths. The generic guard consumes a
+catalog-resolver interface and does not know which storage technology or bundle
+produced the current projection.
 
 There is no delegated-card selector meaning "all current and future operations
 in this namespace." New operations therefore remain ungranted. Platform
 administrator authority is a separate concept and must not be inferred as a
 future-operation wildcard on a granular card.
 
-An append-only card-change history would improve audit and rollback, but it is
-separate from the immediate enforcement and editability requirements above.
+Immutable card revisions are required for durable authority and provenance.
+They do not expose rollback: restoring old authority would be a new explicit
+grant operation, not a pointer move to a historical revision.
 
 ## Revocation And Expiry
 
-- Expired records disappear from list and cease to resolve.
-- Manual revoke logs out the bound platform session and removes the access
-  grant/card.
-- Agent revoke removes its reusable server-side grant and bearer authority.
-- OAuth revoke removes current access-grant and refresh-token state as well as
-  the card.
+- Expired cards disappear from the normal active list and cease to resolve.
+  Redis removes their live projection, while their durable revisions remain
+  available to history/audit views.
+- Manual revoke commits a durable `revoked` revision, logs out the bound
+  platform session, and removes live access-grant state.
+- Agent revoke commits the same durable state and removes its reusable
+  server-side bearer authority.
+- OAuth revoke commits the durable state and removes current access-grant and
+  refresh-token state.
 - Every mutation publishes a best-effort
   `connection_hub.delegated_access.changed` event so open Connection Hub
   widgets refetch the authoritative list.
@@ -642,7 +927,14 @@ separate from the immediate enforcement and editability requirements above.
 | Concern | Implementation |
 | --- | --- |
 | Capability/resource vocabulary and parser aliases | `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config` |
-| Record, Redis keys, create/list/edit/revoke | `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access` |
+| Current Redis-only record, keys, and operation orchestration | `kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.automation_access` |
+| Required durable revisions and current pointer | planned `...delegated_credentials.cards.store.DelegatedCardStore` over Connection Hub bundle storage |
+| Required TTL live projection and read-through | planned `...delegated_credentials.cards.cache` |
+| Durable catalog history | planned `...delegated_credentials.catalog.store` and `.publisher`, using immutable version documents and complete `active.json` |
+| Request-serving catalog cache | planned async `...delegated_credentials.catalog.runtime_cache.DelegatedCatalogRuntimeCache`; Redis stores complete TTL-cached `active.json` and historical version documents, with atomic no-downgrade active updates |
+| Current catalog resolution | planned `...delegated_credentials.catalog.resolver`, reading complete Redis `active.json` on each request; no props input, second active-body lookup, or process catalog cache |
+| Runtime-cache recovery | planned request-time durable read-through in `...delegated_credentials.catalog.resolver`; `on_app_deploy` publication remains in `.publisher` |
+| Current-capability denial shaping | planned shared `authorize_current_capability(...)`, called by the managed REST/MCP guard and common named-service dispatcher with the complete parsed capability path |
 | Named-service strict narrowing and materialization | `...delegated_credentials.named_service_policy` |
 | Descriptor namespace/operation projection | `...solutions.named_services_providers.boundary_policy.NamedServiceBoundaryCatalog` |
 | Live provider requirement enrichment | `automation_access.AutomationAccessService._named_service_options` plus provider discovery `spec.metadata.connected_accounts` |
