@@ -95,6 +95,43 @@ function pendingAgentGrantRequest(openParams?: Record<string, string>): PendingA
   }
 }
 
+type ManualAccessFocus = {
+  accessId: string;
+  resource?: string;
+  claims: string[];
+  accountId?: string;
+  accountClaim?: string;
+};
+
+function manualAccessFocusFromParams(get: (key: string) => string): ManualAccessFocus | null {
+  const accessId = get('manual_access_id').trim();
+  if (!accessId) return null;
+  const resource = get('resource').trim();
+  const claims = get('claims').split(',').map((item) => item.trim()).filter(Boolean);
+  const accountId = get('account_id').trim();
+  const accountClaim = get('account_claim').trim();
+  return {
+    accessId,
+    resource: resource || undefined,
+    claims,
+    accountId: accountId || undefined,
+    accountClaim: accountClaim || undefined,
+  };
+}
+
+function manualAccessFocusRequest(openParams?: Record<string, string>): ManualAccessFocus | null {
+  if (openParams) {
+    const fromProps = manualAccessFocusFromParams((key) => String(openParams[key] ?? ''));
+    if (fromProps) return fromProps;
+  }
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return manualAccessFocusFromParams((key) => params.get(key) ?? '');
+  } catch {
+    return null;
+  }
+}
+
 const ttlOptions = [
   { value: 3600, label: '1 hour' },
   { value: 12 * 3600, label: '12 hours' },
@@ -390,6 +427,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [namedServiceOperations, setNamedServiceOperations] = useState<DelegatedAccessNamedServiceOperations>({});
   const [ttlSeconds, setTtlSeconds] = useState(ttlOptions[0].value);
   const [pendingGrant, setPendingGrant] = useState(() => pendingAgentGrantRequest(openParams));
+  const manualFocus = useMemo(() => manualAccessFocusRequest(openParams), [openParams]);
   useEffect(() => {
     console.info(
       '[consent-route] pending pane state on mount:',
@@ -415,11 +453,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editLabel, setEditLabel] = useState('');
   // The automation-creation form is folded behind its call to action.
   const [createOpen, setCreateOpen] = useState(false);
+  // Claims kept on the edited card, keyed `${resource}:${claim}`. The form
+  // offers the resource's whole catalog, so only `true` counts.
   const [editPicks, setEditPicks] = useState<Record<string, boolean>>({});
+  // Namespace narrowing being edited: {resource: {namespace: [operation]}}.
+  const [editNamedServiceOperations, setEditNamedServiceOperations] =
+    useState<DelegatedAccessNamedServiceOperations>({});
   // Per-account claim binding being edited: {provider_id: {account_id: [claims]}}.
   // Default-closed: a provider with nothing ticked grants NO account to this
   // client; only the ticked accounts+claims are allowed.
   const [editAccountScope, setEditAccountScope] = useState<Record<string, Record<string, string[]>>>({});
+  // The same binding for the card being created.
+  const [createAccountScope, setCreateAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   // Catalog search: narrows the delegable-resource cards (labels, grants,
   // named-service rows) wherever the shared list renders.
   const [resourceQuery, setResourceQuery] = useState('');
@@ -537,11 +582,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       label: label.trim() || 'Automation access',
       resourceGrants,
       namedServiceOperations: selectedNamedServiceOperations,
+      accountScope: createAccountScope,
       ttlSeconds,
     })).unwrap().catch(() => undefined);
     // Fold the form back once the credential exists — the issued token renders
     // above it, which is what the user needs to see next.
     setCreateOpen(false);
+    setCreateAccountScope({});
     void dispatch(loadDelegatedAccess());
   };
 
@@ -623,16 +670,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     void dispatch(loadDelegatedAccess());
   };
 
-  const startEdit = (item: DelegatedAccessRecord) => {
-    const picks: Record<string, boolean> = {};
-    Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
-      grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
-    });
-    setEditingAccessId(item.access_id);
-    setEditPicks(picks);
-    setEditAccountScope(seedAccountScopeFromRecord(item));
-    setEditLabel(item.label || '');
-  };
   // Toggle one claim on one account for a provider. An account with no claims
   // drops out; a provider with no bound accounts drops out (=> nothing granted
   // there — the runtime is default-closed for delegated callers).
@@ -684,6 +721,27 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     });
     return scope;
   }, [providersWithAccounts]);
+  const startEdit = useCallback((item: DelegatedAccessRecord) => {
+    const picks: Record<string, boolean> = {};
+    Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
+      grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
+    });
+    setEditingAccessId(item.access_id);
+    setEditPicks(picks);
+    setEditNamedServiceOperations(
+      Object.fromEntries(
+        Object.entries(item.named_service_operations || {})
+          .map(([resource, namespaces]) => [
+            resource,
+            Object.fromEntries(
+              Object.entries(namespaces || {}).map(([ns, ops]) => [ns, [...(ops || [])]]),
+            ),
+          ]),
+      ),
+    );
+    setEditAccountScope(seedAccountScopeFromRecord(item));
+    setEditLabel(item.label || '');
+  }, [seedAccountScopeFromRecord]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -694,9 +752,37 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [accounts]);
   // Which provider account-lists are expanded (the "+ choose" disclosure).
   const [expandedAccountProviders, setExpandedAccountProviders] = useState<Record<string, boolean>>({});
+  const focusedManualAccessId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!manualFocus) {
+      focusedManualAccessId.current = null;
+      return;
+    }
+    const item = items.find(
+      (candidate) => candidate.source === 'manual'
+        && candidate.access_id === manualFocus.accessId,
+    );
+    if (!item) return;
+    if (focusedManualAccessId.current !== manualFocus.accessId) {
+      focusedManualAccessId.current = manualFocus.accessId;
+      startEdit(item);
+    }
+    if (manualFocus.accountId) {
+      const account = accounts.find(
+        (candidate) => candidate.account_id === manualFocus.accountId,
+      );
+      if (account?.provider_id) {
+        setExpandedAccountProviders((current) => ({
+          ...current,
+          [account.provider_id]: true,
+        }));
+      }
+    }
+  }, [manualFocus, items, accounts, startEdit]);
   // Per-account claim binding chosen while granting a PENDING request (consent card).
   const [pendingAccountScope, setPendingAccountScope] = useState<Record<string, Record<string, string[]>>>({});
   const togglePendingAccount = makeToggleAccountClaim(setPendingAccountScope);
+  const toggleCreateAccount = makeToggleAccountClaim(setCreateAccountScope);
   // Seed the pending consent card's per-account picker ONCE (per client) from
   // the agent's existing grant, after the account list + grant registry load.
   // Without this, re-consent for a newly-demanded door claim (e.g. mail:send)
@@ -801,20 +887,93 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     );
   };
 
+  // Same cascade as the create form: ticking an operation adds the claims it
+  // declares, dropping a claim drops the operations that required it.
+  const toggleEditClaim = (resource: string, claim: string, checked: boolean) => {
+    setEditPicks((current) => ({ ...current, [`${resource}:${claim}`]: checked }));
+    if (checked) return;
+    const resourceOption = resources.find((item) => item.resource === resource);
+    if (!resourceOption) return;
+    setEditNamedServiceOperations((current) => {
+      const existingNamespaces = current[resource];
+      if (!existingNamespaces) return current;
+      const removesSurfaceAccess = commonOperationGrants(resourceOption).includes(claim);
+      const nextNamespaces: Record<string, string[]> = {};
+      (resourceOption.named_services || []).forEach((namespace) => {
+        const disallowed = new Set(
+          operationRows(namespace)
+            .filter((row) => removesSurfaceAccess || row.grants.includes(claim))
+            .map((row) => row.operation),
+        );
+        const remaining = (existingNamespaces[namespace.namespace] || [])
+          .filter((operation) => !disallowed.has(operation));
+        if (remaining.length) nextNamespaces[namespace.namespace] = remaining;
+      });
+      return { ...current, [resource]: nextNamespaces };
+    });
+  };
+
+  const toggleEditNamedServiceOperation = (
+    resource: string,
+    namespace: string,
+    operation: string,
+    grants: string[],
+    checked: boolean,
+  ) => {
+    if (checked) {
+      const resourceOption = resources.find((item) => item.resource === resource);
+      const required = [
+        ...grants,
+        ...(resourceOption ? commonOperationGrants(resourceOption) : []),
+      ];
+      setEditPicks((current) => ({
+        ...current,
+        ...Object.fromEntries(required.map((grant) => [`${resource}:${grant}`, true])),
+      }));
+    }
+    setEditNamedServiceOperations((current) => {
+      const namespaces = { ...(current[resource] || {}) };
+      const existing = namespaces[namespace] || [];
+      const updated = checked
+        ? Array.from(new Set([...existing, operation]))
+        : existing.filter((item) => item !== operation);
+      if (updated.length) namespaces[namespace] = updated;
+      else delete namespaces[namespace];
+      // The resource key stays when empty: absent means no narrowing, present
+      // and empty means nothing allowed.
+      return { ...current, [resource]: namespaces };
+    });
+  };
+
+  const clearEditState = () => {
+    setEditingAccessId(null);
+    setEditPicks({});
+    setEditNamedServiceOperations({});
+    setEditAccountScope({});
+    setEditLabel('');
+  };
+
+  // The catalog's claims (so one can be added) union the record's own (so a
+  // claim the catalog dropped is still shown and removable).
+  const editableClaimsFor = (item: DelegatedAccessRecord, resource: string): string[] => {
+    const option = resources.find((candidate) => candidate.resource === resource);
+    return Array.from(new Set([
+      ...((item.resource_grants || {})[resource] || []),
+      ...(option ? grantsForResource(option) : []),
+    ]));
+  };
+
   const saveEdit = async (item: DelegatedAccessRecord) => {
-    const entries = Object.entries(item.resource_grants || {});
     const kept: Record<string, string[]> = {};
-    entries.forEach(([resource, grants]) => {
-      kept[resource] = grants.filter((claim) => editPicks[`${resource}:${claim}`] !== false);
+    Object.keys(item.resource_grants || {}).forEach((resource) => {
+      kept[resource] = editableClaimsFor(item, resource)
+        .filter((claim) => editPicks[`${resource}:${claim}`] === true);
     });
     const anyKept = Object.values(kept).some((claims) => claims.length > 0);
     if (!anyKept) {
       // Removing everything is a revoke, not an edit.
       await dispatch(revokeDelegatedAccess({ accessId: item.access_id })).unwrap().catch(() => undefined);
-      setEditingAccessId(null);
-      setEditPicks({});
-      setEditAccountScope({});
-      setEditLabel('');
+      clearEditState();
       void dispatch(loadDelegatedAccess());
       return;
     }
@@ -827,22 +986,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       const prunedKept = Object.fromEntries(
         Object.entries(kept).filter(([, claims]) => claims.length > 0),
       );
-      // Keep each surviving resource's named-service narrowing; drop entries for
-      // resources fully unchecked above.
+      // The edited selection, minus resources fully unchecked above. Left
+      // undefined when the card carries no narrowing and none was picked, so a
+      // rename preserves it instead of narrowing every resource to nothing.
       const keptNamedServiceOperations = Object.fromEntries(
-        Object.entries(item.named_service_operations || {})
+        Object.entries(editNamedServiceOperations)
           .filter(([resource]) => prunedKept[resource]),
       );
       await dispatch(updateDelegatedAccess({
         accessId: item.access_id,
         label: editLabel.trim() || item.label || 'Automation access',
         resourceGrants: prunedKept,
-        namedServiceOperations: keptNamedServiceOperations,
+        namedServiceOperations: Object.keys(keptNamedServiceOperations).length
+          ? keptNamedServiceOperations
+          : undefined,
+        accountScope: editAccountScope,
       })).unwrap().catch(() => undefined);
-      setEditingAccessId(null);
-      setEditPicks({});
-      setEditAccountScope({});
-      setEditLabel('');
+      clearEditState();
       void dispatch(loadDelegatedAccess());
       return;
     }
@@ -866,10 +1026,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         first = false;
       }
     }
-    setEditingAccessId(null);
-    setEditPicks({});
-    setEditAccountScope({});
-    setEditLabel('');
+    clearEditState();
     void dispatch(loadDelegatedAccess());
   };
 
@@ -1256,7 +1413,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               <button className="btn" type="button" disabled={busy} onClick={() => saveEdit(item)}>
                                 Save
                               </button>
-                              <button className="btn" type="button" disabled={busy} onClick={() => { setEditingAccessId(null); setEditPicks({}); setEditAccountScope({}); setEditLabel(''); }}>
+                              <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
                                 Cancel
                               </button>
                             </>
@@ -1327,6 +1484,22 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ? <ClientIdRef value={item.access_id} kind="access" />
                     : (item.client_id && item.client_id !== item.label
                         ? <ClientIdRef value={item.client_id} kind="client" /> : null)}
+                  {manualFocus?.accessId === item.access_id ? (
+                    <div className="notice" style={{ marginTop: 10, marginBottom: 10 }}>
+                      <strong>Access update required</strong>
+                      {manualFocus.accountClaim ? (
+                        <div>
+                          Allow <code>{manualFocus.accountClaim}</code>
+                          {manualFocus.accountId ? <> on <code>{manualFocus.accountId}</code></> : null},
+                          then save and retry the operation.
+                        </div>
+                      ) : manualFocus.claims.length ? (
+                        <div>
+                          Review <code>{manualFocus.claims.join(', ')}</code>, save, and retry the operation.
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {editing ? (
                     <label className="rename-row">
                       <span className="card-field-label">Name</span>
@@ -1340,26 +1513,46 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   ) : null}
                   {item.resource_grants && Object.keys(item.resource_grants).length ? (
                     editing ? (
-                      Object.entries(item.resource_grants).map(([resource, grants]) => (
-                        <div key={resource}>
-                          <div className="account-title">{resource === '*' ? 'all resources' : (doorAlias(resource) || resourceLabelFor(resource) || resource)}</div>
-                          {resource !== '*' ? <DoorRef value={resource} /> : null}
-                          <div className="resource-grants">
-                            {grants.map((claim) => (
-                              <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
-                                <input
-                                  type="checkbox"
-                                  checked={editPicks[`${resource}:${claim}`] !== false}
-                                  onChange={(event) => setEditPicks((current) => ({
-                                    ...current, [`${resource}:${claim}`]: event.target.checked,
-                                  }))}
-                                />
-                                <span>{claim}</span>
-                              </label>
-                            ))}
+                      Object.keys(item.resource_grants).map((resource) => {
+                        const resourceOption = resources.find((candidate) => candidate.resource === resource);
+                        const editedGrants = editableClaimsFor(item, resource)
+                          .filter((claim) => editPicks[`${resource}:${claim}`] === true);
+                        return (
+                          <div key={resource}>
+                            <div className="account-title">{resource === '*' ? 'all resources' : (doorAlias(resource) || resourceLabelFor(resource) || resource)}</div>
+                            {resource !== '*' ? <DoorRef value={resource} /> : null}
+                            <div className="resource-grants">
+                              {editableClaimsFor(item, resource).map((claim) => (
+                                <label className="grant-chip" key={`${resource}:${claim}`} title={grantOptionByName.get(claim)?.label || undefined}>
+                                  <input
+                                    type="checkbox"
+                                    checked={editPicks[`${resource}:${claim}`] === true}
+                                    onChange={(event) => toggleEditClaim(resource, claim, event.target.checked)}
+                                  />
+                                  <span>{claim}</span>
+                                </label>
+                              ))}
+                            </div>
+                            {/* Namespace operations are stored per card and derived
+                                per request only for manual automations; the OAuth
+                                edit op does not accept them. */}
+                            {item.source === 'manual' && resourceOption ? (
+                              <DelegatedResourceCatalog
+                                resource={resourceOption}
+                                selectedGrants={editedGrants}
+                                selectedOperations={editNamedServiceOperations[resource] || {}}
+                                onOperationChange={(namespace, operation, operationGrants, checked) => (
+                                  toggleEditNamedServiceOperation(
+                                    resource, namespace, operation, operationGrants, checked,
+                                  )
+                                )}
+                                providers={providers}
+                                accounts={accounts}
+                              />
+                            ) : null}
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     ) : null
                   ) : null}
                   {/* Read-only view: labelled rows, values as chips. A grant can
@@ -1430,8 +1623,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </Field>
                     </div>
                   ) : null}
-                  {editing && item.source === 'oauth'
-                    ? renderAccountScopePicker(editAccountScope, toggleEditAccount, 'this app')
+                  {editing
+                    ? renderAccountScopePicker(
+                        editAccountScope,
+                        toggleEditAccount,
+                        item.source === 'manual' ? 'this automation' : 'this app',
+                      )
                     : null}
                 </div>
                 <div className="account-actions">
@@ -1440,7 +1637,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <button className="btn" type="button" disabled={busy} onClick={() => saveEdit(item)}>
                         Save
                       </button>
-                      <button className="btn" type="button" disabled={busy} onClick={() => { setEditingAccessId(null); setEditPicks({}); setEditAccountScope({}); setEditLabel(''); }}>
+                      <button className="btn" type="button" disabled={busy} onClick={clearEditState}>
                         Cancel
                       </button>
                     </>
@@ -1530,6 +1727,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             {renderResourceList()}
           </div>
         ) : null}
+        {renderAccountScopePicker(createAccountScope, toggleCreateAccount, 'this credential')}
         <select className="input" value={ttlSeconds} onChange={(event) => setTtlSeconds(Number(event.target.value))}>
           {ttlOptions.map((item) => (
             <option key={item.value} value={item.value}>{item.label}</option>

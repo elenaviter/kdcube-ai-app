@@ -4,7 +4,8 @@ title: "Connection Hub Solution"
 summary: "Canonical map of Connection Hub roles: connection edges, identity-family resolution, request authenticators, authority projection, delegated connections, link flows, and widget auth-context transport."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "identity", "auth", "authority", "delegated-connections"]
-updated_at: 2026-08-01
+keywords: ["Connection Hub", "delegated access cards", "connected accounts", "authority registry", "request authenticators", "connection edges", "OAuth MCP"]
+updated_at: 2026-08-11
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-edges/connection-edges-README.md
@@ -18,6 +19,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-accounts/delegated-accounts-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/integrations/custom-oauth-oidc-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/delegated-connections-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/delegation-edges-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/widget-auth-context/widget-auth-context-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-token-storage-README.md
@@ -485,8 +487,13 @@ Connected-provider boundary, when required
 The OAuth MCP connector presents the descriptor-backed catalog through its
 OAuth authorization/consent flow. Manual **Delegated by KDCube -> Create
 automation access** presents exact namespace-operation checkboxes and persists
-a narrowed copy of the same `named_services` tree in the grant record. These
-are separate issuance paths with one runtime policy, not two grant systems.
+a narrowed copy of the same `named_services` tree on the access card, which the
+managed guard carries to the bridge on every call. These are separate issuance
+paths with one runtime policy, not two grant systems.
+
+The authoritative explanation of what those cards store, which live catalogs
+render them, how pointer-backed credentials resolve them, and how descriptor
+drift must be reconciled is [Delegated Access Cards](delegated-cards/delegated-cards-README.md).
 
 Provider prerequisites are display/deep-link information derived from the
 selected operations. They lead to the existing **Delegated to KDCube** flow.
@@ -516,6 +523,7 @@ grantor's full platform session.
 | Open Data Bus from Telegram or another non-browser actor | [Federated Data Bus Session Tokens](../../bundle/auth-bundle-federated-README.md) |
 | Configure authenticated MCP from zero - every layer, the provider connected-accounts contract, both consent gates, and all three scenarios (hosted agent, external MCP connection, automation token) | [Authenticated MCP: The Full Configuration Chain](authenticated-mcp/authenticated-mcp-README.md) |
 | Understand delegated representatives, manual automation selection, and OAuth grants | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
+| Understand Delegated by KDCube card storage, rendering, edit semantics, runtime enforcement, and catalog drift | [Delegated Access Cards](delegated-cards/delegated-cards-README.md) |
 | See and revoke access a user granted to automations and external clients | [Delegated Connections](delegated-connections/delegated-connections-README.md) |
 | Build an app that exposes a governed service over MCP (uses Gmail + your own OAuth server) | [Expose a Governed Service over MCP](../../../recipes/quickstart/expose-governed-service-mcp-README.md) |
 | See every place config lives to wire providers → an MCP service → a consumer, end to end | [The Connected-Services Config Chain](connected-services-config-chain/connected-services-config-chain-README.md) |

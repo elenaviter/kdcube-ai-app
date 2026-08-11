@@ -4,9 +4,11 @@ title: "Connection Hub Token Storage"
 summary: "One-page answer for where Connection Hub stores Claude Code delegated OAuth tokens, manual Delegated by KDCube tokens, connected-account provider tokens, and deployment secrets."
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "tokens", "storage", "oauth", "delegated-credentials", "secrets", "redis"]
-updated_at: 2026-07-16
+updated_at: 2026-08-11
+keywords: ["Connection Hub token storage", "manual automation token", "live grant card", "named_service_operations", "account_scope", "credential isolation"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-cards/delegated-cards-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/storage-model/storage-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-credentials/oauth-delegated-credential-protocol-adapter-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/delegated-connections/design/grant-storage-durability-README.md
@@ -17,6 +19,10 @@ see_also:
 
 This page is the single operational answer for "where did Connection Hub put
 the token?" The answer depends on which token family is involved.
+
+For the authority record behind every **Delegated by KDCube** card, including
+which fields are stored versus read from live catalogs and how the card reaches
+runtime enforcement, read [Delegated Access Cards](delegated-cards/delegated-cards-README.md).
 
 ## At A Glance
 
@@ -237,6 +243,9 @@ grantor_subject
 delegate_subject
 resource_grants
 operations
+named_service_operations
+named_services (internal materialized boundary; not public)
+account_scope
 identity_scope
 session_id
 created_at
@@ -248,6 +257,53 @@ source=manual
 Manual listing rows do not store the raw access token for later display.
 Revocation uses the stored `session_id` and grant metadata to remove the active
 bundle-session record and access-grant binding.
+
+### Editing a manual token in place
+
+`delegated_access_update` rewrites the card by `access_id`. The token is a
+pointer — the guard resolves the card live on every call — so the scope changes
+and the bearer the operator already copied keeps working with the new
+permissions. Nothing is re-minted.
+
+```text
+POST delegated_access_update
+  access_id                  which card to rewrite
+  resource_grants            REPLACES the record exactly
+  named_service_operations   optional per-resource namespace narrowing
+  account_scope              optional {provider_id: {account_id: [claims]}}
+  label                      optional rename
+```
+
+The submitted selection replaces the record and is re-validated with the same
+rules as create, so widening is allowed up to what the grantor may delegate.
+Submitting no grants at all is a revoke, not an edit, and is refused —
+`delegated_access_revoke` is the operation for that.
+
+`named_service_operations` is editable in place too, and the Connection Hub edit
+form renders the namespace-operation picker for a manual card. The update
+recomputes that resource's narrowed `named_services` boundary from the live
+descriptor and stores it on the card; the managed guard copies it onto the
+request, so the change applies on the bearer's next call. Cards written before
+that field keep the boundary bound at issuance until their next save.
+
+Only manual cards are editable here: an agent or OAuth card answers
+`delegated_access_not_editable` and edits through its own consent flow. An
+OAuth card's namespace boundary therefore stays as consent bound it —
+`extend_client_access` edits claims and account binding, not the narrowing.
+
+Both `account_scope` and `named_service_operations` distinguish absent from
+empty:
+
+```text
+omitted        leave the dimension untouched
+{}             account_scope: bind no account, default-closed
+               named_service_operations: allow no namespace operation
+with content   replace that dimension exactly
+```
+
+On CREATE the two differ, deliberately: an absent `account_scope` binds nothing
+(default-closed), while an absent `named_service_operations` applies no
+narrowing at all — the resource's grants remain the only ceiling.
 
 ## Connected Provider Account Tokens
 

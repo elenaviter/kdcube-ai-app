@@ -4,7 +4,7 @@ title: "Authenticated MCP: The Full Configuration Chain"
 summary: "The single authoritative reference for configuring authenticated MCP in KDCube: every configuration layer in order (managed door, delegated resource ceiling, delegable capabilities, OAuth client registration, namespace boundary grants), the provider connected-accounts self-description contract, the two consent gates, and the three scenarios this chain enables."
 status: active
 tags: ["sdk", "connections", "connection-hub", "mcp", "managed-auth", "delegated-credentials", "delegated-accounts", "named-services", "consent", "connected-accounts", "automation", "agents"]
-updated_at: 2026-08-01
+updated_at: 2026-08-10
 keywords: ["mode: managed", "authority_id", "delegated_client", "resources", "grants", "capabilities", "delegable_roles", "delegable_permissions", "Client ID Metadata Document", "dynamic_client_registration", "allowed_redirect_uris", "named_services.namespaces", "connected_accounts", "claims_by_operation", "claim_labels", "delegated_consent_required", "needs_connected_account_consent", "connect_required", "agent_grant_required", "retry_hint", "candidates", "kdcube-agent", "automation access", "TTL", "enforce_tool_requirements", "plain mcp tools", "productivity"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/configuring-agent-service-access/configuring-agent-service-access-README.md
@@ -651,9 +651,10 @@ journey and identity-scope choices:
 access** panel renders the same catalog: the user selects a resource, its
 grants (only ones delegable to them, layer 3), narrows named-service
 operations to an exact selection of existing operation ids, and sets a TTL.
-The token's grant record stores the narrowed boundary tree, which the bridge
-prefers over the deployment default - so the token reaches exactly the
-selected operations and nothing else. Provider-backed namespaces keep the
+The card stores the narrowed boundary tree, the managed guard carries it onto
+the request, and the bridge prefers it over the deployment default - so the
+token reaches exactly the selected operations and nothing else, and editing the
+selection later applies without re-issuing the token. Provider-backed namespaces keep the
 connected account as a separate upstream prerequisite; the panel shows it and
 deep-links Delegated to KDCube. Details:
 [Protect Bundle MCP With Managed Credentials](../../../../recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md).
