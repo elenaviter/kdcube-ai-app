@@ -4,7 +4,7 @@ title: "What I Should Know Before Writing a KDCube App"
 summary: "A builder's mind map for KDCube apps: async runtime rules, provider and consumer surfaces, identity and delegation, configuration, storage, concurrency, eventing, conversations, economics, UI, telemetry, isolated execution, and operational checks."
 status: current
 tags: ["recipe", "app", "bundle", "builder", "runtime", "async", "surfaces", "storage", "eventing", "economics"]
-updated_at: 2026-08-01
+updated_at: 2026-08-12
 keywords:
   [
     "KDCube app ingredients",
@@ -21,6 +21,7 @@ keywords:
     "EconomicsGuard",
   ]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-configure-and-run-bundle-README.md
@@ -454,7 +455,18 @@ decorators.
 Read [The Conversation for Any Agent](../sdk/solutions/conversation/hosted-agent-conversation-README.md)
 and [Connect an Agentic Loop to Ordered Delivery](./dataflow/connect-agentic-loop-to-ordered-delivery-README.md).
 
-## 10. Consume Tools, MCP, and Named Services Deliberately
+## 10. Compose Apps And Consume Tools Deliberately
+
+### App-to-app composition
+
+Choose the work contract before choosing its transport. Use the request-bound
+local operation bridge for one immediate same-KDCube result, named services for
+an owner-defined domain vocabulary, Data Bus for durable mutations, conversation
+ingress for ordered agent work, and real MCP or REST when protocol compatibility
+is part of the contract.
+
+Read [Integrate One KDCube App With Another](./apps/integrate-cross-app-surface-README.md)
+and [Cross-App Surface Interoperability](../runtime/cross-app-surface-interoperability-README.md).
 
 ### Built-in tools
 

@@ -20,6 +20,7 @@ keywords:
 updated_at: 2026-08-12
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/runtimes-map-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
@@ -514,6 +515,9 @@ Use the request-bound local @api operation bridge.
 
 For a browser experience, compose the UI through a scene/widget surface and
 then apply the same decision flow to the backend action it starts.
+
+For implementation steps and copy-ready SDK examples, follow
+[Integrate One KDCube App With Another](../recipes/apps/integrate-cross-app-surface-README.md).
 
 ## Implementation Anchors
 

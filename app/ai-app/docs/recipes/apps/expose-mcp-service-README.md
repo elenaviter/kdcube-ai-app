@@ -4,9 +4,11 @@ title: "Expose An MCP Service From A KDCube App"
 summary: "Builder recipe for exposing MCP tools from any KDCube app, choosing public, app-owned, or Connection Hub managed authorization, and adding accounting or named-service semantics only when the product needs them."
 status: active
 tags: ["recipes", "kdcube-for-agents", "mcp", "as-provider", "governance", "economics"]
-updated_at: 2026-07-30
+updated_at: 2026-08-12
 keywords: ["KDCubeMCPServer", "MCP provider surface", "stateless MCP", "managed MCP auth", "bundle MCP", "MCP 2026-07-28", "legacy MCP client"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/consume-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/tools/mcp-README.md
@@ -18,6 +20,12 @@ see_also:
 
 Use this recipe when an external agent, another KDCube app, or one of your own
 agents should call capabilities implemented by a KDCube app through MCP.
+
+Choose MCP when the caller needs MCP discovery, tool schemas, or `tools/call`
+compatibility. Trusted same-KDCube app code that needs one bounded result can
+use the local app-operation bridge, while durable work uses Data Bus or the
+relevant job/conversation lane. [Integrate One KDCube App With
+Another](integrate-cross-app-surface-README.md) maps those contracts.
 
 The full configuration reference - every layer, the provider connected-accounts
 contract, both consent gates, and all three scenarios - is
@@ -192,6 +200,13 @@ For `route="operations"`, the route is:
 ```text
 /api/integrations/bundles/{tenant}/{project}/{bundle_id}/mcp/reports
 ```
+
+Another app in the same KDCube consumes this as a real MCP endpoint through a
+descriptor-configured transport, commonly streamable HTTP through the private
+OpenResty address. Another KDCube reaches it through this deployment's accepted
+ingress and presents a credential accepted here. The local app-operation bridge
+serves non-MCP request/response composition; the SDK does not expose an
+app-facing `call_bundle_mcp(...)` shortcut.
 
 `auth_config` is a pointer into this app's effective descriptor. It does not
 hard-code credentials in Python and it does not itself select an auth mode.
@@ -527,6 +542,8 @@ per-agent consent grant. See
 
 ## Related Documentation
 
+- [Integrate One KDCube App With Another](integrate-cross-app-surface-README.md)
+- [Cross-App Surface Interoperability](../../runtime/cross-app-surface-interoperability-README.md)
 - [Connect An MCP Service To A KDCube Agent](consume-mcp-service-README.md)
 - [MCP SDK Integration](../../sdk/tools/mcp-README.md)
 - [Protect App MCP With Managed Credentials](../connections/protect-bundle-mcp-with-managed-credentials-README.md)

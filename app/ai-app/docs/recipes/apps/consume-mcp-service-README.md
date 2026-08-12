@@ -4,9 +4,11 @@ title: "Connect An MCP Service To A KDCube Agent"
 summary: "Builder recipe for registering an MCP server once, exposing an allow-listed tool view to each KDCube agent through surfaces.as_consumer, resolving secrets, and verifying the resulting mcp.<alias>.<tool> catalog and runtime calls."
 status: active
 tags: ["recipes", "kdcube-for-agents", "mcp", "as-consumer", "agents", "tools", "governance"]
-updated_at: 2026-07-30
+updated_at: 2026-08-12
 keywords: ["MCP consumer surface", "protocol_mode", "MCP server registry", "per-agent MCP tools", "MCP 2026-07-28", "legacy initialize", "streamable HTTP"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/authenticated-mcp/authenticated-mcp-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/expose-mcp-service-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
@@ -18,6 +20,12 @@ see_also:
 
 Use this recipe when a KDCube app needs one or more of its agents to call tools
 from an MCP server.
+
+MCP is the app-to-app contract when the consumer needs MCP discovery, tool
+schemas, or `tools/call` compatibility. For one bounded same-KDCube app result,
+the local app-operation bridge is shorter; durable work belongs on Data Bus or
+the relevant job/conversation lane. Use [Integrate One KDCube App With
+Another](integrate-cross-app-surface-README.md) to choose that path first.
 
 The full configuration reference - every layer, the provider connected-accounts
 contract, both consent gates, and all three scenarios - is
@@ -105,6 +113,13 @@ secret references and are resolved server-side.
 The URL must be reachable from the runtime process, not only from the builder's
 browser. In Docker, `127.0.0.1` points to the current container. Use service DNS
 or a reachable internal/public host when the MCP server runs elsewhere.
+
+When another app in the same KDCube provides the MCP endpoint, configure its
+streamable-HTTP URL through the deployment's private OpenResty address. Keep
+that address in the descriptor. Managed connections also declare a protected
+`resource` whose pattern must match the canonical request path observed by the
+target guard. The SDK uses the real MCP transport for this path; it does not
+translate the call into a local app-operation invocation.
 
 ## 2. Attach An Allow-Listed View To An Agent
 
@@ -482,6 +497,8 @@ MCP build_tool_entries: total ... mcp.docs.search ...
 
 ## Related Documentation
 
+- [Integrate One KDCube App With Another](integrate-cross-app-surface-README.md)
+- [Cross-App Surface Interoperability](../../runtime/cross-app-surface-interoperability-README.md)
 - [Expose An MCP Service From A KDCube App](expose-mcp-service-README.md)
 - [MCP SDK Integration](../../sdk/tools/mcp-README.md)
 - [Tool Subsystem](../../sdk/tools/tool-subsystem-README.md)
