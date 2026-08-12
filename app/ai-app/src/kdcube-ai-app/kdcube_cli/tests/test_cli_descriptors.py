@@ -64,6 +64,7 @@ from kdcube_cli.installer import (
     ensure_local_dirs,
     patch_gateway_descriptor_file,
     gather_configuration,
+    render_nginx_forwarded_proto_config,
     render_nginx_frame_embedding_config,
     resolve_frontend_routes_prefix,
     stage_descriptor_directory,
@@ -570,6 +571,10 @@ def test_update_nginx_routes_prefix_adds_prefix_root_redirect(tmp_path: Path):
         "    }\n"
         "    location / {\n"
         "        proxy_pass http://web_ui;\n"
+        "        location ~* /chatbot/.+ {\n"
+        "            rewrite ^/chatbot/(.*)$ /$1 break;\n"
+        "            proxy_pass http://web_ui;\n"
+        "        }\n"
         "    }\n"
         "}\n"
     )
@@ -579,6 +584,82 @@ def test_update_nginx_routes_prefix_adds_prefix_root_redirect(tmp_path: Path):
     updated = nginx.read_text()
     assert "return 301 /chatbot/demo/chat;" in updated
     assert "location = /chatbot/demo {" in updated
+    assert "location ~* /chatbot/demo/.+ {" in updated
+    assert "rewrite ^/chatbot/demo/(.*)$ /$1 break;" in updated
+
+
+def test_update_nginx_routes_prefix_keeps_multi_segment_mount_when_stripping_upstream_path(
+    tmp_path: Path,
+):
+    nginx = tmp_path / "nginx.conf"
+    nginx.write_text(
+        "server {\n"
+        "    location / {\n"
+        "        location ~* /chatbot/.+ {\n"
+        "            rewrite ^/chatbot/(.*)$ /$1 break;\n"
+        "            proxy_pass http://web_ui;\n"
+        "        }\n"
+        "    }\n"
+        "}\n"
+    )
+
+    update_nginx_routes_prefix(nginx, "/control/ui")
+
+    updated = nginx.read_text()
+    assert "location ~* /control/ui/.+ {" in updated
+    assert "rewrite ^/control/ui/(.*)$ /$1 break;" in updated
+
+
+def test_render_nginx_forwarded_proto_defaults_to_immediate_request():
+    template = (
+        "    # KDCUBE_FORWARDED_PROTO_SOURCE: request\n"
+        "    map $scheme $forwarded_proto_last {\n"
+        "        default                        $scheme;\n"
+    )
+
+    rendered = render_nginx_forwarded_proto_config(template, {"proxy": {}})
+
+    assert "KDCUBE_FORWARDED_PROTO_SOURCE: request" in rendered
+    assert "map $scheme $forwarded_proto_last" in rendered
+    assert "default $scheme;" in rendered
+
+
+def test_render_nginx_forwarded_proto_accepts_declared_trusted_terminator():
+    template = (
+        "    # KDCUBE_FORWARDED_PROTO_SOURCE: request\n"
+        "    map $scheme $forwarded_proto_last {\n"
+        "        default                        $scheme;\n"
+    )
+    assembly = {
+        "proxy": {
+            "forwarded_proto": {
+                "source": "trusted_x_forwarded_proto",
+            }
+        }
+    }
+
+    rendered = render_nginx_forwarded_proto_config(template, assembly)
+
+    assert "KDCUBE_FORWARDED_PROTO_SOURCE: trusted_x_forwarded_proto" in rendered
+    assert "map $http_x_forwarded_proto $forwarded_proto_last" in rendered
+    assert "default $http_x_forwarded_proto;" in rendered
+
+
+def test_render_nginx_forwarded_proto_unknown_source_fails_safe():
+    template = (
+        "    # KDCUBE_FORWARDED_PROTO_SOURCE: trusted_x_forwarded_proto\n"
+        "    map $http_x_forwarded_proto $forwarded_proto_last {\n"
+        "        default $http_x_forwarded_proto;\n"
+    )
+
+    rendered = render_nginx_forwarded_proto_config(
+        template,
+        {"proxy": {"forwarded_proto": {"source": "unknown"}}},
+    )
+
+    assert "KDCUBE_FORWARDED_PROTO_SOURCE: request" in rendered
+    assert "map $scheme $forwarded_proto_last" in rendered
+    assert "default $scheme;" in rendered
 
 
 def test_render_nginx_frame_embedding_defaults_to_standalone_shell_and_same_origin_frames():

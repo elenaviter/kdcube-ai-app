@@ -56,6 +56,17 @@ auth:
 proxy:
   ssl: false
   route_prefix: "/platform"
+  # Selects the browser-visible scheme that local non-TLS OpenResty forwards
+  # to applications as X-Forwarded-Proto. Cloud ECS ingress derives this from
+  # its declared CloudFront/ALB topology instead of this local setting.
+  forwarded_proto:
+    # Values:
+    #   request (default) - use the scheme received directly by OpenResty;
+    #     choose this for direct local access and when the setting is uncertain.
+    #   trusted_x_forwarded_proto - use X-Forwarded-Proto supplied by a trusted
+    #     TLS terminator; only when untrusted callers cannot bypass that terminator.
+    # Missing or unknown values fail safe to request.
+    source: "request"
   frame_embedding:
     mode: "standalone"
     allowed_origins: []

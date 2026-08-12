@@ -388,6 +388,7 @@ services:
       dockerfile: ${PROXY_DOCKERFILE_PATH}
       args:
         - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
+        - KDCUBE_AI_APP_SOURCE_PATH=app/ai-app
     restart: unless-stopped
     volumes:
       - ${NGINX_PROXY_RUNTIME_CONFIG_PATH:-${KDCUBE_CONFIG_DIR:-./config}/nginx_proxy.conf}:/usr/local/openresty/nginx/conf/nginx.conf:ro

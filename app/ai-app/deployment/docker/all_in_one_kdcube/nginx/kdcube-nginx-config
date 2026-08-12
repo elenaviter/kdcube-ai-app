@@ -1,0 +1,122 @@
+#!/bin/sh
+set -eu
+
+TEMPLATE_PATH="${NGINX_CONFIG_TEMPLATE_PATH:-/nginx-config/nginx.conf.template}"
+MARKER_PATH="${NGINX_CONFIG_MARKER_PATH:-/nginx-config/nginx.conf.sha256}"
+RUNTIME_PATH="${NGINX_CONFIG_RUNTIME_PATH:-/usr/local/openresty/nginx/conf/nginx.conf}"
+LOCK_PATH="${NGINX_CONFIG_LOCK_PATH:-/nginx-config/.activation.lock}"
+
+sha256_file() {
+    sha256sum "$1" | awk '{print $1}'
+}
+
+render_template() {
+    template_path="$1"
+    output_path="$2"
+    envsubst '${APP_DOMAIN} ${ALB_CIDR} ${ROUTE_PREFIX}' \
+        < "$template_path" \
+        > "$output_path"
+}
+
+record_loaded_hashes() {
+    template_sha="$1"
+    runtime_sha="$2"
+    mkdir -p /run/kdcube
+    printf '%s\n' "$template_sha" > /run/kdcube/nginx-template.sha256
+    printf '%s\n' "$runtime_sha" > /run/kdcube/nginx-runtime.sha256
+}
+
+render_for_startup() {
+    if [ ! -f "$TEMPLATE_PATH" ]; then
+        openresty -t -c "$RUNTIME_PATH"
+        record_loaded_hashes "local-bind-mount" "$(sha256_file "$RUNTIME_PATH")"
+        return
+    fi
+
+    template_sha="$(sha256_file "$TEMPLATE_PATH")"
+    deployment_sha="${NGINX_CONFIG_SHA256:-}"
+    if [ -n "$deployment_sha" ] && [ "$template_sha" != "$deployment_sha" ]; then
+        echo "nginx template does not match this task definition: expected=$deployment_sha actual=$template_sha" >&2
+        exit 20
+    fi
+
+    if [ -n "$deployment_sha" ] && [ ! -f "$MARKER_PATH" ]; then
+        echo "nginx checksum marker required by this task definition is missing: $MARKER_PATH" >&2
+        exit 21
+    fi
+
+    if [ -f "$MARKER_PATH" ]; then
+        marker_sha="$(tr -d '[:space:]' < "$MARKER_PATH")"
+        if [ -z "$marker_sha" ] || [ "$template_sha" != "$marker_sha" ]; then
+            echo "nginx template checksum marker mismatch: marker=$marker_sha actual=$template_sha" >&2
+            exit 21
+        fi
+        if [ -n "$deployment_sha" ] && [ "$marker_sha" != "$deployment_sha" ]; then
+            echo "nginx marker does not match this task definition: expected=$deployment_sha marker=$marker_sha" >&2
+            exit 21
+        fi
+    fi
+
+    runtime_candidate="${RUNTIME_PATH}.next.$$"
+    trap 'rm -f "$runtime_candidate"' EXIT HUP INT TERM
+    render_template "$TEMPLATE_PATH" "$runtime_candidate"
+    openresty -t -c "$runtime_candidate"
+    runtime_sha="$(sha256_file "$runtime_candidate")"
+    mv "$runtime_candidate" "$RUNTIME_PATH"
+    trap - EXIT HUP INT TERM
+    record_loaded_hashes "$template_sha" "$runtime_sha"
+}
+
+activate_template() {
+    : "${NGINX_CONFIG_B64:?NGINX_CONFIG_B64 is required}"
+    : "${NGINX_CONFIG_SHA256:?NGINX_CONFIG_SHA256 is required}"
+
+    mkdir -p "$(dirname "$TEMPLATE_PATH")" "$(dirname "$LOCK_PATH")"
+    exec 9>"$LOCK_PATH"
+    flock -x 9
+
+    template_candidate="$(mktemp "$(dirname "$TEMPLATE_PATH")/.nginx.conf.template.XXXXXX")"
+    marker_candidate="$(mktemp "$(dirname "$MARKER_PATH")/.nginx.conf.sha256.XXXXXX")"
+    runtime_candidate="$(mktemp /tmp/kdcube-nginx-runtime.XXXXXX)"
+    trap 'rm -f "$template_candidate" "$marker_candidate" "$runtime_candidate"' EXIT HUP INT TERM
+
+    printf '%s' "$NGINX_CONFIG_B64" | base64 -d > "$template_candidate"
+    candidate_sha="$(sha256_file "$template_candidate")"
+    if [ "$candidate_sha" != "$NGINX_CONFIG_SHA256" ]; then
+        echo "nginx candidate checksum mismatch: expected=$NGINX_CONFIG_SHA256 actual=$candidate_sha" >&2
+        exit 22
+    fi
+
+    force="${NGINX_CONFIG_FORCE:-false}"
+    if [ "$force" != "true" ] && [ -f "$TEMPLATE_PATH" ] && [ -f "$MARKER_PATH" ]; then
+        active_sha="$(sha256_file "$TEMPLATE_PATH")"
+        marker_sha="$(tr -d '[:space:]' < "$MARKER_PATH")"
+        if [ "$active_sha" = "$candidate_sha" ] && [ "$marker_sha" = "$candidate_sha" ]; then
+            echo "nginx config unchanged: sha256=$candidate_sha"
+            exit 10
+        fi
+    fi
+
+    render_template "$template_candidate" "$runtime_candidate"
+    openresty -t -c "$runtime_candidate"
+
+    printf '%s\n' "$candidate_sha" > "$marker_candidate"
+    mv "$template_candidate" "$TEMPLATE_PATH"
+    mv "$marker_candidate" "$MARKER_PATH"
+    trap 'rm -f "$runtime_candidate"' EXIT HUP INT TERM
+
+    echo "nginx config activated: sha256=$candidate_sha"
+}
+
+case "${1:-render}" in
+    render)
+        render_for_startup
+        ;;
+    activate)
+        activate_template
+        ;;
+    *)
+        echo "usage: kdcube-nginx-config [render|activate]" >&2
+        exit 2
+        ;;
+esac

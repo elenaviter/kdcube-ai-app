@@ -341,6 +341,45 @@ requests through `auth.idp: session`. The older browser value `hardcoded` is a
 legacy alias for `simple`; new descriptors should use `simple`. `oauth` is not
 a deployment auth mode; use `cognito` for the OSS browser Cognito/OIDC flow.
 
+### `proxy.forwarded_proto`
+
+`proxy.forwarded_proto.source` tells a non-TLS local OpenResty deployment where
+to obtain the browser-visible request scheme that it forwards to applications.
+The setting is rendered into the generated proxy configuration by the CLI.
+
+Accepted values are:
+
+| Value | Meaning |
+| --- | --- |
+| `request` | Default. Use the scheme received directly by OpenResty. This is the safe choice for direct local access. |
+| `trusted_x_forwarded_proto` | Use `X-Forwarded-Proto` supplied by a trusted TLS terminator that is the effective ingress. Untrusted callers must not be able to bypass that terminator. |
+
+An omitted or unknown value fails safe to `request`.
+
+The default is the scheme received directly by OpenResty:
+
+```yaml
+proxy:
+  forwarded_proto:
+    source: "request"
+```
+
+Use the forwarded header only when a trusted TLS terminator is the effective
+ingress and it overwrites or appends its own `X-Forwarded-Proto` observation:
+
+```yaml
+proxy:
+  forwarded_proto:
+    source: "trusted_x_forwarded_proto"
+```
+
+In that mode, OpenResty takes the rightmost header value, accepts only `http`
+or `https`, and falls back to its immediate request scheme for any other value.
+The setting declares which input to use; it does not restrict network access to
+the proxy. The deployment remains responsible for preventing an untrusted
+caller from bypassing the declared terminator. TLS configurations that terminate
+HTTPS in OpenResty use the immediate request scheme.
+
 ### `proxy.frame_embedding`
 
 `proxy.frame_embedding` controls whether the KDCube control-plane frontend may

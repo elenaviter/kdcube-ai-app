@@ -225,6 +225,7 @@ services:
       dockerfile: ${PROXY_DOCKERFILE_PATH}
       args:
         - NGINX_CONFIG_FILE_PATH=${NGINX_PROXY_CONFIG_FILE_PATH}
+        - KDCUBE_AI_APP_SOURCE_PATH=app/ai-app
     restart: unless-stopped
     volumes:
       - /etc/letsencrypt:/etc/letsencrypt:ro

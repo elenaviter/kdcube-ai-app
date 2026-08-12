@@ -2,6 +2,11 @@ FROM openresty/openresty:alpine
 
 RUN apk add --no-cache gettext
 
+ARG KDCUBE_AI_APP_SOURCE_PATH=.
+COPY ${KDCUBE_AI_APP_SOURCE_PATH}/deployment/docker/all_in_one_kdcube/nginx/kdcube-nginx-config \
+    /usr/local/bin/kdcube-nginx-config
+RUN chmod 0755 /usr/local/bin/kdcube-nginx-config
+
 # EXPOSE 80 443
 EXPOSE 80
 
@@ -13,12 +18,9 @@ EXPOSE 80
 #
 #   ECS/Fargate:
 #     EFS nginx-config access point is mounted at /nginx-config/.
-#     nginx.conf.template is written there by the nginx-config-init one-shot task.
-#     envsubst substitutes ${APP_DOMAIN} and ${ALB_CIDR} at container startup.
+#     nginx.conf.template and its SHA-256 marker are activated there by the
+#     nginx-config-init one-shot task. Startup verifies the template, renders
+#     deployment values, validates the candidate, and records the loaded hash.
 CMD ["/bin/sh", "-c", \
-  "if [ -f /nginx-config/nginx.conf.template ]; then \
-     envsubst '${APP_DOMAIN} ${ALB_CIDR} ${ROUTE_PREFIX}' \
-       < /nginx-config/nginx.conf.template \
-       > /usr/local/openresty/nginx/conf/nginx.conf; \
-   fi \
+  "/usr/local/bin/kdcube-nginx-config render \
    && exec openresty -g 'daemon off;'"]

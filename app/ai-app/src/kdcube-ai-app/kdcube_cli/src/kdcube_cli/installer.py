@@ -1716,6 +1716,41 @@ _FRAME_EMBEDDING_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
+_FORWARDED_PROTO_SOURCE_RE = re.compile(
+    r"(?P<indent>[ \t]*)# KDCUBE_FORWARDED_PROTO_SOURCE: [^\n]+\n"
+    r"(?P=indent)map \$[A-Za-z0-9_]+ \$forwarded_proto_last \{\n"
+    r"(?P<default_indent>[ \t]*)default[ \t]+\$[A-Za-z0-9_]+;",
+)
+
+
+def _forwarded_proto_source(assembly: Optional[Dict[str, object]]) -> tuple[str, str]:
+    proxy = assembly.get("proxy") if isinstance(assembly, dict) else {}
+    raw = proxy.get("forwarded_proto") if isinstance(proxy, dict) else {}
+    cfg = raw if isinstance(raw, dict) else {}
+    source = str(cfg.get("source") or "request").strip().lower().replace("-", "_")
+    if source == "trusted_x_forwarded_proto":
+        return source, "$http_x_forwarded_proto"
+    return "request", "$scheme"
+
+
+def render_nginx_forwarded_proto_config(
+    text: str,
+    assembly: Optional[Dict[str, object]],
+) -> str:
+    """Select the descriptor-declared source for downstream request scheme."""
+    source_name, nginx_variable = _forwarded_proto_source(assembly)
+
+    def _replace(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        default_indent = match.group("default_indent")
+        return (
+            f"{indent}# KDCUBE_FORWARDED_PROTO_SOURCE: {source_name}\n"
+            f"{indent}map {nginx_variable} $forwarded_proto_last {{\n"
+            f"{default_indent}default {nginx_variable};"
+        )
+
+    return _FORWARDED_PROTO_SOURCE_RE.sub(_replace, text)
+
 
 def _normalize_frame_origin(value: object) -> str:
     raw = str(value or "").strip().rstrip("/")
@@ -1841,6 +1876,8 @@ def sync_nginx_proxy_config(
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, target_path)
+        current = target_path.read_text()
+        target_path.write_text(render_nginx_forwarded_proto_config(current, assembly))
         apply_nginx_frame_embedding_config(target_path, assembly)
     except Exception:
         return

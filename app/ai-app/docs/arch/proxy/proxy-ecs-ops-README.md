@@ -1,399 +1,349 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-ecs-ops-README.md
 title: "Proxy ECS Ops"
-summary: "Ops guide for the OpenResty reverse proxy on AWS ECS/Fargate: ALB setup, real IP recovery, SSL offload, service discovery, IAM, ECR, and EFS."
-tags: ["proxy", "openresty", "ops", "ecs", "fargate", "aws", "alb", "ecr", "efs", "nginx"]
-keywords: ["OpenResty", "ECS", "Fargate", "ALB", "ACM", "real_ip_header", "set_real_ip_from", "service discovery", "Cloud Map", "ECR", "EFS", "awsvpc", "task IAM role", "nginx_proxy_ssl_cognito.conf"]
+summary: "Operational contract for the OpenResty entry proxy on ECS: trusted ingress metadata, CloudFront origin verification, ALB routing, config activation, and rollout verification."
+tags: ["proxy", "openresty", "ops", "ecs", "aws", "cloudfront", "alb", "security"]
+keywords: ["OpenResty", "ECS", "CloudFront", "ALB", "origin verification", "real IP", "forwarded proto", "nginx config activation", "checksum"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-ops-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-local-ops-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-delivery-and-update-README.md
----
-# Proxy ECS Ops Guide (OpenResty on AWS ECS/Fargate)
-
-This guide covers deploying the OpenResty proxy on **AWS ECS with Fargate**, where SSL is offloaded to an Application Load Balancer (ALB) and all services run as ECS tasks in a shared VPC.
-
-For other deployments see:
-- [EC2 + SSL + proxylogin](proxy-ops-README.md)
-- [Local / all-in-one Docker Compose](proxy-local-ops-README.md)
-
 ---
 
-## Architecture overview
+# Proxy ECS Ops
 
-```
-Internet
-  │ HTTPS :443
-  ▼
-ALB  (ACM certificate, SSL termination)
-  │ HTTP :80  (within VPC only)
-  ▼
-web-proxy ECS service  (OpenResty, this proxy)
-  │ HTTP  (awsvpc, service discovery DNS)
-  ├─▶ web-ui
-  ├─▶ chat-ingress
-  ├─▶ chat-proc
-  ├─▶ proxylogin   (if auth mode = delegated)
-  └─▶ kb           (if KB service enabled)
+KDCube's ECS entry proxy is an OpenResty service behind an Application Load
+Balancer. A deployment may expose that ALB directly or place CloudFront in
+front of it. Those topologies use different authoritative headers; the proxy
+configuration is rendered for the selected topology.
+
+The proxy listens on port 80 inside the ECS network and forwards to services
+resolved through Cloud Map.
+
+## Supported Entry Topologies
+
+### Direct ALB
+
+```text
+viewer
+  -> ALB HTTPS listener
+       -> OpenResty port 80
+            -> KDCube services
+
+viewer HTTP
+  -> ALB HTTP listener
+       -> HTTPS redirect
 ```
 
-On ECS, TLS is terminated at the ALB using an ACM certificate. The proxy container runs on **port 80 only** — the `EXPOSE 443` line in the Dockerfile is commented out by design. Traffic between the ALB and the proxy travels over plain HTTP inside the private VPC subnet.
+The ALB is the sole public proxy in this mode:
 
----
+- the HTTPS listener forwards to OpenResty;
+- the HTTP listener redirects instead of forwarding application traffic;
+- OpenResty obtains the viewer scheme from the ALB-authored
+  `X-Forwarded-Proto` value;
+- OpenResty obtains the viewer address from the ALB-authored
+  `X-Forwarded-For` chain.
 
-## Key differences from EC2 and local deployments
+The proxy task security group accepts port 80 only from the ALB security
+group. Trusting either forwarded header requires that direct access to the
+proxy task is excluded.
 
-|                   | ECS (this doc) | EC2 / SSL                                        | Local |
-|-------------------|---|--------------------------------------------------|---|
-| SSL/TLS           | ALB + ACM (not in proxy) | Proxy-level (Let's Encrypt)                      | None |
-| Proxy port        | `:80` only | `:80` + `:443`                                   | `:80` only |
-| Real client IP    | Must recover from `X-Forwarded-For` | Direct                                           | Direct |
-| `server_name`     | Explicit domain or `_` | Explicit domain                                  | `_` |
-| Compose           | No — ECS task definitions | `docker-compose.yml` (custom-ui-managed-infra)   | `docker-compose.yml` (all_in_one_kdcube) |
-| Service discovery | AWS Cloud Map DNS | Docker network DNS                               | Docker network DNS |
-| Config delivery   | ECR image (baked in) or EFS mount | Bind mount / baked in image                      | Bind mount / baked in image |
-| AWS credentials   | Task IAM role | `~/.aws` bind mount                              | `~/.aws` bind mount |
-| Let's Encrypt     | Not needed | `/etc/letsencrypt` bind mount                    | Not needed |
-| Shared storage    | EFS (`uid=1000`, `gid=1000`) | Host bind mount                                  | Host bind mount |
-| proxylogin        | Separate ECS service | Separate container                               | Commented out |
+### CloudFront and ALB
 
----
-
-## Critical config change: real IP recovery
-
-The EC2 nginx config contains this commented-out block, explicitly labelled `only if under LB`:
-
-```nginx
-#     real_ip_header X-Forwarded-For;
-#     set_real_ip_from <LB_CIDR>;
-#     real_ip_recursive on;
+```text
+viewer HTTPS
+  -> CloudFront
+       adds X-KDCube-Origin-Verify
+       adds X-KDCube-Viewer-Proto
+       adds CloudFront-Viewer-Address
+       -> public ALB HTTPS origin listener
+            verifies X-KDCube-Origin-Verify
+            -> OpenResty port 80
+                 -> KDCube services
 ```
 
-**This block must be uncommented for ECS behind an ALB.** Without it, `$binary_remote_addr` resolves to the ALB's private IP, causing every client to share a single rate-limiting bucket — rendering rate limiting useless and breaking per-client `limit_conn` counts.
+The CloudFront path establishes the following boundary:
 
-In your ECS nginx config, replace `<LB_CIDR>` with the CIDR of your ALB subnet(s). For a typical ALB in two AZs:
+1. CloudFront connects to the ALB over HTTPS, and the ALB security group
+   admits port 443 from the AWS-managed CloudFront origin-facing prefix list.
+2. The ALB forwarding rule also requires a deployment-generated
+   `X-KDCube-Origin-Verify` value.
+3. Requests that do not match the forwarding rule receive a fixed `403`.
+4. CloudFront writes the dedicated viewer metadata consumed by OpenResty.
 
-```nginx
-# In http {} — only when behind ALB
-real_ip_header    X-Forwarded-For;
-set_real_ip_from  10.0.0.0/8;      # replace with your VPC/ALB CIDR
-real_ip_recursive on;
+The network restriction and origin-verification value serve different
+purposes. The prefix list limits the source network. The header condition
+binds the request to this distribution and deployment.
+
+The generated origin-verification value is deployment state. It must not be
+placed in a tracked descriptor or log. A deployment principal that can read
+or modify CloudFront and ALB configuration can also control this boundary;
+IAM and CI controls protect that principal.
+
+## Forwarded Scheme Contract
+
+OpenResty always sends one normalized `X-Forwarded-Proto` value downstream.
+The source depends on the selected topology:
+
+| Topology | Authoritative input |
+| --- | --- |
+| Direct ALB | ALB-authored `X-Forwarded-Proto` |
+| CloudFront | CloudFront-authored `X-KDCube-Viewer-Proto` after origin verification |
+
+The proxy takes the rightmost value when an accepted input contains a
+comma-joined chain, accepts only `http` or `https`, and otherwise falls back
+to the scheme of its immediate request.
+
+This normalization validates syntax. Provenance comes from the ingress
+topology: exclusive ALB access in direct mode, or the CloudFront network and
+origin-verification boundary in CDN mode.
+
+For local non-TLS deployments, `assembly.yaml` owns the equivalent choice:
+
+```yaml
+proxy:
+  forwarded_proto:
+    source: "request"                    # default direct-local behavior
+    # source: "trusted_x_forwarded_proto" # trusted TLS terminator in front
 ```
 
-`real_ip_recursive on` strips any client-supplied `X-Forwarded-For` spoofing by walking the chain from right to left and stopping at the first non-trusted IP.
+The CLI renders all non-TLS local proxy variants from this setting. The
+`trusted_x_forwarded_proto` value preserves an external HTTPS scheme through a
+tunnel or load balancer; the operator must make that terminator the effective
+ingress. See the assembly descriptor reference for the complete contract.
 
----
+## Viewer Address Contract
 
-## SSL offload: proxy config for ECS
+OpenResty rate-limit keys use the recovered viewer address.
 
-Because the ALB terminates TLS, the proxy does not need to handle certificates or HTTPS redirects. Use a simplified server block:
+| Topology | `real_ip_header` |
+| --- | --- |
+| Direct ALB | `X-Forwarded-For` |
+| CloudFront | `CloudFront-Viewer-Address` |
 
-```nginx
-# No default_server IP block needed — ALB never sends bare IP requests
-# No ACME location needed — ACM handles renewals
+`set_real_ip_from` is rendered from the deployment network CIDR and tells
+OpenResty which reachable network peers may supply the selected real-IP
+header. The separate proxy-task security group restricts port 80 to the ALB
+security group; both controls are required. CloudFront's viewer address may
+include a source port; current OpenResty/Nginx real-IP support accepts the RFC
+3986 address-and-port form.
 
-server {
-    listen 80;
-    server_name YOUR_DOMAIN_NAME;
+Access logs retain both identities needed for diagnosis:
 
-    # Security headers (HSTS omitted — add at ALB level or keep here)
-    more_set_headers "X-Content-Type-Options: nosniff";
-    more_set_headers "X-Frame-Options: DENY";
-    more_set_headers "X-XSS-Protection: 1; mode=block";
-    more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
-    # HSTS: add here or at ALB via a custom response header rule
-    more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
+- `viewer`: the recovered viewer address;
+- `peer`: the immediate trusted peer before real-IP replacement.
 
-    # Forward the original scheme so backends know the request arrived over HTTPS
-    proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+They also retain the forwarded chain and CloudFront viewer-address header.
 
-    # ... rest of location blocks unchanged from EC2 config ...
-}
+## Configuration Activation
+
+The proxy image contains the activation and startup utility:
+
+```text
+deployment/docker/all_in_one_kdcube/nginx/kdcube-nginx-config
 ```
 
-If `proxylogin` is in use, the `ssl_certificate` directives in the EC2 config are removed entirely — the `init_by_lua_block` and `access_by_lua_block` auth logic is unchanged.
+The cloud deployment keeps the selected template in shared proxy-config
+storage. Operators do not edit that derived file directly.
 
-The ALB listener rules:
-- `:443` → forward to target group (proxy ECS service, port 80)
-- `:80` → redirect to `https://#{host}:443/#{path}?#{query}` (HTTP 301)
+### Desired configuration
 
-Use an ALB idle timeout long enough for browser streaming transports. The
-Terraform ECS deployment sets this through `alb_idle_timeout` and defaults to
-600 seconds, matching the OpenResty SSE and `/cb/socket.io/` WebSocket proxy
-timeouts.
+Terraform performs the deterministic part of the contract:
 
----
-
-## ALB health check
-
-Configure the ALB target group health check to hit a lightweight endpoint. The SPA redirect is suitable:
-
-| Setting | Value |
-|---|---|
-| Protocol | HTTP |
-| Port | 80 |
-| Path | `/` |
-| Expected codes | 200, 301 |
-| Healthy threshold | 2 |
-| Unhealthy threshold | 3 |
-| Timeout | 5 s |
-| Interval | 30 s |
-
-The proxy returns `301 /chatbot/chat` for `GET /`, which counts as a 3xx success in ALB health checks when `200,301` is the matcher.
-
----
-
-## ECS task definition
-
-The proxy runs as its own ECS service (not a sidecar). Suggested task definition parameters:
-
-```json
-{
-  "family": "kdcube-web-proxy",
-  "networkMode": "awsvpc",
-  "requiresCompatibilities": ["FARGATE"],
-  "cpu": "256",
-  "memory": "512",
-  "executionRoleArn": "arn:aws:iam::<account>:role/ecsTaskExecutionRole",
-  "taskRoleArn": "arn:aws:iam::<account>:role/kdcube-proxy-task-role",
-  "containerDefinitions": [
-    {
-      "name": "web-proxy",
-      "image": "<account>.dkr.ecr.<region>.amazonaws.com/kdcube-web-proxy:latest",
-      "portMappings": [{ "containerPort": 80, "protocol": "tcp" }],
-      "essential": true,
-      "logConfiguration": {
-        "logDriver": "awslogs",
-        "options": {
-          "awslogs-group": "/ecs/kdcube-web-proxy",
-          "awslogs-region": "<region>",
-          "awslogs-stream-prefix": "ecs"
-        }
-      },
-      "mountPoints": [
-        {
-          "sourceVolume": "nginx-config",
-          "containerPath": "/usr/local/openresty/nginx/conf/nginx.conf",
-          "readOnly": true
-        }
-      ]
-    }
-  ],
-  "volumes": [
-    {
-      "name": "nginx-config",
-      "efsVolumeConfiguration": {
-        "fileSystemId": "<efs-fs-id>",
-        "rootDirectory": "/proxy/nginx.conf",
-        "transitEncryptionPort": 2999
-      }
-    }
-  ]
-}
+```text
+selected source template
+  + frame-embedding settings
+  + ingress-topology markers
+  -> exact desired template bytes
+  -> SHA-256
 ```
 
-Using an EFS mount for the config file lets you update the nginx config and force a new task deployment without rebuilding the Docker image.
+The desired template bytes and SHA are placed in the one-shot activation task
+definition. The SHA is also placed independently in the long-lived web-proxy
+task definition as `NGINX_CONFIG_SHA256`.
 
-Alternatively — and more reproducibly — bake the config into the image at build time (the Dockerfile `COPY` arg approach) and use ECR image tags as the versioning mechanism.
+### Activation task
 
----
+After each infrastructure apply, the workflow runs the one-shot task:
 
-## Service discovery (upstream DNS)
+```text
+kdcube-nginx-config activate
+```
 
-On ECS with `awsvpc` networking, containers cannot reach each other by container name the way Docker Compose does. You have two options:
+The task:
 
-**Option A — AWS Cloud Map (recommended)**
+1. takes an exclusive activation lock in shared proxy-config storage;
+2. decodes the desired template into a temporary file in the shared
+   filesystem;
+3. computes its SHA-256 and compares it with the deployment-provided SHA;
+4. renders `APP_DOMAIN`, `ALB_CIDR`, and `ROUTE_PREFIX` into a temporary
+   runtime candidate;
+5. runs `openresty -t` against that candidate;
+6. moves the validated template and SHA marker into their active paths.
 
-Register each ECS service with Cloud Map. Each service gets a DNS name like `web-ui.kdcube.local`. Update your nginx `upstream` blocks:
+The moves occur only after validation. A process interruption between the two
+moves can temporarily leave a mismatched pair; proxy startup detects that
+state and fails closed. Running the activation task again repairs it.
+
+The deployment workflows also serialize runs per target environment. The
+shared lock prevents concurrent activation tasks from interleaving their file
+moves; workflow serialization prevents an older deployment run from activating
+after a newer run for the same environment.
+
+Exit codes used by the deployment workflow are:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | A validated template was activated. |
+| `10` | The active template and marker already match the desired SHA. |
+| other | Activation failed; the workflow stops. |
+
+The workflow input named `run_nginx_config_init` is a force-recovery switch.
+Normal changes are detected from content and do not depend on that input.
+
+### Proxy startup
+
+In cloud mode, startup requires three equal values:
+
+```text
+SHA-256(active template)
+  == active SHA marker
+  == NGINX_CONFIG_SHA256 from this web-proxy task definition
+```
+
+It then renders the runtime candidate, runs `openresty -t`, installs the
+rendered file inside the container, and records both the template SHA and the
+rendered runtime SHA under `/run/kdcube/`.
+
+This three-way comparison detects:
+
+- stale shared config from an earlier deployment;
+- a partial activation;
+- corrupt template or marker bytes;
+- a proxy task starting against another task revision's template.
+
+It does not prove that an authorized or compromised deployment writer chose
+the correct source template. A principal able to rewrite the desired template,
+activation task, and proxy task definition can make all three values agree.
+Source review, CI integrity, and IAM protect that threat boundary.
+
+### Post-roll verification
+
+After ECS services converge, the workflow enters the running proxy task and
+checks:
+
+```text
+Terraform desired SHA
+  == shared marker
+  == SHA-256(shared active template)
+  == startup-recorded template SHA
+
+startup-recorded runtime SHA
+  == SHA-256(container nginx.conf)
+```
+
+A successful infrastructure workflow therefore establishes which reviewed
+template and rendered runtime file the running task loaded.
+
+## Rollout Sequence
+
+The expected sequence is:
+
+```text
+terraform apply
+  -> registers desired activation and proxy task definitions
+  -> activation task validates and activates desired config
+  -> web-proxy rollout starts or is forced when config changed
+  -> ECS convergence check
+  -> running-container checksum check
+```
+
+Terraform may register a new proxy task definition before activation finishes.
+Such a task carries the new expected SHA and rejects the old shared template.
+The previous healthy task remains in service while ECS retries; activation
+then allows the new revision to start. ECS deployment health settings must
+retain the old task until the replacement is healthy.
+
+## Service Discovery
+
+Cloud deployments resolve upstream services through Cloud Map names such as:
 
 ```nginx
 upstream web_ui      { server web-ui.kdcube.local:80; }
 upstream chat_api    { server chat-ingress.kdcube.local:8010; }
 upstream chat_proc   { server chat-proc.kdcube.local:8020; }
-upstream proxy_login { server proxylogin.kdcube.local:8080; }
+upstream proxy_login { server proxylogin.kdcube.local:80; }
 ```
 
-**Option B — ALB per service (simpler for fewer services)**
-
-Place each backend behind its own internal ALB or NLB. Use the ALB DNS name in the nginx upstream. Adds latency but avoids Cloud Map setup.
-
-**Important for Lua subrequests:** if `unmask_token()` resolves `proxy_login` via Cloud Map DNS, ensure the Lua resolver is configured:
+The AWS VPC resolver is configured for variable-based proxy targets and Lua
+subrequests:
 
 ```nginx
-# In http {}
-resolver 169.254.169.253 valid=10s;   # VPC DNS resolver (always this IP on AWS)
+resolver 169.254.169.253 valid=10s;
 resolver_timeout 5s;
 ```
 
-Without this, OpenResty's Lua DNS lookups use the system resolver, which may not honour TTLs correctly and can cause stale upstream addresses after a `proxylogin` task replacement.
+## Network Checklist
 
-In delegated auth deployments, the ECS task definition must pass
-`AUTH_TOKEN_COOKIE_NAME` and `ID_TOKEN_COOKIE_NAME` to web-proxy. These values
-come from `assembly.yaml` and let OpenResty distinguish already-present real
-token cookies from the proxylogin masquerade/unmask flow.
+- The proxy task accepts port 80 only from the ALB security group.
+- The proxy task carries only its dedicated security group; shared proxy-config
+  storage admits NFS from that group explicitly.
+- Direct-ALB mode redirects public HTTP to HTTPS.
+- CloudFront mode restricts ALB ingress to the managed origin-facing prefix
+  list and requires the origin-verification header on forwarding rules.
+- Unmatched CloudFront-origin requests receive `403`.
+- The selected topology renders the expected scheme and viewer-address
+  sources into OpenResty.
+- Rate limits use the recovered viewer address.
+- The ALB idle timeout covers the configured streaming and WebSocket timeout.
+- Cloud Map and the VPC resolver can resolve every declared upstream.
 
----
+## Configuration Checklist
 
-## ECR: building and pushing the proxy image
+- The web-proxy and activation tasks use the same released proxy image.
+- The web-proxy task definition carries `NGINX_CONFIG_SHA256`.
+- The activation task carries the desired template bytes and the same SHA.
+- The activation task runs after every non-plan infrastructure apply.
+- `openresty -t` succeeds for each selected auth and ingress topology.
+- ECS rollout convergence succeeds.
+- The running-container checksum verification succeeds.
+
+## Verification Commands
+
+The repository provides focused contract tests:
 
 ```bash
-# Authenticate
-aws ecr get-login-password --region <region> | \
-  docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
-
-# Build (same Dockerfile as local/EC2)
-docker build \
-  --build-arg NGINX_CONFIG_FILE_PATH=deployment/proxy/nginx_proxy_ssl_cognito.conf \
-  -t kdcube-web-proxy:latest \
-  -f deployment/docker/Dockerfile_ProxyOpenResty \
-  .
-
-# Tag and push
-docker tag kdcube-web-proxy:latest \
-  <account>.dkr.ecr.<region>.amazonaws.com/kdcube-web-proxy:<tag>
-
-docker push \
-  <account>.dkr.ecr.<region>.amazonaws.com/kdcube-web-proxy:<tag>
+python3 -m unittest app/ai-app/deployment/docker/tests/test_proxy_config_contract.py
+./app/ai-app/deployment/docker/tests/test_proxy_config_runtime.sh <proxy-image>
 ```
 
-Use a release tag (e.g. `v1.2.3`) rather than `latest` for ECS task definitions in production — `latest` will not trigger a redeployment if the digest hasn't changed.
+The proxy Dockerfile supports both platform build contexts used by KDCube.
+Release workflows build with `app/ai-app` as the context and use the
+Dockerfile's `KDCUBE_AI_APP_SOURCE_PATH=.` default. A local CLI runtime stages
+the repository and builds the proxy from that repository root, so both local
+Compose files pass `KDCUBE_AI_APP_SOURCE_PATH=app/ai-app`. The contract test
+resolves the startup utility from both contexts before an image is published
+or locally refreshed.
 
----
+The deployment repository should additionally run its Terraform validation,
+workflow parsing, and every rendered cloud-template topology against the same
+proxy image before rollout.
 
-## IAM: task role
+## Source Files
 
-The proxy task itself needs no AWS API access. The execution role (`ecsTaskExecutionRole`) needs:
+- Proxy image:
+  `app/ai-app/deployment/docker/all_in_one_kdcube/Dockerfile_ProxyOpenResty`
+- Activation/startup utility:
+  `app/ai-app/deployment/docker/all_in_one_kdcube/nginx/kdcube-nginx-config`
+- Local proxy template:
+  `app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf`
+- Managed-ECS reference template:
+  `app/ai-app/deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_ecs.conf`
 
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "ecr:GetAuthorizationToken",
-    "ecr:BatchCheckLayerAvailability",
-    "ecr:GetDownloadUrlForLayer",
-    "ecr:BatchGetImage",
-    "logs:CreateLogStream",
-    "logs:PutLogEvents"
-  ],
-  "Resource": "*"
-}
-```
+## External References
 
-If you are using EFS for the config mount, also add:
-
-```json
-{
-  "Effect": "Allow",
-  "Action": [
-    "elasticfilesystem:ClientMount",
-    "elasticfilesystem:ClientWrite"
-  ],
-  "Resource": "arn:aws:elasticfilesystem:<region>:<account>:file-system/<efs-fs-id>"
-}
-```
-
-The `~/.aws` bind mount used in the EC2 and local deployments is **absent** on ECS. Services that need AWS API access (ingress, proc) use their own task IAM roles instead.
-
----
-
-## Security groups
-
-| SG | Inbound | Source |
-|---|---|---|
-| `kdcube-proxy-sg` | TCP 80 | ALB security group |
-| `kdcube-proxy-sg` | TCP 443 | — (not needed, ALB terminates) |
-| `kdcube-app-sg` (ingress, proc, ui) | TCP 8010, 8020, 80 | `kdcube-proxy-sg` |
-
-Do not open proxy port 80 to `0.0.0.0/0`. All external traffic must flow through the ALB.
-
----
-
-## EFS for shared bundle storage
-
-If `chat-proc` uses bundles with shared local storage, mount EFS as described in the bundle ops guide:
-
-```
-BUNDLE_STORAGE_ROOT=/bundle-storage
-```
-
-EFS access point configuration:
-- `uid=1000`, `gid=1000` (matches the `appuser` inside the container)
-- Mount target in each AZ your ECS tasks run in
-- Transit encryption enabled
-
-The proxy itself does not use EFS for storage — only for the optional config file mount described above.
-
----
-
-## Forced config updates without image rebuild
-
-If you mount the config via EFS rather than baking it into the image:
-
-1. Update the config file on EFS.
-2. Force a new ECS deployment: `aws ecs update-service --cluster <cluster> --service kdcube-web-proxy --force-new-deployment`.
-3. ECS drains existing tasks and replaces them — the new tasks pick up the updated config.
-
-If you bake the config into the image (recommended for production stability):
-
-1. Rebuild and push a new image tag to ECR.
-2. Update the task definition to reference the new image tag.
-3. Update the ECS service to use the new task definition revision.
-
----
-
-## Logging
-
-Nginx access and error logs go to `stdout`/`stderr` in the container. On ECS with the `awslogs` driver they land in CloudWatch Logs under `/ecs/kdcube-web-proxy`. Useful queries:
-
-```
-# 4xx/5xx count by status
-fields @timestamp, status
-| filter status >= 400
-| stats count(*) by status
-| sort count desc
-
-# Rate-limited requests (429)
-fields @timestamp, @message
-| filter status = 429
-
-# Slow upstream responses
-fields @timestamp, upstream_response_time
-| filter upstream_response_time > 10
-| sort upstream_response_time desc
-```
-
-To include `upstream_response_time` in the log, extend the `log_format` in `nginx.conf`:
-
-```nginx
-log_format main '$remote_addr - $remote_user [$time_local] "$request" '
-                '$status $body_bytes_sent "$http_referer" '
-                '"$http_user_agent" "$http_x_forwarded_for" '
-                'rt=$request_time uct=$upstream_connect_time urt=$upstream_response_time';
-```
-
----
-
-## Rollout checklist
-
-- [ ] Uncomment and configure `real_ip_header` / `set_real_ip_from` with ALB CIDR
-- [ ] Remove `ssl_certificate` / `ssl_certificate_key` directives (ACM handles TLS)
-- [ ] Remove ACME challenge location (not needed with ACM)
-- [ ] Remove `listen 443 ssl http2` block (proxy only listens on `:80`)
-- [ ] Add VPC DNS `resolver 169.254.169.253` directive if using Lua auth (`unmask_token`)
-- [ ] Update nginx `upstream` blocks with Cloud Map DNS names
-- [ ] Build and push image to ECR
-- [ ] Register task definition with ECS, attach execution role and (if EFS) task role
-- [ ] Create ALB target group pointing to port 80, health check path `/`
-- [ ] Configure ALB listener: `:443` → forward, `:80` → redirect 301, ALB idle timeout 600 s
-- [ ] Set security groups: proxy accepts only from ALB SG; backends accept only from proxy SG
-- [ ] Enable CloudWatch log group `/ecs/kdcube-web-proxy`
-
----
-
-## References (code)
-
-- Proxy config (EC2/ECS base): `deployment/docker/custom-ui-managed-infra/nginx_proxy_ssl_cognito.conf`
-- Proxy Dockerfile: `deployment/docker/Dockerfile_ProxyOpenResty`
-- Bundle storage (EFS): `repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-delivery-and-update-README.md` — Shared bundle local storage section
-- Chat processor task def: `deployment/ecs/task-definitions/chat-proc.json`
-- Chat ingress task def: `deployment/ecs/task-definitions/chat-ingress.json`
+- [AWS: restrict access to Application Load Balancer origins](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/restrict-access-to-load-balancer.html)
+- [AWS: add CloudFront request headers](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/adding-cloudfront-headers.html)
+- [AWS: require HTTPS to a custom origin](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-cloudfront-to-custom-origin.html)
+- [Nginx real-IP module](https://nginx.org/en/docs/http/ngx_http_realip_module.html)
