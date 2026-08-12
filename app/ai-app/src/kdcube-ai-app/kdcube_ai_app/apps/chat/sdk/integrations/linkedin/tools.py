@@ -14,7 +14,7 @@ import logging
 import mimetypes
 import pathlib
 import re
-from typing import Annotated, Any, Sequence
+from typing import Annotated, Any, Mapping, Sequence
 
 import httpx
 
@@ -341,6 +341,87 @@ def load_image_artifact(file_path: str) -> tuple[dict[str, Any] | None, dict[str
     return file_obj, None
 
 
+def validate_document(file_obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Check one document against LinkedIn's limits (PPT/DOC/PDF, <=100 MB)."""
+    data = file_obj.get("data") or b""
+    filename = _safe_filename(str(file_obj.get("filename") or ""), fallback="document.bin")
+    mime = str(file_obj.get("mime_type") or file_obj.get("mime") or "").strip()
+    mime = mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    if len(data) > rest_api.MAX_DOCUMENT_BYTES:
+        return {
+            "code": "file_too_large",
+            "message": f"LinkedIn documents must be at most {rest_api.MAX_DOCUMENT_BYTES} bytes.",
+            "filename": filename,
+            "size_bytes": len(data),
+        }
+    if mime not in rest_api.SUPPORTED_DOCUMENT_MIME:
+        return {
+            "code": "unsupported_document_type",
+            "message": "LinkedIn accepts PDF, DOC/DOCX and PPT/PPTX documents; got " + mime + ".",
+            "filename": filename,
+            "mime_type": mime,
+        }
+    file_obj["filename"] = filename
+    file_obj["mime_type"] = mime
+    return None
+
+
+def validate_video(file_obj: dict[str, Any]) -> dict[str, Any] | None:
+    """Check one video against LinkedIn's limits (MP4, 75 KB .. 500 MB)."""
+    data = file_obj.get("data") or b""
+    filename = _safe_filename(str(file_obj.get("filename") or ""), fallback="video.mp4")
+    mime = str(file_obj.get("mime_type") or file_obj.get("mime") or "").strip()
+    mime = mime or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    if len(data) < rest_api.MIN_VIDEO_BYTES or len(data) > rest_api.MAX_VIDEO_BYTES:
+        return {
+            "code": "file_size_out_of_range",
+            "message": (
+                f"LinkedIn videos must be between {rest_api.MIN_VIDEO_BYTES} and "
+                f"{rest_api.MAX_VIDEO_BYTES} bytes."
+            ),
+            "filename": filename,
+            "size_bytes": len(data),
+        }
+    if mime not in rest_api.SUPPORTED_VIDEO_MIME:
+        return {
+            "code": "unsupported_video_type",
+            "message": f"LinkedIn accepts {', '.join(rest_api.SUPPORTED_VIDEO_MIME)}; got {mime}.",
+            "filename": filename,
+            "mime_type": mime,
+        }
+    file_obj["filename"] = filename
+    file_obj["mime_type"] = mime
+    return None
+
+
+def load_file_artifact(file_path: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Read one workspace file WITHOUT type validation. Returns ``(file, error)``.
+
+    The caller validates per post shape (document/video); images keep their
+    own loader so image errors stay specific.
+    """
+    artifact_root, _turn_id = _current_artifact_context()
+    if artifact_root is None:
+        return None, {
+            "code": "artifact_workspace_unavailable",
+            "message": "Current artifact workspace is unavailable; cannot read local files.",
+        }
+    resolved = _resolve_input_artifact(file_path, artifact_root)
+    if resolved is None or not resolved.exists() or not resolved.is_file():
+        return None, {
+            "code": "file_not_found",
+            "message": "File path was not found in the current artifact workspace.",
+            "path": file_path,
+        }
+    filename = resolved.name
+    return {
+        "filename": filename,
+        "data": resolved.read_bytes(),
+        "mime_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        "source_path": file_path,
+    }, None
+
+
 class LinkedInTools:
     async def _credential(
         self,
@@ -505,6 +586,7 @@ class LinkedInTools:
         account_id: str = "",
         visibility: str = "PUBLIC",
         as_organization: bool = False,
+        article: Mapping[str, Any] | None = None,
         where: str = "linkedin.publish",
     ) -> dict[str, Any]:
         """Publish loaded image bytes through credential recovery.
@@ -513,7 +595,10 @@ class LinkedInTools:
         staged-upload MCP tools. Provider-auth markers are an internal retry
         protocol and must never be serialized to either caller.
         ``as_organization`` publishes as the account's organization page
-        (org-lane account required) instead of the member.
+        (org-lane account required) instead of the member. ``article`` is the
+        link-preview card ({source, title, description?, thumbnail_alt?});
+        with an article, ``files`` may carry at most ONE image — the card's
+        thumbnail — because a post holds an article card or images, not both.
         """
         return await _run_provider_call(
             where=where,
@@ -526,6 +611,7 @@ class LinkedInTools:
                 account_id=account_id,
                 visibility=visibility,
                 as_organization=as_organization,
+                article=article,
                 where=where,
             ),
         )
@@ -539,12 +625,23 @@ class LinkedInTools:
         account_id: str = "",
         visibility: str = "PUBLIC",
         as_organization: bool = False,
+        article: Mapping[str, Any] | None = None,
         where: str = "linkedin.publish",
     ) -> dict[str, Any]:
         """Publish a post from already-loaded image bytes.
 
         ``files`` entries are ``{filename, data, mime_type}``.
         """
+        article = dict(article) if article else None
+        if article and len(list(files or ())) > 1:
+            return _error_result(
+                code="article_takes_one_thumbnail",
+                message=(
+                    "An article post carries at most one image — the card's "
+                    "thumbnail. Publish gallery images without a link card."
+                ),
+                where=where,
+            )
         commentary = format_post_text(text or "")
         if not commentary.strip():
             return _error_result(code="text_required", message="LinkedIn post text is required.", where=where)
@@ -598,15 +695,40 @@ class LinkedInTools:
                 )
                 if error is not None:
                     return error
-            response = await rest_api.create_post(
-                client,
-                access_token=credential.access_token,
-                api_version=linkedin_api_version(),
-                author_urn=author_urn,
-                commentary=commentary,
-                images=images,
-                visibility=visibility,
-            )
+            if article is not None:
+                # The single uploaded image (if any) is the card's thumbnail;
+                # content.article and content.media never share a post.
+                if images:
+                    article.setdefault("thumbnail_urn", images[0]["image_urn"])
+                try:
+                    article_content = rest_api.build_article_content(
+                        source=str(article.get("source") or ""),
+                        title=str(article.get("title") or ""),
+                        description=str(article.get("description") or ""),
+                        thumbnail_urn=str(article.get("thumbnail_urn") or ""),
+                        thumbnail_alt=str(article.get("thumbnail_alt") or ""),
+                    )
+                except rest_api.LinkedInPayloadError as exc:
+                    return _error_result(code="article_invalid", message=str(exc), where=where)
+                response = await rest_api.create_post(
+                    client,
+                    access_token=credential.access_token,
+                    api_version=linkedin_api_version(),
+                    author_urn=author_urn,
+                    commentary=commentary,
+                    article=article_content,
+                    visibility=visibility,
+                )
+            else:
+                response = await rest_api.create_post(
+                    client,
+                    access_token=credential.access_token,
+                    api_version=linkedin_api_version(),
+                    author_urn=author_urn,
+                    commentary=commentary,
+                    images=images,
+                    visibility=visibility,
+                )
         if response.status_code >= 400:
             failure = _linkedin_failure(
                 response,
@@ -642,6 +764,9 @@ class LinkedInTools:
                 "account_id": credential.account_id,
                 "author": author_urn,
                 "image_count": len(images),
+                # The LinkedIn image URNs, in files[] order — callers record
+                # them (the publication index writes them back per image).
+                "image_urns": [str(item.get("image_urn") or "") for item in images],
                 "commentary_chars": len(commentary),
             }
         )
@@ -929,6 +1054,208 @@ class LinkedInTools:
             }
         )
 
+    # --- Mutations on published content ------------------------------------
+    # LinkedIn's w_member_social scope covers create, modify, and delete of
+    # posts, comments, and reactions; the org lane mirrors it for page posts.
+
+    @kernel_function(
+        name="update_linkedin_post_text",
+        description=(
+            "Edit the TEXT of a LinkedIn post published by the connected member (with "
+            "as_organization, by the organization page). LinkedIn permits editing a post's "
+            "commentary only; the attached card or media can never change. Markdown is "
+            "stripped and the text is truncated to LinkedIn's 3000-character limit. Requires "
+            "the linkedin:post claim (linkedin:org:post with as_organization). "
+            "Returns {ok, error, ret}; ret={post_urn,updated,account_id}."
+        ),
+    )
+    async def update_linkedin_post_text(
+        self,
+        post_urn: Annotated[str, "Post URN to edit, e.g. urn:li:share:7123456789 or urn:li:ugcPost:7123456789."] = "",
+        text: Annotated[str, "New post body. Markdown is stripped; LinkedIn renders plain text only."] = "",
+        account_id: Annotated[str, "Optional connected account id when several LinkedIn accounts are connected."] = "",
+        as_organization: Annotated[bool, "Edit a post authored by the org-lane account's organization page."] = False,
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await _run_provider_call(
+            where="linkedin.update_linkedin_post_text",
+            operation="posts.partialUpdate",
+            mutating=True,
+            run=lambda: self._update_post_text(
+                post_urn=post_urn,
+                text=text,
+                account_id=account_id,
+                as_organization=bool(as_organization),
+            ),
+        )
+
+    async def _update_post_text(
+        self, *, post_urn: str, text: str, account_id: str, as_organization: bool
+    ) -> dict[str, Any]:
+        where = "linkedin.update_linkedin_post_text"
+        target = str(post_urn or "").strip()
+        if not target:
+            return _error_result(code="post_urn_required", message="LinkedIn post URN is required.", where=where)
+        commentary = format_post_text(text or "")
+        if not commentary.strip():
+            return _error_result(code="text_required", message="LinkedIn post text is required.", where=where)
+        claim = LINKEDIN_ORG_POST_CLAIM if as_organization else LINKEDIN_POST_CLAIM
+        credential = await self._credential(claim=claim, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await rest_api.update_post_commentary(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                post_urn=target,
+                commentary=commentary,
+            )
+        if response.status_code >= 400:
+            failure = _linkedin_failure(
+                response,
+                operation="posts.partialUpdate",
+                fallback="LinkedIn post text could not be updated.",
+                where=where,
+                mutating=True,
+            )
+            if failure.credential_failure:
+                return connected_account_auth_failure(credential, _auth_failure_message(failure))
+            return failure.error_result(where=where)
+        return _ok_ret_result(
+            {
+                "post_urn": target,
+                "updated": True,
+                "account_id": credential.account_id,
+                "commentary_chars": len(commentary),
+            }
+        )
+
+    @kernel_function(
+        name="delete_linkedin_post",
+        description=(
+            "Delete a LinkedIn post published by the connected member (with as_organization, "
+            "by the organization page). Deletion is PERMANENT: the post disappears with its "
+            "comments and reactions. Idempotent — deleting an already-deleted post still "
+            "succeeds. Requires the linkedin:post claim (linkedin:org:post with "
+            "as_organization). Returns {ok, error, ret}; ret={post_urn,deleted,account_id}."
+        ),
+    )
+    async def delete_linkedin_post(
+        self,
+        post_urn: Annotated[str, "Post URN to delete, e.g. urn:li:share:7123456789 or urn:li:ugcPost:7123456789."] = "",
+        account_id: Annotated[str, "Optional connected account id when several LinkedIn accounts are connected."] = "",
+        as_organization: Annotated[bool, "Delete a post authored by the org-lane account's organization page."] = False,
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await _run_provider_call(
+            where="linkedin.delete_linkedin_post",
+            operation="posts.delete",
+            mutating=True,
+            run=lambda: self._delete_post(
+                post_urn=post_urn,
+                account_id=account_id,
+                as_organization=bool(as_organization),
+            ),
+        )
+
+    async def _delete_post(
+        self, *, post_urn: str, account_id: str, as_organization: bool
+    ) -> dict[str, Any]:
+        where = "linkedin.delete_linkedin_post"
+        target = str(post_urn or "").strip()
+        if not target:
+            return _error_result(code="post_urn_required", message="LinkedIn post URN is required.", where=where)
+        claim = LINKEDIN_ORG_POST_CLAIM if as_organization else LINKEDIN_POST_CLAIM
+        credential = await self._credential(claim=claim, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await rest_api.delete_post(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                post_urn=target,
+            )
+        if response.status_code >= 400:
+            failure = _linkedin_failure(
+                response,
+                operation="posts.delete",
+                fallback="LinkedIn post could not be deleted.",
+                where=where,
+                mutating=True,
+            )
+            if failure.credential_failure:
+                return connected_account_auth_failure(credential, _auth_failure_message(failure))
+            return failure.error_result(where=where)
+        return _ok_ret_result(
+            {"post_urn": target, "deleted": True, "account_id": credential.account_id}
+        )
+
+    @kernel_function(
+        name="delete_linkedin_comment",
+        description=(
+            "Delete a comment the connected member authored on a LinkedIn post. Deletion is "
+            "permanent. comment_id is the value comment_on_linkedin_post returned. Requires "
+            "the linkedin:post claim. "
+            "Returns {ok, error, ret}; ret={post_urn,comment_id,deleted,account_id}."
+        ),
+    )
+    async def delete_linkedin_comment(
+        self,
+        post_urn: Annotated[str, "The comment's post URN, e.g. urn:li:share:7123456789."] = "",
+        comment_id: Annotated[str, "Comment id returned by comment_on_linkedin_post (not the full comment URN)."] = "",
+        account_id: Annotated[str, "Optional connected account id when several LinkedIn accounts are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await _run_provider_call(
+            where="linkedin.delete_linkedin_comment",
+            operation="socialActions.comments.delete",
+            mutating=True,
+            run=lambda: self._delete_comment(
+                post_urn=post_urn, comment_id=comment_id, account_id=account_id
+            ),
+        )
+
+    async def _delete_comment(
+        self, *, post_urn: str, comment_id: str, account_id: str
+    ) -> dict[str, Any]:
+        where = "linkedin.delete_linkedin_comment"
+        target = str(post_urn or "").strip()
+        if not target:
+            return _error_result(code="post_urn_required", message="LinkedIn post URN is required.", where=where)
+        comment = str(comment_id or "").strip()
+        if not comment:
+            return _error_result(code="comment_id_required", message="LinkedIn comment id is required.", where=where)
+        credential = await self._credential(claim=LINKEDIN_POST_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        actor_urn = await self._author_urn(credential)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await rest_api.delete_comment(
+                client,
+                access_token=credential.access_token,
+                actor_urn=actor_urn,
+                object_urn=target,
+                comment_id=comment,
+            )
+        if response.status_code >= 400:
+            failure = _linkedin_failure(
+                response,
+                operation="socialActions.comments.delete",
+                fallback="LinkedIn comment could not be deleted.",
+                where=where,
+                mutating=True,
+            )
+            if failure.credential_failure:
+                return connected_account_auth_failure(credential, _auth_failure_message(failure))
+            return failure.error_result(where=where)
+        return _ok_ret_result(
+            {
+                "post_urn": target,
+                "comment_id": comment,
+                "deleted": True,
+                "account_id": credential.account_id,
+            }
+        )
+
 
     # --- Organization lane (Community Management API connector) -----------
     # The ONLY reads this integration has anywhere: the page's own posts,
@@ -1133,6 +1460,458 @@ class LinkedInTools:
         )
 
 
+    # --- Poll / document / video posts -------------------------------------
+    # The remaining creatable LinkedIn content shapes. Each resolves the
+    # account like every other publish lane and shares the receipt handling.
+
+    async def _resolve_author(
+        self, *, claim: str, account_id: str, as_organization: bool, where: str
+    ):
+        """(credential, author_urn, error_result) for one publish call."""
+        credential = await self._credential(claim=claim, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return None, "", credential.error_envelope(where=where)
+        if not credential.access_token:
+            return None, "", _error_result(
+                code="credential_missing_access_token",
+                message="Connected LinkedIn credential has no access token.",
+                where=where,
+            )
+        if as_organization:
+            author_urn = await self._org_author_urn(credential)
+            if not author_urn:
+                return None, "", _error_result(
+                    code="org_account_missing_organization",
+                    message=(
+                        "The resolved LinkedIn account carries no organization. "
+                        "Connect the organization-lane LinkedIn app in Connection Hub."
+                    ),
+                    where=where,
+                )
+            return credential, author_urn, None
+        return credential, await self._author_urn(credential), None
+
+    def _post_receipt(
+        self,
+        response: Any,
+        *,
+        credential: Any,
+        author_urn: str,
+        where: str,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Shared create-post receipt: failure mapping, outcome_unknown, ok ret."""
+        if response.status_code >= 400:
+            failure = _linkedin_failure(
+                response,
+                operation="posts.create",
+                fallback="LinkedIn post failed.",
+                where=where,
+                mutating=True,
+            )
+            if failure.credential_failure:
+                return connected_account_auth_failure(credential, _auth_failure_message(failure))
+            return failure.error_result(where=where)
+        post_urn = rest_api.created_urn_from_response(response)
+        if not post_urn:
+            return _error_result(
+                code="linkedin_response_incomplete",
+                message=(
+                    "LinkedIn accepted the post request but did not return its "
+                    "identifier. The outcome is unknown; search LinkedIn before retrying."
+                ),
+                where=where,
+                ret={
+                    "provider": LINKEDIN_PROVIDER_ID,
+                    "operation": "posts.create",
+                    "provider_status": int(response.status_code or 0),
+                    "outcome_unknown": True,
+                },
+            )
+        return _ok_ret_result(
+            {
+                "post_urn": post_urn,
+                "permalink": rest_api.post_permalink(post_urn),
+                "account_id": credential.account_id,
+                "author": author_urn,
+                **(extra or {}),
+            }
+        )
+
+    @kernel_function(
+        name="post_linkedin_poll",
+        description=(
+            "Publish a LinkedIn poll post: a question (max 140 chars) with 2-4 options (max 30 "
+            "chars each), open for a fixed duration. Requires the linkedin:post claim. "
+            "Returns {ok, error, ret}; ret={post_urn,permalink,account_id,question,option_count}."
+        ),
+    )
+    async def post_linkedin_poll(
+        self,
+        text: Annotated[str, "Post body accompanying the poll."] = "",
+        question: Annotated[str, "Poll question, max 140 characters."] = "",
+        options: Annotated[list, "2-4 option strings, max 30 characters each."] = [],
+        duration: Annotated[str, "ONE_DAY | THREE_DAYS | SEVEN_DAYS | FOURTEEN_DAYS."] = "SEVEN_DAYS",
+        account_id: Annotated[str, "Optional connected account id when several are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await self.publish_poll(
+            text=text, question=question, options=list(options or []), duration=duration,
+            account_id=account_id, where="linkedin.post_linkedin_poll",
+        )
+
+    @kernel_function(
+        name="post_linkedin_document_update",
+        description=(
+            "Publish a LinkedIn post carrying one document (PDF, DOC/DOCX, PPT/PPTX; up to "
+            "100 MB) from the current workspace, rendered as a swipeable document. A title is "
+            "required. Requires the linkedin:post claim. Returns {ok, error, ret}; "
+            "ret={post_urn,permalink,account_id,document_urn,title}."
+        ),
+    )
+    async def post_linkedin_document_update(
+        self,
+        text: Annotated[str, "Post body. Markdown is stripped."] = "",
+        file_path: Annotated[str, "conv:fi: reference or workspace-relative path of the document."] = "",
+        title: Annotated[str, "Document title shown on the post (required)."] = "",
+        account_id: Annotated[str, "Optional connected account id when several are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        where = "linkedin.post_linkedin_document_update"
+        file_obj, error = load_file_artifact(str(file_path or "").strip())
+        if error is not None:
+            return _error_result(
+                code=str(error.get("code") or "file_unavailable"),
+                message=str(error.get("message") or "Document could not be read."),
+                where=where, ret=error,
+            )
+        return await self.publish_document(
+            text=text, file=file_obj, title=title, account_id=account_id, where=where,
+        )
+
+    @kernel_function(
+        name="post_linkedin_video_update",
+        description=(
+            "Publish a LinkedIn post carrying one MP4 video (75 KB - 500 MB, 3 s - 30 min) from "
+            "the current workspace. LinkedIn processes the video asynchronously; the post "
+            "publishes when processing completes. Requires the linkedin:post claim. "
+            "Returns {ok, error, ret}; ret={post_urn,permalink,account_id,video_urn,processing}."
+        ),
+    )
+    async def post_linkedin_video_update(
+        self,
+        text: Annotated[str, "Post body. Markdown is stripped."] = "",
+        file_path: Annotated[str, "conv:fi: reference or workspace-relative path of the MP4."] = "",
+        title: Annotated[str, "Optional video title."] = "",
+        account_id: Annotated[str, "Optional connected account id when several are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        where = "linkedin.post_linkedin_video_update"
+        file_obj, error = load_file_artifact(str(file_path or "").strip())
+        if error is not None:
+            return _error_result(
+                code=str(error.get("code") or "file_unavailable"),
+                message=str(error.get("message") or "Video could not be read."),
+                where=where, ret=error,
+            )
+        return await self.publish_video(
+            text=text, file=file_obj, title=title, account_id=account_id, where=where,
+        )
+
+    async def publish_poll(
+        self,
+        *,
+        text: str,
+        question: str,
+        options: Sequence[str],
+        duration: str = "SEVEN_DAYS",
+        account_id: str = "",
+        visibility: str = "PUBLIC",
+        as_organization: bool = False,
+        where: str = "linkedin.publish_poll",
+    ) -> dict[str, Any]:
+        return await _run_provider_call(
+            where=where,
+            operation="posts.create",
+            mutating=True,
+            run=lambda: self._publish_poll(
+                text=text, question=question, options=options, duration=duration,
+                account_id=account_id, visibility=visibility,
+                as_organization=as_organization, where=where,
+            ),
+        )
+
+    async def _publish_poll(
+        self, *, text, question, options, duration, account_id, visibility, as_organization, where
+    ) -> dict[str, Any]:
+        commentary = format_post_text(text or "")
+        if not commentary.strip():
+            return _error_result(code="text_required", message="LinkedIn post text is required.", where=where)
+        try:
+            poll = rest_api.build_poll_content(question=question, options=options, duration=duration)
+        except rest_api.LinkedInPayloadError as exc:
+            return _error_result(code="poll_invalid", message=str(exc), where=where)
+        claim = LINKEDIN_ORG_POST_CLAIM if as_organization else LINKEDIN_POST_CLAIM
+        credential, author_urn, error = await self._resolve_author(
+            claim=claim, account_id=account_id, as_organization=as_organization, where=where
+        )
+        if error is not None:
+            return error
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await rest_api.create_post(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                author_urn=author_urn,
+                commentary=commentary,
+                poll=poll,
+                visibility=str(visibility or "PUBLIC").upper() or "PUBLIC",
+            )
+        return self._post_receipt(
+            response, credential=credential, author_urn=author_urn, where=where,
+            extra={"question": poll["question"], "option_count": len(poll["options"])},
+        )
+
+    async def publish_document(
+        self,
+        *,
+        text: str,
+        file: dict[str, Any],
+        title: str,
+        account_id: str = "",
+        visibility: str = "PUBLIC",
+        as_organization: bool = False,
+        where: str = "linkedin.publish_document",
+    ) -> dict[str, Any]:
+        return await _run_provider_call(
+            where=where,
+            operation="posts.create",
+            mutating=True,
+            run=lambda: self._publish_document(
+                text=text, file=file, title=title, account_id=account_id,
+                visibility=visibility, as_organization=as_organization, where=where,
+            ),
+        )
+
+    async def _publish_document(
+        self, *, text, file, title, account_id, visibility, as_organization, where
+    ) -> dict[str, Any]:
+        commentary = format_post_text(text or "")
+        if not commentary.strip():
+            return _error_result(code="text_required", message="LinkedIn post text is required.", where=where)
+        if not str(title or "").strip():
+            return _error_result(
+                code="title_required",
+                message="LinkedIn document posts require a title.",
+                where=where,
+            )
+        file_obj = dict(file or {})
+        error = validate_document(file_obj)
+        if error is not None:
+            return _error_result(
+                code=str(error.get("code") or "document_unavailable"),
+                message=str(error.get("message") or "Document could not be used."),
+                where=where,
+                ret=error,
+            )
+        claim = LINKEDIN_ORG_POST_CLAIM if as_organization else LINKEDIN_POST_CLAIM
+        credential, author_urn, resolve_error = await self._resolve_author(
+            claim=claim, account_id=account_id, as_organization=as_organization, where=where
+        )
+        if resolve_error is not None:
+            return resolve_error
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            init_response = await rest_api.initialize_document_upload(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                owner_urn=author_urn,
+            )
+            if init_response.status_code >= 400:
+                failure = _linkedin_failure(
+                    init_response,
+                    operation="documents.initializeUpload",
+                    fallback="LinkedIn document upload could not be initialized.",
+                    where=where,
+                    stage="initialize_upload",
+                )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(credential, _auth_failure_message(failure))
+                return failure.error_result(where=where)
+            try:
+                init = rest_api.parse_document_upload_init(init_response.json())
+            except Exception:
+                init = {}
+            if not init.get("upload_url") or not init.get("document_urn"):
+                return _error_result(
+                    code="document_upload_init_incomplete",
+                    message="LinkedIn did not return an upload URL and document URN.",
+                    where=where,
+                )
+            upload_response = await rest_api.upload_image_bytes(
+                client,
+                upload_url=init["upload_url"],
+                access_token=credential.access_token,
+                data=file_obj["data"],
+                content_type=file_obj["mime_type"],
+            )
+            if upload_response.status_code >= 400:
+                failure = _linkedin_failure(
+                    upload_response,
+                    operation="documents.upload",
+                    fallback="LinkedIn document upload failed.",
+                    where=where,
+                    stage="upload_bytes",
+                )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(credential, _auth_failure_message(failure))
+                return failure.error_result(where=where)
+            response = await rest_api.create_post(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                author_urn=author_urn,
+                commentary=commentary,
+                media=rest_api.build_document_media(document_urn=init["document_urn"], title=title),
+                visibility=str(visibility or "PUBLIC").upper() or "PUBLIC",
+            )
+        return self._post_receipt(
+            response, credential=credential, author_urn=author_urn, where=where,
+            extra={"document_urn": init["document_urn"], "title": str(title).strip()},
+        )
+
+    async def publish_video(
+        self,
+        *,
+        text: str,
+        file: dict[str, Any],
+        title: str = "",
+        account_id: str = "",
+        visibility: str = "PUBLIC",
+        as_organization: bool = False,
+        where: str = "linkedin.publish_video",
+    ) -> dict[str, Any]:
+        return await _run_provider_call(
+            where=where,
+            operation="posts.create",
+            mutating=True,
+            run=lambda: self._publish_video(
+                text=text, file=file, title=title, account_id=account_id,
+                visibility=visibility, as_organization=as_organization, where=where,
+            ),
+        )
+
+    async def _publish_video(
+        self, *, text, file, title, account_id, visibility, as_organization, where
+    ) -> dict[str, Any]:
+        commentary = format_post_text(text or "")
+        if not commentary.strip():
+            return _error_result(code="text_required", message="LinkedIn post text is required.", where=where)
+        file_obj = dict(file or {})
+        error = validate_video(file_obj)
+        if error is not None:
+            return _error_result(
+                code=str(error.get("code") or "video_unavailable"),
+                message=str(error.get("message") or "Video could not be used."),
+                where=where,
+                ret=error,
+            )
+        claim = LINKEDIN_ORG_POST_CLAIM if as_organization else LINKEDIN_POST_CLAIM
+        credential, author_urn, resolve_error = await self._resolve_author(
+            claim=claim, account_id=account_id, as_organization=as_organization, where=where
+        )
+        if resolve_error is not None:
+            return resolve_error
+        data: bytes = file_obj["data"]
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            init_response = await rest_api.initialize_video_upload(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                owner_urn=author_urn,
+                file_size_bytes=len(data),
+            )
+            if init_response.status_code >= 400:
+                failure = _linkedin_failure(
+                    init_response,
+                    operation="videos.initializeUpload",
+                    fallback="LinkedIn video upload could not be initialized.",
+                    where=where,
+                    stage="initialize_upload",
+                )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(credential, _auth_failure_message(failure))
+                return failure.error_result(where=where)
+            try:
+                init = rest_api.parse_video_upload_init(init_response.json())
+            except Exception:
+                init = {}
+            if not init.get("video_urn") or not init.get("upload_instructions"):
+                return _error_result(
+                    code="video_upload_init_incomplete",
+                    message="LinkedIn did not return a video URN and upload instructions.",
+                    where=where,
+                )
+            # Multipart by the byte ranges LinkedIn dictated; every part's ETag
+            # feeds finalizeUpload, in instruction order.
+            part_ids: list[str] = []
+            for part in init["upload_instructions"]:
+                chunk = data[part["first_byte"]: part["last_byte"] + 1]
+                part_response = await rest_api.upload_video_part(
+                    client, upload_url=part["upload_url"], data=chunk
+                )
+                if part_response.status_code >= 400:
+                    failure = _linkedin_failure(
+                        part_response,
+                        operation="videos.uploadPart",
+                        fallback="LinkedIn video part upload failed.",
+                        where=where,
+                        stage="upload_bytes",
+                    )
+                    return failure.error_result(where=where)
+                etag = rest_api.etag_from_response(part_response)
+                if not etag:
+                    return _error_result(
+                        code="video_part_missing_etag",
+                        message="LinkedIn returned no ETag for an uploaded video part.",
+                        where=where,
+                    )
+                part_ids.append(etag)
+            finalize_response = await rest_api.finalize_video_upload(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                video_urn=init["video_urn"],
+                upload_token=init.get("upload_token") or "",
+                uploaded_part_ids=part_ids,
+            )
+            if finalize_response.status_code >= 400:
+                failure = _linkedin_failure(
+                    finalize_response,
+                    operation="videos.finalizeUpload",
+                    fallback="LinkedIn video upload could not be finalized.",
+                    where=where,
+                    stage="finalize_upload",
+                )
+                return failure.error_result(where=where)
+            response = await rest_api.create_post(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                author_urn=author_urn,
+                commentary=commentary,
+                media=rest_api.build_video_media(video_urn=init["video_urn"], title=title),
+                visibility=str(visibility or "PUBLIC").upper() or "PUBLIC",
+            )
+        return self._post_receipt(
+            response, credential=credential, author_urn=author_urn, where=where,
+            extra={
+                "video_urn": init["video_urn"],
+                "processing": (
+                    "LinkedIn processes the video asynchronously; the post publishes "
+                    "once processing completes."
+                ),
+            },
+        )
+
+
 def create_linkedin_plugin() -> LinkedInTools:
     return LinkedInTools()
 
@@ -1150,5 +1929,8 @@ __all__ = [
     "connected_linkedin_accounts",
     "create_linkedin_plugin",
     "linkedin_api_version",
+    "load_file_artifact",
     "load_image_artifact",
+    "validate_document",
+    "validate_video",
 ]

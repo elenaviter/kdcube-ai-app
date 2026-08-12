@@ -91,13 +91,20 @@ async def test_capabilities_do_not_advertise_search(provider, ctx):
     assert capabilities["list"] is True and capabilities["get"] is True
     assert sorted(capabilities["actions"]) == [
         "add_comment",
+        "delete_comment",
+        "delete_post",
         "discard_upload",
         "list_org_posts",
+        "publish_article_post",
+        "publish_document_post",
         "publish_image_post",
         "publish_org_post",
+        "publish_poll",
         "publish_post",
+        "publish_video_post",
         "read_post_engagement",
         "request_upload",
+        "update_post_text",
     ]
     assert "object.search" in capabilities["not_supported"]
 
@@ -570,6 +577,158 @@ async def test_request_upload_points_at_the_image_action(provider, ctx):
     assert f"in {ns.ACTION_PUBLISH_POST} files" not in how
 
 
+# --- Mutations on published content -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_post_accepts_the_post_ref(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _delete(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "error": None,
+                "ret": {"post_urn": kwargs["post_urn"], "deleted": True, "account_id": "acc_1"}}
+
+    monkeypatch.setattr(provider._linkedin, "delete_linkedin_post", _delete)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_DELETE_POST,
+                 object_ref="linkedin:acc_1:post:urn:li:share:7123456789", payload={}),
+    )
+    assert response.ok is True
+    assert captured["post_urn"] == "urn:li:share:7123456789"
+    assert captured["account_id"] == "acc_1"
+    assert captured["as_organization"] is False
+    obj = dict((response.ret or {}).get("object") or {})
+    assert obj["deleted"] is True
+    assert _extra(response)["action"] == ns.ACTION_DELETE_POST
+
+
+@pytest.mark.asyncio
+async def test_delete_post_routes_the_org_lane(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _delete(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "error": None,
+                "ret": {"post_urn": kwargs["post_urn"], "deleted": True, "account_id": "acc_1"}}
+
+    monkeypatch.setattr(provider._linkedin, "delete_linkedin_post", _delete)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_DELETE_POST,
+                 payload={"post_urn": "urn:li:share:9", "as_organization": True}),
+    )
+    assert response.ok is True
+    assert captured["as_organization"] is True
+
+
+@pytest.mark.asyncio
+async def test_delete_post_without_a_target_is_rejected(provider, ctx):
+    response = await provider.object_action(
+        ctx, _request("object.action", action=ns.ACTION_DELETE_POST, payload={})
+    )
+    assert response.ok is False
+    assert response.error.code == "linkedin_post_ref_required"
+
+
+@pytest.mark.asyncio
+async def test_update_post_text_routes_text_and_target(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _update(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "error": None,
+                "ret": {"post_urn": kwargs["post_urn"], "updated": True, "account_id": "acc_1"}}
+
+    monkeypatch.setattr(provider._linkedin, "update_linkedin_post_text", _update)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_UPDATE_POST_TEXT,
+                 object_ref="linkedin:acc_1:post:urn:li:share:7123",
+                 payload={"text": "corrected wording"}),
+    )
+    assert response.ok is True
+    assert captured["post_urn"] == "urn:li:share:7123"
+    assert captured["text"] == "corrected wording"
+    assert captured["as_organization"] is False
+    obj = dict((response.ret or {}).get("object") or {})
+    assert obj["updated"] is True
+    assert _extra(response)["action"] == ns.ACTION_UPDATE_POST_TEXT
+
+
+@pytest.mark.asyncio
+async def test_update_post_text_without_a_target_is_rejected(provider, ctx):
+    response = await provider.object_action(
+        ctx, _request("object.action", action=ns.ACTION_UPDATE_POST_TEXT, payload={"text": "x"})
+    )
+    assert response.ok is False
+    assert response.error.code == "linkedin_post_ref_required"
+
+
+@pytest.mark.asyncio
+async def test_update_post_text_failure_is_translated_not_raised(provider, ctx, monkeypatch):
+    async def _update(**_kwargs):
+        return {"ok": False, "error": {"code": "linkedin_not_found"}, "ret": {}}
+
+    monkeypatch.setattr(provider._linkedin, "update_linkedin_post_text", _update)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_UPDATE_POST_TEXT,
+                 object_ref="linkedin:acc_1:post:urn:li:share:7", payload={"text": "x"}),
+    )
+    assert response.ok is False
+    assert response.error.code == "linkedin_not_found"
+    assert response.error.message == "LinkedIn post text could not be updated."
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_routes_comment_and_post(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _delete(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "error": None,
+                "ret": {"post_urn": kwargs["post_urn"], "comment_id": kwargs["comment_id"],
+                        "deleted": True, "account_id": "acc_1"}}
+
+    monkeypatch.setattr(provider._linkedin, "delete_linkedin_comment", _delete)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_DELETE_COMMENT,
+                 object_ref="linkedin:acc_1:post:urn:li:share:7123",
+                 payload={"comment_id": "99"}),
+    )
+    assert response.ok is True
+    assert captured["post_urn"] == "urn:li:share:7123"
+    assert captured["comment_id"] == "99"
+    assert captured["account_id"] == "acc_1"
+    obj = dict((response.ret or {}).get("object") or {})
+    assert obj["deleted"] is True
+    assert _extra(response)["action"] == ns.ACTION_DELETE_COMMENT
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_requires_a_comment_id(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_DELETE_COMMENT,
+                 object_ref="linkedin:acc_1:post:urn:li:share:7123", payload={}),
+    )
+    assert response.ok is False
+    assert response.error.code == "comment_id_required"
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_without_a_post_is_rejected(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_DELETE_COMMENT, payload={"comment_id": "99"}),
+    )
+    assert response.ok is False
+    assert response.error.code == "linkedin_post_ref_required"
+
+
 # --- Organization-lane actions ---------------------------------------------
 
 
@@ -674,3 +833,132 @@ async def test_read_post_engagement_returns_counts_and_comments(provider, ctx, m
     obj = dict((response.ret or {}).get("object") or {})
     assert obj["like_count"] == 12 and obj["comment_count"] == 2
     assert len(obj["comments"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_article_post_routes_article_and_thumbnail(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _publish(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "ret": {
+            "post_urn": "urn:li:share:42",
+            "permalink": "https://www.linkedin.com/feed/update/urn:li:share:42",
+            "account_id": ACCOUNT.account_id,
+            "author": "urn:li:person:dE5aOhH-ap",
+            "image_count": 0,
+            "image_urns": [],
+        }}
+
+    monkeypatch.setattr(provider._linkedin, "publish", _publish)
+    response = await provider.object_action(
+        ctx,
+        _request(
+            "object.action",
+            action=ns.ACTION_PUBLISH_ARTICLE_POST,
+            object_ref=ns.account_ref(ACCOUNT.account_id),
+            payload={
+                "text": "read this",
+                "article": {"source": "https://x.test/blog", "title": "T", "description": "D"},
+            },
+        ),
+    )
+    assert response.ok is True
+    assert captured["article"]["source"] == "https://x.test/blog"
+    assert captured["article"]["title"] == "T"
+    assert _extra(response)["action"] == ns.ACTION_PUBLISH_ARTICLE_POST
+
+
+@pytest.mark.asyncio
+async def test_publish_article_post_requires_the_card(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_PUBLISH_ARTICLE_POST, payload={"text": "hi"}),
+    )
+    assert response.ok is False
+    assert response.error.code == "article_required"
+
+
+@pytest.mark.asyncio
+async def test_publish_article_post_rejects_a_gallery(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request(
+            "object.action",
+            action=ns.ACTION_PUBLISH_ARTICLE_POST,
+            payload={
+                "text": "hi",
+                "article": {"source": "https://x.test", "title": "T"},
+                "files": [{"staged_ref": "a"}, {"staged_ref": "b"}],
+            },
+        ),
+    )
+    assert response.ok is False
+    assert response.error.code == "article_takes_one_thumbnail"
+
+
+# --- Poll / document / video actions ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_publish_poll_routes_the_poll_payload(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _poll(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "ret": {
+            "post_urn": "urn:li:ugcPost:77", "permalink": "https://www.linkedin.com/feed/update/urn:li:ugcPost:77",
+            "account_id": ACCOUNT.account_id, "author": "urn:li:person:dE5aOhH-ap",
+            "question": "Q?", "option_count": 2,
+        }}
+
+    monkeypatch.setattr(provider._linkedin, "publish_poll", _poll)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_PUBLISH_POLL,
+                 object_ref=ns.account_ref(ACCOUNT.account_id),
+                 payload={"text": "vote", "question": "Q?", "options": ["A", "B"], "duration": "ONE_DAY"}),
+    )
+    assert response.ok is True
+    assert captured["question"] == "Q?" and captured["options"] == ["A", "B"]
+    assert captured["duration"] == "ONE_DAY"
+    assert _extra(response)["action"] == ns.ACTION_PUBLISH_POLL
+
+
+@pytest.mark.asyncio
+async def test_document_post_requires_exactly_one_file(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_PUBLISH_DOCUMENT_POST,
+                 payload={"text": "read", "title": "Deck", "files": []}),
+    )
+    assert response.ok is False
+    assert response.error.code == "document_takes_one_file"
+
+
+@pytest.mark.asyncio
+async def test_video_post_routes_one_staged_file(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _video(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "ret": {
+            "post_urn": "urn:li:ugcPost:88", "permalink": "https://www.linkedin.com/feed/update/urn:li:ugcPost:88",
+            "account_id": ACCOUNT.account_id, "author": "urn:li:person:dE5aOhH-ap",
+            "video_urn": "urn:li:video:V1", "processing": "async",
+        }}
+
+    def _resolve(entries):
+        return [{"filename": "clip.mp4", "mime_type": "video/mp4", "data": b"x" * 10}], [], None
+
+    monkeypatch.setattr(provider._linkedin, "publish_video", _video)
+    monkeypatch.setattr(provider, "_resolve_media_files", _resolve)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_PUBLISH_VIDEO_POST,
+                 object_ref=ns.account_ref(ACCOUNT.account_id),
+                 payload={"text": "watch", "title": "T", "files": [{"staged_ref": "s1"}]}),
+    )
+    assert response.ok is True
+    assert captured["file"]["filename"] == "clip.mp4"
+    assert _extra(response)["action"] == ns.ACTION_PUBLISH_VIDEO_POST

@@ -5,6 +5,11 @@ import re
 LINKEDIN_POST_MAX_CHARS = 3000
 
 
+def utf16_length(text: str) -> int:
+    """Length as LinkedIn counts it: UTF-16 code units (emoji cost 2)."""
+    return sum(2 if ord(ch) > 0xFFFF else 1 for ch in str(text or ""))
+
+
 def strip_markdown(text: str) -> str:
     """Convert markdown-flavoured text to plain text suitable for a LinkedIn post.
 
@@ -59,21 +64,31 @@ def strip_markdown(text: str) -> str:
 
 
 def truncate_post_text(text: str, max_chars: int = LINKEDIN_POST_MAX_CHARS, suffix: str = "…") -> str:
-    """Truncate *text* to *max_chars*, appending *suffix* when a cut is made.
+    """Truncate *text* to *max_chars* UTF-16 code units, appending *suffix*.
 
-    The cut is made on a word boundary where possible so the post does not end
+    LinkedIn measures the limit in UTF-16 code units, so an emoji costs 2 —
+    a code-point count undercounts exactly the posts that carry emoji. The cut
+    is made on a word boundary where possible so the post does not end
     mid-word.
     """
     value = str(text or "")
-    if len(value) <= max_chars:
+    if utf16_length(value) <= max_chars:
         return value
-    budget = max_chars - len(suffix)
+    budget = max_chars - utf16_length(suffix)
+    # Walk to the last code-point index whose prefix fits the UTF-16 budget.
+    units = 0
+    fit = 0
+    for index, ch in enumerate(value):
+        units += 2 if ord(ch) > 0xFFFF else 1
+        if units > budget:
+            break
+        fit = index + 1
     # Try to break on a word boundary (space or newline)
-    cut = value.rfind(" ", 0, budget + 1)
+    cut = value.rfind(" ", 0, fit + 1)
     if cut <= 0:
-        cut = value.rfind("\n", 0, budget + 1)
+        cut = value.rfind("\n", 0, fit + 1)
     if cut <= 0:
-        cut = budget
+        cut = fit
     return value[:cut].rstrip() + suffix
 
 

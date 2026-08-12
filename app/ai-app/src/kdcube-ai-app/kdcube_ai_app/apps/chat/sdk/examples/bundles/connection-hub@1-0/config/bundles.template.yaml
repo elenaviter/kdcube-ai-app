@@ -1194,9 +1194,51 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:post"
+                          object.action.publish_article_post:
+                            label: "Publish LinkedIn post with a link card"
+                            description: "Publish a post carrying a link-preview card, with an optional thumbnail image."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.publish_poll:
+                            label: "Publish LinkedIn poll"
+                            description: "Publish a poll post as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.publish_document_post:
+                            label: "Publish LinkedIn document post"
+                            description: "Publish a post carrying a PDF/DOC/PPT document as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.publish_video_post:
+                            label: "Publish LinkedIn video post"
+                            description: "Publish a post carrying an MP4 video as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
                           object.action.add_comment:
                             label: "Comment on LinkedIn post"
                             description: "Add a comment to a LinkedIn post as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.update_post_text:
+                            label: "Edit LinkedIn post text"
+                            description: "Replace the text of a post published by the connected member; the attached card or media never change."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.delete_post:
+                            label: "Delete LinkedIn post"
+                            description: "Permanently delete a post published by the connected member, with its comments and reactions."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.delete_comment:
+                            label: "Delete LinkedIn comment"
+                            description: "Permanently delete a comment the connected member authored on a post."
                             grants:
                             - "named_services:use"
                             - "linkedin:post"
@@ -1274,9 +1316,51 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:post"
+                          object.action.publish_article_post:
+                            label: "Publish LinkedIn post with a link card"
+                            description: "Publish a post carrying a link-preview card, with an optional thumbnail image."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.publish_poll:
+                            label: "Publish LinkedIn poll"
+                            description: "Publish a poll post as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.publish_document_post:
+                            label: "Publish LinkedIn document post"
+                            description: "Publish a post carrying a PDF/DOC/PPT document as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.publish_video_post:
+                            label: "Publish LinkedIn video post"
+                            description: "Publish a post carrying an MP4 video as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
                           object.action.add_comment:
                             label: "Comment on LinkedIn post"
                             description: "Add a comment to a LinkedIn post as the connected member."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.update_post_text:
+                            label: "Edit LinkedIn post text"
+                            description: "Replace the text of a post published by the connected member; the attached card or media never change."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.delete_post:
+                            label: "Delete LinkedIn post"
+                            description: "Permanently delete a post published by the connected member, with its comments and reactions."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:post"
+                          object.action.delete_comment:
+                            label: "Delete LinkedIn comment"
+                            description: "Permanently delete a comment the connected member authored on a post."
                             grants:
                             - "named_services:use"
                             - "linkedin:post"

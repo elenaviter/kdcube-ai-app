@@ -39,6 +39,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.linkedin.tools import (
     bind_integrations as bind_linkedin_integrations,
     bind_service as bind_linkedin_service,
     connected_linkedin_accounts,
+    load_file_artifact,
     load_image_artifact,
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.named_service_consent import (
@@ -91,7 +92,16 @@ LINKEDIN_TRANSPORTS = (TRANSPORT_LOCAL, TRANSPORT_API)
 # media publishing are separate actions here, so each carries its own grant.
 ACTION_PUBLISH_POST = "publish_post"
 ACTION_PUBLISH_IMAGE_POST = "publish_image_post"
+ACTION_PUBLISH_ARTICLE_POST = "publish_article_post"
+ACTION_PUBLISH_POLL = "publish_poll"
+ACTION_PUBLISH_DOCUMENT_POST = "publish_document_post"
+ACTION_PUBLISH_VIDEO_POST = "publish_video_post"
 ACTION_ADD_COMMENT = "add_comment"
+# Mutations on already-published content. LinkedIn's w_member_social scope
+# covers create, modify, and delete of posts, comments, and reactions.
+ACTION_UPDATE_POST_TEXT = "update_post_text"
+ACTION_DELETE_POST = "delete_post"
+ACTION_DELETE_COMMENT = "delete_comment"
 ACTION_REQUEST_UPLOAD = "request_upload"
 ACTION_DISCARD_UPLOAD = "discard_upload"
 # Organization lane (Community Management API connector): post as the page,
@@ -104,7 +114,14 @@ ACTION_READ_POST_ENGAGEMENT = "read_post_engagement"
 LINKEDIN_ACTIONS = (
     ACTION_PUBLISH_POST,
     ACTION_PUBLISH_IMAGE_POST,
+    ACTION_PUBLISH_ARTICLE_POST,
+    ACTION_PUBLISH_POLL,
+    ACTION_PUBLISH_DOCUMENT_POST,
+    ACTION_PUBLISH_VIDEO_POST,
     ACTION_ADD_COMMENT,
+    ACTION_UPDATE_POST_TEXT,
+    ACTION_DELETE_POST,
+    ACTION_DELETE_COMMENT,
     ACTION_REQUEST_UPLOAD,
     ACTION_DISCARD_UPLOAD,
     ACTION_PUBLISH_ORG_POST,
@@ -115,7 +132,14 @@ LINKEDIN_ACTIONS = (
 LINKEDIN_MEMBER_ACTIONS = (
     ACTION_PUBLISH_POST,
     ACTION_PUBLISH_IMAGE_POST,
+    ACTION_PUBLISH_ARTICLE_POST,
+    ACTION_PUBLISH_POLL,
+    ACTION_PUBLISH_DOCUMENT_POST,
+    ACTION_PUBLISH_VIDEO_POST,
     ACTION_ADD_COMMENT,
+    ACTION_UPDATE_POST_TEXT,
+    ACTION_DELETE_POST,
+    ACTION_DELETE_COMMENT,
     ACTION_REQUEST_UPLOAD,
     ACTION_DISCARD_UPLOAD,
 )
@@ -152,7 +176,14 @@ LINKEDIN_CONNECTED_ACCOUNT_REQUIREMENTS = [
         "claims_by_operation": {
             f"object.action.{ACTION_PUBLISH_POST}": [LINKEDIN_POST_CLAIM],
             f"object.action.{ACTION_PUBLISH_IMAGE_POST}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_PUBLISH_ARTICLE_POST}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_PUBLISH_POLL}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_PUBLISH_DOCUMENT_POST}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_PUBLISH_VIDEO_POST}": [LINKEDIN_POST_CLAIM],
             f"object.action.{ACTION_ADD_COMMENT}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_UPDATE_POST_TEXT}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_DELETE_POST}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_DELETE_COMMENT}": [LINKEDIN_POST_CLAIM],
             f"object.action.{ACTION_PUBLISH_ORG_POST}": [LINKEDIN_ORG_POST_CLAIM],
             f"object.action.{ACTION_LIST_ORG_POSTS}": [LINKEDIN_ORG_READ_CLAIM],
             f"object.action.{ACTION_READ_POST_ENGAGEMENT}": [LINKEDIN_ORG_READ_CLAIM],
@@ -209,7 +240,14 @@ LINKEDIN_PRESENTATION = {
     "actions": {
         ACTION_PUBLISH_POST: {"label": "Publish a post", "description": "Publish a text post to your LinkedIn feed."},
         ACTION_PUBLISH_IMAGE_POST: {"label": "Publish a post with images", "description": "Publish a post with one or more images to your LinkedIn feed."},
+        ACTION_PUBLISH_ARTICLE_POST: {"label": "Publish a post with a link card", "description": "Publish a post carrying a link-preview card, with an optional thumbnail image."},
+        ACTION_PUBLISH_POLL: {"label": "Publish a poll", "description": "Publish a poll post: a question with 2-4 options open for a fixed duration."},
+        ACTION_PUBLISH_DOCUMENT_POST: {"label": "Publish a document post", "description": "Publish a post carrying a PDF/DOC/PPT document."},
+        ACTION_PUBLISH_VIDEO_POST: {"label": "Publish a video post", "description": "Publish a post carrying an MP4 video."},
         ACTION_ADD_COMMENT: {"label": "Comment on a post", "description": "Add a comment to a LinkedIn post as you."},
+        ACTION_UPDATE_POST_TEXT: {"label": "Edit a post's text", "description": "Replace the text of a post you published; the attached card or media stay as they are."},
+        ACTION_DELETE_POST: {"label": "Delete a post", "description": "Permanently delete a post you published, with its comments and reactions."},
+        ACTION_DELETE_COMMENT: {"label": "Delete a comment", "description": "Permanently delete a comment you added to a post."},
         ACTION_REQUEST_UPLOAD: {"label": "Attach an image", "description": "Stage one image for an upcoming post."},
         ACTION_DISCARD_UPLOAD: {"label": "Discard staged image", "description": "Remove a staged image before it is used."},
         ACTION_PUBLISH_ORG_POST: {"label": "Publish as your organization", "description": "Publish a text post as the organization page you administer."},
@@ -296,6 +334,93 @@ LINKEDIN_SCHEMA = {
             "returns": "post_urn, permalink, account_id, author_urn, image_count",
             "grants": [LINKEDIN_POST_CLAIM],
         },
+        ACTION_PUBLISH_ARTICLE_POST: {
+            "description": (
+                "Publish a post carrying a LINK-PREVIEW CARD (source URL + title, "
+                "optional description and thumbnail image). A post holds a card OR "
+                "images, never both — with a card, files[] may carry at most one "
+                "image, which becomes the card's thumbnail."
+            ),
+            "object_ref": (
+                "linkedin:<account_id> selecting the publishing account; take it "
+                "from object.list. Required by named_services_action."
+            ),
+            "payload": {
+                "text": {"type": "string", "required": True, "description": "Post body. Markdown is stripped; max 3000 characters (UTF-16 units — emoji cost 2)."},
+                "article": {
+                    "type": "object",
+                    "required": True,
+                    "description": (
+                        "The card: {source (URL, required), title (required, <=400), "
+                        "description (<=4086), thumbnail_alt (<=4086)}. The thumbnail "
+                        "itself travels in files[]."
+                    ),
+                },
+                "files": {
+                    "type": "array",
+                    "description": (
+                        "At most ONE image — the card thumbnail — as [{staged_ref}] "
+                        "or the inline/workspace forms publish_image_post takes."
+                    ),
+                },
+                "visibility": {"type": "string", "enum": ["PUBLIC", "CONNECTIONS"], "default": "PUBLIC"},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, permalink, account_id, author_urn, image_urns",
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
+        ACTION_PUBLISH_POLL: {
+            "description": (
+                "Publish a poll post: a question with 2-4 options, open for a "
+                "fixed duration. Non-sponsored only; results are visible to the "
+                "author on LinkedIn."
+            ),
+            "object_ref": "linkedin:<account_id> selecting the publishing account; take it from object.list.",
+            "payload": {
+                "text": {"type": "string", "required": True, "description": "Post body. Max 3000 characters (UTF-16 units)."},
+                "question": {"type": "string", "required": True, "description": "Poll question; max 140 characters."},
+                "options": {"type": "array", "required": True, "description": "2-4 option strings, each max 30 characters."},
+                "duration": {"type": "string", "enum": ["ONE_DAY", "THREE_DAYS", "SEVEN_DAYS", "FOURTEEN_DAYS"], "default": "SEVEN_DAYS"},
+                "visibility": {"type": "string", "enum": ["PUBLIC", "CONNECTIONS"], "default": "PUBLIC"},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, permalink, account_id, author, question, option_count",
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
+        ACTION_PUBLISH_DOCUMENT_POST: {
+            "description": (
+                "Publish a post carrying ONE document (PDF, DOC/DOCX, PPT/PPTX; "
+                "up to 100 MB). LinkedIn renders it as a swipeable document. A "
+                "title is required."
+            ),
+            "object_ref": "linkedin:<account_id> selecting the publishing account; take it from object.list.",
+            "payload": {
+                "text": {"type": "string", "required": True, "description": "Post body. Max 3000 characters (UTF-16 units)."},
+                "title": {"type": "string", "required": True, "description": "Document title shown on the post."},
+                "files": {"type": "array", "required": True, "description": "Exactly ONE document, in the same forms publish_image_post takes ([{staged_ref}] preferred)."},
+                "visibility": {"type": "string", "enum": ["PUBLIC", "CONNECTIONS"], "default": "PUBLIC"},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, permalink, account_id, author, document_urn, title",
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
+        ACTION_PUBLISH_VIDEO_POST: {
+            "description": (
+                "Publish a post carrying ONE MP4 video (75 KB - 500 MB, 3 s - 30 "
+                "min). The upload is multipart; LinkedIn processes the video "
+                "asynchronously and publishes the post when processing completes."
+            ),
+            "object_ref": "linkedin:<account_id> selecting the publishing account; take it from object.list.",
+            "payload": {
+                "text": {"type": "string", "required": True, "description": "Post body. Max 3000 characters (UTF-16 units)."},
+                "title": {"type": "string", "description": "Optional video title."},
+                "files": {"type": "array", "required": True, "description": "Exactly ONE MP4, in the same forms publish_image_post takes ([{staged_ref}] preferred)."},
+                "visibility": {"type": "string", "enum": ["PUBLIC", "CONNECTIONS"], "default": "PUBLIC"},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, permalink, account_id, author, video_urn, processing",
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
         ACTION_REQUEST_UPLOAD: {
             "description": (
                 "Reserve an upload slot for one image. Returns {upload_url, "
@@ -339,6 +464,55 @@ LINKEDIN_SCHEMA = {
                 "comment_id, comment_urn, post_urn, account_id. comment_urn is "
                 "empty when the response carries no thread to key it on."
             ),
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
+        ACTION_UPDATE_POST_TEXT: {
+            "description": (
+                "Replace the TEXT of a post published through a connected "
+                "account (with as_organization, a post the organization page "
+                "authored). LinkedIn permits editing a post's commentary only; "
+                "the attached card or media can never change."
+            ),
+            "object_ref": "linkedin:<account_id>:post:<post_urn>, or pass post_urn in the payload.",
+            "payload": {
+                "text": {"type": "string", "required": True, "description": "New post body. Markdown is stripped; max 3000 characters (UTF-16 units)."},
+                "post_urn": {"type": "string", "description": "Target post URN when no object_ref is given."},
+                "as_organization": {"type": "boolean", "default": False, "description": "Edit a post authored by the org-lane account's organization page."},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, updated",
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
+        ACTION_DELETE_POST: {
+            "description": (
+                "Delete a post published through a connected account (with "
+                "as_organization, a post the organization page authored). "
+                "Deletion is PERMANENT: the post disappears with its comments "
+                "and reactions. Idempotent — deleting an already-deleted post "
+                "still succeeds."
+            ),
+            "object_ref": "linkedin:<account_id>:post:<post_urn>, or pass post_urn in the payload.",
+            "payload": {
+                "post_urn": {"type": "string", "description": "Target post URN when no object_ref is given."},
+                "as_organization": {"type": "boolean", "default": False, "description": "Delete a post authored by the org-lane account's organization page."},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, deleted",
+            "grants": [LINKEDIN_POST_CLAIM],
+        },
+        ACTION_DELETE_COMMENT: {
+            "description": (
+                "Delete a comment the connected member authored on a LinkedIn "
+                "post. Deletion is permanent. Uses the unversioned "
+                "/v2/socialActions endpoint, like add_comment."
+            ),
+            "object_ref": "linkedin:<account_id>:post:<post_urn> — the comment's post — or pass post_urn in the payload.",
+            "payload": {
+                "comment_id": {"type": "string", "required": True, "description": "Comment id returned by add_comment (comment_id, not the full comment URN)."},
+                "post_urn": {"type": "string", "description": "The comment's post URN when no object_ref is given."},
+                "account_id": {"type": "string", "description": "Connected account id when several are connected."},
+            },
+            "returns": "post_urn, comment_id, deleted",
             "grants": [LINKEDIN_POST_CLAIM],
         },
         ACTION_PUBLISH_ORG_POST: {
@@ -394,6 +568,22 @@ LINKEDIN_SCHEMA = {
         "images_per_post": rest_api.MULTI_IMAGE_MAX,
         "image_bytes": rest_api.MAX_IMAGE_BYTES,
         "image_mime": list(rest_api.SUPPORTED_IMAGE_MIME),
+    },
+    # LinkedIn's post content universe (Posts API `content` members) and what
+    # this namespace covers. A post renders ONE content shape; the doc implies
+    # rather than states exclusivity, so the guard here refuses combinations
+    # with an actionable error instead of letting LinkedIn fail opaquely.
+    "post_formats": {
+        "text": f"wired — {ACTION_PUBLISH_POST} (a post with commentary and no content block).",
+        "image": f"wired — {ACTION_PUBLISH_IMAGE_POST} with one file (content.media).",
+        "multiImage": f"wired — {ACTION_PUBLISH_IMAGE_POST} with 2-{rest_api.MULTI_IMAGE_MAX} files (non-sponsored only).",
+        "article": f"wired — {ACTION_PUBLISH_ARTICLE_POST} (link-preview card, optional thumbnail).",
+        "video": f"wired — {ACTION_PUBLISH_VIDEO_POST} (MP4, multipart Videos API upload; LinkedIn processes asynchronously).",
+        "document": f"wired — {ACTION_PUBLISH_DOCUMENT_POST} (PDF/DOC/PPT via the Documents API; title required).",
+        "poll": f"wired — {ACTION_PUBLISH_POLL} (question + 2-4 options; non-sponsored only).",
+        "carousel": "out of scope — LinkedIn allows carousel posts only as sponsored content.",
+        "celebration": "not creatable — LinkedIn does not allow creating celebration posts through the external API.",
+        "reference": "not wired — event/appreciation reference posts.",
     },
     "not_supported": {
         "object.search": "LinkedIn exposes no content search to this integration.",
@@ -500,6 +690,34 @@ LINKEDIN_SCHEMA_PROJECTION = {
                         "operations": [f"object.action:{ACTION_PUBLISH_IMAGE_POST}"],
                     },
                     {
+                        "id": "link",
+                        "label": "Publish a post with a link card",
+                        "description": "Publish a post carrying a link-preview card (URL + title, optional description and thumbnail).",
+                        "keywords": ["links", "cards", "articles", "previews", "thumbnails", "url", "urls"],
+                        "operations": [f"object.action:{ACTION_PUBLISH_ARTICLE_POST}"],
+                    },
+                    {
+                        "id": "poll",
+                        "label": "Publish a poll",
+                        "description": "A question with 2-4 options, open for a fixed duration.",
+                        "keywords": ["polls", "questions", "votes", "voting", "surveys", "options"],
+                        "operations": [f"object.action:{ACTION_PUBLISH_POLL}"],
+                    },
+                    {
+                        "id": "document",
+                        "label": "Publish a document post",
+                        "description": "A post carrying a PDF/DOC/PPT rendered as a swipeable document.",
+                        "keywords": ["documents", "pdf", "pdfs", "slides", "decks", "presentations", "carousels"],
+                        "operations": [f"object.action:{ACTION_PUBLISH_DOCUMENT_POST}"],
+                    },
+                    {
+                        "id": "video",
+                        "label": "Publish a video post",
+                        "description": "A post carrying an MP4 video, processed asynchronously by LinkedIn.",
+                        "keywords": ["videos", "mp4", "clips", "recordings", "reels"],
+                        "operations": [f"object.action:{ACTION_PUBLISH_VIDEO_POST}"],
+                    },
+                    {
                         "id": "staging",
                         "label": "Stage images for a post",
                         "description": "Reserve and release signed upload slots so image bytes bypass model context.",
@@ -529,6 +747,29 @@ LINKEDIN_SCHEMA_PROJECTION = {
                         "description": "Add a comment to a LinkedIn post as the connected member.",
                         "keywords": ["comments", "commenting", "reply", "replies", "responding"],
                         "operations": [f"object.action:{ACTION_ADD_COMMENT}"],
+                    },
+                    {
+                        "id": "edit-text",
+                        "label": "Edit a post's text",
+                        "description": "Replace the text of a published post; the attached card or media never change.",
+                        "keywords": ["editing", "edits", "updating", "rewriting", "rewording", "revising",
+                                     "corrections", "correcting", "typos", "fixing"],
+                        "operations": [f"object.action:{ACTION_UPDATE_POST_TEXT}"],
+                    },
+                    {
+                        "id": "delete",
+                        "label": "Delete a post",
+                        "description": "Permanently delete a published post, with its comments and reactions.",
+                        "keywords": ["deleting", "deletes", "deletion", "deletions", "removing", "removal",
+                                     "removals", "retracting", "unpublishing", "takedowns"],
+                        "operations": [f"object.action:{ACTION_DELETE_POST}"],
+                    },
+                    {
+                        "id": "delete-comment",
+                        "label": "Delete a comment",
+                        "description": "Permanently delete a comment the connected member added to a post.",
+                        "keywords": ["deleting", "removing", "retracting", "moderating", "moderation"],
+                        "operations": [f"object.action:{ACTION_DELETE_COMMENT}"],
                     },
                 ],
             },
@@ -580,6 +821,10 @@ LINKEDIN_SCHEMA_PROJECTION = {
             "actions": [
                 ACTION_PUBLISH_POST,
                 ACTION_PUBLISH_IMAGE_POST,
+                ACTION_PUBLISH_ARTICLE_POST,
+                ACTION_PUBLISH_POLL,
+                ACTION_PUBLISH_DOCUMENT_POST,
+                ACTION_PUBLISH_VIDEO_POST,
                 ACTION_REQUEST_UPLOAD,
                 ACTION_DISCARD_UPLOAD,
                 ACTION_PUBLISH_ORG_POST,
@@ -590,7 +835,13 @@ LINKEDIN_SCHEMA_PROJECTION = {
             "refs": ["post"],
             "related_kinds": [LINKEDIN_ACCOUNT_KIND],
             "operations": {"object.get": {}},
-            "actions": [ACTION_ADD_COMMENT, ACTION_READ_POST_ENGAGEMENT],
+            "actions": [
+                ACTION_ADD_COMMENT,
+                ACTION_UPDATE_POST_TEXT,
+                ACTION_DELETE_POST,
+                ACTION_DELETE_COMMENT,
+                ACTION_READ_POST_ENGAGEMENT,
+            ],
         },
     },
 }
@@ -900,8 +1151,22 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             return await self._publish_post(ctx, request)
         if action == ACTION_PUBLISH_IMAGE_POST:
             return await self._publish_image_post(ctx, request)
+        if action == ACTION_PUBLISH_ARTICLE_POST:
+            return await self._publish_article_post(ctx, request)
+        if action == ACTION_PUBLISH_POLL:
+            return await self._publish_poll(ctx, request)
+        if action == ACTION_PUBLISH_DOCUMENT_POST:
+            return await self._publish_media_post(ctx, request, kind="document")
+        if action == ACTION_PUBLISH_VIDEO_POST:
+            return await self._publish_media_post(ctx, request, kind="video")
         if action == ACTION_ADD_COMMENT:
             return await self._add_comment(ctx, request)
+        if action == ACTION_UPDATE_POST_TEXT:
+            return await self._update_post_text(ctx, request)
+        if action == ACTION_DELETE_POST:
+            return await self._delete_post(ctx, request)
+        if action == ACTION_DELETE_COMMENT:
+            return await self._delete_comment(ctx, request)
         if action == ACTION_REQUEST_UPLOAD:
             return await self._request_upload(ctx, request)
         if action == ACTION_DISCARD_UPLOAD:
@@ -1049,6 +1314,7 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
         files: list[dict[str, Any]],
         consumed: list[str],
         as_organization: bool = False,
+        article: dict[str, Any] | None = None,
     ) -> NamedServiceResponse:
         payload = dict(request.payload or {})
         alt_texts = [str(item or "") for item in (payload.get("alt_texts") or [])]
@@ -1059,6 +1325,7 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             account_id=self._account_id_for(request),
             visibility=_text(payload.get("visibility")).upper() or "PUBLIC",
             as_organization=as_organization,
+            article=article,
             where=f"named_services.{LINKEDIN_NAMESPACE}.{action}",
         )
         if not isinstance(result, Mapping) or not result.get("ok"):
@@ -1143,6 +1410,205 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             )
         return await self._publish(
             request, action=ACTION_PUBLISH_IMAGE_POST, files=files, consumed=consumed
+        )
+
+    async def _publish_article_post(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        raw_article = payload.get("article")
+        if not isinstance(raw_article, Mapping) or not _text(raw_article.get("source")):
+            return NamedServiceResponse.error_response(
+                code="article_required",
+                message=(
+                    "publish_article_post needs payload.article with at least "
+                    "{source, title}. Publish without a link card via "
+                    f"{ACTION_PUBLISH_POST} or {ACTION_PUBLISH_IMAGE_POST}."
+                ),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+            )
+        entries = list(payload.get("files") or [])
+        if len(entries) > 1:
+            return NamedServiceResponse.error_response(
+                code="article_takes_one_thumbnail",
+                message=(
+                    "An article post carries at most one image — the card's "
+                    f"thumbnail. Publish galleries via {ACTION_PUBLISH_IMAGE_POST}, "
+                    "without a link card."
+                ),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+                details={"action": ACTION_PUBLISH_IMAGE_POST},
+            )
+        files: list[dict[str, Any]] = []
+        consumed: list[str] = []
+        if entries:
+            try:
+                files, consumed, error = self._resolve_image_files(entries)
+            except InlineFileError as exc:
+                return NamedServiceResponse.error_response(
+                    code="linkedin_invalid_files",
+                    message=str(exc),
+                    status=400,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or LINKEDIN_NAMESPACE,
+                )
+            if error is not None:
+                return NamedServiceResponse.error_response(
+                    code=str(error.get("code") or "linkedin_invalid_files"),
+                    message=str(error.get("message") or "Thumbnail image could not be read."),
+                    status=400,
+                    provider=self._provider_identity(),
+                    namespace=request.namespace or LINKEDIN_NAMESPACE,
+                    details=dict(error),
+                )
+        article = {
+            "source": _text(raw_article.get("source")),
+            "title": _text(raw_article.get("title")),
+            "description": _text(raw_article.get("description")),
+            "thumbnail_alt": _text(raw_article.get("thumbnail_alt") or raw_article.get("thumbnailAltText")),
+        }
+        return await self._publish(
+            request,
+            action=ACTION_PUBLISH_ARTICLE_POST,
+            files=files,
+            consumed=consumed,
+            article=article,
+        )
+
+    async def _publish_poll(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        result = await self._linkedin.publish_poll(
+            text=_text(payload.get("text")),
+            question=_text(payload.get("question")),
+            options=[str(item or "") for item in (payload.get("options") or [])],
+            duration=_text(payload.get("duration")) or "SEVEN_DAYS",
+            account_id=self._account_id_for(request),
+            visibility=_text(payload.get("visibility")).upper() or "PUBLIC",
+        )
+        return self._post_action_response(result, request, action=ACTION_PUBLISH_POLL,
+                                          default_code="linkedin_poll_failed",
+                                          fallback_message="LinkedIn poll could not be published.")
+
+    async def _publish_media_post(
+        self, ctx: NamedServiceContext, request: NamedServiceRequest, *, kind: str
+    ) -> NamedServiceResponse:
+        """document/video posts: exactly ONE file, resolved from any file lane."""
+        del ctx
+        payload = dict(request.payload or {})
+        action = ACTION_PUBLISH_DOCUMENT_POST if kind == "document" else ACTION_PUBLISH_VIDEO_POST
+        entries = list(payload.get("files") or [])
+        if len(entries) != 1:
+            return NamedServiceResponse.error_response(
+                code=f"{kind}_takes_one_file",
+                message=f"A {kind} post carries exactly one file; got {len(entries)}.",
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+            )
+        try:
+            files, consumed, error = self._resolve_media_files(entries)
+        except InlineFileError as exc:
+            return NamedServiceResponse.error_response(
+                code="linkedin_invalid_files",
+                message=str(exc),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+            )
+        if error is not None:
+            return NamedServiceResponse.error_response(
+                code=str(error.get("code") or "linkedin_invalid_files"),
+                message=str(error.get("message") or "File could not be read."),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+                details=dict(error),
+            )
+        common = {
+            "text": _text(payload.get("text")),
+            "file": files[0],
+            "account_id": self._account_id_for(request),
+            "visibility": _text(payload.get("visibility")).upper() or "PUBLIC",
+        }
+        if kind == "document":
+            result = await self._linkedin.publish_document(title=_text(payload.get("title")), **common)
+        else:
+            result = await self._linkedin.publish_video(title=_text(payload.get("title")), **common)
+        response = self._post_action_response(
+            result, request, action=action,
+            default_code=f"linkedin_{kind}_failed",
+            fallback_message=f"LinkedIn {kind} post could not be published.",
+        )
+        if response.ok:
+            root = self._staging_root()
+            if root is not None:
+                for staged_ref in consumed:
+                    delete_staged(root, staged_ref)
+        return response
+
+    def _resolve_media_files(
+        self, entries: list[Any]
+    ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any] | None]:
+        """Like _resolve_image_files but WITHOUT image typing: the file_path
+        lane loads any workspace file; per-shape validation happens in the
+        tools layer (document/video limits differ from images)."""
+        slots: list[dict[str, Any] | None] = [None] * len(entries)
+        deferred: list[tuple[int, Any]] = []
+        for index, entry in enumerate(entries):
+            path = _text(entry.get("file_path")) if isinstance(entry, Mapping) else ""
+            if not path:
+                deferred.append((index, entry))
+                continue
+            file_obj, error = load_file_artifact(path)
+            if error is not None:
+                return [], [], error
+            slots[index] = file_obj
+        consumed: list[str] = []
+        if deferred:
+            resolved, consumed = resolve_payload_file_entries(
+                [entry for _index, entry in deferred],
+                staging_root=self._staging_root(),
+            )
+            with inline_files_workspace() as artifact_root:
+                staged = materialize_inline_files(artifact_root, resolved)
+                for (index, _entry), row in zip(deferred, staged):
+                    slots[index] = {
+                        "filename": row["filename"],
+                        "mime_type": row["mime"],
+                        "data": (pathlib.Path(artifact_root) / row["relpath"]).read_bytes(),
+                    }
+        return [slot for slot in slots if slot is not None], consumed, None
+
+    def _post_action_response(
+        self,
+        result: Any,
+        request: NamedServiceRequest,
+        *,
+        action: str,
+        default_code: str,
+        fallback_message: str,
+    ) -> NamedServiceResponse:
+        """Shared ok/error shaping for post-producing actions."""
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code=default_code,
+                fallback_message=fallback_message,
+            )
+        ret = dict(result.get("ret") or {})
+        account_id = _text(ret.get("account_id"))
+        post_urn = _text(ret.get("post_urn"))
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+            object_ref=post_ref(account_id, post_urn) if post_urn else None,
+            object={**_post_object(account_id, post_urn), **ret} if post_urn else ret,
+            extra={"action": action},
         )
 
     async def _publish_org_post(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
@@ -1275,6 +1741,119 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             extra={"action": ACTION_ADD_COMMENT},
         )
 
+    # --- Mutations on published content -------------------------------------
+
+    def _target_post_urn(self, request: NamedServiceRequest) -> str:
+        """Target post URN from payload.post_urn or the post object_ref."""
+        payload = dict(request.payload or {})
+        post_urn = _text(payload.get("post_urn"))
+        if post_urn:
+            return post_urn
+        return _text(parse_linkedin_ref(request.object_ref or "").get("post_urn"))
+
+    def _post_ref_required(self, request: NamedServiceRequest, *, action: str) -> NamedServiceResponse:
+        return NamedServiceResponse.error_response(
+            code="linkedin_post_ref_required",
+            message=(
+                f"{action} needs a post: provide a "
+                "linkedin:<account_id>:post:<post_urn> object_ref or payload.post_urn."
+            ),
+            status=400,
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+        )
+
+    async def _update_post_text(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        post_urn = self._target_post_urn(request)
+        if not post_urn:
+            return self._post_ref_required(request, action=ACTION_UPDATE_POST_TEXT)
+        result = await self._linkedin.update_linkedin_post_text(
+            post_urn=post_urn,
+            text=_text(payload.get("text")),
+            account_id=self._account_id_for(request),
+            as_organization=bool(payload.get("as_organization")),
+        )
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code="linkedin_update_failed",
+                fallback_message="LinkedIn post text could not be updated.",
+            )
+        ret = dict(result.get("ret") or {})
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+            object_ref=post_ref(_text(ret.get("account_id")), post_urn),
+            object=ret,
+            extra={"action": ACTION_UPDATE_POST_TEXT},
+        )
+
+    async def _delete_post(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        post_urn = self._target_post_urn(request)
+        if not post_urn:
+            return self._post_ref_required(request, action=ACTION_DELETE_POST)
+        result = await self._linkedin.delete_linkedin_post(
+            post_urn=post_urn,
+            account_id=self._account_id_for(request),
+            as_organization=bool(payload.get("as_organization")),
+        )
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code="linkedin_delete_failed",
+                fallback_message="LinkedIn post could not be deleted.",
+            )
+        ret = dict(result.get("ret") or {})
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+            object_ref=post_ref(_text(ret.get("account_id")), post_urn),
+            object=ret,
+            extra={"action": ACTION_DELETE_POST},
+        )
+
+    async def _delete_comment(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        post_urn = self._target_post_urn(request)
+        if not post_urn:
+            return self._post_ref_required(request, action=ACTION_DELETE_COMMENT)
+        comment_id = _text(payload.get("comment_id"))
+        if not comment_id:
+            return NamedServiceResponse.error_response(
+                code="comment_id_required",
+                message=f"{ACTION_DELETE_COMMENT} needs payload.comment_id (the id add_comment returned).",
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+            )
+        result = await self._linkedin.delete_linkedin_comment(
+            post_urn=post_urn,
+            comment_id=comment_id,
+            account_id=self._account_id_for(request),
+        )
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code="linkedin_comment_delete_failed",
+                fallback_message="LinkedIn comment could not be deleted.",
+            )
+        ret = dict(result.get("ret") or {})
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+            object_ref=post_ref(_text(ret.get("account_id")), post_urn),
+            object=ret,
+            extra={"action": ACTION_DELETE_COMMENT},
+        )
+
 
 def make_linkedin_named_service_provider(
     *,
@@ -1295,10 +1874,13 @@ def make_linkedin_named_service_provider(
 
 __all__ = [
     "ACTION_ADD_COMMENT",
+    "ACTION_DELETE_COMMENT",
+    "ACTION_DELETE_POST",
     "ACTION_DISCARD_UPLOAD",
     "ACTION_PUBLISH_IMAGE_POST",
     "ACTION_PUBLISH_POST",
     "ACTION_REQUEST_UPLOAD",
+    "ACTION_UPDATE_POST_TEXT",
     "LINKEDIN_ACCOUNT_KIND",
     "LINKEDIN_ACTIONS",
     "LINKEDIN_CONNECTED_ACCOUNT_REQUIREMENTS",

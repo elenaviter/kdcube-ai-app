@@ -82,7 +82,7 @@ async def test_namespace_only_returns_the_root_catalog(provider, ctx):
 async def test_schema_path_browses_one_branch_recursively(provider, ctx):
     catalog = (await _schema(provider, ctx, schema_path="/publishing"))["catalog"]
     assert catalog["path"] == "/publishing"
-    assert [child["id"] for child in catalog["children"]] == ["text", "images", "staging"]
+    assert [child["id"] for child in catalog["children"]] == ["text", "images", "link", "poll", "document", "video", "staging"]
 
 
 @pytest.mark.asyncio
@@ -173,7 +173,7 @@ async def test_unknown_schema_path_is_rejected(provider, ctx):
         NamedServiceRequest(
             operation="object.schema",
             namespace=ns.LINKEDIN_NAMESPACE,
-            payload={"schema_path": "/publishing/video"},
+            payload={"schema_path": "/publishing/livestream"},
         ),
     )
     assert response.ok is False
@@ -221,6 +221,11 @@ def test_every_declared_keyword_reaches_a_searchable_entry():
         ("uploads", "/publishing/staging"),
         ("profiles", "/accounts/list"),
         ("permalinks", "/engagement/posts"),
+        ("typos", "/engagement/edit-text"),
+        ("rewording", "/engagement/edit-text"),
+        ("unpublishing", "/engagement/delete"),
+        ("deletion", "/engagement/delete"),
+        ("moderating", "/engagement/delete-comment"),
     ],
 )
 def test_both_word_forms_reach_their_branch(query: str, catalog_path: str):

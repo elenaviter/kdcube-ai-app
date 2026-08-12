@@ -157,3 +157,190 @@ def test_comment_urn_is_empty_without_a_thread():
     assert rest_api.comment_urn_from_body({}, comment_id="7") == ""
     assert rest_api.comment_urn_from_body({"object": "urn:li:activity:99"}) == ""
     assert rest_api.comment_urn_from_body(None) == ""
+
+
+# --- Article card (content.article) + UTF-16 length -------------------------
+
+
+def test_utf16_length_counts_emoji_as_two():
+    from kdcube_ai_app.apps.chat.sdk.integrations.linkedin.rest_api import utf16_length
+
+    assert utf16_length("abc") == 3
+    assert utf16_length("🚀") == 2          # astral plane
+    assert utf16_length("a🚀b") == 4
+    assert utf16_length("👩‍💻") == 5        # person(2) + ZWJ(1) + laptop(2)
+
+
+def test_build_article_content_full_card():
+    from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import rest_api
+
+    article = rest_api.build_article_content(
+        source="https://example.test/blog/post",
+        title="A title",
+        description="A description",
+        thumbnail_urn="urn:li:image:abc",
+        thumbnail_alt="Cover",
+    )
+    assert article == {
+        "source": "https://example.test/blog/post",
+        "title": "A title",
+        "description": "A description",
+        "thumbnail": "urn:li:image:abc",
+        "thumbnailAltText": "Cover",
+    }
+
+
+def test_build_article_content_requires_source_and_title():
+    from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import rest_api
+
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_article_content(source="", title="t")
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_article_content(source="https://x.test", title="")
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_article_content(source="https://x.test", title="x" * 401)
+
+
+def test_post_body_carries_article_and_never_both():
+    from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import rest_api
+
+    article = rest_api.build_article_content(source="https://x.test", title="t")
+    body = rest_api.build_post_body(
+        author_urn="urn:li:person:p", commentary="hello", article=article
+    )
+    assert body["content"] == {"article": article}
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_post_body(
+            author_urn="urn:li:person:p",
+            commentary="hello",
+            article=article,
+            images=[{"image_urn": "urn:li:image:i"}],
+        )
+
+
+def test_post_body_limit_is_utf16_aware():
+    from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import rest_api
+
+    # 1499 chars + 751 emoji = 1499 + 1502 = 3001 UTF-16 units -> rejected,
+    # although len() sees only 2250 code points.
+    text = "x" * 1499 + "🚀" * 751
+    assert len(text) < 3000
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_post_body(author_urn="urn:li:person:p", commentary=text)
+
+
+# --- Post delete / partial update + comment delete ---------------------------
+
+
+class _CapturingClient:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def post(self, url, *, json=None, headers=None, params=None):
+        self.calls.append({"method": "POST", "url": url, "json": json,
+                           "headers": headers, "params": params})
+        return _Response({})
+
+    async def delete(self, url, *, headers=None, params=None):
+        self.calls.append({"method": "DELETE", "url": url, "headers": headers,
+                           "params": params})
+        return _Response({})
+
+
+def test_post_entity_url_encodes_the_urn():
+    assert rest_api.post_entity_url("urn:li:share:7123") == (
+        "https://api.linkedin.com/rest/posts/urn%3Ali%3Ashare%3A7123"
+    )
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.post_entity_url("")
+
+
+def test_commentary_patch_sets_commentary_and_nothing_else():
+    assert rest_api.build_commentary_patch("new text") == {
+        "patch": {"$set": {"commentary": "new text"}}
+    }
+
+
+def test_commentary_patch_enforces_the_utf16_limit():
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_commentary_patch("   ")
+    # 3001 UTF-16 units although len() sees only 2250 code points.
+    text = "x" * 1499 + "🚀" * 751
+    assert len(text) < 3000
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.build_commentary_patch(text)
+
+
+@pytest.mark.asyncio
+async def test_delete_post_sends_the_restli_delete_method():
+    client = _CapturingClient()
+    await rest_api.delete_post(
+        client, access_token="T", api_version="202601", post_urn="urn:li:share:7123"
+    )
+    call = client.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["url"] == "https://api.linkedin.com/rest/posts/urn%3Ali%3Ashare%3A7123"
+    assert call["headers"]["X-RestLi-Method"] == "DELETE"
+    assert call["headers"]["LinkedIn-Version"] == "202601"
+
+
+@pytest.mark.asyncio
+async def test_update_post_commentary_is_a_partial_update_post():
+    client = _CapturingClient()
+    await rest_api.update_post_commentary(
+        client,
+        access_token="T",
+        api_version="202601",
+        post_urn="urn:li:ugcPost:9",
+        commentary="edited",
+    )
+    call = client.calls[0]
+    assert call["method"] == "POST"
+    assert call["url"] == "https://api.linkedin.com/rest/posts/urn%3Ali%3AugcPost%3A9"
+    assert call["headers"]["X-RestLi-Method"] == "PARTIAL_UPDATE"
+    assert call["headers"]["Content-Type"] == "application/json"
+    assert call["json"] == {"patch": {"$set": {"commentary": "edited"}}}
+
+
+def test_comment_delete_url_encodes_thread_and_comment():
+    url = rest_api.social_actions_comment_url("urn:li:share:7123", "654 3")
+    assert url == (
+        "https://api.linkedin.com/v2/socialActions/urn%3Ali%3Ashare%3A7123/comments/654%203"
+    )
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.social_actions_comment_url("urn:li:share:7123", "")
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        rest_api.social_actions_comment_url("", "6543")
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_targets_v2_with_the_actor():
+    client = _CapturingClient()
+    await rest_api.delete_comment(
+        client,
+        access_token="T",
+        actor_urn="urn:li:person:X",
+        object_urn="urn:li:share:7123",
+        comment_id="6543",
+    )
+    call = client.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["url"] == (
+        "https://api.linkedin.com/v2/socialActions/urn%3Ali%3Ashare%3A7123/comments/6543"
+    )
+    assert call["params"] == {"actor": "urn:li:person:X"}
+    # Unversioned endpoint: legacy headers carry no LinkedIn-Version.
+    assert "LinkedIn-Version" not in call["headers"]
+    assert call["headers"]["Authorization"] == "Bearer T"
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_requires_the_actor():
+    with pytest.raises(rest_api.LinkedInPayloadError):
+        await rest_api.delete_comment(
+            _CapturingClient(),
+            access_token="T",
+            actor_urn="",
+            object_urn="urn:li:share:7123",
+            comment_id="6543",
+        )

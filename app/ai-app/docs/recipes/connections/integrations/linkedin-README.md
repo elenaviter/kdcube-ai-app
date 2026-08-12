@@ -51,11 +51,15 @@ this before designing screens:
 | --- | --- | --- |
 | Publish a text post | yes | `w_member_social` |
 | Publish a post with images | yes | 1 image inline, 2–20 as a multi-image post |
+| Publish a post with a link-preview card | yes | `content.article`: source + title, optional description and thumbnail image; a post carries a card OR images, never both |
+| Publish a poll | yes | question + 2–4 options, fixed duration; non-sponsored only |
+| Publish a document post (PDF/DOC/PPT) | yes | Documents API upload, up to 100 MB; title required |
+| Publish a video post (MP4) | yes | Videos API multipart upload, 75 KB–500 MB; LinkedIn processes asynchronously |
 | Comment on a post | yes, on `/v2` | `w_member_social`; see below |
 | Read the connected member's own profile | yes | `openid`, `profile`, `email` |
 | Read post content, feeds, reactions | **no** | needs `r_member_social`, restricted to LinkedIn-approved apps |
 | Search people, posts or companies | **no** | no such scope on standard products |
-| Publish documents (PDF) | **no** | Documents API needs Marketing partner access; render pages to images instead |
+| Publish carousel posts | **no** | LinkedIn allows carousels only as sponsored content |
 
 The `linkedin` namespace therefore declares `search: false` and its
 `object.get` performs no provider read. That is a LinkedIn constraint, not a
