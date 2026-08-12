@@ -18,15 +18,33 @@ CHAT_WEB_APP_CONFIG_ENDPOINT=/api/cp-frontend-config
 If that endpoint is unavailable, it falls back to:
 
 ```text
-CHAT_WEB_APP_CONFIG_FILE_PATH=/config.json
+CHAT_WEB_APP_CONFIG_FILE_PATH=<control-plane-mount>/config.json
 ```
 
 Use the endpoint in descriptor-driven deployments. The static file is intended
 for local development or static hosting without the control-plane endpoint.
+The default fallback is computed at runtime from the control-plane mount, so a
+single built artifact can use `/platform/config.json` or
+`/control/ui/config.json` without rebuilding.
 
 The endpoint supplies the effective tenant/project, app catalog, browser auth
 configuration, cookie/header names, and platform routes. The browser should not
 reconstruct those values from deployment internals.
+
+The built artifact must keep frontend files under the control-plane mount:
+
+```text
+/platform/chat                  chat route
+/platform/assets/index-....js   JavaScript
+/platform/img/favicon.svg       image
+
+/control/ui/chat                chat route with a multi-segment mount
+/control/ui/assets/index-....js JavaScript
+/control/ui/img/favicon.svg     image
+```
+
+Do not emit root frontend-file URLs such as `/assets/...`, `/img/...`, or
+`/config.json`. Root clean paths may belong to application-hosted sites.
 
 ## App Presentation
 

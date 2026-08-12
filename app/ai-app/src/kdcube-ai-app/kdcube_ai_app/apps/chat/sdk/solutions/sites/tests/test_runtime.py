@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from kdcube_ai_app.apps.chat.sdk.solutions.sites.registry import (
+    SiteRegistryError,
     compile_application_site_catalog,
 )
 from kdcube_ai_app.apps.chat.sdk.solutions.sites.runtime import (
@@ -156,3 +157,50 @@ async def test_refresh_projects_resolved_application_target(monkeypatch) -> None
     assert catalog.sites[0].target.module == "entrypoint"
     assert catalog.sites[0].target.singleton is True
     assert runtime.snapshot() == catalog
+
+
+@pytest.mark.asyncio
+async def test_rejected_route_prefix_conflict_preserves_last_valid_runtime(monkeypatch) -> None:
+    from kdcube_ai_app.infra.plugin import bundle_store
+
+    async def _get_bundle_props(_redis, *, tenant, project, bundle_id):
+        assert (tenant, project, bundle_id) == ("tenant-a", "project-a", "site@1")
+        return {
+            "ui": {
+                "main_view": {
+                    "site": {"enabled": True, "alias": "site", "default": True},
+                },
+            },
+        }
+
+    monkeypatch.setattr(bundle_store, "get_bundle_props", _get_bundle_props)
+    redis = FakeRedis()
+    runtime = ApplicationSiteCatalogRuntime()
+    last_valid = compile_application_site_catalog(
+        tenant="tenant-a",
+        project="project-a",
+        sites=[],
+        generation=7,
+    )
+    assert runtime.replace(last_valid) is True
+
+    with pytest.raises(SiteRegistryError, match="proxy.route_prefix is '/'"):
+        await refresh_application_site_catalog(
+            redis,
+            tenant="tenant-a",
+            project="project-a",
+            applications={
+                "site@1": SimpleNamespace(
+                    model_dump=lambda: {
+                        "id": "site@1",
+                        "path": "/managed/site@1",
+                        "module": "entrypoint",
+                        "singleton": True,
+                    },
+                ),
+            },
+            runtime=runtime,
+            route_prefix="/",
+        )
+
+    assert runtime.snapshot() == last_valid

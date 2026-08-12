@@ -22,7 +22,8 @@ The platform owns:
 - active authority/provider configuration;
 - resolved login and logout endpoints;
 - `/profile` session truth;
-- `/api/*` and `/platform/*` routes;
+- `/api/*` and the configured control-plane mount such as `/platform/*` or
+  `/control/ui/*`;
 - building and serving app main views.
 
 The platform runtime owns the site registry. OpenResty forwards stable root and
@@ -45,11 +46,15 @@ browser ----------------+--> /api/cp-frontend-config
                          +--> configured scene public/static
 
 OpenResty / ---------------------> proc /api/integrations/site-root
+OpenResty /{path} ---------------> proc /api/integrations/site-root/{path}
 OpenResty /sites/{alias}/{path} -> proc /api/integrations/sites/{alias}/{path}
 Site CDN /{path} ---------------> proc /api/integrations/site-root/{path}
 ```
 
-No site selection or scene composition belongs in `assembly.yaml`.
+No site selection or scene composition belongs in `assembly.yaml`. The
+`proxy.route_prefix` value still belongs there. When any site is enabled, it
+must be non-root so platform frontend files do not compete with site root
+paths.
 
 Root resolution is deterministic:
 
@@ -59,6 +64,8 @@ Root resolution is deterministic:
 
 Duplicate aliases, ambiguous host matches, and multiple defaults are invalid
 registry states and return `503` rather than selecting an arbitrary site.
+If no site resolves for a non-root clean path, proc returns `404`. It does not
+redirect that path to the platform frontend.
 
 The website uses the normal main-view cache policy: entry HTML and root-level
 non-hashed shell files revalidate, while content-hashed `assets/` files are

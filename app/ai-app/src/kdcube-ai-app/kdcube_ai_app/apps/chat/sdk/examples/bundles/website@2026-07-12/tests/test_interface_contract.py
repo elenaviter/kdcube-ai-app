@@ -42,6 +42,19 @@ def test_site_script_accepts_site_and_control_plane_main_view_routes() -> None:
     assert "kdcube-site-context" in source
 
 
+def test_site_shell_uses_relative_assets_and_runtime_platform_prefix() -> None:
+    html = (ROOT / "ui" / "site" / "index.html").read_text()
+    source = (ROOT / "ui" / "site" / "site.js").read_text()
+
+    assert 'href="./styles.css"' in html
+    assert 'src="./site.js"' in html
+    assert 'href="/assets/' not in html
+    assert 'src="/assets/' not in html
+    assert '"/config.json"' not in source
+    assert "platformConfig?.routesPrefix" in source
+    assert "DEFAULT_PLATFORM_PREFIX = '/platform'" in source
+
+
 def test_site_keeps_a_definite_height_chain_for_the_embedded_scene() -> None:
     html = (ROOT / "ui" / "site" / "index.html").read_text()
     source = (ROOT / "ui" / "site" / "styles.css").read_text()

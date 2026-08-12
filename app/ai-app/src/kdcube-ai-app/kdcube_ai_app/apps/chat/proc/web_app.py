@@ -1289,6 +1289,7 @@ async def lifespan(app: FastAPI):
                 project=settings.PROJECT,
                 applications=_get_mem_registry(),
                 runtime=application_site_catalog_runtime,
+                route_prefix=settings.plain("proxy.route_prefix"),
             )
             app.state.application_site_catalog_task = asyncio.create_task(
                 subscribe_application_site_catalog_updates(

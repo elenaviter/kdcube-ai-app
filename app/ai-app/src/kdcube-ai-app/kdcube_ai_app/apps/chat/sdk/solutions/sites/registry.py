@@ -250,6 +250,7 @@ def compile_application_site_catalog(
     project: str,
     sites: Iterable[ApplicationSite],
     generation: int = 0,
+    route_prefix: Any = None,
 ) -> ApplicationSiteCatalog:
     normalized_tenant = str(tenant or "").strip()
     normalized_project = str(project or "").strip()
@@ -285,6 +286,11 @@ def compile_application_site_catalog(
 
     if len(defaults) > 1:
         raise SiteRegistryError("multiple default application sites are configured")
+    if catalog and str(route_prefix or "").strip() == "/":
+        raise SiteRegistryError(
+            "application-hosted sites cannot be enabled when proxy.route_prefix is '/'; "
+            "set proxy.route_prefix to a non-root mount such as '/platform' or disable root sites"
+        )
 
     return ApplicationSiteCatalog(
         tenant=normalized_tenant,
@@ -305,6 +311,7 @@ def build_application_site_catalog(
     project: str,
     application_props: Mapping[str, Mapping[str, Any] | None],
     application_specs: Mapping[str, Mapping[str, Any] | None] | None = None,
+    route_prefix: Any = None,
 ) -> ApplicationSiteCatalog:
     sites: list[ApplicationSite] = []
     for application_id in sorted(application_props):
@@ -319,6 +326,7 @@ def build_application_site_catalog(
         tenant=tenant,
         project=project,
         sites=sites,
+        route_prefix=route_prefix,
     )
 
 

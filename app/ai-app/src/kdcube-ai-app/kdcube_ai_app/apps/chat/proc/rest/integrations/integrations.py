@@ -3091,7 +3091,7 @@ async def bundle_static_asset_public_path(
 
 
 def _platform_chat_path() -> str:
-    raw = str(get_settings().plain("proxy.route_prefix") or "/chatbot").strip()
+    raw = str(get_settings().plain("proxy.route_prefix") or "/platform").strip()
     prefix = raw if raw.startswith("/") else f"/{raw}"
     prefix = prefix.rstrip("/") or "/"
     return "/chat" if prefix == "/" else f"{prefix}/chat"
@@ -3112,6 +3112,7 @@ async def _serve_application_site(
     request: Request,
     site_alias: str,
     path: str = "index.html",
+    root_request: bool = False,
 ) -> Response:
     try:
         catalog = await _application_site_catalog(request)
@@ -3132,8 +3133,10 @@ async def _serve_application_site(
         raise HTTPException(status_code=503, detail="Application site registry is unavailable") from exc
 
     if site is None:
-        if not site_alias:
+        if not site_alias and root_request:
             return RedirectResponse(url=_platform_chat_path(), status_code=307)
+        if not site_alias:
+            raise HTTPException(status_code=404, detail="Application site path not found")
         raise HTTPException(status_code=404, detail=f"Application site '{site_alias}' not found")
 
     public_base = f"/sites/{site.alias}/" if site_alias else "/"
@@ -3175,6 +3178,7 @@ async def application_site_landing(request: Request):
     return await _serve_application_site(
         request=request,
         site_alias="",
+        root_request=True,
     )
 
 

@@ -2160,6 +2160,7 @@ class EnhancedChatRequestProcessor:
                     project=project,
                     applications=get_all(),
                     runtime=application_site_catalog_runtime,
+                    route_prefix=settings.plain("proxy.route_prefix"),
                 )
             except Exception:
                 logger.warning(
@@ -2633,6 +2634,7 @@ class EnhancedChatRequestProcessor:
                                 project=project,
                                 applications=get_all(),
                                 runtime=application_site_catalog_runtime,
+                                route_prefix=settings.plain("proxy.route_prefix"),
                             )
                         except Exception:
                             logger.warning(

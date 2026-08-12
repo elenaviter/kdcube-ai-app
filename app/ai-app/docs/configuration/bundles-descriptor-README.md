@@ -100,6 +100,12 @@ config does not require generated proxy config and does not add Redis or YAML
 reads to website requests. The CLI does not interpret this section. `/api/*`
 and the configured platform frontend prefix remain platform routes.
 
+If any site is enabled, `assembly.yaml` must set a non-root
+`proxy.route_prefix`, such as `/platform` or `/control/ui`. The catalog rejects
+`proxy.route_prefix: /` with enabled sites because root clean paths cannot be
+owned by both the platform frontend and application-hosted sites. A root route
+prefix is valid only when no sites are enabled.
+
 Do not put website selection, title, or scene composition in `assembly.yaml`.
 The browser reads platform/auth configuration from `/api/cp-frontend-config`
 and reads site composition from the owning app's API.

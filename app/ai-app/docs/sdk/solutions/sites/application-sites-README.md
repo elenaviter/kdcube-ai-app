@@ -46,6 +46,13 @@ request /
         +--> host match
         +--> otherwise one default
         +--> otherwise configured platform chat route
+
+request /{clean-path} without a resolved site
+        |
+        +--> proc /api/integrations/site-root/{clean-path}
+        +--> host match
+        +--> otherwise one default
+        +--> otherwise controlled 404
 ```
 
 OpenResty does not contain an app list. It only forwards `/` and `/sites/*` to
@@ -83,6 +90,44 @@ parse YAML, or scan application properties.
 Invalid aliases, duplicate aliases, duplicate host declarations, and multiple
 defaults are rejected while compiling the catalog. The previous valid hot
 catalog remains active until a valid replacement is published.
+
+If any application-hosted site is enabled, `proxy.route_prefix` must be a
+non-root control-plane mount. `proxy.route_prefix: /` plus an enabled site is
+invalid because root paths cannot simultaneously belong to the platform
+frontend and to a host/default-selected website. `proxy.route_prefix: /` is
+still valid when no application-hosted sites are enabled.
+
+Neutral public fixture mounts used by tests and documentation:
+
+```text
+/platform/chat                  control-plane chat route
+/platform/assets/index-....js   control-plane frontend JavaScript
+/platform/img/favicon.svg       control-plane frontend image
+/platform/config.json           optional static frontend fallback
+
+/control/ui/chat                multi-segment control-plane chat route
+/control/ui/assets/index-....js control-plane frontend JavaScript
+/control/ui/img/favicon.svg     control-plane frontend image
+/control/ui/config.json         optional static frontend fallback
+```
+
+`/api/cp-frontend-config` remains a root API route reserved for runtime
+configuration. It is not a static frontend file and does not move under the
+control-plane mount.
+
+## Proc Result Matrix
+
+| Request | Catalog outcome | Result |
+| --- | --- | --- |
+| `/` | host match | Serve the matched site's `index.html` with base `/`. |
+| `/` | no host match, one default | Serve the default site's `index.html` with base `/`. |
+| `/` | no resolved site | Redirect to `<proxy.route_prefix>/chat`. |
+| `/{clean-path}` | host match or default | Serve file/directory index/SPA fallback for the selected site. |
+| `/{clean-path}` | no resolved site | Return controlled `404`, not a platform fallback. |
+| `/sites/{alias}` | known alias | Serve that site's `index.html` with base `/sites/{alias}/`. |
+| `/sites/{alias}/{path}` | known alias | Serve file/directory index/SPA fallback for that site. |
+| `/sites/{alias}` | unknown alias | Return controlled `404`. |
+| any site route | invalid or unavailable catalog | Return `503` while the last valid hot catalog remains active. |
 
 ## Multipage And CDN Routing
 

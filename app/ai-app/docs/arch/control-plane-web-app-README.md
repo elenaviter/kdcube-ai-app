@@ -177,6 +177,38 @@ reserved `site-root` origin route. The CDN does not own the site catalog.
 `@public_content` is another separate mechanism for indexed public records,
 catalogs, structured metadata, and sitemaps.
 
+## Control-Plane Mount And Assets
+
+The control-plane web app is served under the configured `proxy.route_prefix`.
+The route prefix is the browser mount for the built frontend files and is
+separate from the chat route inside the app. For example:
+
+```text
+/platform/chat                  chat route
+/platform/assets/index-....js   frontend JavaScript
+/platform/img/favicon.svg       frontend image
+/platform/config.json           optional static config fallback
+
+/control/ui/chat                chat route with a multi-segment mount
+/control/ui/assets/index-....js frontend JavaScript
+/control/ui/img/favicon.svg     frontend image
+/control/ui/config.json         optional static config fallback
+```
+
+The same built artifact must work under both mounts. It therefore must not emit
+root frontend-file URLs such as `/assets/...`, `/img/...`, or `/config.json`.
+At runtime the HTML shell computes the mount from the current browser path and
+loads its JavaScript, CSS, image, and optional static configuration files under
+that mount.
+
+Root API routes remain root API routes. In particular,
+`/api/cp-frontend-config` stays at root because it is a backend configuration
+endpoint, not a static frontend file.
+
+When application-hosted sites are enabled, `proxy.route_prefix: /` is invalid.
+Root clean paths are reserved for host/default-selected sites, while the
+control-plane frontend must live under a non-root mount.
+
 ## Source And Development
 
 Source package:

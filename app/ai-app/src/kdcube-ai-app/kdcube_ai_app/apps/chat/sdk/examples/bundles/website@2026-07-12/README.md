@@ -30,8 +30,9 @@ keep their normal ownership:
 /                         -> host match, then the default site
 /sites/workspace          -> website@2026-07-12 public main view
 /sites/workspace/<path>   -> files, directory indexes, then SPA fallback
-/platform/* -> platform frontend
-/api/*      -> platform/application APIs
+/platform/*               -> platform frontend fixture
+/control/ui/*             -> multi-segment platform frontend fixture
+/api/*                    -> platform/application APIs
 ```
 
 Enable it in the app entry in `bundles.yaml`:
@@ -54,3 +55,8 @@ Enable it in the app entry in `bundles.yaml`:
 Many apps may enable a site. Aliases must be unique. At most one site may be
 the default, and one host must not match multiple sites. Site routing stays in
 `bundles.yaml`; it does not belong in `assembly.yaml` or the CLI.
+
+The site shell uses relative static files (`./styles.css`, `./site.js`) so it
+can be served at root, by alias, or through the app static route. It reads the
+runtime platform route prefix from `/api/cp-frontend-config`; the neutral
+`/platform` default is only a bootstrap fallback before config loads.

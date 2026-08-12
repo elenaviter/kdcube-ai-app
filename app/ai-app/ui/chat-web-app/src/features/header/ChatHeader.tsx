@@ -10,6 +10,7 @@ import {selectCurrentBundle, setCurrentBundle} from "../bundles/bundlesSlice.ts"
 import IconContainer from "../../components/IconContainer.tsx";
 import BundleControls from "./BundleControls.tsx";
 import {useSidePanelContext} from "../chatSidePanel/sidePanelContext.ts";
+import {controlPlanePublicPath} from "../../controlPlaneMount.ts";
 
 
 const ChatHeader = () => {
@@ -71,7 +72,7 @@ const ChatHeader = () => {
             <div className="bg-white border-b border-gray-200 px-4 py-2">
                 <div className="flex items-center justify-between">
                     <div className="flex items-center">
-                        <img src={"/img/logo.svg"} alt={"KDCube Logo"} className={"w-14 h-14"}/>
+                        <img src={controlPlanePublicPath("img/logo.svg")} alt={"KDCube Logo"} className={"w-14 h-14"}/>
                         <div>
                             <h1 className="text-xl font-semibold text-gray-900">
                                 KDCube

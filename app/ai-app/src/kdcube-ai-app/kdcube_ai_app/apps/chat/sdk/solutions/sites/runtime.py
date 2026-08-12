@@ -118,6 +118,7 @@ async def refresh_application_site_catalog(
     project: str,
     applications: Mapping[str, Any],
     runtime: Optional[ApplicationSiteCatalogRuntime] = None,
+    route_prefix: Any = None,
 ) -> ApplicationSiteCatalog:
     """Project authoritative app properties into the distributed site catalog."""
 
@@ -150,6 +151,7 @@ async def refresh_application_site_catalog(
         project=project,
         application_props=application_props,
         application_specs=application_specs,
+        route_prefix=route_prefix,
     )
     projected = await publish_application_site_catalog(redis, catalog)
     if runtime is not None:

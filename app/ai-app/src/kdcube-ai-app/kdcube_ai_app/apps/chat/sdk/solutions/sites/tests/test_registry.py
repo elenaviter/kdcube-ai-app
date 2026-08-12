@@ -143,3 +143,52 @@ def test_disabled_application_is_not_projected() -> None:
     )
 
     assert [site.alias for site in catalog.sites] == ["enabled"]
+
+
+def test_root_route_prefix_rejects_enabled_application_sites() -> None:
+    with pytest.raises(SiteRegistryError, match="proxy.route_prefix is '/'"):
+        build_application_site_catalog(
+            tenant="tenant-a",
+            project="project-a",
+            route_prefix="/",
+            application_props={
+                "site@1": {
+                    "ui": {
+                        "main_view": {
+                            "site": {"enabled": True, "alias": "site", "default": True},
+                        },
+                    },
+                },
+            },
+        )
+
+
+def test_root_route_prefix_without_sites_is_allowed() -> None:
+    catalog = build_application_site_catalog(
+        tenant="tenant-a",
+        project="project-a",
+        route_prefix="/",
+        application_props={},
+    )
+
+    assert catalog.sites == ()
+
+
+def test_non_root_route_prefix_allows_enabled_application_sites() -> None:
+    for prefix in ("/platform", "/control/ui"):
+        catalog = build_application_site_catalog(
+            tenant="tenant-a",
+            project="project-a",
+            route_prefix=prefix,
+            application_props={
+                "site@1": {
+                    "ui": {
+                        "main_view": {
+                            "site": {"enabled": True, "alias": "site", "default": True},
+                        },
+                    },
+                },
+            },
+        )
+
+        assert [site.alias for site in catalog.sites] == ["site"]

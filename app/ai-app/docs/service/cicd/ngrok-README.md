@@ -259,10 +259,12 @@ Use the actual port where the frontend process listens.
 > widgets on your own page at the same origin (so the browser auth cookie stays
 > same-site), you'd replace the catch-all `reverse_proxy /* <frontend-port>`
 > with a `file_server` for your site and keep the platform-path proxies above.
-> One gotcha: the frontend SPA references its hashed bundles at the ROOT
-> (`/assets/*`, `/img/*`), which collide with your site's own `/assets`. Route
-> those paths to serve the site file when it exists on disk and otherwise proxy
-> to the frontend — Caddy's `file` matcher does this:
+> The control-plane frontend files belong under the configured platform prefix,
+> not at root. For example, `/platform/chat` loads
+> `/platform/assets/index-....js` and `/platform/img/favicon.svg`; a
+> multi-segment prefix such as `/control/ui` similarly loads
+> `/control/ui/assets/index-....js`. Root `/assets/*` and `/img/*` remain
+> available to the root site.
 >
 > ```caddyfile
 > @kdcube path /api/* /sse/* /socket.io /socket.io/* /cb/socket.io /cb/socket.io/* /profile /profile/* /admin/* /monitoring/* /platform /platform/*
@@ -271,18 +273,11 @@ Use the actual port where the frontend process listens.
 >     flush_interval -1
 >   }
 > }
->
-> @sharedAssets path /assets/* /img/*
-> handle @sharedAssets {
->   @siteHasFile file
->   handle @siteHasFile { file_server }
->   handle { reverse_proxy 127.0.0.1:<frontend-port> }
-> }
 > ```
 >
-> Without it, `/platform/chat` loads its HTML but the JS/CSS 404 and the page
-> renders blank. (The frontend's bundle names are hashed, so they never exist on
-> your site — the `file` check routes them correctly.)
+> If `/platform/chat` loads HTML but then requests `/assets/...`, `/img/...`, or
+> `/config.json`, the frontend artifact is stale and must be rebuilt from a
+> prefix-safe platform release.
 
 ### Frontend / Cognito
 

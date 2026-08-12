@@ -4,7 +4,7 @@ title: "Application-Hosted Website"
 summary: "Build an app-owned website, register it by alias and host, and serve it through the KDCube runtime."
 status: current
 tags: ["recipe", "website", "application", "main-view", "routing", "authentication"]
-updated_at: 2026-07-13
+updated_at: 2026-08-12
 keywords:
   [
     "application hosted website",
@@ -35,7 +35,8 @@ browser
   /                              host match, then default site
   /sites/{alias}                 direct site address
   /sites/{alias}/{path}          site route with SPA fallback
-  /platform/*                    platform frontend
+  /platform/*                    platform frontend fixture
+  /control/ui/*                  multi-segment platform frontend fixture
   /api/*                         platform and app APIs
           |
           v
@@ -51,7 +52,8 @@ standard ui.main_view build and static-serving lifecycle
 
 No website selection belongs in `assembly.yaml`. The CLI stages descriptors but
 does not interpret site registration or generate application-specific proxy
-routes.
+routes. `assembly.yaml` still owns `proxy.route_prefix`, and that route prefix
+must be non-root when any application-hosted site is enabled.
 
 ## 1. Add A Main View
 
@@ -164,6 +166,10 @@ Many apps may register sites. Duplicate aliases, multiple defaults, or multiple
 sites matching one host are invalid registry states. Proc returns `503` instead
 of selecting an arbitrary app.
 
+Do not combine an enabled site with `proxy.route_prefix: /`. That descriptor
+shape is rejected because root clean paths must have one owner. Use a non-root
+control-plane mount such as `/platform` or `/control/ui`, or disable the site.
+
 ## 3. Use Platform Authentication Transparently
 
 The website must not embed Cognito, custom-authority, cookie, or login endpoint
@@ -223,6 +229,7 @@ OpenResty contains no application list. Its stable routes are:
 
 ```text
 /                  -> proc /api/integrations/site-root
+/<path>            -> proc /api/integrations/site-root/<path>
 /sites/{alias}/*   -> proc /api/integrations/sites/{alias}/*
 ```
 
@@ -243,6 +250,11 @@ bundles.yaml
 For a multipage site, include the complete output tree in the main-view build.
 Existing files and directory `index.html` files are served directly; an unknown
 path falls back to the root `index.html` for SPA routers.
+
+If no site resolves, root `/` redirects to the configured control-plane chat
+route, for example `/platform/chat` or `/control/ui/chat`. A non-root clean path
+such as `/guide` returns a controlled `404` when no site resolves; it does not
+fall back to the platform frontend.
 
 For a dedicated CDN hostname, add the hostname to `site.hosts` and configure
 the CDN origin behavior to preserve that host and rewrite the viewer path:
@@ -294,7 +306,9 @@ curl -sS -o /dev/null -w '%{http_code}\n' \
 ```
 
 Expected results are `200`, `200`, and `404`. Platform UI must remain reachable
-at its configured route prefix, for example `/platform/chat`.
+at its configured route prefix, for example `/platform/chat`. Repeat the same
+check with a multi-segment route prefix such as `/control/ui/chat` when testing
+mount-sensitive changes.
 
 After the stable platform routes exist, descriptor-only site changes use the
 normal app reload flow. Test host selection without DNS by overriding `Host`:
@@ -324,7 +338,9 @@ as described above.
 | --- | --- |
 | `/` still redirects directly to platform chat | The web-proxy container is using an older image/config; rebuild and recreate it. |
 | `/sites/{alias}` returns `404` | Site is disabled, alias differs, or app descriptor was not reloaded. |
+| A clean path without a site opens platform chat | Root and clean-path fallback are mixed; clean path without a resolved site should be `404`. |
 | `/` returns `503` | Inspect duplicate aliases, multiple defaults, or overlapping host declarations. |
+| Catalog rejects the descriptor with `proxy.route_prefix is '/'` | Move the platform frontend to a non-root route prefix before enabling a site. |
 | Site HTML loads but assets fail | Build emitted root-relative URLs; use relative URLs or Vite `base: './'`. |
 | Site shows authenticated UI but APIs reject the user | Treat `/profile` as truth; do not infer login from client OIDC state alone. |
 | Login returns to the wrong site | Pass the current site path through the configured login endpoint's `next` parameter. |
