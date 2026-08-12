@@ -4,7 +4,7 @@ title: "Platform Documentation Index"
 summary: "Curated top-level map of the KDCube documentation tree for app builders, integrators, operators, and agents."
 tags: ["docs", "index", "sdk", "service", "ops", "architecture"]
 keywords: ["documentation index", "platform architecture", "configuration guides", "service runtime docs", "app sdk docs", "execution docs", "deployment and operations docs", "app builder docs", "client widgets", "streaming", "memory", "claude code"]
-updated_at: 2026-08-11
+updated_at: 2026-08-12
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
@@ -67,6 +67,8 @@ Curated index of platform, service, and SDK documentation.
 * App Client Communication: [client-transport-protocols-README.md](service/comm/client-transport-protocols-README.md)
 * App Chat Stream Events: [chat-stream-events-README.md](sdk/solutions/chat/chat-stream-events-README.md)
 * App Transports: [bundle-transports-README.md](sdk/bundle/bundle-transports-README.md)
+* Cross-App Surface Interoperability: [cross-app-surface-interoperability-README.md](runtime/cross-app-surface-interoperability-README.md)
+* Cross-KDCube App Surface Interoperability: [cross-kdcube-app-surface-interoperability-README.md](runtime/cross-kdcube-app-surface-interoperability-README.md)
 * App Operation CSRF: [bundle-operation-csrf-README.md](sdk/bundle/bundle-operation-csrf-README.md)
 
 ## Agents, Tools, Skills, And Memory

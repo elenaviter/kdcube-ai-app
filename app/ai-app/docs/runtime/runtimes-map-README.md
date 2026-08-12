@@ -27,12 +27,13 @@ keywords:
     "distributed serving",
     "horizontal scaling",
   ]
-updated_at: 2026-07-29
+updated_at: 2026-08-12
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/agent-in-the-runtimes-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/fenced-runtime-bootstrap-and-reduce-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-iso-runtime.md
@@ -541,7 +542,8 @@ Contract and field-level detail:
 
 A provider app is a runtime of its own — possibly another process, another
 worker, even another machine. Reaching it is therefore a runtime crossing
-with the same discipline as every other fence.
+with the same discipline as every other fence. The complete route-selection
+map is [Cross-App Surface Interoperability](cross-app-surface-interoperability-README.md).
 
 ```text
 agent / tool / generated code needs  ns:<operation>
@@ -552,17 +554,18 @@ named-service DISCOVERY — Redis-backed registry per tenant/project
    schema | backend | tenant | project — the directory itself never moves)
         |
         v
-dispatch over the BEST AVAILABLE BRIDGE, auth context preserved:
-  local in-proc call   (provider co-hosted in this processor)
-  | app API bridge     (another process, same deployment)
-  | MCP                (an MCP-speaking consumer or provider)
-  | Data Bus relay     (durable; the leg from isolated runtimes)
+dispatch over the CONFIGURED IMPLEMENTED BRIDGE, auth context preserved:
+  bundle_registry      (same-KDCube provider registry call)
+  | bundle_operation   (same-KDCube @api facade)
+  | module             (same-runtime provider module)
+  | Data Bus relay     (trusted leg from isolated runtimes)
         |
         v
 provider app enforces its own schema, claims, and consent
 ```
 
-MCP itself runs in **both directions** and each is a crossing:
+MCP itself runs in **both directions** and each is a crossing, separate from
+the local named-service bridge selection:
 
 - **As provider:** an app's `@mcp` doors are served through the integrations
   router (§3). The door's declared visibility, authentication, guards, and
@@ -572,7 +575,13 @@ MCP itself runs in **both directions** and each is a crossing:
   inventory; the MCP subsystem carries the calls out, subject to the agent's
   inventory and connection authorization.
 
-MCP is one transport among the bridges, not the identity of the runtime.
+An app may explicitly expose a named-service domain through MCP, but current
+named-service discovery does not infer or mount a generic MCP adapter. MCP
+consumers use an actual stdio, SSE, or streamable-HTTP MCP transport; there is
+currently no app-facing local `call_bundle_mcp(...)` shortcut. Within one
+KDCube, an HTTP MCP connection can use the deployment's private proxy route.
+Across KDCubes it enters through the target deployment's authenticated
+ingress. MCP is a protocol surface, not the identity of the runtime.
 Contracts: [Named Service Discovery](../sdk/namespace-services/discovery-README.md),
 [Named Services From The Isolated Runtime](../sdk/solutions/kdcube-services/named-services-from-isolated-runtime-README.md),
 [Bundle Transports](../sdk/bundle/bundle-transports-README.md).
@@ -773,6 +782,7 @@ for in the SDK for that crossing:
 | The agent's-eye view: one agent fed from any surface, two layers of state, native vs integrated | [The Agent In The Runtimes Fusion](agent-in-the-runtimes-README.md) |
 | The full boundary and enforcement map | [Tenant, User, Authority, And Execution Boundaries](tenant-project-user-and-execution-boundaries-README.md) |
 | What crosses a runtime hop | [Cross-Runtime Context](cross-runtime-context-README.md) |
+| How apps compose through local operations, named services, buses, jobs, MCP/REST, and widgets | [Cross-App Surface Interoperability](cross-app-surface-interoperability-README.md) |
 | Generated-code isolation mechanics | [ISO Runtime](../exec/README-iso-runtime.md) and [Distributed Execution](../exec/distributed-exec-README.md) |
 | Data Bus handlers and inbound surfaces in app code | [Bundle Runtime](../sdk/bundle/bundle-runtime-README.md) and [Bundle Transports](../sdk/bundle/bundle-transports-README.md) |
 | Streaming events back to the initiator across communicator-enabled runtimes | [Communication](../service/comm/README-comm.md) and [Comm Recording And Event Sinks](../service/comm/comm-recording-event-sinks-README.md) |

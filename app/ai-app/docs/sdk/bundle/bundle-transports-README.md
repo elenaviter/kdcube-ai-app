@@ -4,8 +4,9 @@ title: "Bundle Transports"
 summary: "Complete transport map for bundle capabilities: chat, Data Bus, background jobs, REST operations, widgets, static UI, communicator streams, public routes, and MCP endpoints."
 tags: ["sdk", "bundle", "transport", "protocol", "mcp", "rest", "sse", "socketio", "widgets", "auth", "background-jobs", "data-bus"]
 keywords: ["bundle transport map", "chat transport", "data bus transport", "background job transport", "on_job transport", "operations rest transport", "widget transport", "static ui transport", "communicator streaming", "public route transport", "mcp endpoint transport"]
-updated_at: 2026-07-30
+updated_at: 2026-08-12
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-provider-surfaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/surfaces/as-consumer-surfaces-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
@@ -36,6 +37,11 @@ It answers:
 - what `operations` vs `public` means for REST and MCP
 
 This page is transport-focused.
+
+For choosing among local app operations, named services, Data Bus, jobs,
+conversation ingress, MCP/REST, and browser composition across one or several
+KDCube deployments, read
+[Cross-App Surface Interoperability](../../runtime/cross-app-surface-interoperability-README.md).
 
 For the specific contract that takes authored `external_events[]` from a
 browser, webhook, Telegram adapter, or backend submitter into a conversation

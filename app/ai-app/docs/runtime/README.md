@@ -15,11 +15,13 @@ keywords:
     "iso runtime",
     "bundle runtime",
   ]
-updated_at: 2026-07-18
+updated_at: 2026-08-12
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-kdcube-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/fenced-runtime-bootstrap-and-reduce-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/runtime-README.md
@@ -47,6 +49,8 @@ For the portable context contract, read
 | The agent's-eye view: one agent fed from any surface, two layers of state, native vs integrated | [The Agent In The Runtimes Fusion](agent-in-the-runtimes-README.md) |
 | Separate tenant/project scope, concurrent users, Connection Hub authority, apps, and reusable agent-code isolation | [Tenant, User, Authority, And Execution Boundaries](tenant-project-user-and-execution-boundaries-README.md) |
 | Know which identity and descriptors cross runtime transitions | [Cross-Runtime Context](cross-runtime-context-README.md) |
+| Choose an implemented app-to-app path inside one KDCube | [Cross-App Surface Interoperability](cross-app-surface-interoperability-README.md) |
+| Understand current cross-deployment building blocks and the planned remote delegated-authorization client | [Cross-KDCube App Surface Interoperability](cross-kdcube-app-surface-interoperability-README.md) |
 | Bootstrap and reduce a scoped execution fence | [Fenced Runtime Bootstrap And Reduce](fenced-runtime-bootstrap-and-reduce-README.md) |
 | Understand framework-neutral agent events, timelines, refs, and turn workspaces | [Agent Harness Runtime](harness/README.md) |
 | Operate the supervisor/executor isolation model | [ISO Runtime](../exec/README-iso-runtime.md) |
@@ -80,6 +84,7 @@ For the portable context contract, read
 | Docker/Fargate supervisor | descriptor payloads, portable spec, communicator spec, tool/module maps, storage config | host-only Python objects |
 | Docker/Fargate executor | work/out paths, limited env, supervisor socket | descriptors, secrets, bundle storage roots, platform storage roots |
 | Peer app local loop | request/session context, target app (bundle) id, operation payload | browser cookies as raw replay; caller uses platform session/auth context |
+| Cross-KDCube API/MCP | target-accepted credential plus protocol request | local `ContextVar` state; target reconstructs its own context after authentication |
 | Redis Streams/Data Bus | durable JSON messages and handler results | conversation timeline unless an explicit bridge writes conversation events |
 | SSE/Socket.IO relay | live envelopes to connected clients | durable truth; use storage/Data Bus/event lane for state |
 
@@ -131,7 +136,7 @@ Examples:
 | Data Bus | messages are durable Redis Stream records. Handler lifecycle belongs to runtime workers. |
 | Conversation event lane | conversation `external_events[]` are ordered and consumed by conversation/runtime orchestration, not by comm relay. |
 | Namespace services | provider location is resolved from Named Service Discovery; calls use the best available runtime bridge while preserving auth context. |
-| App operations | same-KDCube calls should use local app (bundle) operation/registry bridges when available; external HTTP is not required for local composition. |
+| App interoperability | local operation, named-service, Data Bus, job, conversation, MCP/REST, and widget paths are selected by required semantics; see [Cross-App Surface Interoperability](cross-app-surface-interoperability-README.md). |
 | Accounting | accounting context is restored in child runtimes and writes through the configured accounting storage. |
 | Artifacts | child runtimes write to runtime out/work surfaces; host merges expected side files and artifacts after execution. |
 | Agent harness | shared event, timeline, and workspace contracts are imported by framework adapters; model protocols and scheduling policy remain adapter-owned. |

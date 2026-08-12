@@ -4,7 +4,7 @@ title: "Architecture Long"
 summary: "Detailed current KDCube architecture: deployment scope, app catalogs and surfaces, ingress, ordered conversation lanes, Data Bus and relay, identity and delegation, cross-runtime context, isolated execution, storage, scaling, sites, and economics."
 status: current
 tags: ["arch", "architecture", "runtime", "apps", "events", "identity", "execution", "storage"]
-updated_at: 2026-07-29
+updated_at: 2026-08-12
 keywords: ["KDCube architecture", "tenant project", "app provider consumer", "conversation event bus", "data bus", "isolated execution", "Connection Hub", "site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
@@ -14,6 +14,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-short.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/conversation-event-bus-and-data-bus-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/connection-hub-solution-README.md
 ---
@@ -294,6 +295,10 @@ Nested in-process app calls use `call_bundle_operation()`. Internal peer-call
 provenance bypasses only the generic external-entry requirement for an already
 bound user; target visibility, role, delegated authority, enablement, and API
 policy still run.
+
+For the complete choice among local operations, named services, durable work,
+conversation ingress, REST/MCP, widgets, and cross-KDCube calls, use
+[Cross-App Surface Interoperability](../runtime/cross-app-surface-interoperability-README.md).
 
 ## 8. Ordered Conversation Eventing
 

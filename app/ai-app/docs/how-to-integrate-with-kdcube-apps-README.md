@@ -4,9 +4,10 @@ title: "How To Integrate With KDCube Apps"
 summary: "Canonical product-level integration guide for KDCube apps: iframe app UI, embedded KDCube control plane, direct host-browser clients, host-server clients, backend-only app surfaces, chat/event streams, Data Bus, named services, files, and auth/origin decisions."
 tags: ["kdcube", "apps", "integration", "client", "iframe", "data-bus", "event-bus", "backend", "widget"]
 keywords: ["integrate with kdcube apps", "host app kdcube integration", "direct browser client", "kdcube app backend only", "iframe kdcube app widget", "host server kdcube app api", "kdcube data bus client", "conversation event bus client", "external client surfaces"]
-updated_at: 2026-06-23
+updated_at: 2026-08-12
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/embedding-kdcube-in-a-host-app-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/embedding-control-plane-frontend-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-client-ui-README.md
@@ -33,6 +34,12 @@ Compatibility note: some lower-level SDK docs, runtime routes, and CLI commands
 still use the legacy term `bundle` for the deployable app package. This article
 uses `app` for the product-facing concept and links to those lower-level
 contracts.
+
+This page owns integration from a host website, product client, or external
+server. For the routing decision between two KDCube apps, including the local
+`call_bundle_operation(...)` bridge, named services, durable work, private MCP,
+and separate KDCube deployments, use
+[Cross-App Surface Interoperability](runtime/cross-app-surface-interoperability-README.md).
 
 ## Integration Modes
 

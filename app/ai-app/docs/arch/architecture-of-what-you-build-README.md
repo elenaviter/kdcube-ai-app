@@ -4,10 +4,11 @@ title: "Architecture Of What You Build"
 summary: "Builder architecture for KDCube apps: optional surface families, provider and consumer directions, existing or ready agents, scenes, named-service realms, events, websites, storage, authority, and package contracts."
 status: current
 tags: ["arch", "architecture", "apps", "surfaces", "provider", "consumer", "named-services", "scene"]
-updated_at: 2026-07-29
+updated_at: 2026-08-12
 keywords: ["KDCube app architecture", "as provider", "as consumer", "app surfaces", "named service", "scene", "default chat"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
@@ -224,6 +225,9 @@ app-domain mutation          Data Bus
 agent/domain object access   named service or MCP
 browser composition          Scene and surface commands
 ```
+
+The complete same-KDCube and cross-KDCube route-selection map is
+[Cross-App Surface Interoperability](../runtime/cross-app-surface-interoperability-README.md).
 
 External agents and automation can call protected MCP or REST resources with
 delegated KDCube credentials. Connected external accounts point the other way:

@@ -14,10 +14,12 @@ keywords:
     "PORTABLE_SPEC_JSON",
     "ContextVar restore",
   ]
-updated_at: 2026-07-14
+updated_at: 2026-08-12
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/tenant-project-user-and-execution-boundaries-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-kdcube-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/fenced-runtime-bootstrap-and-reduce-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/runtime-README.md
@@ -335,7 +337,16 @@ Provider calls still run through a runtime bridge:
 | `bundle_registry` | Same-KDCube direct registry call when the runtime has a platform-bound local named-service caller. |
 | `bundle_operation` | Same-KDCube operation facade, useful when the provider exposes `@api(alias="named_service")` or when direct registry call is unavailable. |
 | `module` | Same-runtime importable module provider. |
-| MCP / Data Bus | Provider capability vocabulary; generic adapters are separate integration work. |
+
+The isolated-runtime named-service path uses the trusted Data Bus
+request/reply relay to reach one of those provider bridges. MCP is a separate
+protocol surface: an app may explicitly expose the same domain through MCP,
+but named-service discovery does not infer or mount an MCP adapter.
+
+The complete distinction between the current local named-service bridges, the
+isolated-runtime Data Bus relay, real MCP/HTTP transports, and cross-KDCube
+calls is in
+[Cross-App Surface Interoperability](cross-app-surface-interoperability-README.md).
 
 The call must preserve request identity. The provider authorizes through the
 current `ExternalEventPayload` / `AuthContext`, not through a model-supplied

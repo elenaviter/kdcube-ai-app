@@ -4,7 +4,7 @@ title: "Tenant, User, Authority, And Execution Boundaries"
 summary: "Canonical boundary map separating tenant/project deployment scope, shared-user runtime execution, cross-runtime identity continuity, Connection Hub authority enforcement, and reusable isolated-workspace execution for agent-generated code."
 status: active
 tags: ["runtime", "multi-tenancy", "identity", "authority", "connection-hub", "react", "langgraph", "isolation", "storage"]
-updated_at: 2026-07-14
+updated_at: 2026-08-12
 keywords:
   [
     "tenant project deployment",
@@ -23,6 +23,7 @@ keywords:
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-runtime-context-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/fenced-runtime-bootstrap-and-reduce-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/exec/README-iso-runtime.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/workspace/workspace-model-README.md
@@ -290,6 +291,11 @@ the receiving boundary decides whether those facts authorize an operation.
 This distinction matters. Context propagation keeps the authenticated identity
 stable across supported transitions. Authorization remains the responsibility
 of the protected storage, tool, API, named-service, or economics boundary.
+
+For the routing decision between local peer operations, named services, Data
+Bus, background jobs, conversation ingress, MCP/REST, and widget composition,
+including the separate cross-KDCube authentication boundary, read
+[Cross-App Surface Interoperability](cross-app-surface-interoperability-README.md).
 
 ## 4. Connection Hub Resolves Authority At Guarded Boundaries
 
