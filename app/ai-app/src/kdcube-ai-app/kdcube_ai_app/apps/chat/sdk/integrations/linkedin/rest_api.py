@@ -26,6 +26,12 @@ LINKEDIN_IMAGES_URL = f"{LINKEDIN_REST_BASE}/images"
 # `partnerApiSocialActions.CREATE.<version>` without Community Management
 # partner access, which w_member_social does not grant.
 LINKEDIN_SOCIAL_ACTIONS_URL = "https://api.linkedin.com/v2/socialActions"
+# Organization lane (Community Management API app): versioned endpoints. The
+# member lane cannot reach these; the org token can, including the VERSIONED
+# socialActions reads that a w_member_social token is denied.
+LINKEDIN_ORGANIZATION_ACLS_URL = f"{LINKEDIN_REST_BASE}/organizationAcls"
+LINKEDIN_ORGANIZATIONS_URL = f"{LINKEDIN_REST_BASE}/organizations"
+LINKEDIN_REST_SOCIAL_ACTIONS_URL = f"{LINKEDIN_REST_BASE}/socialActions"
 LINKEDIN_RESTLI_PROTOCOL_VERSION = "2.0.0"
 
 # Shipped default for the descriptor template. LinkedIn sunsets dated
@@ -51,6 +57,14 @@ def person_urn(subject: str) -> str:
     if not value:
         raise LinkedInPayloadError("LinkedIn member subject is required")
     return value if value.startswith("urn:li:") else f"urn:li:person:{value}"
+
+
+def organization_urn(organization: str) -> str:
+    """Organization author URN from a page id or an already-full URN."""
+    value = str(organization or "").strip()
+    if not value:
+        raise LinkedInPayloadError("LinkedIn organization is required")
+    return value if value.startswith("urn:li:") else f"urn:li:organization:{value}"
 
 
 def post_permalink(post_urn: str) -> str:
@@ -280,12 +294,196 @@ async def create_comment(
     )
 
 
+# --- Organization lane (Community Management API) -------------------------
+# Reads exist ONLY here: the member lane has no read at all. Every function is
+# protocol-shape only, like the rest of this module.
+
+
+def parse_organization_acls(body: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Approved role assignments from an organizationAcls response.
+
+    Each row: {organization: urn, role, state, role_assignee: urn}.
+    """
+    elements = (dict(body or {}).get("elements") or []) if isinstance(body, Mapping) else []
+    rows: list[dict[str, Any]] = []
+    for item in elements:
+        data = dict(item or {})
+        organization = str(data.get("organization") or "").strip()
+        if not organization:
+            continue
+        rows.append(
+            {
+                "organization": organization,
+                "role": str(data.get("role") or "").strip(),
+                "state": str(data.get("state") or "").strip(),
+                "role_assignee": str(data.get("roleAssignee") or "").strip(),
+            }
+        )
+    return rows
+
+
+def parse_posts_page(body: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Post rows from a /rest/posts finder response, newest shape kept small."""
+    elements = (dict(body or {}).get("elements") or []) if isinstance(body, Mapping) else []
+    rows: list[dict[str, Any]] = []
+    for item in elements:
+        data = dict(item or {})
+        urn = str(data.get("id") or "").strip()
+        if not urn:
+            continue
+        rows.append(
+            {
+                "post_urn": urn,
+                "permalink": post_permalink(urn),
+                "author": str(data.get("author") or "").strip(),
+                "commentary": str(data.get("commentary") or ""),
+                "visibility": str(data.get("visibility") or "").strip(),
+                "lifecycle_state": str(data.get("lifecycleState") or "").strip(),
+                "published_at": int(data.get("publishedAt") or 0),
+                "last_modified_at": int(data.get("lastModifiedAt") or 0),
+            }
+        )
+    return rows
+
+
+def parse_social_summary(body: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Comment/reaction counts from a socialActions entity response."""
+    data = dict(body or {}) if isinstance(body, Mapping) else {}
+    comments = dict(data.get("commentsSummary") or {})
+    likes = dict(data.get("likesSummary") or {})
+    return {
+        "target_urn": str(data.get("target") or data.get("$URN") or "").strip(),
+        "comment_count": int(comments.get("aggregatedTotalComments") or comments.get("count") or 0),
+        "like_count": int(likes.get("aggregatedTotalLikes") or likes.get("totalLikes") or 0),
+    }
+
+
+def parse_comments_page(body: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """Comment rows from a socialActions comments response."""
+    elements = (dict(body or {}).get("elements") or []) if isinstance(body, Mapping) else []
+    rows: list[dict[str, Any]] = []
+    for item in elements:
+        data = dict(item or {})
+        message = data.get("message")
+        text = str(dict(message or {}).get("text") or "") if isinstance(message, Mapping) else ""
+        rows.append(
+            {
+                "comment_urn": str(data.get("commentUrn") or data.get("$URN") or "").strip(),
+                "actor": str(data.get("actor") or "").strip(),
+                "object": str(data.get("object") or "").strip(),
+                "text": text,
+                "created_at": int(dict(data.get("created") or {}).get("time") or 0),
+            }
+        )
+    return rows
+
+
+async def fetch_organization_acls(
+    client: httpx.AsyncClient,
+    *,
+    access_token: str,
+    api_version: str,
+    role: str = "ADMINISTRATOR",
+    state: str = "APPROVED",
+) -> httpx.Response:
+    """Organizations the token's member holds the given role on."""
+    return await client.get(
+        LINKEDIN_ORGANIZATION_ACLS_URL,
+        params={"q": "roleAssignee", "role": role, "state": state},
+        headers=rest_headers(access_token=access_token, api_version=api_version),
+    )
+
+
+async def fetch_organization(
+    client: httpx.AsyncClient,
+    *,
+    access_token: str,
+    api_version: str,
+    organization_urn: str,
+) -> httpx.Response:
+    """One organization record (localizedName etc.) by URN."""
+    org_id = str(organization_urn or "").rsplit(":", 1)[-1].strip()
+    if not org_id:
+        raise LinkedInPayloadError("LinkedIn organization URN is required")
+    return await client.get(
+        f"{LINKEDIN_ORGANIZATIONS_URL}/{urllib.parse.quote(org_id, safe='')}",
+        headers=rest_headers(access_token=access_token, api_version=api_version),
+    )
+
+
+async def list_posts_by_author(
+    client: httpx.AsyncClient,
+    *,
+    access_token: str,
+    api_version: str,
+    author_urn: str,
+    count: int = 10,
+    start: int = 0,
+) -> httpx.Response:
+    """Posts authored by the given URN (org lane read: q=author finder)."""
+    if not str(author_urn or "").strip():
+        raise LinkedInPayloadError("LinkedIn author URN is required")
+    return await client.get(
+        LINKEDIN_POSTS_URL,
+        params={
+            "q": "author",
+            "author": author_urn,
+            "count": max(1, min(int(count or 10), 100)),
+            "start": max(0, int(start or 0)),
+        },
+        headers=rest_headers(access_token=access_token, api_version=api_version),
+    )
+
+
+async def fetch_social_summary(
+    client: httpx.AsyncClient,
+    *,
+    access_token: str,
+    api_version: str,
+    object_urn: str,
+) -> httpx.Response:
+    """Comment/like summary of one post (org lane read, VERSIONED endpoint)."""
+    quoted = urllib.parse.quote(str(object_urn or "").strip(), safe="")
+    if not quoted:
+        raise LinkedInPayloadError("LinkedIn post URN is required")
+    return await client.get(
+        f"{LINKEDIN_REST_SOCIAL_ACTIONS_URL}/{quoted}",
+        headers=rest_headers(access_token=access_token, api_version=api_version),
+    )
+
+
+async def list_comments(
+    client: httpx.AsyncClient,
+    *,
+    access_token: str,
+    api_version: str,
+    object_urn: str,
+    count: int = 25,
+    start: int = 0,
+) -> httpx.Response:
+    """Comments on one post (org lane read, VERSIONED endpoint)."""
+    quoted = urllib.parse.quote(str(object_urn or "").strip(), safe="")
+    if not quoted:
+        raise LinkedInPayloadError("LinkedIn post URN is required")
+    return await client.get(
+        f"{LINKEDIN_REST_SOCIAL_ACTIONS_URL}/{quoted}/comments",
+        params={
+            "count": max(1, min(int(count or 25), 100)),
+            "start": max(0, int(start or 0)),
+        },
+        headers=rest_headers(access_token=access_token, api_version=api_version),
+    )
+
+
 __all__ = [
     "DEFAULT_LINKEDIN_API_VERSION",
     "LINKEDIN_IMAGES_URL",
+    "LINKEDIN_ORGANIZATION_ACLS_URL",
+    "LINKEDIN_ORGANIZATIONS_URL",
     "LINKEDIN_POSTS_URL",
     "LINKEDIN_POST_MAX_CHARS",
     "LINKEDIN_REST_BASE",
+    "LINKEDIN_REST_SOCIAL_ACTIONS_URL",
     "LINKEDIN_SOCIAL_ACTIONS_URL",
     "MAX_IMAGE_BYTES",
     "MULTI_IMAGE_MAX",
@@ -300,9 +498,19 @@ __all__ = [
     "create_comment",
     "create_post",
     "created_urn_from_response",
+    "fetch_organization",
+    "fetch_organization_acls",
+    "fetch_social_summary",
     "initialize_image_upload",
     "legacy_headers",
+    "list_comments",
+    "list_posts_by_author",
+    "organization_urn",
+    "parse_comments_page",
     "parse_image_upload_init",
+    "parse_organization_acls",
+    "parse_posts_page",
+    "parse_social_summary",
     "person_urn",
     "post_permalink",
     "rest_headers",

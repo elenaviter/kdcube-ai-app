@@ -30,6 +30,8 @@ from kdcube_ai_app.apps.chat.sdk.integrations.inline_files import (
 )
 from kdcube_ai_app.apps.chat.sdk.integrations.linkedin import rest_api
 from kdcube_ai_app.apps.chat.sdk.integrations.linkedin.tools import (
+    LINKEDIN_ORG_POST_CLAIM,
+    LINKEDIN_ORG_READ_CLAIM,
     LINKEDIN_POST_CLAIM,
     LINKEDIN_PROFILE_CLAIM,
     LINKEDIN_PROVIDER_ID,
@@ -92,8 +94,25 @@ ACTION_PUBLISH_IMAGE_POST = "publish_image_post"
 ACTION_ADD_COMMENT = "add_comment"
 ACTION_REQUEST_UPLOAD = "request_upload"
 ACTION_DISCARD_UPLOAD = "discard_upload"
+# Organization lane (Community Management API connector): post as the page,
+# and the only reads this namespace has anywhere — the page's own posts,
+# comments, and reaction counts. Member content stays write-only.
+ACTION_PUBLISH_ORG_POST = "publish_org_post"
+ACTION_LIST_ORG_POSTS = "list_org_posts"
+ACTION_READ_POST_ENGAGEMENT = "read_post_engagement"
 
 LINKEDIN_ACTIONS = (
+    ACTION_PUBLISH_POST,
+    ACTION_PUBLISH_IMAGE_POST,
+    ACTION_ADD_COMMENT,
+    ACTION_REQUEST_UPLOAD,
+    ACTION_DISCARD_UPLOAD,
+    ACTION_PUBLISH_ORG_POST,
+    ACTION_LIST_ORG_POSTS,
+    ACTION_READ_POST_ENGAGEMENT,
+)
+
+LINKEDIN_MEMBER_ACTIONS = (
     ACTION_PUBLISH_POST,
     ACTION_PUBLISH_IMAGE_POST,
     ACTION_ADD_COMMENT,
@@ -106,12 +125,17 @@ LINKEDIN_GRANT_HINTS = {
     # ref; neither calls LinkedIn.
     "object.list": [],
     "object.get": [],
-    **{f"object.action.{action}": [LINKEDIN_POST_CLAIM] for action in LINKEDIN_ACTIONS},
+    **{f"object.action.{action}": [LINKEDIN_POST_CLAIM] for action in LINKEDIN_MEMBER_ACTIONS},
+    f"object.action.{ACTION_PUBLISH_ORG_POST}": [LINKEDIN_ORG_POST_CLAIM],
+    f"object.action.{ACTION_LIST_ORG_POSTS}": [LINKEDIN_ORG_READ_CLAIM],
+    f"object.action.{ACTION_READ_POST_ENGAGEMENT}": [LINKEDIN_ORG_READ_CLAIM],
 }
 
 LINKEDIN_CONNECTED_ACCOUNT_CLAIMS = {
     "profile": LINKEDIN_PROFILE_CLAIM,
     "post": LINKEDIN_POST_CLAIM,
+    "org_post": LINKEDIN_ORG_POST_CLAIM,
+    "org_read": LINKEDIN_ORG_READ_CLAIM,
 }
 
 LINKEDIN_CONNECTED_ACCOUNT_REQUIREMENTS = [
@@ -122,11 +146,16 @@ LINKEDIN_CONNECTED_ACCOUNT_REQUIREMENTS = [
         "claim_labels": {
             LINKEDIN_PROFILE_CLAIM: "read your profile",
             LINKEDIN_POST_CLAIM: "post and comment as you",
+            LINKEDIN_ORG_POST_CLAIM: "post as your organization page",
+            LINKEDIN_ORG_READ_CLAIM: "read your organization page's posts and engagement",
         },
         "claims_by_operation": {
             f"object.action.{ACTION_PUBLISH_POST}": [LINKEDIN_POST_CLAIM],
             f"object.action.{ACTION_PUBLISH_IMAGE_POST}": [LINKEDIN_POST_CLAIM],
             f"object.action.{ACTION_ADD_COMMENT}": [LINKEDIN_POST_CLAIM],
+            f"object.action.{ACTION_PUBLISH_ORG_POST}": [LINKEDIN_ORG_POST_CLAIM],
+            f"object.action.{ACTION_LIST_ORG_POSTS}": [LINKEDIN_ORG_READ_CLAIM],
+            f"object.action.{ACTION_READ_POST_ENGAGEMENT}": [LINKEDIN_ORG_READ_CLAIM],
         },
     }
 ]
@@ -183,6 +212,9 @@ LINKEDIN_PRESENTATION = {
         ACTION_ADD_COMMENT: {"label": "Comment on a post", "description": "Add a comment to a LinkedIn post as you."},
         ACTION_REQUEST_UPLOAD: {"label": "Attach an image", "description": "Stage one image for an upcoming post."},
         ACTION_DISCARD_UPLOAD: {"label": "Discard staged image", "description": "Remove a staged image before it is used."},
+        ACTION_PUBLISH_ORG_POST: {"label": "Publish as your organization", "description": "Publish a text post as the organization page you administer."},
+        ACTION_LIST_ORG_POSTS: {"label": "List organization posts", "description": "List posts authored by your organization page."},
+        ACTION_READ_POST_ENGAGEMENT: {"label": "Read post engagement", "description": "Read comment and reaction counts, and comments, of an organization post."},
     },
 }
 
@@ -309,6 +341,53 @@ LINKEDIN_SCHEMA = {
             ),
             "grants": [LINKEDIN_POST_CLAIM],
         },
+        ACTION_PUBLISH_ORG_POST: {
+            "description": (
+                "Publish a text post AS THE ORGANIZATION PAGE the connected "
+                "org-lane account administers. Post text is required."
+            ),
+            "object_ref": (
+                "linkedin:<account_id> selecting the ORG-LANE account (its record "
+                "carries the organization); take it from object.list."
+            ),
+            "payload": {
+                "text": {"type": "string", "required": True, "description": "Post body. Markdown is stripped; max 3000 characters."},
+                "visibility": {"type": "string", "enum": ["PUBLIC", "CONNECTIONS"], "default": "PUBLIC"},
+                "account_id": {"type": "string", "description": "Connected org-lane account id when several are connected."},
+            },
+            "returns": "post_urn, permalink, account_id, author (urn:li:organization:*), image_count",
+            "grants": [LINKEDIN_ORG_POST_CLAIM],
+        },
+        ACTION_LIST_ORG_POSTS: {
+            "description": (
+                "List posts authored by the connected org-lane account's "
+                "organization page, newest first — the only post listing this "
+                "namespace has anywhere. Member posts stay unlistable."
+            ),
+            "object_ref": "linkedin:<account_id> selecting the org-lane account, or pass account_id in the payload.",
+            "payload": {
+                "count": {"type": "integer", "default": 10, "description": "How many posts (1-100)."},
+                "start": {"type": "integer", "default": 0, "description": "Pagination offset."},
+                "account_id": {"type": "string", "description": "Connected org-lane account id when several are connected."},
+            },
+            "returns": "posts[{post_urn, permalink, commentary, published_at, ...}], count, author",
+            "grants": [LINKEDIN_ORG_READ_CLAIM],
+        },
+        ACTION_READ_POST_ENGAGEMENT: {
+            "description": (
+                "Read comment/reaction counts — and optionally the comments — of "
+                "one post authored by the org-lane account's organization page."
+            ),
+            "object_ref": "linkedin:<account_id>:post:<post_urn>, or pass post_urn in the payload.",
+            "payload": {
+                "post_urn": {"type": "string", "description": "Target post URN when no object_ref is given."},
+                "include_comments": {"type": "boolean", "default": True},
+                "comments_count": {"type": "integer", "default": 25, "description": "How many comments when included (1-100)."},
+                "account_id": {"type": "string", "description": "Connected org-lane account id when several are connected."},
+            },
+            "returns": "post_urn, like_count, comment_count, comments[{comment_urn, actor, text, created_at}]",
+            "grants": [LINKEDIN_ORG_READ_CLAIM],
+        },
     },
     "limits": {
         "post_text_chars": rest_api.LINKEDIN_POST_MAX_CHARS,
@@ -318,7 +397,12 @@ LINKEDIN_SCHEMA = {
     },
     "not_supported": {
         "object.search": "LinkedIn exposes no content search to this integration.",
-        "post_content_read": "Reading post bodies, feeds or reactions requires r_member_social (approved apps only).",
+        "post_content_read": (
+            "Reading MEMBER post bodies, feeds or reactions requires "
+            "r_member_social (approved apps only). Organization-page posts and "
+            f"engagement ARE readable — through {ACTION_LIST_ORG_POSTS} and "
+            f"{ACTION_READ_POST_ENGAGEMENT} on an org-lane account."
+        ),
         "other_members": "Only the connected member's own account is reachable.",
     },
     "account_selection": LINKEDIN_ACCOUNT_SELECTION,
@@ -448,6 +532,41 @@ LINKEDIN_SCHEMA_PROJECTION = {
                     },
                 ],
             },
+            {
+                "id": "organization",
+                "label": "Organization page",
+                "object_kind": LINKEDIN_ACCOUNT_KIND,
+                "keywords": ["organization", "organizations", "org", "orgs", "company", "companies", "page", "pages", "brand", "brands"],
+                "children": [
+                    {
+                        "id": "publish",
+                        "label": "Publish as the organization",
+                        "description": "Publish a text post as the organization page the org-lane account administers.",
+                        "keywords": ["posts", "publishing", "sharing", "updates", "organization", "organizations",
+                                     "org", "orgs", "company", "companies", "page", "pages", "brand", "brands"],
+                        "operations": [f"object.action:{ACTION_PUBLISH_ORG_POST}"],
+                    },
+                    {
+                        "id": "posts",
+                        "label": "List organization posts",
+                        "description": "Posts authored by the organization page, newest first — the namespace's only post listing.",
+                        "keywords": ["listing", "listings", "history", "published", "reading", "reads",
+                                     "organization", "organizations", "org", "orgs", "company", "companies",
+                                     "page", "pages", "brand", "brands"],
+                        "operations": [f"object.action:{ACTION_LIST_ORG_POSTS}"],
+                    },
+                    {
+                        "id": "engagement",
+                        "label": "Read post engagement",
+                        "description": "Comment and reaction counts, and comments, of one organization post.",
+                        # The target is a POST ref; this overrides the group's
+                        # account kind so the operation resolves on its owner.
+                        "object_kind": LINKEDIN_POST_KIND,
+                        "keywords": ["engagement", "reactions", "likes", "counts", "metrics", "analytics"],
+                        "operations": [f"object.action:{ACTION_READ_POST_ENGAGEMENT}"],
+                    },
+                ],
+            },
         ],
     },
     "kinds": {
@@ -463,13 +582,15 @@ LINKEDIN_SCHEMA_PROJECTION = {
                 ACTION_PUBLISH_IMAGE_POST,
                 ACTION_REQUEST_UPLOAD,
                 ACTION_DISCARD_UPLOAD,
+                ACTION_PUBLISH_ORG_POST,
+                ACTION_LIST_ORG_POSTS,
             ],
         },
         LINKEDIN_POST_KIND: {
             "refs": ["post"],
             "related_kinds": [LINKEDIN_ACCOUNT_KIND],
             "operations": {"object.get": {}},
-            "actions": [ACTION_ADD_COMMENT],
+            "actions": [ACTION_ADD_COMMENT, ACTION_READ_POST_ENGAGEMENT],
         },
     },
 }
@@ -785,6 +906,12 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             return await self._request_upload(ctx, request)
         if action == ACTION_DISCARD_UPLOAD:
             return self._discard_upload(ctx, request)
+        if action == ACTION_PUBLISH_ORG_POST:
+            return await self._publish_org_post(ctx, request)
+        if action == ACTION_LIST_ORG_POSTS:
+            return await self._list_org_posts(ctx, request)
+        if action == ACTION_READ_POST_ENGAGEMENT:
+            return await self._read_post_engagement(ctx, request)
         return NamedServiceResponse.error_response(
             code="linkedin_unknown_action",
             message=f"Unknown LinkedIn action {action!r}.",
@@ -921,6 +1048,7 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
         action: str,
         files: list[dict[str, Any]],
         consumed: list[str],
+        as_organization: bool = False,
     ) -> NamedServiceResponse:
         payload = dict(request.payload or {})
         alt_texts = [str(item or "") for item in (payload.get("alt_texts") or [])]
@@ -930,6 +1058,7 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             alt_texts=alt_texts,
             account_id=self._account_id_for(request),
             visibility=_text(payload.get("visibility")).upper() or "PUBLIC",
+            as_organization=as_organization,
             where=f"named_services.{LINKEDIN_NAMESPACE}.{action}",
         )
         if not isinstance(result, Mapping) or not result.get("ok"):
@@ -1014,6 +1143,102 @@ class LinkedInNamedServiceProvider(NamedServiceProvider):
             )
         return await self._publish(
             request, action=ACTION_PUBLISH_IMAGE_POST, files=files, consumed=consumed
+        )
+
+    async def _publish_org_post(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        # Text-only, like publish_post: anything file-shaped must not vanish
+        # silently. Org image posts are not offered until they are real.
+        present = [key for key in self._FILE_KEYS if payload.get(key)]
+        if present:
+            return NamedServiceResponse.error_response(
+                code="linkedin_post_carries_no_images",
+                message=(
+                    f"This action publishes text only; {', '.join(present)} would be dropped."
+                ),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+                details={"rejected_keys": present},
+            )
+        return await self._publish(
+            request, action=ACTION_PUBLISH_ORG_POST, files=[], consumed=[], as_organization=True
+        )
+
+    async def _list_org_posts(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        result = await self._linkedin.list_linkedin_org_posts(
+            count=int(payload.get("count") or 10),
+            start=int(payload.get("start") or 0),
+            account_id=self._account_id_for(request),
+        )
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code="linkedin_org_posts_failed",
+                fallback_message="LinkedIn organization posts could not be listed.",
+            )
+        ret = dict(result.get("ret") or {})
+        account_id = _text(ret.get("account_id"))
+        items = [
+            {**_post_object(account_id, _text(row.get("post_urn"))), **dict(row)}
+            for row in (ret.get("posts") or [])
+            if _text(dict(row or {}).get("post_urn"))
+        ]
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+            items=items,
+            extra={
+                "action": ACTION_LIST_ORG_POSTS,
+                "count": len(items),
+                "author": _text(ret.get("author")),
+                "account_id": account_id,
+            },
+        )
+
+    async def _read_post_engagement(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:
+        del ctx
+        payload = dict(request.payload or {})
+        post_urn = _text(payload.get("post_urn"))
+        if not post_urn:
+            parsed = parse_linkedin_ref(request.object_ref or "")
+            post_urn = _text(parsed.get("post_urn"))
+        if not post_urn:
+            return NamedServiceResponse.error_response(
+                code="post_urn_required",
+                message=(
+                    "read_post_engagement needs a post: pass payload.post_urn or a "
+                    "linkedin:<account_id>:post:<post_urn> object_ref."
+                ),
+                status=400,
+                provider=self._provider_identity(),
+                namespace=request.namespace or LINKEDIN_NAMESPACE,
+            )
+        result = await self._linkedin.read_linkedin_post_engagement(
+            post_urn=post_urn,
+            include_comments=bool(payload.get("include_comments", True)),
+            comments_count=int(payload.get("comments_count") or 25),
+            account_id=self._account_id_for(request),
+        )
+        if not isinstance(result, Mapping) or not result.get("ok"):
+            return _error_from_tool(
+                result if isinstance(result, Mapping) else {},
+                request=request,
+                default_code="linkedin_engagement_failed",
+                fallback_message="LinkedIn post engagement could not be read.",
+            )
+        ret = dict(result.get("ret") or {})
+        account_id = _text(ret.get("account_id"))
+        return NamedServiceResponse.ok_response(
+            provider=self._provider_identity(),
+            namespace=request.namespace or LINKEDIN_NAMESPACE,
+            object_ref=post_ref(account_id, post_urn) if account_id else None,
+            object={**_post_object(account_id, post_urn), **ret},
+            extra={"action": ACTION_READ_POST_ENGAGEMENT},
         )
 
     async def _add_comment(self, ctx: NamedServiceContext, request: NamedServiceRequest) -> NamedServiceResponse:

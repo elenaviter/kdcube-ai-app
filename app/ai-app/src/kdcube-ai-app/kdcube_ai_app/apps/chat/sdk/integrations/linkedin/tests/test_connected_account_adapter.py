@@ -80,3 +80,115 @@ async def test_missing_id_token_yields_an_empty_subject(adapter):
 def test_credential_without_refresh_token_is_not_refreshable(adapter):
     assert adapter.credential_refreshable({"access_token": "T"}) is False
     assert adapter.credential_refreshable({"access_token": "T", "refresh_token": "R"}) is True
+
+
+# --- Organization lane (Community Management API connector) ----------------
+
+ORG_CLAIM_MAP = {
+    **CLAIM_MAP,
+    "linkedin:org:post": {"provider_scopes": ["w_organization_social"]},
+    "linkedin:org:read": {"provider_scopes": ["r_organization_social"]},
+}
+
+
+def test_org_only_claims_request_no_identity_scopes(adapter):
+    """A CMA-only app has no Sign In product: LinkedIn rejects openid/profile.
+    An org-only selection must therefore go out with exactly the org scopes."""
+    scopes = adapter.provider_scopes_for_claims(
+        ["linkedin:org:post", "linkedin:org:read"], ORG_CLAIM_MAP
+    )
+    assert sorted(scopes) == ["r_organization_social", "w_organization_social"]
+
+
+def test_mixed_claims_still_force_identity_scopes(adapter):
+    scopes = adapter.provider_scopes_for_claims(
+        ["linkedin:post", "linkedin:org:read"], ORG_CLAIM_MAP
+    )
+    assert "openid" in scopes and "profile" in scopes
+
+
+class _Response:
+    def __init__(self, status_code: int, body: dict):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+class _OrgHttpClient:
+    """userinfo fails (no openid on the token); organizationAcls answers."""
+
+    def __init__(self):
+        self.requested: list[str] = []
+
+    async def get(self, url, **kwargs):
+        self.requested.append(url)
+        if url.endswith("/userinfo"):
+            return _Response(403, {"error": "insufficient_scope"})
+        if "organizationAcls" in url:
+            assert kwargs["headers"]["LinkedIn-Version"], "versioned endpoint needs a version header"
+            return _Response(
+                200,
+                {
+                    "elements": [
+                        {
+                            "organization": "urn:li:organization:5123456",
+                            "role": "ADMINISTRATOR",
+                            "state": "APPROVED",
+                            "roleAssignee": "urn:li:person:dE5aOhH-ap",
+                        }
+                    ]
+                },
+            )
+        if "/organizations/" in url:
+            return _Response(200, {"localizedName": "KDCube"})
+        return _Response(404, {})
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+@pytest.mark.asyncio
+async def test_org_token_identity_resolves_through_organization_acls(adapter, monkeypatch):
+    """No openid -> no userinfo, no id_token. The org lane identifies through
+    the organizations the member administers: subject = the member URN,
+    workspace = the organization URN (one connected account per organization)."""
+    import httpx
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers import (
+        linkedin as adapter_module,
+    )
+
+    client = _OrgHttpClient()
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", lambda **kwargs: client)
+    profile = await adapter.fetch_profile(access_token="ORG_TOKEN", token={"access_token": "ORG_TOKEN"})
+    assert profile["external_subject"] == "urn:li:person:dE5aOhH-ap"
+    assert profile["workspace"] == "urn:li:organization:5123456"
+    assert profile["workspace_label"] == "KDCube"
+    assert profile["display_name"] == "KDCube"
+
+
+@pytest.mark.asyncio
+async def test_member_token_identity_is_unchanged_by_the_org_fallback(adapter, monkeypatch):
+    """userinfo answering means the member path resolves exactly as before —
+    the org fallback never runs."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_to_kdcube.providers import (
+        linkedin as adapter_module,
+    )
+
+    class _MemberClient(_OrgHttpClient):
+        async def get(self, url, **kwargs):
+            self.requested.append(url)
+            if url.endswith("/userinfo"):
+                return _Response(200, {"sub": "dE5aOhH-ap", "email": "jane@example.com", "name": "Jane Smith"})
+            raise AssertionError(f"unexpected call: {url}")
+
+    client = _MemberClient()
+    monkeypatch.setattr(adapter_module.httpx, "AsyncClient", lambda **kwargs: client)
+    profile = await adapter.fetch_profile(access_token="MEMBER_TOKEN")
+    assert profile["external_subject"] == "dE5aOhH-ap"
+    assert profile.get("workspace") is None or profile.get("workspace") == ""

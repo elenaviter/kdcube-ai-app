@@ -92,8 +92,11 @@ async def test_capabilities_do_not_advertise_search(provider, ctx):
     assert sorted(capabilities["actions"]) == [
         "add_comment",
         "discard_upload",
+        "list_org_posts",
         "publish_image_post",
+        "publish_org_post",
         "publish_post",
+        "read_post_engagement",
         "request_upload",
     ]
     assert "object.search" in capabilities["not_supported"]
@@ -565,3 +568,109 @@ async def test_request_upload_points_at_the_image_action(provider, ctx):
     assert ns.ACTION_PUBLISH_IMAGE_POST in how
     # publish_post rejects files, so naming it here would be a wrong instruction.
     assert f"in {ns.ACTION_PUBLISH_POST} files" not in how
+
+
+# --- Organization-lane actions ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_publish_org_post_routes_as_organization(provider, ctx, monkeypatch):
+    captured: dict[str, Any] = {}
+
+    async def _publish(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "ret": {
+            "post_urn": "urn:li:share:9000000001",
+            "permalink": "https://www.linkedin.com/feed/update/urn:li:share:9000000001",
+            "account_id": ACCOUNT.account_id,
+            "author": "urn:li:organization:5123456",
+            "image_count": 0,
+        }}
+
+    monkeypatch.setattr(provider._linkedin, "publish", _publish)
+    response = await provider.object_action(
+        ctx,
+        _request(
+            "object.action",
+            action=ns.ACTION_PUBLISH_ORG_POST,
+            object_ref=ns.account_ref(ACCOUNT.account_id),
+            payload={"text": "org update"},
+        ),
+    )
+    assert response.ok is True
+    assert captured["as_organization"] is True
+    assert _extra(response)["action"] == ns.ACTION_PUBLISH_ORG_POST
+
+
+@pytest.mark.asyncio
+async def test_publish_org_post_rejects_files(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request(
+            "object.action",
+            action=ns.ACTION_PUBLISH_ORG_POST,
+            payload={"text": "hi", "files": [{"staged_ref": "s1"}]},
+        ),
+    )
+    assert response.ok is False
+    assert response.error.code == "linkedin_post_carries_no_images"
+
+
+@pytest.mark.asyncio
+async def test_list_org_posts_returns_ref_carrying_items(provider, ctx, monkeypatch):
+    async def _list(**kwargs):
+        return {"ok": True, "ret": {
+            "posts": [
+                {"post_urn": "urn:li:share:1", "permalink": "https://www.linkedin.com/feed/update/urn:li:share:1",
+                 "commentary": "a", "published_at": 1},
+            ],
+            "count": 1,
+            "author": "urn:li:organization:5123456",
+            "account_id": ACCOUNT.account_id,
+        }}
+
+    monkeypatch.setattr(provider._linkedin, "list_linkedin_org_posts", _list)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_LIST_ORG_POSTS,
+                 object_ref=ns.account_ref(ACCOUNT.account_id), payload={}),
+    )
+    assert response.ok is True
+    items = list((response.ret or {}).get("items") or [])
+    assert len(items) == 1
+    assert items[0]["ref"] == ns.post_ref(ACCOUNT.account_id, "urn:li:share:1")
+
+
+@pytest.mark.asyncio
+async def test_read_post_engagement_requires_a_post(provider, ctx):
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_READ_POST_ENGAGEMENT,
+                 object_ref=ns.account_ref(ACCOUNT.account_id), payload={}),
+    )
+    assert response.ok is False
+    assert response.error.code == "post_urn_required"
+
+
+@pytest.mark.asyncio
+async def test_read_post_engagement_returns_counts_and_comments(provider, ctx, monkeypatch):
+    async def _read(**kwargs):
+        assert kwargs["post_urn"] == "urn:li:share:1"
+        return {"ok": True, "ret": {
+            "post_urn": "urn:li:share:1",
+            "like_count": 12,
+            "comment_count": 2,
+            "comments": [{"comment_urn": "", "actor": "urn:li:person:x", "text": "nice", "created_at": 1}],
+            "account_id": ACCOUNT.account_id,
+        }}
+
+    monkeypatch.setattr(provider._linkedin, "read_linkedin_post_engagement", _read)
+    response = await provider.object_action(
+        ctx,
+        _request("object.action", action=ns.ACTION_READ_POST_ENGAGEMENT,
+                 object_ref=ns.post_ref(ACCOUNT.account_id, "urn:li:share:1"), payload={}),
+    )
+    assert response.ok is True
+    obj = dict((response.ret or {}).get("object") or {})
+    assert obj["like_count"] == 12 and obj["comment_count"] == 2
+    assert len(obj["comments"]) == 1

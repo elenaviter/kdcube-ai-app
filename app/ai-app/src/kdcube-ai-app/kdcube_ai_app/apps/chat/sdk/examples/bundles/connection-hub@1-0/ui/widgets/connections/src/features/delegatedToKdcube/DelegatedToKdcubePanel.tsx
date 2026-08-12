@@ -3,7 +3,12 @@ import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { AccountRow, type AccountStatusTone } from '../../components/AccountRow';
 import { PaneGroup } from '../../components/Pane';
 import { ConsentPlan, type ConsentPlanAction } from './ConsentPlan';
-import type { DelegatedToKdcubeAccount, DelegatedToKdcubeClaim, DelegatedToKdcubeProvider } from '../../api/types';
+import type {
+  DelegatedToKdcubeAccount,
+  DelegatedToKdcubeClaim,
+  DelegatedToKdcubeConnectorApp,
+  DelegatedToKdcubeProvider,
+} from '../../api/types';
 import {
   connectDelegatedToKdcubeCredential,
   disconnectDelegatedToKdcube,
@@ -71,8 +76,17 @@ function accountSubtitle(account: DelegatedToKdcubeAccount, provider?: Delegated
     provider ? providerLabel(provider) : account.provider_id,
     account.email,
     account.workspace,
+    accountConnectorBit(account, provider),
   ].filter(Boolean);
   return bits.length ? bits.join(' · ') : undefined;
+}
+
+// Which connector app holds this account's delegation — shown only when the
+// provider carries more than one, otherwise it adds nothing.
+function accountConnectorBit(account: DelegatedToKdcubeAccount, provider?: DelegatedToKdcubeProvider): string {
+  const apps = provider?.connector_apps || {};
+  if (!account.connector_app_id || Object.keys(apps).length < 2) return '';
+  return `via ${connectorAppLabel(apps[account.connector_app_id], account.connector_app_id)}`;
 }
 
 function accountGrantedChips(account: DelegatedToKdcubeAccount, provider?: DelegatedToKdcubeProvider): string[] {
@@ -146,8 +160,39 @@ function firstProviderId(providers: DelegatedToKdcubeProvider[]): string {
   return providers[0]?.provider_id || '';
 }
 
+function enabledConnectorApps(provider?: DelegatedToKdcubeProvider): DelegatedToKdcubeConnectorApp[] {
+  return Object.values(provider?.connector_apps || {}).filter((app) => app.enabled !== false);
+}
+
+function connectorAppLabel(app: DelegatedToKdcubeConnectorApp | undefined, connectorAppId: string): string {
+  return app?.label || connectorAppId;
+}
+
+// A connector with a non-empty allowed_claims ceiling carries only those
+// claims; an empty ceiling means the whole provider vocabulary.
+function connectorCarries(app: DelegatedToKdcubeConnectorApp, claimIds: string[]): boolean {
+  const ceiling = app.allowed_claims || [];
+  return !ceiling.length || claimIds.every((claimId) => ceiling.includes(claimId));
+}
+
+function connectorBlockedClaims(app: DelegatedToKdcubeConnectorApp, claimIds: string[]): string[] {
+  const ceiling = app.allowed_claims || [];
+  return ceiling.length ? claimIds.filter((claimId) => !ceiling.includes(claimId)) : [];
+}
+
+// The connector app a connect should use when none was named explicitly:
+// prefer a connector able to carry the requested claims (so a single capable
+// connector is auto-selected), fall back to the first enabled one.
+function resolveConnectorAppId(provider: DelegatedToKdcubeProvider | undefined, requestedClaims: string[]): string {
+  const enabled = enabledConnectorApps(provider);
+  const carriers = requestedClaims.length
+    ? enabled.filter((app) => connectorCarries(app, requestedClaims))
+    : enabled;
+  return (carriers[0] || enabled[0])?.connector_app_id || '';
+}
+
 function firstConnectorAppId(provider?: DelegatedToKdcubeProvider): string {
-  return Object.values(provider?.connector_apps || {}).find((app) => app.enabled !== false)?.connector_app_id || '';
+  return enabledConnectorApps(provider)[0]?.connector_app_id || '';
 }
 
 function defaultClaims(provider?: DelegatedToKdcubeProvider, connectorAppId?: string): string[] {
@@ -173,10 +218,15 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   const selectedProviderId = providerId || firstProviderId(providerList);
   const selectedProvider = providers[selectedProviderId];
   const [connectorAppId, setConnectorAppId] = useState(deepLink.providerId ? deepLink.connectorAppId : '');
-  const selectedConnectorAppId = connectorAppId || firstConnectorAppId(selectedProvider);
   const claimIds = Object.keys(selectedProvider?.claims || {});
-  const suggestedClaims = defaultClaims(selectedProvider, selectedConnectorAppId);
   const [claims, setClaims] = useState<string[]>(deepLink.providerId ? deepLink.claims : []);
+  // The ticked claims drive connector narrowing; an explicitly named connector
+  // (deep link or the user's own pick) keeps absolute precedence, otherwise the
+  // form resolves to a connector that can carry them (auto-selecting the single
+  // capable one) and falls back to the first enabled connector.
+  const enabledConnectors = useMemo(() => enabledConnectorApps(selectedProvider), [selectedProvider]);
+  const selectedConnectorAppId = connectorAppId || resolveConnectorAppId(selectedProvider, claims);
+  const suggestedClaims = defaultClaims(selectedProvider, selectedConnectorAppId);
   // Deep-links and prefills may carry claims of another provider; only
   // claims this provider declares may reach the OAuth start. If nothing
   // survives the filter, fall back to the provider's suggested claims.
@@ -191,6 +241,9 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   const [secretKind, setSecretKind] = useState<ConnectCredentialArgs['secretKind']>('app_password');
   const [secretValue, setSecretValue] = useState('');
   const [formNotice, setFormNotice] = useState('');
+  // Claims a just-picked connector could not carry: the pick drops them and
+  // this names what was dropped.
+  const [droppedNotice, setDroppedNotice] = useState('');
   // Account whose access the form is managing; its checked set replaces the
   // account's claims on approval. Empty = connecting a new account.
   const [managedAccountId, setManagedAccountId] = useState('');
@@ -240,7 +293,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   // accounts get the form prefilled so the user pastes a fresh secret.
   const reconnect = (account: DelegatedToKdcubeAccount) => {
     const provider = providers[account.provider_id];
-    const appId = account.connector_app_id || firstConnectorAppId(provider);
+    const appId = account.connector_app_id || resolveConnectorAppId(provider, account.claims || []);
     const accountClaims = account.claims?.length ? account.claims : defaultClaims(provider, appId);
     if (oauthEnabled(provider, appId)) {
       void launchOAuth(account.provider_id, appId, accountClaims, {
@@ -257,7 +310,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
   // access, unticking removes it.
   const manageAccess = (account: DelegatedToKdcubeAccount) => {
     const provider = providers[account.provider_id];
-    const appId = account.connector_app_id || firstConnectorAppId(provider);
+    const appId = account.connector_app_id || resolveConnectorAppId(provider, account.claims || []);
     const merged = Array.from(new Set([
       ...(account.claims || []),
       ...(deepLink.accountId === account.account_id ? deepLink.claims : []),
@@ -286,6 +339,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     setDisplayName(account.display_name || '');
     setWorkspace(account.workspace || '');
     setFormNotice(notice);
+    setDroppedNotice('');
     // NOT scrolled here: the connect pane mounts on demand, so the form does
     // not exist yet at this point. The effect below scrolls once it renders.
   };
@@ -346,8 +400,10 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
       console.warn('[connect-route] runPlanAction with NO planProvider — button did nothing', { action });
       return;
     }
-    const appId = deepLink.connectorAppId || firstConnectorAppId(planProvider);
     const targetClaims = planClaims.length ? planClaims : planRequestedClaims;
+    // An explicit deep-link connector wins; otherwise pick one able to carry
+    // the plan's claims (a mis-matched first connector must not swallow them).
+    const appId = deepLink.connectorAppId || resolveConnectorAppId(planProvider, targetClaims);
     console.info('[connect-route] runPlanAction', {
       action, provider: planProvider.provider_id, appId,
       oauthEnabled: oauthEnabled(planProvider, appId), targetClaims,
@@ -400,12 +456,26 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
     setConnectorAppId('');
     setClaims([]);
     setFormNotice('');
+    setDroppedNotice('');
     setManagedAccountId('');
   };
 
+  // Picking a connector keeps the ticked claims it can carry and drops the
+  // rest, naming what was dropped. Managing an account is left behind: a
+  // different connector means a fresh connect, not a re-approval of that
+  // account (reconnect always keeps the account's own connector).
   const changeConnectorApp = (nextConnectorAppId: string) => {
+    const nextApp = selectedProvider?.connector_apps?.[nextConnectorAppId];
+    const dropped = nextApp ? connectorBlockedClaims(nextApp, claims) : [];
+    if (dropped.length) {
+      setClaims(claims.filter((claimId) => !dropped.includes(claimId)));
+      setDroppedNotice(
+        `${connectorAppLabel(nextApp, nextConnectorAppId)} cannot carry: ${dropped.join(', ')} — dropped from the selection.`,
+      );
+    } else {
+      setDroppedNotice('');
+    }
     setConnectorAppId(nextConnectorAppId);
-    setClaims([]);
     setFormNotice('');
     setManagedAccountId('');
   };
@@ -596,6 +666,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
                 setManagedAccountId('');
                 setClaims([]);
                 setFormNotice('');
+                setDroppedNotice('');
               }}
             >
               Connect a different account instead
@@ -608,6 +679,7 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
           </p>
         )}
         {formNotice ? <p className="notice success">{formNotice}</p> : null}
+        {droppedNotice ? <p className="notice warning">{droppedNotice}</p> : null}
         <div className="inline-fields">
           <select className="input" value={selectedProviderId} onChange={(event) => changeProvider(event.target.value)}>
             {providerList.map((provider) => (
@@ -616,14 +688,50 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
               </option>
             ))}
           </select>
-          <select className="input" value={selectedConnectorAppId} onChange={(event) => changeConnectorApp(event.target.value)}>
-            {Object.values(selectedProvider?.connector_apps || {}).map((app) => (
-              <option key={app.connector_app_id} value={app.connector_app_id}>
-                {app.label || app.connector_app_id}
-              </option>
-            ))}
-          </select>
         </div>
+
+        {enabledConnectors.length > 1 ? (
+          // The provider carries several connector apps; each row names what
+          // that connector can carry. A row that cannot carry the ticked
+          // claims stays pickable — picking it drops those claims (named in
+          // the warning above). With one connector the choice does not exist
+          // and nothing renders.
+          <div className="connector-pick" role="radiogroup" aria-label="Connect through">
+            {enabledConnectors.map((app) => {
+              const checked = app.connector_app_id === selectedConnectorAppId;
+              const blocked = connectorBlockedClaims(app, claims);
+              const optionClass = [
+                'connector-option',
+                checked ? 'connector-option-checked' : '',
+                blocked.length ? 'connector-option-blocked' : '',
+              ].filter(Boolean).join(' ');
+              return (
+                <label key={app.connector_app_id} className={optionClass}>
+                  <input
+                    type="radio"
+                    name="connector-app"
+                    checked={checked}
+                    onChange={() => changeConnectorApp(app.connector_app_id)}
+                    disabled={busy}
+                  />
+                  <span className="connector-option-body">
+                    <span className="connector-option-title">{connectorAppLabel(app, app.connector_app_id)}</span>
+                    <span className="connector-option-sub">
+                      {app.allowed_claims?.length
+                        ? app.allowed_claims.map((claimId) => claimLabel(selectedProvider?.claims?.[claimId], claimId)).join(' · ')
+                        : 'all provider permissions'}
+                    </span>
+                    {blocked.length ? (
+                      <span className="connector-option-sub connector-option-reason">
+                        cannot carry: {blocked.join(', ')}
+                      </span>
+                    ) : null}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        ) : null}
 
         {claimIds.length ? (
           <div className="scope-list">

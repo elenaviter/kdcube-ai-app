@@ -1088,6 +1088,29 @@ code {
   font-size: 12px;
 }
 
+/* Connector-app picker: radio rows shown only when a provider carries more
+   than one enabled connector app. */
+.connector-pick { display: flex; flex-direction: column; gap: 6px; }
+.connector-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  cursor: pointer;
+}
+.connector-option input { accent-color: var(--teal); margin-top: 3px; }
+.connector-option-checked { border-color: var(--teal); }
+/* A connector that cannot carry the ticked claims stays pickable; picking it
+   drops those claims, so the row only reads secondary, its inputs stay live. */
+.connector-option-blocked { opacity: 0.6; }
+.connector-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.connector-option-title { font-size: 13px; color: var(--ink); }
+.connector-option-sub { font-size: 12px; color: var(--muted); }
+.connector-option-reason { color: var(--warn-text); }
+
 .auth-grid {
   margin-top: 12px;
   display: grid;

@@ -74,6 +74,7 @@ async def test_namespace_only_returns_the_root_catalog(provider, ctx):
         "accounts",
         "publishing",
         "engagement",
+        "organization",
     ]
 
 

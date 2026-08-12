@@ -268,6 +268,16 @@ bundles:
               description: "Publish posts and comments through connected LinkedIn accounts."
               delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
               delegable_permissions: ["linkedin:post"]
+            - grant: "linkedin:org:post"
+              label: "Post as the organization page"
+              description: "Publish posts as the organization page through a connected org-lane LinkedIn account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["linkedin:org:post"]
+            - grant: "linkedin:org:read"
+              label: "Read organization posts and engagement"
+              description: "Read the organization page's posts, comments, and reaction counts through a connected org-lane LinkedIn account."
+              delegable_roles: ["kdcube:role:registered", "kdcube:role:paid", "kdcube:role:privileged", "kdcube:role:super-admin"]
+              delegable_permissions: ["linkedin:org:read"]
             resources:
             - resource: "*"
               label: "All platform and application APIs"
@@ -1202,6 +1212,27 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:post"
+                          # Organization lane: served by a separate Community
+                          # Management API connector app (that product must be
+                          # the ONLY one on its LinkedIn app).
+                          object.action.publish_org_post:
+                            label: "Publish as the organization page"
+                            description: "Publish a text post as the organization page the connected org-lane account administers."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:org:post"
+                          object.action.list_org_posts:
+                            label: "List organization posts"
+                            description: "List posts authored by the connected account's organization page."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:org:read"
+                          object.action.read_post_engagement:
+                            label: "Read post engagement"
+                            description: "Read comment and reaction counts, and comments, of an organization post."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:org:read"
                       call:
                         label: "Generic LinkedIn call"
                         description: "Generic LinkedIn namespace call with per-operation grants."
@@ -1261,6 +1292,24 @@ bundles:
                             grants:
                             - "named_services:use"
                             - "linkedin:post"
+                          object.action.publish_org_post:
+                            label: "Publish as the organization page"
+                            description: "Publish a text post as the organization page the connected org-lane account administers."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:org:post"
+                          object.action.list_org_posts:
+                            label: "List organization posts"
+                            description: "List posts authored by the connected account's organization page."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:org:read"
+                          object.action.read_post_engagement:
+                            label: "Read post engagement"
+                            description: "Read comment and reaction counts, and comments, of an organization post."
+                            grants:
+                            - "named_services:use"
+                            - "linkedin:org:read"
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.
         providers: {}
@@ -1432,6 +1481,20 @@ bundles:
                   allowed_claims:
                   - "linkedin:profile"
                   - "linkedin:post"
+                # Organization lane: a SEPARATE LinkedIn app carrying the
+                # Community Management API product — LinkedIn requires that
+                # product to be the only one on its app, so it can never share
+                # an app with Sign In / Share on LinkedIn. Its allowed_claims
+                # ceiling carries only the org claims, which routes org
+                # connects to this app (claims-driven connector narrowing).
+                org:
+                  label: "KDCube LinkedIn Org"
+                  enabled: false
+                  client_id: "<LINKEDIN_ORG_OAUTH_CLIENT_ID>"
+                  client_secret_ref: "connections.delegated_to_kdcube.providers.linkedin.connector_apps.org.client_secret"
+                  allowed_claims:
+                  - "linkedin:org:post"
+                  - "linkedin:org:read"
               claims:
                 linkedin:profile:
                   label: "Read your LinkedIn profile"
@@ -1447,6 +1510,20 @@ bundles:
                   description: "Publish posts and comments on LinkedIn as the approving member."
                   provider_scopes:
                   - "w_member_social"
+                # Organization-lane claims: org scopes only — the adapter must
+                # NOT force openid/profile on these (a Community Management API
+                # app has no Sign In product, and LinkedIn rejects scopes no
+                # enabled product grants).
+                linkedin:org:post:
+                  label: "Post as your organization page"
+                  description: "Publish posts as the LinkedIn organization page the approving member administers."
+                  provider_scopes:
+                  - "w_organization_social"
+                linkedin:org:read:
+                  label: "Read your organization page's posts and engagement"
+                  description: "Read posts, comments, and reaction counts of the LinkedIn organization page the approving member administers."
+                  provider_scopes:
+                  - "r_organization_social"
             s1:
               label: "S1"
               adapter: "oidc.generic"

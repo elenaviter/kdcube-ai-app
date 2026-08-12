@@ -49,6 +49,11 @@ LINKEDIN_PROVIDER_ID = "linkedin"
 LINKEDIN_PROFILE_CLAIM = "linkedin:profile"
 # Covers posts and comments: LinkedIn gates both on w_member_social.
 LINKEDIN_POST_CLAIM = "linkedin:post"
+# Organization lane (Community Management API connector): post as the page,
+# and — the only reads LinkedIn allows this integration anywhere — read the
+# page's own posts, comments, and reaction counts.
+LINKEDIN_ORG_POST_CLAIM = "linkedin:org:post"
+LINKEDIN_ORG_READ_CLAIM = "linkedin:org:read"
 
 LINKEDIN_USERINFO_URL = "https://api.linkedin.com/v2/userinfo"
 API_VERSION_PROP = "integrations.linkedin.api_version"
@@ -374,6 +379,27 @@ class LinkedInTools:
             subject = _subject_from_id_token(str(raw.get("id_token") or ""))
         return rest_api.person_urn(subject)
 
+    async def _org_author_urn(self, credential: ConnectedAccountCredential) -> str:
+        """Organization author URN from the connected account's workspace.
+
+        An org-lane account (Community Management API connector) stores the
+        organization URN as its ``workspace`` at connect time — one connected
+        account per organization. Returns "" when the resolved account carries
+        no organization, which the caller reports as an actionable error.
+        """
+        accounts = await connected_linkedin_accounts(
+            tenant=credential.tenant,
+            project=credential.project,
+            hub_bundle_id=credential.connection_hub_bundle_id,
+        )
+        for account in accounts:
+            if account.account_id == credential.account_id:
+                workspace = str(account.workspace or "").strip()
+                if workspace:
+                    return rest_api.organization_urn(workspace)
+                break
+        return ""
+
     async def _upload_images(
         self,
         client: httpx.AsyncClient,
@@ -447,6 +473,7 @@ class LinkedInTools:
         account_id: str,
         visibility: str,
         where: str,
+        as_organization: bool = False,
     ) -> dict[str, Any]:
         files: list[dict[str, Any]] = []
         for path in image_paths:
@@ -465,6 +492,7 @@ class LinkedInTools:
             alt_texts=alt_texts,
             account_id=account_id,
             visibility=visibility,
+            as_organization=as_organization,
             where=where,
         )
 
@@ -476,6 +504,7 @@ class LinkedInTools:
         alt_texts: Sequence[str] = (),
         account_id: str = "",
         visibility: str = "PUBLIC",
+        as_organization: bool = False,
         where: str = "linkedin.publish",
     ) -> dict[str, Any]:
         """Publish loaded image bytes through credential recovery.
@@ -483,6 +512,8 @@ class LinkedInTools:
         This is the safe programmatic entrypoint used by named services and
         staged-upload MCP tools. Provider-auth markers are an internal retry
         protocol and must never be serialized to either caller.
+        ``as_organization`` publishes as the account's organization page
+        (org-lane account required) instead of the member.
         """
         return await _run_provider_call(
             where=where,
@@ -494,6 +525,7 @@ class LinkedInTools:
                 alt_texts=alt_texts,
                 account_id=account_id,
                 visibility=visibility,
+                as_organization=as_organization,
                 where=where,
             ),
         )
@@ -506,6 +538,7 @@ class LinkedInTools:
         alt_texts: Sequence[str] = (),
         account_id: str = "",
         visibility: str = "PUBLIC",
+        as_organization: bool = False,
         where: str = "linkedin.publish",
     ) -> dict[str, Any]:
         """Publish a post from already-loaded image bytes.
@@ -527,7 +560,8 @@ class LinkedInTools:
                     ret=error,
                 )
 
-        credential = await self._credential(claim=LINKEDIN_POST_CLAIM, account_id=account_id, tool_name=where)
+        claim = LINKEDIN_ORG_POST_CLAIM if as_organization else LINKEDIN_POST_CLAIM
+        credential = await self._credential(claim=claim, account_id=account_id, tool_name=where)
         if not credential.ok:
             return credential.error_envelope(where=where)
         if not credential.access_token:
@@ -536,7 +570,20 @@ class LinkedInTools:
                 message="Connected LinkedIn credential has no access token.",
                 where=where,
             )
-        author_urn = await self._author_urn(credential)
+        if as_organization:
+            author_urn = await self._org_author_urn(credential)
+            if not author_urn:
+                return _error_result(
+                    code="org_account_missing_organization",
+                    message=(
+                        "The resolved LinkedIn account carries no organization. "
+                        "Connect the organization-lane LinkedIn app in Connection Hub "
+                        "and use that account for organization publishing."
+                    ),
+                    where=where,
+                )
+        else:
+            author_urn = await self._author_urn(credential)
 
         async with httpx.AsyncClient(timeout=120.0) as client:
             images: list[dict[str, Any]] = []
@@ -759,6 +806,7 @@ class LinkedInTools:
         alt_texts: Sequence[str] = (),
         account_id: str = "",
         visibility: str = "PUBLIC",
+        as_organization: bool = False,
         where: str = "linkedin.publish_staged",
     ) -> dict[str, Any]:
         """Publish a post from images already uploaded to a signed slot."""
@@ -782,6 +830,7 @@ class LinkedInTools:
             alt_texts=alt_texts,
             account_id=account_id,
             visibility=visibility,
+            as_organization=as_organization,
             where=where,
         )
         if isinstance(result, dict) and result.get("ok"):
@@ -881,12 +930,217 @@ class LinkedInTools:
         )
 
 
+    # --- Organization lane (Community Management API connector) -----------
+    # The ONLY reads this integration has anywhere: the page's own posts,
+    # comments, and reaction counts. Member content stays write-only.
+
+    @kernel_function(
+        name="post_linkedin_org_update",
+        description=(
+            "Publish a text post AS THE ORGANIZATION PAGE the connected org-lane LinkedIn account "
+            "administers. Requires the user to connect the organization LinkedIn app with the "
+            "linkedin:org:post claim in Connection Hub. Markdown is stripped; 3000-character limit. "
+            "Returns {ok, error, ret}; ret={post_urn,permalink,account_id,author,image_count}."
+        ),
+    )
+    async def post_linkedin_org_update(
+        self,
+        text: Annotated[str, "Post body. Markdown is stripped; LinkedIn renders plain text only."] = "",
+        visibility: Annotated[str, "PUBLIC or CONNECTIONS. Defaults to PUBLIC."] = "PUBLIC",
+        account_id: Annotated[str, "Optional connected account id when several LinkedIn accounts are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        where = "linkedin.post_linkedin_org_update"
+        return await _run_provider_call(
+            where=where,
+            operation="posts.create",
+            mutating=True,
+            run=lambda: self._publish_from_workspace(
+                text=text,
+                image_paths=(),
+                alt_texts=(),
+                account_id=account_id,
+                visibility=str(visibility or "PUBLIC").strip().upper() or "PUBLIC",
+                as_organization=True,
+                where=where,
+            ),
+        )
+
+    @kernel_function(
+        name="list_linkedin_org_posts",
+        description=(
+            "List posts authored by the organization page of the connected org-lane LinkedIn "
+            "account — the only post listing LinkedIn exposes to this integration. Requires the "
+            "linkedin:org:read claim. Returns {ok, error, ret}; "
+            "ret={posts:[{post_urn,permalink,commentary,published_at,...}],count,author}."
+        ),
+    )
+    async def list_linkedin_org_posts(
+        self,
+        count: Annotated[int, "How many posts, newest first (1-100)."] = 10,
+        start: Annotated[int, "Pagination offset."] = 0,
+        account_id: Annotated[str, "Optional connected account id when several LinkedIn accounts are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await _run_provider_call(
+            where="linkedin.list_linkedin_org_posts",
+            operation="posts.list",
+            run=lambda: self._list_org_posts(count=count, start=start, account_id=account_id),
+        )
+
+    async def _list_org_posts(self, *, count: int, start: int, account_id: str) -> dict[str, Any]:
+        where = "linkedin.list_linkedin_org_posts"
+        credential = await self._credential(claim=LINKEDIN_ORG_READ_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        author_urn = await self._org_author_urn(credential)
+        if not author_urn:
+            return _error_result(
+                code="org_account_missing_organization",
+                message=(
+                    "The resolved LinkedIn account carries no organization. "
+                    "Connect the organization-lane LinkedIn app in Connection Hub."
+                ),
+                where=where,
+            )
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await rest_api.list_posts_by_author(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                author_urn=author_urn,
+                count=count,
+                start=start,
+            )
+        if response.status_code >= 400:
+            failure = _linkedin_failure(
+                response,
+                operation="posts.list",
+                fallback="LinkedIn organization posts could not be listed.",
+                where=where,
+            )
+            if failure.credential_failure:
+                return connected_account_auth_failure(credential, _auth_failure_message(failure))
+            return failure.error_result(where=where)
+        try:
+            body = response.json()
+        except Exception:
+            body = {}
+        posts = rest_api.parse_posts_page(body)
+        return _ok_ret_result(
+            {
+                "posts": posts,
+                "count": len(posts),
+                "author": author_urn,
+                "account_id": credential.account_id,
+            }
+        )
+
+    @kernel_function(
+        name="read_linkedin_post_engagement",
+        description=(
+            "Read comment/reaction counts — and optionally the comments — of one post authored by "
+            "the connected org-lane account's organization page. Requires the linkedin:org:read "
+            "claim. post_urn is a urn:li:share:* or urn:li:ugcPost:* value. Returns {ok, error, ret}; "
+            "ret={post_urn,like_count,comment_count,comments:[{comment_urn,actor,text,created_at}]}."
+        ),
+    )
+    async def read_linkedin_post_engagement(
+        self,
+        post_urn: Annotated[str, "Target post URN, e.g. urn:li:share:7123456789."] = "",
+        include_comments: Annotated[bool, "Also return the comment rows (default true)."] = True,
+        comments_count: Annotated[int, "How many comments when included (1-100)."] = 25,
+        account_id: Annotated[str, "Optional connected account id when several LinkedIn accounts are connected."] = "",
+    ) -> Annotated[dict, "Envelope: {ok, error, ret}."]:
+        return await _run_provider_call(
+            where="linkedin.read_linkedin_post_engagement",
+            operation="socialActions.read",
+            run=lambda: self._read_post_engagement(
+                post_urn=post_urn,
+                include_comments=include_comments,
+                comments_count=comments_count,
+                account_id=account_id,
+            ),
+        )
+
+    async def _read_post_engagement(
+        self,
+        *,
+        post_urn: str,
+        include_comments: bool,
+        comments_count: int,
+        account_id: str,
+    ) -> dict[str, Any]:
+        where = "linkedin.read_linkedin_post_engagement"
+        target = str(post_urn or "").strip()
+        if not target:
+            return _error_result(code="post_urn_required", message="LinkedIn post URN is required.", where=where)
+        credential = await self._credential(claim=LINKEDIN_ORG_READ_CLAIM, account_id=account_id, tool_name=where)
+        if not credential.ok:
+            return credential.error_envelope(where=where)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            summary_response = await rest_api.fetch_social_summary(
+                client,
+                access_token=credential.access_token,
+                api_version=linkedin_api_version(),
+                object_urn=target,
+            )
+            if summary_response.status_code >= 400:
+                failure = _linkedin_failure(
+                    summary_response,
+                    operation="socialActions.read",
+                    fallback="LinkedIn post engagement could not be read.",
+                    where=where,
+                )
+                if failure.credential_failure:
+                    return connected_account_auth_failure(credential, _auth_failure_message(failure))
+                return failure.error_result(where=where)
+            try:
+                summary_body = summary_response.json()
+            except Exception:
+                summary_body = {}
+            summary = rest_api.parse_social_summary(summary_body)
+            comments: list[dict[str, Any]] = []
+            if include_comments:
+                comments_response = await rest_api.list_comments(
+                    client,
+                    access_token=credential.access_token,
+                    api_version=linkedin_api_version(),
+                    object_urn=target,
+                    count=comments_count,
+                )
+                if comments_response.status_code >= 400:
+                    failure = _linkedin_failure(
+                        comments_response,
+                        operation="socialActions.comments.list",
+                        fallback="LinkedIn post comments could not be read.",
+                        where=where,
+                    )
+                    if failure.credential_failure:
+                        return connected_account_auth_failure(credential, _auth_failure_message(failure))
+                    return failure.error_result(where=where)
+                try:
+                    comments_body = comments_response.json()
+                except Exception:
+                    comments_body = {}
+                comments = rest_api.parse_comments_page(comments_body)
+        return _ok_ret_result(
+            {
+                "post_urn": target,
+                "like_count": summary.get("like_count", 0),
+                "comment_count": summary.get("comment_count", 0),
+                "comments": comments,
+                "account_id": credential.account_id,
+            }
+        )
+
+
 def create_linkedin_plugin() -> LinkedInTools:
     return LinkedInTools()
 
 
 __all__ = [
     "API_VERSION_PROP",
+    "LINKEDIN_ORG_POST_CLAIM",
+    "LINKEDIN_ORG_READ_CLAIM",
     "LINKEDIN_POST_CLAIM",
     "LINKEDIN_PROFILE_CLAIM",
     "LINKEDIN_PROVIDER_ID",
