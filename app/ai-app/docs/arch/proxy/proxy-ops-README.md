@@ -4,9 +4,10 @@ title: "Proxy Ops"
 summary: "Ops guide for the OpenResty reverse proxy: responsibilities, SSL, auth unmask, routing, anti-DDoS hardening, and WAF protection."
 tags: ["proxy", "openresty", "ops", "nginx", "ssl", "waf", "ddos", "rate-limiting", "auth"]
 keywords: ["OpenResty", "unmask_token", "limit_req", "limit_conn", "lua-resty-waf", "ModSecurity", "OWASP CRS", "proxylogin", "SSE", "WebSocket", "gzip", "HSTS"]
+updated_at: 2026-08-13
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/nginx.conf
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
 ---
 # Proxy Ops Guide (OpenResty)
 
@@ -22,8 +23,10 @@ The proxy runs every inbound request through six phases in sequence:
 2. **Security headers + compression** — injects `HSTS`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`; gzip on all text responses.
 3. **Rate limiting** — `limit_req` zones for chat, KB, upload, and auth routes.
 4. **Auth cookie handling** — for protected routes, either accepts already-present real token cookies or internally calls `proxylogin /v1/unmask`, extracts real session cookies, and injects them into the upstream request.
-5. **Path-based routing** — dispatches to five upstream backends by URL prefix.
-6. **Protocol handling** — SSE (buffering off, 600 s timeout), WebSocket upgrade, SPA 404 fallback.
+5. **Path-based routing** — preserves explicit services, mounts the control
+   plane at `proxy.route_prefix`, and forwards application-site paths to proc.
+6. **Protocol handling** — SSE (buffering off, 600 s timeout), WebSocket
+   upgrade, mounted control-plane SPA routing, and proc-backed site delivery.
 
 ```text
 client
@@ -32,8 +35,8 @@ client
   -> 3 anti-DDoS + rate limiting  (conn limit, limit_req 10r/s zones, timeouts, bot filter)
   -> 4 WAF inspection             (SQLi, XSS, path traversal — when enabled)
   -> 5 auth cookie unmask         (proxylogin /v1/unmask -> inject real cookies)
-  -> 6 path-based routing         (6 route groups -> 5 backends)
-  -> 7 protocol handling          (SSE buffering off, WebSocket upgrade, SPA fallback)
+  -> 6 path-based routing         (reserved services + control plane + sites)
+  -> 7 protocol handling          (SSE, WebSocket, mounted SPA, site responses)
   -> web-ui :80 | proxylogin | chat-ingress :8010 | chat-proc :8020 | kb :8000
 ```
 
@@ -45,10 +48,10 @@ Phase ordering matters: rate limiting (phase 3) runs *before* auth cookie handli
 
 | Backend | Address | Routes |
 |---|---|---|
-| `web-ui` | `web-ui:80` | `/chatbot/*`, SPA fallback |
+| `web-ui` | `web-ui:80` | The descriptor-rendered `proxy.route_prefix`, such as `/platform/*`. |
 | `proxylogin` | `proxylogin` | `/auth/*`, internal `/auth/unmask` |
 | `chat-ingress` | `chat-ingress:8010` | `/sse/`, `/api/chat/`, `/api/cb/*`, `/admin/*`, `/monitoring`, `/cb/socket.io/` |
-| `chat-proc` | `chat-proc:8020` | `/api/integrations/`, `/admin/integrations/` |
+| `chat-proc` | `chat-proc:8020` | `/api/integrations/`, `/admin/integrations/`, aliases, root, and remaining non-reserved site paths. |
 | `kb` | `kb:8000` | `/api/kb/` |
 
 The shared Socket.IO transport is exposed at `/cb/socket.io/` and proxies to

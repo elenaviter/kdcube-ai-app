@@ -313,7 +313,7 @@ frontend:
       totpAppName: "Example App"
       totpIssuer: "Example App"
       apiBase: "/auth/"
-    routesPrefix: "/chatbot"
+    routesPrefix: "/platform"
     debug:
       injectDebugCommands: false
       animateStreaming: true
@@ -340,6 +340,25 @@ descriptor-configured platform cookies, while the platform still validates
 requests through `auth.idp: session`. The older browser value `hardcoded` is a
 legacy alias for `simple`; new descriptors should use `simple`. `oauth` is not
 a deployment auth mode; use `cognito` for the OSS browser Cognito/OIDC flow.
+
+### `proxy.route_prefix`
+
+`proxy.route_prefix` is the non-root URL mount owned by the KDCube control
+plane. The reference value is `/platform`; multi-segment mounts such as
+`/control/ui` are supported.
+
+The same descriptor value configures the frontend build/runtime and renders
+the generated OpenResty route matrix:
+
+```text
+<route_prefix>       -> redirect to <route_prefix>/chat
+<route_prefix>/*     -> control-plane frontend, with the prefix stripped
+/sites/*, /, /<path> -> application-site origin through proc
+```
+
+`proxy.route_prefix: /` is valid only when no application-hosted site is
+enabled. An enabled site requires a non-root mount because root clean paths
+belong to that site.
 
 ### `proxy.forwarded_proto`
 

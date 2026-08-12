@@ -9,5 +9,5 @@
   },
   "tenant": "TENANT_ID",
   "project": "PROJECT_ID",
-  "routesPrefix": "/chatbot"
+  "routesPrefix": "/platform"
 }

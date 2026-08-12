@@ -68,6 +68,7 @@ from kdcube_cli.installer import (
     render_nginx_frame_embedding_config,
     resolve_frontend_routes_prefix,
     stage_descriptor_directory,
+    sync_nginx_proxy_config,
     update_nginx_routes_prefix,
     ui_entry_path,
     write_frontend_config,
@@ -112,12 +113,12 @@ def test_workspace_namespace_uses_safe_names():
 
 def test_ui_entry_path_uses_routes_prefix():
     assert ui_entry_path("/chatbot/demo") == "/chatbot/demo/chat"
-    assert ui_entry_path(None) == "/chatbot/chat"
+    assert ui_entry_path(None) == "/platform/chat"
 
 
 def test_build_ui_url_uses_routes_prefix():
     assert build_ui_url("5174", "/chatbot/demo") == "http://localhost:5174/chatbot/demo/chat"
-    assert build_ui_url("80", None) == "http://localhost/chatbot/chat"
+    assert build_ui_url("80", None) == "http://localhost/platform/chat"
 
 
 def test_parse_init_secret_pairs_accepts_dotted_keys_and_aliases():
@@ -562,18 +563,20 @@ def test_write_frontend_config_derives_bundle_auth_connection_hub_reference(tmp_
     assert "token" not in config["auth"]
 
 
-def test_update_nginx_routes_prefix_adds_prefix_root_redirect(tmp_path: Path):
+def test_update_nginx_routes_prefix_renders_generated_route_marker(tmp_path: Path):
     nginx = tmp_path / "nginx.conf"
     nginx.write_text(
-        "server {\n"
-        "    location = / {\n"
-        "        return 301 /chatbot/chat;\n"
+        "http {\n"
+        "    map $uri $kdcube_control_plane_entry {\n"
+        "        / /chat;\n"
+        '        default "${ROUTE_PREFIX}/chat";\n'
         "    }\n"
-        "    location / {\n"
-        "        proxy_pass http://web_ui;\n"
-        "        location ~* /chatbot/.+ {\n"
-        "            rewrite ^/chatbot/(.*)$ /$1 break;\n"
-        "            proxy_pass http://web_ui;\n"
+        "    server {\n"
+        "        location = ${ROUTE_PREFIX} {\n"
+        "            return 302 $kdcube_control_plane_entry;\n"
+        "        }\n"
+        "        location ^~ ${ROUTE_PREFIX}/ {\n"
+        "            proxy_pass http://web_ui/;\n"
         "        }\n"
         "    }\n"
         "}\n"
@@ -582,10 +585,10 @@ def test_update_nginx_routes_prefix_adds_prefix_root_redirect(tmp_path: Path):
     update_nginx_routes_prefix(nginx, "/chatbot/demo")
 
     updated = nginx.read_text()
-    assert "return 301 /chatbot/demo/chat;" in updated
+    assert 'default "/chatbot/demo/chat";' in updated
     assert "location = /chatbot/demo {" in updated
-    assert "location ~* /chatbot/demo/.+ {" in updated
-    assert "rewrite ^/chatbot/demo/(.*)$ /$1 break;" in updated
+    assert "location ^~ /chatbot/demo/ {" in updated
+    assert "${ROUTE_PREFIX}" not in updated
 
 
 def test_update_nginx_routes_prefix_keeps_multi_segment_mount_when_stripping_upstream_path(
@@ -594,11 +597,8 @@ def test_update_nginx_routes_prefix_keeps_multi_segment_mount_when_stripping_ups
     nginx = tmp_path / "nginx.conf"
     nginx.write_text(
         "server {\n"
-        "    location / {\n"
-        "        location ~* /chatbot/.+ {\n"
-        "            rewrite ^/chatbot/(.*)$ /$1 break;\n"
-        "            proxy_pass http://web_ui;\n"
-        "        }\n"
+        "    location ^~ ${ROUTE_PREFIX}/ {\n"
+        "        proxy_pass http://web_ui/;\n"
         "    }\n"
         "}\n"
     )
@@ -606,8 +606,30 @@ def test_update_nginx_routes_prefix_keeps_multi_segment_mount_when_stripping_ups
     update_nginx_routes_prefix(nginx, "/control/ui")
 
     updated = nginx.read_text()
-    assert "location ~* /control/ui/.+ {" in updated
-    assert "rewrite ^/control/ui/(.*)$ /$1 break;" in updated
+    assert "location ^~ /control/ui/ {" in updated
+    assert "proxy_pass http://web_ui/;" in updated
+
+
+def test_local_proxy_sync_activates_generated_application_site_routes(tmp_path: Path):
+    ai_app_root = Path(__file__).resolve().parents[4]
+    target = tmp_path / "nginx_proxy.conf"
+    template = "app/ai-app/deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf"
+
+    sync_nginx_proxy_config(
+        target,
+        ai_app_root,
+        template,
+        assembly={"proxy": {"forwarded_proto": {"source": "request"}}},
+    )
+    update_nginx_routes_prefix(target, "/control/ui")
+
+    rendered = target.read_text()
+    assert "${ROUTE_PREFIX}" not in rendered
+    assert "location = /control/ui {" in rendered
+    assert "location ^~ /control/ui/ {" in rendered
+    assert "rewrite ^/$ /api/integrations/site-root break;" in rendered
+    assert "rewrite ^/sites/(.*)$ /api/integrations/sites/$1 break;" in rendered
+    assert "proxy_set_header X-Forwarded-Host  $http_host;" in rendered
 
 
 def test_render_nginx_forwarded_proto_defaults_to_immediate_request():

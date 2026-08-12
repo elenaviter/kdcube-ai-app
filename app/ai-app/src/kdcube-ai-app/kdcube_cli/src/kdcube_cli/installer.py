@@ -1655,7 +1655,7 @@ def git_clone_or_update(console: Console, repo: str, ref: Optional[str], dest: P
 def normalize_routes_prefix(value: Optional[str]) -> str:
     prefix = (value or "").strip()
     if not prefix:
-        return "/chatbot"
+        return "/platform"
     if not prefix.startswith("/"):
         prefix = "/" + prefix
     if prefix != "/" and prefix.endswith("/"):
@@ -1891,8 +1891,15 @@ def update_nginx_routes_prefix(path: Path, routes_prefix: str) -> None:
         current = path.read_text()
     except Exception:
         return
-    updated = current.replace("/chatbot", routes_prefix)
-    if routes_prefix != "/":
+    route_prefix_token = "${ROUTE_PREFIX}"
+    if route_prefix_token in current:
+        updated = current.replace(route_prefix_token, routes_prefix)
+    else:
+        # Compatibility for custom proxy templates created before the
+        # descriptor-rendered route marker was introduced.
+        updated = current.replace("/chatbot", routes_prefix)
+
+    if route_prefix_token not in current and routes_prefix != "/":
         exact_location = f"location = {routes_prefix} {{"
         if exact_location not in updated:
             root_redirect_re = re.compile(

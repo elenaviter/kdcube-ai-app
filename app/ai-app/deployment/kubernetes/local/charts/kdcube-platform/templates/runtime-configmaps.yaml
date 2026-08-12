@@ -1,6 +1,11 @@
 {{- $tenant := default "TENANT_ID" .Values.context.tenant -}}
 {{- $project := default "PROJECT_ID" .Values.context.project -}}
-{{- $routePrefix := default "/chatbot" .Values.proxy.route_prefix -}}
+{{- $routePrefixRaw := default "/platform" .Values.proxy.route_prefix -}}
+{{- if not (hasPrefix "/" $routePrefixRaw) -}}
+{{- fail "proxy.route_prefix must be an absolute path" -}}
+{{- end -}}
+{{- $routePrefix := trimSuffix "/" $routePrefixRaw -}}
+{{- if eq $routePrefix "" -}}{{- $routePrefix = "/" -}}{{- end -}}
 {{- $authMode := lower (default "simple" .Values.auth.type) -}}
 {{- $validAuthModes := list "simple" "cognito" "delegated" "bundle" -}}
 {{- if not (has $authMode $validAuthModes) -}}
@@ -214,6 +219,18 @@ data:
       ''      close;
     }
 
+    # KDCUBE_APPLICATION_SITE_SELECTOR:BEGIN
+    map "{{ $routePrefix }}:$host" $kdcube_control_plane_at_root {
+        ~^/:    1;
+        default 0;
+    }
+
+    map $uri $kdcube_control_plane_entry {
+        /       /chat;
+        default "{{ $routePrefix }}/chat";
+    }
+    # KDCUBE_APPLICATION_SITE_SELECTOR:END
+
     upstream web_ui {
       server web-ui:80;
     }
@@ -230,9 +247,6 @@ data:
       listen 80;
       server_name _;
 
-      location = / {
-        return 301 $scheme://$http_host{{ $routePrefix }}/chat;
-      }
 
       # SSE stream — must not buffer
       location /sse/ {
@@ -360,20 +374,64 @@ data:
         client_max_body_size 50M;
       }
 
-      location /config.json {
-        proxy_pass http://web_ui/config.json;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+
+      # KDCUBE_APPLICATION_SITE_ROUTES:BEGIN
+      # Proxy-owned liveness is independent of application-site selection.
+      location = /health {
+          default_type text/plain;
+          return 200 "ok\n";
       }
 
-      # UI fallback: serve SPA and static assets from web-ui
-      location / {
-        proxy_pass http://web_ui;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+      # The control plane owns only its descriptor-rendered mount.
+      location = {{ $routePrefix }} {
+          absolute_redirect off;
+          return 302 $kdcube_control_plane_entry;
       }
+
+      location ^~ {{ $routePrefix }}/ {
+          proxy_pass http://web_ui/;
+          proxy_set_header Host              $http_host;
+          proxy_set_header X-Forwarded-Host  $http_host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+      }
+
+      # Proc resolves aliases and host/default-selected application sites.
+      location ^~ /sites/ {
+          rewrite ^/sites/(.*)$ /api/integrations/sites/$1 break;
+          proxy_pass http://chat_proc;
+          proxy_set_header Host              $http_host;
+          proxy_set_header X-Forwarded-Host  $http_host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+      }
+
+      location / {
+          # route_prefix '/' is valid only when no application site is enabled.
+          error_page 418 = @kdcube_control_plane_root;
+          if ($kdcube_control_plane_at_root = 1) { return 418; }
+
+          rewrite ^/$ /api/integrations/site-root break;
+          rewrite ^/(.*)$ /api/integrations/site-root/$1 break;
+          proxy_pass http://chat_proc;
+          proxy_set_header Host              $http_host;
+          proxy_set_header X-Forwarded-Host  $http_host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+      }
+
+      location @kdcube_control_plane_root {
+          proxy_pass http://web_ui;
+          proxy_set_header Host              $http_host;
+          proxy_set_header X-Forwarded-Host  $http_host;
+          proxy_set_header X-Real-IP         $remote_addr;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+      }
+      # KDCUBE_APPLICATION_SITE_ROUTES:END
     }

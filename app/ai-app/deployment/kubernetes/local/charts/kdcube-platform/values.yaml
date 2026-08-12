@@ -60,7 +60,7 @@ auth:
 
 proxy:
   ssl: false
-  route_prefix: "/chatbot"
+  route_prefix: "/platform"
 
 storage:
   kdcube: "file:///kdcube-storage"

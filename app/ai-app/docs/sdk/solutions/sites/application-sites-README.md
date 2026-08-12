@@ -4,6 +4,12 @@ title: "Application-Hosted Sites"
 summary: "How KDCube apps register directly addressable websites and participate in root host routing."
 status: active
 tags: ["sites", "website", "main-view", "routing", "bundles.yaml"]
+updated_at: 2026-08-13
+keywords: ["application site", "site catalog", "host routing", "route prefix", "clean paths"]
+see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
 ---
 
 # Application-Hosted Sites
@@ -55,9 +61,11 @@ request /{clean-path} without a resolved site
         +--> otherwise controlled 404
 ```
 
-OpenResty does not contain an app list. It only forwards `/` and `/sites/*` to
-proc. This allows descriptor reloads to add, remove, or remap sites without
-regenerating proxy configuration.
+OpenResty does not contain an app list. Its generated route matrix reserves
+`proxy.route_prefix` for the control plane, preserves explicit platform
+services, and forwards `/`, clean paths, and `/sites/*` to proc. This allows
+descriptor reloads to add, remove, or remap sites without regenerating proxy
+configuration.
 
 ## Catalog Projection And Hot Routing
 

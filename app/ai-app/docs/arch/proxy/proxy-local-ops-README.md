@@ -4,10 +4,12 @@ title: "Proxy Local Ops"
 summary: "Ops guide for the OpenResty reverse proxy in local/all-in-one Docker Compose setup: responsibilities, routing, CORS, and differences from the EC2/SSL deployment."
 tags: ["proxy", "openresty", "ops", "local", "docker-compose", "nginx", "dev"]
 keywords: ["OpenResty", "nginx_proxy.conf", "all_in_one_kdcube", "docker-compose", "CORS", "no-auth", "local dev", "HTTP"]
+updated_at: 2026-08-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-ops-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/nginx_proxy.conf
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
 ---
 # Proxy Local Ops Guide (OpenResty — local / all-in-one)
 
@@ -41,8 +43,12 @@ The local proxy runs inbound requests through four phases (SSL and auth unmask p
 1. **Security headers + compression** — injects `X-Content-Type-Options`, `X-Frame-Options`, `X-XSS-Protection`, `Referrer-Policy`; gzip on all text responses. HSTS is omitted (no TLS).
 2. **Rate limiting** — `limit_req` zones defined for chat, KB, upload, and monitoring routes. Currently commented out on most locations — enable per location as needed.
 3. **CORS preflight handling** — `OPTIONS` responses handled at the proxy for `/api/integrations/`, `/admin/integrations/`, `/api/opex/`, and `/api/admin/control-plane`. This is a local-only concern; on EC2 the backend handles CORS.
-4. **Path-based routing** — dispatches to four upstream backends by URL prefix.
-5. **Protocol handling** — SSE (buffering off, 600 s timeout), WebSocket upgrade, SPA 404 fallback.
+4. **Path-based routing** — preserves explicit platform services, mounts the
+   control plane at `assembly.proxy.route_prefix`, and forwards remaining site
+   paths to proc.
+5. **Protocol handling** — SSE (buffering off, 600 s timeout), WebSocket
+   upgrade, control-plane SPA routing inside its mount, and application-site
+   static responses through proc.
 
 There is no TLS termination and no auth unmask step. The proxy accepts any `Host` header (`server_name _`), which is appropriate for local development but must never be used in production.
 
@@ -52,9 +58,9 @@ There is no TLS termination and no auth unmask step. The proxy accepts any `Host
 
 | Backend | Address | Routes |
 |---|---|---|
-| `web-ui` | `web-ui:80` | `/chatbot/*`, SPA fallback |
+| `web-ui` | `web-ui:80` | The descriptor-rendered `proxy.route_prefix`, such as `/platform/*`. |
 | `chat-ingress` | `chat-ingress:8010` | `/sse/`, `/api/chat/`, `/api/cb/*`, `/admin/*`, `/monitoring`, `/cb/socket.io/`, `/api/opex/`, `/api/admin/control-plane` |
-| `chat-proc` | `chat-proc:8020` | `/api/integrations/`, `/admin/integrations/` |
+| `chat-proc` | `chat-proc:8020` | `/api/integrations/`, `/admin/integrations/`, `/sites/*`, `/`, and remaining non-reserved application-site paths. |
 | `kb` | `kb:8000` | `/api/kb/` (dynamic `$kb_backend` variable) |
 
 The shared Socket.IO transport is exposed at `/cb/socket.io/` and proxies to
@@ -111,30 +117,25 @@ postgres-db (healthy)
 
 ---
 
-## Proxy image (Dockerfile)
+## Proxy Image And Active Configuration
 
-The proxy image is a thin wrapper over `openresty/openresty:alpine`. The config is baked in at build time via a build arg:
+The proxy image is a thin wrapper over `openresty/openresty:alpine`. Local
+Compose bind-mounts the CLI-rendered runtime configuration. Managed deployment
+can activate a descriptor-rendered template through `kdcube-nginx-config`,
+which verifies its checksum and OpenResty syntax before startup.
 
-```dockerfile
-FROM openresty/openresty:alpine
-ARG NGINX_CONFIG_FILE_PATH
-COPY ${NGINX_CONFIG_FILE_PATH} /usr/local/openresty/nginx/conf/nginx.conf
-EXPOSE 80
-CMD ["openresty", "-g", "daemon off;"]
-```
+The local mount is:
 
-The same Dockerfile is used for both local and EC2 deployments. The difference is which config file is passed via `NGINX_CONFIG_FILE_PATH`:
-- **Local**: `nginx_proxy.conf` (no SSL, no Lua auth block)
-- **EC2**: `nginx_proxy_ssl_cognito.conf` (SSL + proxylogin Lua)
-
-At runtime the config can also be overridden by mounting a file over `/usr/local/openresty/nginx/conf/nginx.conf` via the compose volume:
-
-```yaml
+```text
 volumes:
   - ${NGINX_PROXY_RUNTIME_CONFIG_PATH:-./config/nginx_proxy.conf}:/usr/local/openresty/nginx/conf/nginx.conf:ro
 ```
 
-This means you can swap configs without rebuilding the image, which is useful for local iteration.
+The CLI copies the selected source template, renders the forwarded-protocol and
+frame policies, substitutes `${ROUTE_PREFIX}` from `assembly.yaml`, and writes
+that runtime file. Source refresh restages the platform before regenerating it.
+Application aliases and hosts remain proc catalog data; they are never rendered
+into this proxy file.
 
 ---
 
@@ -199,10 +200,11 @@ Without step 3, OpenResty will fail to start because the SSL/delegated-auth conf
 
 ## References (code)
 
-- Proxy config (local): `deployment/docker/all_in_one_kdcube/nginx_proxy.conf`
-- Proxy config (EC2): `deployment/docker/custom-ui-managed-infra/nginx_proxy_ssl_cognito.conf`
-- Proxy Dockerfile: `deployment/docker/Dockerfile_ProxyOpenResty`
-- All-in-one compose: `deployment/docker/all_in_one_kdcube/docker-compose.yml`
-- EC2 compose: `deployment/docker/custom-ui-managed-infra/docker-compose.yml`
+- Proxy config (local): `deployment/docker/all_in_one_kdcube/nginx/conf/nginx_proxy.conf`
+- Proxy config (managed reference): `deployment/docker/custom-ui-managed-infra/nginx/conf/nginx_proxy_ecs.conf`
+- Generated route source: `deployment/nginx/generate_application_site_routes.py`
+- Proxy Dockerfile: `deployment/docker/all_in_one_kdcube/Dockerfile_ProxyOpenResty`
+- All-in-one compose: `deployment/docker/all_in_one_kdcube/docker-compose.yaml`
+- Managed-infrastructure compose: `deployment/docker/custom-ui-managed-infra/docker-compose.yaml`
 - Chat ingress: `src/kdcube-ai-app/kdcube_ai_app/apps/chat/ingress/`
 - Chat processor: `src/kdcube-ai-app/kdcube_ai_app/apps/chat/processor.py`

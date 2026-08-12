@@ -1,10 +1,20 @@
 FROM openresty/openresty:alpine
 
-# Build argument for nginx config path (relative to build context)
+# Build inputs are relative to the build context. The assembly descriptor owns
+# the route prefix used by both the frontend and this proxy configuration.
 ARG NGINX_CONFIG_FILE_PATH
+ARG ASSEMBLY_DESCRIPTOR_FILE_PATH
 
-# Copy nginx configuration from customer repo
-COPY ${NGINX_CONFIG_FILE_PATH} /usr/local/openresty/nginx/conf/nginx.conf
+COPY ${NGINX_CONFIG_FILE_PATH} /tmp/nginx.conf.template
+COPY ${ASSEMBLY_DESCRIPTOR_FILE_PATH} /tmp/assembly.yaml
+
+RUN apk add --no-cache --virtual .nginx-render-deps gettext python3 py3-yaml \
+    && route_prefix="$(python3 -c 'import sys, yaml; data = yaml.safe_load(open(sys.argv[1], encoding="utf-8")) or {}; value = (data.get("proxy") or {}).get("route_prefix"); assert isinstance(value, str) and value.startswith("/"), "assembly.proxy.route_prefix must be an absolute path"; print(value.rstrip("/") or "/")' /tmp/assembly.yaml)" \
+    && ROUTE_PREFIX="$route_prefix" envsubst '${ROUTE_PREFIX}' \
+        < /tmp/nginx.conf.template \
+        > /usr/local/openresty/nginx/conf/nginx.conf \
+    && rm -f /tmp/nginx.conf.template /tmp/assembly.yaml \
+    && apk del .nginx-render-deps
 
 # Create webroot for Let's Encrypt
 # RUN mkdir -p /var/www/letsencrypt

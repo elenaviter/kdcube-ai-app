@@ -45,6 +45,10 @@ cp sample_env/.env.proxylogin ./.env.proxylogin
 - Edit `.env` paths for `UI_BUILD_CONTEXT`, `UI_SOURCE_PATH`, `PATH_TO_FRONTEND_CONFIG_JSON`, etc.
 - Choose an OpenResty config template under `nginx/` and set `NGINX_PROXY_CONFIG_FILE_PATH` in `.env`.
   - If a path is **relative**, it is interpreted relative to `UI_BUILD_CONTEXT`.
+- Build `Dockerfile_ProxyOpenResty` with both
+  `NGINX_CONFIG_FILE_PATH` and `ASSEMBLY_DESCRIPTOR_FILE_PATH`. The build reads
+  `proxy.route_prefix` from that descriptor and renders the selected proxy
+  template. The frontend configuration must come from the same descriptor.
 
 Available templates:
 - `nginx/nginx_proxy_ssl_hardcoded.conf`
@@ -72,7 +76,8 @@ chmod -R 0777 ./logs
 Your frontend should route API traffic through OpenResty and use a stable `routesPrefix`.
 
 Recommended UI config fields:
-- `routesPrefix: "/chatbot"` (UI is served under `/chatbot/*`)
+- `routesPrefix` must equal `assembly.proxy.route_prefix` (the reference value
+  is `/platform`; multi-segment mounts are supported)
 - Auth config depends on your chosen mode:
   - `authType: "simple"` (static token)
   - `authType: "cognito"` (browser sends Cognito tokens)

@@ -2,6 +2,7 @@ FROM openresty/openresty:alpine
 
 RUN apk add --no-cache gettext
 
+ARG NGINX_CONFIG_FILE_PATH
 ARG KDCUBE_AI_APP_SOURCE_PATH=.
 COPY ${KDCUBE_AI_APP_SOURCE_PATH}/deployment/docker/all_in_one_kdcube/nginx/kdcube-nginx-config \
     /usr/local/bin/kdcube-nginx-config

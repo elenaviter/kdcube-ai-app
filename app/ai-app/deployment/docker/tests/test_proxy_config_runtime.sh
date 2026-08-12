@@ -104,23 +104,27 @@ LOCAL_CONFIGS=(
 )
 
 for relative_config in "${LOCAL_CONFIGS[@]}"; do
-  for source in request trusted_x_forwarded_proto; do
-    candidate="$STATE_DIR/$(echo "$relative_config-$source" | tr '/' '_')"
-    if [[ "$source" == "request" ]]; then
-      cp "$ROOT_DIR/$relative_config" "$candidate"
-    else
-      sed \
-        -e 's/KDCUBE_FORWARDED_PROTO_SOURCE: request/KDCUBE_FORWARDED_PROTO_SOURCE: trusted_x_forwarded_proto/' \
-        -e 's/map \$scheme \$forwarded_proto_last/map \$http_x_forwarded_proto \$forwarded_proto_last/' \
-        -e 's/default                        \$scheme;/default                        \$http_x_forwarded_proto;/' \
-        "$ROOT_DIR/$relative_config" > "$candidate"
-    fi
+  for route_prefix in /platform /control/ui; do
+    for source in request trusted_x_forwarded_proto; do
+      candidate="$STATE_DIR/$(echo "$relative_config-$route_prefix-$source" | tr '/' '_')"
+      if [[ "$source" == "request" ]]; then
+        sed -e "s|\${ROUTE_PREFIX}|$route_prefix|g" \
+          "$ROOT_DIR/$relative_config" > "$candidate"
+      else
+        sed \
+          -e "s|\${ROUTE_PREFIX}|$route_prefix|g" \
+          -e 's/KDCUBE_FORWARDED_PROTO_SOURCE: request/KDCUBE_FORWARDED_PROTO_SOURCE: trusted_x_forwarded_proto/' \
+          -e 's/map \$scheme \$forwarded_proto_last/map \$http_x_forwarded_proto \$forwarded_proto_last/' \
+          -e 's/default                        \$scheme;/default                        \$http_x_forwarded_proto;/' \
+          "$ROOT_DIR/$relative_config" > "$candidate"
+      fi
 
-    docker run --rm \
-      "${LOCAL_SERVICE_HOSTS[@]}" \
-      -v "$candidate:/usr/local/openresty/nginx/conf/nginx.conf:ro" \
-      "$IMAGE" \
-      /usr/local/bin/kdcube-nginx-config render
+      docker run --rm \
+        "${LOCAL_SERVICE_HOSTS[@]}" \
+        -v "$candidate:/usr/local/openresty/nginx/conf/nginx.conf:ro" \
+        "$IMAGE" \
+        /usr/local/bin/kdcube-nginx-config render
+    done
   done
 done
 

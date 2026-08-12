@@ -80,7 +80,7 @@ docker compose --env-file ./config/.env up -d --build
 ```
 
 Open the UI:
-- `http://localhost:${KDCUBE_PROXY_HTTP_PORT:-KDCUBE_UI_PORT}/chatbot/chat`
+- `http://localhost:${KDCUBE_PROXY_HTTP_PORT:-KDCUBE_UI_PORT}/platform/chat`
   (via proxy; if `KDCUBE_PROXY_HTTP_PORT` is unset, it falls back to `KDCUBE_UI_PORT`)
 
 6. Stop the stack:

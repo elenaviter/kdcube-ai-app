@@ -385,7 +385,7 @@ kubectl -n kdcube port-forward svc/web-proxy 8080:80
 Open:
 
 ```bash
-open http://127.0.0.1:8080/chatbot/chat
+open http://127.0.0.1:8080/platform/chat
 ```
 
 ## Common Failure Modes
@@ -439,7 +439,8 @@ Fix:
 5. Install `redis`.
 6. Run `postgres-setup`.
 7. Install `kdcube-platform` with descriptor overlays.
-8. Port-forward `web-proxy` and open `/chatbot/chat`.
+8. Port-forward `web-proxy` and open the configured control-plane route,
+   `/platform/chat` by default.
 
 ## Future enhancements
 

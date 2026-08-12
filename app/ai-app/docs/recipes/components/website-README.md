@@ -4,7 +4,7 @@ title: "Application-Hosted Website"
 summary: "Build an app-owned website, register it by alias and host, and serve it through the KDCube runtime."
 status: current
 tags: ["recipe", "website", "application", "main-view", "routing", "authentication"]
-updated_at: 2026-08-12
+updated_at: 2026-08-13
 keywords:
   [
     "application hosted website",
@@ -19,6 +19,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-client-ui-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/ui-components-lifecycle-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-local-ops-README.md
 ---
 
 # Recipe: Application-Hosted Website
@@ -225,12 +227,16 @@ surface behavior.
 
 ## 5. Understand Routing And Caching
 
-OpenResty contains no application list. Its stable routes are:
+OpenResty contains no application list. One generated route matrix reserves
+the configured control-plane mount and established service routes, then sends
+the remaining website paths to proc:
 
 ```text
-/                  -> proc /api/integrations/site-root
-/<path>            -> proc /api/integrations/site-root/<path>
-/sites/{alias}/*   -> proc /api/integrations/sites/{alias}/*
+<proxy.route_prefix>       -> redirect to <proxy.route_prefix>/chat
+<proxy.route_prefix>/*     -> web-ui after stripping only that prefix
+/sites/{alias}/*           -> proc /api/integrations/sites/{alias}/*
+/                           -> proc /api/integrations/site-root
+/<remaining clean path>    -> proc /api/integrations/site-root/<path>
 ```
 
 At startup and after application/config updates, proc validates the current
@@ -292,23 +298,35 @@ kdcube refresh \
   --build
 ```
 
-Then test direct and root routes against the configured proxy port:
+Then test the generated route boundary against the configured proxy port. The
+examples use `/platform`; substitute the active `proxy.route_prefix`:
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' \
-  http://localhost:<proxy-port>/sites/workspace
+curl -sSI http://127.0.0.1:<proxy-port>/platform \
+  | sed -n '/^[Ll]ocation:/p'
+
+curl -sS http://127.0.0.1:<proxy-port>/platform/chat \
+  -o /dev/null -w '%{http_code}\n'
 
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  http://localhost:<proxy-port>/
+  http://127.0.0.1:<proxy-port>/
 
 curl -sS -o /dev/null -w '%{http_code}\n' \
-  http://localhost:<proxy-port>/sites/does-not-exist
+  http://127.0.0.1:<proxy-port>/site.js
+
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  http://127.0.0.1:<proxy-port>/sites/workspace/site.js
+
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  http://127.0.0.1:<proxy-port>/api/cp-frontend-config
 ```
 
-Expected results are `200`, `200`, and `404`. Platform UI must remain reachable
-at its configured route prefix, for example `/platform/chat`. Repeat the same
-check with a multi-segment route prefix such as `/control/ui/chat` when testing
-mount-sensitive changes.
+The mount redirect must point to `/platform/chat`; the remaining requests must
+reach the control plane, selected site, alias-selected site, and reserved API
+respectively. Test an unknown alias and an unknown clean path as well. Their
+controlled result comes from proc and must never be the control-plane SPA.
+Repeat the matrix with a multi-segment route prefix such as `/control/ui` when
+testing mount-sensitive changes.
 
 After the stable platform routes exist, descriptor-only site changes use the
 normal app reload flow. Test host selection without DNS by overriding `Host`:
@@ -319,18 +337,56 @@ curl -sS -H 'Host: workspace.local.test' \
   http://127.0.0.1:<proxy-port>/
 ```
 
+To expose that same origin through a stable ngrok domain, point ngrok at the
+web-proxy port and preserve the browser host:
+
+```bash
+ngrok http <proxy-port> --url https://<stable-ngrok-domain>
+```
+
+Do not use `--host-header=rewrite`. Add the stable domain to `site.hosts`. When
+ngrok or another trusted outer proxy terminates HTTPS before OpenResty, declare
+that boundary in `assembly.yaml`:
+
+```yaml
+proxy:
+  route_prefix: "/platform"
+  forwarded_proto:
+    source: "trusted_x_forwarded_proto"
+```
+
+That mode is valid only when untrusted callers cannot bypass the terminator and
+reach the proxy while supplying their own forwarded headers.
+
+Caddy is optional when several local hostnames or local TLS should reach one
+CLI-started runtime. It forwards the complete origin to KDCube; it does not
+copy the route matrix or choose an app:
+
+```caddyfile
+workspace.local.test {
+  reverse_proxy 127.0.0.1:<proxy-port> {
+    header_up Host {host}
+    header_up X-Forwarded-Host {host}
+    header_up X-Forwarded-Proto {scheme}
+  }
+}
+```
+
+Map the local hostname to `127.0.0.1`, include it in `site.hosts`, and use the
+same trusted-forwarded-protocol setting when Caddy terminates TLS.
+
 ## 7. Cloud Deployment
 
-The ECS Cognito and delegated-auth OpenResty templates use the same stable
-routes. Terraform continues selecting the proxy template by platform authority
-type; it does not need application-specific website logic.
+The platform ECS reference and Kubernetes OpenResty templates use the same
+generated routes. A concrete cloud deployment still owns hostname exposure,
+certificate/DNS configuration, and host-aware edge caching; it does not need
+application-specific website logic in OpenResty.
 
 Add site declarations to the environment's `bundles.yaml` and publish the
 descriptor through the normal deployment procedure. Domain-based selection
 requires those domains to reach the KDCube runtime, appear in the site's
-`hosts` list, and preserve the viewer host. For full multipage host routing,
-rewrite `/<path>` to `/api/integrations/site-root/<path>` at the CDN behavior,
-as described above.
+`hosts` list, and preserve the viewer host through the edge. The edge forwards
+clean paths to OpenResty; OpenResty performs the stable proc rewrite.
 
 ## Diagnostics
 

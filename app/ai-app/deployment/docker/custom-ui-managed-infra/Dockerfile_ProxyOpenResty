@@ -1,15 +1,15 @@
 FROM openresty/openresty:alpine
 
-# Build argument for nginx config path (relative to build context)
+RUN apk add --no-cache gettext
+
 ARG NGINX_CONFIG_FILE_PATH
+ARG KDCUBE_AI_APP_SOURCE_PATH=.
+COPY ${KDCUBE_AI_APP_SOURCE_PATH}/deployment/docker/all_in_one_kdcube/nginx/kdcube-nginx-config \
+    /usr/local/bin/kdcube-nginx-config
+RUN chmod 0755 /usr/local/bin/kdcube-nginx-config
 
-# Copy nginx configuration from customer repo
-COPY ${NGINX_CONFIG_FILE_PATH} /usr/local/openresty/nginx/conf/nginx.conf
-
-# Create webroot for Let's Encrypt
-# RUN mkdir -p /var/www/letsencrypt
-
-# EXPOSE 80 443
 EXPOSE 80
 
-CMD ["openresty", "-g", "daemon off;"]
+CMD ["/bin/sh", "-c", \
+  "/usr/local/bin/kdcube-nginx-config render \
+   && exec openresty -g 'daemon off;'"]

@@ -53,7 +53,7 @@ def is_placeholder(value: Optional[str]) -> bool:
     return False
 
 
-def normalize_routes_prefix(value: Any, default: str = "/chatbot") -> str:
+def normalize_routes_prefix(value: Any, default: str = "/platform") -> str:
     raw = as_text(value) or default
     if raw == "/":
         return ""

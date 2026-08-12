@@ -85,7 +85,8 @@ user (UID 1000) must have write access to that host folder.
 Your frontend should route API traffic through OpenResty and use a stable `routesPrefix`.
 
 Recommended UI config fields:
-- `routesPrefix: "/chatbot"` (UI is served under `/chatbot/*`)
+- `routesPrefix` must equal `assembly.proxy.route_prefix` (the reference value
+  is `/platform`; multi-segment mounts are supported)
 - Auth config depends on your chosen mode:
   - `authType: "simple"` (static token)
   - `authType: "cognito"` (browser sends Cognito tokens)
