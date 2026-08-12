@@ -1,14 +1,15 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-ecs-ops-README.md
 title: "Proxy ECS Ops"
-summary: "Operational contract for the OpenResty entry proxy on ECS: trusted ingress metadata, CloudFront origin verification, ALB routing, config activation, and rollout verification."
+summary: "Operational contract for the OpenResty entry proxy on ECS: public edge provenance, trusted application ingress, forwarded metadata, config activation, and rollout verification."
 tags: ["proxy", "openresty", "ops", "ecs", "aws", "cloudfront", "alb", "security"]
-keywords: ["OpenResty", "ECS", "CloudFront", "ALB", "origin verification", "real IP", "forwarded proto", "nginx config activation", "checksum"]
+keywords: ["OpenResty", "ECS", "CloudFront", "ALB", "origin verification", "trusted application ingress", "private MCP", "real IP", "forwarded proto", "nginx config activation", "checksum"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-ops-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-local-ops-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
 ---
 
 # Proxy ECS Ops
@@ -45,9 +46,11 @@ The ALB is the sole public proxy in this mode:
 - OpenResty obtains the viewer address from the ALB-authored
   `X-Forwarded-For` chain.
 
-The proxy task security group accepts port 80 only from the ALB security
-group. Trusting either forwarded header requires that direct access to the
-proxy task is excluded.
+For public requests, the proxy task security group accepts port 80 from the
+ALB security group. Trusting either forwarded header requires that other
+public network identities cannot reach the proxy task directly. A separate
+source-group rule admits trusted KDCube application tasks for deliberate
+same-KDCube REST and MCP calls, as described below.
 
 ### CloudFront and ALB
 
@@ -81,6 +84,28 @@ placed in a tracked descriptor or log. A deployment principal that can read
 or modify CloudFront and ALB configuration can also control this boundary;
 IAM and CI controls protect that principal.
 
+### Trusted Application Surface Calls
+
+Trusted KDCube app code may consume another app's real REST or MCP surface
+through the private OpenResty address. The network contract is:
+
+```text
+application_tasks security group
+  -> web_proxy security group : TCP 80
+
+web_proxy ECS task
+  -> attaches only web_proxy security group
+```
+
+This source-group rule supplies reachability to one proxy listener. The target
+REST or MCP surface still authenticates the request and enforces its current
+endpoint, resource, operation, and domain policy. The proxy keeps its dedicated
+network identity and does not inherit application-task access to Redis, RDS,
+or other application services.
+
+Generated code executes behind the supervisor/executor boundary and does not
+receive the trusted application-task network identity.
+
 ## Forwarded Scheme Contract
 
 OpenResty always sends one normalized `X-Forwarded-Proto` value downstream.
@@ -95,9 +120,11 @@ The proxy takes the rightmost value when an accepted input contains a
 comma-joined chain, accepts only `http` or `https`, and otherwise falls back
 to the scheme of its immediate request.
 
-This normalization validates syntax. Provenance comes from the ingress
-topology: exclusive ALB access in direct mode, or the CloudFront network and
-origin-verification boundary in CDN mode.
+This normalization validates syntax. For public requests, provenance comes
+from the selected ingress topology: the ALB authors `X-Forwarded-Proto` in
+direct mode; CloudFront authors `X-KDCube-Viewer-Proto`, and the ALB verifies
+the CloudFront origin, in CDN mode. Trusted application calls share the
+listener and follow the explicit edge-header boundary described below.
 
 For local non-TLS deployments, `assembly.yaml` owns the equivalent choice:
 
@@ -124,10 +151,29 @@ OpenResty rate-limit keys use the recovered viewer address.
 
 `set_real_ip_from` is rendered from the deployment network CIDR and tells
 OpenResty which reachable network peers may supply the selected real-IP
-header. The separate proxy-task security group restricts port 80 to the ALB
-security group; both controls are required. CloudFront's viewer address may
-include a source port; current OpenResty/Nginx real-IP support accepts the RFC
-3986 address-and-port form.
+header. The proxy-task security group admits the ALB and the explicit trusted
+application-task source group; those network rules and OpenResty's header
+trust serve different purposes. CloudFront's viewer address may include a
+source port; current OpenResty/Nginx real-IP support accepts the RFC 3986
+address-and-port form.
+
+### Shared-Listener Edge-Header Boundary
+
+An internal app call normally carries no edge-authored viewer headers, so
+OpenResty uses its immediate scheme and address. Because the ALB path and the
+trusted application-task path share one listener, the current topology relies
+on trusted application code not authoring the edge-owned headers selected for
+that deployment:
+
+- direct ALB: `X-Forwarded-Proto` and `X-Forwarded-For`;
+- CloudFront and ALB: `X-KDCube-Viewer-Proto` and
+  `CloudFront-Viewer-Address`.
+
+The network rule grants application tasks reachability; it does not make
+application-authored edge metadata authoritative. A separate internal
+listener, or equivalent sanitization before applying edge headers, would
+remove this shared-listener assumption. Generated code does not receive the
+trusted application-task network identity and cannot reach this path directly.
 
 Access logs retain both identities needed for diagnosis:
 
@@ -286,9 +332,14 @@ resolver_timeout 5s;
 
 ## Network Checklist
 
-- The proxy task accepts port 80 only from the ALB security group.
+- The proxy task accepts port 80 from the ALB security group and the explicit
+  trusted application-task security group.
 - The proxy task carries only its dedicated security group; shared proxy-config
   storage admits NFS from that group explicitly.
+- Trusted same-KDCube REST/MCP calls still pass target authentication and
+  authorization after reaching OpenResty.
+- Trusted application calls do not author the edge-owned scheme or viewer
+  address headers selected for the deployment topology.
 - Direct-ALB mode redirects public HTTP to HTTPS.
 - CloudFront mode restricts ALB ingress to the managed origin-facing prefix
   list and requires the origin-verification header on forwarding rules.
