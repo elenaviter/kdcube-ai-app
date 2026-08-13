@@ -37,7 +37,8 @@ export const useGetBundleWidgets = () => {
         const allWidgets = currentBundleData?.widgets || [];
         const userRoles = userProfile?.roles ?? []
         const widgets = allWidgets.filter((widget) => {
-            return !BUILT_IN_WIDGET_ALIASES.has(widget.alias) && (!widget.roles || widget.roles.length === 0 || authDisabled || (!!userProfile && widget.roles.every(r=>userRoles.includes(r))))
+            // Role lists are ANY-OF, matching the proc-side visibility filter.
+            return !BUILT_IN_WIDGET_ALIASES.has(widget.alias) && (!widget.roles || widget.roles.length === 0 || authDisabled || (!!userProfile && widget.roles.some(r=>userRoles.includes(r))))
         });
 
         // An app serves the default chat surface only when its descriptor
