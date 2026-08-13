@@ -8,7 +8,7 @@ updated_at: 2026-08-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-ops-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
 ---
 # Proxy Local Ops Guide (OpenResty — local / all-in-one)

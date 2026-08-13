@@ -136,6 +136,7 @@ Conditional additions:
 | Agent tools, skills, MCP, file-producing tools, role models, Claude Code | [../bundle-agent-integration-README.md](../bundle-agent-integration-README.md) |
 | Authored external events, custom event policies, snapshots, artifact rehosters | [../bundle-events-README.md](../bundle-events-README.md) |
 | Widget source folders, static widget builds, shared SDK UI source | [../bundle-widget-integration-README.md](../bundle-widget-integration-README.md) and [../ui-components-lifecycle-README.md](../ui-components-lifecycle-README.md) |
+| Building a complete app-owned website or serving several sites from one installation | [../bundle-website-integration-README.md](../bundle-website-integration-README.md), then [../../../recipes/components/website-README.md](../../../recipes/components/website-README.md) |
 | Entrypoint inheritance, mixins, singleton behavior, request context | [../bundle-entrypoint-classes-README.md](../bundle-entrypoint-classes-README.md) |
 | Chat turns, semantic search, task execution, or background jobs that spend money/quota | [../bundle-economics-integration-README.md](../bundle-economics-integration-README.md) |
 | Release tag, descriptor ref, release validation | [how-to-release-bundle-content-README.md](how-to-release-bundle-content-README.md) |
@@ -165,6 +166,7 @@ Conditional additions:
 | How does a host app or server integrate with KDCube without necessarily using a widget? | [../../../how-to-integrate-with-kdcube-apps-README.md](../../../how-to-integrate-with-kdcube-apps-README.md) |
 | How do I configure Data Bus publish limits? | [../../../configuration/gateway-descriptor-README.md#data_buspublish_limits](../../../configuration/gateway-descriptor-README.md#data_buspublish_limits), [how-to-configure-and-run-bundle-README.md](how-to-configure-and-run-bundle-README.md) |
 | How do I build source-folder widgets or reuse SDK widget source? | [../bundle-widget-integration-README.md](../bundle-widget-integration-README.md), [../ui-components-lifecycle-README.md](../ui-components-lifecycle-README.md) |
+| How do I turn an app main view into a complete website, and how many sites can one app register? | [../bundle-website-integration-README.md](../bundle-website-integration-README.md), [../../../arch/application-hosted-websites-README.md](../../../arch/application-hosted-websites-README.md) |
 | How does ReAct see tools, skills, MCP, and generated files? | [../bundle-agent-integration-README.md](../bundle-agent-integration-README.md) |
 | What is the sharp architecture path for conversation events, wakeups, bundle load, and ReAct turns? | [how-to-understand-conversation-events-and-react-turns-README.md](how-to-understand-conversation-events-and-react-turns-README.md) |
 | How do authored external events render to timeline/ANNOUNCE? | [how-to-understand-conversation-events-and-react-turns-README.md](how-to-understand-conversation-events-and-react-turns-README.md), [../bundle-events-README.md](../bundle-events-README.md), [../../agents/react/event-source/event-source-README.md](../../agents/react/event-source/event-source-README.md) |

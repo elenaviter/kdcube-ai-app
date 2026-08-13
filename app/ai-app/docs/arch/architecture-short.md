@@ -4,11 +4,12 @@ title: "Architecture Short"
 summary: "Concise current architecture of KDCube: one tenant/project deployment, directional app surfaces, ordered conversation eventing, app Data Bus, authority, storage, isolation, and accounting."
 status: current
 tags: ["arch", "architecture", "overview", "apps", "runtime"]
-updated_at: 2026-07-29
+updated_at: 2026-08-13
 keywords: ["KDCube architecture", "app surfaces", "as provider", "as consumer", "conversation event lane", "isolated execution"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-long.md
@@ -112,7 +113,8 @@ auth and app-routing contract. `/profile` is the source of logged-in state.
 An app may serve widgets, a main view, the reserved default chat, or a complete
 website. Website declarations compile into a validated
 `ApplicationSiteCatalog`; Redis distributes catalog generations and each proc
-routes from an immutable in-memory snapshot.
+routes from an immutable in-memory snapshot. One app contributes at most its
+one main-view site; one deployment can serve many such app-owned sites.
 
 ## Conversation Work
 
@@ -216,5 +218,6 @@ belong to deployment descriptors and operations docs, not this stable map.
 - [Architecture Of What We Built](architecture-of-what-we-built-README.md)
 - [Architecture Of What You Build](architecture-of-what-you-build-README.md)
 - [Architecture Long](architecture-long.md)
+- [Application-Hosted Website Architecture](application-hosted-websites-README.md)
 - [Tenant, Project, User, Authority, And Execution Boundaries](../runtime/tenant-project-user-and-execution-boundaries-README.md)
 - [Conversation Event Bus And Data Bus](../service/comm/conversation-event-bus-and-data-bus-README.md)

@@ -4,11 +4,12 @@ title: "Architecture Long"
 summary: "Detailed current KDCube architecture: deployment scope, app catalogs and surfaces, ingress, ordered conversation lanes, Data Bus and relay, identity and delegation, cross-runtime context, isolated execution, storage, scaling, sites, and economics."
 status: current
 tags: ["arch", "architecture", "runtime", "apps", "events", "identity", "execution", "storage"]
-updated_at: 2026-08-12
+updated_at: 2026-08-13
 keywords: ["KDCube architecture", "tenant project", "app provider consumer", "conversation event bus", "data bus", "isolated execution", "Connection Hub", "site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-short.md
@@ -168,6 +169,11 @@ app target. Publication atomically advances a Redis generation, replaces the
 snapshot, and emits an update. Each proc subscribes, loads the current snapshot,
 rejects delayed generations, and performs request-time lookups only against its
 local immutable catalog.
+
+Each app contributes zero or one site because an app has one optional main
+view and one singular `ui.main_view.site` declaration. A deployment builds a
+multi-site catalog from many apps. Several hosts on one declaration are several
+selectors for that same app site.
 
 ```text
 bundles.yaml -> validate -> catalog revision + generation -> Redis projection
@@ -674,4 +680,5 @@ matching namespace, durability, IAM, TLS, DNS, backup, and recovery policy.
 - [Connection Hub](../sdk/solutions/connections/connection-hub-solution-README.md)
 - [Named-Service Providers](../sdk/namespace-services/providers-README.md)
 - [Application-Hosted Sites](../sdk/solutions/sites/application-sites-README.md)
+- [Application-Hosted Website Architecture](application-hosted-websites-README.md)
 - [User Settings](../sdk/solutions/user-settings/user-settings-solution-README.md)

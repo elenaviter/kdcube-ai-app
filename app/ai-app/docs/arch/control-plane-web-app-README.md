@@ -4,10 +4,11 @@ title: "Control Plane Web App"
 summary: "Browser architecture of the KDCube control-plane web app: runtime configuration, provider-neutral authentication, app selection, main-view and automatic-scene presentation, quick-access controls, chat transport, and site boundaries."
 status: current
 tags: ["arch", "control-plane", "web-app", "browser", "apps", "chat", "auth"]
-updated_at: 2026-07-27
+updated_at: 2026-08-13
 keywords: ["KDCube web app", "control plane web app", "cp frontend config", "automatic app scene", "default chat", "quick access rail"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-widget-solution-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/sites/application-sites-README.md
@@ -171,6 +172,9 @@ application-hosted site
   resolved through ApplicationSiteCatalog
 ```
 
+One app has at most one main view and therefore at most one registered
+application site. Many apps can register sites in the same deployment.
+
 A CDN may preserve the viewer hostname and rewrite a clean public path to the
 reserved `site-root` origin route. The CDN does not own the site catalog.
 
@@ -259,4 +263,5 @@ monitoring, Socket.IO, and SSE routes to configured local backends.
 - [Architecture Of What You Build](architecture-of-what-you-build-README.md)
 - [Chat Widget Solution](../sdk/solutions/chat/chat-widget-solution-README.md)
 - [Application-Hosted Sites](../sdk/solutions/sites/application-sites-README.md)
+- [Application-Hosted Website Architecture](application-hosted-websites-README.md)
 - [Platform Authority Setup](../recipes/connections/platform-authority/setup-platform-authority-README.md)

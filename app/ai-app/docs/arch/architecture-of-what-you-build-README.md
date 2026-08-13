@@ -4,10 +4,11 @@ title: "Architecture Of What You Build"
 summary: "Builder architecture for KDCube apps: optional surface families, provider and consumer directions, existing or ready agents, scenes, named-service realms, events, websites, storage, authority, and package contracts."
 status: current
 tags: ["arch", "architecture", "apps", "surfaces", "provider", "consumer", "named-services", "scene"]
-updated_at: 2026-08-12
+updated_at: 2026-08-13
 keywords: ["KDCube app architecture", "as provider", "as consumer", "app surfaces", "named service", "scene", "default chat"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/cross-app-surface-interoperability-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
@@ -172,6 +173,28 @@ Apps that do not need a Scene can embed the chat or another widget directly in
 an existing website. An app may also expose its built main view as a complete
 website through the application-site catalog.
 
+## Serve Complete Websites
+
+The current app contract provides one primary main view and optionally
+registers that view as one complete site. A deployment serves many sites by
+loading many site-owning apps:
+
+```text
+docs app       -> /sites/docs/       -> optional docs.example.com /
+workspace app  -> /sites/workspace/  -> optional workspace.example.com /
+admin app      -> /sites/admin/      -> optional admin.example.com /
+```
+
+Several `hosts` entries on one app select the same site; they do not create
+separate website artifacts. KDCube owns the build, site catalog, alias/host
+routing, and platform browser contract. The deployment edge owns DNS, TLS, and
+transporting each public hostname to KDCube while preserving `Host`.
+
+Read [Application-Hosted Website Architecture](application-hosted-websites-README.md)
+for the complete ownership/topology map and follow the
+[website recipe](../recipes/components/website-README.md) to build and expose
+one locally or through a tunnel.
+
 ## Model A Domain As A Named Service
 
 Named services avoid one bespoke tool vocabulary per domain. Providers expose
@@ -304,3 +327,5 @@ patterns; they do not replace the canonical package contract.
 - [Scene Recipe](../recipes/components/scene-README.md)
 - [Chat With A ReAct Agent](../recipes/components/chat-with-react-agent-README.md)
 - [Application-Hosted Sites](../sdk/solutions/sites/application-sites-README.md)
+- [Application-Hosted Website Architecture](application-hosted-websites-README.md)
+- [Bundle Website Integration](../sdk/bundle/bundle-website-integration-README.md)

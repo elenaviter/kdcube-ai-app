@@ -1,14 +1,14 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
+id: repo:kdcube/app/ai-app/docs/service/cicd/ngrok-README.md
 title: "Serving Local KDCube With Ngrok"
 summary: "Short operational recipe for exposing a local KDCube development stack through one ngrok HTTPS origin for Cognito, Telegram, and WebSocket/Data Bus testing."
 tags: ["service", "cicd", "local", "ngrok", "cognito", "telegram"]
 keywords: ["ngrok local kdcube", "kdcube web proxy", "caddy reverse proxy", "cognito callback ngrok", "telegram webhook ngrok", "socket.io websocket ngrok"]
 updated_at: 2026-08-13
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/cli-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/assembly-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/cli-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/assembly-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/bundles-descriptor-README.md
 ---
 # Serving Local KDCube With Ngrok
 
@@ -317,13 +317,18 @@ Use the actual port where the frontend process listens.
 > available to the root site.
 >
 > ```caddyfile
-> @kdcube path /api/* /sse/* /socket.io /socket.io/* /cb/socket.io /cb/socket.io/* /profile /profile/* /admin/* /monitoring/* /platform /platform/*
+> @kdcube path /api/* /sse/* /socket.io /socket.io/* /cb/socket.io /cb/socket.io/* /profile /profile/* /admin/* /monitoring/* /platform /platform/* /sites /sites/*
 > handle @kdcube {
 >   reverse_proxy 127.0.0.1:<proxy-http-port> {
 >     flush_interval -1
 >   }
 > }
 > ```
+>
+> In this composed-origin shape, the separate website owns `/`; KDCube's
+> host-selected/default site therefore does not own that root. Reserving
+> `/sites` and `/sites/*` keeps every enabled KDCube application site
+> reachable through its descriptor alias.
 >
 > If `/platform/chat` loads HTML but then requests `/assets/...`, `/img/...`, or
 > `/config.json`, the frontend artifact is stale and must be rebuilt from a

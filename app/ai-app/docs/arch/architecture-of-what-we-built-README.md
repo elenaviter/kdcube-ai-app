@@ -4,11 +4,12 @@ title: "Architecture Of What We Built"
 summary: "Current platform-runtime map of KDCube: one tenant/project deployment, browser and external ingress, app loading, ordered conversation eventing, Data Bus, tenant/project/session relay, identity and authority, storage ownership, isolated execution, economics, and deployment profiles."
 status: current
 tags: ["arch", "architecture", "runtime", "services", "ingress", "events", "authority", "execution", "deployment"]
-updated_at: 2026-07-29
+updated_at: 2026-08-13
 keywords: ["platform architecture", "runtime architecture", "tenant project deployment", "conversation event lane", "data bus", "SSE relay", "cross runtime context", "isolated execution", "application site catalog"]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/security-and-trust-model-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-short.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-long.md
@@ -115,8 +116,9 @@ email, or readable cookies are not sufficient.
 Apps may serve widgets, a main view, a default chat, or a complete website. Site
 declarations compile into a validated, versioned `ApplicationSiteCatalog`.
 Redis distributes generations; each proc routes requests from an immutable
-in-memory snapshot. Request-time site selection does not parse descriptors or
-query Redis.
+in-memory snapshot. Each app contributes at most its one main-view site;
+deployment-wide multiplicity comes from many apps. Request-time site selection
+does not parse descriptors or query Redis.
 
 ## App Loading And Surface Dispatch
 
@@ -345,3 +347,4 @@ their operational descriptors and deployment docs, not this stable map.
 - [Tenant, Project, User, Authority, And Execution Boundaries](../runtime/tenant-project-user-and-execution-boundaries-README.md)
 - [Conversation Event Bus And Data Bus](../service/comm/conversation-event-bus-and-data-bus-README.md)
 - [Application-Hosted Sites](../sdk/solutions/sites/application-sites-README.md)
+- [Application-Hosted Website Architecture](application-hosted-websites-README.md)

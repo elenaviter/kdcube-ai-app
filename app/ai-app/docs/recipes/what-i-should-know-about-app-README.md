@@ -4,7 +4,7 @@ title: "What I Should Know Before Writing a KDCube App"
 summary: "A builder's mind map for KDCube apps: async runtime rules, provider and consumer surfaces, identity and delegation, configuration, storage, concurrency, eventing, conversations, economics, UI, telemetry, isolated execution, and operational checks."
 status: current
 tags: ["recipe", "app", "bundle", "builder", "runtime", "async", "surfaces", "storage", "eventing", "economics"]
-updated_at: 2026-08-12
+updated_at: 2026-08-13
 keywords:
   [
     "KDCube app ingredients",
@@ -19,8 +19,11 @@ keywords:
     "data bus",
     "background jobs",
     "EconomicsGuard",
+    "application hosted website",
   ]
 see_also:
+  - repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/bundle-website-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/integrate-cross-app-surface-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-assemble-bundle-with-sdk-building-blocks-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-write-bundle-README.md
@@ -130,7 +133,7 @@ surfaces. Chat, ReAct, UI, and a database are optional.
 | Public callback/webhook | `@api(route="public", ...)` | app verifies the caller's proof or uses a configured managed guard |
 | MCP endpoint | `@mcp(...)` | public, app-owned, or platform-managed auth; tool grants when managed |
 | Embeddable UI | `@ui_widget(...)` plus `ui.widgets.<alias>` when built from source | visibility/auth and runtime-config handshake |
-| Main UI/site | `@ui_main` plus `ui.main_view` configuration | build/serve policy; a scene is optional |
+| Main UI/site | one optional `ui.main_view`; optional at most one `@ui_main` code declaration | build/serve policy; one optional site registration; a scene is optional |
 | Conversation agent | one `@on_reactive_event` method, normally inherited from `BaseEntrypoint` | stable `agent_id`; internal dispatch when the app has several agents |
 | Scheduled producer | `@cron(...)` | detect due work quickly and enqueue/return ready work; do not perform the long job in the scan |
 
@@ -587,10 +590,28 @@ surface registry, config handshake, context drag/drop, commands, and event
 relay. Do not add ad hoc cross-iframe protocols or infer namespace behavior in
 the scene host.
 
+### Complete website
+
+One app has one optional effective `ui.main_view`. Register that built tree
+under the singular `ui.main_view.site` configuration when it should be a
+standalone website. A configuration-backed site does not require `@ui_main`;
+when that optional code surface is used, only one such method may be declared.
+Many apps can each register one site, giving the deployment many websites with
+unique aliases.
+
+Every site is reachable at `/sites/{alias}/`. Matching `hosts` entries select
+that same site at `/`; one site may also be the default root. The app owns its
+website files and composition, KDCube owns build/static/catalog routing, and
+the outer ingress owns DNS, TLS, tunnel endpoints, and preserving `Host`.
+
+Read [Bundle Website Integration](../sdk/bundle/bundle-website-integration-README.md)
+and follow the [Application-Hosted Website recipe](components/website-README.md).
+
 Read [Widget Integration](../sdk/bundle/bundle-widget-integration-README.md),
 [Chat Widget Solution](../sdk/solutions/chat/chat-widget-solution-README.md),
 [Chat Stream Events](../sdk/solutions/chat/chat-stream-events-README.md), and
-[Scene](../sdk/solutions/scene/).
+[Scene](../sdk/solutions/scene/). For a complete site, read
+[Application-Hosted Website](components/website-README.md).
 
 ## 14. Use Built-In Observability, but Know What Is Current
 
@@ -732,6 +753,7 @@ interfaces, docs/journal, focused tests, and release notes semantically aligned.
 - [ ] Every platform callback and every I/O chain is async and non-blocking.
 - [ ] Provider surfaces and consumer capabilities are both explicit.
 - [ ] API/widget role, user-type, authority, and grant policy is tested.
+- [ ] A website, when present, has one main view, a unique site alias, relative assets, and real proxy/host/alias tests.
 - [ ] External callers use verified proof and explicit delegation edges.
 - [ ] No app config/state relies on env vars, module globals, or singleton fields.
 - [ ] App and user props/secrets use the supported helpers.

@@ -19,6 +19,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundle-runtime-configuration-and-secrets-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-delivery-and-update-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/bundle-website-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-conversation-events-and-react-output-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-events-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-entrypoint-classes-README.md
@@ -129,6 +130,7 @@ backend-only apps — start with
 | Bundle lifecycle and instance model | [bundle-lifecycle-README.md](bundle-lifecycle-README.md) |
 | Widgets, streaming, operations, background job surface | [bundle-interfaces-README.md](bundle-interfaces-README.md) |
 | Bundle-facing browser/UI entry | [bundle-client-ui-README.md](bundle-client-ui-README.md) |
+| Build and register a complete app-owned website | [bundle-website-integration-README.md](bundle-website-integration-README.md) |
 | Product-level KDCube app/client integration modes | [../../how-to-integrate-with-kdcube-apps-README.md](../../how-to-integrate-with-kdcube-apps-README.md) |
 | Browser/UI transport contract | [client-transport-protocols-README.md](../../service/comm/client-transport-protocols-README.md) |
 | Chat stream event catalog for bundle-facing clients | [chat-stream-events-README.md](../solutions/chat/chat-stream-events-README.md) |

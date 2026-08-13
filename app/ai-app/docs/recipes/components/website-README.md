@@ -1,5 +1,5 @@
 ---
-id: repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
+id: repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
 title: "Application-Hosted Website"
 summary: "Build an app-owned website, register it by alias and host, and serve it through the KDCube runtime."
 status: current
@@ -15,12 +15,14 @@ keywords:
     "sites alias",
   ]
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/sites/application-sites-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-client-ui-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/ui-components-lifecycle-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/arch/proxy/proxy-local-ops-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/solutions/sites/application-sites-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/bundle-website-integration-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/bundle-client-ui-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/ui-components-lifecycle-README.md
+  - repo:kdcube/app/ai-app/docs/configuration/bundles-descriptor-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/ngrok-README.md
+  - repo:kdcube/app/ai-app/docs/arch/proxy/proxy-local-ops-README.md
 ---
 
 # Recipe: Application-Hosted Website
@@ -31,6 +33,13 @@ should serve it alongside platform, API, MCP, Event Bus, and widget routes.
 An application-hosted website is a normal app `ui.main_view`. The app owns its
 HTML, presentation, and composition. The platform owns building, storage,
 routing, authentication metadata, and static delivery.
+
+One app has one optional effective `ui.main_view` and one optional
+`ui.main_view.site` registration. A configuration-backed website does not need
+an `@ui_main` method; if that optional code surface is used, an app may declare
+at most one. A KDCube installation serves many websites by loading many apps
+that each register a site. Several entries in one site's `hosts` list are
+several names for the same built website, not separate sites.
 
 ```text
 browser
@@ -167,6 +176,34 @@ Enable and route the site in that app's `bundles.yaml` entry:
 Many apps may register sites. Duplicate aliases, multiple defaults, or multiple
 sites matching one host are invalid registry states. Proc returns `503` instead
 of selecting an arbitrary app.
+
+`hosts` is a YAML list because one site can answer several names:
+
+```yaml
+hosts:
+  - workspace.localhost
+  - workspace.example.com
+  - "*.workspace-preview.example.com"
+```
+
+The runtime accepts one scalar host as a compatibility convenience and
+normalizes it to a one-item list. The descriptor contract remains a list. The
+current `kdcube bundle --set-config` value parser accepts scalar values; for
+several hosts, edit/apply a descriptor containing the real YAML list.
+
+The field controls selection only after the request reaches KDCube. It does not
+create DNS, reserve a tunnel hostname, issue TLS, or tell Caddy which origin to
+forward. The outer ingress must route that hostname to KDCube and preserve the
+browser's `Host` header.
+
+```text
+one app -> one main-view tree -> zero or one site alias
+
+one site alias
+  +-- always: /sites/{alias}/
+  +-- optional: clean / on every matching hosts entry
+  `-- optional: clean / as the one deployment default
+```
 
 Do not combine an enabled site with `proxy.route_prefix: /`. That descriptor
 shape is rejected because root clean paths must have one owner. Use a non-root
@@ -337,8 +374,10 @@ curl -sS -H 'Host: workspace.local.test' \
   http://127.0.0.1:<proxy-port>/
 ```
 
-To expose that same origin through a stable ngrok domain, point ngrok at the
-web-proxy port and preserve the browser host:
+### Publish the complete KDCube origin
+
+To expose the complete KDCube origin through a stable ngrok domain, point
+ngrok at the web-proxy port and preserve the browser host:
 
 ```bash
 ngrok http <proxy-port> --url https://<stable-ngrok-domain>
@@ -358,6 +397,27 @@ proxy:
 That mode is valid only when untrusted callers cannot bypass the terminator and
 reach the proxy while supplying their own forwarded headers.
 
+One public hostname can select one clean-root site, while every enabled site
+remains available through `/sites/{alias}/`. Hostnames such as
+`site-a.<tunnel-domain>` work only when the tunnel/domain provider has actually
+routed those names to the same KDCube origin; `site.hosts` alone cannot create
+them.
+
+Verify both root and alias paths through the tunnel:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<stable-ngrok-domain>/
+
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<stable-ngrok-domain>/sites/<site-alias>/
+
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<stable-ngrok-domain>/sites/<site-alias>/<asset-path>
+```
+
+### Forward the complete origin through Caddy
+
 Caddy is optional when several local hostnames or local TLS should reach one
 CLI-started runtime. It forwards the complete origin to KDCube; it does not
 copy the route matrix or choose an app:
@@ -374,6 +434,68 @@ workspace.local.test {
 
 Map the local hostname to `127.0.0.1`, include it in `site.hosts`, and use the
 same trusted-forwarded-protocol setting when Caddy terminates TLS.
+
+### Keep a separate website at root and expose KDCube beside it
+
+When Caddy serves a separately built website at `/`, reserve every KDCube route
+family before the file-server fallback. Application-site aliases require both
+`/sites` and `/sites/*`:
+
+```caddyfile
+:18080 {
+  encode gzip
+  root * <separate-site-root>
+
+  @kdcube path /api/* /sse/* /socket.io /socket.io/* /cb/socket.io /cb/socket.io/* /profile /profile/* /admin/* /monitoring/* /platform /platform/* /sites /sites/*
+  handle @kdcube {
+    reverse_proxy 127.0.0.1:<proxy-port> {
+      flush_interval -1
+    }
+  }
+
+  handle {
+    file_server
+  }
+}
+```
+
+This composition has deliberate root ownership:
+
+```text
+https://<public-host>/
+  -> separate website
+
+https://<public-host>/sites/<site-alias>/
+  -> KDCube application site
+
+https://<public-host>/platform/chat
+  -> KDCube control plane
+```
+
+The separate website owns `/`, so a KDCube host-selected/default site cannot
+also appear at that root on the same hostname. Route another hostname wholly
+to KDCube when that site needs its own clean `/`.
+
+Validate and reload Caddy, then test the complete composed route:
+
+```bash
+caddy validate --config <caddyfile> --adapter caddyfile
+caddy reload --config <caddyfile> --adapter caddyfile
+
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<public-host>/
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<public-host>/platform/chat
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<public-host>/sites/<site-alias>/
+curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
+  https://<public-host>/sites/<site-alias>/<asset-path>
+```
+
+The prefix-safe control-plane frontend loads its own static files below
+`/platform` (or the configured mount). Root `/assets/*` and `/img/*` remain
+owned by the separate website; do not add a fallback that proxies missing root
+assets to KDCube.
 
 ## 7. Cloud Deployment
 
@@ -394,6 +516,7 @@ clean paths to OpenResty; OpenResty performs the stable proc rewrite.
 | --- | --- |
 | `/` still redirects directly to platform chat | The web-proxy container is using an older image/config; rebuild and recreate it. |
 | `/sites/{alias}` returns `404` | Site is disabled, alias differs, or app descriptor was not reloaded. |
+| Direct `/sites/{alias}` works but the tunneled URL returns Caddy `404` | The composed Caddy matcher does not forward `/sites` and `/sites/*` to the KDCube web proxy. |
 | A clean path without a site opens platform chat | Root and clean-path fallback are mixed; clean path without a resolved site should be `404`. |
 | `/` returns `503` | Inspect duplicate aliases, multiple defaults, or overlapping host declarations. |
 | Catalog rejects the descriptor with `proxy.route_prefix is '/'` | Move the platform frontend to a non-root route prefix before enabling a site. |
@@ -405,6 +528,8 @@ clean paths to OpenResty; OpenResty performs the stable proc rewrite.
 ## Related Documentation
 
 - [Application-Hosted Sites](../../sdk/solutions/sites/application-sites-README.md)
+- [Application-Hosted Website Architecture](../../arch/application-hosted-websites-README.md)
+- [Bundle Website Integration](../../sdk/bundle/bundle-website-integration-README.md)
 - [Bundle Client UI](../../sdk/bundle/bundle-client-ui-README.md)
 - [UI Components Lifecycle](../../sdk/bundle/ui-components-lifecycle-README.md)
 - [Bundles Descriptor](../../configuration/bundles-descriptor-README.md)

@@ -14,6 +14,8 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-we-built-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/connections/README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/resource_sharing/README.md
@@ -36,9 +38,11 @@ Curated index of platform, service, and SDK documentation.
 * Architecture Of What We Built: [architecture-of-what-we-built-README.md](arch/architecture-of-what-we-built-README.md)
 * Architecture Of What You Build: [architecture-of-what-you-build-README.md](arch/architecture-of-what-you-build-README.md)
 * Control Plane Web App: [control-plane-web-app-README.md](arch/control-plane-web-app-README.md)
+* Application-Hosted Website Architecture: [application-hosted-websites-README.md](arch/application-hosted-websites-README.md)
 * Component Recipes: [components/README.md](recipes/components/README.md)
 * Connection Recipes: [connections/README.md](recipes/connections/README.md)
 * Resource Sharing Recipes: [resource_sharing/README.md](recipes/resource_sharing/README.md)
+* Application-Hosted Website Recipe: [website-README.md](recipes/components/website-README.md)
 * How To Navigate App Docs: [how-to-navigate-kdcube-docs-README.md](sdk/bundle/build/how-to-navigate-kdcube-docs-README.md)
 * App Docs Index: [bundle-index-README.md](sdk/bundle/bundle-index-README.md)
 
@@ -60,6 +64,8 @@ Curated index of platform, service, and SDK documentation.
 * How To Integrate With KDCube Apps: [how-to-integrate-with-kdcube-apps-README.md](how-to-integrate-with-kdcube-apps-README.md)
 * App Interfaces: [bundle-interfaces-README.md](sdk/bundle/bundle-interfaces-README.md)
 * App Client UI: [bundle-client-ui-README.md](sdk/bundle/bundle-client-ui-README.md)
+* App Website Integration: [bundle-website-integration-README.md](sdk/bundle/bundle-website-integration-README.md)
+* Application-Site Runtime: [application-sites-README.md](sdk/solutions/sites/application-sites-README.md)
 * App Widget Integration: [bundle-widget-integration-README.md](sdk/bundle/bundle-widget-integration-README.md)
 * UI Components Lifecycle: [ui-components-lifecycle-README.md](sdk/bundle/ui-components-lifecycle-README.md)
 * App Deployment And Static Widget Delivery: [app-deployment-and-static-widget-delivery-README.md](sdk/bundle/app-deployment-and-static-widget-delivery-README.md)
@@ -128,6 +134,7 @@ Curated index of platform, service, and SDK documentation.
 * Architecture Short: [architecture-short.md](arch/architecture-short.md)
 * Architecture Long: [architecture-long.md](arch/architecture-long.md)
 * Control Plane Web App: [control-plane-web-app-README.md](arch/control-plane-web-app-README.md)
+* Application-Hosted Website Architecture: [application-hosted-websites-README.md](arch/application-hosted-websites-README.md)
 * Current CLI: [cli-README.md](service/cicd/cli-README.md)
 * Descriptors And CI/CD: [descriptors-README.md](service/cicd/descriptors-README.md)
 * Custom CI/CD: [custom-cicd-README.md](service/cicd/custom-cicd-README.md)

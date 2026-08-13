@@ -7,7 +7,7 @@ keywords: ["OpenResty", "unmask_token", "limit_req", "limit_conn", "lua-resty-wa
 updated_at: 2026-08-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/configuration/bundles-descriptor-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
 ---
 # Proxy Ops Guide (OpenResty)
 

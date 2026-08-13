@@ -4,7 +4,7 @@ title: "Component Recipes"
 summary: "Short recipes for composing KDCube app components, with links to the canonical architecture and provider contracts."
 status: current
 tags: ["recipes", "components", "scene", "chat", "pinboard", "named-services", "ecosystem"]
-updated_at: 2026-07-13
+updated_at: 2026-08-13
 keywords:
   [
     "component recipes",
@@ -17,6 +17,7 @@ keywords:
   ]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/arch/architecture-of-what-you-build-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/components-ecosystem-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/ecosystem-component/ecosystem-component-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/namespace-services/README.md

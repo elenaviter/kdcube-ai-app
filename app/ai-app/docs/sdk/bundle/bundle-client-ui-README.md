@@ -4,10 +4,11 @@ title: "App Client UI"
 summary: "Entry page for app-facing frontend integration: source layout for main UI vs widgets, static/integration routes, browser transport links, frame behavior, and widget or operation interoperability."
 tags: ["sdk", "app", "bundle-legacy-path", "frontend", "transport", "auth", "sse", "socketio", "rest", "ui"]
 keywords: ["frontend integration entrypoint", "app ui contract", "main view ui/main", "widget source folder", "widget and operation interoperability", "browser auth and transport", "chat stream lifecycle guidance", "multi tab coordination", "client side app behavior"]
-updated_at: 2026-06-21
+updated_at: 2026-08-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-widget-integration-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/bundle-website-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/client-transport-protocols-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/comm/client-transport-protocols-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/chat/chat-component-communication-README.md
@@ -178,7 +179,8 @@ ui:
         - workspace.example.com
 ```
 
-The site is always reachable at `/sites/workspace`. Multiple apps may register
+The site is always reachable at `/sites/workspace`. One app has one main view
+and may register that view as at most one site. Multiple apps may register
 sites with unique aliases. Root `/` selects a host match first, then one
 explicit default. OpenResty only forwards stable routes; proc resolves active
 app configuration. The CLI does not select or mount websites.
@@ -192,7 +194,9 @@ authorities.
 The reference implementation is
 `sdk/examples/bundles/website@2026-07-12`. Site composition does not belong in
 `assembly.yaml`. The complete registry contract is documented in
-[Application-Hosted Sites](../solutions/sites/application-sites-README.md).
+[Application-Hosted Sites](../solutions/sites/application-sites-README.md), and
+the app package contract is documented in
+[Bundle Website Integration](bundle-website-integration-README.md).
 
 Buildable app browser surfaces must therefore emit relative asset URLs. For Vite
 apps under `ui/main` or `ui/widgets/<alias>`, set `base: './'`:

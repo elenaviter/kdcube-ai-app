@@ -7,9 +7,11 @@ tags: ["sites", "website", "main-view", "routing", "bundles.yaml"]
 updated_at: 2026-08-13
 keywords: ["application site", "site catalog", "host routing", "route prefix", "clean paths"]
 see_also:
-  - repo:kdcube-ai-app/app/ai-app/docs/recipes/components/website-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/arch/control-plane-web-app-README.md
-  - repo:kdcube-ai-app/app/ai-app/docs/service/cicd/ngrok-README.md
+  - repo:kdcube/app/ai-app/docs/arch/application-hosted-websites-README.md
+  - repo:kdcube/app/ai-app/docs/sdk/bundle/bundle-website-integration-README.md
+  - repo:kdcube/app/ai-app/docs/recipes/components/website-README.md
+  - repo:kdcube/app/ai-app/docs/arch/control-plane-web-app-README.md
+  - repo:kdcube/app/ai-app/docs/service/cicd/ngrok-README.md
 ---
 
 # Application-Hosted Sites
@@ -37,6 +39,24 @@ is not interpreted by the CLI.
 | `alias` | Required unique route key. `_root` is reserved. |
 | `default` | Optional root fallback. At most one enabled site may be default. |
 | `hosts` | Optional exact hosts or `*.example.com` patterns used before the default. |
+
+## App And Deployment Cardinality
+
+The registered-site field is singular because the app browser root is
+singular:
+
+```text
+one app -> zero or one effective ui.main_view -> zero or one site
+deployment -> many apps -> many registered sites
+```
+
+The catalog reads the one effective `ui.main_view.site` mapping from each app.
+The main view may be configuration-backed without `@ui_main`. If the app also
+declares that optional code surface, the loader rejects multiple `@ui_main`
+methods on one entrypoint. Multiple `hosts` values route several names to the
+same app, alias, and built main-view tree; they do not create several sites.
+Use separate apps for independently built or independently configured
+websites.
 
 ```text
 request /sites/{alias}/{path}
@@ -165,6 +185,12 @@ revalidate; hashed files below `assets/` are immutable for one year. This is the
 same separation used by public content: the application declares content,
 platform storage serves it, and the CDN only forwards and caches responses.
 
+The same ownership applies to local tunnels and Caddy. An outer proxy can
+forward the complete origin while preserving `Host`, in which case KDCube owns
+root selection. If a separate website already owns `/`, the adapter must route
+`/sites` and `/sites/*` to KDCube; application sites are then available by
+alias, while the separate website remains the root owner.
+
 The site shell should read platform/auth browser configuration from
 `/api/cp-frontend-config` and authenticated session truth from `/profile`.
 Provider-specific login settings do not belong in site source.
@@ -176,3 +202,7 @@ publication registry merely to cache its shell.
 
 The reference implementation is
 `sdk/examples/bundles/website@2026-07-12`.
+
+See [Application-Hosted Website Architecture](../../../arch/application-hosted-websites-README.md)
+for the ownership/topology map and [Bundle Website Integration](../../bundle/bundle-website-integration-README.md)
+for the app package contract.

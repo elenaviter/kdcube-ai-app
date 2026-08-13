@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/use-cases-README.md
 title: "Recipe Index: What Problem Does KDCube Solve?"
-summary: "Problem-first index of KDCube use cases for agents and builders: sixteen practitioner problems — scheduling vs judgement, credential lifecycle, multi-user isolation, context bloat, lineage, memory across sessions, delegated mail/Slack, notebook-to-production, machine-checkable coding agents, disposable automation tokens, trusted generated code, publishable agent output, per-user agent tuning, attributable cache costs, shared workspace pages, mid-run answers — each answered with the concrete mechanism and links to the deep docs."
+summary: "Problem-first index of KDCube use cases for agents and builders: seventeen practitioner problems spanning agent operation, delegated access, multi-user state, generated-code isolation, browser composition, and serving several complete app-owned websites from one installation."
 status: current
 tags: ["recipes", "use-cases", "index", "problems", "platform", "agents"]
-updated_at: 2026-07-08
+updated_at: 2026-08-13
 keywords:
   [
     "what problem does kdcube solve",
@@ -25,6 +25,7 @@ keywords:
     "prompt cache cost attribution",
     "internal dashboard frontend",
     "answer arrives mid-run",
+    "serve multiple websites",
   ]
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/what-you-can-do-with-kdcube-README.md
@@ -57,6 +58,7 @@ HOW. Use the index to find the problem; use the entry to confirm the fit.
 | 14 | "Cache rebuilds are invisible; nobody can attribute the cost" | Placement by lifecycle; the `[CACHE]` cold-turn marker joins the rebuild premium to its cause; the user holds the policy | [context caching](../sdk/agents/react/context-caching-README.md) |
 | 15 | "Every internal tool becomes its own frontend project" | A scene is config + content over a shared host; widgets are served by the apps that own them | [scene configuration](../sdk/solutions/scene/config/README.md) · [scene recipe](components/scene-README.md) |
 | 16 | "The answer arrives while the agent is still working" | Every conversation carries an event lane; answers fold into the live turn or wait as next-turn context | [conversation events](../sdk/bundle/bundle-conversation-events-and-react-output-README.md) |
+| 17 | "Every app website becomes another deployment to operate" | Each app can register its complete main view as one site; one KDCube origin serves many app sites by stable alias, preserved host, or one default root | [website recipe](components/website-README.md) · [website architecture](../arch/application-hosted-websites-README.md) |
 
 ## 1. Scheduled pipelines that sometimes need judgement
 
@@ -369,6 +371,29 @@ the answer shows up mid-run.
 Docs: [conversation events](../sdk/bundle/bundle-conversation-events-and-react-output-README.md) ·
 [app events](../sdk/bundle/bundle-events-README.md) ·
 [Connection Hub](../sdk/solutions/connections/connection-hub-solution-README.md)
+
+## 17. Every app website becomes another deployment to operate
+
+Problem: a product has several complete sites, and every site starts acquiring
+its own server, deployment script, auth integration, and proxy rules.
+
+- **Each app may register its one built main view as one site.** Independent
+  sites stay independently configured apps; one installation serves all of
+  them.
+- **Every site has a stable alias** at `/sites/{alias}/`, so it works on one
+  local or public origin without provisioning a hostname first.
+- **Host routing adds clean roots:** several local/public names may reach the
+  same KDCube origin, and `site.hosts` selects the owning app while one optional
+  default handles unmatched hosts.
+- **The app stays the product unit:** its site can ship beside agents, APIs,
+  MCP, jobs, widgets, and integrations and follows the same Git/config/reload
+  lifecycle.
+- **The edge remains ordinary:** DNS, TLS, and tunnels deliver hostnames;
+  KDCube validates and routes the site after the request arrives.
+
+Docs: [website recipe](components/website-README.md) ·
+[website architecture](../arch/application-hosted-websites-README.md) ·
+[bundle website contract](../sdk/bundle/bundle-website-integration-README.md)
 
 ## The pattern behind the answers
 
