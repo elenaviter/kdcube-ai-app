@@ -225,3 +225,124 @@ def test_mcp_projection_absent_leaves_state_untouched(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---------------------------------------------------------------------------
+# Regression: the narrow slice must NEVER reject (publisher-lane incident).
+# Pre-slice, managed-mode MCP routes resolved delegated tokens via the
+# managed guard alone; a slice failure (catalog ambiguity, denial, verifier
+# error) must contribute nothing so that path keeps working unchanged.
+# ---------------------------------------------------------------------------
+
+from kdcube_ai_app.auth.AuthManager import AuthenticationError, AuthorizationError
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.authentication_surface import (
+    ConnectionHubAuthenticationSurface,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_credentials.oauth.config import (
+    OAuthDelegatedClientConfig,
+    OAuthDelegatedResourceConfig,
+    OAuthDelegatedToolConfig,
+)
+
+
+def _surface_with_bearer(raiser_or_session):
+    surface = object.__new__(ConnectionHubAuthenticationSurface)
+    surface.tenant = "t"
+    surface.project = "p"
+
+    async def _bearer(request, context, session_factory):
+        if isinstance(raiser_or_session, Exception):
+            raise raiser_or_session
+        return raiser_or_session
+
+    surface._try_delegated_platform_bearer = _bearer
+    return surface
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        AuthorizationError("delegated platform resource has ambiguous operation catalog: x"),
+        AuthenticationError("bad token"),
+        RuntimeError("verifier exploded"),
+    ],
+)
+def test_slice_never_rejects_any_resolution_failure(failure):
+    surface = _surface_with_bearer(failure)
+    result = asyncio.run(
+        surface.authenticate_delegated_bearer(
+            SimpleNamespace(url=SimpleNamespace(path="/api/x")), _context("Bearer kst1.y"), _session_factory
+        )
+    )
+    assert result is None  # anonymous downstream; managed guard proceeds
+
+
+def test_slice_failure_resolves_anonymous_end_to_end():
+    """Through the resolver: an ambiguity raise inside the slice must not
+    escape as 401/403 from the middleware — the request resolves anonymous
+    and the managed-mode guard downstream owns the token, as pre-change."""
+    surface = _surface_with_bearer(
+        AuthorizationError("delegated platform resource has ambiguous operation catalog: x")
+    )
+    resolver = _resolver(surface)
+    session = asyncio.run(
+        resolver.resolve_session(
+            REQUEST,
+            _context("Bearer kst1.y"),
+            allow_connection_hub=CONNECTION_HUB_DELEGATED_BEARER_ONLY,
+        )
+    )
+    assert session.user_type == UserType.ANONYMOUS
+
+
+def test_slice_success_still_projects():
+    projected = _session(UserType.EXTERNAL, ["kdcube:role:super-admin"])
+    surface = _surface_with_bearer(projected)
+    result = asyncio.run(
+        surface.authenticate_delegated_bearer(
+            SimpleNamespace(url=SimpleNamespace(path="/api/x")), _context("Bearer kst1.y"), _session_factory
+        )
+    )
+    assert result is projected
+
+
+# ---------------------------------------------------------------------------
+# Most-specific-match preference: a specific resource row beats the
+# `resource: '*'` admin fallback; the wildcard covers only what nothing
+# specific matches.
+# ---------------------------------------------------------------------------
+
+_NAMED_SERVICES_PATTERN = "*/kdcube-services@1-0/public/mcp/named_services*"
+
+
+def _catalog():
+    wildcard = OAuthDelegatedResourceConfig(
+        resource="*", grants=("platform:admin",), tools=(), admin_only=True
+    )
+    specific = OAuthDelegatedResourceConfig(
+        resource=_NAMED_SERVICES_PATTERN,
+        grants=("named_services:use",),
+        tools=(
+            OAuthDelegatedToolConfig(name="named_services_list", label="List", grants=("named_services:use",)),
+            OAuthDelegatedToolConfig(name="named_services_action", label="Action", grants=("named_services:use",)),
+        ),
+    )
+    # Wildcard declared FIRST: order must not matter for the preference.
+    return SimpleNamespace(resources=(wildcard, specific))
+
+
+def test_specific_row_beats_wildcard():
+    cfg = _catalog()
+    row = OAuthDelegatedClientConfig.resource_config(
+        cfg, "https://host/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/named_services"
+    )
+    assert row is not None and row.resource == _NAMED_SERVICES_PATTERN
+    assert row.admin_only is False  # the specific row keeps its own semantics
+
+
+def test_wildcard_serves_only_the_unmatched():
+    cfg = _catalog()
+    row = OAuthDelegatedClientConfig.resource_config(
+        cfg, "https://host/api/integrations/bundles/t/p/press.linkedin@2026-08-13/mcp/press"
+    )
+    assert row is not None and row.resource == "*" and row.admin_only is True

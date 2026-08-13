@@ -503,8 +503,34 @@ class ConnectionHubAuthenticationSurface:
         delegated platform BEARER branch (Authorization header + grant store;
         no cookies, no query params, no provider authenticators). Route
         families that must stay header-only (bundle MCP) consult this instead
-        of the full surface."""
-        return await self._try_delegated_platform_bearer(request, context, session_factory)
+        of the full surface.
+
+        CONTRACT: this slice NEVER rejects a request. Any resolution failure
+        — resource-catalog ambiguity, an authorization denial, a verifier
+        error — contributes nothing (None): the request stays anonymous and
+        the downstream authorities that owned these tokens before the slice
+        existed (the managed-mode MCP guard, bundle-side gates) proceed
+        exactly as they always did. Resource-row selection itself is
+        most-specific-first (exact match, then specific patterns, the
+        ``resource: '*'`` admin row only as the fallback — see
+        ``OAuthDelegatedConfig.resource_config``), so a URL covered by a
+        specific row keeps that row's own auth semantics and the all-resources
+        admin row serves everything else. The full surface (`__call__`), used
+        on non-MCP routes, keeps its historical strict behavior."""
+        try:
+            return await self._try_delegated_platform_bearer(request, context, session_factory)
+        except (AuthenticationError, AuthorizationError):
+            return None
+        except Exception:
+            logger.warning(
+                "[auth.connection_hub.surface] delegated-bearer slice failed; "
+                "resolving anonymous tenant=%s project=%s path=%s",
+                self.tenant,
+                self.project,
+                getattr(getattr(request, "url", None), "path", ""),
+                exc_info=False,
+            )
+            return None
 
     async def _try_delegated_platform_bearer(
         self,
