@@ -26,32 +26,15 @@ import logging
 from typing import Any, Dict, Iterable, Optional
 
 from kdcube_ai_app.apps.chat.sdk.runtime import comm_ctx
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import (
+    content_text,
+)
 
 LOGGER = logging.getLogger("kdcube.ported_langgraph_agents.stream_solution")
 
-
-def _content_text(content: Any) -> str:
-    """Normalize a LangChain message chunk's ``content`` to text.
-
-    Newer chat models (e.g. OpenAI's Responses API) stream ``content`` as a LIST
-    of content blocks (``[{"type": "text", "text": "..."}, ...]``), not a plain
-    str — so accumulating ``answer += chunk.content`` would raise
-    ``TypeError: can only concatenate str (not "list") to str``. Extract the text
-    parts and join them; a plain string passes through unchanged.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "".join(parts)
-    return ""
+# The generic chunk-content normalizer (content may stream as a LIST of content
+# blocks) lives in the shared foreign-runtime seam; local alias for readability.
+_content_text = content_text
 
 
 async def stream_graph_turn(

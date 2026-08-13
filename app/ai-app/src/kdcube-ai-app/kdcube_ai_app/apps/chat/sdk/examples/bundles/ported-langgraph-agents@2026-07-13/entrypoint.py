@@ -46,11 +46,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
+from dataclasses import replace
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from kdcube_ai_app.apps.chat.sdk.protocol import ExternalEventPayload, external_events_text
-from kdcube_ai_app.apps.chat.sdk.runtime import comm_ctx
 from kdcube_ai_app.apps.chat.sdk.util import _now_ms
 from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import bind_current_bundle_call_context_patch
 from kdcube_ai_app.apps.chat.sdk.tools.backends.summary.conversation_title import (
@@ -83,13 +82,28 @@ from .solution.lg_prebuilt.llm import StubChatModel
 # The platform seams.
 from .platform.pg_target import resolve_solution_pg, resolve_solution_memory, schema_for_scope
 from .platform.turn_batch import fold_turn_external_events
-from .platform.identity import turn_identity, normalize_agent_id
+from .platform.identity import turn_identity
 from .platform.stream_solution import stream_graph_turn
 from .platform.stream_prebuilt import stream_react_turn
 from .platform.tools_mcp import load_mcp_tools_for_connections, consent_request_tools
 from kdcube_ai_app.apps.chat.sdk.solutions.connections.delegated_mcp import (
     delegated_client_id_for_agent,
-    connection_resource,
+)
+# The shared foreign-runtime seam (SDK): per-agent dispatch, delegated-MCP
+# identity/bearer, and run-to-completion turn recording.
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.dispatch import (
+    AgentSpec,
+    resolve_agent_spec,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.mcp_bridge import (
+    agent_grant_bearer_provider,
+    current_turn_user_sub,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.turn_record import (
+    conversation_is_new,
+    emit_turn_timing,
+    finalize_conversation_title,
+    persist_turn_artifacts,
 )
 from .platform.tool_pick import agent_tool_connections, run_python_bound, select_bound_tools
 from .platform.turn_workspace import (
@@ -176,23 +190,13 @@ def _widget_visibility(
 
 
 # ── the per-agent registry ───────────────────────────────────────────────────
-# Each agent is described by an AgentSpec: how to BUILD its graph (with
-# its own deps/checkpointer/store), how to STREAM it (its own adapter), how to
-# shape its INPUTS, its model role, and its `agent_id` (the row-scope discriminator
-# that keeps the two agents' rows apart inside the SHARED tenant/project schema).
-# The module-level build/stream/input functions take the entrypoint explicitly so
-# the spec stays a plain value object and the entrypoint methods stay thin.
-
-@dataclass(frozen=True)
-class AgentSpec:
-    agent_id: str
-    role: str
-    build_graph: Callable[["LGPortedAgentsBundle"], Awaitable[Any]]
-    stream: Callable[[Any, Dict[str, Any], Dict[str, Any]], Awaitable[str]]
-    # (question, ident, attachments) -> (inputs, run_config). `attachments` is the
-    # turn's materialized multimodal blocks (image/document); empty for text-only.
-    # (framed turn text, identity, multimodal attachment blocks)
-    build_inputs: Callable[[str, Any, list], Tuple[Dict[str, Any], Dict[str, Any]]]
+# Each agent is described by an `AgentSpec` (the shared foreign-runtime seam's
+# value object): how to BUILD its graph (with its own deps/checkpointer/store),
+# how to STREAM it (its own adapter), how to shape its INPUTS, its model role,
+# and its `agent_id` (the row-scope discriminator that keeps the two agents'
+# rows apart inside the SHARED tenant/project schema). The module-level
+# build/stream/input functions take the entrypoint explicitly so the spec stays
+# a plain value object and the entrypoint methods stay thin.
 
 
 def _solution_scope(ep: "LGPortedAgentsBundle", agent_id: str) -> StorageScope:
@@ -257,20 +261,9 @@ def _current_turn_user_sub(ep: "LGPortedAgentsBundle") -> str:
     time — the accounting context (bound around execute_core), else the comm. Used to
     mint the per-user delegated MCP bearer without threading identity through the
     build signatures. Empty when no user is bound (a delegated MCP connection then
-    resolves to nothing — no unauthenticated call)."""
-    try:
-        from kdcube_ai_app.infra.accounting import _get_context
-        sub = str((_get_context().to_dict() or {}).get("user_id") or "").strip()
-        if sub:
-            return sub
-    except Exception:
-        pass
-    # `ep.comm` is a property that BUILDS the communicator and raises when no turn
-    # task is bound (e.g. a graph built outside a turn) — guard the side effect.
-    try:
-        return str(getattr(ep.comm, "user_id", "") or "").strip()
-    except Exception:
-        return ""
+    resolves to nothing — no unauthenticated call). Delegates to the shared
+    foreign-runtime seam."""
+    return current_turn_user_sub(ep)
 
 
 async def _build_prebuilt_graph(
@@ -437,43 +430,9 @@ def _agent_grant_bearer_provider(ep: "LGPortedAgentsBundle", client_id: str):
     from the Connection Hub named service (`agent_grant.get_token`) for the turn's
     user. Returns None on any absence/failure (consent pending / caller unbound /
     hub unreachable) so the delegated connection is dropped and surfaces as a
-    consent demand — never a blind call, never a failed build."""
-    async def _provider(conn: Mapping[str, Any], user_sub: str):
-        resource = connection_resource(conn)
-        if not resource:
-            return None
-        try:
-            from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_named_service
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.connection_edges import (
-                connection_hub_bundle_id_from_entrypoint,
-            )
-            from kdcube_ai_app.apps.chat.sdk.solutions.connections.contract import (
-                NAMESPACE, AGENT_GRANT_GET_TOKEN,
-            )
-            from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
-                NamedServiceResponse,
-            )
-            result = await call_bundle_named_service(
-                bundle_id=connection_hub_bundle_id_from_entrypoint(ep),
-                request={
-                    "namespace": NAMESPACE,
-                    "operation": AGENT_GRANT_GET_TOKEN,
-                    "payload": {"client_id": client_id, "resource": resource},
-                },
-            )
-            value = getattr(result, "value", None)
-            response = NamedServiceResponse.coerce(value) if value is not None else None
-        except Exception:
-            LOGGER.info(
-                "[ported-langgraph] agent-grant token lookup failed for %s; "
-                "treating as consent-pending.", resource, exc_info=True,
-            )
-            return None
-        if response is None or not response.ok or not response.attrs.get("has_token"):
-            return None
-        token = str((response.object or {}).get("access_token") or "").strip()
-        return token or None
-    return _provider
+    consent demand — never a blind call, never a failed build. Delegates to the
+    shared foreign-runtime seam."""
+    return agent_grant_bearer_provider(ep, client_id)
 
 
 async def _announce_mcp_consent(c: Any) -> None:
@@ -987,11 +946,10 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         thread_id: str,
         params: Dict[str, Any],
     ) -> Dict[str, Any]:
-        # Resolve the ACTIVE agent from the turn state; unknown/blank -> default.
-        agent_id = normalize_agent_id(state.get("agent_id"), default=DEFAULT_AGENT_ID)
-        if agent_id not in AGENTS:
-            agent_id = DEFAULT_AGENT_ID
-        spec = AGENTS[agent_id]
+        # Resolve the ACTIVE agent from the turn state; unknown/blank -> default
+        # (the shared foreign-runtime dispatch rule).
+        spec = resolve_agent_spec(AGENTS, state.get("agent_id"), DEFAULT_AGENT_ID)
+        agent_id = spec.agent_id
 
         # This (user, conversation)'s tool opt-outs from the capabilities widget —
         # resolved BEFORE the build so they narrow the bound tool set (admin ceiling
@@ -1134,22 +1092,9 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         ``accounting.usage`` cost badge also rides), threads ``elapsed_ms`` into that
         artifact so reload restores the time exactly like React. Field name/shape match
         BaseWorkflow so the same reload reader surfaces it. Best-effort: a timing-emit
-        failure never affects the turn."""
-        try:
-            comm = self.comm
-            if comm is None:
-                return
-            await comm.event(
-                agent="turn_controller",
-                type="chat.turn.summary",
-                route="chat.step",
-                title="Turn Summary (Timings)",
-                step="turn.summary",
-                data={"elapsed_ms": int(total_ms), "started_ms": int(started_ms), "ended_ms": int(_now_ms())},
-                status="completed",
-            )
-        except Exception:
-            LOGGER.warning("[ported-langgraph] turn-timing emit failed", exc_info=True)
+        failure never affects the turn. Delegates to the shared foreign-runtime
+        seam."""
+        await emit_turn_timing(self, started_ms=started_ms, total_ms=total_ms)
 
     # ── per-turn economics persistence (reload) ───────────────────────────────
 
@@ -1177,28 +1122,10 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         The saved-artifact user is threaded from the economics/authority projection
         when the raw ``user`` state key is empty (this app carries the user on the
         authority projection — mirrors ``_conversation_is_new``'s user resolution), so
-        the artifact is scoped to the same (user, conversation) the reload reads."""
+        the artifact is scoped to the same (user, conversation) the reload reads.
+        The persistence orchestration is the shared foreign-runtime seam's."""
         await super().post_run_hook(state=state, result=result, econ_ctx=econ_ctx or {})
-        # Scope the artifact to the record user. `_save_events_artifact` reads
-        # `state["user"]`; this app's turn carries the user on the authority
-        # projection, so fall back to it without mutating the caller's state.
-        save_state = state
-        if not str(state.get("user") or "").strip():
-            record_user = str(
-                state.get("economics_user")
-                or state.get("authority_user")
-                or state.get("actor_user")
-                or state.get("fingerprint")
-                or ""
-            ).strip()
-            if record_user:
-                save_state = dict(state)
-                save_state["user"] = record_user
-        await self._save_events_artifact(state=save_state)
-        # Subsystem/canvas stream replay on reload (the code-exec panel): persist
-        # this turn's delta aggregates as conv.artifacts.stream — the same artifact
-        # React saves itself; the fallback is inert on rich-log turns.
-        await self._persist_stream_artifacts_fallback(state=save_state)
+        await persist_turn_artifacts(self, state, result)
 
     # ── first-turn conversation title ─────────────────────────────────────────
 
@@ -1215,115 +1142,47 @@ class LGPortedAgentsBundle(BaseEntrypointWithEconomics):
         first-turn signal is framework-neutral: a new conversation has no prior
         recorded turn log. Uses the reusable SDK utility directly (no ctx_browser /
         no thinking stream — this is a run-to-completion bundle). Fail-open by
-        construction: any failure leaves the turn untouched."""
+        construction: any failure leaves the turn untouched. The chain itself is
+        the shared foreign-runtime seam's (`finalize_conversation_title`)."""
+        # The seam resolves the title utilities (`generate_conversation_title`,
+        # `emit_conversation_title_event`) from their home module at CALL time;
+        # this module's top-level imports of those names are the offline tests'
+        # injection point, so thread any rebound one through for this call.
+        # In production nothing is rebound and this is a pure delegation.
+        from kdcube_ai_app.apps.chat.sdk.tools.backends.summary import (
+            conversation_title as _title_impl,
+        )
+
+        overrides = {
+            name: fn
+            for name, fn in (
+                ("generate_conversation_title", generate_conversation_title),
+                ("emit_conversation_title_event", emit_conversation_title_event),
+            )
+            if getattr(_title_impl, name) is not fn
+        }
+        originals = {name: getattr(_title_impl, name) for name in overrides}
+        for name, fn in overrides.items():
+            setattr(_title_impl, name, fn)
         try:
-            question = (question or "").strip()
-            answer = (answer or "").strip()
-            conversation_id = str(
-                conversation_id or state.get("conversation_id") or state.get("session_id") or ""
-            ).strip()
-            svc = getattr(self, "models_service", None)
-            LOGGER.info(
-                "[ported-langgraph] title check conversation=%s question_len=%d svc=%s",
-                conversation_id, len(question), "set" if svc is not None else "NONE",
+            await finalize_conversation_title(
+                self, state,
+                conversation_id=conversation_id, question=question,
+                answer=answer, title_role=title_role,
             )
-            if not question or not conversation_id or svc is None:
-                LOGGER.info("[ported-langgraph] title SKIP: missing question/conversation/model-service")
-                return
-            if not await self._conversation_is_new(state=state, conversation_id=conversation_id):
-                LOGGER.info("[ported-langgraph] title SKIP: conversation not new conversation=%s", conversation_id)
-                return
-            # Use the AGENT's own answer role for the title (a known-good modern
-            # model that follows the two-channel protocol), not the unconfigured
-            # `gate.simple` default. Falls back to the utility default when unset.
-            title_kwargs = {"role": title_role} if title_role else {}
-            title = (await generate_conversation_title(
-                svc, user_message=question, answer=answer or None, **title_kwargs,
-            ) or "").strip()
-            if not title:
-                LOGGER.info("[ported-langgraph] title SKIP: model returned an empty title")
-                return
-            # Persist seam: the framework-neutral recorder reads this off `result`.
-            state["conversation_title"] = title
-            _comm = comm_ctx.get_comm()
-            try:
-                LOGGER.info(
-                    "[ported-langgraph] conversation-title generated conversation=%s title=%r "
-                    "comm=%s turn=%s — emitting",
-                    conversation_id, title, ("set" if _comm is not None else "NONE"),
-                    str(state.get("turn_id") or ""),
-                )
-            except Exception:
-                pass
-            # Emit seam: the SAME chat event the React workflow emits, streamed via
-            # this turn's comm (the one the bundle already streams through), so the
-            # chat component updates the conversation header live.
-            await emit_conversation_title_event(
-                _comm,
-                conversation_id=conversation_id,
-                turn_id=str(state.get("turn_id") or "").strip(),
-                title=title,
-            )
-            try:
-                LOGGER.info(
-                    "[ported-langgraph] conversation-title emitted conversation=%s", conversation_id
-                )
-            except Exception:
-                pass
-        except Exception:
-            LOGGER.warning(
-                "[ported-langgraph] conversation-title generation/emit FAILED", exc_info=True
-            )
+        finally:
+            for name, fn in originals.items():
+                setattr(_title_impl, name, fn)
 
     async def _conversation_is_new(self, *, state: Dict[str, Any], conversation_id: str) -> bool:
         """A conversation is new when it has no prior recorded turn (the current
         turn's log is written after ``execute_core``). Read the platform conversation
         record — the same store the conversation list reads — so the signal matches
-        what the user sees. Fail-safe to "not new" (skip the title) on any error."""
-        try:
-            client = await self.get_ctx_client()
-            if client is None:
-                LOGGER.info("[ported-langgraph] is_new: NO ctx client (pg_pool missing?) -> not new")
-                return False
-            # Read under the SAME user the door records the turn log under: the
-            # economics door writes the minimal turn log under its `user_id`
-            # (== state["economics_user"], the projected-authority record user),
-            # NOT the raw `actor_user`/`user`/`fingerprint` state keys — those can
-            # be empty when the user is carried only on the authority projection
-            # (comm user_obj / identity_authority). Preferring `economics_user`
-            # keeps record, list, and this probe agreed on (user, conversation);
-            # the raw keys stay as fallbacks for a non-economics run().
-            user_id = str(
-                state.get("economics_user")
-                or state.get("authority_user")
-                or state.get("actor_user")
-                or state.get("user")
-                or state.get("fingerprint")
-                or ""
-            ).strip()
-            if not user_id or not conversation_id:
-                LOGGER.info(
-                    "[ported-langgraph] is_new: empty user_id=%r or conversation_id=%r -> not new",
-                    user_id, conversation_id,
-                )
-                return False
-            res = await client.recent(
-                kinds=["artifact:turn.log"],
-                roles=("artifact",),
-                limit=1,
-                days=365,
-                user_id=user_id,
-                conversation_id=conversation_id,
-            )
-            items = res.get("items") or []
-            LOGGER.info(
-                "[ported-langgraph] is_new probe user=%s conversation=%s prior_turn_logs=%d -> new=%s",
-                user_id, conversation_id, len(items), not items,
-            )
-            return not items
-        except Exception:
-            LOGGER.warning("[ported-langgraph] is_new probe FAILED -> not new", exc_info=True)
-            return False
+        what the user sees. Fail-safe to "not new" (skip the title) on any error.
+        Delegates to the shared foreign-runtime seam (which reads the SAME user
+        the economics door records the turn log under — `economics_user` first,
+        raw actor keys as fallbacks)."""
+        return await conversation_is_new(self, state, conversation_id=conversation_id)
 
     # ── scene chat widgets (one per agent) ────────────────────────────────────
     # The scene mounts two chat tiles as iframes at `widgets/chat_lg_solution`

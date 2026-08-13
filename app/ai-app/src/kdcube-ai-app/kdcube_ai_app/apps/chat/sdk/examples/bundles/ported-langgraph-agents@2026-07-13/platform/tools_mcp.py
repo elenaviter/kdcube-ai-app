@@ -40,8 +40,10 @@ from kdcube_ai_app.apps.chat.sdk.solutions.connections.mcp_consent import (
     MCPConsentRequired,
     mcp_consent_from_denial,
 )
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.mcp_bridge import (
+    load_mcp_server_instructions_safe,
+)
 from kdcube_ai_app.apps.chat.sdk.frameworks.langchain.mcp import (
-    load_mcp_server_instructions,
     load_mcp_tools_from_server_map,
     load_error_looks_like_denial,
     mcp_adapters_available,  # re-exported for callers/tests
@@ -165,6 +167,10 @@ async def load_mcp_tools_for_connections(
     if not conns:
         return [], []
     client_id = delegated_client_id_for_agent(application, agent_id)
+    # The server map is resolved directly (not via the foreign-runtime seam's
+    # `resolve_turn_mcp` wrapper): this function's contract takes an INJECTED
+    # `bearer_provider` + explicit `user_sub` and no entrypoint, while the
+    # wrapper derives both from an entrypoint and accepts no provider override.
     drop_sink: Dict[str, str] = {}
     server_map = await resolve_mcp_server_map(
         conns, user_sub=user_sub, client_id=client_id, bearer_provider=bearer_provider,
@@ -178,13 +184,11 @@ async def load_mcp_tools_for_connections(
 
     # An MCP server may publish an operating guide during protocol negotiation —
     # what MCP-native clients (e.g. Claude connectors) show their model. Tool
-    # schemas do not carry it, so recover it here for the system prompt.
+    # schemas do not carry it, so recover it here for the system prompt (via the
+    # foreign-runtime seam's fail-open wrapper — any failure yields {}).
     # Only when tools actually loaded (a consent-denied door would just 403).
     if instructions_sink is not None and tools:
-        try:
-            instructions_sink.update(await load_mcp_server_instructions(server_map))
-        except Exception:
-            logger.info("mcp server-instructions fetch failed (non-fatal)", exc_info=True)
+        instructions_sink.update(await load_mcp_server_instructions_safe(server_map))
 
     # A delegated connection the user hasn't granted THIS agent surfaces as a
     # consent demand, whichever way the block manifested:
