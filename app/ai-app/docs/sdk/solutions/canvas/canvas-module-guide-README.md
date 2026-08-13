@@ -180,7 +180,9 @@ like the same content in chat:
 - bare URLs autolink, and a line that is exactly one URL renders as a link
   preview — favicon (by hostname, self-hiding on error), host, and the
   clickable URL. A pin whose summary is exactly a URL gets the same preview
-  in its card body.
+  in its card body. The author controls the form: a bare URL on its own line
+  opts INTO the preview; a titled markdown link `[text](url)` (or a URL
+  inside a sentence) stays a plain link.
 
 Selectable preview text. Text in pin previews — note bodies, titles and
 summaries, and everything in the expanded flyout including code plates — is

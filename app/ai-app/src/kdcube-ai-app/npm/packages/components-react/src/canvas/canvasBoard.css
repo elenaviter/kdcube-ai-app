@@ -2103,11 +2103,18 @@ button {
   display: block;
   width: 100%;
   max-height: 150px;
+  /* The card has a fixed user-set height; inside the zone's flex column the
+     thumbnail must SHRINK with the card rather than overflow it. */
+  flex: 0 1 auto;
+  min-height: 0;
   object-fit: contain;
+  object-position: left top;
   background: var(--surface-2);
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
 }
+/* Clip anything (image or text) that would spill past the card's body. */
+.canvas-card-text-zone { overflow: hidden; }
 .canvas-card-flyout-image {
   display: block;
   width: 100%;

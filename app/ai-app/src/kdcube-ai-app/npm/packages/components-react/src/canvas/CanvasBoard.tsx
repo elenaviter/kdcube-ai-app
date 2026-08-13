@@ -296,6 +296,24 @@ function CodeCopyBtn({ value }: { value: string }) {
   )
 }
 
+// Collect image files from a clipboard/drag payload. Finder-copied files often
+// surface only through `items` (kind: 'file'), not `files` — read both.
+function imageFilesFromTransfer(data: DataTransfer | null): File[] {
+  if (!data) return []
+  const out: File[] = []
+  for (const f of Array.from(data.files || [])) {
+    if (f && f.type.startsWith('image/')) out.push(f)
+  }
+  if (!out.length) {
+    for (const item of Array.from(data.items || [])) {
+      if (item.kind !== 'file' || !item.type.startsWith('image/')) continue
+      const f = item.getAsFile()
+      if (f) out.push(f)
+    }
+  }
+  return out
+}
+
 // Chat-parity link preview for bare URLs: S2 favicon by hostname (self-hiding
 // on error, like chat's FaviconImg), host label, and the clickable URL.
 function LinkPreview({ url }: { url: string }) {
@@ -469,6 +487,26 @@ function InlineMarkdownEditor({
   autoFocus?: boolean
 }) {
   const [mode, setMode] = useState<'raw' | 'rendered'>('raw')
+
+  // Shared by paste and drop: read the image, insert `![…](data:…)` at the
+  // caret. Over ~2MB the note (a hosted text object) is the wrong home —
+  // log a hint to drop it on the board as a file pin instead.
+  function insertImageAtCaret(el: HTMLTextAreaElement, image: File) {
+    if (image.size > 2 * 1024 * 1024) {
+      console.warn('[kdcube.canvas] image over 2MB — drop it on the board as a file pin instead')
+      return
+    }
+    const start = el.selectionStart ?? value.length
+    const end = el.selectionEnd ?? value.length
+    const reader = new FileReader()
+    reader.onload = () => {
+      const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+      if (!dataUrl.startsWith('data:image/')) return
+      const snippet = `![pasted image](${dataUrl})`
+      onChange(`${value.slice(0, start)}${snippet}${value.slice(end)}`)
+    }
+    reader.readAsDataURL(image)
+  }
   return (
     <div className="canvas-mde" onPointerDown={(event) => event.stopPropagation()}>
       <div className="canvas-mde-bar">
@@ -499,28 +537,24 @@ function InlineMarkdownEditor({
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           autoFocus={autoFocus}
-          /* Paste an image from the clipboard: it lands as inline markdown
-           * (data URI) at the caret and renders in the note. Modest size cap
-           * — a note is a hosted text object, not a byte store. */
+          /* Paste OR drop an image (screenshot, copied Finder file, dragged
+           * file): it lands as inline markdown (data URI) at the caret and
+           * renders in the note. Modest size cap — a note is a hosted text
+           * object, not a byte store. Finder-copied files often arrive via
+           * clipboard `items`, not `files` — the helper reads both. */
           onPaste={(event) => {
-            const image = Array.from(event.clipboardData?.files || []).find((f) => f.type.startsWith('image/'))
+            const image = imageFilesFromTransfer(event.clipboardData)[0]
             if (!image) return
             event.preventDefault()
-            if (image.size > 2 * 1024 * 1024) {
-              console.warn('[kdcube.canvas] pasted image over 2MB — drop it on the board as a file pin instead')
-              return
-            }
-            const el = event.currentTarget
-            const start = el.selectionStart ?? value.length
-            const end = el.selectionEnd ?? value.length
-            const reader = new FileReader()
-            reader.onload = () => {
-              const dataUrl = typeof reader.result === 'string' ? reader.result : ''
-              if (!dataUrl.startsWith('data:image/')) return
-              const snippet = `![pasted image](${dataUrl})`
-              onChange(`${value.slice(0, start)}${snippet}${value.slice(end)}`)
-            }
-            reader.readAsDataURL(image)
+            insertImageAtCaret(event.currentTarget, image)
+          }}
+          onDragOver={(event) => { event.preventDefault(); event.stopPropagation() }}
+          onDrop={(event) => {
+            const image = imageFilesFromTransfer(event.dataTransfer)[0]
+            event.preventDefault()
+            event.stopPropagation()
+            if (!image) return
+            insertImageAtCaret(event.currentTarget, image)
           }}
         />
       ) : (
@@ -1966,12 +2000,17 @@ export function CanvasBoard({
     onDropFiles(selected, newCardRect(260, 120))
   }
 
+  // True when the last pointerdown on a card landed in a selectable text
+  // zone — the card's dragstart consults this to yield to text selection.
+  const textSelectPointerRef = useRef(false)
+
   // Paste onto the board: clipboard images (screenshots, copied images)
   // become file pins at the default new-card spot — same path as drop/pick.
   function handleBoardPaste(event: ReactClipboardEvent<HTMLElement>) {
     const target = event.target instanceof HTMLElement ? event.target : null
     if (target?.closest('textarea, input, [contenteditable="true"]')) return
-    const files = acceptCanvasFiles(Array.from(event.clipboardData?.files || []).filter(Boolean))
+    const clipboardFiles = Array.from(event.clipboardData?.files || []).filter(Boolean)
+    const files = acceptCanvasFiles(clipboardFiles.length ? clipboardFiles : imageFilesFromTransfer(event.clipboardData))
     if (!files.length) return
     event.preventDefault()
     onDropFiles(files, newCardRect(260, 120))
@@ -2856,7 +2895,23 @@ export function CanvasBoard({
                 className={`canvas-card ${isUserText ? 'user-text' : ''} ${pinned ? 'expanded' : ''} ${dragged ? 'moving' : ''} ${card.selected || locallySelected ? 'selected' : ''} ${locallySelected ? 'multi-selected' : ''} ${pendingSuggestion ? 'suggested' : ''} ns-${cssClassToken(presentation.key)} ${searchActive ? (matchedCardIds?.has(card.id) ? 'search-match' : 'search-dim') : ''}`}
                 draggable
                 onClick={(event) => selectCard(card, event)}
+                /* dragstart fires on THIS draggable element even when the
+                 * pointer went down on selectable text inside it — inner-zone
+                 * dragstart guards never see the event. Capture the pointer's
+                 * true target here and veto the card drag when it began in a
+                 * text-reading zone, so a text-drag selects instead. */
+                onPointerDownCapture={(event) => {
+                  const target = event.target instanceof HTMLElement ? event.target : null
+                  textSelectPointerRef.current = Boolean(target?.closest(
+                    '.canvas-card-note-body, .canvas-card-text-zone, .canvas-card-flyout, .canvas-md, .canvas-code',
+                  ))
+                }}
                 onDragStart={(event) => {
+                  if (textSelectPointerRef.current) {
+                    console.debug('[kdcube.canvas] card drag vetoed: pointer started in a selectable text zone')
+                    event.preventDefault()
+                    return
+                  }
                   const selectedDragCards = selectedCardIds.has(card.id) && selectedVisibleCards.length > 1
                     ? selectedVisibleCards
                     : [card]
