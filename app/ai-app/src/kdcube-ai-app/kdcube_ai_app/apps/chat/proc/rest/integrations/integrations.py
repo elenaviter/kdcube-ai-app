@@ -31,7 +31,7 @@ from kdcube_ai_app.apps.chat.ingress.resolvers import (
     auth_without_pressure,
     get_user_session_dependency,
 )
-from kdcube_ai_app.apps.middleware.gateway import STATE_STREAM_ID, extract_stream_id
+from kdcube_ai_app.apps.middleware.gateway import STATE_SESSION, STATE_STREAM_ID, extract_stream_id
 from kdcube_ai_app.auth.AuthManager import RequireUser
 from kdcube_ai_app.auth.sessions import RequestContext, UserSession, UserType
 from kdcube_ai_app.apps.chat.sdk.config import get_settings, get_secret
@@ -4500,6 +4500,12 @@ def _apply_delegated_mcp_runtime_projection(
     session.roles = roles
     session.permissions = permissions
     session.identity_authority = dict(identity_authority)
+
+    # The projected identity must also be what bundle-side gates observe:
+    # they read the request-attached session, not the route-local one. This
+    # only ever runs after authorize_delegated_mcp_request accepted the
+    # bearer, so the upgrade is strictly post-verification.
+    setattr(request.state, STATE_SESSION, session)
 
     user = getattr(comm_context, "user", None)
     if user is None:

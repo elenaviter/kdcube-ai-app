@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 SessionFactory = Callable[[RequestContext, UserType, Optional[dict[str, Any]]], Awaitable[UserSession]]
 RequestAuthenticationSurface = Callable[[Request, RequestContext, SessionFactory], Awaitable[Optional[UserSession]]]
 
+# ``allow_connection_hub`` mode: consult ONLY the Connection Hub surface's
+# delegated platform BEARER branch (header-only by construction — it reads
+# nothing but the Authorization header and the grant store). Route families
+# that must never see cookie/query/provider authenticators (bundle MCP) use
+# this so verified delegated automation identities still resolve.
+CONNECTION_HUB_DELEGATED_BEARER_ONLY = "delegated_bearer_only"
+
 
 def _auth_debug_enabled() -> bool:
     return os.getenv("AUTH_DEBUG", "").lower() in {"1", "true", "yes", "on"}
@@ -83,7 +90,7 @@ class RequestAuthResolver:
         request: Request,
         context: RequestContext,
         *,
-        allow_connection_hub: bool = True,
+        allow_connection_hub: bool | str = True,
     ) -> UserSession:
         if context.authorization_header:
             session = await self._try_surface(
@@ -95,15 +102,33 @@ class RequestAuthResolver:
             if session is not None:
                 return session
 
-        if allow_connection_hub and self._connection_hub_surface is not None:
-            session = await self._try_surface(
-                self._connection_hub_surface,
-                request,
-                context,
-                label="connection_hub",
-            )
-            if session is not None:
-                return session
+        if self._connection_hub_surface is not None:
+            if allow_connection_hub is True:
+                session = await self._try_surface(
+                    self._connection_hub_surface,
+                    request,
+                    context,
+                    label="connection_hub",
+                )
+                if session is not None:
+                    return session
+            elif allow_connection_hub == CONNECTION_HUB_DELEGATED_BEARER_ONLY:
+                # The narrow, header-only slice of the hub surface. A surface
+                # that does not expose it simply contributes nothing here —
+                # unknown tokens keep resolving to the anonymous session and
+                # every downstream gate stays fail-closed.
+                narrow = getattr(
+                    self._connection_hub_surface, "authenticate_delegated_bearer", None
+                )
+                if callable(narrow):
+                    session = await self._try_surface(
+                        narrow,
+                        request,
+                        context,
+                        label="connection_hub.delegated_bearer",
+                    )
+                    if session is not None:
+                        return session
 
         return await self.session_factory(context, UserType.ANONYMOUS, None)
 

@@ -55,6 +55,9 @@ from kdcube_ai_app.apps.middleware.gateway import (
     bind_stream_id_to_request_state,
 )
 from kdcube_ai_app.apps.middleware.token_extract import extract_auth_tokens_from_query_params
+from kdcube_ai_app.apps.chat.sdk.solutions.connections.request_auth import (
+    CONNECTION_HUB_DELEGATED_BEARER_ONLY,
+)
 from kdcube_ai_app.infra.gateway.config import (
     get_gateway_config,
     apply_gateway_config_from_cache,
@@ -1462,9 +1465,17 @@ async def gateway_middleware(request: Request, call_next):
             if user_utc_offset_min:
                 headers[get_settings().RUNTIME_CONFIG.USER_UTC_OFFSET_MIN_HEADER_NAME] = user_utc_offset_min
 
+        # MCP routes stay header-only (no cookies, no query-param auth), but
+        # they DO consult the Connection Hub surface's delegated platform
+        # BEARER branch — itself header-only by construction — so verified
+        # delegated automation identities (kst1 session tokens bound to a
+        # grant card) resolve instead of degrading to anonymous. Unknown or
+        # invalid bearers keep resolving to the anonymous session and every
+        # downstream gate stays fail-closed.
         session = await app.state.gateway_adapter.process_by_policy(
             request,
             header_only_auth=mcp_route,
+            connection_hub=(CONNECTION_HUB_DELEGATED_BEARER_ONLY if mcp_route else None),
         )
         setattr(request.state, STATE_SESSION, session)
         setattr(request.state, STATE_USER_TYPE, session.user_type.value)

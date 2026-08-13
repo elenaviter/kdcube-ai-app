@@ -493,6 +493,19 @@ class ConnectionHubAuthenticationSurface:
         )
         return session
 
+    async def authenticate_delegated_bearer(
+        self,
+        request: Request,
+        context: RequestContext,
+        session_factory: SessionFactory,
+    ) -> Optional[UserSession]:
+        """The narrow, header-only slice of this surface: exactly the
+        delegated platform BEARER branch (Authorization header + grant store;
+        no cookies, no query params, no provider authenticators). Route
+        families that must stay header-only (bundle MCP) consult this instead
+        of the full surface."""
+        return await self._try_delegated_platform_bearer(request, context, session_factory)
+
     async def _try_delegated_platform_bearer(
         self,
         request: Request,

@@ -220,7 +220,13 @@ class FastAPIGatewayAdapter:
             return session
         return dependency
 
-    async def process_by_policy(self, request: Request, *, header_only_auth: bool = False) -> UserSession:
+    async def process_by_policy(
+        self,
+        request: Request,
+        *,
+        header_only_auth: bool = False,
+        connection_hub: bool | str | None = None,
+    ) -> UserSession:
         pol = self.policy.resolve(request)
         return await self.process_request(
             request,
@@ -229,6 +235,7 @@ class FastAPIGatewayAdapter:
             bypass_gate=pol.bypass_gate,
             bypass_backpressure=pol.bypass_backpressure,
             header_only_auth=header_only_auth,
+            connection_hub=connection_hub,
         )
 
     async def process_request(self,
@@ -237,8 +244,16 @@ class FastAPIGatewayAdapter:
                               bypass_throttling: bool = False,
                               bypass_gate: bool = False,
                               bypass_backpressure: bool = False,
-                              header_only_auth: bool = False) -> UserSession:
-        """Process request and return session"""
+                              header_only_auth: bool = False,
+                              connection_hub: bool | str | None = None) -> UserSession:
+        """Process request and return session.
+
+        ``connection_hub`` overrides the Connection Hub consultation mode for
+        the request-auth resolver; None keeps the historical rule (the full
+        surface unless header_only_auth). Callers that must stay header-only
+        but still accept verified delegated bearers pass the resolver's
+        delegated-bearer-only mode.
+        """
         requirements = requirements or []
         context = self._extract_context(request, header_only_auth=header_only_auth)
         endpoint = request.url.path
@@ -247,7 +262,9 @@ class FastAPIGatewayAdapter:
             session = await self.request_auth_resolver.resolve_session(
                 request,
                 context,
-                allow_connection_hub=not header_only_auth,
+                allow_connection_hub=(
+                    connection_hub if connection_hub is not None else not header_only_auth
+                ),
             )
             session = await self.gateway.process_request(
                 context,
