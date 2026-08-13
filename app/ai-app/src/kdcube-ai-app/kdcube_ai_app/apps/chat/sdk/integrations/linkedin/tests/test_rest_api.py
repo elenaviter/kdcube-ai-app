@@ -344,3 +344,21 @@ async def test_delete_comment_requires_the_actor():
             object_urn="urn:li:share:7123",
             comment_id="6543",
         )
+
+
+def test_commentary_escapes_little_text_control_characters():
+    """Live finding 2026-08-13: a raw "(" in an API-written commentary made
+    LinkedIn truncate the rendered post at that character. Commentary is
+    little-text format; reserved characters must be backslash-escaped, while
+    bare hashtags stay raw."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.linkedin.delivery import (
+        escape_little_text,
+        format_post_text,
+    )
+
+    out = format_post_text("works. (edit leg too.)\n\n#PipelineTest")
+    assert "\\(edit leg too.\\)" in out
+    assert "#PipelineTest" in out and "\\#" not in out
+    assert escape_little_text("a|b{c}@d[e](f)<g>*h_i~\\") == (
+        "a\\|b\\{c\\}\\@d\\[e\\]\\(f\\)\\<g\\>\\*h\\_i\\~\\\\"
+    )

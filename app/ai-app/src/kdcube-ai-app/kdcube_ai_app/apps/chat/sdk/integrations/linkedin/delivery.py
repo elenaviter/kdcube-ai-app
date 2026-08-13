@@ -63,6 +63,26 @@ def strip_markdown(text: str) -> str:
     return value.strip()
 
 
+# LinkedIn commentary is "little text" format: these characters are control
+# characters there (mention/hashtag templates, emphasis), and RAW occurrences
+# corrupt the parse - observed live: an unescaped "(" truncated the rendered
+# post at that character. "#" stays raw: bare hashtags are the one little-text
+# construct authors write literally.
+_LITTLE_TEXT_RESERVED = "\\|{}@[]()<>*_~"
+
+
+def escape_little_text(text: str) -> str:
+    """Backslash-escape little-text control characters for the commentary."""
+    value = str(text or "")
+    out = []
+    for ch in value:
+        if ch in _LITTLE_TEXT_RESERVED:
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def truncate_post_text(text: str, max_chars: int = LINKEDIN_POST_MAX_CHARS, suffix: str = "…") -> str:
     """Truncate *text* to *max_chars* UTF-16 code units, appending *suffix*.
 
@@ -98,4 +118,4 @@ def format_post_text(text: str, max_chars: int = LINKEDIN_POST_MAX_CHARS) -> str
     Convenience wrapper: call this on any text before passing it to
     ``create_linkedin_post``.
     """
-    return truncate_post_text(strip_markdown(text), max_chars=max_chars)
+    return truncate_post_text(escape_little_text(strip_markdown(text)), max_chars=max_chars)
