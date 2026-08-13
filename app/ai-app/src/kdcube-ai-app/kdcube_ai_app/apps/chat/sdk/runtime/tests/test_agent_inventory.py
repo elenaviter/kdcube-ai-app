@@ -753,6 +753,107 @@ async def test_realm_enrichment_fails_open_on_discovery_errors():
     assert "realm" not in out["named_services"][0]
 
 
+@pytest.mark.asyncio
+async def test_realm_enrichment_folds_every_provider_of_a_shared_namespace():
+    """Two provider bundles publish partial definitions of ONE namespace
+    (operation sets disjoint where they must be): the realm card is the FOLD
+    of every spec — the second provider's operations survive beside the
+    first's, actions and connected-account requirements merge deduplicated,
+    the first spec's label wins."""
+    from kdcube_ai_app.apps.chat.sdk.runtime.agent_inventory import (
+        enrich_catalog_named_service_realms,
+    )
+    from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers.types import (
+        NamedServiceProviderSpec,
+    )
+
+    requirement = {
+        "provider_id": "linkedin",
+        "connector_app_id": "demo",
+        "provider_label": "LinkedIn",
+        "claims": ["linkedin:post"],
+    }
+    door_spec = NamedServiceProviderSpec(
+        provider_id="sdk.integrations.linkedin",
+        namespace="linkedin",
+        refs=("linkedin:*",),
+        operations={
+            "provider.about": {}, "object.list": {},
+            "object.get": {}, "object.action": {},
+        },
+        label="LinkedIn",
+        description="LinkedIn namespace over user-connected LinkedIn accounts.",
+        metadata={
+            "connected_accounts": [dict(requirement)],
+            "actions": {"publish_post": "Publish a text post to your LinkedIn feed."},
+        },
+    )
+    store_spec = NamedServiceProviderSpec(
+        provider_id="press.linkedin.store",
+        namespace="linkedin",
+        refs=("linkedin:*:post:*/*",),
+        operations={
+            "object.search": {}, "object.get": {},
+            "object.resolve": {}, "object.action": {},
+        },
+        label="LinkedIn publications store",
+        description="Search and read the authored LinkedIn publications store.",
+        metadata={
+            # The same requirement declared twice across providers must not
+            # duplicate on the card.
+            "connected_accounts": [dict(requirement)],
+            "presentation": {
+                "operations": {
+                    "object.search": {"description": "Search the publications store."},
+                },
+            },
+        },
+    )
+
+    class _MultiDiscovery:
+        def __init__(self, specs):
+            self.specs = specs
+
+        async def entries_for_namespace(self, namespace):
+            class _Entry:
+                def __init__(self, spec):
+                    self.spec = spec
+
+            return [_Entry(spec) for spec in self.specs]
+
+    catalog = {
+        "named_services": [
+            {"namespace": "linkedin", "alias": "named_services",
+             "operations": ["object.search", "object.get", "object.resolve", "object.action"]},
+        ]
+    }
+    out = await enrich_catalog_named_service_realms(
+        catalog, discovery=_MultiDiscovery([door_spec, store_spec]),
+    )
+    realm = out["named_services"][0]["realm"]
+    # The first spec's label wins; the distinct descriptions both survive.
+    assert realm["label"] == "LinkedIn"
+    assert "user-connected LinkedIn accounts" in realm["description"]
+    # The SECOND provider's operation survives on the card (the fix: the fold
+    # replaces first-provider-wins) with its own presented description...
+    op_names = [op["name"] for op in realm["operations"]]
+    assert "object.search" in op_names
+    search_row = next(op for op in realm["operations"] if op["name"] == "object.search")
+    assert search_row["description"] == "Search the publications store."
+    assert "enabled_for_agent" not in search_row
+    # ...beside the door's advertised surface: its named actions render, and
+    # its object.list (advertised, not configured) stays visible as excluded.
+    assert [action["name"] for action in realm["actions"]] == ["publish_post"]
+    excluded = {op["name"] for op in realm["operations"] if op.get("enabled_for_agent") is False}
+    assert "object.list" in excluded
+    # The shared requirement rides the card exactly once.
+    assert realm["connected_accounts"] == [{
+        "provider_id": "linkedin",
+        "connector_app_id": "demo",
+        "claims": ["linkedin:post"],
+    }]
+
+
 # ── Per-user namespace narrowing at (namespace, operation/action) level ──────
 
 

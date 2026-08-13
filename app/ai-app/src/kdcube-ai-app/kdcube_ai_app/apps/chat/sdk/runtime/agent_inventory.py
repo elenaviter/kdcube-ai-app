@@ -27,8 +27,10 @@ locked on and immune to denial.
 from __future__ import annotations
 
 import importlib
+import json
 import pathlib
 import re
+from types import SimpleNamespace
 from typing import Any, Mapping, Sequence
 
 from kdcube_ai_app.apps.chat.sdk.event_identity import normalize_agent_id
@@ -1487,6 +1489,139 @@ def _realm_payload_from_spec(
     return payload
 
 
+def _merge_realm_specs(specs: Sequence[Any]) -> Any:
+    """One realm view over EVERY provider publishing to a namespace.
+
+    A shared namespace (e.g. ``linkedin`` served by the SDK publishing
+    provider AND an app's store provider) is one realm to the user; the card
+    must show the UNION of what its providers declare, not first-provider-wins.
+    Folding rules:
+
+    - advertised operations: union; the first spec declaring an operation
+      keeps its operation spec;
+    - ``metadata``: per-key first-wins, except the mergeable surfaces —
+      ``actions``/``object_kinds`` (dict union, first-wins per name),
+      ``connected_accounts`` (list concatenation, deduplicated), and
+      ``presentation`` (its ``operations``/``actions`` maps union first-wins
+      per key, ``requirements`` concatenated deduplicated by id, scalar lines
+      first-non-empty);
+    - ``label``: the first spec's non-empty label wins;
+    - ``description``: distinct descriptions joined into one paragraph.
+
+    A single spec passes through unchanged, so every single-provider surface
+    keeps its exact prior behavior.
+    """
+    folded = [spec for spec in (specs or ()) if spec is not None]
+    if not folded:
+        return None
+    if len(folded) == 1:
+        return folded[0]
+
+    operations: dict[str, Any] = {}
+    for spec in folded:
+        for op, op_spec in dict(getattr(spec, "operations", None) or {}).items():
+            operations.setdefault(str(op), op_spec)
+
+    label = next((_norm(getattr(spec, "label", "")) for spec in folded if _norm(getattr(spec, "label", ""))), "")
+    descriptions: list[str] = []
+    for spec in folded:
+        text = _first_para(str(getattr(spec, "description", "") or ""))
+        if text and text not in descriptions:
+            descriptions.append(text)
+    description = " ".join(descriptions)
+
+    def _requirement_key(value: Any) -> str:
+        try:
+            return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            return repr(value)
+
+    metadata: dict[str, Any] = {}
+    merged_actions: dict[str, Any] = {}
+    merged_object_kinds: dict[str, Any] = {}
+    merged_requirements: list[Any] = []
+    seen_requirements: set[str] = set()
+    merged_presentation: dict[str, Any] = {}
+    presented_operations: dict[str, Any] = {}
+    presented_actions: dict[str, Any] = {}
+    presented_requirements: list[Any] = []
+    seen_presented_requirements: set[str] = set()
+    for spec in folded:
+        spec_metadata = getattr(spec, "metadata", None)
+        spec_metadata = dict(spec_metadata) if isinstance(spec_metadata, Mapping) else {}
+        for key, value in spec_metadata.items():
+            if key in ("actions", "object_kinds", "connected_accounts", "presentation"):
+                continue
+            metadata.setdefault(key, value)
+        raw_actions = spec_metadata.get("actions")
+        if isinstance(raw_actions, Mapping):
+            for name, meta in raw_actions.items():
+                merged_actions.setdefault(str(name), meta)
+        raw_kinds = spec_metadata.get("object_kinds")
+        if isinstance(raw_kinds, Mapping):
+            for name, meta in raw_kinds.items():
+                merged_object_kinds.setdefault(str(name), meta)
+        raw_requirements = spec_metadata.get("connected_accounts")
+        if isinstance(raw_requirements, (list, tuple)):
+            for requirement in raw_requirements:
+                key = _requirement_key(requirement)
+                if key in seen_requirements:
+                    continue
+                seen_requirements.add(key)
+                merged_requirements.append(requirement)
+        presentation = spec_metadata.get("presentation")
+        if isinstance(presentation, Mapping):
+            for key, value in presentation.items():
+                if key in ("operations", "actions", "requirements"):
+                    continue
+                if _norm(value) if isinstance(value, str) else value:
+                    merged_presentation.setdefault(key, value)
+            raw_presented_ops = presentation.get("operations")
+            if isinstance(raw_presented_ops, Mapping):
+                for op, meta in raw_presented_ops.items():
+                    presented_operations.setdefault(str(op), meta)
+            raw_presented_actions = presentation.get("actions")
+            if isinstance(raw_presented_actions, Mapping):
+                for name, meta in raw_presented_actions.items():
+                    presented_actions.setdefault(str(name), meta)
+            raw_presented_reqs = presentation.get("requirements")
+            if isinstance(raw_presented_reqs, (list, tuple)):
+                for requirement in raw_presented_reqs:
+                    req_id = (
+                        _norm(requirement.get("id"))
+                        if isinstance(requirement, Mapping)
+                        else _requirement_key(requirement)
+                    ) or _requirement_key(requirement)
+                    if req_id in seen_presented_requirements:
+                        continue
+                    seen_presented_requirements.add(req_id)
+                    presented_requirements.append(requirement)
+    if merged_actions:
+        metadata["actions"] = merged_actions
+    if merged_object_kinds:
+        metadata["object_kinds"] = merged_object_kinds
+    if merged_requirements:
+        metadata["connected_accounts"] = merged_requirements
+    if presented_operations:
+        merged_presentation["operations"] = presented_operations
+    if presented_actions:
+        merged_presentation["actions"] = presented_actions
+    if presented_requirements:
+        merged_presentation["requirements"] = presented_requirements
+    if merged_presentation:
+        metadata["presentation"] = merged_presentation
+
+    return SimpleNamespace(
+        provider_id="+".join(
+            _norm(getattr(spec, "provider_id", "")) or "?" for spec in folded
+        ),
+        operations=operations,
+        metadata=metadata,
+        label=label or None,
+        description=description or None,
+    )
+
+
 async def enrich_catalog_named_service_realms(
     catalog: dict[str, Any],
     *,
@@ -1523,9 +1658,13 @@ async def enrich_catalog_named_service_realms(
                 found = await discovery.entries_for_namespace(namespace)
             except Exception:
                 continue
-            spec = next(
-                (item.spec for item in (found or []) if getattr(item, "spec", None) is not None),
-                None,
+            # EVERY provider publishing to the namespace shapes the realm
+            # card: a shared namespace folds its specs (advertised-operation
+            # union, actions/requirements merge) instead of first-provider-
+            # wins, so a second provider's operations never vanish from the
+            # user-facing capability card.
+            spec = _merge_realm_specs(
+                [item.spec for item in (found or []) if getattr(item, "spec", None) is not None]
             )
             overrides = entry.get("requirements_config")
             excluded_cfg = entry.get("excluded_config")
