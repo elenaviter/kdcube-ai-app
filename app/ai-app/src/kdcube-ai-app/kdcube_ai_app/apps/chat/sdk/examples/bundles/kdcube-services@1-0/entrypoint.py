@@ -579,11 +579,11 @@ class KDCubeServicesEntrypoint(BaseEntrypoint):
     async def _integration_upload_slot(self, ns_ctx: Any, info: Any) -> Dict[str, Any] | None:
         """Mint a signed single-use upload slot for one inbound file.
 
-        Called by the mail/slack named services on ``request_upload``. The
-        client PUTs raw bytes to the returned URL over plain HTTP (never
+        Called by named services on ``request_upload``. The client POSTs raw
+        bytes to the signed URL over the deployment's public origin (never
         through the model's context) and then references the returned
-        ``staged:`` ref in send/upload payloads. Same signing secret and
-        token shape as the download links."""
+        ``staged:`` ref in send/upload payloads. Same signing secret and token
+        shape as the download links."""
         base = get_public_base_url()
         if not base:
             return None

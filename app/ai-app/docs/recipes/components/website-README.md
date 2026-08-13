@@ -34,6 +34,12 @@ An application-hosted website is a normal app `ui.main_view`. The app owns its
 HTML, presentation, and composition. The platform owns building, storage,
 routing, authentication metadata, and static delivery.
 
+`ui.main_view` alone builds and serves the frontend through app-scoped static
+routes. The nested `ui.main_view.site` declaration additionally registers that
+same artifact for `/sites/{alias}/`, host-selected `/`, and optional default
+`/` routing; it creates no second frontend build. The complete distinction is
+owned by [Bundle Website Integration](../../sdk/bundle/bundle-website-integration-README.md#main-view-and-site-registration).
+
 One app has one optional effective `ui.main_view` and one optional
 `ui.main_view.site` registration. A configuration-backed website does not need
 an `@ui_main` method; if that optional code surface is used, an app may declare
@@ -300,17 +306,19 @@ such as `/guide` returns a controlled `404` when no site resolves; it does not
 fall back to the platform frontend.
 
 For a dedicated CDN hostname, add the hostname to `site.hosts` and configure
-the CDN origin behavior to preserve that host and rewrite the viewer path:
+the edge to preserve the viewer host and forward the clean path to OpenResty:
 
 ```text
 https://docs.example.com/<path>
-  -> /api/integrations/site-root/<path>
+  -> edge forwards /<path> with Host: docs.example.com
+  -> OpenResty rewrites internally to /api/integrations/site-root/<path>
   -> host-selected application site
 ```
 
-The CDN is not a catalog owner and does not query Redis. It only forwards and
-caches. Keep HTML revalidating and allow content-hashed `assets/` to use the
-immutable cache headers returned by the platform.
+The edge does not reproduce KDCube's clean-path mapping and is not a catalog
+owner. It forwards and caches; the generated OpenResty route matrix owns the
+internal proc rewrite. Keep HTML revalidating and allow content-hashed
+`assets/` to use the immutable cache headers returned by the platform.
 
 The standard cache policy applies:
 
@@ -420,15 +428,12 @@ curl -sS -o /dev/null -w '%{http_code} %{content_type}\n' \
 
 Caddy is optional when several local hostnames or local TLS should reach one
 CLI-started runtime. It forwards the complete origin to KDCube; it does not
-copy the route matrix or choose an app:
+copy the route matrix or choose an app. When Caddy terminates TLS itself, its
+standard reverse-proxy headers already preserve the browser scheme:
 
 ```caddyfile
 workspace.local.test {
-  reverse_proxy 127.0.0.1:<proxy-port> {
-    header_up Host {host}
-    header_up X-Forwarded-Host {host}
-    header_up X-Forwarded-Proto {scheme}
-  }
+  reverse_proxy 127.0.0.1:<proxy-port>
 }
 ```
 
@@ -442,6 +447,15 @@ family before the file-server fallback. Application-site aliases require both
 `/sites` and `/sites/*`:
 
 ```caddyfile
+{
+  # The local ngrok agent terminates public TLS before this HTTP listener.
+  # Trust only that local hop so Caddy preserves its X-Forwarded-Proto value.
+  servers {
+    trusted_proxies static 127.0.0.1/32 ::1/128
+    trusted_proxies_strict
+  }
+}
+
 :18080 {
   encode gzip
   root * <separate-site-root>
@@ -458,6 +472,14 @@ family before the file-server fallback. Application-site aliases require both
   }
 }
 ```
+
+The trust block is required when ngrok reaches Caddy over local HTTP. Without
+it, Caddy reports that inward hop as `http`, and request-derived absolute URLs
+such as signed upload slots use the wrong scheme. The KDCube assembly must also
+select `proxy.forwarded_proto.source: trusted_x_forwarded_proto`; Caddy owns
+which peer is trusted, while OpenResty owns whether that provenance is used.
+The full operational contract and checks live in
+[Serving Local KDCube With Ngrok](../../service/cicd/ngrok-README.md#trust-the-local-ngrok-hop-in-caddy).
 
 This composition has deliberate root ownership:
 

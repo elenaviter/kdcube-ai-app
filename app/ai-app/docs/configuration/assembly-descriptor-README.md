@@ -399,6 +399,13 @@ the proxy. The deployment remains responsible for preventing an untrusted
 caller from bypassing the declared terminator. TLS configurations that terminate
 HTTPS in OpenResty use the immediate request scheme.
 
+Every proxy before OpenResty must preserve the same provenance. For example,
+when a local ngrok agent terminates TLS and forwards through Caddy, Caddy must
+trust the loopback ngrok peer; otherwise Caddy replaces ngrok's `https` value
+with its own inward `http` scheme before OpenResty can validate it. The complete
+Caddy/ngrok configuration is in
+[Serving Local KDCube With Ngrok](../service/cicd/ngrok-README.md#trust-the-local-ngrok-hop-in-caddy).
+
 ### `proxy.frame_embedding`
 
 `proxy.frame_embedding` controls whether the KDCube control-plane frontend may

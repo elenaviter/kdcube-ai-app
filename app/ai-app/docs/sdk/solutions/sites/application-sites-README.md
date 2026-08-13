@@ -157,7 +157,7 @@ control-plane mount.
 | `/sites/{alias}` | unknown alias | Return controlled `404`. |
 | any site route | invalid or unavailable catalog | Return `503` while the last valid hot catalog remains active. |
 
-## Multipage And CDN Routing
+## Multipage And Edge Routing
 
 Direct alias routes support files, directory indexes, and SPA fallback:
 
@@ -167,23 +167,26 @@ Direct alias routes support files, directory indexes, and SPA fallback:
 /sites/docs/client-route     -> index.html when no file exists
 ```
 
-A CDN that owns `docs.example.com` forwards clean public paths by rewriting
-them to the reserved host-selected surface while preserving the viewer host:
+An edge that owns `docs.example.com` forwards clean public paths to OpenResty
+while preserving the viewer host. The generated OpenResty route matrix owns
+the internal rewrite to the reserved host-selected proc surface:
 
 ```text
 viewer GET https://docs.example.com/guide/
-  -> CDN rewrite/origin request
+  -> edge forwards /guide/
+     Host: docs.example.com
+  -> OpenResty rewrites internally
      /api/integrations/site-root/guide/
-     Host or X-Forwarded-Host: docs.example.com
   -> proc hot catalog selects the application
   -> standard application UI storage serves the file
-  -> CDN may cache the response
+  -> edge may cache the response
 ```
 
-The CDN contains no site registry. Entry HTML and root-level non-hashed files
-revalidate; hashed files below `assets/` are immutable for one year. This is the
-same separation used by public content: the application declares content,
-platform storage serves it, and the CDN only forwards and caches responses.
+The edge contains no site registry or duplicate path map. Entry HTML and
+root-level non-hashed files revalidate; hashed files below `assets/` are
+immutable for one year. The app declares the site, platform storage serves it,
+OpenResty owns the stable route contract, and the edge only forwards and caches
+responses.
 
 The same ownership applies to local tunnels and Caddy. An outer proxy can
 forward the complete origin while preserving `Host`, in which case KDCube owns

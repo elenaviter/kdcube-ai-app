@@ -4,7 +4,7 @@ title: "How To Bootstrap A Local Bundle Runtime As A Coding Agent"
 summary: "Tier 1 coding-agent runbook for Claude Code, Codex, or a build-with-KDCube plugin to configure a local KDCube runtime, wire a bundle through the CLI, start ngrok when public callbacks are needed, set bundle props and secrets, register Telegram webhooks, prepare Gmail OAuth settings, validate bundle events, and report only the external steps the agent cannot complete."
 tags: ["sdk", "bundle", "tier-1", "agents", "local-runtime", "cli", "ngrok", "telegram", "gmail", "oauth"]
 keywords: ["agent local bundle setup", "configure bundle with cli", "run kdcube local runtime", "telegram webhook setup", "gmail oauth local setup", "ngrok local kdcube", "bundles yaml staged descriptors", "bundles secrets yaml", "bundle events", "event sources", "artifact rehosters", "kdcube bundle command", "autonomous runtime smoke test"]
-updated_at: 2026-06-11
+updated_at: 2026-08-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/how-to-integrate-with-kdcube-apps-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/build/how-to-navigate-kdcube-docs-README.md
@@ -558,9 +558,12 @@ Start ngrok in a separate long-lived terminal/session:
 
 ```bash
 ngrok http "$KDCUBE_LOCAL_PORT" \
-  --url "https://$NGROK_DOMAIN" \
-  --host-header=rewrite
+  --url "https://$NGROK_DOMAIN"
 ```
+
+Keep the browser's public Host unchanged. Host-selected application sites,
+frontend configuration, callbacks, and request-derived absolute URLs all use
+that origin as request context.
 
 Verify:
 

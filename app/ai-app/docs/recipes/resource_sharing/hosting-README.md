@@ -1,10 +1,10 @@
 ---
 id: repo:kdcube-ai-app/app/ai-app/docs/recipes/resource_sharing/hosting-README.md
 title: "Move Files In And Out Over MCP (Hosting Room)"
-summary: "Exact calls for an external agent to attach files to mail, upload files to Slack, and pull provider attachments/files out — signed upload slots and download URLs, bytes always over plain HTTP, never inside tool calls."
+summary: "Exact calls for an external agent to attach files to mail, upload files to Slack, and pull provider attachments/files out through signed upload slots and download URLs, with bytes kept outside tool calls."
 status: active
 tags: ["recipes", "resource-sharing", "hosting", "upload", "download", "mcp", "mail", "slack", "staged-ref", "signed-url"]
-updated_at: 2026-07-07
+updated_at: 2026-08-13
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/hosting/hosting-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/named-services-mcp-README.md
@@ -16,8 +16,9 @@ see_also:
 Use this recipe when an external agent connected to the generic
 `named_services` MCP surface needs real file bytes to cross the boundary:
 attach a file to an outgoing email, upload a file to Slack, or fetch a mail
-attachment / Slack file. Bytes travel over plain HTTP against signed,
-short-lived URLs; tool calls carry only JSON.
+attachment / Slack file. Bytes travel in HTTP request and response bodies
+through signed, short-lived URLs; tool calls carry only JSON. Public origins
+mint HTTPS URLs, while a direct local-only origin may use HTTP.
 
 Architecture, module map, and bundle wiring live in the
 [hosting solution doc](../../sdk/solutions/hosting/hosting-README.md) — this

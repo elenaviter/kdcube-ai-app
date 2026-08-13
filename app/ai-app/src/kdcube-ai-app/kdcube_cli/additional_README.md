@@ -342,10 +342,13 @@ Use the local proxy port printed by `kdcube start`, then start ngrok with the
 stable assigned domain:
 
 ```bash
-ngrok http 5173 --url https://<stable-ngrok-domain> --host-header=rewrite
+ngrok http 5173 --url https://<stable-ngrok-domain>
 ```
 
 If `kdcube start` prints another proxy port, replace `5173` with that port.
+Preserve the public browser host; do not use `--host-header=rewrite`. When
+ngrok targets Caddy before the KDCube proxy, declare the loopback ngrok peer
+as trusted in Caddy as described in the full operational recipe.
 
 For ngrok, keep the local proxy HTTP-only:
 

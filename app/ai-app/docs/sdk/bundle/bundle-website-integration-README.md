@@ -20,6 +20,40 @@ An app can build one primary `ui.main_view` and register that built tree as one
 complete website. Site registration adds routes to the existing main-view
 artifact; it does not create another frontend build.
 
+## Main View And Site Registration
+
+`ui.main_view` and `ui.main_view.site` own different parts of the contract:
+
+| Configuration | Responsibility |
+| --- | --- |
+| `ui.main_view` | Defines the app's frontend artifact: source folder, build command, built HTML/JavaScript/CSS tree, and app-scoped static serving. |
+| `ui.main_view.site` | Registers that existing artifact in the installation-wide site catalog and assigns its alias, host selectors, and optional default-root role. |
+
+With only `ui.main_view`, the built frontend remains available through its
+app-scoped routes:
+
+```text
+/api/integrations/static/{tenant}/{project}/{app-id}/...
+/api/integrations/bundles/{tenant}/{project}/{app-id}/public/static/...
+```
+
+It may be opened by the control plane or embedded by another website, but it
+does not own `/sites/*`, a hostname root, or the deployment default root.
+
+Adding an enabled `ui.main_view.site` projects the same built tree into the
+site catalog:
+
+```text
+existing ui.main_view artifact
+  +-- /sites/{alias}/                         always
+  +-- / on every matching site.hosts entry   when configured
+  `-- / as the unmatched-host fallback       when default: true
+```
+
+Omitting `site`, or setting `site.enabled: false`, leaves the main-view build
+and app-scoped routes intact while removing website-catalog registration. Site
+registration does not build or store a second copy of the frontend.
+
 ## Current Cardinality
 
 ```text
