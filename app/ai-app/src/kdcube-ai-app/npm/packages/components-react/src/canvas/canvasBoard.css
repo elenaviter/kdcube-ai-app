@@ -2003,3 +2003,173 @@ button {
   background: var(--red) !important;
   color: #fff !important;
 }
+
+/* --- Chat-parity reading surface (2026-08-13) ------------------------------ */
+/* Pin previews read like the same content in chat: selectable text, chat's
+   inline-code chip, and fenced code as the chat snippet plate (dark body,
+   language tab, copy button). Colors mirror the chat widget's design system. */
+
+/* Text in previews is freely selectable; the card drags from its chrome. */
+.canvas-card-note-body,
+.canvas-card-flyout,
+.canvas-card-flyout-preview-text,
+.canvas-card-flyout-kv,
+.canvas-info-body {
+  user-select: text;
+}
+.canvas-card-text-zone h3,
+.canvas-card-text-zone p {
+  user-select: text;
+  cursor: text;
+}
+
+/* Inline code chip — chat's .markdown-body code */
+.canvas-md code {
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.92em;
+}
+
+/* Fenced code plate — chat's .k-snippet.k-snippet-dark */
+.canvas-code {
+  margin: 0 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: var(--r-md);
+  background: #0f1b26;
+  color: #d8eceb;
+  overflow: hidden;
+}
+.canvas-md > .canvas-code:last-child { margin-bottom: 0; }
+.canvas-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 4px 3px 10px;
+  background: #14222f;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  color: #bfd0d9;
+  font-size: 11px;
+}
+.canvas-code-lang {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: #8fd8d2;
+}
+.canvas-code pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  overflow: auto;
+  user-select: text;
+  cursor: text;
+}
+.canvas-code pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+}
+/* Copy button — chat's .k-tinybtn on the dark plate */
+.canvas-code-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  width: 22px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: #bfd0d9;
+  cursor: pointer;
+  flex: 0 0 auto;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.canvas-code-copy:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+.canvas-code-copy[data-flash="true"] { color: #4fc38a; }
+
+/* Image pins — chat-style framed thumbnail in the card, larger in the flyout */
+.canvas-card-image-preview {
+  display: block;
+  width: 100%;
+  max-height: 150px;
+  object-fit: contain;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+}
+.canvas-card-flyout-image {
+  display: block;
+  width: 100%;
+  max-height: 260px;
+  object-fit: contain;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  margin-bottom: 8px;
+}
+
+/* Markdown images inside notes/descriptions/comments */
+.canvas-md-image {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  background: var(--surface-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  margin: 4px 0 8px;
+}
+
+/* HTML pins — sandboxed live preview in the flyout */
+.canvas-card-flyout-html {
+  display: block;
+  width: 100%;
+  height: 260px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: #fff;
+  margin-bottom: 8px;
+}
+
+/* Bare-URL link preview: favicon + host + url (chat's result-row favicon) */
+.canvas-link-preview {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 2px 0 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  text-decoration: none;
+  user-select: text;
+}
+.canvas-link-preview:hover { border-color: var(--line); background: var(--surface-3); }
+.canvas-link-favicon { flex: 0 0 auto; width: 16px; height: 16px; border-radius: 3px; }
+.canvas-link-host {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.canvas-link-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--blue-dark);
+}

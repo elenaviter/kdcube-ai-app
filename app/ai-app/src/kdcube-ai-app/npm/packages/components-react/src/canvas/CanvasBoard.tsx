@@ -18,7 +18,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import type { CanvasObjectActionName, CanvasObjectActionResponse, CanvasPatchInput, CanvasPatchOp, CanvasPatchResponse, CanvasReadInput, CanvasReadResponse, CanvasSearchInput, CanvasSearchItem, CanvasSearchResponse } from '@kdcube/components-core/canvas'
 import { namespacePresentationCandidates, namespaceStyleForKey, normalizeContext, normalizeContextMessage, type CanvasContextItem } from '@kdcube/components-core/canvas'
 import { parseIngressMessage, type CanvasIngressMessage } from '@kdcube/components-core/canvas'
@@ -265,11 +265,69 @@ function decodeBase64ToText(value: string): string {
 // Supports headings, bold/italic, inline code, code fences, links, blockquotes
 // and ordered/unordered lists — enough for canvas text, descriptions, and
 // comments without pulling a markdown library into the shared component.
+// Fenced blocks render as chat-parity code plates (dark body, language tab,
+// copy button) so a pin preview reads like the same content in chat.
+
+// Chat-parity copy button for fenced code blocks: clipboard icon, 1.2s check
+// flash. Stops pointer events so the copy click never drags/selects the card.
+function CodeCopyBtn({ value }: { value: string }) {
+  const [done, setDone] = useState(false)
+  return (
+    <button
+      type="button"
+      className="canvas-code-copy"
+      title="Copy code"
+      aria-label="Copy code"
+      data-flash={done ? 'true' : undefined}
+      onClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        void copyTextToClipboard(value).then((ok) => {
+          if (!ok) return
+          setDone(true)
+          window.setTimeout(() => setDone(false), 1200)
+        })
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      {done ? <Check size={12} /> : <Copy size={12} />}
+    </button>
+  )
+}
+
+// Chat-parity link preview for bare URLs: S2 favicon by hostname (self-hiding
+// on error, like chat's FaviconImg), host label, and the clickable URL.
+function LinkPreview({ url }: { url: string }) {
+  let host = ''
+  try { host = new URL(url).hostname } catch { /* not a URL after all */ }
+  if (!host) return <a href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+  return (
+    <a className="canvas-link-preview" href={url} target="_blank" rel="noopener noreferrer" title={url}>
+      <img
+        className="canvas-link-favicon"
+        src={`https://www.google.com/s2/favicons?domain=${encodeURIComponent(host)}&sz=32`}
+        alt=""
+        width={16}
+        height={16}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        onError={(event) => { (event.currentTarget as HTMLImageElement).style.visibility = 'hidden' }}
+      />
+      <span className="canvas-link-host">{host}</span>
+      <span className="canvas-link-url">{url}</span>
+    </a>
+  )
+}
+
+const BARE_URL_RE = /^https?:\/\/\S+$/i
+
 function renderInlineMarkdown(text: string): ReactNode[] {
   const out: ReactNode[] = []
   let rest = text
   let key = 0
-  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\n]+\*|_[^_\n]+_)|(\[[^\]]+\]\([^)\s]+\))/
+  const re = /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*\n]+\*|_[^_\n]+_)|(!\[[^\]]*\]\([^)\s]+\))|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s<>()]+)/
   while (rest.length) {
     const m = re.exec(rest)
     if (!m) {
@@ -280,10 +338,24 @@ function renderInlineMarkdown(text: string): ReactNode[] {
     const tok = m[0]
     if (tok.startsWith('`')) out.push(<code key={key++}>{tok.slice(1, -1)}</code>)
     else if (tok.startsWith('**')) out.push(<strong key={key++}>{tok.slice(2, -2)}</strong>)
+    else if (tok.startsWith('![')) {
+      // Markdown image: renders for web/data URLs (a note can embed an image
+      // by URL or pasted data URI); other schemes fall back to the alt text.
+      const im = /!\[([^\]]*)\]\(([^)\s]+)\)/.exec(tok)
+      const src = im?.[2] || ''
+      if (im && /^(https?:|data:image\/)/i.test(src)) {
+        out.push(<img key={key++} className="canvas-md-image" src={src} alt={im[1] || ''} loading="lazy" draggable={false} />)
+      } else {
+        out.push(<Fragment key={key++}>{im?.[1] || tok}</Fragment>)
+      }
+    }
     else if (tok.startsWith('[')) {
       const lm = /\[([^\]]+)\]\(([^)\s]+)\)/.exec(tok)
       if (lm) out.push(<a key={key++} href={lm[2]} target="_blank" rel="noopener noreferrer">{lm[1]}</a>)
       else out.push(<Fragment key={key++}>{tok}</Fragment>)
+    } else if (/^https?:\/\//i.test(tok)) {
+      // Bare URL — autolink (a lone-URL paragraph gets the richer preview).
+      out.push(<a key={key++} href={tok} target="_blank" rel="noopener noreferrer">{tok}</a>)
     } else out.push(<em key={key++}>{tok.slice(1, -1)}</em>)
     rest = rest.slice(m.index + tok.length)
   }
@@ -302,11 +374,21 @@ function Markdown({ text }: { text: string }) {
     const line = lines[i]
     if (line.trim() === '') { i++; continue }
     if (/^```/.test(line)) {
+      const lang = line.replace(/^`+/, '').trim().split(/\s+/)[0] || ''
       const buf: string[] = []
       i++
       while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++ }
       if (i < lines.length) i++
-      blocks.push(<pre key={key++}><code>{buf.join('\n')}</code></pre>)
+      const codeText = buf.join('\n')
+      blocks.push(
+        <div className="canvas-code" key={key++}>
+          <div className="canvas-code-head">
+            <span className="canvas-code-lang">{lang || 'text'}</span>
+            <CodeCopyBtn value={codeText} />
+          </div>
+          <pre><code>{codeText}</code></pre>
+        </div>,
+      )
       continue
     }
     const h = /^(#{1,6})\s+(.*)$/.exec(line)
@@ -337,7 +419,21 @@ function Markdown({ text }: { text: string }) {
     }
     const buf: string[] = []
     while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) { buf.push(lines[i]); i++ }
-    blocks.push(<p key={key++}>{renderInlineMarkdown(buf.join(' '))}</p>)
+    // A paragraph that is exactly one bare URL renders as a link preview
+    // (favicon + host + url) instead of plain text.
+    if (buf.length === 1 && BARE_URL_RE.test(buf[0].trim())) {
+      blocks.push(<LinkPreview key={key++} url={buf[0].trim()} />)
+      continue
+    }
+    // Preserve single line breaks inside a paragraph (chat renders markdown
+    // with the line-breaks plugin; a note's hand-wrapped lines stay lines).
+    blocks.push(
+      <p key={key++}>
+        {buf.map((l, j) => (
+          <Fragment key={j}>{j ? <br /> : null}{renderInlineMarkdown(l)}</Fragment>
+        ))}
+      </p>,
+    )
   }
   return <div className="canvas-md">{blocks}</div>
 }
@@ -403,6 +499,29 @@ function InlineMarkdownEditor({
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           autoFocus={autoFocus}
+          /* Paste an image from the clipboard: it lands as inline markdown
+           * (data URI) at the caret and renders in the note. Modest size cap
+           * — a note is a hosted text object, not a byte store. */
+          onPaste={(event) => {
+            const image = Array.from(event.clipboardData?.files || []).find((f) => f.type.startsWith('image/'))
+            if (!image) return
+            event.preventDefault()
+            if (image.size > 2 * 1024 * 1024) {
+              console.warn('[kdcube.canvas] pasted image over 2MB — drop it on the board as a file pin instead')
+              return
+            }
+            const el = event.currentTarget
+            const start = el.selectionStart ?? value.length
+            const end = el.selectionEnd ?? value.length
+            const reader = new FileReader()
+            reader.onload = () => {
+              const dataUrl = typeof reader.result === 'string' ? reader.result : ''
+              if (!dataUrl.startsWith('data:image/')) return
+              const snippet = `![pasted image](${dataUrl})`
+              onChange(`${value.slice(0, start)}${snippet}${value.slice(end)}`)
+            }
+            reader.readAsDataURL(image)
+          }}
         />
       ) : (
         <div className="canvas-mde-preview">
@@ -1268,6 +1387,91 @@ export function CanvasBoard({
   const selectedVisibleCards = useMemo(() => (
     visibleCards.filter((card) => selectedCardIds.has(card.id))
   ), [selectedCardIds, visibleCards])
+
+  // --- Image pins: chat-parity thumbnail previews ---------------------------
+  // An image-mime card fetches its bytes once via the object `download`
+  // action (the same non-side-effect path user-text bodies use) and shows a
+  // real thumbnail instead of a bare filename. data: payloads render
+  // directly; download URLs are fetched with credentials into a blob URL.
+  const [imageUrlByCard, setImageUrlByCard] = useState<Record<string, string>>({})
+  const imageInFlightRef = useRef<Set<string>>(new Set())
+  const imageUrlByCardRef = useRef<Record<string, string>>({})
+  useEffect(() => { imageUrlByCardRef.current = imageUrlByCard }, [imageUrlByCard])
+  useEffect(() => () => {
+    for (const url of Object.values(imageUrlByCardRef.current)) {
+      if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+    }
+  }, [])
+
+  // HTML pins (text/html): fetch the document once and render it in the
+  // flyout as a sandboxed iframe — same opaque-origin sandbox chat uses for
+  // canvas html payloads (scripts run, but cannot reach the parent frame).
+  const [htmlByCard, setHtmlByCard] = useState<Record<string, string>>({})
+  const htmlInFlightRef = useRef<Set<string>>(new Set())
+  const htmlByCardRef = useRef<Record<string, string>>({})
+  useEffect(() => { htmlByCardRef.current = htmlByCard }, [htmlByCard])
+
+  useEffect(() => {
+    if (!onObjectAction) return
+    const candidates = visibleCards.filter((card) => (
+      /^(text\/html|application\/xhtml\+xml)/i.test(String(card.mime || '')) &&
+      htmlByCardRef.current[card.id] === undefined &&
+      !htmlInFlightRef.current.has(card.id)
+    )).slice(0, 12)
+    candidates.forEach((card) => {
+      htmlInFlightRef.current.add(card.id)
+      void (async () => {
+        let text = ''
+        try {
+          const res = await onObjectAction(card, 'download')
+          if (res && res.ok) {
+            if (typeof res.text === 'string' && res.text) text = res.text
+            else if (typeof res.content_base64 === 'string' && res.content_base64) text = decodeBase64ToText(res.content_base64)
+            else if (typeof res.download_url === 'string' && res.download_url) {
+              try { text = await (await fetch(res.download_url, { credentials: 'include' })).text() } catch { /* stay empty */ }
+            }
+          }
+        } catch { /* preview is best-effort */ }
+        htmlInFlightRef.current.delete(card.id)
+        if (!mountedRef.current) return
+        setHtmlByCard((current) => ({ ...current, [card.id]: text }))
+      })()
+    })
+  }, [onObjectAction, visibleCards])
+
+  useEffect(() => {
+    if (!onObjectAction) return
+    const candidates = visibleCards.filter((card) => (
+      String(card.mime || '').startsWith('image/') &&
+      imageUrlByCardRef.current[card.id] === undefined &&
+      !imageInFlightRef.current.has(card.id)
+    )).slice(0, 24)
+    candidates.forEach((card) => {
+      imageInFlightRef.current.add(card.id)
+      void (async () => {
+        let url = ''
+        try {
+          const res = await onObjectAction(card, 'download')
+          if (res && res.ok) {
+            const b64 = typeof res.content_base64 === 'string' ? res.content_base64 : ''
+            if (b64) {
+              url = b64.startsWith('data:')
+                ? b64
+                : `data:${card.mime || 'image/png'};base64,${b64.includes(',') ? b64.slice(b64.indexOf(',') + 1) : b64}`
+            } else if (typeof res.download_url === 'string' && res.download_url) {
+              try {
+                const blob = await (await fetch(res.download_url, { credentials: 'include' })).blob()
+                url = URL.createObjectURL(blob)
+              } catch { url = res.download_url }
+            }
+          }
+        } catch { /* thumbnail is best-effort; the card still shows its text */ }
+        imageInFlightRef.current.delete(card.id)
+        if (!mountedRef.current) return
+        setImageUrlByCard((current) => ({ ...current, [card.id]: url }))
+      })()
+    })
+  }, [onObjectAction, visibleCards])
   const selectedBounds = useMemo(() => cardsBounds(selectedVisibleCards), [selectedVisibleCards])
 
   // --- Pin search (hybrid; results applied as a temporary board filter) ---
@@ -1760,6 +1964,17 @@ export function CanvasBoard({
     }
     if (!selected.length) return
     onDropFiles(selected, newCardRect(260, 120))
+  }
+
+  // Paste onto the board: clipboard images (screenshots, copied images)
+  // become file pins at the default new-card spot — same path as drop/pick.
+  function handleBoardPaste(event: ReactClipboardEvent<HTMLElement>) {
+    const target = event.target instanceof HTMLElement ? event.target : null
+    if (target?.closest('textarea, input, [contenteditable="true"]')) return
+    const files = acceptCanvasFiles(Array.from(event.clipboardData?.files || []).filter(Boolean))
+    if (!files.length) return
+    event.preventDefault()
+    onDropFiles(files, newCardRect(260, 120))
   }
 
   function handleExternalDrop(event: DragEvent<HTMLElement>) {
@@ -2524,6 +2739,10 @@ export function CanvasBoard({
           ref={boardRef}
           className={`canvas-board ${externalDropReady ? 'external-drop-ready' : ''}`}
           aria-label="Canvas board"
+          /* Focusable so a clipboard paste (screenshot → pin) reaches the
+           * board without any prior text-field focus. */
+          tabIndex={-1}
+          onPaste={handleBoardPaste}
           onPointerDown={startBoardGesture}
           onDragOver={(event) => {
             if (dragState) {
@@ -2627,6 +2846,8 @@ export function CanvasBoard({
             const userTextLoading = Boolean(userTextLoadingByCard[card.id])
             const presentation = cardPresentation(card, namespaceStyles, resolverState)
             const visibleSummary = card.summary || (isObjectRefCard ? card.ref : '')
+            const cardImageUrl = String(card.mime || '').startsWith('image/') ? (imageUrlByCard[card.id] || '') : ''
+            const cardHtmlDoc = /^(text\/html|application\/xhtml\+xml)/i.test(String(card.mime || '')) ? (htmlByCard[card.id] || '') : ''
             const providerAttachmentContexts = providerObjectAttachmentContexts(card, resolverState)
             return (
               <article
@@ -2776,8 +2997,14 @@ export function CanvasBoard({
                     ) : (
                       <div
                         className="canvas-card-note-body"
-                        /* Wheel-scroll to read; the card drags from elsewhere. */
+                        /* Wheel-scroll to read; the card drags from elsewhere.
+                         * The pointer/drag guards below make text freely
+                         * selectable: the card's draggable ancestor would
+                         * otherwise turn a text-drag into a card drag. */
                         onWheel={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
                       >
                         {userTextLoading && userTextBody === undefined ? (
                           <p className="canvas-card-note-empty">Loading…</p>
@@ -2797,9 +3024,24 @@ export function CanvasBoard({
                     onPointerMove={moveDescriptionHold}
                     onPointerUp={clearDescriptionHold}
                     onPointerCancel={clearDescriptionHold}
+                    /* Text-drag selects instead of dragging the card. */
+                    onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
                   >
                     <h3>{card.title}</h3>
-                    <p>{visibleSummary}</p>
+                    {cardImageUrl ? (
+                      <img
+                        className="canvas-card-image-preview"
+                        src={cardImageUrl}
+                        alt={card.title}
+                        loading="lazy"
+                        draggable={false}
+                        onDragStart={(event) => event.preventDefault()}
+                      />
+                    ) : BARE_URL_RE.test((visibleSummary || '').trim()) ? (
+                      <LinkPreview url={(visibleSummary || '').trim()} />
+                    ) : (
+                      <p>{visibleSummary}</p>
+                    )}
                   </div>
                 )}
                 <span className="canvas-card-kind">
@@ -2841,6 +3083,9 @@ export function CanvasBoard({
                   style={pinned ? { maxHeight: expandMaxHeight } : undefined}
                   onClick={(event) => event.stopPropagation()}
                   onPointerDown={(event) => event.stopPropagation()}
+                  /* Selecting text in the preview/description/comments must
+                   * not start a card drag (attachments keep their own drag). */
+                  onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
                 >
                   {resolverLoading ? <p className="canvas-card-flyout-state">Resolving…</p> : null}
                   {!resolverLoading && resolverNotice ? (
@@ -2855,10 +3100,32 @@ export function CanvasBoard({
                         {card.summary ? <div><dt>preview</dt><dd>{card.summary}</dd></div> : null}
                       </dl>
                     ) : wantsDownload ? (
-                      <dl className="canvas-card-flyout-kv">
-                        <div><dt>file</dt><dd>{card.ref || card.title}</dd></div>
-                        <div><dt>mime</dt><dd>{card.mime || '—'}</dd></div>
-                      </dl>
+                      <>
+                        {cardImageUrl ? (
+                          <img
+                            className="canvas-card-flyout-image"
+                            src={cardImageUrl}
+                            alt={card.title}
+                            loading="lazy"
+                            draggable={false}
+                            onDragStart={(event) => event.preventDefault()}
+                          />
+                        ) : null}
+                        {cardHtmlDoc ? (
+                          <iframe
+                            className="canvas-card-flyout-html"
+                            /* Chat's canvas-html sandbox: scripts run in an
+                             * opaque origin and cannot reach this frame. */
+                            sandbox="allow-scripts allow-popups"
+                            srcDoc={cardHtmlDoc}
+                            title={card.title}
+                          />
+                        ) : null}
+                        <dl className="canvas-card-flyout-kv">
+                          <div><dt>file</dt><dd>{card.ref || card.title}</dd></div>
+                          <div><dt>mime</dt><dd>{card.mime || '—'}</dd></div>
+                        </dl>
+                      </>
                     ) : card.summary ? (
                       <pre className="canvas-card-flyout-preview-text">{card.summary}</pre>
                     ) : null

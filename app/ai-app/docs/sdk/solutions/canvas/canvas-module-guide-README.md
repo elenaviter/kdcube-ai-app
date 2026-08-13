@@ -167,6 +167,40 @@ description/comments, and the agent contract is the `cnv` named-service upsert
 surface (`canvas.card` for content/description changes and `canvas.card.comment`
 for comments).
 
+Chat-parity markdown rendering. Rendered notes, descriptions, and comments read
+like the same content in chat:
+
+- fenced code blocks render as the chat code plate — dark body, a language tab
+  from the fence info string, and a copy button (clipboard with check flash);
+  inline code uses the chat chip style, and single line breaks inside a
+  paragraph are preserved;
+- `![alt](url)` renders a framed inline image for `https:` and `data:image/`
+  sources (other schemes degrade to the alt text — `conv:fi:` refs are not
+  client-resolvable inside the note renderer);
+- bare URLs autolink, and a line that is exactly one URL renders as a link
+  preview — favicon (by hostname, self-hiding on error), host, and the
+  clickable URL. A pin whose summary is exactly a URL gets the same preview
+  in its card body.
+
+Selectable preview text. Text in pin previews — note bodies, titles and
+summaries, and everything in the expanded flyout including code plates — is
+freely selectable. Because the card element itself is draggable, the text
+zones cancel the native drag so a text-drag selects; the card still drags
+from its header row, kind strip, and grip.
+
+Media pins. A pin whose mime is `image/*` shows a framed thumbnail in the
+card body and a larger view in the expanded flyout; a `text/html` pin renders
+its document live in the flyout inside a sandboxed iframe
+(`sandbox="allow-scripts allow-popups"`, opaque origin — scripts run but
+cannot reach the host frame). Both fetch bytes once through the non-side-effect
+`download` object action, the same path used for user-text bodies.
+
+Clipboard paste. Pasting an image with the board focused creates a file pin
+through the same accept/upload path as drag-and-drop. Pasting an image inside
+the note editor inserts it at the caret as inline markdown
+(`![pasted image](data:…)`, capped at 2 MB — larger images belong on the
+board as file pins).
+
 Board help. An info (ⓘ) control opens an HTML help panel that tells scene users
 what the board is for. The host supplies the HTML; when none is supplied the
 component shows a built-in default covering the general concept plus the

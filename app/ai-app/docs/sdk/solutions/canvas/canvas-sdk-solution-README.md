@@ -376,11 +376,14 @@ revision shape.
 
 ## UI Component
 
-The SDK ships source for a reusable React component:
+The reusable React component ships as workspace npm packages (the Pin Board
+widget materializes them under its `_shared/` at bundle build):
 
 ```text
-sdk/solutions/canvas/ui/component/src
+npm/packages/components-react/src/canvas
   CanvasBoard.tsx
+  canvasBoard.css
+npm/packages/components-core/src/canvas
   canvasModel.ts
   canvasTypes.ts
   contextTypes.ts
@@ -433,9 +436,12 @@ User-authored card content is edited in place, never through a browser
 
 All three use a shared markdown editor with a Raw / Rendered switch. The
 component carries a small self-contained markdown renderer (headings, bold,
-italic, inline code, fenced code, links, blockquotes, and lists), so descriptions
-and comments render as markdown without pulling a markdown library into the
-shared source.
+italic, inline code, fenced code with chat-style copyable code plates, images,
+links with bare-URL previews, blockquotes, and lists), so descriptions and
+comments render as markdown without pulling a markdown library into the shared
+source. The reading affordances — chat-parity rendering, selectable preview
+text, image/HTML pin previews, clipboard image paste — are described in
+[Board UI Affordances](./canvas-module-guide-README.md#board-ui-affordances).
 
 ### Board Help (`infoHtml`)
 
