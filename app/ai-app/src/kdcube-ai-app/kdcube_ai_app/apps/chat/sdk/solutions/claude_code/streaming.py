@@ -358,7 +358,10 @@ def _plain_text_of_blocks(value: Any) -> str:
 #: the agent just did; ``Bash · git status --porcelain`` does. One line per tool
 #: family, keyed by the argument that carries the meaning.
 _TOOL_SUBJECT_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("bash", ("command",)),
+    # Bash carries a human `description` beside the command — "Show working tree
+    # status" reads better in a list than the pipeline that produces it, and the
+    # command itself is one click away in the row body.
+    ("bash", ("description", "command")),
     ("read", ("file_path", "path", "notebook_path")),
     ("write", ("file_path", "path")),
     ("edit", ("file_path", "path")),
@@ -368,7 +371,10 @@ _TOOL_SUBJECT_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("websearch", ("query",)),
     ("task", ("description", "prompt")),
 )
-TOOL_TITLE_SUBJECT_CHARS = 96
+#: A row is scanned, not read: the list is narrow and a long subject is cut
+#: mid-word, which tells the reader less than a short one. The full arguments
+#: live in the row's body.
+TOOL_TITLE_SUBJECT_CHARS = 52
 
 
 def claude_tool_activity_title(name: str, args: Any) -> str:
@@ -401,5 +407,11 @@ def claude_tool_activity_title(name: str, args: Any) -> str:
         return label
     subject = " ".join(subject.split())
     if len(subject) > TOOL_TITLE_SUBJECT_CHARS:
-        subject = subject[: TOOL_TITLE_SUBJECT_CHARS - 1] + "…"
+        if "/" in subject and " " not in subject:
+            # A path: keep the END, which is the file being worked on. Cutting
+            # the front of `/bundles/kdcube/…/publications/README.md` loses the
+            # only part that identifies it.
+            subject = "…" + subject[-(TOOL_TITLE_SUBJECT_CHARS - 1):]
+        else:
+            subject = subject[: TOOL_TITLE_SUBJECT_CHARS - 1] + "…"
     return f"{label} · {subject}"

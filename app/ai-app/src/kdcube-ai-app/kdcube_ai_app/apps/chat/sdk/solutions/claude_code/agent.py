@@ -523,7 +523,8 @@ class ClaudeCodeAgent:
                 structured_buffer = structured_buffer[newline_index + 1 :]
                 await _ingest_structured_line(line)
 
-        tool_titles: dict[str, str] = {}
+        tool_steps: dict[str, tuple[str, str]] = {}
+        tool_index = 0
 
         async def _consume_stdout() -> None:
             nonlocal snapshot
@@ -538,6 +539,7 @@ class ClaudeCodeAgent:
             nonlocal api_duration_ms
             nonlocal raw_result_event
             nonlocal resolved_from_stream
+            nonlocal tool_index
 
             assert process.stdout is not None
             async for line in _iter_stream_text_lines(process.stdout):
@@ -593,23 +595,32 @@ class ClaudeCodeAgent:
                 for call in extract_tool_uses_from_claude_event(parsed):
                     title = claude_tool_activity_title(call["name"], call.get("input"))
                     _sig, body = tool_call_views(call["name"], call.get("input"))
+                    # A step KEY identifies a row; sharing one across every tool
+                    # call made the list show a single row that rewrote itself as
+                    # the agent worked. One key per call, so the reader gets a
+                    # history instead of a flicker — and the result below updates
+                    # ITS OWN row by reusing the same key.
+                    tool_index += 1
+                    step_key = f"tool.{tool_index}"
                     if call.get("id"):
-                        tool_titles[str(call["id"])] = title
+                        tool_steps[str(call["id"])] = (step_key, title)
                     await self._emit_step(
-                        step="tool", status="running", title=title,
+                        step=step_key, status="running", title=title,
                         data={"markdown": body, "tool": call["name"]},
                     )
                     await self._emit_activity_line(f"→ `{title}`")
 
                 for done in extract_tool_results_from_claude_event(parsed):
-                    title = tool_titles.pop(str(done.get("tool_use_id") or ""), "tool")
+                    step_key, title = tool_steps.pop(
+                        str(done.get("tool_use_id") or ""), (f"tool.{tool_index}", "tool")
+                    )
                     total = int(done.get("total_chars") or 0)
                     size = f"{total:,} chars" if total else "no output"
                     head = f"**{title}** — {size}" + (" · showing the head" if done.get("truncated") else "")
                     text_out = str(done.get("text") or "")
                     body = f"{head}\n\n```\n{text_out}\n```" if text_out else head
                     await self._emit_step(
-                        step="tool",
+                        step=step_key,
                         status="error" if done.get("is_error") else "completed",
                         title=title,
                         data={"markdown": body, "chars": total, "error": bool(done.get("is_error"))},

@@ -997,8 +997,13 @@ def test_an_activity_row_says_what_the_agent_did():
         claude_tool_activity_title,
     )
 
+    # With a human description present, that is the row's subject; the command
+    # itself is in the row body.
     assert claude_tool_activity_title(
         "Bash", {"command": "git status --porcelain", "description": "Show working tree status"}
+    ) == "Bash · Show working tree status"
+    assert claude_tool_activity_title(
+        "Bash", {"command": "git status --porcelain"}
     ) == "Bash · git status --porcelain"
     assert claude_tool_activity_title(
         "Read", {"file_path": "/store/publications/README.md"}
@@ -1013,3 +1018,27 @@ def test_an_activity_row_says_what_the_agent_did():
     long_cmd = "python3 " + "x" * 300
     title = claude_tool_activity_title("Bash", {"command": long_cmd})
     assert title.startswith("Bash · python3 ") and title.endswith("…")
+
+
+def test_a_long_subject_keeps_the_part_that_identifies_it():
+    """LIVE: the row read `Bash · ls -a | head -20; echo "=== pkg ro…` — cut
+    before anything that says what the agent did. A row is scanned, not read."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        TOOL_TITLE_SUBJECT_CHARS,
+        claude_tool_activity_title,
+    )
+
+    # Bash carries a human description beside the command: prefer it.
+    assert claude_tool_activity_title(
+        "Bash",
+        {"command": 'ls -a | head -20; echo "=== pkg root ==="; cat AGENTS.md',
+         "description": "List the store and read the router"},
+    ) == "Bash · List the store and read the router"
+
+    # A path keeps its TAIL — the mount point identifies nothing.
+    title = claude_tool_activity_title(
+        "Read", {"file_path": "/bundles/kdcube/applications/kdcube-docs/procedures/"
+                              "synthesis/press.linkedin@2026-08-13/publications/README.md"}
+    )
+    assert title.endswith("publications/README.md")
+    assert len(title) <= len("Read · ") + TOOL_TITLE_SUBJECT_CHARS
