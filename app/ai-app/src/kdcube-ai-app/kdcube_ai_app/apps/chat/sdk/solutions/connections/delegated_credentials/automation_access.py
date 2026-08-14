@@ -805,6 +805,26 @@ class AutomationAccessService:
         if not selected_grants:
             return {"ok": False, "error": "delegated_access_requires_resource_grants"}
 
+        # The resource FIRST: a claim for an endpoint this deployment never put
+        # in the hub's catalog is not "a claim you may not delegate" — it is an
+        # endpoint nobody here has decided to expose, and the two need different
+        # answers. The hub's catalog is a SUBSET of what apps declare: an app
+        # states what its surface can delegate, this deployment decides how much
+        # of that may be asked for here, and until it says so the answer is no.
+        try:
+            resource_configs = self._configured_resources(selected_resources) if self._config.resources else ()
+        except ValueError:
+            return {
+                "ok": False,
+                "error": "delegated_access_unknown_resources",
+                "resources": selected_resources,
+                "message": (
+                    "This deployment has not made that endpoint delegable. Add it to "
+                    "connection-hub@1-0 `connections.delegated_credentials.oauth.resources`, "
+                    "with the tools it may grant, before access to it can be asked for."
+                ),
+            }
+
         inventory = await self._available_inventory(user, requested_grants=selected_grants)
         available = set(inventory.grant_names())
         denied = [grant for grant in selected_grants if grant not in available]
@@ -813,12 +833,12 @@ class AutomationAccessService:
                 "ok": False,
                 "error": "delegated_access_grants_not_delegable",
                 "grants": denied,
+                "message": (
+                    "These permissions are not among the ones this deployment allows for "
+                    "the endpoint. They are configured in connection-hub@1-0 "
+                    "`connections.delegated_credentials.oauth.resources`, per tool."
+                ),
             }
-
-        try:
-            resource_configs = self._configured_resources(selected_resources) if self._config.resources else ()
-        except ValueError:
-            return {"ok": False, "error": "delegated_access_unknown_resources", "resources": selected_resources}
         admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
         if admin_required and not _is_platform_admin(user):
             return {
@@ -1137,14 +1157,34 @@ class AutomationAccessService:
         if not selected_grants:
             # Removing everything is a revoke, not an edit.
             return {"ok": False, "error": "delegated_access_requires_resource_grants"}
-        inventory = await self._available_inventory(user, requested_grants=selected_grants)
-        denied = [grant for grant in selected_grants if grant not in set(inventory.grant_names())]
-        if denied:
-            return {"ok": False, "error": "delegated_access_grants_not_delegable", "grants": denied}
+        # Same order as create_access: an endpoint this deployment never made
+        # delegable is a different answer from a permission it will not delegate.
         try:
             resource_configs = self._configured_resources(selected_resources) if self._config.resources else ()
         except ValueError:
-            return {"ok": False, "error": "delegated_access_unknown_resources", "resources": selected_resources}
+            return {
+                "ok": False,
+                "error": "delegated_access_unknown_resources",
+                "resources": selected_resources,
+                "message": (
+                    "This deployment has not made that endpoint delegable. Add it to "
+                    "connection-hub@1-0 `connections.delegated_credentials.oauth.resources`, "
+                    "with the tools it may grant, before access to it can be asked for."
+                ),
+            }
+        inventory = await self._available_inventory(user, requested_grants=selected_grants)
+        denied = [grant for grant in selected_grants if grant not in set(inventory.grant_names())]
+        if denied:
+            return {
+                "ok": False,
+                "error": "delegated_access_grants_not_delegable",
+                "grants": denied,
+                "message": (
+                    "These permissions are not among the ones this deployment allows for "
+                    "the endpoint. They are configured in connection-hub@1-0 "
+                    "`connections.delegated_credentials.oauth.resources`, per tool."
+                ),
+            }
         admin_required = [cfg.resource for cfg in resource_configs if cfg.admin_only]
         if admin_required and not _is_platform_admin(user):
             return {"ok": False, "error": "delegated_access_resource_requires_admin", "resources": admin_required}

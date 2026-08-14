@@ -496,11 +496,12 @@ async def test_automation_access_rejects_non_delegable_grant():
         resource_grants={"https://example.test/mcp": ["records:read"]},
     )
 
-    assert denied == {
-        "ok": False,
-        "error": "delegated_access_grants_not_delegable",
-        "grants": ["records:read"],
-    }
+    assert denied["ok"] is False
+    assert denied["error"] == "delegated_access_grants_not_delegable"
+    assert denied["grants"] == ["records:read"]
+    # The refusal says WHERE this deployment decides — the hub catalog is
+    # the subset of what apps expose that may be asked for here.
+    assert "connection-hub@1-0" in denied["message"]
 
 
 @pytest.mark.asyncio
@@ -532,11 +533,12 @@ async def test_automation_access_requires_configured_resource_when_catalog_exist
         label="Unknown resource",
         resource_grants={"https://example.test/other": ["records:read"]},
     )
-    assert unknown == {
-        "ok": False,
-        "error": "delegated_access_unknown_resources",
-        "resources": ["https://example.test/other"],
-    }
+    assert unknown["ok"] is False
+    assert unknown["error"] == "delegated_access_unknown_resources"
+    assert unknown["resources"] == ["https://example.test/other"]
+    # An endpoint nobody configured is NOT "a permission you may not have":
+    # it is one this deployment never decided to expose, and the answer says so.
+    assert "connection-hub@1-0" in unknown["message"]
 
 
 @pytest.mark.asyncio
@@ -564,11 +566,12 @@ async def test_automation_access_all_resources_is_admin_only():
         label="All APIs",
         resource_grants={"*": ["kdcube:role:super-admin"]},
     )
-    assert denied == {
-        "ok": False,
-        "error": "delegated_access_grants_not_delegable",
-        "grants": ["kdcube:role:super-admin"],
-    }
+    assert denied["ok"] is False
+    assert denied["error"] == "delegated_access_grants_not_delegable"
+    assert denied["grants"] == ["kdcube:role:super-admin"]
+    # The refusal says WHERE this deployment decides — the hub catalog is
+    # the subset of what apps expose that may be asked for here.
+    assert "connection-hub@1-0" in denied["message"]
 
     admin = {
         "user_id": "platform-admin-1",
