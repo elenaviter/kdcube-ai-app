@@ -2819,7 +2819,17 @@ class BaseEntrypoint:
         # First-turn conversation title (set on `result`/`state` by a bundle's
         # execute_core). Threaded through so the recorder persists it onto the
         # conversation timeline the conversation list reads. Empty on later turns.
-        conversation_title = str((result or {}).get("conversation_title") or "").strip()
+        # The title may be stashed on either side: a rich harness returns it on
+        # `result`, while a run-to-completion turn names the conversation BEFORE
+        # the agent runs (so the name survives a failed turn) and leaves it on
+        # `state`. Reading only one of the two is why hosted-runtime
+        # conversations listed as "Untitled conversation" while their live header
+        # showed the generated name.
+        conversation_title = str(
+            (result or {}).get("conversation_title")
+            or (state or {}).get("conversation_title")
+            or ""
+        ).strip()
         try:
             self.logger.log(
                 f"[turn-log-fallback] enter conversation={thread_id} turn={turn_id} "

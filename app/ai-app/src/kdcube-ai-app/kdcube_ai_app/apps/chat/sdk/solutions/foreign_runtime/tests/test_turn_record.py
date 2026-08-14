@@ -174,3 +174,20 @@ def test_conversation_is_new_reads_under_the_economics_user() -> None:
     assert calls[0]["user_id"] == "econ-user"
     assert calls[0]["conversation_id"] == "c1"
     assert calls[0]["kinds"] == ["artifact:turn.log"]
+
+
+def test_the_generated_title_is_where_the_recorder_looks():
+    """LIVE: every hosted-runtime conversation listed as "Untitled conversation"
+    while its live header showed the generated name. The seam names the
+    conversation BEFORE the agent runs — so the name survives a failed turn —
+    and leaves it on `state`; the recorder read only `result`. The two ends must
+    agree, and this pins which key carries it."""
+    import inspect
+    from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime import turn_record
+
+    source = inspect.getsource(turn_record.finalize_conversation_title)
+    assert 'state["conversation_title"] = title' in source
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.chatbot import entrypoint as base
+    recorder = inspect.getsource(base.BaseEntrypoint._record_turn_log_fallback)
+    assert '(state or {}).get("conversation_title")' in recorder
