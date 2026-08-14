@@ -819,6 +819,33 @@ workspace_config = ClaudeCodeWorkspaceConfig(
 )
 ```
 
+Add the turn's own workspace beside those servers. A CLI runtime has one door
+for tools, so the platform's pull-by-ref primitive reaches it as a **local
+stdio server** — the same contract an in-process runtime binds as a function:
+
+```python
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime import (
+    WORKSPACE_MCP_SERVER_ID,          # "turn_workspace" — `workspace` is reserved by the CLI
+    workspace_mcp_server,
+)
+
+servers = claude_code_mcp_servers(server_map)
+servers[WORKSPACE_MCP_SERVER_ID] = workspace_mcp_server(
+    workspace=workspace_path,
+    tenant=tenant, project=project,
+    user_id=user_id, conversation_id=conversation_id,
+)
+```
+
+It offers `pull(refs)` and `pulled()`, takes its identity from the child's
+environment (so an agent cannot pull as somebody else by naming them), and
+answers with a local path plus a time-limited download link per file. Keep it
+out of the capability narrowing: namespaces come and go with an administrator's
+inventory, a user's pick, or a lapsed grant, and none of that may take away an
+agent's ability to open a file its own conversation carries. Nothing is
+materialized until the agent asks — a message names its attachments by ref, and
+most turns never open them.
+
 `resolve_turn_mcp` keys the delegated bearer to
 `delegated_client_id_for_agent(application, agent_id)`, so the workspace runs
 under the same per-agent grant the chat consent card offers. A connection the
@@ -1323,8 +1350,19 @@ workspace/
   .mcp.json
   .claude/
     settings.local.json
+    .claude.json          <- workspace trust (written by the SDK helper)
   CLAUDE.md
 ```
+
+Writing those files is necessary and not sufficient. The CLI needs the config
+**named on its command line** (`--mcp-config … --strict-mcp-config`, which the
+runner adds when `.mcp.json` exists — a discovered project config is
+approval-scoped and a lane has nobody to approve it), the workspace **recorded
+as trusted** (otherwise the CLI discards every `permissions.allow` entry it was
+just given, MCP tools included), and **no server named `workspace`** (reserved;
+the SDK's own local server is `turn_workspace`). Full list, with the log line
+that names each cause:
+[Claude Code Agent — what it takes for the CLI to actually have its MCP tools](../agents/claude/claude-code-README.md#what-it-takes-for-the-cli-to-actually-have-its-mcp-tools).
 
 Example `.mcp.json`:
 
@@ -1503,6 +1541,40 @@ should use.
 
 The URL must be reachable from the process or container running `claude`.
 
+### A surface this deployment serves is dialed locally
+
+When the agent consumes **its own app's** surface, the declared URL is the
+address the world knows — a grant, a Connection Hub resource pattern, and a
+person all recognise it — and it is the wrong address to *dial* from inside.
+Sending an in-process call out through the public host means its TLS, its
+proxy, and any tunnel or load balancer on the way back; each is a hop that can
+mangle a response the app already produced correctly (an SSE body delivered
+byte-for-byte and then killed by an HTTP/2 `PROTOCOL_ERROR` is the worked
+example — the client reports the response as lost while the server logs 200).
+
+Declare the intent on the connection:
+
+```yaml
+- name: press
+  kind: mcp
+  server_id: press
+  url: "https://<PUBLIC_HOST>/api/integrations/bundles/<T>/<P>/<bundle>/public/mcp/press"
+  resource: "*/api/integrations/bundles/*/*/<bundle>/public/mcp/press*"
+  transport: streamable_http
+  self_hosted: true          # this deployment serves it — dial the local process
+  delegated: true
+```
+
+`self_hosted` keeps path and query exactly (they name tenant, project, bundle,
+alias) and replaces only the origin with this runtime's own
+(`http://127.0.0.1:<CHAT_PROCESSOR_PORT>`). Authorization is unchanged: the
+grant is looked up by the declared `resource`, whose pattern is
+host-wildcarded, and the surface guard matches the incoming request against the
+same pattern. It is correct on a laptop, in Docker, and on ECS, where the agent
+subprocess and the surface it calls are the same task. A deployment whose agent
+host is a different container from the serving process names that base with
+`internal_base_url` on the same connection.
+
 Recommended config:
 
 ```yaml
@@ -1540,8 +1612,12 @@ true:
 
 - the `claude` CLI exists in the runtime image/container
 - Anthropic or Claude Code credentials are available to the subprocess
-- the Claude workspace path is writable
+- the Claude workspace path is writable, and stable **per conversation** — a
+  per-turn path invalidates the runtime's prompt cache every turn
+  (`cache_miss_reason: system_changed`) and the user waits through the rebuild
 - any required workspace files are written before the turn starts
+- the workspace is recorded as trusted, and the MCP config is named on the
+  command line, or the CLI runs with no MCP tools and no allow list
 - the bundle MCP endpoint is enabled by bundle props
 - Claude can reach the MCP URL over HTTP from its network namespace
 - the MCP endpoint authenticates itself because proc does not authenticate MCP
@@ -1562,18 +1638,31 @@ Managed container recommendations:
 
 Before debugging the model, prove the runtime boundary:
 
-1. Verify the bundle endpoint is discoverable through `@mcp(...)`.
+1. Verify the bundle endpoint is discoverable through `@mcp(...)`, on the route
+   its `auth_config` implies — a managed delegated surface serves
+   `…/<bundle>/public/mcp/<alias>`, and moving it there **changes the URL** the
+   workspace config and the Connection Hub catalog resource must both use.
 2. Call `tools/list` against the final MCP URL from the same host/container that
    will run Claude.
-3. Confirm missing or invalid MCP auth returns `401`.
+3. Confirm the surface answers unauthenticated calls the way its route does: a
+   bundle-owned token surface answers `401`; a managed delegated surface
+   answers `404` with no token and `403` with a bad or ungranted one. "Public"
+   names the route, not the access.
 4. Confirm valid MCP auth returns only the scoped tools.
 5. Confirm each tool enforces the run scope.
-6. Generate the Claude workspace and inspect `.mcp.json` and
-   `.claude/settings.local.json`.
+6. Generate the Claude workspace and inspect `.mcp.json`,
+   `.claude/settings.local.json`, and the trust record in `.claude/.claude.json`.
 7. Run the Claude turn with only the MCP allowed tools.
-8. Assert the run-scoped result was recorded.
-9. Assert a Claude timeout, MCP connection failure, or missing recorded result
-   is reported as MCP sub-processing failure, not as success.
+8. Read the CLI's own `system` init event before blaming the model: it lists the
+   session's MCP servers, their connection status, and any
+   `Ignoring N permissions.allow entries` warning. It names the cause; the app
+   side cannot see it.
+9. Assert the run-scoped result was recorded.
+10. Assert a Claude timeout, MCP connection failure, or missing recorded result
+    is reported as MCP sub-processing failure, not as success.
+11. REOPEN the conversation and confirm the turn is still there — its answer,
+    cost, elapsed time, name, and any object the message carried. Live and
+    reloaded are different code paths, and only the second proves recording.
 
 Useful route probes:
 

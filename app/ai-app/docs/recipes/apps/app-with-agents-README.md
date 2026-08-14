@@ -185,6 +185,42 @@ A capability needed by both runtimes is two pieces of work. The per-capability
 table is
 [Wire Each Capability Per Runtime](../../sdk/bundle/bundle-agent-integration-README.md#1a-wire-each-capability-per-runtime).
 
+### If the hosted runtime is a coding agent, host it as one
+
+An agent that already knows how to work a filesystem should be given one, and
+told the truth about it. Four rules that came out of running one in production:
+
+- **One rulebook.** If the app ships a package with its own `AGENTS.md` /
+  runbook, the resident agent follows **that** — the same document an engineer
+  on a laptop follows. A second, lane-only instruction set drifts from the first
+  and doubles the maintenance. The lane adds only what is true of *this* agent
+  (its identity, its surfaces, what it may publish), and the package must travel
+  in the agent's working directories or its own routing links cannot be opened.
+- **Permit the commands the runbook demands.** A lane has nobody to answer a
+  permission prompt, so a runbook that says "run `git status`" needs `Bash`
+  allowed. Keep the runtime's own toolset a *deployment* choice
+  (`agent.tools.allow` / `agent.tools.deny`, both empty by default) rather than
+  a constant in code — `--allowedTools` grants permission, it does not remove
+  what the CLI ships.
+- **Give the turn's objects a pull, not a copy.** Attach refs to the message
+  and let the agent fetch them when it wants them
+  ([turn workspace server](../../sdk/agents/claude/claude-code-README.md#the-turns-own-workspace-server));
+  pre-materializing every attachment pays for bytes most turns never open.
+- **Name the toolchain, do not build it.** A package venv belongs on the local
+  disk of the machine that runs it, in a directory keyed by a hash of its
+  `requirements.txt` — never inside the package working tree (it is what the
+  desk commits from, and re-materialization deletes it) and never on shared
+  storage (thousands of small files, two hosts installing at once). The app
+  tells the agent the path and whether it exists; **the agent** reads
+  `requirements.txt`, inspects the venv, and builds or refreshes it on demand
+  with its own shell. An app rebuilding in the background pays on turns that
+  never touch the tooling and hides failures in a log nobody reads.
+
+And show the work: a hosted runtime's tool calls and results are **activity
+rows**, never answer text — the workings are useful to the user and
+indispensable when debugging
+([tool activity is not answer text](../../sdk/agents/claude/claude-code-README.md#tool-activity-is-not-answer-text)).
+
 ## 4. Expose The Model Picker Per Agent
 
 The pickable list, the saved pick, and the wire operations that serve them are
@@ -353,6 +389,9 @@ answers `403 ambiguous operation catalog`. Both are in
 | cost and elapsed time show live, then vanish on reload | a lifecycle hook overrode the base without `super()`; the turn recording never started | call `super()` first, forwarding `econ_ctx` |
 | every turn raises `missing 1 required keyword-only argument: 'econ_ctx'` | a `super().pre_run_hook(...)` that omits it | accept `econ_ctx` with a default and forward it |
 | the agent reports no MCP tools although the server was injected with a fresh grant | the app's own `@mcp` surface is on the operations route, or carries no managed `auth_config` | declare `route: "public"` + `auth_config` with `selected_tool_grants: true` |
+| a hosted CLI agent reports no MCP tools and the servers look correct on disk | the config was not named on the command line, the workspace is untrusted (all `permissions.allow` ignored), or a server uses the reserved name `workspace` | read the CLI's `system` init event; [what it takes for the CLI to have its MCP tools](../../sdk/agents/claude/claude-code-README.md#what-it-takes-for-the-cli-to-actually-have-its-mcp-tools) |
+| a file the agent read appears in chat as the agent's answer | tool results arrive as `user` events and a generic extractor took them as text | render tool calls/results as activity rows, never as answer text |
+| several seconds pass before the first token, every turn | the workspace path changes per turn, so the runtime's system prompt (and prompt cache) is rebuilt each time | make the workspace per conversation |
 | two identical chat tiles in one scene | `default_chat: true` already serves the inherited `chat` alias | configure that alias instead of declaring a second chat widget |
 
 ## Done Means
@@ -369,6 +408,7 @@ answers `403 ambiguous operation catalog`. Both are in
 ## Read Next
 
 - [Bundles Descriptor](../../configuration/bundles-descriptor-README.md)
+- [Build An App With A Resident Coding Agent](app-with-resident-coding-agent-README.md)
 - [Bundle Agent Integration](../../sdk/bundle/bundle-agent-integration-README.md)
 - [Connect An MCP Service To A KDCube Agent](consume-mcp-service-README.md)
 - [Agents Acting On Behalf Of The User](../../sdk/solutions/connections/agent-acting-for-user/agent-acting-for-user-README.md)

@@ -89,6 +89,56 @@ ns_cache = ensure_namespaced_cache(
 )
 ```
 
+## Kinds: a cache with a contract on top
+
+`KVCache` is the mechanism. A **kind** is a small wrapper that owns one key
+grammar, one TTL, and one validity rule — so callers share a cache without
+sharing conventions. The favicon cache was the first; the query-embedding cache
+is the second.
+
+### Query embeddings (`kdcube:cache:query-embedding`)
+
+A hybrid search embeds the QUERY on every call, and that vector is a pure
+function of `(query, model, dim)`. The repeats worth catching — pagination, a
+later turn, two people typing the same term — happen on **different workers**,
+so the cache has to be shared. The index keeps no process-local memo on purpose:
+in a distributed runtime that would be a cache one worker out of N can use and
+none of them can invalidate.
+
+```python
+from kdcube_ai_app.infra.index.embedding_cache import create_query_embedding_cache
+
+cache = create_query_embedding_cache(
+    model="text-embedding-3-small", dim=1536,
+    tenant=settings.TENANT, project=settings.PROJECT,
+)   # None when Redis is unreachable — the caller then simply embeds
+```
+
+- **Key**: `<model>:<dim>:<sha256(normalized query)>`. Normalization is trim +
+  whitespace collapse + casefold, and nothing else — stemming would make the key
+  disagree with what was actually embedded. The model and width are part of the
+  identity because a vector from another model is not a cheaper answer, it is a
+  wrong one.
+- **Size**: the vector is stored as base64-packed **float32**, not JSON — 1536
+  values are ~8KB packed against ~17KB as a JSON array, and the JSON form is
+  also lossier to read back.
+- **Bound**: `QUERY_EMBEDDING_CACHE_MAX_ENTRIES` (default 5000) per scope, so
+  ~40MB per tenant/project at 1536 dims. Vectors are big; a cache nobody bounds
+  is a memory leak that happens to answer questions. The ceiling is enforced by
+  a Redis sorted set of the scope's keys scored by **last use** (`…:__lru`), so
+  a write over the cap evicts the coldest entries, not the oldest — and a read
+  re-scores its entry. Redis' own `maxmemory-policy` stays the backstop
+  underneath; the index is best-effort and never fails a call.
+- **TTL**: `QUERY_EMBEDDING_CACHE_TTL_SECONDS` (default 86400). Correctness does
+  not depend on it; it bounds age, while the entry count is bounded above.
+- **Failure posture**: every method fails soft. A miss, a malformed payload, a
+  Redis that is not answering — all return `None`, and the search embeds. A
+  search must never fail because a cache did.
+- **Wiring**: hand it to `IndexConfig.query_embedding_cache`
+  ([Hybrid Index](../solutions/index/hybrid-index-README.md#optional-shared-query-embedding-cache)).
+  It is opt-in per index instance, because the caller is the one who knows
+  whether its queries repeat and under whose tenant/project the vectors belong.
+
 ## Env vars
 
 Required:
@@ -97,6 +147,8 @@ Required:
 Optional:
 - `KV_CACHE_TTL_SECONDS` (default: 3600)
 - `FAVICON_CACHE_TTL_SECONDS` (default: 86400)
+- `QUERY_EMBEDDING_CACHE_TTL_SECONDS` (default: 86400)
+- `QUERY_EMBEDDING_CACHE_MAX_ENTRIES` (default: 5000 per tenant/project scope)
 
 ## Notes
 

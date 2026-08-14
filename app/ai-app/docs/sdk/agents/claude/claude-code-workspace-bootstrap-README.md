@@ -109,6 +109,48 @@ Example valid choices:
 The important rule is determinism: the bundle must consistently point Claude at
 the same logical local root for the same continuity boundary.
 
+### One workspace per conversation, not per turn
+
+The same determinism rule applies to `workspace_path`, and it is not only about
+continuity — it is about cost. The working directory is part of the CLI's
+runtime system prompt, so a workspace created per turn re-creates that prefix
+every turn (`cache_miss_reason: system_changed` in the stream) and the user
+waits through it before the first token.
+
+Use one directory per conversation — `<bundle-storage-root>/agent_workspaces/
+<conversation_id>` — matching the boundary `claude_session_id` and the
+session-store branch already use. Consequences worth knowing:
+
+- the session store bootstraps **once per conversation** instead of once per
+  turn, so a turn that resumes pays no materialization;
+- the CLI's transcript stays under the same `projects/<cwd-slug>` key across
+  turns. The cwd-retarget on bootstrap then only serves what it was meant for:
+  lineage restored on a **different node**, whose recorded cwd differs;
+- workspace files (`CLAUDE.md`, `.mcp.json`, settings) are refreshed in place
+  per turn, which is what `refresh_support_files` is for.
+
+### Trust is part of preparing the workspace
+
+Claude Code honors a project's `permissions.allow` only after the project has
+been trusted through an interactive dialog. A hosted lane has nobody to click
+it, so the CLI logs `Ignoring N permissions.allow entries … this workspace has
+not been trusted` and runs with **none** of them — including MCP servers.
+
+`prepare_claude_code_workspace(...)` therefore writes the trust record itself:
+
+```text
+<CLAUDE_CONFIG_DIR>/.claude.json
+  projects:
+    "<absolute workspace path>":
+      hasTrustDialogAccepted: true
+```
+
+The workspace is the platform's own directory — created by it, configured by
+it, living in bundle storage — so this states a fact rather than delegating a
+security decision to the agent. `CLAUDE_CONFIG_DIR` is set to the session
+store's `local_root` in git mode (see below), which is what makes the trust
+record travel with the session lineage.
+
 For cron/background pipelines this root should be tied to the service-owned
 identity and logical conversation, for example:
 

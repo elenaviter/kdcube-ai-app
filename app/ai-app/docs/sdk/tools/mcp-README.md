@@ -164,6 +164,14 @@ Minimum checklist:
 - stdio commands and their dependencies exist in the process that starts them
 - bundle-served streamable HTTP apps return `KDCubeMCPServer`, whose default is
   stateless HTTP and whose server accepts modern and legacy clients
+- a bundle-served call is answered as **JSON, not as an event stream**: the
+  platform builds the sub-app with `json_response=True` and re-frames a
+  single-message stream it did not build. Streamable-HTTP permits both, and a
+  request/response call needs no stream — while a stream is a shape every hop in
+  front of the deployment can get wrong (a tunnel or HTTP/2 edge that delivers
+  every byte and then closes the stream badly makes the client report the
+  response as LOST while the server logs a clean 200). A body carrying several
+  messages, such as progress notifications, is passed through unchanged
 - logs include enough non-secret context to debug failures: server alias,
   transport, URL host, tool id, run id when applicable, and final status
 
@@ -176,7 +184,11 @@ For Claude Code consumers, remember that KDCube
 `surfaces.as_consumer.mcp.services` does not configure Claude Code. The app
 must write Claude-compatible MCP config into
 the Claude workspace, usually `.mcp.json`, and the configured URL must be
-reachable from the process/container that runs `claude`.
+reachable from the process/container that runs `claude`. When the surface is
+served by the same deployment, declare `self_hosted: true` on the connection so
+the call is dialed on the runtime's own loopback instead of travelling out
+through the public host and back
+([Bundle Agent Integration §8](../bundle/bundle-agent-integration-README.md#a-surface-this-deployment-serves-is-dialed-locally)).
 Use `ClaudeCodeWorkspaceConfig` / `prepare_claude_code_workspace(...)` from the
 Claude Code SDK when you want the SDK to write the standard workspace files.
 

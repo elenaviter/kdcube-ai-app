@@ -629,5 +629,8 @@ Read:
 | Every turn errors with `missing 1 required keyword-only argument: 'econ_ctx'` | a `super().pre_run_hook(...)` call that omits the argument the economics base requires. |
 | An agent reports no MCP tools although the server was injected with a fresh grant | the `@mcp` surface is on the operations route, or has no managed `auth_config`; probe it directly and read whether it answers 401 or 403. |
 | `403 ambiguous operation catalog` | a delegated resource with several tools reached the single-operation REST path — declare `selected_tool_grants: true`. |
+| A hosted CLI agent has no MCP tools although its `.mcp.json` is correct | the CLI side: the config must be named on the command line, the workspace must be recorded as trusted (or every `permissions.allow` entry is ignored), and no server may use a reserved name. Read the CLI's own session-init event. |
+| A hosted CLI agent's file reads appear in chat as its answer | tool results arrive as `user` events; render tool calls/results as activity rows, never as answer text. |
+| A hosted agent's MCP calls hang, then report the response as lost, while the server logged 200 | the call left the deployment and came back: the surface is the app's own, and a hop in between broke the stream — declare `self_hosted: true` on the connection (and let the surface answer JSON framing). |
 | A widget is invisible to a user who holds one of its declared roles | roles are ANY-OF; an admin surface should gate on `user_types`, not a role list. |
 | Two identical chat tiles in one scene | `default_chat: true` plus an app-declared chat widget — the inherited `chat` alias is already the app's chat surface. |

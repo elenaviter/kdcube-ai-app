@@ -91,6 +91,11 @@ Use KV cache for:
 - small runtime config
 - per‑tenant/project flags
 
+A cache with its own key grammar and TTL is a **kind** — the favicon cache, and
+the query-embedding cache a search index can be handed so a paged or repeated
+query is not re-embedded on every worker. The kinds and their contracts:
+[Cache](../storage/cache-README.md#kinds-a-cache-with-a-contract-on-top).
+
 ---
 
 ## Shared bundle local storage (filesystem)

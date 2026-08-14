@@ -206,6 +206,14 @@ splits enforcement in two, and the split is worth knowing exactly:
 Making a per-namespace operation denial enforceable is open work, tracked as
 [kdcube#233](https://github.com/kdcube/kdcube/issues/233).
 
+**What the pick may never take away.** The agent's ability to open a file its
+own conversation carries is not a service capability. An agent with every
+namespace denied still reads, edits, and answers about what the turn handed it:
+the native runtime keeps `react.pull`, and a hosted CLI runtime gets the same
+primitive as a local stdio server (`turn_workspace`, `pull` / `pulled`,
+`foreign_runtime.workspace_tools`) that no inventory, pick, or lapsed grant can
+remove. Only *domain* questions go through the door.
+
 The configured namespace is the base namespace used for policy and endpoint
 resolution. A provider may advertise narrower scoped namespaces for specific
 operations, especially search. In that case, the client still authorizes the

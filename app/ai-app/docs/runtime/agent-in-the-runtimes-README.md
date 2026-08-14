@@ -21,7 +21,7 @@ keywords:
     "rehosting",
     "turn lifecycle",
   ]
-updated_at: 2026-07-29
+updated_at: 2026-08-14
 see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/runtimes-map-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/runtime/harness/README.md
@@ -308,8 +308,9 @@ search, ordered start-batch handling, horizontal serving, accounting on
 integrated paths, consent-gated tools, the same workspace grammar (fresh per
 turn, refs in, produced files hosted out), and the same pull-over-URI
 primitives the native agent uses (`pull_refs_into_dir`; the ReAct tools are one
-adapter over them, and the ported app binds the same helpers as
-`read_file`/`pull_files`). Framework-specific capabilities such as live event
+adapter over them, the ported app binds the same helpers as
+`read_file`/`pull_files`, and a CLI runtime reaches them through the
+`turn_workspace` stdio server). Framework-specific capabilities such as live event
 folding or a nested execution-tool catalog still require explicit adapter
 support.
 
@@ -325,6 +326,28 @@ It is the clearest illustration that the platform record and a framework's
 working memory are genuinely different layers: the record is still captured
 and serves restore/search, while the framework's continuity lives in its own
 files.
+
+Hosting a **CLI** runtime adds three seam facts an in-process runtime never
+meets:
+
+- **its tool traffic is not its answer.** The CLI reports every tool result
+  back into its own conversation as a `user` event, so a generic text extractor
+  publishes a file the agent read as the agent's reply. Tool calls and results
+  become **activity rows** — one step per call, title, arguments, bounded output
+  head — and the answer stays the answer;
+- **its only door for tools is MCP**, so the platform's pull-by-ref primitive
+  is bound as a **local stdio server** (`turn_workspace`) rather than as a
+  function the way lg-react binds `pull_files`. Same contract, different
+  binding step — and deliberately not a capability: an agent with every
+  namespace switched off must still be able to open a file its own
+  conversation carries;
+- **its working directory is part of its prompt**, so the workspace is per
+  **conversation**, not per turn. A moving cwd re-creates the runtime system
+  prompt every turn and the user waits through the rebuild.
+
+Everything else the fusion gives is unchanged, including context objects the
+message carried: they are recorded as their own timeline events, so a reopened
+conversation shows live chips rather than prose about them.
 
 ## 6. One Turn, End To End
 

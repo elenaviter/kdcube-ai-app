@@ -3,7 +3,7 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/conversation/hosted-agent-c
 title: "The Conversation For Any Agent"
 summary: "How KDCube maintains the conversation for ANY hosted agent — KDCube's own ReAct or a wrapped external framework (LangGraph, LangChain, a raw loop). The model: two memories with two owners — the agent's working memory (its checkpointer/store, what the model sees this turn) and the platform conversation record (what the chat component lists, reloads, searches, titles). Details the record's per-turn artifacts (turn.log blocks, conv.timeline.v1, conv.artifacts.events, conv.artifacts.stream, conversation files as conv:fi: links), the two write doors (the React workflow's rich finish_turn vs. the framework-neutral fallbacks in the app base, all homed in solutions/conversation/record.py), the read side (list, reload replay, downloads, external view, search), cost/time restoration, the first-turn title and its identity + role-binding contracts, durable checkpointer keying, and why client-sent chat_history is a hint."
 tags: ["sdk", "solutions", "conversation", "hosting", "langgraph", "port", "checkpointer", "turn-recorder", "conversation-record", "reload", "turn-log"]
-updated_at: 2026-07-16
+updated_at: 2026-08-14
 keywords:
   [
     "hosted agent conversation",
@@ -77,6 +77,14 @@ transcript as an ordered block list `{ts, blocks, blocks_count}`:
 - `chat:user` — the user's message (rebuilds the user bubble on reload);
 - user attachment meta blocks — filename/mime/size plus the `conv:fi:` link
   (rebuilds the attachment cards; the link is pullable later);
+- **user context-object event blocks** — everything *else* the message carried:
+  a pinned post, a canvas object, any surface-attached ref. Recorded **verbatim
+  as their own blocks** under `meta.event`, sharing the prompt block's
+  `batch_id`, so the reader groups them into one message and
+  `context_chip_from_event_block` rebuilds a **live** chip from the event's own
+  `object_ref` — a click resolves through the same resolver the live chip used.
+  Summarizing them into the prompt text instead reloads as prose nobody can
+  open, which is exactly the bug this block shape fixed;
 - `assistant.step` — progress steps;
 - assistant file blocks — files the agent produced, again as `conv:fi:` links
   (rebuilds the file cards, powers Download);
@@ -212,8 +220,13 @@ persist:
   through the turn's `comm`; the chat component applies it to the header live
   and only when the event's `conversation_id` matches the open conversation
   (the event is broadcast to all of the user's surfaces).
-- Persist: return it on the turn result (`result["conversation_title"]`) — the
-  recorder writes it onto the `conv.timeline.v1` the list reads.
+- Persist: leave it on `state["conversation_title"]` **or** return it on the
+  turn result (`result["conversation_title"]`) — the recorder reads both and
+  writes it onto the `conv.timeline.v1` the list reads. Two ends of one handoff
+  must agree: a door that names the conversation *before* the agent runs (so
+  the title survives a failed turn) puts it on `state`, and a recorder that
+  reads only `result` leaves every such conversation "Untitled" with nothing
+  raising.
 
 **The identity contract.** The user the recorder writes under, the user the
 list reads under, and the user the is-new probe reads under must be the **same**

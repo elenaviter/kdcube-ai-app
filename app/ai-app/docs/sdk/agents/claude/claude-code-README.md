@@ -3,8 +3,9 @@ id: repo:kdcube-ai-app/app/ai-app/docs/sdk/agents/claude/claude-code-README.md
 title: "Claude Code Agent"
 summary: "Native Python SDK runner for Claude Code with deterministic user and conversation binding, workspace-scoped execution, communicator-backed streaming, framed structured-output parsing, timeout control, and correct session resume semantics."
 tags: ["sdk", "agents", "claude", "claude-code", "streaming", "communicator", "workspace"]
-keywords: ["ClaudeCodeAgent", "run_followup", "run_steer", "allowedTools", "session-id", "resume", "add-dir", "permission-mode", "stream-json", "ChatCommunicator", "timeout_seconds", "structured_output_prefixes"]
+keywords: ["ClaudeCodeAgent", "run_followup", "run_steer", "allowedTools", "session-id", "resume", "add-dir", "permission-mode", "stream-json", "ChatCommunicator", "timeout_seconds", "structured_output_prefixes", "mcp-config", "strict-mcp-config", "workspace trust", "turn_workspace", "activity rows", "per-conversation workspace", "prompt cache"]
 see_also:
+  - repo:kdcube-ai-app/app/ai-app/docs/recipes/apps/app-with-resident-coding-agent-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-agent-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/bundle/bundle-runtime-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/streaming/channeled-streamer-README.md
@@ -294,6 +295,7 @@ Important current flags:
 - `--verbose`
 - `--output-format stream-json`
 - `--include-partial-messages`
+- `--mcp-config <workspace>/.mcp.json --strict-mcp-config` when that file exists
 - `--model <alias|name>` when configured
 - `--allowedTools ...` when configured
 - `--permission-mode <mode>` when configured
@@ -321,6 +323,58 @@ see [workspace bootstrap](claude-code-workspace-bootstrap-README.md)); a bundle
 that uses `agent_name` purely as a label seeds nothing and runs the default
 agent.
 
+### What it takes for the CLI to actually have its MCP tools
+
+Writing `.mcp.json` is necessary and not sufficient. A hosted lane that looks
+correct from the outside can still start a session with zero MCP tools, and the
+agent then reports — accurately — that the tools its instructions describe are
+not in its session. Every one of these is required:
+
+- **The config is named on the command line.** A project `.mcp.json` the CLI
+  discovers by itself is *approval-scoped*, and a lane has nobody to approve it.
+  The runner passes `--mcp-config <workspace>/.mcp.json --strict-mcp-config`
+  whenever the file exists; strict mode also keeps a user- or machine-level
+  config from adding servers this turn never declared.
+- **The workspace is trusted.** Until a project is trusted the CLI ignores
+  *all* of its `permissions.allow` entries — the whole list, MCP tools
+  included — and says so in its own log: `Ignoring N permissions.allow entries
+  … this workspace has not been trusted`. `prepare_claude_code_workspace(...)`
+  records the trust as a fact (`.claude/.claude.json` →
+  `projects["<abs workspace>"].hasTrustDialogAccepted = true`), because the
+  workspace is the platform's own directory.
+- **No server carries a reserved name.** `workspace` is reserved by the CLI; a
+  server declared under it is refused by name. The SDK's local server is
+  `turn_workspace` (`WORKSPACE_MCP_SERVER_ID`).
+- **`--allowedTools` is a permission list, not an availability filter.**
+  Omitting a tool there does not remove it from the session, and listing one
+  does not add a server that was never configured.
+- **A remote KDCube surface answers the bearer.** An app's own `@mcp` surface
+  must be declared so a delegated bearer authenticates on it (`route: "public"`
+  plus a managed `auth_config` with `selected_tool_grants: true`) — and a public
+  route changes the served path, so the connection URL and the Connection Hub
+  catalog's resource pattern must follow it. Details and probes:
+  [Bundle Agent Integration §8](../../bundle/bundle-agent-integration-README.md#8-mcp-url-reachability).
+
+When tools are missing, read the CLI's own `system` init event first: it lists
+the session's servers, their connection status, and the ignored-permissions
+warning. It names the cause; guessing from the app side does not.
+
+### The turn's own workspace server
+
+A CLI runtime has exactly one door for tools — MCP — so the platform's
+pull-by-ref primitive reaches it as a **local stdio server** rather than an
+in-process binding:
+`sdk/solutions/foreign_runtime/workspace_mcp.py`, configured by
+`workspace_tools.workspace_mcp_server(...)`. It offers `pull(refs)` and
+`pulled()` over the same `pull_refs_into_dir` the native agent uses, takes its
+identity from the child's environment (never from a tool argument), and returns
+each pulled file as a local path plus a time-limited download link.
+
+It is deliberately **not** a named service: namespaces come and go with an
+administrator's inventory, a user's pick, or a lapsed grant, and none of that
+may take away an agent's ability to open a file its own conversation carries.
+Nothing is materialized until the agent asks.
+
 ## Streaming behavior
 
 Claude Code stream-json output is not token-by-token.
@@ -339,6 +393,35 @@ Communicator behavior:
 - `chat.step` with `status="completed"` or `status="error"` at the end
 
 The runner does not call `chat.complete` itself. That remains the responsibility of the surrounding bundle or workflow turn handling.
+
+### Tool activity is not answer text
+
+Claude Code reports every tool result back into its own conversation as a
+`user` event, and a tool call as a `tool_use` block on an assistant event. A
+generic text extractor takes both, so a file the agent read arrives in chat **as
+the agent's answer**, line numbers and all.
+
+The contract the runner enforces:
+
+- `tool_result`, `tool_use`, `thinking`, and `redacted_thinking` blocks, and
+  whole `user` / `system` events, are **never** answer text
+  (`_NON_ANSWER_BLOCK_TYPES`, `_NON_ANSWER_EVENT_TYPES` in `streaming.py`);
+- they are not swallowed either. Each call and each result becomes an
+  **activity row** — a `chat.step` carrying the title, the arguments, a bounded
+  output head (`TOOL_RESULT_PREVIEW_CHARS`), the output size, and an error flag
+  — plus one compact line in the thinking lane;
+- **one step key per call** (`tool.1`, `tool.2`, …). A shared key makes the UI
+  show a single row rewriting itself: three tools, one flickering line;
+- **the row's body travels as the `markdown` argument** of the step, because
+  the comm contract composes it into the block shape the chat renders. A body
+  placed in `data` produces a row with nothing to expand;
+- **a row reads as a sentence** (`claude_tool_activity_title`):
+  `Bash · Show working tree status`, `Read · …/publications/README.md`,
+  `press · search · keep agent`. A Bash call prefers its human `description`
+  over its command line; a path keeps its **tail**, not its head.
+
+Extraction helpers: `extract_tool_uses_from_claude_event`,
+`extract_tool_results_from_claude_event`, `claude_tool_activity_title`.
 
 ## Structured streamed output
 
@@ -495,6 +578,20 @@ Plain-language boundary summary:
 The caller must choose a per-user/per-conversation/per-agent workspace path when
 concurrent or cross-user isolation is required.
 
+### Make it per conversation, never per turn
+
+A workspace path that changes between turns costs the whole prompt cache. The
+working directory is part of the CLI's runtime system prompt, so a new path per
+turn re-creates that prefix: the stream reports
+`cache_miss_reason: system_changed` and the turn pays for it in latency (~7s to
+first token, of which the model was ~2s, on a measured turn of ~13k re-created
+tokens).
+
+Use one directory per continuity boundary — `…/agent_workspaces/<conversation>`
+— the same boundary as `claude_session_id` and the session-store branch. Then
+the cache holds, the session store materializes once per conversation instead of
+once per turn, and the CLI's transcript stays where it put it.
+
 ## Workspace support files
 
 The SDK includes a helper for standard Claude Code workspace files:
@@ -560,6 +657,11 @@ agent = ClaudeCodeAgent(
 
 When `workspace_config` is set, `ClaudeCodeAgent.run_turn(...)` prepares the
 workspace before checking that `workspace_path` exists.
+
+Besides those files the helper records the workspace as **trusted** in the
+CLI's own config (`.claude/.claude.json`), without which the CLI discards every
+`permissions.allow` entry it just wrote — see
+[What it takes for the CLI to actually have its MCP tools](#what-it-takes-for-the-cli-to-actually-have-its-mcp-tools).
 
 `skill_ids` are KDCube skill ids known to the active skills subsystem, for
 example `public.pdf-press` or `product.email-analysis`. The SDK expands skill

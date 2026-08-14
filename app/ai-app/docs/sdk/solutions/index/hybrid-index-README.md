@@ -26,6 +26,7 @@ see_also:
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/index/hybrid-scoring-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/sdk/solutions/canvas/pin-integration-README.md
   - repo:kdcube-ai-app/app/ai-app/docs/service/synch-mechanisms/critical-section-README.md
+  - repo:kdcube-ai-app/app/ai-app/docs/sdk/storage/cache-README.md
 ---
 # SQLite + Vector Hybrid Index
 
@@ -163,10 +164,46 @@ degrades to lexical + recency — still returning results, at no embed cost. The
 semantic factor can also be turned **off** outright (`min_semantic_score < 0`, e.g.
 `-1`) for a scope with no embeddings/budget, and it is **fail-soft**: a runtime
 embedder/vector error degrades to lexical instead of failing the search. A repeated
-query is served from a small LRU query→vector cache (pagination, debounced typeahead,
-the same term across boards do not re-pay the embedder). The gating knobs (including
+query re-embeds unless the caller configured the shared query→vector cache below —
+there is no process-local memo, deliberately (see the next section). The gating knobs (including
 the three `min_semantic_score` regimes) and the fusion math are in
 [Hybrid Scoring](./hybrid-scoring-README.md).
+
+### Optional: shared query-embedding cache
+
+A search embeds the query on every call, and that vector is a pure function of
+`(query, model, dim)`. The repeats worth catching happen **across processes**:
+"Load more" is the same query with a bigger window and may land on another
+worker, a later turn re-asks the same thing, two people converge on the same
+obvious term, and a search-backed tool runs once per turn for weeks.
+
+The index therefore keeps **no process-local memo**. This runtime is
+distributed and an index instance is rebuilt freely, so anything remembered
+inside one object is a cache one worker out of N can use and none of them can
+invalidate. The cache that means something is shared, and it is the caller's to
+configure:
+
+```python
+from kdcube_ai_app.infra.index.embedding_cache import create_query_embedding_cache
+
+idx = HybridIndex(IndexConfig(
+    db_path=..., embed_fn=model_service.embed_texts, dim=1536,
+    vector_store=LocalFaissStore(...),
+    query_embedding_cache=create_query_embedding_cache(
+        model="text-embedding-3-small", dim=1536,
+        tenant=settings.TENANT, project=settings.PROJECT,
+    ),
+))
+```
+
+Opt-in on purpose: the caller knows whether its queries repeat, and under whose
+tenant/project the vectors belong. Leave it `None` and every query is embedded.
+The cache is bounded per scope (default 5000 entries, evicting least-recently-used)
+and stores packed float32 rather than JSON — a vector cache without a ceiling is a
+memory leak. The tier is fail-soft in both directions — a cache that cannot be read
+or written costs an embed call, never the search — and the key carries the model
+and the width, so a re-pointed embedder cannot serve stale vectors. The kind, its
+key grammar and TTL: [Cache](../../storage/cache-README.md#query-embeddings-kdcubecachequery-embedding).
 
 ## What it does not do
 
