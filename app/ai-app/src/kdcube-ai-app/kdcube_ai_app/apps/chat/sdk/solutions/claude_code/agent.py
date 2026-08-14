@@ -31,6 +31,7 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
     extract_text_from_claude_event,
     extract_tool_uses_from_claude_event,
     extract_tool_results_from_claude_event,
+    claude_tool_activity_title,
     extract_usage_from_claude_event,
     is_result_event,
     is_usage_bearing_message_event,
@@ -590,7 +591,8 @@ class ClaudeCodeAgent:
                 # the thinking lane), so a reader follows the work and a debugger
                 # can read the output — while the answer stays the answer.
                 for call in extract_tool_uses_from_claude_event(parsed):
-                    title, body = tool_call_views(call["name"], call.get("input"))
+                    title = claude_tool_activity_title(call["name"], call.get("input"))
+                    _sig, body = tool_call_views(call["name"], call.get("input"))
                     if call.get("id"):
                         tool_titles[str(call["id"])] = title
                     await self._emit_step(

@@ -351,3 +351,55 @@ def _plain_text_of_blocks(value: Any) -> str:
         elif isinstance(item, dict) and isinstance(item.get("text"), str):
             parts.append(item["text"])
     return "".join(parts)
+
+
+#: How a tool call reads in the activity row. A signature like
+#: ``Bash(command=<252 chars>, description=…)`` tells a reader nothing about what
+#: the agent just did; ``Bash · git status --porcelain`` does. One line per tool
+#: family, keyed by the argument that carries the meaning.
+_TOOL_SUBJECT_KEYS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("bash", ("command",)),
+    ("read", ("file_path", "path", "notebook_path")),
+    ("write", ("file_path", "path")),
+    ("edit", ("file_path", "path")),
+    ("glob", ("pattern", "path")),
+    ("grep", ("pattern", "query")),
+    ("webfetch", ("url",)),
+    ("websearch", ("query",)),
+    ("task", ("description", "prompt")),
+)
+TOOL_TITLE_SUBJECT_CHARS = 96
+
+
+def claude_tool_activity_title(name: str, args: Any) -> str:
+    """``<tool> · <what it acted on>`` for one tool call.
+
+    Reads as a sentence in the Steps list — the file, the command, the pattern —
+    instead of a truncated argument dump. An MCP tool keeps its server so two
+    services publishing the same tool name stay distinguishable."""
+    label = str(name or "tool").strip() or "tool"
+    if label.startswith("mcp__"):
+        parts = label.split("__")
+        label = " · ".join(part for part in parts[1:] if part) or label
+    args = args if isinstance(args, dict) else {}
+    subject = ""
+    key = label.split("·")[0].strip().lower()
+    for family, keys in _TOOL_SUBJECT_KEYS:
+        if key == family:
+            for candidate in keys:
+                value = args.get(candidate)
+                if isinstance(value, str) and value.strip():
+                    subject = value.strip()
+                    break
+            break
+    if not subject:
+        for value in args.values():
+            if isinstance(value, str) and value.strip():
+                subject = value.strip()
+                break
+    if not subject:
+        return label
+    subject = " ".join(subject.split())
+    if len(subject) > TOOL_TITLE_SUBJECT_CHARS:
+        subject = subject[: TOOL_TITLE_SUBJECT_CHARS - 1] + "…"
+    return f"{label} · {subject}"

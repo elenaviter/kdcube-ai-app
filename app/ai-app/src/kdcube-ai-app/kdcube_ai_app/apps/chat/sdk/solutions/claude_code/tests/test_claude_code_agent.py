@@ -987,3 +987,29 @@ def test_a_tool_result_is_shown_as_activity_with_its_size():
         ]},
     })
     assert err[0]["is_error"] is True and err[0]["text"] == "permission denied"
+
+
+def test_an_activity_row_says_what_the_agent_did():
+    """LIVE: the Steps list read `Bash(command=<252 chars>, descripti…` — an
+    argument dump, truncated before the part that matters. A row should read
+    like a sentence: the tool, then the thing it acted on."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        claude_tool_activity_title,
+    )
+
+    assert claude_tool_activity_title(
+        "Bash", {"command": "git status --porcelain", "description": "Show working tree status"}
+    ) == "Bash · git status --porcelain"
+    assert claude_tool_activity_title(
+        "Read", {"file_path": "/store/publications/README.md"}
+    ) == "Read · /store/publications/README.md"
+    # an MCP tool keeps its server: two services may publish `search`
+    assert claude_tool_activity_title(
+        "mcp__press__search", {"query": "keep agent"}
+    ) == "press · search · keep agent"
+    # no arguments at all still names the tool
+    assert claude_tool_activity_title("TodoWrite", {}) == "TodoWrite"
+    # a long command is cut at the end, not in the middle of the verb
+    long_cmd = "python3 " + "x" * 300
+    title = claude_tool_activity_title("Bash", {"command": long_cmd})
+    assert title.startswith("Bash · python3 ") and title.endswith("…")
