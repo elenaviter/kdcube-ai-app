@@ -293,6 +293,17 @@ class ClaudeCodeAgent:
             "stream-json",
             "--include-partial-messages",
         ]
+        # POINT AT THE MCP CONFIG EXPLICITLY. The CLI can discover a project
+        # `.mcp.json` from its working directory, but a project-scoped server is
+        # subject to approval, and a lane with nobody to approve simply starts
+        # without its tools — the agent then reports, accurately, that the tools
+        # its instructions describe are not in the session. Naming the file
+        # removes the discovery-and-approval step; `--strict-mcp-config` keeps a
+        # user- or machine-level config from adding servers this turn never
+        # declared.
+        mcp_config_path = self.config.workspace_path / ".mcp.json"
+        if mcp_config_path.is_file():
+            args.extend(["--mcp-config", str(mcp_config_path), "--strict-mcp-config"])
         if self.config.allowed_tools:
             args.extend(["--allowedTools", ",".join(self.config.allowed_tools)])
         if self.config.model and self.config.model != "default":
@@ -386,9 +397,20 @@ class ClaudeCodeAgent:
             except Exception:
                 self.logger.debug("[ClaudeCodeAgent] failed to log stdout event", exc_info=True)
 
+        cli_args = self.build_args(prompt, resume_existing=resume_existing)
+        # The launch line, minus the prompt: which config the CLI was pointed at
+        # and which tools it was told to allow. When an agent reports that its
+        # tools are missing, this is the first thing to read — it says whether
+        # the runtime was even asked for them.
+        self.logger.info(
+            "[ClaudeCodeAgent] launch agent=%s cwd=%s args=%s",
+            self.config.agent_name,
+            workspace_path,
+            [a for a in cli_args if a != prompt],
+        )
         process = await asyncio.create_subprocess_exec(
             self.config.command,
-            *self.build_args(prompt, resume_existing=resume_existing),
+            *cli_args,
             cwd=str(workspace_path),
             env=self._build_env(kind=kind),
             stdin=asyncio.subprocess.DEVNULL,

@@ -1042,3 +1042,41 @@ def test_a_long_subject_keeps_the_part_that_identifies_it():
     )
     assert title.endswith("publications/README.md")
     assert len(title) <= len("Read · ") + TOOL_TITLE_SUBJECT_CHARS
+
+
+def test_the_cli_is_pointed_at_the_turn_s_mcp_config(tmp_path):
+    """LIVE: the agent reported — accurately — that the MCP tools its
+    instructions describe were not in the session, while `.mcp.json` sat in its
+    workspace with both servers in it. A project-scoped server is subject to
+    approval, and a lane has nobody to approve; naming the file removes that
+    step, and `--strict-mcp-config` keeps a machine-level config from adding
+    servers this turn never declared."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.agent import (
+        ClaudeCodeAgent,
+        ClaudeCodeAgentConfig,
+        ClaudeCodeBinding,
+    )
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = ClaudeCodeAgentConfig(
+        agent_name="press",
+        workspace_path=workspace,
+        allowed_tools=("Read", "mcp__press"),
+    )
+    agent = ClaudeCodeAgent(
+        config=config,
+        binding=ClaudeCodeBinding(
+            user_id="u", conversation_id="c", session_id="s", claude_session_id="cs",
+        ),
+        comm=None,
+    )
+
+    # no config file yet: nothing to point at
+    assert "--mcp-config" not in agent.build_args("hello")
+
+    (workspace / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
+    args = agent.build_args("hello")
+    assert "--mcp-config" in args
+    assert str(workspace / ".mcp.json") in args
+    assert "--strict-mcp-config" in args
