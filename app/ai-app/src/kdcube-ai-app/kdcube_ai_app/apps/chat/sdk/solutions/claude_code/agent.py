@@ -628,7 +628,8 @@ class ClaudeCodeAgent:
                         tool_steps[str(call["id"])] = (step_key, title)
                     await self._emit_step(
                         step=step_key, status="running", title=title,
-                        data={"markdown": body, "tool": call["name"]},
+                        markdown=body,
+                        data={"tool": call["name"]},
                     )
                     await self._emit_activity_line(f"→ `{title}`")
 
@@ -645,7 +646,8 @@ class ClaudeCodeAgent:
                         step=step_key,
                         status="error" if done.get("is_error") else "completed",
                         title=title,
-                        data={"markdown": body, "chars": total, "error": bool(done.get("is_error"))},
+                        markdown=body,
+                        data={"chars": total, "error": bool(done.get("is_error"))},
                     )
                     mark = "✗" if done.get("is_error") else "✓"
                     await self._emit_activity_line(f"{mark} `{title}` — {size}")
@@ -1030,16 +1032,25 @@ class ClaudeCodeAgent:
             "session_id": self.binding.session_id,
         }
 
-    async def _emit_step(self, *, step: str, status: str, title: str, data: dict) -> None:
+    async def _emit_step(
+        self, *, step: str, status: str, title: str, data: dict, markdown: str | None = None
+    ) -> None:
+        """One activity row. `markdown` travels as its OWN argument, not inside
+        `data`: the comm contract composes it into the block shape the chat
+        renders, and a row whose body is hand-placed in `data` shows a title
+        with nothing to expand."""
         if self.comm is None:
             return
-        await self.comm.step(
-            step=step,
-            status=status,
-            title=title,
-            data=data,
-            agent=self.config.agent_name,
-        )
+        kwargs: dict[str, Any] = {
+            "step": step,
+            "status": status,
+            "title": title,
+            "data": data,
+            "agent": self.config.agent_name,
+        }
+        if markdown:
+            kwargs["markdown"] = markdown
+        await self.comm.step(**kwargs)
 
     async def _emit_activity_line(self, text: str) -> None:
         """One compact line per tool call/result, in the thinking lane.

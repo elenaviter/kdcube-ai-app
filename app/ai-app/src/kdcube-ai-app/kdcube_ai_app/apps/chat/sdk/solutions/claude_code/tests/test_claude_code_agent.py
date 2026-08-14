@@ -1080,3 +1080,41 @@ def test_the_cli_is_pointed_at_the_turn_s_mcp_config(tmp_path):
     assert "--mcp-config" in args
     assert str(workspace / ".mcp.json") in args
     assert "--strict-mcp-config" in args
+
+
+def test_a_step_body_travels_as_markdown_not_inside_data():
+    """LIVE: activity rows appeared with titles and nothing to expand. The chat
+    renders a step's body from the composed markdown the comm contract builds;
+    a body hand-placed in `data` never becomes that."""
+    import asyncio
+
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.agent import (
+        ClaudeCodeAgent,
+        ClaudeCodeAgentConfig,
+        ClaudeCodeBinding,
+    )
+
+    seen: list[dict] = []
+
+    class _Comm:
+        async def step(self, **kwargs):
+            seen.append(kwargs)
+
+    agent = ClaudeCodeAgent(
+        config=ClaudeCodeAgentConfig(agent_name="press", workspace_path=Path(".")),
+        binding=ClaudeCodeBinding(
+            user_id="u", conversation_id="c", session_id="s", claude_session_id="cs",
+        ),
+        comm=_Comm(),
+    )
+    asyncio.run(agent._emit_step(
+        step="tool.1", status="completed", title="Read · x.md",
+        data={"chars": 12}, markdown="**Read · x.md** — 12 chars",
+    ))
+    assert seen and seen[0]["markdown"] == "**Read · x.md** — 12 chars"
+    assert "markdown" not in seen[0]["data"]
+
+    # no body: the argument is omitted rather than sent empty
+    seen.clear()
+    asyncio.run(agent._emit_step(step="tool.2", status="running", title="t", data={}))
+    assert "markdown" not in seen[0]
