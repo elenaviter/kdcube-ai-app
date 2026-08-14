@@ -21,6 +21,7 @@ from kdcube_ai_app.apps.chat.sdk.runtime.comm_ctx import (
 )
 from kdcube_ai_app.infra.accounting import track_llm
 from kdcube_ai_app.infra.accounting.usage import ServiceUsage, _norm_usage_dict
+from kdcube_ai_app.apps.chat.sdk.solutions.foreign_runtime.stream_contract import tool_call_views
 from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
     CLAUDE_CODE_PROVIDER,
     accumulate_usage,
@@ -28,6 +29,8 @@ from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
     extract_model_from_claude_event,
     extract_result_metrics_from_claude_event,
     extract_text_from_claude_event,
+    extract_tool_uses_from_claude_event,
+    extract_tool_results_from_claude_event,
     extract_usage_from_claude_event,
     is_result_event,
     is_usage_bearing_message_event,
@@ -212,6 +215,9 @@ class ClaudeCodeAgent:
         self.binding = binding
         self.comm = comm if comm is not None else get_current_comm()
         self.logger = logger or logging.getLogger("ClaudeCodeAgent")
+        # Index for the thinking-lane activity commentary (tool calls/results),
+        # kept apart from the answer's own delta index.
+        self._activity_index = 0
 
     @classmethod
     def from_current_context(
@@ -516,6 +522,8 @@ class ClaudeCodeAgent:
                 structured_buffer = structured_buffer[newline_index + 1 :]
                 await _ingest_structured_line(line)
 
+        tool_titles: dict[str, str] = {}
+
         async def _consume_stdout() -> None:
             nonlocal snapshot
             nonlocal final_text
@@ -576,6 +584,36 @@ class ClaudeCodeAgent:
                 if is_result_event(parsed):
                     raw_result_event = parsed
                     resolved_from_stream = True
+
+                # Tool activity is SHOWN, just not as answer text: the call and
+                # what came back both become activity rows (and a compact line in
+                # the thinking lane), so a reader follows the work and a debugger
+                # can read the output — while the answer stays the answer.
+                for call in extract_tool_uses_from_claude_event(parsed):
+                    title, body = tool_call_views(call["name"], call.get("input"))
+                    if call.get("id"):
+                        tool_titles[str(call["id"])] = title
+                    await self._emit_step(
+                        step="tool", status="running", title=title,
+                        data={"markdown": body, "tool": call["name"]},
+                    )
+                    await self._emit_activity_line(f"→ `{title}`")
+
+                for done in extract_tool_results_from_claude_event(parsed):
+                    title = tool_titles.pop(str(done.get("tool_use_id") or ""), "tool")
+                    total = int(done.get("total_chars") or 0)
+                    size = f"{total:,} chars" if total else "no output"
+                    head = f"**{title}** — {size}" + (" · showing the head" if done.get("truncated") else "")
+                    text_out = str(done.get("text") or "")
+                    body = f"{head}\n\n```\n{text_out}\n```" if text_out else head
+                    await self._emit_step(
+                        step="tool",
+                        status="error" if done.get("is_error") else "completed",
+                        title=title,
+                        data={"markdown": body, "chars": total, "error": bool(done.get("is_error"))},
+                    )
+                    mark = "✗" if done.get("is_error") else "✓"
+                    await self._emit_activity_line(f"{mark} `{title}` — {size}")
 
                 text = extract_text_from_claude_event(parsed)
                 _log_stdout_event(line, parsed=parsed if isinstance(parsed, Mapping) else None, text=text)
@@ -967,6 +1005,25 @@ class ClaudeCodeAgent:
             data=data,
             agent=self.config.agent_name,
         )
+
+    async def _emit_activity_line(self, text: str) -> None:
+        """One compact line per tool call/result, in the thinking lane.
+
+        The Steps rows carry the detail (arguments, output head); this is the
+        running commentary a reader follows without opening anything, and the
+        first thing to look at when a turn goes wrong."""
+        if self.comm is None:
+            return
+        try:
+            await self.comm.delta(
+                text=text + "\n",
+                index=self._activity_index,
+                marker="thinking",
+                agent=self.config.agent_name,
+            )
+            self._activity_index += 1
+        except Exception:
+            self.logger.debug("[ClaudeCodeAgent] activity line failed", exc_info=True)
 
     async def _emit_delta(self, *, text: str, index: int) -> None:
         if self.comm is None:

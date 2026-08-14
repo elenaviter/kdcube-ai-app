@@ -894,3 +894,96 @@ async def test_failed_run_marks_accounting_event_unsuccessful(monkeypatch, tmp_p
     assert event["usage"]["input_tokens"] == 20
     assert event["usage"]["output_tokens"] == 10
     assert event["usage"]["cost_usd"] == pytest.approx(0.001)
+
+
+# ── the reader gets the answer, not the workings ──────────────────────────────
+
+def test_a_tool_result_never_reaches_the_answer():
+    """REGRESSION (live): Claude Code reports every tool result back into its own
+    conversation as a `user` event whose content is what the tool returned — a
+    file read comes back line-numbered. The generic extractor streamed that into
+    the chat, so a whole README arrived as the assistant's answer with line
+    numbers down the side."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        extract_text_from_claude_event,
+        extract_tool_uses_from_claude_event,
+    )
+
+    tool_result = {
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "content": "1\t# LinkedIn publications\n2\t\n3\tThe canonical store"},
+        ]},
+    }
+    assert extract_text_from_claude_event(tool_result) == ""
+
+    # the same shape nested one level deeper (an assistant echoing a result block)
+    assert extract_text_from_claude_event(
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_result", "content": "1\tsecret file body"},
+        ]}}
+    ) == ""
+
+
+def test_a_tool_call_is_visible_as_activity_not_as_text():
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        extract_text_from_claude_event,
+        extract_tool_uses_from_claude_event,
+    )
+
+    event = {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/store/README.md"}},
+        ]},
+    }
+    assert extract_text_from_claude_event(event) == ""      # not answer text
+    calls = extract_tool_uses_from_claude_event(event)      # but visible as a step
+    assert calls == [{"id": "", "name": "Read", "input": {"file_path": "/store/README.md"}}]
+
+
+def test_the_agent_s_own_words_still_stream():
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        extract_text_from_claude_event,
+    )
+    assert extract_text_from_claude_event(
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "The test account is restricted."},
+        ]}}
+    ) == "The test account is restricted."
+    # a bare result event (no type) keeps working — that is the final answer path
+    assert extract_text_from_claude_event({"result": "done"}) == "done"
+
+
+def test_a_tool_result_is_shown_as_activity_with_its_size():
+    """Elena's rule: show the workings, do not swallow them. The result becomes
+    an activity row carrying the head of the output and how much it stood for —
+    which is also what makes a bad turn debuggable after the fact."""
+    from kdcube_ai_app.apps.chat.sdk.solutions.claude_code.streaming import (
+        TOOL_RESULT_PREVIEW_CHARS,
+        extract_tool_results_from_claude_event,
+    )
+
+    body = "x" * (TOOL_RESULT_PREVIEW_CHARS + 500)
+    results = extract_tool_results_from_claude_event({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "call_1", "content": body},
+        ]},
+    })
+    assert len(results) == 1
+    row = results[0]
+    assert row["tool_use_id"] == "call_1"
+    assert row["total_chars"] == len(body)
+    assert row["truncated"] is True
+    assert len(row["text"]) == TOOL_RESULT_PREVIEW_CHARS
+    assert row["is_error"] is False
+
+    # an errored tool is marked, not hidden
+    err = extract_tool_results_from_claude_event({
+        "type": "user",
+        "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "c2", "content": "permission denied", "is_error": True},
+        ]},
+    })
+    assert err[0]["is_error"] is True and err[0]["text"] == "permission denied"

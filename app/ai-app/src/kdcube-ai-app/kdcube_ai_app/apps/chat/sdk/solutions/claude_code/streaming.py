@@ -32,12 +32,23 @@ _CLAUDE_CODE_MODEL_ALIASES = {
 }
 
 
+#: Content blocks that are the runtime's own machinery rather than the agent's
+#: words. A ``tool_result`` block carries whatever the tool returned — a file
+#: read comes back as the whole file, line-numbered — and a ``tool_use`` block
+#: carries the call's JSON arguments. Streaming either into the answer prints
+#: the agent's workings on top of its answer; the reader wants what it CONCLUDED.
+_NON_ANSWER_BLOCK_TYPES = frozenset({"tool_result", "tool_use", "thinking", "redacted_thinking"})
+
+
 def extract_text_from_claude_content(value: Any) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, list):
         return "".join(part for part in (extract_text_from_claude_content(item) for item in value) if part)
     if not isinstance(value, dict):
+        return ""
+
+    if str(value.get("type") or "") in _NON_ANSWER_BLOCK_TYPES:
         return ""
 
     if isinstance(value.get("text"), str):
@@ -51,8 +62,45 @@ def extract_text_from_claude_content(value: Any) -> str:
     return ""
 
 
+#: Stream events that never carry answer text. A ``user`` event is how Claude
+#: Code reports a TOOL RESULT back into its own conversation — the file it read,
+#: the command output — and a ``system`` event is session bookkeeping. Both have
+#: a ``content`` key, so a generic extractor happily streams them to the reader.
+_NON_ANSWER_EVENT_TYPES = frozenset({"user", "system"})
+
+
+def extract_tool_uses_from_claude_event(value: Any) -> list[dict[str, Any]]:
+    """``[{"name", "input"}, …]`` for the tool calls an assistant event makes.
+
+    The reader still deserves to see that the agent read a file or searched the
+    store — just as an activity row, not as the file's contents pasted into the
+    answer. The caller renders these as steps."""
+    if not isinstance(value, dict) or str(value.get("type") or "") != "assistant":
+        return []
+    message = value.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict) or str(block.get("type") or "") != "tool_use":
+            continue
+        name = str(block.get("name") or "").strip()
+        if not name:
+            continue
+        out.append({
+            "id": str(block.get("id") or ""),
+            "name": name,
+            "input": block.get("input") if isinstance(block.get("input"), dict) else {},
+        })
+    return out
+
+
 def extract_text_from_claude_event(value: Any) -> str:
     if not isinstance(value, dict):
+        return ""
+
+    if str(value.get("type") or "") in _NON_ANSWER_EVENT_TYPES:
         return ""
 
     for key in ("text", "completion", "message", "delta", "result", "content"):
@@ -250,3 +298,56 @@ def accumulate_usage(
     current["requests"] = int(current.get("requests", 0) or 0) + max(requests_int, 0)
 
     return current
+
+#: How much of a tool's output the activity row carries. The row exists so the
+#: reader (and whoever is debugging a turn) can see WHAT came back; the whole
+#: file is already on disk and in the agent's context, so the row shows the head
+#: of it and says how much it stood for.
+TOOL_RESULT_PREVIEW_CHARS = 1600
+
+
+def extract_tool_results_from_claude_event(value: Any) -> list[dict[str, Any]]:
+    """``[{"tool_use_id", "text", "is_error", "truncated", "total_chars"}, …]``
+    for the tool results a ``user`` event reports back.
+
+    Claude Code narrates its own tool calls by feeding the results into its
+    conversation as `user` events. They are not the agent's answer — but they
+    are exactly what a reader wants to see as activity, and what a debugger
+    needs when a turn goes sideways."""
+    if not isinstance(value, dict) or str(value.get("type") or "") != "user":
+        return []
+    message = value.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict) or str(block.get("type") or "") != "tool_result":
+            continue
+        raw = block.get("content")
+        text = raw if isinstance(raw, str) else _plain_text_of_blocks(raw)
+        total = len(text)
+        preview = text[:TOOL_RESULT_PREVIEW_CHARS]
+        out.append({
+            "tool_use_id": str(block.get("tool_use_id") or ""),
+            "text": preview,
+            "truncated": total > len(preview),
+            "total_chars": total,
+            "is_error": bool(block.get("is_error")),
+        })
+    return out
+
+
+def _plain_text_of_blocks(value: Any) -> str:
+    """The text of a tool result given as blocks rather than a string."""
+    if isinstance(value, str):
+        return value
+    if not isinstance(value, list):
+        return ""
+    parts: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            parts.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+    return "".join(parts)
